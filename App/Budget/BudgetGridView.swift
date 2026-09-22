@@ -2,26 +2,45 @@
 import SwiftUI
 import BudgetCore
 import struct BudgetCore.Category
+import UniformTypeIdentifiers
+
+struct CSVDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.commaSeparatedText] }
+    let text: String
+
+    init(text: String) { self.text = text }
+    init(configuration: ReadConfiguration) throws { text = "" }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
+    }
+}
 
 struct BudgetGridView: View {
     @ObservedObject var viewModel: BudgetGridViewModel
+    @State private var showExporter = false
 
     private func categoriesByType(_ type: CategoryType) -> [Category] {
         viewModel.categories.filter { $0.type == type }
     }
 
     var body: some View {
-        ScrollView([.horizontal, .vertical]) {
-            Grid(alignment: .leading) {
-                headerRow
-                summaryRows
-                Divider()
-                categorySection(.income, title: "Income")
-                categorySection(.expense, title: "Expenses")
-                categorySection(.transfer, title: "Transfers")
+        VStack(alignment: .leading) {
+            Button("Export CSV…") { showExporter = true }
+                .padding([.horizontal, .top])
+            ScrollView([.horizontal, .vertical]) {
+                Grid(alignment: .leading) {
+                    headerRow
+                    summaryRows
+                    Divider()
+                    categorySection(.income, title: "Income")
+                    categorySection(.expense, title: "Expenses")
+                    categorySection(.transfer, title: "Transfers")
+                }
+                .padding()
             }
-            .padding()
         }
+        .fileExporter(isPresented: $showExporter, document: CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories, periods: viewModel.periods, transactions: viewModel.transactions)), contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
     }
 
     private var headerRow: some View {
