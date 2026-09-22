@@ -27,7 +27,7 @@ struct BudgetGridView: View {
     private var headerRow: some View {
         GridRow {
             Text("").frame(width: 220, alignment: .leading)
-            ForEach(viewModel.periods) { period in
+            ForEach(viewModel.periods, id: \.startDate) { period in
                 VStack {
                     Text(period.startDate.formatted(date: .abbreviated, time: .omitted))
                     if period.type == .projected { Text("(forecast)").font(.caption).foregroundStyle(.secondary) }
@@ -51,7 +51,7 @@ struct BudgetGridView: View {
     private func summaryRow(_ title: String, _ value: @escaping (PayPeriod) -> Int) -> some View {
         GridRow {
             Text(title).frame(width: 220, alignment: .leading)
-            ForEach(viewModel.periods) { period in
+            ForEach(viewModel.periods, id: \.startDate) { period in
                 Text(Money.format(value(period), currency: .gbp)).frame(width: 120)
             }
         }
@@ -62,7 +62,7 @@ struct BudgetGridView: View {
             ForEach(categoriesByType(type)) { category in
                 GridRow {
                     Text(category.name).frame(width: 220, alignment: .leading)
-                    ForEach(viewModel.periods) { period in
+                    ForEach(viewModel.periods, id: \.startDate) { period in
                         let total = viewModel.categoryTotal(category, in: period)
                         Text(total == 0 ? "—" : Money.format(total, currency: .gbp))
                             .frame(width: 120)
