@@ -30,5 +30,6 @@ public final class DatabaseManager {
         registerImportBatchMigration(&migrator)
         registerTransactionMigration(&migrator)
         registerRuleMigration(&migrator)
+        registerPayPeriodMigration(&migrator)
     }
 }
