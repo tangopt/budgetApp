@@ -26,5 +26,8 @@ public final class DatabaseManager {
     private func registerMigrations(_ migrator: inout DatabaseMigrator) {
         registerCategoryMigration(&migrator)
         registerAccountMigration(&migrator)
+        registerImportProfileMigration(&migrator)
+        registerImportBatchMigration(&migrator)
+        registerTransactionMigration(&migrator)
     }
 }
