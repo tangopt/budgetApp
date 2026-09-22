@@ -1,0 +1,56 @@
+// App/Import/ImportView.swift
+import SwiftUI
+import BudgetCore
+import struct BudgetCore.Category
+import UniformTypeIdentifiers
+
+struct ImportView: View {
+    @StateObject var viewModel: ImportViewModel
+    let account: Account
+    let categories: [Category]
+    let profileStore: ImportProfileStore
+
+    @State private var showFilePicker = false
+    @State private var pendingHeaderRowForWizard: [String]?
+    @State private var pendingFileURL: URL?
+
+    var body: some View {
+        VStack {
+            if !viewModel.stagedRows.isEmpty {
+                ReviewView(viewModel: viewModel, categories: categories) {}
+            } else {
+                Button("Import CSV statement…") { showFilePicker = true }
+            }
+        }
+        .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.commaSeparatedText]) { result in
+            guard case .success(let url) = result else { return }
+            handlePickedFile(url)
+        }
+        .sheet(item: Binding(get: { pendingHeaderRowForWizard.map { Wrapped(value: $0) } }, set: { _ in pendingHeaderRowForWizard = nil })) { wrapped in
+            CSVMappingWizardView(account: account, sampleHeaderRow: wrapped.value) { profile in
+                try? profileStore.save(profile)
+                pendingHeaderRowForWizard = nil
+                if let url = pendingFileURL {
+                    Task { await viewModel.stageCSV(fileURL: url, account: account) }
+                }
+            }
+        }
+    }
+
+    private func handlePickedFile(_ url: URL) {
+        pendingFileURL = url
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              let firstLine = text.split(separator: "\n").first else { return }
+        let existingProfile = try? profileStore.find(accountId: account.id!, format: .csv)
+        if existingProfile != nil {
+            Task { await viewModel.stageCSV(fileURL: url, account: account) }
+        } else {
+            pendingHeaderRowForWizard = CSVRowSplitter.split(line: String(firstLine), delimiter: ",")
+        }
+    }
+}
+
+private struct Wrapped: Identifiable {
+    let value: [String]
+    var id: String { value.joined() }
+}
