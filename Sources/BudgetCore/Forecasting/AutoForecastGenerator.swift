@@ -42,17 +42,18 @@ public enum AutoForecastGenerator {
             let isFixed = relativeStdDev < 0.15
 
             let forecastAmount = isFixed ? perPeriodSums.last! : Int(mean.rounded())
+            let signedAmount = category.type == .income ? forecastAmount : -forecastAmount
             let nextPeriodStart = sortedPeriods.last!.startDate
 
             if var existing = try ForecastEntry
                 .filter(Column("categoryId") == category.id! && Column("groupId") == group.id!)
                 .fetchOne(db) {
                 guard existing.status == .auto else { continue } // respect manual tuning
-                existing.amountMinorUnits = forecastAmount
+                existing.amountMinorUnits = signedAmount
                 try existing.update(db)
             } else {
                 var entry = ForecastEntry(
-                    groupId: group.id!, categoryId: category.id!, amountMinorUnits: forecastAmount,
+                    groupId: group.id!, categoryId: category.id!, amountMinorUnits: signedAmount,
                     frequency: .monthly, interval: 1, startDate: nextPeriodStart, endDate: nil,
                     isEnabled: true, status: .auto, note: nil
                 )

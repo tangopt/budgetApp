@@ -49,7 +49,7 @@ final class AutoForecastGeneratorTests: XCTestCase {
         }
         let entries = try manager.dbQueue.read { db in try ForecastEntry.filter(Column("categoryId") == rentId).fetchAll(db) }
         XCTAssertEqual(entries.count, 1)
-        XCTAssertEqual(entries[0].amountMinorUnits, 280000)
+        XCTAssertEqual(entries[0].amountMinorUnits, -280000)
         XCTAssertEqual(entries[0].status, .auto)
         XCTAssertEqual(entries[0].frequency, .monthly)
     }
