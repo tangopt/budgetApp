@@ -1,0 +1,19 @@
+name: Budget
+options:
+  bundleIdPrefix: com.personal
+packages:
+  BudgetCore:
+    path: .
+targets:
+  Budget:
+    type: application
+    platform: macOS
+    deploymentTarget: "13.0"
+    sources: [App]
+    dependencies:
+      - package: BudgetCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.personal.budget
+        MARKETING_VERSION: "0.1.0"
+        GENERATE_INFOPLIST_FILE: YES
