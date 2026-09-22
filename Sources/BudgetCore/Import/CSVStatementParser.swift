@@ -45,7 +45,7 @@ public enum CSVStatementParser {
         let cleaned = raw.replacingOccurrences(of: ",", with: "")
         guard let decimalValue = Decimal(string: cleaned) else { return nil }
         let scaled = decimalValue * 100
-        return NSDecimalNumber(decimal: scaled).intValue == 0 && cleaned != "0" && cleaned != "0.00"
+        return NSDecimalNumber(decimal: scaled).intValue == 0 && decimalValue != 0
             ? nil
             : NSDecimalNumber(decimal: scaled).intValue
     }
