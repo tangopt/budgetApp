@@ -29,5 +29,6 @@ public final class DatabaseManager {
         registerImportProfileMigration(&migrator)
         registerImportBatchMigration(&migrator)
         registerTransactionMigration(&migrator)
+        registerRuleMigration(&migrator)
     }
 }
