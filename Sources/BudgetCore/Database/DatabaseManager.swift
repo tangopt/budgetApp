@@ -31,5 +31,7 @@ public final class DatabaseManager {
         registerTransactionMigration(&migrator)
         registerRuleMigration(&migrator)
         registerPayPeriodMigration(&migrator)
+        registerForecastGroupMigration(&migrator)
+        registerForecastEntryMigration(&migrator)
     }
 }
