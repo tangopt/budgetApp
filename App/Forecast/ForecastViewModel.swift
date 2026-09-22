@@ -20,6 +20,7 @@ final class ForecastViewModel: ObservableObject {
         entries = try dbQueue.read { db in try ForecastEntry.fetchAll(db) }
         let incomeDates = try dbQueue.read { db -> [Date] in
             let incomeCategoryIds = try Category.filter(Column("type") == CategoryType.income.rawValue).fetchAll(db).compactMap(\.id)
+            guard !incomeCategoryIds.isEmpty else { return [] }
             return try Date.fetchAll(db, sql: "SELECT date FROM transaction_ WHERE categoryId IN (\(incomeCategoryIds.map(String.init).joined(separator: ","))) AND status = 'confirmed' ORDER BY date")
         }
         var allPeriods = PayPeriodDetector.generateActualPeriods(incomeDates: incomeDates)
