@@ -62,7 +62,7 @@ struct ForecastComparisonView: View {
     private var comparisonTable: some View {
         VStack(alignment: .leading) {
             Text("Confirmed vs. Preview forecast").font(.headline)
-            ForEach(futurePeriods) { period in
+            ForEach(futurePeriods, id: \.startDate) { period in
                 VStack(alignment: .leading) {
                     Text(period.startDate.formatted(date: .abbreviated, time: .omitted))
                         .font(.subheadline).bold()
