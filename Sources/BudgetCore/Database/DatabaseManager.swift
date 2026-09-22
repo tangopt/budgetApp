@@ -25,5 +25,6 @@ public final class DatabaseManager {
     /// and this function calls them all in order.
     private func registerMigrations(_ migrator: inout DatabaseMigrator) {
         registerCategoryMigration(&migrator)
+        registerAccountMigration(&migrator)
     }
 }
