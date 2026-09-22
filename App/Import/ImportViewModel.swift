@@ -44,6 +44,14 @@ final class ImportViewModel: ObservableObject {
         }
     }
 
+    func stagePDF(lines: [String], config: PDFLayoutConfig, account: Account) async throws {
+        lastSourceFileName = "statement.pdf"
+        lastAccountId = account.id!
+        let result = try await coordinator.stagePDFImport(lines: lines, config: config, accountId: account.id!)
+        stagedRows = result.staged.map { ReviewRow(staged: $0, chosenCategoryId: $0.suggestedCategoryId) }
+        duplicateCount = result.duplicateCount
+    }
+
     func commit() throws {
         let decisions = stagedRows.map { ImportDecision(stagedId: $0.staged.id, finalCategoryId: $0.chosenCategoryId) }
         try coordinator.commit(accountId: lastAccountId, sourceFileName: lastSourceFileName, staged: stagedRows.map(\.staged), decisions: decisions)

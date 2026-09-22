@@ -13,6 +13,8 @@ struct ImportView: View {
     @State private var showFilePicker = false
     @State private var pendingHeaderRowForWizard: [String]?
     @State private var pendingFileURL: URL?
+    @State private var showPDFPicker = false
+    @State private var pendingPDFLines: [String]?
 
     var body: some View {
         VStack {
@@ -20,11 +22,16 @@ struct ImportView: View {
                 ReviewView(viewModel: viewModel, categories: categories) {}
             } else {
                 Button("Import CSV statement…") { showFilePicker = true }
+                Button("Import PDF statement…") { showPDFPicker = true }
             }
         }
         .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.commaSeparatedText]) { result in
             guard case .success(let url) = result else { return }
             handlePickedFile(url)
+        }
+        .fileImporter(isPresented: $showPDFPicker, allowedContentTypes: [.pdf]) { result in
+            guard case .success(let url) = result else { return }
+            handlePickedPDF(url)
         }
         .sheet(item: Binding(get: { pendingHeaderRowForWizard.map { Wrapped(value: $0) } }, set: { _ in pendingHeaderRowForWizard = nil })) { wrapped in
             CSVMappingWizardView(account: account, sampleHeaderRow: wrapped.value) { profile in
@@ -32,6 +39,15 @@ struct ImportView: View {
                 pendingHeaderRowForWizard = nil
                 if let url = pendingFileURL {
                     Task { await viewModel.stageCSV(fileURL: url, account: account) }
+                }
+            }
+        }
+        .sheet(item: Binding(get: { pendingPDFLines.map { Wrapped(value: $0) } }, set: { _ in pendingPDFLines = nil })) { wrapped in
+            PDFLayoutWizardView(account: account, sampleLines: wrapped.value) { profile in
+                try? profileStore.save(profile)
+                pendingPDFLines = nil
+                if let configJSON = profile.pdfLayoutConfig, let config = try? PDFLayoutConfig.decode(configJSON) {
+                    Task { try? await viewModel.stagePDF(lines: wrapped.value, config: config, account: account) }
                 }
             }
         }
@@ -46,6 +62,17 @@ struct ImportView: View {
             Task { await viewModel.stageCSV(fileURL: url, account: account) }
         } else {
             pendingHeaderRowForWizard = CSVRowSplitter.split(line: String(firstLine), delimiter: ",")
+        }
+    }
+
+    private func handlePickedPDF(_ url: URL) {
+        guard let lines = try? PDFTextExtractor.extractLines(from: url) else { return }
+        if let existingProfile = try? profileStore.find(accountId: account.id!, format: .pdf),
+           let configJSON = existingProfile.pdfLayoutConfig,
+           let config = try? PDFLayoutConfig.decode(configJSON) {
+            Task { try? await viewModel.stagePDF(lines: lines, config: config, account: account) }
+        } else {
+            pendingPDFLines = lines
         }
     }
 }

@@ -66,6 +66,31 @@ public final class ImportCoordinator {
         return StagedImport(staged: staged, duplicateCount: duplicateCount)
     }
 
+    public func stagePDFImport(lines: [String], config: PDFLayoutConfig, accountId: Int64) async throws -> StagedImport {
+        let parseResult = PDFLineParser.parse(lines: lines, config: config)
+        let existingFingerprints = try await dbQueue.read { db in
+            try Set(String.fetchAll(db, sql: "SELECT fingerprint FROM transaction_ WHERE accountId = ?", arguments: [accountId]))
+        }
+        let categories = try await dbQueue.read { db in try Category.fetchAll(db) }
+        let rules = try await dbQueue.read { db in try Rule.fetchAll(db) }
+
+        var staged: [StagedTransaction] = []
+        var duplicateCount = 0
+        for parsedTransaction in parseResult.transactions {
+            let fingerprint = TransactionFingerprint.compute(
+                accountId: accountId, date: parsedTransaction.date,
+                amountMinorUnits: parsedTransaction.amountMinorUnits, description: parsedTransaction.rawDescription
+            )
+            if existingFingerprints.contains(fingerprint) {
+                duplicateCount += 1
+                continue
+            }
+            let result = await categorizationService.categorize(description: parsedTransaction.rawDescription, rules: rules, categories: categories)
+            staged.append(StagedTransaction(parsed: parsedTransaction, suggestedCategoryId: result.categoryId, source: result.source, confidence: result.confidence))
+        }
+        return StagedImport(staged: staged, duplicateCount: duplicateCount)
+    }
+
     public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision]) throws {
         let decisionById = Dictionary(uniqueKeysWithValues: decisions.map { ($0.stagedId, $0.finalCategoryId) })
         try dbQueue.write { db in
