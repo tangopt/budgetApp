@@ -10,6 +10,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
     case forecast = "Forecast"
     case netWorth = "Net Worth"
     case rules = "Rules"
+    case categories = "Categories"
     case uncategorized = "Uncategorized"
     case accounts = "Accounts"
     var id: String { rawValue }
@@ -31,6 +32,7 @@ struct ContentView: View {
     @StateObject private var forecastViewModel: ForecastViewModel
     @StateObject private var netWorthViewModel: NetWorthViewModel
     @StateObject private var rulesViewModel: RulesViewModel
+    @StateObject private var categoriesViewModel: CategoriesViewModel
     @StateObject private var uncategorizedViewModel: UncategorizedViewModel
     @StateObject private var accountsViewModel: AccountsSettingsViewModel
 
@@ -47,6 +49,7 @@ struct ContentView: View {
         _forecastViewModel = StateObject(wrappedValue: ForecastViewModel(dbQueue: environment.dbQueue))
         _netWorthViewModel = StateObject(wrappedValue: NetWorthViewModel(dbQueue: environment.dbQueue))
         _rulesViewModel = StateObject(wrappedValue: RulesViewModel(dbQueue: environment.dbQueue))
+        _categoriesViewModel = StateObject(wrappedValue: CategoriesViewModel(dbQueue: environment.dbQueue))
         _uncategorizedViewModel = StateObject(wrappedValue: UncategorizedViewModel(dbQueue: environment.dbQueue))
         _accountsViewModel = StateObject(wrappedValue: AccountsSettingsViewModel(dbQueue: environment.dbQueue))
     }
@@ -105,6 +108,8 @@ struct ContentView: View {
                 case .rules:
                     RulesView(viewModel: rulesViewModel)
                         .onAppear { try? rulesViewModel.load() }
+                case .categories:
+                    CategoriesView(viewModel: categoriesViewModel)
                 case .uncategorized:
                     UncategorizedView(viewModel: uncategorizedViewModel)
                         .onAppear { try? uncategorizedViewModel.load() }
