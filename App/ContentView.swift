@@ -18,7 +18,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @ObservedObject var environment: AppEnvironment
     @State private var selection: AppScreen? = .importReview
-    @State private var selectedAccount: Account?
+    @State private var selectedImportAccountId: Int64?
     @State private var accounts: [Account] = []
     @State private var categories: [Category] = []
 
@@ -64,13 +64,27 @@ struct ContentView: View {
             Group {
                 switch selection {
                 case .importReview:
-                    if let account = selectedAccount {
-                        ImportView(
-                            viewModel: importViewModel,
-                            account: account, categories: categories, profileStore: profileStore
-                        )
+                    if importableAccounts.isEmpty {
+                        Text("Add an account with tracking mode \"imported\" under Accounts, then pick it here to import a statement.")
                     } else {
-                        Text("Add an account under Accounts, then pick it here to import a statement.")
+                        VStack(alignment: .leading, spacing: 0) {
+                            Picker("Import into", selection: $selectedImportAccountId) {
+                                ForEach(importableAccounts) { account in
+                                    Text("\(account.name) (\(account.currency.rawValue.uppercased()))").tag(Int64?.some(account.id!))
+                                }
+                            }
+                            .frame(maxWidth: 360)
+                            .padding([.horizontal, .top])
+                            // The staged rows belong to the account they were staged for;
+                            // switching mid-review would be misleading.
+                            .disabled(importViewModel.isReviewing)
+                            if let account = selectedImportAccount {
+                                ImportView(
+                                    viewModel: importViewModel,
+                                    account: account, categories: categories, profileStore: profileStore
+                                )
+                            }
+                        }
                     }
                 case .budgetGrid:
                     BudgetGridView(viewModel: budgetGridViewModel)
@@ -106,11 +120,23 @@ struct ContentView: View {
         }
     }
 
+    /// Only `.imported` accounts receive statement imports; `.manual` accounts are
+    /// balance-only (updated from the Net Worth screen).
+    private var importableAccounts: [Account] {
+        accounts.filter { $0.trackingMode == .imported }
+    }
+
+    private var selectedImportAccount: Account? {
+        importableAccounts.first { $0.id == selectedImportAccountId }
+    }
+
     private func refreshSharedState() {
         categories = (try? environment.dbQueue.read { db in try Category.fetchAll(db) }) ?? []
         accounts = (try? environment.dbQueue.read { db in try Account.fetchAll(db) }) ?? []
-        if selectedAccount == nil || !accounts.contains(where: { $0.id == selectedAccount?.id }) {
-            selectedAccount = accounts.first
+        // Keep the user's choice across navigation; fall back to the first importable
+        // account only when nothing (valid) is selected yet.
+        if selectedImportAccount == nil {
+            selectedImportAccountId = importableAccounts.first?.id
         }
     }
 }
