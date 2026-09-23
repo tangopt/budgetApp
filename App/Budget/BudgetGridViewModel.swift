@@ -21,6 +21,7 @@ final class BudgetGridViewModel: ObservableObject {
     @Published var errorMessage: String?
 
     private let dbQueue: DatabaseQueue
+    private var calendarTotals: [Int64: [Int: [Int: Int]]] = [:]
 
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
@@ -29,6 +30,7 @@ final class BudgetGridViewModel: ObservableObject {
     func load(horizon: Date) throws {
         categories = try dbQueue.read { db in try Category.fetchAll(db) }
         transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
+        calendarTotals = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
         forecastEntries = try dbQueue.read { db in try ForecastEntry.fetchAll(db) }
         forecastGroups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
         // Paydays come from the salary category only (not Bonus/refunds) — see PaydaySource.
@@ -49,18 +51,18 @@ final class BudgetGridViewModel: ObservableObject {
         BudgetGridCalculator.yearsWithData(transactions: transactions)
     }
 
+    func calendarCategoryTotal(_ category: Category, year: Int, month: Int) -> Int {
+        BudgetGridCalculator.categoryTotalForCalendarMonth(category: category, year: year, month: month, calendarTotals: calendarTotals)
+    }
+
     func yearlyTotal(_ year: Int) -> Int {
-        BudgetGridCalculator.yearlyTotal(year: year, categories: categories, transactions: transactions)
+        BudgetGridCalculator.yearlyTotal(year: year, categories: categories, calendarTotals: calendarTotals)
     }
 
     func yearOverYearChange(_ year: Int) -> Double? {
         let previousYear = year - 1
         let previousTotal = availableYears.contains(previousYear) ? yearlyTotal(previousYear) : nil
         return BudgetGridCalculator.yearOverYearChange(currentYearTotal: yearlyTotal(year), previousYearTotal: previousTotal)
-    }
-
-    func calendarCategoryTotal(_ category: Category, year: Int, month: Int) -> Int {
-        BudgetGridCalculator.categoryTotalForCalendarMonth(category: category, year: year, month: month, transactions: transactions)
     }
 
     /// Falls back to the most recent year with data whenever the current selection is

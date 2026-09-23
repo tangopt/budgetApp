@@ -72,25 +72,34 @@ final class BudgetGridCalculatorCalendarModeTests: XCTestCase {
         return Calendar(identifier: .gregorian).date(from: c)!
     }
 
-    func testCategoryTotalForCalendarMonthSumsOnlyThatMonth() {
-        let rent = Category(id: 1, name: "Rent", type: .expense)
+    func testCalendarTotalsLookupGroupsByCategoryYearMonth() {
         let transactions = [
             Transaction(id: 1, importBatchId: 1, accountId: 1, date: date(2026, 3, 16), rawDescription: "Rent", amountMinorUnits: -280000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "a"),
-            Transaction(id: 2, importBatchId: 1, accountId: 1, date: date(2026, 4, 16), rawDescription: "Rent", amountMinorUnits: -280000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "b")
+            Transaction(id: 2, importBatchId: 1, accountId: 1, date: date(2026, 4, 16), rawDescription: "Rent", amountMinorUnits: -280000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "b"),
+            Transaction(id: 3, importBatchId: 1, accountId: 1, date: date(2026, 3, 20), rawDescription: "Rent2", amountMinorUnits: -1000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "c")
         ]
-        let total = BudgetGridCalculator.categoryTotalForCalendarMonth(category: rent, year: 2026, month: 3, transactions: transactions)
-        XCTAssertEqual(total, -280000)
+        let lookup = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
+        XCTAssertEqual(lookup[1]?[2026]?[3], -281000)
+        XCTAssertEqual(lookup[1]?[2026]?[4], -280000)
     }
 
-    func testCategoryTotalForCalendarMonthIgnoresUnconfirmedAndOtherCategories() {
-        let rent = Category(id: 1, name: "Rent", type: .expense)
-        let groceries = Category(id: 2, name: "Groceries", type: .expense)
+    func testCalendarTotalsLookupIgnoresUnconfirmedAndUncategorized() {
         let transactions = [
             Transaction(id: 1, importBatchId: 1, accountId: 1, date: date(2026, 3, 16), rawDescription: "Rent", amountMinorUnits: -280000, categoryId: 1, status: .pendingReview, categorizedBy: .none, fingerprint: "a"),
-            Transaction(id: 2, importBatchId: 1, accountId: 1, date: date(2026, 3, 16), rawDescription: "Groceries", amountMinorUnits: -4000, categoryId: 2, status: .confirmed, categorizedBy: .manual, fingerprint: "b")
+            Transaction(id: 2, importBatchId: 1, accountId: 1, date: date(2026, 3, 16), rawDescription: "X", amountMinorUnits: -500, categoryId: nil, status: .confirmed, categorizedBy: .none, fingerprint: "b")
         ]
-        let total = BudgetGridCalculator.categoryTotalForCalendarMonth(category: rent, year: 2026, month: 3, transactions: transactions)
-        XCTAssertEqual(total, 0)
+        let lookup = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
+        XCTAssertTrue(lookup.isEmpty)
+    }
+
+    func testCategoryTotalForCalendarMonthReadsFromLookup() {
+        let rent = Category(id: 1, name: "Rent", type: .expense)
+        let transactions = [
+            Transaction(id: 1, importBatchId: 1, accountId: 1, date: date(2026, 3, 16), rawDescription: "Rent", amountMinorUnits: -280000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "a")
+        ]
+        let lookup = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
+        XCTAssertEqual(BudgetGridCalculator.categoryTotalForCalendarMonth(category: rent, year: 2026, month: 3, calendarTotals: lookup), -280000)
+        XCTAssertEqual(BudgetGridCalculator.categoryTotalForCalendarMonth(category: rent, year: 2026, month: 4, calendarTotals: lookup), 0)
     }
 
     func testYearlyTotalComputesNetLikePeriodSummary() {
@@ -104,7 +113,8 @@ final class BudgetGridCalculatorCalendarModeTests: XCTestCase {
             // A different year — must not be included.
             Transaction(id: 4, importBatchId: 1, accountId: 1, date: date(2025, 6, 1), rawDescription: "Income", amountMinorUnits: 1000000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "d")
         ]
-        let total = BudgetGridCalculator.yearlyTotal(year: 2026, categories: [income, rent, transfer], transactions: transactions)
+        let lookup = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
+        let total = BudgetGridCalculator.yearlyTotal(year: 2026, categories: [income, rent, transfer], calendarTotals: lookup)
         XCTAssertEqual(total, 775825 - 280000 - 50000)
     }
 

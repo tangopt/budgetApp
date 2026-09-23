@@ -48,26 +48,34 @@ public enum BudgetGridCalculator {
         return PeriodSummary(period: period, incomeMinorUnits: income, expensesMinorUnits: expenses, transfersMinorUnits: transfers)
     }
 
-    public static func categoryTotalForCalendarMonth(category: Category, year: Int, month: Int, transactions: [Transaction]) -> Int {
-        transactions
-            .filter { transaction in
-                guard transaction.categoryId == category.id, transaction.status == .confirmed else { return false }
-                let components = calendar.dateComponents([.year, .month], from: transaction.date)
-                return components.year == year && components.month == month
-            }
-            .reduce(0) { $0 + $1.amountMinorUnits }
+    /// One pass over every transaction, building `[categoryId: [year: [month: minorUnits]]]`.
+    /// Built once when data loads; every cell/year/YoY read is then an O(1) dictionary
+    /// lookup instead of re-scanning the full transaction list (the grid was doing that
+    /// per cell, per render — the real cause of this screen's slowdown with real data).
+    public static func calendarTotalsLookup(transactions: [Transaction]) -> [Int64: [Int: [Int: Int]]] {
+        var result: [Int64: [Int: [Int: Int]]] = [:]
+        for transaction in transactions {
+            guard transaction.status == .confirmed, let categoryId = transaction.categoryId else { continue }
+            let components = calendar.dateComponents([.year, .month], from: transaction.date)
+            guard let year = components.year, let month = components.month else { continue }
+            result[categoryId, default: [:]][year, default: [:]][month, default: 0] += transaction.amountMinorUnits
+        }
+        return result
+    }
+
+    public static func categoryTotalForCalendarMonth(category: Category, year: Int, month: Int, calendarTotals: [Int64: [Int: [Int: Int]]]) -> Int {
+        guard let categoryId = category.id else { return 0 }
+        return calendarTotals[categoryId]?[year]?[month] ?? 0
     }
 
     /// Net position for the whole calendar year (income − expenses − transfers), signed
     /// the same way `periodSummary`'s `moneyRemainingMinorUnits` is — the headline figure
     /// shown on each year picker chip.
-    public static func yearlyTotal(year: Int, categories: [Category], transactions: [Transaction]) -> Int {
+    public static func yearlyTotal(year: Int, categories: [Category], calendarTotals: [Int64: [Int: [Int: Int]]]) -> Int {
         var income = 0, expenses = 0, transfers = 0
         for category in categories {
-            var monthlyTotal = 0
-            for month in 1...12 {
-                monthlyTotal += categoryTotalForCalendarMonth(category: category, year: year, month: month, transactions: transactions)
-            }
+            guard let categoryId = category.id else { continue }
+            let monthlyTotal = (calendarTotals[categoryId]?[year] ?? [:]).values.reduce(0, +)
             switch category.type {
             case .income: income += monthlyTotal
             case .expense: expenses -= monthlyTotal
