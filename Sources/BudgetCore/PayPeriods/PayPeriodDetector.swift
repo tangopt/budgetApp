@@ -18,10 +18,34 @@ public enum PayPeriodDetector {
         return cal
     }()
 
-    /// Requires at least 2 income dates to establish an interval.
+    /// Paydays closer together than this are treated as the same pay event (e.g. a
+    /// salary split into two payments, or two salary-sized credits on one day).
+    /// Matches the lower bound of the plausible-interval filter in `detectCadence`.
+    static let minimumPaydayGapDays = 20
+    private static let maxProjectedPeriods = 600
+
+    /// Sorts payday dates and collapses any date falling fewer than
+    /// `minimumPaydayGapDays` days after the previously kept payday (which also
+    /// removes exact same-day duplicates). Guarantees every returned date is a
+    /// distinct period start with a strictly positive period length, so callers
+    /// can rely on `startDate` being unique (e.g. as a SwiftUI `ForEach` id).
+    /// Original `Date` values are kept unchanged (no start-of-day normalisation).
+    public static func paydayAnchors(_ incomeDates: [Date]) -> [Date] {
+        var anchors: [Date] = []
+        for date in incomeDates.sorted() {
+            if let previous = anchors.last {
+                let gap = calendar.dateComponents([.day], from: previous, to: date).day ?? 0
+                if gap < minimumPaydayGapDays { continue }
+            }
+            anchors.append(date)
+        }
+        return anchors
+    }
+
+    /// Requires at least 2 distinct paydays to establish an interval.
     /// Tolerates weekend/bank-holiday shifts of a few days either side of a ~30-day cadence.
     public static func detectCadence(incomeDates: [Date]) -> PayCadence? {
-        let sorted = incomeDates.sorted()
+        let sorted = paydayAnchors(incomeDates)
         guard sorted.count >= 2 else { return nil }
 
         let intervals: [Double] = zip(sorted, sorted.dropFirst()).map { earlier, later in
@@ -37,7 +61,7 @@ public enum PayPeriodDetector {
     }
 
     public static func generateActualPeriods(incomeDates: [Date]) -> [PayPeriod] {
-        let sorted = incomeDates.sorted()
+        let sorted = paydayAnchors(incomeDates)
         guard sorted.count >= 2 else { return [] }
 
         var periods: [PayPeriod] = []
@@ -47,28 +71,46 @@ public enum PayPeriodDetector {
             let end = calendar.date(byAdding: .day, value: -1, to: nextStart)!
             periods.append(PayPeriod(startDate: start, endDate: end, type: .actual))
         }
-        // The most recent period is still open; estimate its end from the detected cadence.
-        if let cadence = detectCadence(incomeDates: sorted) {
+        // The most recent period is still open; it runs until the day before the next
+        // expected payday (same day-of-month next month), which is exactly where the
+        // first projected period from `generateProjectedPeriods` starts.
+        if detectCadence(incomeDates: sorted) != nil {
             let start = sorted.last!
-            let end = calendar.date(byAdding: .day, value: Int(cadence.averageIntervalDays.rounded()) - 1, to: start)!
+            let nextPayday = calendar.date(byAdding: .month, value: 1, to: start)!
+            let end = calendar.date(byAdding: .day, value: -1, to: nextPayday)!
             periods.append(PayPeriod(startDate: start, endDate: end, type: .actual))
         }
         return periods
     }
 
+    /// Extrapolates paydays forward by calendar month, keeping the same day-of-month as
+    /// `cadence.lastPayDate` (per spec), rather than stepping a fixed number of days —
+    /// fixed-day steps drift across short/long months and made monthly forecast entries
+    /// occasionally fire twice or not at all within a period.
+    ///
+    /// Each payday is computed from the anchor (anchor + n months) rather than from the
+    /// previous projected payday, so an anchor on the 31st yields 28 Feb then 31 Mar,
+    /// not 28 Feb then 28 Mar forever after.
     public static func generateProjectedPeriods(cadence: PayCadence, horizon: Date) -> [PayPeriod] {
         var periods: [PayPeriod] = []
-        var cursor = cadence.lastPayDate
-        let intervalDays = Int(cadence.averageIntervalDays.rounded())
-        while true {
-            guard let nextStart = calendar.date(byAdding: .day, value: intervalDays, to: cursor) else { break }
-            // Stop once the *next* period's start would fall past the horizon, rather than
-            // checking the previous cursor — checking cursor here would let one extra period
-            // slip through whose start (and end) land up to a full interval beyond horizon.
-            guard nextStart <= horizon else { break }
-            let end = calendar.date(byAdding: .day, value: intervalDays - 1, to: nextStart)!
-            periods.append(PayPeriod(startDate: nextStart, endDate: end, type: .projected))
-            cursor = nextStart
+        let anchor = cadence.lastPayDate
+        for monthOffset in 1...maxProjectedPeriods {
+            guard let start = calendar.date(byAdding: .month, value: monthOffset, to: anchor),
+                  let nextStart = calendar.date(byAdding: .month, value: monthOffset + 1, to: anchor) else { break }
+            // Stop once this period's start would fall past the horizon.
+            guard start <= horizon else { break }
+            let end = calendar.date(byAdding: .day, value: -1, to: nextStart)!
+            periods.append(PayPeriod(startDate: start, endDate: end, type: .projected))
+        }
+        return periods
+    }
+
+    /// Convenience: actual periods from the payday history plus projected periods
+    /// through `horizon` (when a cadence can be detected).
+    public static func allPeriods(incomeDates: [Date], horizon: Date) -> [PayPeriod] {
+        var periods = generateActualPeriods(incomeDates: incomeDates)
+        if let cadence = detectCadence(incomeDates: incomeDates) {
+            periods += generateProjectedPeriods(cadence: cadence, horizon: horizon)
         }
         return periods
     }

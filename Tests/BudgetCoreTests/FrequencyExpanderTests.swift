@@ -52,4 +52,13 @@ final class FrequencyExpanderTests: XCTestCase {
         let period = PayPeriod(startDate: date(2026, 8, 26), endDate: date(2026, 9, 25), type: .projected)
         XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [])
     }
+
+    func testMonthEndStartDateDoesNotDriftAfterFebruary() {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        func d(_ y: Int, _ m: Int, _ day: Int) -> Date { utc.date(from: DateComponents(year: y, month: m, day: day))! }
+        let entry = makeEntry(frequency: .monthly, interval: 1, startDate: d(2026, 1, 31))
+        let period = PayPeriod(startDate: d(2026, 1, 1), endDate: d(2026, 5, 31), type: .projected)
+        XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [d(2026, 1, 31), d(2026, 2, 28), d(2026, 3, 31), d(2026, 4, 30), d(2026, 5, 31)])
+    }
 }

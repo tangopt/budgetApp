@@ -23,15 +23,9 @@ final class BudgetGridViewModel: ObservableObject {
         transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
         forecastEntries = try dbQueue.read { db in try ForecastEntry.fetchAll(db) }
         forecastGroups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
-        let incomeCategoryIds = categories.filter { $0.type == .income }.compactMap(\.id)
-        let incomeDates = transactions
-            .filter { $0.status == .confirmed && incomeCategoryIds.contains($0.categoryId ?? -1) }
-            .map(\.date).sorted()
-        var allPeriods = PayPeriodDetector.generateActualPeriods(incomeDates: incomeDates)
-        if let cadence = PayPeriodDetector.detectCadence(incomeDates: incomeDates) {
-            allPeriods += PayPeriodDetector.generateProjectedPeriods(cadence: cadence, horizon: horizon)
-        }
-        periods = allPeriods
+        // Paydays come from the salary category only (not Bonus/refunds) — see PaydaySource.
+        let paydayDates = PaydaySource.paydayDates(transactions: transactions, categories: categories)
+        periods = PayPeriodDetector.allPeriods(incomeDates: paydayDates, horizon: horizon)
     }
 
     func categoryTotal(_ category: Category, in period: PayPeriod) -> Int {

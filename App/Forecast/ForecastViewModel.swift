@@ -18,16 +18,9 @@ final class ForecastViewModel: ObservableObject {
     func load(horizon: Date) throws {
         groups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
         entries = try dbQueue.read { db in try ForecastEntry.fetchAll(db) }
-        let incomeDates = try dbQueue.read { db -> [Date] in
-            let incomeCategoryIds = try Category.filter(Column("type") == CategoryType.income.rawValue).fetchAll(db).compactMap(\.id)
-            guard !incomeCategoryIds.isEmpty else { return [] }
-            return try Date.fetchAll(db, sql: "SELECT date FROM transaction_ WHERE categoryId IN (\(incomeCategoryIds.map(String.init).joined(separator: ","))) AND status = 'confirmed' ORDER BY date")
-        }
-        var allPeriods = PayPeriodDetector.generateActualPeriods(incomeDates: incomeDates)
-        if let cadence = PayPeriodDetector.detectCadence(incomeDates: incomeDates) {
-            allPeriods += PayPeriodDetector.generateProjectedPeriods(cadence: cadence, horizon: horizon)
-        }
-        periods = allPeriods
+        // Paydays come from the salary category only (not Bonus/refunds) — see PaydaySource.
+        let paydayDates = try dbQueue.read { db in try PaydaySource.paydayDates(db: db) }
+        periods = PayPeriodDetector.allPeriods(incomeDates: paydayDates, horizon: horizon)
     }
 
     func toggleGroup(_ group: ForecastGroup) {
