@@ -11,7 +11,6 @@ enum AppScreen: String, CaseIterable, Identifiable {
     case netWorth = "Net Worth"
     case rules = "Rules"
     case accounts = "Accounts"
-    case settings = "Settings"
     var id: String { rawValue }
 }
 
@@ -39,8 +38,7 @@ struct ContentView: View {
         self.environment = environment
         let profileStore = ImportProfileStore(dbQueue: environment.dbQueue)
         self.profileStore = profileStore
-        let categorizer = ClaudeCategorizer(apiKeyStore: KeychainAPIKeyStore(), session: .shared)
-        let categorizationService = CategorizationService(categorizer: categorizer)
+        let categorizationService = CategorizationService(categorizer: OnDeviceCategorizer.systemDefault())
         let coordinator = ImportCoordinator(dbQueue: environment.dbQueue, categorizationService: categorizationService)
         _importViewModel = StateObject(wrappedValue: ImportViewModel(dbQueue: environment.dbQueue, coordinator: coordinator, profileStore: profileStore))
         _budgetGridViewModel = StateObject(wrappedValue: BudgetGridViewModel(dbQueue: environment.dbQueue))
@@ -100,8 +98,8 @@ struct ContentView: View {
                         .onAppear { try? rulesViewModel.load() }
                 case .accounts:
                     AccountsSettingsView(viewModel: accountsViewModel)
-                case .settings, .none:
-                    APIKeySettingsView()
+                case .none:
+                    Text("Select a screen from the sidebar.")
                 }
             }
         }
