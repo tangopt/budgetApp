@@ -11,6 +11,8 @@ struct ReviewView: View {
     @State private var showUnparsed = true
     @State private var showDuplicates = false
     @State private var isForcing = false
+    @State private var focusedRowId: UUID?
+    @State private var showReady = false
 
     private var uncategorizedCount: Int {
         viewModel.stagedRows.filter { $0.chosenCategoryId == nil }.count
@@ -83,15 +85,21 @@ struct ReviewView: View {
                 }
             }
 
-            Table(viewModel.stagedRows) {
-                TableColumn("Date") { row in Text(row.staged.parsed.date.formatted(date: .abbreviated, time: .omitted)) }
-                TableColumn("Description") { row in Text(row.staged.parsed.rawDescription) }
-                TableColumn("Amount") { row in MoneyText(minorUnits: row.staged.parsed.amountMinorUnits) }
-                TableColumn("Category") { row in
-                    categoryPicker(for: row)
+            List(selection: $focusedRowId) {
+                Section("Needs your attention (\(viewModel.needsAttentionRows.count))") {
+                    ForEach(viewModel.needsAttentionRows) { row in
+                        reviewRow(row, showInlineConfirm: true).tag(row.id)
+                    }
                 }
-                TableColumn("Source") { row in Text(row.staged.source.rawValue) }
+                if !viewModel.readyRows.isEmpty {
+                    DisclosureGroup("Ready to confirm (\(viewModel.readyRows.count))", isExpanded: $showReady) {
+                        ForEach(viewModel.readyRows) { row in
+                            reviewRow(row, showInlineConfirm: false).tag(row.id)
+                        }
+                    }
+                }
             }
+            .frame(minHeight: 240)
 
             if uncategorizedCount > 0 {
                 Text("\(uncategorizedCount) transaction(s) will be saved as Uncategorized for you to assign later.")
@@ -99,17 +107,37 @@ struct ReviewView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let error = viewModel.errorMessage {
+                Text(error).foregroundStyle(.red).font(.callout)
+            }
+
             HStack {
-                Button("Confirm all \(viewModel.stagedRows.count) transactions") {
-                    // Errors (e.g. a database failure — the commit is all-or-nothing) are
-                    // surfaced via viewModel.errorMessage instead of being swallowed.
-                    if viewModel.commit() {
+                Button("Confirm \(viewModel.readyRows.count) ready") {
+                    if viewModel.confirmReady() && viewModel.stagedRows.isEmpty {
                         onCommitted()
                     }
                 }
-                .disabled(viewModel.stagedRows.isEmpty)
+                .disabled(viewModel.readyRows.isEmpty)
                 .keyboardShortcut(.defaultAction)
                 Button("Cancel import", role: .cancel) { viewModel.cancel() }
+            }
+        }
+    }
+
+    private func reviewRow(_ row: ReviewRow, showInlineConfirm: Bool) -> some View {
+        HStack {
+            ConfidenceDot(source: row.staged.source, confidence: row.staged.confidence)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.staged.parsed.rawDescription)
+                Text(row.staged.parsed.date.formatted(date: .abbreviated, time: .omitted))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            MoneyText(minorUnits: row.staged.parsed.amountMinorUnits)
+            categoryPicker(for: row).frame(width: 200)
+            if showInlineConfirm {
+                Button("Confirm") { _ = viewModel.confirmRow(row) }
+                    .disabled(row.chosenCategoryId == nil)
             }
         }
     }

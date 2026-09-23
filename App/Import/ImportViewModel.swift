@@ -98,22 +98,53 @@ final class ImportViewModel: ObservableObject {
     func dismissDuplicates() { duplicates = [] }
     func dismissUnparsedLines() { unparsedLines = [] }
 
-    /// Commits the staged rows. On failure the rows stay staged and `errorMessage`
-    /// explains why (nothing is saved — the commit is a single transaction).
+    var readyRows: [ReviewRow] {
+        let readyIds = Set(ReviewPartitioning.partition(stagedRows.map(\.staged)).ready.map(\.id))
+        return stagedRows.filter { readyIds.contains($0.id) }
+    }
+
+    var needsAttentionRows: [ReviewRow] {
+        let readyIds = Set(ReviewPartitioning.partition(stagedRows.map(\.staged)).ready.map(\.id))
+        return stagedRows.filter { !readyIds.contains($0.id) }
+    }
+
+    /// Commits only the "ready" rows, leaving "needs attention" rows still staged for
+    /// further review. Each partial confirm creates its own `ImportBatch` row (a minor,
+    /// harmless duplication of what used to always be exactly one batch per file — nothing
+    /// else in the app depends on "one batch per import").
     @discardableResult
-    func commit() -> Bool {
+    func confirmReady() -> Bool {
         errorMessage = nil
-        let decisions = stagedRows.map { ImportDecision(stagedId: $0.staged.id, finalCategoryId: $0.chosenCategoryId) }
+        let ready = readyRows
+        guard !ready.isEmpty else { return true }
+        let decisions = ready.map { ImportDecision(stagedId: $0.staged.id, finalCategoryId: $0.chosenCategoryId) }
         do {
-            try coordinator.commit(accountId: lastAccountId, sourceFileName: lastSourceFileName, staged: stagedRows.map(\.staged), decisions: decisions)
+            try coordinator.commit(accountId: lastAccountId, sourceFileName: lastSourceFileName, staged: ready.map(\.staged), decisions: decisions)
         } catch {
-            fail("Import failed — nothing was saved: \(error.localizedDescription)")
+            fail("Couldn't confirm the ready transactions: \(error.localizedDescription)")
             return false
         }
-        let uncategorized = stagedRows.filter { $0.chosenCategoryId == nil }.count
-        statusMessage = "Imported \(stagedRows.count) transaction(s) from \(lastSourceFileName)"
-            + (uncategorized > 0 ? " (\(uncategorized) left Uncategorized)." : ".")
-        reset()
+        let readyIds = Set(ready.map(\.id))
+        stagedRows.removeAll { readyIds.contains($0.id) }
+        statusMessage = "Confirmed \(ready.count) transaction(s)."
+        if stagedRows.isEmpty && duplicates.isEmpty && unparsedLines.isEmpty { isReviewing = false }
+        return true
+    }
+
+    /// Commits a single row (used by both the needs-attention section's inline confirm
+    /// button and Return-to-confirm-and-advance keyboard handling in Task 7).
+    @discardableResult
+    func confirmRow(_ row: ReviewRow) -> Bool {
+        errorMessage = nil
+        let decisions = [ImportDecision(stagedId: row.staged.id, finalCategoryId: row.chosenCategoryId)]
+        do {
+            try coordinator.commit(accountId: lastAccountId, sourceFileName: lastSourceFileName, staged: [row.staged], decisions: decisions)
+        } catch {
+            fail("Couldn't confirm this transaction: \(error.localizedDescription)")
+            return false
+        }
+        stagedRows.removeAll { $0.id == row.id }
+        if stagedRows.isEmpty && duplicates.isEmpty && unparsedLines.isEmpty { isReviewing = false }
         return true
     }
 
