@@ -23,6 +23,15 @@ final class TransactionFingerprintTests: XCTestCase {
         XCTAssertNotEqual(a, b)
     }
 
+    func testOccurrenceZeroMatchesLegacyFingerprintAndLaterOccurrencesDiffer() {
+        let date = Date(timeIntervalSince1970: 1_770_000_000)
+        let legacy = TransactionFingerprint.compute(accountId: 1, date: date, amountMinorUnits: -330, description: "PRET")
+        let first = TransactionFingerprint.compute(accountId: 1, date: date, amountMinorUnits: -330, description: "PRET", occurrence: 0)
+        let second = TransactionFingerprint.compute(accountId: 1, date: date, amountMinorUnits: -330, description: "PRET", occurrence: 1)
+        XCTAssertEqual(legacy, first)
+        XCTAssertNotEqual(first, second)
+    }
+
     func testDifferentAccountsProduceDifferentFingerprints() {
         let date = Date(timeIntervalSince1970: 1_770_000_000)
         let a = TransactionFingerprint.compute(accountId: 1, date: date, amountMinorUnits: -4564, description: "SAINSBURYS")
