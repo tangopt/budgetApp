@@ -6,14 +6,11 @@ import struct BudgetCore.Transaction
 
 enum GridDrillDownTarget: Identifiable {
     case transactions(title: String, transactions: [Transaction])
-    case forecastEntries(title: String, entries: [ForecastEntry])
 
     var id: String {
         switch self {
         case .transactions(let title, let transactions):
             return "txn-\(title)-\(transactions.map { String($0.id ?? -1) }.joined(separator: ","))"
-        case .forecastEntries(let title, let entries):
-            return "forecast-\(title)-\(entries.map { String($0.id ?? -1) }.joined(separator: ","))"
         }
     }
 }
@@ -67,18 +64,6 @@ struct GridDrillDownSheet: View {
                             .frame(width: 180)
                         }
                     }
-                }
-            case .forecastEntries(let title, let entries):
-                Text(title).font(.headline)
-                Text("Edit these from the Forecast screen.").font(.caption).foregroundStyle(.secondary)
-                ForEach(entries) { entry in
-                    VStack(alignment: .leading, spacing: 4) {
-                        MoneyText(minorUnits: entry.amountMinorUnits)
-                        Text("\(entry.frequency.rawValue), every \(entry.interval) · \(entry.status.rawValue)")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 4)
-                    Divider()
                 }
             }
         }

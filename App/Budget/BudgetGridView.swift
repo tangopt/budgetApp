@@ -28,121 +28,30 @@ struct BudgetGridView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Picker("", selection: $viewModel.groupingMode) {
-                    Text("Pay Period").tag(GridGroupingMode.payPeriod)
-                    Text("Calendar").tag(GridGroupingMode.calendar)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 220)
                 Spacer()
                 Button("Export CSV…") { showExporter = true }
             }
             .padding([.horizontal, .top])
 
-            if viewModel.groupingMode == .calendar {
-                yearPicker
-            }
+            yearPicker
 
-            switch viewModel.groupingMode {
-            case .payPeriod:
-                ScrollView([.horizontal, .vertical]) {
-                    Grid(alignment: .leading) {
-                        headerRow
-                        summaryRows
-                        Divider()
-                        categorySection(.income, title: "Income")
-                        categorySection(.expense, title: "Expenses")
-                        categorySection(.transfer, title: "Transfers")
-                    }
-                    .padding()
+            ScrollView([.horizontal, .vertical]) {
+                Grid(alignment: .leading) {
+                    calendarHeaderRow
+                    calendarCategorySection(.income, title: "Income")
+                    calendarCategorySection(.expense, title: "Expenses")
+                    calendarCategorySection(.transfer, title: "Transfers")
                 }
-            case .calendar:
-                ScrollView([.horizontal, .vertical]) {
-                    Grid(alignment: .leading) {
-                        calendarHeaderRow
-                        calendarCategorySection(.income, title: "Income")
-                        calendarCategorySection(.expense, title: "Expenses")
-                        calendarCategorySection(.transfer, title: "Transfers")
-                    }
-                    .padding()
-                }
+                .padding()
             }
         }
         .fileExporter(isPresented: $showExporter, document: CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories, periods: viewModel.periods, transactions: viewModel.transactions)), contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
         // onDismiss clears any recategorize error so it can't bleed into the next,
-        // unrelated drill-down (including the read-only forecast one, which can't clear it).
+        // unrelated drill-down.
         .sheet(item: $drillDownTarget, onDismiss: { viewModel.errorMessage = nil }) { target in
             GridDrillDownSheet(target: target, categories: viewModel.categories, errorMessage: viewModel.errorMessage, liveTransactions: viewModel.transactions) { transaction, categoryId in
                 viewModel.recategorize(transaction, to: categoryId)
             }
-        }
-    }
-
-    private var headerRow: some View {
-        GridRow {
-            Text("").frame(width: 220, alignment: .leading)
-            ForEach(viewModel.periods, id: \.startDate) { period in
-                VStack {
-                    Text(period.startDate.formatted(date: .abbreviated, time: .omitted))
-                    if period.type == .projected { Text("(forecast)").font(.caption).foregroundStyle(.secondary) }
-                }
-                .frame(width: 120)
-            }
-        }
-        .font(.headline)
-    }
-
-    private var summaryRows: some View {
-        Group {
-            summaryRow("Income") { viewModel.summary(for: $0).incomeMinorUnits }
-            summaryRow("Total Expenses") { viewModel.summary(for: $0).expensesMinorUnits }
-            summaryRow("Total Transfers") { viewModel.summary(for: $0).transfersMinorUnits }
-            summaryRow("Money Remaining") { viewModel.summary(for: $0).moneyRemainingMinorUnits }
-        }
-        .bold()
-    }
-
-    private func summaryRow(_ title: String, _ value: @escaping (PayPeriod) -> Int) -> some View {
-        GridRow {
-            Text(title).frame(width: 220, alignment: .leading)
-            ForEach(viewModel.periods, id: \.startDate) { period in
-                MoneyText(minorUnits: value(period)).frame(width: 120)
-            }
-        }
-    }
-
-    private func categorySection(_ type: CategoryType, title: String) -> some View {
-        Section {
-            ForEach(categoriesByType(type)) { category in
-                GridRow {
-                    Text(category.name).frame(width: 220, alignment: .leading)
-                    ForEach(viewModel.periods, id: \.startDate) { period in
-                        let total = viewModel.categoryTotal(category, in: period)
-                        Group {
-                            if total == 0 {
-                                Text("—").foregroundStyle(.secondary)
-                            } else {
-                                MoneyText(minorUnits: total)
-                            }
-                        }
-                        .frame(width: 120)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            guard total != 0 else { return }
-                            switch period.type {
-                            case .actual:
-                                let matching = viewModel.transactions(forCategoryId: category.id!, from: period.startDate, to: period.endDate)
-                                drillDownTarget = .transactions(title: "\(category.name) — \(period.startDate.formatted(date: .abbreviated, time: .omitted))", transactions: matching)
-                            case .projected:
-                                let entries = viewModel.contributingForecastEntries(for: category, in: period)
-                                drillDownTarget = .forecastEntries(title: "\(category.name) — Forecast", entries: entries)
-                            }
-                        }
-                    }
-                }
-            }
-        } header: {
-            GridRow { Text(title).font(.subheadline).bold().padding(.top, 8) }
         }
     }
 

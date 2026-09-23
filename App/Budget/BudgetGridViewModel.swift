@@ -4,11 +4,6 @@ import BudgetCore
 import struct BudgetCore.Category
 import GRDB
 
-enum GridGroupingMode {
-    case payPeriod
-    case calendar
-}
-
 @MainActor
 final class BudgetGridViewModel: ObservableObject {
     @Published var categories: [Category] = []
@@ -16,7 +11,6 @@ final class BudgetGridViewModel: ObservableObject {
     @Published var transactions: [Transaction] = []
     @Published var forecastEntries: [ForecastEntry] = []
     @Published var forecastGroups: [ForecastGroup] = []
-    @Published var groupingMode: GridGroupingMode = .payPeriod
     @Published var selectedYear: Int?
     @Published var errorMessage: String?
 
@@ -37,14 +31,6 @@ final class BudgetGridViewModel: ObservableObject {
         let paydayDates = PaydaySource.paydayDates(transactions: transactions, categories: categories)
         periods = PayPeriodDetector.allPeriods(incomeDates: paydayDates, horizon: horizon)
         selectDefaultYearIfNeeded()
-    }
-
-    func categoryTotal(_ category: Category, in period: PayPeriod) -> Int {
-        BudgetGridCalculator.categoryTotal(category: category, period: period, transactions: transactions, forecastEntries: forecastEntries, forecastGroups: forecastGroups)
-    }
-
-    func summary(for period: PayPeriod) -> PeriodSummary {
-        BudgetGridCalculator.periodSummary(period: period, categories: categories, transactions: transactions, forecastEntries: forecastEntries, forecastGroups: forecastGroups)
     }
 
     var availableYears: [Int] {
@@ -81,18 +67,6 @@ final class BudgetGridViewModel: ObservableObject {
 
     func transactions(forCategoryId categoryId: Int64, from startDate: Date, to endDate: Date) -> [Transaction] {
         transactions.filter { $0.categoryId == categoryId && $0.status == .confirmed && $0.date >= startDate && $0.date <= endDate }
-    }
-
-    /// Every enabled, non-hypothetical (`.auto`/`.manual`/`.confirmed`) `ForecastEntry`, in
-    /// an enabled group, whose frequency actually fires at least once within `period` —
-    /// the same filter `ForecastCalculator.confirmedTotal` applies to build the projected
-    /// cell's total (it excludes `.hypothetical` entries, which only count toward the
-    /// Forecast screen's preview total), surfaced here for the read-only drill-down.
-    func contributingForecastEntries(for category: Category, in period: PayPeriod) -> [ForecastEntry] {
-        let enabledGroupIds = Set(forecastGroups.filter(\.isEnabled).compactMap(\.id))
-        return forecastEntries
-            .filter { $0.categoryId == category.id && $0.isEnabled && $0.status != .hypothetical && enabledGroupIds.contains($0.groupId) }
-            .filter { !FrequencyExpander.occurrences(for: $0, in: period).isEmpty }
     }
 
     func dateRange(forYear year: Int, month: Int) -> (start: Date, end: Date) {
