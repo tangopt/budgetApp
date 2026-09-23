@@ -27,9 +27,15 @@ struct GridDrillDownSheet: View {
     /// a successful recategorize would appear to snap back to the old category.
     var liveTransactions: [Transaction] = []
     let onRecategorize: (Transaction, Int64) -> Void
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Spacer()
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
             if let errorMessage {
                 Text(errorMessage).foregroundStyle(.red).font(.callout)
             }
