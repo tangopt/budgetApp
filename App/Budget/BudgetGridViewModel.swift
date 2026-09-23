@@ -18,6 +18,7 @@ final class BudgetGridViewModel: ObservableObject {
     @Published var forecastGroups: [ForecastGroup] = []
     @Published var groupingMode: GridGroupingMode = .payPeriod
     @Published var selectedYear: Int?
+    @Published var errorMessage: String?
 
     private let dbQueue: DatabaseQueue
 
@@ -105,9 +106,26 @@ final class BudgetGridViewModel: ObservableObject {
     }
 
     /// Re-categorizes a single already-confirmed transaction (from a drill-down sheet).
-    func recategorize(_ transaction: Transaction, to categoryId: Int64) throws {
-        guard let index = transactions.firstIndex(where: { $0.id == transaction.id }) else { return }
-        transactions[index].categoryId = categoryId
-        try dbQueue.write { db in try transactions[index].update(db) }
+    ///
+    /// The write happens against a locally-built copy first; `self.transactions` is only
+    /// mutated once that write has actually succeeded, mirroring
+    /// `UncategorizedViewModel.assignCategory`. Mutating the in-memory array before the
+    /// write (as an earlier version of this method did) would leave the grid cell showing
+    /// the new category even when the DB write failed, silently diverging from the
+    /// persisted row until the next launch reverted it.
+    @discardableResult
+    func recategorize(_ transaction: Transaction, to categoryId: Int64) -> Bool {
+        errorMessage = nil
+        guard let index = transactions.firstIndex(where: { $0.id == transaction.id }) else { return false }
+        var updated = transactions[index]
+        updated.categoryId = categoryId
+        do {
+            try dbQueue.write { db in try updated.update(db) }
+        } catch {
+            errorMessage = "Couldn't recategorize this transaction: \(error.localizedDescription)"
+            return false
+        }
+        transactions[index] = updated
+        return true
     }
 }

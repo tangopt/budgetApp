@@ -21,10 +21,14 @@ enum GridDrillDownTarget: Identifiable {
 struct GridDrillDownSheet: View {
     let target: GridDrillDownTarget
     let categories: [Category]
+    var errorMessage: String? = nil
     let onRecategorize: (Transaction, Int64) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let errorMessage {
+                Text(errorMessage).foregroundStyle(.red).font(.callout)
+            }
             switch target {
             case .transactions(let title, let transactions):
                 Text(title).font(.headline)

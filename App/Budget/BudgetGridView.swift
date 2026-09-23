@@ -70,8 +70,8 @@ struct BudgetGridView: View {
         }
         .fileExporter(isPresented: $showExporter, document: CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories, periods: viewModel.periods, transactions: viewModel.transactions)), contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
         .sheet(item: $drillDownTarget) { target in
-            GridDrillDownSheet(target: target, categories: viewModel.categories) { transaction, categoryId in
-                try? viewModel.recategorize(transaction, to: categoryId)
+            GridDrillDownSheet(target: target, categories: viewModel.categories, errorMessage: viewModel.errorMessage) { transaction, categoryId in
+                viewModel.recategorize(transaction, to: categoryId)
             }
         }
     }
