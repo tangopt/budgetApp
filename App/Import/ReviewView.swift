@@ -100,6 +100,15 @@ struct ReviewView: View {
                 }
             }
             .frame(minHeight: 240)
+            .onKeyPress(.return) {
+                guard let focusedRowId,
+                      let row = viewModel.stagedRows.first(where: { $0.id == focusedRowId }),
+                      row.chosenCategoryId != nil else { return .ignored }
+                let remainingAfter = viewModel.stagedRows.filter { $0.id != focusedRowId }
+                _ = viewModel.confirmRow(row)
+                self.focusedRowId = remainingAfter.first?.id
+                return .handled
+            }
 
             if uncategorizedCount > 0 {
                 Text("\(uncategorizedCount) transaction(s) will be saved as Uncategorized for you to assign later.")
