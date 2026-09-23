@@ -73,8 +73,13 @@ struct ForecastComparisonView: View {
                             HStack {
                                 Text(category.name)
                                 Spacer()
-                                Text(Money.format(confirmed, currency: .gbp))
-                                Text(Money.format(preview, currency: .gbp)).foregroundStyle(preview != confirmed ? .orange : .primary)
+                                MoneyText(minorUnits: confirmed)
+                                MoneyText(minorUnits: preview)
+                                    .overlay(alignment: .topTrailing) {
+                                        if preview != confirmed {
+                                            Circle().fill(Color.orange).frame(width: 6, height: 6).offset(x: 4, y: -2)
+                                        }
+                                    }
                             }
                         }
                     }

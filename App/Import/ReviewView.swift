@@ -57,7 +57,7 @@ struct ReviewView: View {
                                             Text(duplicate.date.formatted(date: .abbreviated, time: .omitted))
                                             Text(duplicate.rawDescription)
                                             Spacer()
-                                            Text(Money.format(duplicate.amountMinorUnits, currency: .gbp))
+                                            MoneyText(minorUnits: duplicate.amountMinorUnits)
                                         }
                                         .font(.caption)
                                     }
@@ -86,7 +86,7 @@ struct ReviewView: View {
             Table(viewModel.stagedRows) {
                 TableColumn("Date") { row in Text(row.staged.parsed.date.formatted(date: .abbreviated, time: .omitted)) }
                 TableColumn("Description") { row in Text(row.staged.parsed.rawDescription) }
-                TableColumn("Amount") { row in Text(Money.format(row.staged.parsed.amountMinorUnits, currency: .gbp)) }
+                TableColumn("Amount") { row in MoneyText(minorUnits: row.staged.parsed.amountMinorUnits) }
                 TableColumn("Category") { row in
                     categoryPicker(for: row)
                 }

@@ -8,8 +8,11 @@ struct NetWorthView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Net Worth: \(Money.format(viewModel.netWorthGBP, currency: .gbp))")
-                .font(.largeTitle).bold()
+            HStack(spacing: 4) {
+                Text("Net Worth:")
+                MoneyText(minorUnits: viewModel.netWorthGBP)
+            }
+            .font(.largeTitle).bold()
 
             if let warning = viewModel.reconciliationWarning {
                 Text(warning)
@@ -32,13 +35,20 @@ struct NetWorthView: View {
                             Spacer()
                             if balance.account.kind == .credit {
                                 // Stored signed (negative = owed); shown as the amount owed.
-                                Text("\(Money.format(NetWorthCalculator.enteredBalance(signedMinorUnits: balance.nativeBalanceMinorUnits, accountKind: .credit), currency: balance.account.currency)) owed")
+                                HStack(spacing: 4) {
+                                    MoneyText(minorUnits: NetWorthCalculator.enteredBalance(signedMinorUnits: balance.nativeBalanceMinorUnits, accountKind: .credit), currency: balance.account.currency)
+                                    Text("owed")
+                                }
                             } else {
-                                Text(Money.format(balance.nativeBalanceMinorUnits, currency: balance.account.currency))
+                                MoneyText(minorUnits: balance.nativeBalanceMinorUnits, currency: balance.account.currency)
                             }
                             if balance.account.currency != .gbp {
-                                Text("(\(Money.format(balance.gbpBalanceMinorUnits, currency: .gbp)))")
-                                    .foregroundStyle(.secondary)
+                                HStack(spacing: 0) {
+                                    Text("(")
+                                    MoneyText(minorUnits: balance.gbpBalanceMinorUnits, currency: .gbp)
+                                    Text(")")
+                                }
+                                .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -53,7 +63,7 @@ struct NetWorthView: View {
                     HStack {
                         Text(point.date.formatted(date: .abbreviated, time: .omitted))
                         Spacer()
-                        Text(Money.format(point.netWorthGBP, currency: .gbp))
+                        MoneyText(minorUnits: point.netWorthGBP)
                     }
                 }
             }

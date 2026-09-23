@@ -71,7 +71,7 @@ struct BudgetGridView: View {
         GridRow {
             Text(title).frame(width: 220, alignment: .leading)
             ForEach(viewModel.periods, id: \.startDate) { period in
-                Text(Money.format(value(period), currency: .gbp)).frame(width: 120)
+                MoneyText(minorUnits: value(period)).frame(width: 120)
             }
         }
     }
@@ -83,9 +83,14 @@ struct BudgetGridView: View {
                     Text(category.name).frame(width: 220, alignment: .leading)
                     ForEach(viewModel.periods, id: \.startDate) { period in
                         let total = viewModel.categoryTotal(category, in: period)
-                        Text(total == 0 ? "—" : Money.format(total, currency: .gbp))
-                            .frame(width: 120)
-                            .foregroundStyle(total == 0 ? .secondary : .primary)
+                        Group {
+                            if total == 0 {
+                                Text("—").foregroundStyle(.secondary)
+                            } else {
+                                MoneyText(minorUnits: total)
+                            }
+                        }
+                        .frame(width: 120)
                     }
                 }
             }
