@@ -11,9 +11,7 @@ public enum PDFLineParser {
         guard let regex = try? NSRegularExpression(pattern: config.regexPattern) else {
             return PDFParseResult(transactions: [], unparsedLines: lines)
         }
-        let formatter = DateFormatter()
-        formatter.dateFormat = config.dateFormat
-        formatter.locale = Locale(identifier: "en_GB")
+        let formatter = StatementDateFormatter.make(format: config.dateFormat)
 
         var transactions: [ParsedTransaction] = []
         var unparsedLines: [String] = []
@@ -31,14 +29,18 @@ public enum PDFLineParser {
             let description = String(line[descriptionRange]).trimmingCharacters(in: .whitespaces)
             let amountString = String(line[amountRange])
 
+            // Money.parseMinorUnits strips thousands-separator commas ("1,234.56")
+            // before parsing — the same cleaning CSVStatementParser applies.
             guard let date = formatter.date(from: dateString),
-                  let magnitude = Decimal(string: amountString) else {
+                  let magnitude = Money.parseMinorUnits(amountString) else {
                 unparsedLines.append(line)
                 continue
             }
 
-            let isCredit = line.uppercased().hasSuffix("CR")
-            let signedMinorUnits = NSDecimalNumber(decimal: magnitude * 100).intValue * (isCredit ? 1 : -1)
+            // Trim first so a line ending "CR " (trailing whitespace from PDF
+            // text extraction) is still recognised as a credit.
+            let isCredit = line.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().hasSuffix("CR")
+            let signedMinorUnits = abs(magnitude) * (isCredit ? 1 : -1)
             transactions.append(ParsedTransaction(date: date, rawDescription: description, amountMinorUnits: signedMinorUnits))
         }
 

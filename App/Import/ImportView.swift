@@ -56,7 +56,7 @@ struct ImportView: View {
     private func handlePickedFile(_ url: URL) {
         pendingFileURL = url
         guard let text = try? String(contentsOf: url, encoding: .utf8),
-              let firstLine = text.split(separator: "\n").first else { return }
+              let firstLine = CSVStatementParser.splitLines(text).first else { return }
         let existingProfile = try? profileStore.find(accountId: account.id!, format: .csv)
         if existingProfile != nil {
             Task { await viewModel.stageCSV(fileURL: url, account: account) }

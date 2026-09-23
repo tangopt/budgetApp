@@ -13,7 +13,9 @@ public enum PDFTextExtractor {
         var lines: [String] = []
         for pageIndex in 0..<document.pageCount {
             guard let page = document.page(at: pageIndex), let text = page.string else { continue }
-            lines.append(contentsOf: text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init))
+            // Split on any newline (LF, CRLF, CR): "\r\n" is a single Swift Character,
+            // so splitting on "\n" alone misses CRLF-terminated lines.
+            lines.append(contentsOf: text.split(whereSeparator: \.isNewline).map(String.init))
         }
         return lines
     }
