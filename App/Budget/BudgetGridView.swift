@@ -35,6 +35,7 @@ struct BudgetGridView: View {
     @State private var exportDocument: CSVDocument?
     @State private var drillDownTarget: GridDrillDownTarget?
     @State private var horizontalOffset: CGFloat = 0
+    @State private var expandedGroupIds: Set<Int64> = []
 
     private func categoriesByType(_ type: CategoryType) -> [Category] {
         viewModel.categories.filter { $0.type == type }
@@ -43,23 +44,52 @@ struct BudgetGridView: View {
     private enum GridRowKind: Identifiable {
         case sectionHeader(String)
         case category(Category)
+        case groupHeader(CategoryGroup, categories: [Category])
+        case groupChild(Category)
 
         var id: String {
             switch self {
             case .sectionHeader(let title): return "header-\(title)"
             case .category(let category): return "cat-\(category.id ?? -1)"
+            case .groupHeader(let group, _): return "group-\(group.id ?? -1)"
+            case .groupChild(let category): return "groupchild-\(category.id ?? -1)"
             }
         }
+    }
+
+    /// Categories sharing a `groupId` collapse into one `.groupHeader` row (first-seen
+    /// order wins for where the group appears), expanding to a `.groupChild` row per
+    /// member only when its id is in `expandedGroupIds`. Ungrouped categories render
+    /// exactly as `.category`, interleaved in the section's existing order.
+    private func rowKinds(for type: CategoryType) -> [GridRowKind] {
+        let cats = categoriesByType(type)
+        var rows: [GridRowKind] = []
+        var seenGroupIds: Set<Int64> = []
+        for category in cats {
+            if let groupId = category.groupId {
+                guard !seenGroupIds.contains(groupId) else { continue }
+                seenGroupIds.insert(groupId)
+                guard let group = viewModel.categoryGroups.first(where: { $0.id == groupId }) else { continue }
+                let members = cats.filter { $0.groupId == groupId }
+                rows.append(.groupHeader(group, categories: members))
+                if expandedGroupIds.contains(groupId) {
+                    rows += members.map { .groupChild($0) }
+                }
+            } else {
+                rows.append(.category(category))
+            }
+        }
+        return rows
     }
 
     private var allRowKinds: [GridRowKind] {
         var rows: [GridRowKind] = []
         rows.append(.sectionHeader("Income"))
-        rows += categoriesByType(.income).map { .category($0) }
+        rows += rowKinds(for: .income)
         rows.append(.sectionHeader("Expenses"))
-        rows += categoriesByType(.expense).map { .category($0) }
+        rows += rowKinds(for: .expense)
         rows.append(.sectionHeader("Transfers"))
-        rows += categoriesByType(.transfer).map { .category($0) }
+        rows += rowKinds(for: .transfer)
         return rows
     }
 
@@ -199,6 +229,28 @@ struct BudgetGridView: View {
                 .frame(width: 220, height: 28, alignment: .leading)
                 .padding(.horizontal, 8)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+        case .groupHeader(let group, _):
+            Button {
+                if let id = group.id {
+                    if expandedGroupIds.contains(id) { expandedGroupIds.remove(id) } else { expandedGroupIds.insert(id) }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: (group.id.map { expandedGroupIds.contains($0) } ?? false) ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                    Text(group.name).bold()
+                }
+            }
+            .buttonStyle(.plain)
+            .frame(width: 220, height: 28, alignment: .leading)
+            .padding(.horizontal, 8)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+        case .groupChild(let category):
+            Text(category.name).foregroundStyle(.secondary)
+                .frame(width: 200, height: 28, alignment: .leading)
+                .padding(.leading, 28).padding(.trailing, 8)
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
         }
     }
 
@@ -218,6 +270,57 @@ struct BudgetGridView: View {
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
             }
         case .category(let category):
+            if let year = viewModel.selectedYear {
+                HStack(spacing: 0) {
+                    ForEach(1...12, id: \.self) { month in
+                        let total = viewModel.calendarCategoryTotal(category, year: year, month: month)
+                        calendarCell(total)
+                            .frame(height: 28)
+                            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                guard total != 0 else { return }
+                                let range = viewModel.dateRange(forYear: year, month: month)
+                                let matching = viewModel.transactions(forCategoryId: category.id!, from: range.start, to: range.end)
+                                drillDownTarget = .transactions(title: "\(category.name) — \(Self.monthYearLabel(year: year, month: month))", transactions: matching)
+                            }
+                    }
+                    let yearTotal = (1...12).reduce(0) { $0 + viewModel.calendarCategoryTotal(category, year: year, month: $1) }
+                    calendarCell(yearTotal).bold()
+                        .frame(height: 28)
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            guard yearTotal != 0 else { return }
+                            let range = viewModel.dateRange(forYear: year)
+                            let matching = viewModel.transactions(forCategoryId: category.id!, from: range.start, to: range.end)
+                            drillDownTarget = .transactions(title: "\(category.name) — \(year)", transactions: matching)
+                        }
+                }
+            }
+        case .groupHeader(_, let categories):
+            if let year = viewModel.selectedYear {
+                HStack(spacing: 0) {
+                    ForEach(1...12, id: \.self) { month in
+                        let total = categories.reduce(0) { $0 + viewModel.calendarCategoryTotal($1, year: year, month: month) }
+                        calendarCell(total).bold()
+                            .frame(height: 28)
+                            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                    }
+                    let yearTotal = (1...12).reduce(0) { sum, month in sum + categories.reduce(0) { $0 + viewModel.calendarCategoryTotal($1, year: year, month: month) } }
+                    calendarCell(yearTotal).bold()
+                        .frame(height: 28)
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                }
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+            }
+        case .groupChild(let category):
+            // Identical cell behavior to `.category` — a `@ViewBuilder` function
+            // returning `some View` can't call itself recursively (the compiler can't
+            // resolve a self-referential opaque return type), so this repeats the
+            // `.category` branch's body rather than calling `rowCells(.category(...))`.
             if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in

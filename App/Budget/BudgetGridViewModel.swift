@@ -7,6 +7,7 @@ import GRDB
 @MainActor
 final class BudgetGridViewModel: ObservableObject {
     @Published var categories: [Category] = []
+    @Published var categoryGroups: [CategoryGroup] = []
     @Published var periods: [PayPeriod] = []
     @Published var transactions: [Transaction] = []
     @Published var forecastEntries: [ForecastEntry] = []
@@ -23,6 +24,7 @@ final class BudgetGridViewModel: ObservableObject {
 
     func load(horizon: Date) throws {
         categories = try dbQueue.read { db in try Category.fetchAll(db) }
+        categoryGroups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
         transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
         calendarTotals = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
         forecastEntries = try dbQueue.read { db in try ForecastEntry.fetchAll(db) }
