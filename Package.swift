@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "BudgetCore",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS("26.0")],
     products: [
         .library(name: "BudgetCore", targets: ["BudgetCore"])
     ],
