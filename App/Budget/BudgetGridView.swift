@@ -69,8 +69,10 @@ struct BudgetGridView: View {
             }
         }
         .fileExporter(isPresented: $showExporter, document: CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories, periods: viewModel.periods, transactions: viewModel.transactions)), contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
-        .sheet(item: $drillDownTarget) { target in
-            GridDrillDownSheet(target: target, categories: viewModel.categories, errorMessage: viewModel.errorMessage) { transaction, categoryId in
+        // onDismiss clears any recategorize error so it can't bleed into the next,
+        // unrelated drill-down (including the read-only forecast one, which can't clear it).
+        .sheet(item: $drillDownTarget, onDismiss: { viewModel.errorMessage = nil }) { target in
+            GridDrillDownSheet(target: target, categories: viewModel.categories, errorMessage: viewModel.errorMessage, liveTransactions: viewModel.transactions) { transaction, categoryId in
                 viewModel.recategorize(transaction, to: categoryId)
             }
         }

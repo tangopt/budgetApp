@@ -22,6 +22,10 @@ final class ImportViewModel: ObservableObject {
     @Published var isReviewing = false
     @Published var errorMessage: String?
     @Published var statusMessage: String?
+    /// True while a CSV/PDF staging run is in flight (the on-device categorizer makes a
+    /// real model call per unmatched row, so this can take a while). Guards the staging
+    /// entry points against a second concurrent run, e.g. from a double-click.
+    @Published private(set) var isStaging = false
 
     private let dbQueue: DatabaseQueue
     private let coordinator: ImportCoordinator
@@ -42,6 +46,11 @@ final class ImportViewModel: ObservableObject {
     }
 
     func stageCSV(fileURL: URL, account: Account) async {
+        // Check-and-set happens synchronously on the main actor before any `await`, so
+        // two calls can't both get past this guard.
+        guard !isStaging else { return }
+        isStaging = true
+        defer { isStaging = false }
         errorMessage = nil
         statusMessage = nil
         do {
@@ -58,6 +67,9 @@ final class ImportViewModel: ObservableObject {
     }
 
     func stagePDF(lines: [String], config: PDFLayoutConfig, account: Account, sourceFileName: String) async {
+        guard !isStaging else { return }
+        isStaging = true
+        defer { isStaging = false }
         errorMessage = nil
         statusMessage = nil
         do {
@@ -144,6 +156,30 @@ final class ImportViewModel: ObservableObject {
             return false
         }
         stagedRows.removeAll { $0.id == row.id }
+        if stagedRows.isEmpty && duplicates.isEmpty && unparsedLines.isEmpty { isReviewing = false }
+        return true
+    }
+
+    /// Commits every remaining staged row (whatever categories are or aren't chosen) — the
+    /// escape hatch for rows Confirm/Confirm-ready can't reach (no category picked at all).
+    /// Rows without a category are saved as Uncategorized (`.pendingReview`) by
+    /// `ImportCoordinator.commit`; rows with one keep it. Mirrors the old single-shot
+    /// commit()'s behavior, scoped to whatever's left after confirmReady/confirmRow.
+    @discardableResult
+    func saveRemainingAsUncategorized() -> Bool {
+        errorMessage = nil
+        let remaining = stagedRows
+        guard !remaining.isEmpty else { return true }
+        let decisions = remaining.map { ImportDecision(stagedId: $0.staged.id, finalCategoryId: $0.chosenCategoryId) }
+        do {
+            try coordinator.commit(accountId: lastAccountId, sourceFileName: lastSourceFileName, staged: remaining.map(\.staged), decisions: decisions)
+        } catch {
+            fail("Couldn't save the remaining transactions: \(error.localizedDescription)")
+            return false
+        }
+        let savedIds = Set(remaining.map(\.id))
+        stagedRows.removeAll { savedIds.contains($0.id) }
+        statusMessage = "Saved \(remaining.count) transaction(s) — assign categories from Uncategorized."
         if stagedRows.isEmpty && duplicates.isEmpty && unparsedLines.isEmpty { isReviewing = false }
         return true
     }

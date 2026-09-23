@@ -22,6 +22,10 @@ struct GridDrillDownSheet: View {
     let target: GridDrillDownTarget
     let categories: [Category]
     var errorMessage: String? = nil
+    /// The view model's current transactions. `target` is a snapshot frozen when the cell
+    /// was tapped, so each row's picker reads its category from here instead — otherwise
+    /// a successful recategorize would appear to snap back to the old category.
+    var liveTransactions: [Transaction] = []
     let onRecategorize: (Transaction, Int64) -> Void
 
     var body: some View {
@@ -45,7 +49,7 @@ struct GridDrillDownSheet: View {
                             Spacer()
                             MoneyText(minorUnits: transaction.amountMinorUnits)
                             Picker("", selection: Binding<Int64?>(
-                                get: { transaction.categoryId },
+                                get: { liveTransactions.first(where: { $0.id == transaction.id })?.categoryId ?? transaction.categoryId },
                                 set: { newValue in
                                     guard let newValue else { return }
                                     onRecategorize(transaction, newValue)

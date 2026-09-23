@@ -81,13 +81,15 @@ final class BudgetGridViewModel: ObservableObject {
         transactions.filter { $0.categoryId == categoryId && $0.status == .confirmed && $0.date >= startDate && $0.date <= endDate }
     }
 
-    /// Every enabled `ForecastEntry`, in an enabled group, whose frequency actually fires
-    /// at least once within `period` — the same rule `ForecastCalculator.confirmedTotal`
-    /// uses to build the cell's total, surfaced here for the read-only drill-down.
+    /// Every enabled, non-hypothetical (`.auto`/`.manual`/`.confirmed`) `ForecastEntry`, in
+    /// an enabled group, whose frequency actually fires at least once within `period` —
+    /// the same filter `ForecastCalculator.confirmedTotal` applies to build the projected
+    /// cell's total (it excludes `.hypothetical` entries, which only count toward the
+    /// Forecast screen's preview total), surfaced here for the read-only drill-down.
     func contributingForecastEntries(for category: Category, in period: PayPeriod) -> [ForecastEntry] {
         let enabledGroupIds = Set(forecastGroups.filter(\.isEnabled).compactMap(\.id))
         return forecastEntries
-            .filter { $0.categoryId == category.id && $0.isEnabled && enabledGroupIds.contains($0.groupId) }
+            .filter { $0.categoryId == category.id && $0.isEnabled && $0.status != .hypothetical && enabledGroupIds.contains($0.groupId) }
             .filter { !FrequencyExpander.occurrences(for: $0, in: period).isEmpty }
     }
 

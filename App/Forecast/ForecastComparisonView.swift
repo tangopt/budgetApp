@@ -29,6 +29,9 @@ struct ForecastComparisonView: View {
             }
         }
         .sheet(item: $editingEntry) { entry in
+            // Save closes the sheet here (success or failure — a failure's errorMessage
+            // shows above the comparison table, which is hidden while the sheet is up);
+            // Cancel closes it via EditForecastEntryView's own dismiss().
             EditForecastEntryView(entry: entry) { amountMinorUnits, frequency, interval in
                 viewModel.updateEntry(entry, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval)
                 editingEntry = nil
@@ -73,6 +76,9 @@ struct ForecastComparisonView: View {
 
     private var comparisonTable: some View {
         VStack(alignment: .leading) {
+            if let error = viewModel.errorMessage {
+                Text(error).foregroundStyle(.red).font(.callout)
+            }
             HStack {
                 Text("Confirmed vs. Preview forecast").font(.headline)
                 Spacer()
@@ -148,6 +154,7 @@ struct NewForecastEntryView: View {
 struct EditForecastEntryView: View {
     let entry: ForecastEntry
     let onSave: (Int, ForecastFrequency, Int) -> Void
+    @Environment(\.dismiss) private var dismiss
 
     @State private var amountPounds: String
     @State private var frequency: ForecastFrequency
@@ -161,6 +168,21 @@ struct EditForecastEntryView: View {
         _interval = State(initialValue: entry.interval)
     }
 
+    /// Preserves the entry's existing sign (income positive, everything else negative) —
+    /// the field only ever asks for a positive magnitude. nil if the field doesn't parse.
+    private var signedAmount: Int? {
+        guard let minorUnits = Money.parseMinorUnits(amountPounds) else { return nil }
+        return entry.amountMinorUnits < 0 ? -abs(minorUnits) : abs(minorUnits)
+    }
+
+    /// Save is a no-op unless something actually changed: saving an untouched `.auto`
+    /// entry would otherwise promote it to `.manual` (via `updateEntry`) and permanently
+    /// opt that category out of `AutoForecastGenerator.refresh` for no reason.
+    private var hasChanges: Bool {
+        guard let signedAmount else { return false }
+        return signedAmount != entry.amountMinorUnits || frequency != entry.frequency || interval != entry.interval
+    }
+
     var body: some View {
         Form {
             TextField("Amount (£)", text: $amountPounds)
@@ -168,12 +190,16 @@ struct EditForecastEntryView: View {
                 ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(freq.rawValue).tag(freq) }
             }
             Stepper("Every \(interval) \(frequency.rawValue)", value: $interval, in: 1...12)
-            Button("Save") {
-                guard let minorUnits = Money.parseMinorUnits(amountPounds) else { return }
-                // Preserve the entry's existing sign (income positive, everything else
-                // negative) — the field only ever asks for a positive magnitude.
-                let signed = entry.amountMinorUnits < 0 ? -abs(minorUnits) : abs(minorUnits)
-                onSave(signed, frequency, interval)
+            HStack {
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Save") {
+                    guard hasChanges, let signedAmount else { return }
+                    onSave(signedAmount, frequency, interval)
+                }
+                .disabled(!hasChanges)
+                .keyboardShortcut(.defaultAction)
             }
         }
         .padding()

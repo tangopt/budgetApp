@@ -86,9 +86,11 @@ struct ReviewView: View {
             }
 
             List(selection: $focusedRowId) {
-                Section("Needs your attention (\(viewModel.needsAttentionRows.count))") {
-                    ForEach(viewModel.needsAttentionRows) { row in
-                        reviewRow(row, showInlineConfirm: true).tag(row.id)
+                if !viewModel.needsAttentionRows.isEmpty {
+                    Section("Needs your attention (\(viewModel.needsAttentionRows.count))") {
+                        ForEach(viewModel.needsAttentionRows) { row in
+                            reviewRow(row, showInlineConfirm: true).tag(row.id)
+                        }
                     }
                 }
                 if !viewModel.readyRows.isEmpty {
@@ -104,9 +106,14 @@ struct ReviewView: View {
                 guard let focusedRowId,
                       let row = viewModel.stagedRows.first(where: { $0.id == focusedRowId }),
                       row.chosenCategoryId != nil else { return .ignored }
-                let remainingAfter = viewModel.stagedRows.filter { $0.id != focusedRowId }
-                _ = viewModel.confirmRow(row)
-                self.focusedRowId = remainingAfter.first?.id
+                // Advance through rows in the order they're actually displayed (needs
+                // attention first, then ready only if that group is expanded), computed
+                // before confirmRow mutates stagedRows and so the two groupings.
+                let visibleOrder = viewModel.needsAttentionRows + (showReady ? viewModel.readyRows : [])
+                let remainingVisible = visibleOrder.filter { $0.id != focusedRowId }
+                // On failure, keep focus on the row so its error and state stay put.
+                guard viewModel.confirmRow(row) else { return .handled }
+                self.focusedRowId = remainingVisible.first?.id
                 return .handled
             }
 
@@ -128,6 +135,12 @@ struct ReviewView: View {
                 }
                 .disabled(viewModel.readyRows.isEmpty)
                 .keyboardShortcut(.defaultAction)
+                // The only way to commit rows with no category picked at all (they can't
+                // use Confirm/Confirm-ready) — they're saved as Uncategorized to assign later.
+                Button("Save \(viewModel.stagedRows.count) remaining as Uncategorized") {
+                    if viewModel.saveRemainingAsUncategorized() { onCommitted() }
+                }
+                .disabled(viewModel.stagedRows.isEmpty)
                 Button("Cancel import", role: .cancel) { viewModel.cancel() }
             }
         }

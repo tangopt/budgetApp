@@ -9,6 +9,7 @@ final class ForecastViewModel: ObservableObject {
     @Published var entries: [ForecastEntry] = []
     @Published var periods: [PayPeriod] = []
     @Published private(set) var horizon: Date = ForecastViewModel.endOfYear(yearsFromNow: 0)
+    @Published var errorMessage: String?
 
     private let dbQueue: DatabaseQueue
     private static let calendar: Calendar = {
@@ -63,21 +64,49 @@ final class ForecastViewModel: ObservableObject {
     /// Edits an entry's amount/frequency/interval. If it was auto-detected, this promotes
     /// it to `.manual` so a future `AutoForecastGenerator.refresh` won't silently
     /// overwrite the edit — mirrors the generator's own skip-on-manual-tuning behavior.
-    func updateEntry(_ entry: ForecastEntry, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int) {
-        guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return }
-        entries[index].amountMinorUnits = amountMinorUnits
-        entries[index].frequency = frequency
-        entries[index].interval = interval
-        if entries[index].status == .auto {
-            entries[index].status = .manual
+    ///
+    /// The write happens against a locally-built copy first; `entries` is only mutated
+    /// once that write has actually succeeded (same shape as
+    /// `BudgetGridViewModel.recategorize` / `UncategorizedViewModel.assignCategory`), so a
+    /// failed write surfaces in `errorMessage` instead of leaving the UI showing an edit
+    /// that was never persisted.
+    @discardableResult
+    func updateEntry(_ entry: ForecastEntry, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int) -> Bool {
+        errorMessage = nil
+        guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return false }
+        var updated = entries[index]
+        updated.amountMinorUnits = amountMinorUnits
+        updated.frequency = frequency
+        updated.interval = interval
+        if updated.status == .auto {
+            updated.status = .manual
         }
-        try? dbQueue.write { db in try entries[index].update(db) }
+        do {
+            try dbQueue.write { db in try updated.update(db) }
+        } catch {
+            errorMessage = "Couldn't save the change: \(error.localizedDescription)"
+            return false
+        }
+        entries[index] = updated
+        return true
     }
 
-    func unconfirm(_ entry: ForecastEntry) {
-        guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return }
-        entries[index].status = .hypothetical
-        try? dbQueue.write { db in try entries[index].update(db) }
+    /// Moves a confirmed entry back to `.hypothetical` (preview-only). Write-first,
+    /// mutate-on-success, like `updateEntry`.
+    @discardableResult
+    func unconfirm(_ entry: ForecastEntry) -> Bool {
+        errorMessage = nil
+        guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return false }
+        var updated = entries[index]
+        updated.status = .hypothetical
+        do {
+            try dbQueue.write { db in try updated.update(db) }
+        } catch {
+            errorMessage = "Couldn't un-confirm this entry: \(error.localizedDescription)"
+            return false
+        }
+        entries[index] = updated
+        return true
     }
 
     func confirmedTotal(categoryId: Int64, period: PayPeriod) -> Int {

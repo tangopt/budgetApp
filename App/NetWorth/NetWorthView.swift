@@ -46,9 +46,10 @@ struct NetWorthView: View {
                             Text(balance.account.name)
                             Spacer()
                             if balance.account.kind == .credit {
-                                // Stored signed (negative = owed); shown as the amount owed.
+                                // Stored signed (negative = owed); shown as the amount owed,
+                                // but colored by the stored sign so debt reads red, not green.
                                 HStack(spacing: 4) {
-                                    MoneyText(minorUnits: NetWorthCalculator.enteredBalance(signedMinorUnits: balance.nativeBalanceMinorUnits, accountKind: .credit), currency: balance.account.currency)
+                                    MoneyText(minorUnits: NetWorthCalculator.enteredBalance(signedMinorUnits: balance.nativeBalanceMinorUnits, accountKind: .credit), currency: balance.account.currency, colorOverride: balance.nativeBalanceMinorUnits)
                                     Text("owed")
                                 }
                             } else {

@@ -40,8 +40,12 @@ struct ImportView: View {
             if viewModel.isReviewing {
                 ReviewView(viewModel: viewModel, categories: categories) {}
             } else {
+                // Disabled while a staging run is in flight so a second import can't start
+                // concurrently (ImportViewModel also guards its staging entry points).
                 Button("Import CSV statement…") { showFilePicker = true }
+                    .disabled(viewModel.isStaging)
                 Button("Import PDF statement…") { showPDFPicker = true }
+                    .disabled(viewModel.isStaging)
             }
             Spacer(minLength: 0)
         }
