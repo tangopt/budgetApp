@@ -65,3 +65,68 @@ final class BudgetGridCalculatorTests: XCTestCase {
         XCTAssertEqual(summary.moneyRemainingMinorUnits, 280000 - 7500 + 30000)
     }
 }
+
+final class BudgetGridCalculatorCalendarModeTests: XCTestCase {
+    func date(_ y: Int, _ m: Int, _ d: Int) -> Date {
+        var c = DateComponents(); c.year = y; c.month = m; c.day = d; c.timeZone = TimeZone(identifier: "UTC")
+        return Calendar(identifier: .gregorian).date(from: c)!
+    }
+
+    func testCategoryTotalForCalendarMonthSumsOnlyThatMonth() {
+        let rent = Category(id: 1, name: "Rent", type: .expense)
+        let transactions = [
+            Transaction(id: 1, importBatchId: 1, accountId: 1, date: date(2026, 3, 16), rawDescription: "Rent", amountMinorUnits: -280000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "a"),
+            Transaction(id: 2, importBatchId: 1, accountId: 1, date: date(2026, 4, 16), rawDescription: "Rent", amountMinorUnits: -280000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "b")
+        ]
+        let total = BudgetGridCalculator.categoryTotalForCalendarMonth(category: rent, year: 2026, month: 3, transactions: transactions)
+        XCTAssertEqual(total, -280000)
+    }
+
+    func testCategoryTotalForCalendarMonthIgnoresUnconfirmedAndOtherCategories() {
+        let rent = Category(id: 1, name: "Rent", type: .expense)
+        let groceries = Category(id: 2, name: "Groceries", type: .expense)
+        let transactions = [
+            Transaction(id: 1, importBatchId: 1, accountId: 1, date: date(2026, 3, 16), rawDescription: "Rent", amountMinorUnits: -280000, categoryId: 1, status: .pendingReview, categorizedBy: .none, fingerprint: "a"),
+            Transaction(id: 2, importBatchId: 1, accountId: 1, date: date(2026, 3, 16), rawDescription: "Groceries", amountMinorUnits: -4000, categoryId: 2, status: .confirmed, categorizedBy: .manual, fingerprint: "b")
+        ]
+        let total = BudgetGridCalculator.categoryTotalForCalendarMonth(category: rent, year: 2026, month: 3, transactions: transactions)
+        XCTAssertEqual(total, 0)
+    }
+
+    func testYearlyTotalComputesNetLikePeriodSummary() {
+        let income = Category(id: 1, name: "Income", type: .income)
+        let rent = Category(id: 2, name: "Rent", type: .expense)
+        let transfer = Category(id: 3, name: "Transfer: ISA", type: .transfer)
+        let transactions = [
+            Transaction(id: 1, importBatchId: 1, accountId: 1, date: date(2026, 1, 26), rawDescription: "Income", amountMinorUnits: 775825, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "a"),
+            Transaction(id: 2, importBatchId: 1, accountId: 1, date: date(2026, 1, 28), rawDescription: "Rent", amountMinorUnits: -280000, categoryId: 2, status: .confirmed, categorizedBy: .manual, fingerprint: "b"),
+            Transaction(id: 3, importBatchId: 1, accountId: 1, date: date(2026, 1, 29), rawDescription: "ISA", amountMinorUnits: -50000, categoryId: 3, status: .confirmed, categorizedBy: .manual, fingerprint: "c"),
+            // A different year — must not be included.
+            Transaction(id: 4, importBatchId: 1, accountId: 1, date: date(2025, 6, 1), rawDescription: "Income", amountMinorUnits: 1000000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "d")
+        ]
+        let total = BudgetGridCalculator.yearlyTotal(year: 2026, categories: [income, rent, transfer], transactions: transactions)
+        XCTAssertEqual(total, 775825 - 280000 - 50000)
+    }
+
+    func testYearOverYearChangePositiveAndNegative() {
+        XCTAssertEqual(BudgetGridCalculator.yearOverYearChange(currentYearTotal: 110, previousYearTotal: 100)!, 0.1, accuracy: 0.0001)
+        XCTAssertEqual(BudgetGridCalculator.yearOverYearChange(currentYearTotal: 90, previousYearTotal: 100)!, -0.1, accuracy: 0.0001)
+    }
+
+    func testYearOverYearChangeNilWithNoPriorYear() {
+        XCTAssertNil(BudgetGridCalculator.yearOverYearChange(currentYearTotal: 100, previousYearTotal: nil))
+    }
+
+    func testYearOverYearChangeNilWhenPriorYearWasZero() {
+        XCTAssertNil(BudgetGridCalculator.yearOverYearChange(currentYearTotal: 100, previousYearTotal: 0))
+    }
+
+    func testYearsWithDataReturnsAscendingDistinctYears() {
+        let transactions = [
+            Transaction(id: 1, importBatchId: 1, accountId: 1, date: date(2025, 6, 1), rawDescription: "X", amountMinorUnits: -100, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "a"),
+            Transaction(id: 2, importBatchId: 1, accountId: 1, date: date(2023, 1, 1), rawDescription: "X", amountMinorUnits: -100, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "b"),
+            Transaction(id: 3, importBatchId: 1, accountId: 1, date: date(2025, 12, 1), rawDescription: "X", amountMinorUnits: -100, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "c")
+        ]
+        XCTAssertEqual(BudgetGridCalculator.yearsWithData(transactions: transactions), [2023, 2025])
+    }
+}

@@ -13,6 +13,12 @@ public struct PeriodSummary {
 }
 
 public enum BudgetGridCalculator {
+    private static let calendar: Calendar = {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        return cal
+    }()
+
     public static func categoryTotal(category: Category, period: PayPeriod, transactions: [Transaction], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup]) -> Int {
         switch period.type {
         case .actual:
@@ -40,5 +46,45 @@ public enum BudgetGridCalculator {
             }
         }
         return PeriodSummary(period: period, incomeMinorUnits: income, expensesMinorUnits: expenses, transfersMinorUnits: transfers)
+    }
+
+    public static func categoryTotalForCalendarMonth(category: Category, year: Int, month: Int, transactions: [Transaction]) -> Int {
+        transactions
+            .filter { transaction in
+                guard transaction.categoryId == category.id, transaction.status == .confirmed else { return false }
+                let components = calendar.dateComponents([.year, .month], from: transaction.date)
+                return components.year == year && components.month == month
+            }
+            .reduce(0) { $0 + $1.amountMinorUnits }
+    }
+
+    /// Net position for the whole calendar year (income − expenses − transfers), signed
+    /// the same way `periodSummary`'s `moneyRemainingMinorUnits` is — the headline figure
+    /// shown on each year picker chip.
+    public static func yearlyTotal(year: Int, categories: [Category], transactions: [Transaction]) -> Int {
+        var income = 0, expenses = 0, transfers = 0
+        for category in categories {
+            var monthlyTotal = 0
+            for month in 1...12 {
+                monthlyTotal += categoryTotalForCalendarMonth(category: category, year: year, month: month, transactions: transactions)
+            }
+            switch category.type {
+            case .income: income += monthlyTotal
+            case .expense: expenses -= monthlyTotal
+            case .transfer: transfers -= monthlyTotal
+            }
+        }
+        return income - expenses - transfers
+    }
+
+    /// nil when there's nothing to compare against (no prior year, or the prior year's
+    /// total was exactly zero, which would make a percentage meaningless/infinite).
+    public static func yearOverYearChange(currentYearTotal: Int, previousYearTotal: Int?) -> Double? {
+        guard let previousYearTotal, previousYearTotal != 0 else { return nil }
+        return Double(currentYearTotal - previousYearTotal) / Double(abs(previousYearTotal))
+    }
+
+    public static func yearsWithData(transactions: [Transaction]) -> [Int] {
+        Set(transactions.map { calendar.component(.year, from: $0.date) }).sorted()
     }
 }
