@@ -17,6 +17,12 @@ struct NetWorthView: View {
                     .font(.callout)
             }
 
+            if let error = viewModel.errorMessage {
+                Text(error)
+                    .foregroundStyle(.red)
+                    .font(.callout)
+            }
+
             ForEach(groupedByKind(), id: \.0) { kind, balancesInKind in
                 VStack(alignment: .leading) {
                     Text(kind.rawValue.capitalized).font(.headline)
@@ -24,7 +30,12 @@ struct NetWorthView: View {
                         HStack {
                             Text(balance.account.name)
                             Spacer()
-                            Text(Money.format(balance.nativeBalanceMinorUnits, currency: balance.account.currency))
+                            if balance.account.kind == .credit {
+                                // Stored signed (negative = owed); shown as the amount owed.
+                                Text("\(Money.format(NetWorthCalculator.enteredBalance(signedMinorUnits: balance.nativeBalanceMinorUnits, accountKind: .credit), currency: balance.account.currency)) owed")
+                            } else {
+                                Text(Money.format(balance.nativeBalanceMinorUnits, currency: balance.account.currency))
+                            }
                             if balance.account.currency != .gbp {
                                 Text("(\(Money.format(balance.gbpBalanceMinorUnits, currency: .gbp)))")
                                     .foregroundStyle(.secondary)
@@ -49,8 +60,12 @@ struct NetWorthView: View {
         }
         .padding()
         .sheet(isPresented: $showAddSnapshot) {
-            AddSnapshotView(accounts: viewModel.accounts) { accountId, minorUnits, note in
-                try? viewModel.addSnapshot(accountId: accountId, balanceMinorUnits: minorUnits, note: note)
+            AddSnapshotView(accounts: viewModel.accounts) { accountId, enteredMinorUnits, note in
+                do {
+                    try viewModel.addSnapshot(accountId: accountId, enteredMinorUnits: enteredMinorUnits, note: note)
+                } catch {
+                    viewModel.errorMessage = "Couldn't save the balance: \(error.localizedDescription)"
+                }
                 showAddSnapshot = false
             }
         }

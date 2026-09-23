@@ -39,14 +39,23 @@ final class NetWorthViewModel: ObservableObject {
     }
 
     @Published var reconciliationWarning: String?
+    @Published var errorMessage: String?
 
+    /// `enteredMinorUnits` is the figure as the user typed it — for credit accounts
+    /// that's the positive amount owed, which is converted to the signed internal
+    /// representation (negative = owed) before reconciling or saving; see
+    /// `NetWorthCalculator.signedSnapshotBalance`.
+    ///
     /// For `.imported` accounts, compares the balance being entered against what the
     /// running balance (previous snapshot + transactions since) computes to, and
     /// surfaces a warning rather than silently accepting a figure that implies a
     /// missing or duplicate transaction. The snapshot is saved either way.
-    func addSnapshot(accountId: Int64, balanceMinorUnits: Int, note: String?) throws {
+    func addSnapshot(accountId: Int64, enteredMinorUnits: Int, note: String?) throws {
         reconciliationWarning = nil
-        if let account = accounts.first(where: { $0.id == accountId }), account.trackingMode == .imported {
+        errorMessage = nil
+        guard let account = accounts.first(where: { $0.id == accountId }) else { return }
+        let balanceMinorUnits = NetWorthCalculator.signedSnapshotBalance(enteredMinorUnits: enteredMinorUnits, accountKind: account.kind)
+        if account.trackingMode == .imported {
             let previousSnapshot = try dbQueue.read { db in
                 try BalanceSnapshot.filter(Column("accountId") == accountId).order(Column("date").desc).fetchOne(db)
             }
