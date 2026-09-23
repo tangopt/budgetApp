@@ -29,6 +29,10 @@ private struct HorizontalOffsetKey: PreferenceKey {
 struct BudgetGridView: View {
     @ObservedObject var viewModel: BudgetGridViewModel
     @State private var showExporter = false
+    /// Built only when "Export CSV…" is pressed. The export scans every
+    /// category × period × transaction, and `body` re-runs on every horizontal scroll
+    /// frame (via `horizontalOffset`), so it must not be computed in `body`.
+    @State private var exportDocument: CSVDocument?
     @State private var drillDownTarget: GridDrillDownTarget?
     @State private var horizontalOffset: CGFloat = 0
 
@@ -63,7 +67,10 @@ struct BudgetGridView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Spacer()
-                Button("Export CSV…") { showExporter = true }
+                Button("Export CSV…") {
+                    exportDocument = CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories, periods: viewModel.periods, transactions: viewModel.transactions))
+                    showExporter = true
+                }
             }
             .padding([.horizontal, .top])
 
@@ -135,7 +142,7 @@ struct BudgetGridView: View {
                 .onPreferenceChange(HorizontalOffsetKey.self) { horizontalOffset = $0 }
             }
         }
-        .fileExporter(isPresented: $showExporter, document: CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories, periods: viewModel.periods, transactions: viewModel.transactions)), contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
+        .fileExporter(isPresented: $showExporter, document: exportDocument, contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
         // onDismiss clears any recategorize error so it can't bleed into the next,
         // unrelated drill-down.
         .sheet(item: $drillDownTarget, onDismiss: { viewModel.errorMessage = nil }) { target in
