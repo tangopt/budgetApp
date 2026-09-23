@@ -51,9 +51,15 @@ struct ContentView: View {
         _accountsViewModel = StateObject(wrappedValue: AccountsSettingsViewModel(dbQueue: environment.dbQueue))
     }
 
-    /// How far ahead to project forecasted pay periods in the Budget grid and Forecast screens.
+    /// How far ahead to project forecasted pay periods in the Budget grid (the Forecast
+    /// screen manages its own horizon independently — see `ForecastViewModel.horizon` —
+    /// since only that screen has an extend-to-next-year action).
     private var forecastHorizon: Date {
-        Calendar.current.date(byAdding: .month, value: 3, to: Date()) ?? Date()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let year = calendar.component(.year, from: Date())
+        var components = DateComponents(); components.year = year; components.month = 12; components.day = 31
+        return calendar.date(from: components) ?? Date()
     }
 
     var body: some View {
@@ -92,7 +98,7 @@ struct ContentView: View {
                         .onAppear { try? budgetGridViewModel.load(horizon: forecastHorizon) }
                 case .forecast:
                     ForecastComparisonView(viewModel: forecastViewModel, categories: categories)
-                        .onAppear { try? forecastViewModel.load(horizon: forecastHorizon) }
+                        .onAppear { try? forecastViewModel.load() }
                 case .netWorth:
                     NetWorthView(viewModel: netWorthViewModel)
                         .onAppear { try? netWorthViewModel.load() }
