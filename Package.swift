@@ -16,6 +16,7 @@ let package = Package(
         ]),
         .testTarget(name: "BudgetCoreTests", dependencies: ["BudgetCore"]),
         .executableTarget(name: "MigrateHistory", dependencies: ["BudgetCore"]),
-        .executableTarget(name: "MigrateAccountBalances", dependencies: ["BudgetCore"])
+        .executableTarget(name: "MigrateAccountBalances", dependencies: ["BudgetCore"]),
+        .executableTarget(name: "SeedCategoryGroups", dependencies: ["BudgetCore"])
     ]
 )
