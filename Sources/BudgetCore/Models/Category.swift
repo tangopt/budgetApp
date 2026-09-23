@@ -10,11 +10,13 @@ public struct Category: Codable, Equatable, Identifiable, FetchableRecord, Mutab
     public var id: Int64?
     public var name: String
     public var type: CategoryType
+    public var groupId: Int64?
 
-    public init(id: Int64? = nil, name: String, type: CategoryType) {
+    public init(id: Int64? = nil, name: String, type: CategoryType, groupId: Int64? = nil) {
         self.id = id
         self.name = name
         self.type = type
+        self.groupId = groupId
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
