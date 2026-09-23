@@ -20,7 +20,10 @@ struct ImportView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let error = viewModel.errorMessage {
+            // While reviewing, ReviewView shows this same errorMessage locally, right next
+            // to the button that caused it — skip the banner here to avoid showing the
+            // same error twice (e.g. a failed "Confirm N ready" leaves isReviewing true).
+            if let error = viewModel.errorMessage, !viewModel.isReviewing {
                 HStack(alignment: .top) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
                     Text(error).foregroundStyle(.red)
