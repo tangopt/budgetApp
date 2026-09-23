@@ -16,13 +16,47 @@ struct CSVDocument: FileDocument {
     }
 }
 
+/// The Budget grid body's horizontal scroll offset (content minX in the scroll view's
+/// coordinate space: 0 at rest, negative once scrolled right).
+private struct HorizontalOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    // Sum, don't overwrite: SwiftUI also reduces in the default (0) from sibling subtrees
+    // that never set this key, and `value = nextValue()` let that 0 clobber the real
+    // offset after scrolling (header stuck). Only one view sets it, so the sum is exact.
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value += nextValue() }
+}
+
 struct BudgetGridView: View {
     @ObservedObject var viewModel: BudgetGridViewModel
     @State private var showExporter = false
     @State private var drillDownTarget: GridDrillDownTarget?
+    @State private var horizontalOffset: CGFloat = 0
 
     private func categoriesByType(_ type: CategoryType) -> [Category] {
         viewModel.categories.filter { $0.type == type }
+    }
+
+    private enum GridRowKind: Identifiable {
+        case sectionHeader(String)
+        case category(Category)
+
+        var id: String {
+            switch self {
+            case .sectionHeader(let title): return "header-\(title)"
+            case .category(let category): return "cat-\(category.id ?? -1)"
+            }
+        }
+    }
+
+    private var allRowKinds: [GridRowKind] {
+        var rows: [GridRowKind] = []
+        rows.append(.sectionHeader("Income"))
+        rows += categoriesByType(.income).map { .category($0) }
+        rows.append(.sectionHeader("Expenses"))
+        rows += categoriesByType(.expense).map { .category($0) }
+        rows.append(.sectionHeader("Transfers"))
+        rows += categoriesByType(.transfer).map { .category($0) }
+        return rows
     }
 
     var body: some View {
@@ -35,14 +69,70 @@ struct BudgetGridView: View {
 
             yearPicker
 
-            ScrollView([.horizontal, .vertical]) {
-                Grid(alignment: .leading) {
-                    calendarHeaderRow
-                    calendarCategorySection(.income, title: "Income")
-                    calendarCategorySection(.expense, title: "Expenses")
-                    calendarCategorySection(.transfer, title: "Transfers")
+            // spacing: 0 so the frozen header sits flush on the body, with no gap for
+            // scrolled rows to show through.
+            VStack(alignment: .leading, spacing: 0) {
+                // Frozen month-header row: lives outside the vertical scroll (so it never
+                // moves vertically), and mirrors the body's horizontal scroll offset (so it
+                // stays aligned with whichever columns are currently visible).
+                HStack(spacing: 0) {
+                    Text("Category").font(.headline).frame(width: 220, alignment: .leading)
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                    if let year = viewModel.selectedYear {
+                        HStack(spacing: 0) {
+                            ForEach(1...12, id: \.self) { month in
+                                Text(Self.monthYearLabel(year: year, month: month))
+                                    .frame(width: 120, alignment: .trailing)
+                                    .padding(.horizontal, 8).padding(.vertical, 6)
+                                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                            }
+                            Text("Year Total").bold()
+                                .frame(width: 120, alignment: .trailing)
+                                .padding(.horizontal, 8).padding(.vertical, 6)
+                        }
+                        .offset(x: horizontalOffset)
+                        // minWidth: 0 makes this frame take exactly the width it's offered
+                        // (what's left of the window after the Category cell) rather than
+                        // growing to the 13 columns' full width, which would push the whole
+                        // screen wider than the window; the overflow is then clipped.
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                        .clipped()
+                    }
                 }
-                .padding()
+                .font(.headline)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+
+                ScrollView(.vertical) {
+                    HStack(alignment: .top, spacing: 0) {
+                        // Frozen category column: not inside any horizontal scroll, so it
+                        // never moves left/right; it rides this same vertical ScrollView as
+                        // the body, so it stays aligned with its own row.
+                        VStack(spacing: 0) {
+                            ForEach(allRowKinds) { row in
+                                rowLabel(row)
+                            }
+                        }
+                        // 236 = each label's 220pt frame + 8pt padding either side, matching
+                        // the header's "Category" cell so the month columns line up.
+                        .frame(width: 236, alignment: .leading)
+                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+
+                        ScrollView(.horizontal) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                ForEach(allRowKinds) { row in
+                                    rowCells(row)
+                                }
+                            }
+                            .background(GeometryReader { geo in
+                                Color.clear.preference(key: HorizontalOffsetKey.self, value: geo.frame(in: .named("gridHScroll")).minX)
+                            })
+                        }
+                        .coordinateSpace(.named("gridHScroll"))
+                    }
+                }
+                .onPreferenceChange(HorizontalOffsetKey.self) { horizontalOffset = $0 }
             }
         }
         .fileExporter(isPresented: $showExporter, document: CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories, periods: viewModel.periods, transactions: viewModel.transactions)), contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
@@ -88,62 +178,81 @@ struct BudgetGridView: View {
         }
     }
 
-    private var calendarHeaderRow: some View {
-        GridRow {
-            Text("").frame(width: 220, alignment: .leading)
-            if let year = viewModel.selectedYear {
-                ForEach(1...12, id: \.self) { month in
-                    Text(Self.monthYearLabel(year: year, month: month)).frame(width: 120)
-                }
-                Text("Year Total").frame(width: 120).bold()
-            }
+    @ViewBuilder
+    private func rowLabel(_ row: GridRowKind) -> some View {
+        switch row {
+        case .sectionHeader(let title):
+            Text(title).font(.subheadline).bold()
+                .frame(width: 220, height: 32, alignment: .leading)
+                .padding(.horizontal, 8)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+        case .category(let category):
+            Text(category.name)
+                .frame(width: 220, height: 28, alignment: .leading)
+                .padding(.horizontal, 8)
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
         }
-        .font(.headline)
     }
 
-    private func calendarCategorySection(_ type: CategoryType, title: String) -> some View {
-        Section {
-            ForEach(categoriesByType(type)) { category in
-                GridRow {
-                    Text(category.name).frame(width: 220, alignment: .leading)
-                    if let year = viewModel.selectedYear {
-                        ForEach(1...12, id: \.self) { month in
-                            let total = viewModel.calendarCategoryTotal(category, year: year, month: month)
-                            calendarCell(total)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    guard total != 0 else { return }
-                                    let range = viewModel.dateRange(forYear: year, month: month)
-                                    let matching = viewModel.transactions(forCategoryId: category.id!, from: range.start, to: range.end)
-                                    drillDownTarget = .transactions(title: "\(category.name) — \(Self.monthYearLabel(year: year, month: month))", transactions: matching)
-                                }
-                        }
-                        let yearTotal = (1...12).reduce(0) { $0 + viewModel.calendarCategoryTotal(category, year: year, month: $1) }
-                        calendarCell(yearTotal).bold()
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                guard yearTotal != 0 else { return }
-                                let range = viewModel.dateRange(forYear: year)
-                                let matching = viewModel.transactions(forCategoryId: category.id!, from: range.start, to: range.end)
-                                drillDownTarget = .transactions(title: "\(category.name) — \(year)", transactions: matching)
-                            }
+    @ViewBuilder
+    private func rowCells(_ row: GridRowKind) -> some View {
+        switch row {
+        case .sectionHeader:
+            if viewModel.selectedYear != nil {
+                HStack(spacing: 0) {
+                    ForEach(1...(12 + 1), id: \.self) { _ in
+                        // Same footprint as a calendarCell: 120pt frame + 8pt padding
+                        // either side, so the band spans exactly the 13 columns.
+                        Color.clear.frame(width: 120, height: 32).padding(.horizontal, 8)
                     }
                 }
+                .background(Color(nsColor: .controlBackgroundColor))
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
             }
-        } header: {
-            GridRow { Text(title).font(.subheadline).bold().padding(.top, 8) }
+        case .category(let category):
+            if let year = viewModel.selectedYear {
+                HStack(spacing: 0) {
+                    ForEach(1...12, id: \.self) { month in
+                        let total = viewModel.calendarCategoryTotal(category, year: year, month: month)
+                        calendarCell(total)
+                            .frame(height: 28)
+                            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                guard total != 0 else { return }
+                                let range = viewModel.dateRange(forYear: year, month: month)
+                                let matching = viewModel.transactions(forCategoryId: category.id!, from: range.start, to: range.end)
+                                drillDownTarget = .transactions(title: "\(category.name) — \(Self.monthYearLabel(year: year, month: month))", transactions: matching)
+                            }
+                    }
+                    let yearTotal = (1...12).reduce(0) { $0 + viewModel.calendarCategoryTotal(category, year: year, month: $1) }
+                    calendarCell(yearTotal).bold()
+                        .frame(height: 28)
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            guard yearTotal != 0 else { return }
+                            let range = viewModel.dateRange(forYear: year)
+                            let matching = viewModel.transactions(forCategoryId: category.id!, from: range.start, to: range.end)
+                            drillDownTarget = .transactions(title: "\(category.name) — \(year)", transactions: matching)
+                        }
+                }
+            }
         }
     }
 
     private func calendarCell(_ total: Int) -> some View {
         Group {
             if total == 0 {
-                Text("—").foregroundStyle(.secondary)
+                Text("—").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
             } else {
-                MoneyText(minorUnits: total)
+                MoneyText(minorUnits: total, alignment: .trailing)
             }
         }
         .frame(width: 120)
+        .padding(.horizontal, 8)
     }
 
     private static func monthYearLabel(year: Int, month: Int) -> String {
