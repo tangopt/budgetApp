@@ -49,7 +49,7 @@ public final class FoundationModelsSession: GenerativeSession {
     }
 }
 
-/// Replaces `ClaudeCategorizer` — same `Categorizing` conformance, so
+/// Replaces the former Claude-API-backed categorizer — same `Categorizing` conformance, so
 /// `CategorizationService`'s rules-first-then-fallback-then-uncategorized chain needs no
 /// changes. Checks model availability before ever invoking the session, so a Mac without
 /// Apple Intelligence enabled (or too old to support it) degrades to "no suggestion"
