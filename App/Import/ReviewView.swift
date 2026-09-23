@@ -57,7 +57,7 @@ struct ReviewView: View {
                                             Text(duplicate.date.formatted(date: .abbreviated, time: .omitted))
                                             Text(duplicate.rawDescription)
                                             Spacer()
-                                            MoneyText(minorUnits: duplicate.amountMinorUnits)
+                                            MoneyText(minorUnits: duplicate.amountMinorUnits, font: .caption)
                                         }
                                         .font(.caption)
                                     }

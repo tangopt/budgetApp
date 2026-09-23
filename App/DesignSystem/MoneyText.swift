@@ -9,10 +9,11 @@ import BudgetCore
 struct MoneyText: View {
     let minorUnits: Int
     var currency: Currency = .gbp
+    var font: Font = .system(.body, design: .default).monospacedDigit()
 
     var body: some View {
         Text(Money.format(minorUnits, currency: currency))
-            .font(.system(.body, design: .default).monospacedDigit())
+            .font(font)
             .foregroundStyle(minorUnits < 0 ? Color.red : (minorUnits > 0 ? Color.green : Color.primary))
             .contentTransition(.numericText())
     }

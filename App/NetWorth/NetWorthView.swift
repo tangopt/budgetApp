@@ -10,7 +10,7 @@ struct NetWorthView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 4) {
                 Text("Net Worth:")
-                MoneyText(minorUnits: viewModel.netWorthGBP)
+                MoneyText(minorUnits: viewModel.netWorthGBP, font: .largeTitle.bold())
             }
             .font(.largeTitle).bold()
 
