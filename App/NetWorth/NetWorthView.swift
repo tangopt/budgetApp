@@ -4,6 +4,7 @@ import BudgetCore
 
 struct NetWorthView: View {
     @ObservedObject var viewModel: NetWorthViewModel
+    @ObservedObject var environment: AppEnvironment
     @State private var showAddSnapshot = false
 
     var body: some View {
@@ -24,6 +25,17 @@ struct NetWorthView: View {
                 Text(error)
                     .foregroundStyle(.red)
                     .font(.callout)
+            }
+
+            if let banner = environment.exchangeRateBanner {
+                HStack {
+                    Text(banner).font(.callout)
+                    Spacer()
+                    Button("Dismiss") { environment.exchangeRateBanner = nil }
+                        .font(.caption)
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.1)))
             }
 
             ForEach(groupedByKind(), id: \.0) { kind, balancesInKind in

@@ -100,7 +100,7 @@ struct ContentView: View {
                     ForecastComparisonView(viewModel: forecastViewModel, categories: categories)
                         .onAppear { try? forecastViewModel.load() }
                 case .netWorth:
-                    NetWorthView(viewModel: netWorthViewModel)
+                    NetWorthView(viewModel: netWorthViewModel, environment: environment)
                         .onAppear { try? netWorthViewModel.load() }
                 case .rules:
                     RulesView(viewModel: rulesViewModel)
