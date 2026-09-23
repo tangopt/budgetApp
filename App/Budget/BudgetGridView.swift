@@ -51,7 +51,7 @@ struct BudgetGridView: View {
             switch self {
             case .sectionHeader(let title): return "header-\(title)"
             case .category(let category): return "cat-\(category.id ?? -1)"
-            case .groupHeader(let group, _): return "group-\(group.id ?? -1)"
+            case .groupHeader(let group, let categories): return "group-\(group.id ?? -1)-\(categories.first?.type.rawValue ?? "")"
             case .groupChild(let category): return "groupchild-\(category.id ?? -1)"
             }
         }

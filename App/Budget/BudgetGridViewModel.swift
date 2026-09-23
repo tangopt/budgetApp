@@ -9,11 +9,17 @@ final class BudgetGridViewModel: ObservableObject {
     @Published var categories: [Category] = []
     @Published var categoryGroups: [CategoryGroup] = []
     @Published var periods: [PayPeriod] = []
-    @Published var transactions: [Transaction] = []
+    @Published var transactions: [Transaction] = [] {
+        didSet {
+            calendarTotals = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
+            availableYears = BudgetGridCalculator.yearsWithData(transactions: transactions)
+        }
+    }
     @Published var forecastEntries: [ForecastEntry] = []
     @Published var forecastGroups: [ForecastGroup] = []
     @Published var selectedYear: Int?
     @Published var errorMessage: String?
+    @Published private(set) var availableYears: [Int] = []
 
     private let dbQueue: DatabaseQueue
     private var calendarTotals: [Int64: [Int: [Int: Int]]] = [:]
@@ -26,17 +32,12 @@ final class BudgetGridViewModel: ObservableObject {
         categories = try dbQueue.read { db in try Category.fetchAll(db) }
         categoryGroups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
         transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
-        calendarTotals = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
         forecastEntries = try dbQueue.read { db in try ForecastEntry.fetchAll(db) }
         forecastGroups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
         // Paydays come from the salary category only (not Bonus/refunds) — see PaydaySource.
         let paydayDates = PaydaySource.paydayDates(transactions: transactions, categories: categories)
         periods = PayPeriodDetector.allPeriods(incomeDates: paydayDates, horizon: horizon)
         selectDefaultYearIfNeeded()
-    }
-
-    var availableYears: [Int] {
-        BudgetGridCalculator.yearsWithData(transactions: transactions)
     }
 
     func calendarCategoryTotal(_ category: Category, year: Int, month: Int) -> Int {
