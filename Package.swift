@@ -15,6 +15,7 @@ let package = Package(
             .product(name: "GRDB", package: "GRDB.swift")
         ]),
         .testTarget(name: "BudgetCoreTests", dependencies: ["BudgetCore"]),
-        .executableTarget(name: "MigrateHistory", dependencies: ["BudgetCore"])
+        .executableTarget(name: "MigrateHistory", dependencies: ["BudgetCore"]),
+        .executableTarget(name: "MigrateAccountBalances", dependencies: ["BudgetCore"])
     ]
 )
