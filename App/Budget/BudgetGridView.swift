@@ -19,6 +19,7 @@ struct CSVDocument: FileDocument {
 struct BudgetGridView: View {
     @ObservedObject var viewModel: BudgetGridViewModel
     @State private var showExporter = false
+    @State private var drillDownTarget: GridDrillDownTarget?
 
     private func categoriesByType(_ type: CategoryType) -> [Category] {
         viewModel.categories.filter { $0.type == type }
@@ -68,6 +69,11 @@ struct BudgetGridView: View {
             }
         }
         .fileExporter(isPresented: $showExporter, document: CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories, periods: viewModel.periods, transactions: viewModel.transactions)), contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
+        .sheet(item: $drillDownTarget) { target in
+            GridDrillDownSheet(target: target, categories: viewModel.categories) { transaction, categoryId in
+                try? viewModel.recategorize(transaction, to: categoryId)
+            }
+        }
     }
 
     private var headerRow: some View {
@@ -118,6 +124,18 @@ struct BudgetGridView: View {
                             }
                         }
                         .frame(width: 120)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            guard total != 0 else { return }
+                            switch period.type {
+                            case .actual:
+                                let matching = viewModel.transactions(forCategoryId: category.id!, from: period.startDate, to: period.endDate)
+                                drillDownTarget = .transactions(title: "\(category.name) — \(period.startDate.formatted(date: .abbreviated, time: .omitted))", transactions: matching)
+                            case .projected:
+                                let entries = viewModel.contributingForecastEntries(for: category, in: period)
+                                drillDownTarget = .forecastEntries(title: "\(category.name) — Forecast", entries: entries)
+                            }
+                        }
                     }
                 }
             }
@@ -179,10 +197,25 @@ struct BudgetGridView: View {
                     Text(category.name).frame(width: 220, alignment: .leading)
                     if let year = viewModel.selectedYear {
                         ForEach(1...12, id: \.self) { month in
-                            calendarCell(viewModel.calendarCategoryTotal(category, year: year, month: month))
+                            let total = viewModel.calendarCategoryTotal(category, year: year, month: month)
+                            calendarCell(total)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    guard total != 0 else { return }
+                                    let range = viewModel.dateRange(forYear: year, month: month)
+                                    let matching = viewModel.transactions(forCategoryId: category.id!, from: range.start, to: range.end)
+                                    drillDownTarget = .transactions(title: "\(category.name) — \(Self.monthYearLabel(year: year, month: month))", transactions: matching)
+                                }
                         }
                         let yearTotal = (1...12).reduce(0) { $0 + viewModel.calendarCategoryTotal(category, year: year, month: $1) }
                         calendarCell(yearTotal).bold()
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                guard yearTotal != 0 else { return }
+                                let range = viewModel.dateRange(forYear: year)
+                                let matching = viewModel.transactions(forCategoryId: category.id!, from: range.start, to: range.end)
+                                drillDownTarget = .transactions(title: "\(category.name) — \(year)", transactions: matching)
+                            }
                     }
                 }
             }
