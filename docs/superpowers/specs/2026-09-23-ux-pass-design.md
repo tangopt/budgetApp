@@ -35,6 +35,10 @@ In scope:
   that were committed without one.
 - Budget grid cell drill-down (tap a cell, see its transactions or
   forecast entry).
+- A calendar-mode toggle on the Budget grid: pay-period grouping (the
+  existing behavior) alongside calendar-month/year grouping with
+  year-over-year comparison, sharing the same grid component and the
+  same drill-down as pay-period mode.
 - Forecast entry editing and un-confirming; a real forecast horizon
   (end of current year, extendable to next year) replacing the 3-month
   placeholder.
@@ -159,16 +163,55 @@ provides elsewhere. Empty state: "Nothing uncategorized" with a
 secondary line pointing at Import if the list is empty because nothing's
 been imported yet.
 
+## Budget grid: calendar mode
+
+`BudgetGridView` gains a segmented control — **Pay Period** / **Calendar**
+— above the grid. Pay Period is today's existing behavior, unchanged. In
+Calendar mode:
+
+- A horizontally-scrolling year picker sits above the grid: one chip per
+  year that has any transaction data, each showing that year's total and
+  its year-over-year change (colored via the same green/red convention,
+  computed as `(thisYear - lastYear) / lastYear`). Tapping a chip selects
+  that year.
+- The grid below re-renders with the *same component* used in Pay Period
+  mode — same category rows, same styling, same `MoneyText` formatting
+  (full `£X,XXX.XX`, never abbreviated) — but with columns = the selected
+  year's 12 calendar months plus a trailing **Year Total** column. Column
+  headers are month-and-year labels ("January 2026"), never a specific
+  day — this also fixes the existing date-formatting inconsistency where
+  a period's `startDate` could read as a specific day when the concept
+  being shown is a whole month.
+- A month with no confirmed transactions for a category renders as an
+  empty cell ("—"), matching the existing empty-cell convention — Calendar
+  mode shows actuals only, never forecast figures (forecasting stays
+  Pay-Period/Forecast-screen territory).
+- Cell totals are computed by a new pure `BudgetCore` function,
+  `BudgetGridCalculator.categoryTotalForCalendarMonth(category:year:month:transactions:)`,
+  bucketing confirmed transactions by calendar month instead of
+  `PayPeriod` — parallel to, but independent of, the existing
+  pay-period-based `categoryTotal`. A second pure function,
+  `BudgetGridCalculator.yearlyTotal(year:transactions:)` (plus a
+  YoY-percentage helper), drives the year picker's chips.
+
+Tapping a cell in Calendar mode opens the exact same drill-down sheet
+Pay Period mode uses (below) — one drill-down implementation shared by
+both modes, satisfying "all the way to individual transactions" for
+calendar-grouped data too.
+
 ## Budget grid drill-down
 
-Tapping a non-empty `BudgetGridView` cell opens a sheet:
-- For an `.actual` period: the list of `Transaction`s summing to that
-  cell, each with a category picker. Re-categorizing here updates the
-  underlying transaction immediately (same GRDB update path the
+Tapping a non-empty `BudgetGridView` cell opens a sheet, in either
+grouping mode:
+- For an `.actual` pay period, or any Calendar-mode cell (which is
+  always actuals — see above): the list of `Transaction`s summing to
+  that cell, each with a category picker. Re-categorizing here updates
+  the underlying transaction immediately (same GRDB update path the
   Uncategorized screen uses); `BudgetGridViewModel` reloads its data
   when the sheet is dismissed, so the grid total reflects the change
   without needing a manual refresh action.
-- For a `.projected` period: the single `ForecastEntry` producing the
+- For a `.projected` pay period (Pay Period mode only — Calendar mode
+  has no projected cells): the single `ForecastEntry` producing the
   cell's forecast value, read-only in this sheet (editing happens via
   the Forecast screen's own edit flow, described next, to avoid two
   different edit surfaces for the same data).
@@ -221,7 +264,10 @@ Tapping a non-empty `BudgetGridView` cell opens a sheet:
   net-worth-impact calculation) as a pure function separate from the
   actual HTTP fetch; the review-screen row-partitioning logic
   (ready-to-confirm vs. needs-attention) as a pure function over
-  `[StagedTransaction]`; the Uncategorized screen's query logic.
+  `[StagedTransaction]`; the Uncategorized screen's query logic;
+  `BudgetGridCalculator.categoryTotalForCalendarMonth` and `yearlyTotal`/
+  YoY-percentage (including the year-with-no-prior-year edge case, where
+  YoY has nothing to compare against).
 - SwiftUI view wiring (the sheets, buttons, keyboard handling,
   `MoneyText`/`CategoryBadge` rendering) is not unit-tested, consistent
   with the rest of the app — verified by build success and, this time,
