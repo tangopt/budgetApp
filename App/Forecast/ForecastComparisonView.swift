@@ -8,6 +8,7 @@ struct ForecastComparisonView: View {
     let categories: [Category]
 
     @State private var showNewEntrySheet = false
+    @State private var editingEntry: ForecastEntry?
 
     private var futurePeriods: [PayPeriod] {
         viewModel.periods.filter { $0.type == .projected }
@@ -25,6 +26,12 @@ struct ForecastComparisonView: View {
             NewForecastEntryView(categories: categories) { newGroupName, categoryId, amountMinorUnits, frequency, interval, startDate in
                 viewModel.addHypotheticalEntry(groupName: newGroupName, categoryId: categoryId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate)
                 showNewEntrySheet = false
+            }
+        }
+        .sheet(item: $editingEntry) { entry in
+            EditForecastEntryView(entry: entry) { amountMinorUnits, frequency, interval in
+                viewModel.updateEntry(entry, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval)
+                editingEntry = nil
             }
         }
     }
@@ -50,8 +57,13 @@ struct ForecastComparisonView: View {
                         ))
                         .padding(.leading, 24)
                         Text(entry.status.rawValue).font(.caption).foregroundStyle(.secondary)
+                        Button("Edit…") { editingEntry = entry }
+                            .buttonStyle(.plain)
+                            .font(.caption)
                         if entry.status == .hypothetical {
                             Button("Confirm") { viewModel.confirm(entry) }
+                        } else if entry.status == .confirmed {
+                            Button("Un-confirm") { viewModel.unconfirm(entry) }
                         }
                     }
                 }
@@ -61,7 +73,14 @@ struct ForecastComparisonView: View {
 
     private var comparisonTable: some View {
         VStack(alignment: .leading) {
-            Text("Confirmed vs. Preview forecast").font(.headline)
+            HStack {
+                Text("Confirmed vs. Preview forecast").font(.headline)
+                Spacer()
+                Text("Through \(viewModel.horizon.formatted(date: .abbreviated, time: .omitted))")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Extend to next year") { viewModel.extendHorizonToNextYear() }
+                    .font(.caption)
+            }
             ForEach(futurePeriods, id: \.startDate) { period in
                 VStack(alignment: .leading) {
                     Text(period.startDate.formatted(date: .abbreviated, time: .omitted))
@@ -123,5 +142,41 @@ struct NewForecastEntryView: View {
         }
         .padding()
         .frame(width: 420)
+    }
+}
+
+struct EditForecastEntryView: View {
+    let entry: ForecastEntry
+    let onSave: (Int, ForecastFrequency, Int) -> Void
+
+    @State private var amountPounds: String
+    @State private var frequency: ForecastFrequency
+    @State private var interval: Int
+
+    init(entry: ForecastEntry, onSave: @escaping (Int, ForecastFrequency, Int) -> Void) {
+        self.entry = entry
+        self.onSave = onSave
+        _amountPounds = State(initialValue: String(format: "%.2f", Double(abs(entry.amountMinorUnits)) / 100))
+        _frequency = State(initialValue: entry.frequency)
+        _interval = State(initialValue: entry.interval)
+    }
+
+    var body: some View {
+        Form {
+            TextField("Amount (£)", text: $amountPounds)
+            Picker("Frequency", selection: $frequency) {
+                ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(freq.rawValue).tag(freq) }
+            }
+            Stepper("Every \(interval) \(frequency.rawValue)", value: $interval, in: 1...12)
+            Button("Save") {
+                guard let minorUnits = Money.parseMinorUnits(amountPounds) else { return }
+                // Preserve the entry's existing sign (income positive, everything else
+                // negative) — the field only ever asks for a positive magnitude.
+                let signed = entry.amountMinorUnits < 0 ? -abs(minorUnits) : abs(minorUnits)
+                onSave(signed, frequency, interval)
+            }
+        }
+        .padding()
+        .frame(width: 360)
     }
 }
