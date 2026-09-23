@@ -28,10 +28,15 @@ public enum BudgetGridCalculator {
         var income = 0, expenses = 0, transfers = 0
         for category in categories {
             let total = categoryTotal(category: category, period: period, transactions: transactions, forecastEntries: forecastEntries, forecastGroups: forecastGroups)
+            // Totals are signed (negative = money out). Expenses and transfers are
+            // displayed as positive outflows, so subtract the signed total rather than
+            // adding abs(total): money coming IN on an expense/transfer category (a
+            // refund, a transfer back from savings) then correctly reduces the outflow
+            // and increases Money Remaining instead of being counted as more spending.
             switch category.type {
             case .income: income += total
-            case .expense: expenses += abs(total)
-            case .transfer: transfers += abs(total)
+            case .expense: expenses -= total
+            case .transfer: transfers -= total
             }
         }
         return PeriodSummary(period: period, incomeMinorUnits: income, expensesMinorUnits: expenses, transfersMinorUnits: transfers)
