@@ -51,4 +51,40 @@ final class ClaudeCategorizerTests: XCTestCase {
         XCTAssertEqual(unwrapped.categoryName, "Groceries")
         XCTAssertEqual(unwrapped.confidence, 0.92, accuracy: 0.001)
     }
+
+    // I7: with adaptive thinking, a `thinking` block precedes the `text` block.
+    func testParsesTextBlockThatFollowsAThinkingBlock() async throws {
+        let store = StubAPIKeyStore()
+        store.key = "test-key"
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let session = URLSession(configuration: config)
+        StubURLProtocol.responseData = Data("""
+        {"content":[{"type":"thinking","thinking":"","signature":"abc"},{"type":"text","text":"{\\"categoryName\\":\\"Eating Out\\",\\"confidence\\":0.8}"}],"stop_reason":"end_turn"}
+        """.utf8)
+        StubURLProtocol.statusCode = 200
+
+        let suggestion = try await ClaudeCategorizer(apiKeyStore: store, session: session)
+            .suggestCategory(description: "NANDOS", candidateCategoryNames: ["Groceries", "Eating Out"])
+        XCTAssertEqual(suggestion?.categoryName, "Eating Out")
+    }
+
+    func testParsesJSONWrappedInMarkdownCodeFence() {
+        let body = """
+        {"content":[{"type":"redacted_thinking","data":"xyz"},{"type":"text","text":"```json\\n{\\"categoryName\\": \\"Groceries\\", \\"confidence\\": 1}\\n```"}]}
+        """
+        let suggestion = ClaudeCategorizer.parseSuggestion(fromResponseData: Data(body.utf8))
+        XCTAssertEqual(suggestion?.categoryName, "Groceries")
+        XCTAssertEqual(suggestion?.confidence, 1.0)
+    }
+
+    func testParsesJSONSurroundedByProse() {
+        XCTAssertEqual(ClaudeCategorizer.jsonObject(inModelText: "Sure: {\"categoryName\": \"Rent\", \"confidence\": 0.5} hope that helps")?["categoryName"] as? String, "Rent")
+        XCTAssertEqual(ClaudeCategorizer.jsonObject(inModelText: "```\n{\"categoryName\": \"Rent\", \"confidence\": 0.5}\n```")?["categoryName"] as? String, "Rent")
+    }
+
+    func testResponseWithoutTextBlockIsUnparsable() {
+        let body = #"{"content":[{"type":"thinking","thinking":"","signature":"abc"}],"stop_reason":"max_tokens"}"#
+        XCTAssertNil(ClaudeCategorizer.parseSuggestion(fromResponseData: Data(body.utf8)))
+    }
 }
