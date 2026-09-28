@@ -19,12 +19,17 @@ struct MoneyText: View {
     /// Nil (the default) keeps the text at its natural size, which inline call sites
     /// (Net Worth, Import, Forecast, lists with a `Spacer`) rely on.
     var alignment: Alignment? = nil
+    /// When set, overrides the sign-based red/green/primary color entirely — for callers
+    /// that need a fixed color regardless of the value's sign (e.g. marking a figure as a
+    /// preview/hypothetical, not a real change in either direction).
+    var tint: Color? = nil
 
     var body: some View {
         let colorSource = colorOverride ?? minorUnits
+        let color = tint ?? (colorSource < 0 ? Color.red : (colorSource > 0 ? Color.green : Color.primary))
         let text = Text(Money.format(minorUnits, currency: currency))
             .font(font)
-            .foregroundStyle(colorSource < 0 ? Color.red : (colorSource > 0 ? Color.green : Color.primary))
+            .foregroundStyle(color)
             .contentTransition(.numericText())
         if let alignment {
             text.frame(maxWidth: .infinity, alignment: alignment)

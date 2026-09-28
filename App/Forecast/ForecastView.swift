@@ -211,7 +211,7 @@ struct ForecastView: View {
             .fontWeight(bold ? .bold : .regular)
             if twoLine {
                 if preview != confirmed {
-                    MoneyText(minorUnits: preview, font: .caption2.monospacedDigit(), alignment: .trailing)
+                    MoneyText(minorUnits: preview, font: .caption2.monospacedDigit(), alignment: .trailing, tint: .orange)
                         .opacity(0.7)
                 } else {
                     Color.clear.frame(height: 14)
