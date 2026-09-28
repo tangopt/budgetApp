@@ -55,8 +55,7 @@ struct ContentView: View {
     }
 
     /// How far ahead to project forecasted pay periods in the Budget grid (the Forecast
-    /// screen manages its own horizon independently — see `ForecastViewModel.horizon` —
-    /// since only that screen has an extend-to-next-year action).
+    /// screen computes its own thisYear/nextYear independently — see `ForecastViewModel`).
     private var forecastHorizon: Date {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
@@ -100,7 +99,7 @@ struct ContentView: View {
                     BudgetGridView(viewModel: budgetGridViewModel)
                         .onAppear { try? budgetGridViewModel.load(horizon: forecastHorizon) }
                 case .forecast:
-                    ForecastComparisonView(viewModel: forecastViewModel, categories: categories)
+                    ForecastView(viewModel: forecastViewModel)
                         .onAppear { try? forecastViewModel.load() }
                 case .netWorth:
                     NetWorthView(viewModel: netWorthViewModel, environment: environment)

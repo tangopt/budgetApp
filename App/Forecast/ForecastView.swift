@@ -7,6 +7,9 @@ struct ForecastView: View {
     @ObservedObject var viewModel: ForecastViewModel
     @State private var selectedYear: Int
     @State private var horizontalOffset: CGFloat = 0
+    @State private var showNewEntrySheet = false
+    @State private var editingEntry: ForecastEntry?
+    @State private var manageExpanded = false
 
     // A plain memberwise init would make `selectedYear` a required call-site argument;
     // this way callers just pass `viewModel`, and the initial year comes from it.
@@ -65,6 +68,7 @@ struct ForecastView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            netWorthHeadline
             yearPicker
 
             VStack(alignment: .leading, spacing: 0) {
@@ -117,8 +121,21 @@ struct ForecastView: View {
                 }
                 .onPreferenceChange(ForecastHorizontalOffsetKey.self) { horizontalOffset = $0 }
             }
+            manageForecastSection
         }
         .padding()
+        .sheet(isPresented: $showNewEntrySheet) {
+            NewForecastEntryView(categories: viewModel.categories) { newGroupName, categoryId, amountMinorUnits, frequency, interval, startDate in
+                viewModel.addHypotheticalEntry(groupName: newGroupName, categoryId: categoryId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate)
+                showNewEntrySheet = false
+            }
+        }
+        .sheet(item: $editingEntry) { entry in
+            EditForecastEntryView(entry: entry) { amountMinorUnits, frequency, interval in
+                viewModel.updateEntry(entry, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval)
+                editingEntry = nil
+            }
+        }
     }
 
     private var yearPicker: some View {
@@ -142,6 +159,75 @@ struct ForecastView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private var netWorthHeadline: some View {
+        HStack(spacing: 12) {
+            netWorthStat(year: viewModel.thisYear, baselineLabel: "vs Dec \(viewModel.thisYear - 1)")
+            netWorthStat(year: viewModel.nextYear, baselineLabel: "vs Dec \(viewModel.thisYear) forecast")
+        }
+    }
+
+    private func netWorthStat(year: Int, baselineLabel: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Forecast net worth — Dec \(year)").font(.caption).foregroundStyle(.secondary)
+            if let forecast = viewModel.forecastNetWorth(atEndOf: year) {
+                MoneyText(minorUnits: forecast, font: .title2.bold())
+            } else {
+                Text("—").font(.title2.bold()).foregroundStyle(.secondary)
+            }
+            if let yoy = viewModel.forecastNetWorthYoY(atEndOf: year), let percent = yoy.percent {
+                Text("\(percent >= 0 ? "↑" : "↓") \(String(format: "%.1f", abs(percent) * 100))% \(baselineLabel)")
+                    .font(.caption2)
+                    .foregroundStyle(percent >= 0 ? Color.green : Color.red)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+    }
+
+    private var manageForecastSection: some View {
+        DisclosureGroup("Manage forecast", isExpanded: $manageExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                if let error = viewModel.errorMessage {
+                    Text(error).foregroundStyle(.red).font(.callout)
+                }
+                ForEach(viewModel.groups) { group in
+                    HStack {
+                        Toggle(group.name, isOn: Binding(
+                            get: { group.isEnabled },
+                            set: { _ in viewModel.toggleGroup(group) }
+                        ))
+                        if !group.isSystemManaged {
+                            Text("custom").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    ForEach(viewModel.entries.filter { $0.groupId == group.id }) { entry in
+                        HStack {
+                            Toggle(viewModel.categories.first(where: { $0.id == entry.categoryId })?.name ?? "Unknown", isOn: Binding(
+                                get: { entry.isEnabled },
+                                set: { _ in viewModel.toggleEntry(entry) }
+                            ))
+                            .padding(.leading, 24)
+                            Text(entry.status.rawValue).font(.caption).foregroundStyle(.secondary)
+                            Button("Edit…") { editingEntry = entry }
+                                .buttonStyle(.plain)
+                                .font(.caption)
+                            if entry.status == .hypothetical {
+                                Button("Confirm") { viewModel.confirm(entry) }
+                            } else if entry.status == .confirmed {
+                                Button("Un-confirm") { viewModel.unconfirm(entry) }
+                            }
+                        }
+                    }
+                }
+                Button("Add hypothetical forecast entry…") { showNewEntrySheet = true }
+            }
+            .padding(.top, 8)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
     }
 
     @ViewBuilder
@@ -235,4 +321,96 @@ struct ForecastView: View {
 private struct ForecastHorizontalOffsetKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value += nextValue() }
+}
+
+struct NewForecastEntryView: View {
+    let categories: [Category]
+    let onSave: (String, Int64, Int, ForecastFrequency, Int, Date) -> Void
+
+    @State private var groupName = "New scenario"
+    @State private var categoryId: Int64?
+    @State private var amountPounds = ""
+    @State private var frequency: ForecastFrequency = .monthly
+    @State private var interval = 1
+    @State private var startDate = Date()
+
+    var body: some View {
+        Form {
+            TextField("Group name", text: $groupName)
+            Picker("Category", selection: $categoryId) {
+                Text("Select…").tag(Int64?.none)
+                ForEach(categories) { category in Text(category.name).tag(Int64?.some(category.id!)) }
+            }
+            TextField("Amount (£, positive number)", text: $amountPounds)
+            Picker("Frequency", selection: $frequency) {
+                ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(freq.rawValue).tag(freq) }
+            }
+            Stepper("Every \(interval) \(frequency.rawValue)", value: $interval, in: 1...12)
+            DatePicker("Starting", selection: $startDate, displayedComponents: .date)
+            Button("Save") {
+                guard let categoryId, let pounds = Double(amountPounds) else { return }
+                let category = categories.first { $0.id == categoryId }
+                let signedMinorUnits = Int(pounds * 100) * (category?.type == .income ? 1 : -1)
+                onSave(groupName, categoryId, signedMinorUnits, frequency, interval, startDate)
+            }
+        }
+        .padding()
+        .frame(width: 420)
+    }
+}
+
+struct EditForecastEntryView: View {
+    let entry: ForecastEntry
+    let onSave: (Int, ForecastFrequency, Int) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var amountPounds: String
+    @State private var frequency: ForecastFrequency
+    @State private var interval: Int
+
+    init(entry: ForecastEntry, onSave: @escaping (Int, ForecastFrequency, Int) -> Void) {
+        self.entry = entry
+        self.onSave = onSave
+        _amountPounds = State(initialValue: String(format: "%.2f", Double(abs(entry.amountMinorUnits)) / 100))
+        _frequency = State(initialValue: entry.frequency)
+        _interval = State(initialValue: entry.interval)
+    }
+
+    /// Preserves the entry's existing sign (income positive, everything else negative) —
+    /// the field only ever asks for a positive magnitude. nil if the field doesn't parse.
+    private var signedAmount: Int? {
+        guard let minorUnits = Money.parseMinorUnits(amountPounds) else { return nil }
+        return entry.amountMinorUnits < 0 ? -abs(minorUnits) : abs(minorUnits)
+    }
+
+    /// Save is a no-op unless something actually changed: saving an untouched `.auto`
+    /// entry would otherwise promote it to `.manual` (via `updateEntry`) and permanently
+    /// opt that category out of `AutoForecastGenerator.refresh` for no reason.
+    private var hasChanges: Bool {
+        guard let signedAmount else { return false }
+        return signedAmount != entry.amountMinorUnits || frequency != entry.frequency || interval != entry.interval
+    }
+
+    var body: some View {
+        Form {
+            TextField("Amount (£)", text: $amountPounds)
+            Picker("Frequency", selection: $frequency) {
+                ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(freq.rawValue).tag(freq) }
+            }
+            Stepper("Every \(interval) \(frequency.rawValue)", value: $interval, in: 1...12)
+            HStack {
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Save") {
+                    guard hasChanges, let signedAmount else { return }
+                    onSave(signedAmount, frequency, interval)
+                }
+                .disabled(!hasChanges)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding()
+        .frame(width: 360)
+    }
 }
