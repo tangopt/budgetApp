@@ -19,15 +19,41 @@ final class ForecastCalculatorTests: XCTestCase {
         XCTAssertEqual(confirmed, -280000)
     }
 
-    func testPreviewTotalAddsEnabledHypotheticals() {
+    func testPreviewTotalAddsSelectedScenarioHypotheticals() {
         let period = PayPeriod(startDate: date(2026, 8, 26), endDate: date(2026, 9, 25), type: .projected)
         let groups = [ForecastGroup(id: 1, name: "Detected recurring", note: nil, isEnabled: true, isSystemManaged: true)]
         let entries = [
             ForecastEntry(id: 1, groupId: 1, categoryId: 10, amountMinorUnits: -280000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .auto, note: nil),
             ForecastEntry(id: 2, groupId: 1, categoryId: 10, amountMinorUnits: -5000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
         ]
-        let preview = ForecastCalculator.previewTotal(categoryId: 10, period: period, entries: entries, groups: groups)
+        let preview = ForecastCalculator.previewTotal(categoryId: 10, period: period, entries: entries, groups: groups, selectedScenarioGroupId: 1)
         XCTAssertEqual(preview, -285000)
+    }
+
+    func testPreviewTotalExcludesHypotheticalsFromUnselectedScenario() {
+        let period = PayPeriod(startDate: date(2026, 8, 26), endDate: date(2026, 9, 25), type: .projected)
+        let groups = [
+            ForecastGroup(id: 1, name: "Detected recurring", note: nil, isEnabled: true, isSystemManaged: true),
+            ForecastGroup(id: 2, name: "New car", note: nil, isEnabled: true, isSystemManaged: false)
+        ]
+        let entries = [
+            ForecastEntry(id: 1, groupId: 1, categoryId: 10, amountMinorUnits: -280000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .auto, note: nil),
+            // This scenario's group (id 2) is enabled, but it isn't the *selected* one (id 1 is selected below) — its hypothetical must not count.
+            ForecastEntry(id: 2, groupId: 2, categoryId: 10, amountMinorUnits: -35000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
+        ]
+        let preview = ForecastCalculator.previewTotal(categoryId: 10, period: period, entries: entries, groups: groups, selectedScenarioGroupId: 1)
+        XCTAssertEqual(preview, -280000) // only the auto entry — group 2's hypothetical is excluded
+    }
+
+    func testPreviewTotalWithNoSelectionExcludesAllHypotheticals() {
+        let period = PayPeriod(startDate: date(2026, 8, 26), endDate: date(2026, 9, 25), type: .projected)
+        let groups = [ForecastGroup(id: 1, name: "Detected recurring", note: nil, isEnabled: true, isSystemManaged: true)]
+        let entries = [
+            ForecastEntry(id: 1, groupId: 1, categoryId: 10, amountMinorUnits: -280000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .auto, note: nil),
+            ForecastEntry(id: 2, groupId: 1, categoryId: 10, amountMinorUnits: -5000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
+        ]
+        let preview = ForecastCalculator.previewTotal(categoryId: 10, period: period, entries: entries, groups: groups, selectedScenarioGroupId: nil)
+        XCTAssertEqual(preview, -280000)
     }
 
     func testDisabledGroupExcludesAllItsEntriesRegardlessOfEntryToggle() {
@@ -80,5 +106,31 @@ final class ForecastCalculatorTests: XCTestCase {
         let unsaved = Category(id: nil, name: "Draft", type: .expense)
         let impact = ForecastCalculator.confirmedNetWorthImpact(period: period, categories: [unsaved], entries: [], groups: [])
         XCTAssertEqual(impact, 0)
+    }
+
+    func testPreviewNetWorthDeltaSumsSelectedScenarioIncomeMinusExpensesExcludingTransfers() {
+        let period = PayPeriod(startDate: date(2026, 3, 1), endDate: date(2026, 3, 31), type: .projected)
+        let salary = Category(id: 1, name: "Bonus", type: .income)
+        let carPayment = Category(id: 2, name: "Car Payments", type: .expense)
+        let transfer = Category(id: 3, name: "Transfer: ISA", type: .transfer)
+        let groups = [ForecastGroup(id: 2, name: "New car", note: nil, isEnabled: true, isSystemManaged: false)]
+        let entries = [
+            ForecastEntry(id: 1, groupId: 2, categoryId: 1, amountMinorUnits: 100000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 1), endDate: nil, isEnabled: true, status: .hypothetical, note: nil),
+            ForecastEntry(id: 2, groupId: 2, categoryId: 2, amountMinorUnits: -35000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 1), endDate: nil, isEnabled: true, status: .hypothetical, note: nil),
+            ForecastEntry(id: 3, groupId: 2, categoryId: 3, amountMinorUnits: -20000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 1), endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
+        ]
+        let delta = ForecastCalculator.previewNetWorthDelta(period: period, categories: [salary, carPayment, transfer], entries: entries, groups: groups, selectedScenarioGroupId: 2)
+        XCTAssertEqual(delta, 100000 - 35000) // transfer excluded; delta is preview minus confirmed (0, nothing confirmed here)
+    }
+
+    func testPreviewNetWorthDeltaIsZeroWithNoSelection() {
+        let period = PayPeriod(startDate: date(2026, 3, 1), endDate: date(2026, 3, 31), type: .projected)
+        let carPayment = Category(id: 2, name: "Car Payments", type: .expense)
+        let groups = [ForecastGroup(id: 2, name: "New car", note: nil, isEnabled: true, isSystemManaged: false)]
+        let entries = [
+            ForecastEntry(id: 2, groupId: 2, categoryId: 2, amountMinorUnits: -35000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 1), endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
+        ]
+        let delta = ForecastCalculator.previewNetWorthDelta(period: period, categories: [carPayment], entries: entries, groups: groups, selectedScenarioGroupId: nil)
+        XCTAssertEqual(delta, 0)
     }
 }
