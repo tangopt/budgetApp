@@ -9,6 +9,7 @@ final class ForecastViewModel: ObservableObject {
     @Published var groups: [ForecastGroup] = []
     @Published var entries: [ForecastEntry] = []
     @Published var categories: [Category] = []
+    @Published var categoryGroups: [CategoryGroup] = []
     @Published var accounts: [Account] = []
     @Published var balanceSnapshots: [BalanceSnapshot] = []
     @Published var transactions: [Transaction] = [] {
@@ -16,6 +17,14 @@ final class ForecastViewModel: ObservableObject {
     }
     @Published var exchangeRate: ExchangeRateSetting = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
     @Published var errorMessage: String?
+    /// The scenario (non-system-managed `ForecastGroup`) currently previewed in the grid
+    /// and headline. `nil` means "None (confirmed only)" — the default. Ephemeral: reset
+    /// to `nil` on every `load()`, never persisted. Changing it changes what
+    /// `previewCategoryTotal`/`scenarioNetWorthImpact` compute, so it must trigger the
+    /// same cache rebuild any other cache-affecting mutation does.
+    @Published var selectedScenarioGroupId: Int64? {
+        didSet { recomputeForecastCaches() }
+    }
     /// (year, month) of the latest transaction date across everything `load()` fetched.
     /// `nil` before the first successful `load()`, or if there's no transaction data at
     /// all.
@@ -25,24 +34,20 @@ final class ForecastViewModel: ObservableObject {
     private var calendarTotals: [Int64: [Int: [Int: Int]]] = [:]
     /// Precomputed confirmed/preview forecast totals for every (category, year, month)
     /// cell, covering `thisYear` and `nextYear` — rebuilt by `recomputeForecastCaches()`
-    /// at the end of `load()` and after any mutation that changes `entries`/`groups`
-    /// (toggling, editing, confirming, adding a hypothetical). `ForecastView.body`
-    /// re-evaluates on every horizontal-scroll-offset change (same frozen-header/frozen-
-    /// column technique as the Budget grid), which would otherwise re-run
-    /// `ForecastCalculator` (`FrequencyExpander` occurrence-counting plus `Calendar` date
-    /// arithmetic) for every visible cell on every scroll frame — measured at ~30ms per
-    /// full-grid pass against the live database (56 categories, 12 forecast entries),
-    /// well over a 60fps frame budget, which would cause visible stutter. Only consulted
-    /// for *forecast* (non-actual) months; actual months already have an O(1) path via
-    /// `calendarTotals`. Keyed by categoryId → year → month.
+    /// at the end of `load()`, after any mutation that changes `entries`/`groups`, and
+    /// whenever `selectedScenarioGroupId` changes (the `preview` half of this cache is
+    /// scenario-dependent). `ForecastView.body` re-evaluates on every horizontal-scroll-
+    /// offset change (same frozen-header/frozen-column technique as the Budget grid),
+    /// which would otherwise re-run `ForecastCalculator` for every visible cell on every
+    /// scroll frame — measured at ~30ms per full-grid pass against the live database,
+    /// well over a 60fps frame budget. Only consulted for *forecast* (non-actual) months;
+    /// actual months already have an O(1) path via `calendarTotals`. Keyed by
+    /// categoryId → year → month.
     private var forecastTotalsCache: [Int64: [Int: [Int: (confirmed: Int, preview: Int)]]] = [:]
-    /// Precomputed `forecastNetWorth`/`forecastNetWorthYoY` results for `thisYear` and
-    /// `nextYear` — the four net-worth headline figures `ForecastView` shows. Rebuilt
-    /// alongside `forecastTotalsCache` for the same reason: both underlying functions sum
-    /// `ForecastCalculator.confirmedNetWorthImpact` across every category for every month
-    /// since `latestRealMonth`, so recomputing them on every scroll frame is the same cost
-    /// problem. Keyed by year.
-    private var netWorthHeadlineCache: [Int: (forecast: Int?, yoy: (changeGBP: Int, percent: Double?)?)] = [:]
+    /// Precomputed `forecastNetWorth`/`forecastNetWorthYoY`/`scenarioNetWorthImpact`
+    /// results for `thisYear` and `nextYear` — the headline figures `ForecastView` shows.
+    /// Rebuilt alongside `forecastTotalsCache` for the same reason. Keyed by year.
+    private var netWorthHeadlineCache: [Int: (forecast: Int?, yoy: (changeGBP: Int, percent: Double?)?, scenarioImpact: Int?)] = [:]
     private static let calendar: Calendar = {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(identifier: "UTC")!
@@ -60,21 +65,22 @@ final class ForecastViewModel: ObservableObject {
         groups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
         entries = try dbQueue.read { db in try ForecastEntry.fetchAll(db) }
         categories = try dbQueue.read { db in try Category.fetchAll(db) }
+        categoryGroups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
         accounts = try dbQueue.read { db in try Account.fetchAll(db) }
         balanceSnapshots = try dbQueue.read { db in try BalanceSnapshot.fetchAll(db) }
         transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
         exchangeRate = try dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db) }
         latestRealMonth = Self.computeLatestRealMonth(transactions: transactions, calendar: Self.calendar)
-        recomputeForecastCaches()
+        selectedScenarioGroupId = nil // resets caches via its own didSet, so no separate recomputeForecastCaches() call needed here
     }
 
-    /// Rebuilds `forecastTotalsCache` and `netWorthHeadlineCache` from the current
-    /// `categories`/`entries`/`groups`/`accounts`/`balanceSnapshots`/`transactions`/
-    /// `latestRealMonth`. Called once at the end of `load()` (not via a `didSet` on each
-    /// contributing property — several of them, e.g. `latestRealMonth`, are only valid
-    /// once everything else `load()` fetches is already in place, so a single explicit
-    /// call after `load()` finishes avoids rebuilding with a partially-updated, stale
-    /// mix of state) and again after every mutation that changes `entries`/`groups`.
+    /// Rebuilds `forecastTotalsCache` and `netWorthHeadlineCache` from current state.
+    /// Called once at the end of `load()` (indirectly, via `selectedScenarioGroupId`'s
+    /// `didSet` — several other properties `load()` sets, e.g. `latestRealMonth`, are only
+    /// valid once everything else is already in place, so resetting `selectedScenarioGroupId`
+    /// last and letting its `didSet` fire the rebuild avoids rebuilding with a partially-
+    /// updated, stale mix of state) and after every mutation that changes `entries`/
+    /// `groups`/`selectedScenarioGroupId`.
     private func recomputeForecastCaches() {
         var totals: [Int64: [Int: [Int: (confirmed: Int, preview: Int)]]] = [:]
         for category in categories {
@@ -87,7 +93,7 @@ final class ForecastViewModel: ObservableObject {
                     let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
                     byMonth[month] = (
                         ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups),
-                        ForecastCalculator.previewTotal(categoryId: categoryId, period: period, entries: entries, groups: groups)
+                        ForecastCalculator.previewTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId)
                     )
                 }
                 byYear[year] = byMonth
@@ -96,9 +102,9 @@ final class ForecastViewModel: ObservableObject {
         }
         forecastTotalsCache = totals
 
-        var headline: [Int: (forecast: Int?, yoy: (changeGBP: Int, percent: Double?)?)] = [:]
+        var headline: [Int: (forecast: Int?, yoy: (changeGBP: Int, percent: Double?)?, scenarioImpact: Int?)] = [:]
         for year in [thisYear, nextYear] {
-            headline[year] = (computeForecastNetWorth(atEndOf: year), computeForecastNetWorthYoY(atEndOf: year))
+            headline[year] = (computeForecastNetWorth(atEndOf: year), computeForecastNetWorthYoY(atEndOf: year), computeScenarioNetWorthImpact(atEndOf: year))
         }
         netWorthHeadlineCache = headline
     }
@@ -132,21 +138,17 @@ final class ForecastViewModel: ObservableObject {
     func dateRange(forYear year: Int, month: Int) -> (start: Date, end: Date) {
         var startComponents = DateComponents(); startComponents.year = year; startComponents.month = month; startComponents.day = 1
         let start = Self.calendar.date(from: startComponents)!
-        // `end` is the LAST MOMENT of the month's last day, not midnight at its start.
-        // `FrequencyExpander` checks occurrences inclusively against `end`, and a
-        // `ForecastEntry.startDate` can carry a real time-of-day (e.g. `Date()`, the
-        // default in `NewForecastEntryView`) — midnight on the last day would silently
-        // exclude any occurrence later that same day. "One second before next month
-        // starts" is unambiguously the last day's last second regardless of month length
-        // or leap years.
+        // `end` is the LAST MOMENT of the month's last day, not midnight at its start —
+        // see `FrequencyExpander`'s inclusive occurrence check; a `ForecastEntry.startDate`
+        // can carry a real time-of-day and landing exactly at midnight would silently
+        // exclude a same-day-later occurrence.
         let end = Self.calendar.date(byAdding: .month, value: 1, to: start)!.addingTimeInterval(-1)
         return (start, end)
     }
 
     /// The category's total for one month: the actual transaction total when the month
     /// is real (`isActual`), the confirmed forecast otherwise (read from
-    /// `forecastTotalsCache`, falling back to a direct calculation for a cache miss —
-    /// e.g. a year outside `thisYear`/`nextYear`, or before the first `load()`).
+    /// `forecastTotalsCache`, falling back to a direct calculation for a cache miss).
     func categoryTotal(_ category: Category, year: Int, month: Int) -> Int {
         if isActual(year: year, month: month) {
             return BudgetGridCalculator.categoryTotalForCalendarMonth(category: category, year: year, month: month, calendarTotals: calendarTotals)
@@ -157,10 +159,10 @@ final class ForecastViewModel: ObservableObject {
         return ForecastCalculator.confirmedTotal(categoryId: categoryId, period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), entries: entries, groups: groups)
     }
 
-    /// Confirmed total plus enabled `.hypothetical` entries. For an actual month this
-    /// always equals `categoryTotal` — a hypothetical can't retroactively change history.
-    /// Reads from `forecastTotalsCache` for a forecast month, same fallback as
-    /// `categoryTotal`.
+    /// Confirmed total plus the selected scenario's `.hypothetical` entries, if any. For
+    /// an actual month this always equals `categoryTotal` — a hypothetical can't
+    /// retroactively change history. Reads from `forecastTotalsCache` for a forecast
+    /// month, same fallback as `categoryTotal`.
     func previewCategoryTotal(_ category: Category, year: Int, month: Int) -> Int {
         if isActual(year: year, month: month) {
             return categoryTotal(category, year: year, month: month)
@@ -168,7 +170,7 @@ final class ForecastViewModel: ObservableObject {
         guard let categoryId = category.id else { return 0 }
         if let cached = forecastTotalsCache[categoryId]?[year]?[month] { return cached.preview }
         let range = dateRange(forYear: year, month: month)
-        return ForecastCalculator.previewTotal(categoryId: categoryId, period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), entries: entries, groups: groups)
+        return ForecastCalculator.previewTotal(categoryId: categoryId, period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId)
     }
 
     private var currentNetWorthGBP: Int {
@@ -187,8 +189,8 @@ final class ForecastViewModel: ObservableObject {
     /// Forecast net worth at the end of `year` (December; `year` must be `thisYear` or
     /// `nextYear`): current net worth plus the confirmed forecast's accumulated net impact
     /// for every month strictly after `latestRealMonth` through that December. `nil` when
-    /// there's no `latestRealMonth` yet (no data loaded at all). Reads from
-    /// `netWorthHeadlineCache`, falling back to a direct calculation for a cache miss.
+    /// there's no `latestRealMonth` yet. Reads from `netWorthHeadlineCache`, falling back
+    /// to a direct calculation for a cache miss.
     func forecastNetWorth(atEndOf year: Int) -> Int? {
         netWorthHeadlineCache[year]?.forecast ?? computeForecastNetWorth(atEndOf: year)
     }
@@ -208,15 +210,9 @@ final class ForecastViewModel: ObservableObject {
     }
 
     /// `forecastNetWorth(atEndOf: year)` compared to a baseline: last year's real
-    /// year-end net worth when December of `year - 1` is actually covered by real data
-    /// (`isActual(year: year - 1, month: 12)`), or last year's *forecast* year-end net
-    /// worth otherwise — which is always the case when `year == nextYear` (no real data
-    /// can exist for a future year's December), but can also happen when `year ==
-    /// thisYear` if real data is stale enough that it doesn't reach last December (e.g.
-    /// imports lapsed for over a year). Falling back to the forecast baseline in that
-    /// case avoids presenting a stale, carried-forward balance as "vs Dec `year - 1`" —
-    /// which would overstate how much of that figure is real. `percent` is `nil` when
-    /// the baseline is zero. Reads from `netWorthHeadlineCache`, falling back to a direct
+    /// year-end net worth when December of `year - 1` is actually covered by real data,
+    /// or last year's *forecast* year-end net worth otherwise. `percent` is `nil` when the
+    /// baseline is zero. Reads from `netWorthHeadlineCache`, falling back to a direct
     /// calculation for a cache miss.
     func forecastNetWorthYoY(atEndOf year: Int) -> (changeGBP: Int, percent: Double?)? {
         netWorthHeadlineCache[year]?.yoy ?? computeForecastNetWorthYoY(atEndOf: year)
@@ -228,6 +224,30 @@ final class ForecastViewModel: ObservableObject {
         let change = forecast - baseline
         let percent: Double? = baseline != 0 ? Double(change) / Double(abs(baseline)) : nil
         return (change, percent)
+    }
+
+    /// `nil` when `selectedScenarioGroupId` is nil (no scenario selected) or there's no
+    /// `latestRealMonth` yet. Otherwise, the selected scenario's cumulative preview delta
+    /// (`ForecastCalculator.previewNetWorthDelta`) summed over the same months
+    /// `forecastNetWorth` accumulates over — the change in year-end net worth this
+    /// scenario would add on top of the confirmed forecast. Reads from
+    /// `netWorthHeadlineCache`, falling back to a direct calculation for a cache miss.
+    func scenarioNetWorthImpact(atEndOf year: Int) -> Int? {
+        netWorthHeadlineCache[year]?.scenarioImpact ?? computeScenarioNetWorthImpact(atEndOf: year)
+    }
+
+    private func computeScenarioNetWorthImpact(atEndOf year: Int) -> Int? {
+        guard let selectedScenarioGroupId, let latestRealMonth else { return nil }
+        var delta = 0
+        var cursor = (year: latestRealMonth.year, month: latestRealMonth.month + 1)
+        if cursor.month > 12 { cursor = (cursor.year + 1, 1) }
+        while cursor.year < year || (cursor.year == year && cursor.month <= 12) {
+            let range = dateRange(forYear: cursor.year, month: cursor.month)
+            delta += ForecastCalculator.previewNetWorthDelta(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: categories, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId)
+            cursor.month += 1
+            if cursor.month > 12 { cursor = (cursor.year + 1, 1) }
+        }
+        return delta
     }
 
     func toggleGroup(_ group: ForecastGroup) {
@@ -251,20 +271,21 @@ final class ForecastViewModel: ObservableObject {
         recomputeForecastCaches()
     }
 
-    /// Edits an entry's amount/frequency/interval. If it was auto-detected, this promotes
-    /// it to `.manual` so a future `AutoForecastGenerator.refresh` won't silently
+    /// Edits an entry's amount/frequency/interval/end-date. If it was auto-detected, this
+    /// promotes it to `.manual` so a future `AutoForecastGenerator.refresh` won't silently
     /// overwrite the edit — mirrors the generator's own skip-on-manual-tuning behavior.
     ///
     /// The write happens against a locally-built copy first; `entries` is only mutated
     /// once that write has actually succeeded, mirroring `BudgetGridViewModel.recategorize`.
     @discardableResult
-    func updateEntry(_ entry: ForecastEntry, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int) -> Bool {
+    func updateEntry(_ entry: ForecastEntry, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, endDate: Date?) -> Bool {
         errorMessage = nil
         guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return false }
         var updated = entries[index]
         updated.amountMinorUnits = amountMinorUnits
         updated.frequency = frequency
         updated.interval = interval
+        updated.endDate = endDate
         if updated.status == .auto {
             updated.status = .manual
         }
@@ -298,21 +319,68 @@ final class ForecastViewModel: ObservableObject {
         return true
     }
 
-    func addHypotheticalEntry(groupName: String, categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date) {
+    /// One item in a scenario being created or added to — a plain value type, not
+    /// persisted directly (see `createScenario`/`addItem`, which turn it into a
+    /// `ForecastEntry`).
+    struct ScenarioItem {
+        let categoryId: Int64
+        let amountMinorUnits: Int
+        let frequency: ForecastFrequency
+        let interval: Int
+        let startDate: Date
+        let endDate: Date?
+    }
+
+    /// Creates a new scenario (a non-system-managed `ForecastGroup`) with one or more
+    /// hypothetical entries in a single write. `items` is expected non-empty — the UI
+    /// disables Save with zero items, so this is a precondition, not a runtime error path.
+    func createScenario(name: String, items: [ScenarioItem]) {
         try? dbQueue.write { db in
-            let group: ForecastGroup
-            if let existing = try ForecastGroup.filter(Column("name") == groupName).fetchOne(db) {
-                group = existing
-            } else {
-                var newGroup = ForecastGroup(name: groupName, note: nil, isEnabled: true, isSystemManaged: false)
-                try newGroup.insert(db)
-                group = newGroup
+            var group = ForecastGroup(name: name, note: nil, isEnabled: true, isSystemManaged: false)
+            try group.insert(db)
+            for item in items {
+                var entry = ForecastEntry(groupId: group.id!, categoryId: item.categoryId, amountMinorUnits: item.amountMinorUnits, frequency: item.frequency, interval: item.interval, startDate: item.startDate, endDate: item.endDate, isEnabled: true, status: .hypothetical, note: nil)
+                try entry.insert(db)
             }
-            var entry = ForecastEntry(groupId: group.id!, categoryId: categoryId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
-            try entry.insert(db)
         }
         groups = (try? dbQueue.read { db in try ForecastGroup.fetchAll(db) }) ?? groups
         entries = (try? dbQueue.read { db in try ForecastEntry.fetchAll(db) }) ?? entries
         recomputeForecastCaches()
+    }
+
+    /// Adds one more item to an existing scenario group.
+    func addItem(to group: ForecastGroup, _ item: ScenarioItem) {
+        try? dbQueue.write { db in
+            var entry = ForecastEntry(groupId: group.id!, categoryId: item.categoryId, amountMinorUnits: item.amountMinorUnits, frequency: item.frequency, interval: item.interval, startDate: item.startDate, endDate: item.endDate, isEnabled: true, status: .hypothetical, note: nil)
+            try entry.insert(db)
+        }
+        entries = (try? dbQueue.read { db in try ForecastEntry.fetchAll(db) }) ?? entries
+        recomputeForecastCaches()
+    }
+
+    /// Confirms every entry in `group` at once — a scenario is the unit the user thinks
+    /// in, so confirming happens at that level, not per-entry. Write-first: every entry is
+    /// updated in the same transaction, and `entries` is only mutated once the whole write
+    /// succeeds. Deselects the scenario afterward if it was selected, since a confirmed
+    /// scenario is no longer a "preview" — it's already part of the confirmed forecast.
+    @discardableResult
+    func confirmScenario(_ group: ForecastGroup) -> Bool {
+        errorMessage = nil
+        let indices = entries.indices.filter { entries[$0].groupId == group.id }
+        guard !indices.isEmpty else { return false }
+        var updated = entries
+        for i in indices { updated[i].status = .confirmed }
+        do {
+            try dbQueue.write { db in
+                for i in indices { try updated[i].update(db) }
+            }
+        } catch {
+            errorMessage = "Couldn't confirm this scenario: \(error.localizedDescription)"
+            return false
+        }
+        entries = updated
+        if selectedScenarioGroupId == group.id { selectedScenarioGroupId = nil }
+        recomputeForecastCaches()
+        return true
     }
 }
