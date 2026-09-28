@@ -120,7 +120,6 @@ struct BudgetGridView: View {
                     showExporter = true
                 }
             }
-            .padding([.horizontal, .top])
 
             yearPicker
 
@@ -195,6 +194,7 @@ struct BudgetGridView: View {
                 .onPreferenceChange(HorizontalOffsetKey.self) { horizontalOffset = $0 }
             }
         }
+        .padding()
         .fileExporter(isPresented: $showExporter, document: exportDocument, contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
         // onDismiss clears any recategorize error so it can't bleed into the next,
         // unrelated drill-down.
@@ -303,7 +303,7 @@ struct BudgetGridView: View {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in
                         let total = viewModel.calendarCategoryTotal(category, year: year, month: month)
-                        calendarCell(total, tinted: true)
+                        calendarCell(total)
                             .frame(height: 28)
                             .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
@@ -356,7 +356,7 @@ struct BudgetGridView: View {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in
                         let total = viewModel.calendarCategoryTotal(category, year: year, month: month)
-                        calendarCell(total, tinted: true)
+                        calendarCell(total)
                             .frame(height: 28)
                             .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
@@ -386,7 +386,7 @@ struct BudgetGridView: View {
         }
     }
 
-    private func calendarCell(_ total: Int, tinted: Bool = false) -> some View {
+    private func calendarCell(_ total: Int) -> some View {
         Group {
             if total == 0 {
                 Text("—").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
@@ -396,10 +396,6 @@ struct BudgetGridView: View {
         }
         .frame(width: 120)
         .padding(.horizontal, 8)
-        // Soft conditional-formatting-style tint for the whole cell, not just the digits —
-        // a snug pill around the number would need `calendarCell`'s caller-supplied
-        // trailing-aligned MoneyText to report its own intrinsic width, which it doesn't.
-        .background(tinted && total != 0 ? (total < 0 ? Color.red.opacity(0.10) : Color.green.opacity(0.10)) : Color.clear)
     }
 
     private static func monthYearLabel(year: Int, month: Int) -> String {
