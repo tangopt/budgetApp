@@ -196,17 +196,30 @@ final class ForecastViewModel: ObservableObject {
     }
 
     private func computeForecastNetWorth(atEndOf year: Int) -> Int? {
+        guard let netChange = sumOverForecastMonths(atEndOf: year, { y, m in
+            let range = dateRange(forYear: y, month: m)
+            return ForecastCalculator.confirmedNetWorthImpact(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: categories, entries: entries, groups: groups)
+        }) else { return nil }
+        return currentNetWorthGBP + netChange
+    }
+
+    /// Walks month-by-month from the month after `latestRealMonth` through December of
+    /// `year` (inclusive), summing whatever `perMonth(year, month)` returns for each
+    /// month. `nil` when there's no `latestRealMonth` yet. Shared by
+    /// `computeForecastNetWorth` and `computeScenarioNetWorthImpact`, which differ only in
+    /// what they accumulate per month — factored out so the month-rollover arithmetic
+    /// (`cursor.month += 1; if cursor.month > 12 { … }`) exists in exactly one place.
+    private func sumOverForecastMonths(atEndOf year: Int, _ perMonth: (Int, Int) -> Int) -> Int? {
         guard let latestRealMonth else { return nil }
-        var netChange = 0
+        var sum = 0
         var cursor = (year: latestRealMonth.year, month: latestRealMonth.month + 1)
         if cursor.month > 12 { cursor = (cursor.year + 1, 1) }
         while cursor.year < year || (cursor.year == year && cursor.month <= 12) {
-            let range = dateRange(forYear: cursor.year, month: cursor.month)
-            netChange += ForecastCalculator.confirmedNetWorthImpact(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: categories, entries: entries, groups: groups)
+            sum += perMonth(cursor.year, cursor.month)
             cursor.month += 1
             if cursor.month > 12 { cursor = (cursor.year + 1, 1) }
         }
-        return currentNetWorthGBP + netChange
+        return sum
     }
 
     /// `forecastNetWorth(atEndOf: year)` compared to a baseline: last year's real
@@ -237,17 +250,11 @@ final class ForecastViewModel: ObservableObject {
     }
 
     private func computeScenarioNetWorthImpact(atEndOf year: Int) -> Int? {
-        guard let selectedScenarioGroupId, let latestRealMonth else { return nil }
-        var delta = 0
-        var cursor = (year: latestRealMonth.year, month: latestRealMonth.month + 1)
-        if cursor.month > 12 { cursor = (cursor.year + 1, 1) }
-        while cursor.year < year || (cursor.year == year && cursor.month <= 12) {
-            let range = dateRange(forYear: cursor.year, month: cursor.month)
-            delta += ForecastCalculator.previewNetWorthDelta(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: categories, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId)
-            cursor.month += 1
-            if cursor.month > 12 { cursor = (cursor.year + 1, 1) }
-        }
-        return delta
+        guard let selectedScenarioGroupId else { return nil }
+        return sumOverForecastMonths(atEndOf: year, { y, m in
+            let range = dateRange(forYear: y, month: m)
+            return ForecastCalculator.previewNetWorthDelta(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: categories, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId)
+        })
     }
 
     func toggleGroup(_ group: ForecastGroup) {
@@ -334,25 +341,41 @@ final class ForecastViewModel: ObservableObject {
     /// Creates a new scenario (a non-system-managed `ForecastGroup`) with one or more
     /// hypothetical entries in a single write. `items` is expected non-empty — the UI
     /// disables Save with zero items, so this is a precondition, not a runtime error path.
+    /// Write-first: `groups`/`entries` are only refetched (to pick up the new
+    /// auto-generated ids) once the whole write has actually succeeded, mirroring
+    /// `updateEntry`/`unconfirm`/`confirmScenario`'s do/catch → `errorMessage` pattern.
     func createScenario(name: String, items: [ScenarioItem]) {
-        try? dbQueue.write { db in
-            var group = ForecastGroup(name: name, note: nil, isEnabled: true, isSystemManaged: false)
-            try group.insert(db)
-            for item in items {
-                var entry = ForecastEntry(groupId: group.id!, categoryId: item.categoryId, amountMinorUnits: item.amountMinorUnits, frequency: item.frequency, interval: item.interval, startDate: item.startDate, endDate: item.endDate, isEnabled: true, status: .hypothetical, note: nil)
-                try entry.insert(db)
+        errorMessage = nil
+        do {
+            try dbQueue.write { db in
+                var group = ForecastGroup(name: name, note: nil, isEnabled: true, isSystemManaged: false)
+                try group.insert(db)
+                for item in items {
+                    var entry = ForecastEntry(groupId: group.id!, categoryId: item.categoryId, amountMinorUnits: item.amountMinorUnits, frequency: item.frequency, interval: item.interval, startDate: item.startDate, endDate: item.endDate, isEnabled: true, status: .hypothetical, note: nil)
+                    try entry.insert(db)
+                }
             }
+        } catch {
+            errorMessage = "Couldn't create this scenario: \(error.localizedDescription)"
+            return
         }
         groups = (try? dbQueue.read { db in try ForecastGroup.fetchAll(db) }) ?? groups
         entries = (try? dbQueue.read { db in try ForecastEntry.fetchAll(db) }) ?? entries
         recomputeForecastCaches()
     }
 
-    /// Adds one more item to an existing scenario group.
+    /// Adds one more item to an existing scenario group. Write-first, mutate-on-success,
+    /// like `createScenario`.
     func addItem(to group: ForecastGroup, _ item: ScenarioItem) {
-        try? dbQueue.write { db in
-            var entry = ForecastEntry(groupId: group.id!, categoryId: item.categoryId, amountMinorUnits: item.amountMinorUnits, frequency: item.frequency, interval: item.interval, startDate: item.startDate, endDate: item.endDate, isEnabled: true, status: .hypothetical, note: nil)
-            try entry.insert(db)
+        errorMessage = nil
+        do {
+            try dbQueue.write { db in
+                var entry = ForecastEntry(groupId: group.id!, categoryId: item.categoryId, amountMinorUnits: item.amountMinorUnits, frequency: item.frequency, interval: item.interval, startDate: item.startDate, endDate: item.endDate, isEnabled: true, status: .hypothetical, note: nil)
+                try entry.insert(db)
+            }
+        } catch {
+            errorMessage = "Couldn't add this item to the scenario: \(error.localizedDescription)"
+            return
         }
         entries = (try? dbQueue.read { db in try ForecastEntry.fetchAll(db) }) ?? entries
         recomputeForecastCaches()
