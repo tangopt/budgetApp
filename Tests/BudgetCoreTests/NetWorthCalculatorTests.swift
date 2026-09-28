@@ -89,4 +89,67 @@ final class NetWorthCalculatorTests: XCTestCase {
         let balances = NetWorthCalculator.accountBalances(accounts: [account], snapshots: [snapshot], transactions: [], rate: rate)
         XCTAssertNil(balances[0].reconciliationDriftMinorUnits)
     }
+
+    // MARK: - monthlyBalance
+
+    private static func month(_ year: Int, _ month: Int, day: Int = 1) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar.date(from: DateComponents(year: year, month: month, day: day))!
+    }
+
+    func testMonthlyBalanceCarriesForwardTheLatestPriorSnapshot() {
+        let account = Account(id: 1, name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .manual)
+        let januarySnapshot = BalanceSnapshot(id: 1, accountId: 1, date: Self.month(2026, 1), balanceMinorUnits: 100000, note: nil)
+        let rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
+        let result = NetWorthCalculator.monthlyBalance(account: account, snapshots: [januarySnapshot], transactions: [], rate: rate, monthStart: Self.month(2026, 3), monthEnd: Self.month(2026, 3, day: 31))
+        XCTAssertEqual(result?.nativeBalanceMinorUnits, 100000)
+        XCTAssertEqual(result?.isCarriedForward, true)
+    }
+
+    func testMonthlyBalanceIsNotCarriedForwardWhenSnapshotFallsInThatMonth() {
+        let account = Account(id: 1, name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .manual)
+        let snapshot = BalanceSnapshot(id: 1, accountId: 1, date: Self.month(2026, 2, day: 15), balanceMinorUnits: 150000, note: nil)
+        let rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
+        let result = NetWorthCalculator.monthlyBalance(account: account, snapshots: [snapshot], transactions: [], rate: rate, monthStart: Self.month(2026, 2), monthEnd: Self.month(2026, 2, day: 28))
+        XCTAssertEqual(result?.nativeBalanceMinorUnits, 150000)
+        XCTAssertEqual(result?.isCarriedForward, false)
+    }
+
+    func testMonthlyBalanceReturnsNilBeforeTheFirstSnapshot() {
+        let account = Account(id: 1, name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .manual)
+        let firstSnapshot = BalanceSnapshot(id: 1, accountId: 1, date: Self.month(2026, 3), balanceMinorUnits: 100000, note: nil)
+        let rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
+        let result = NetWorthCalculator.monthlyBalance(account: account, snapshots: [firstSnapshot], transactions: [], rate: rate, monthStart: Self.month(2026, 1), monthEnd: Self.month(2026, 1, day: 31))
+        XCTAssertNil(result)
+    }
+
+    func testMonthlyBalanceConvertsEURToGBP() {
+        let account = Account(id: 1, name: "Lloyds International EUR", currency: .eur, kind: .cash, trackingMode: .manual)
+        let snapshot = BalanceSnapshot(id: 1, accountId: 1, date: Self.month(2026, 1), balanceMinorUnits: 100000, note: nil)
+        let rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
+        let result = NetWorthCalculator.monthlyBalance(account: account, snapshots: [snapshot], transactions: [], rate: rate, monthStart: Self.month(2026, 1), monthEnd: Self.month(2026, 1, day: 31))
+        XCTAssertEqual(result?.nativeBalanceMinorUnits, 100000)
+        XCTAssertEqual(result?.gbpBalanceMinorUnits, 87000)
+    }
+
+    func testMonthlyBalanceForImportedAccountIncludesTransactionsWithinTheMonthAndIsNotCarriedForward() {
+        let account = Account(id: 1, name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
+        let snapshot = BalanceSnapshot(id: 1, accountId: 1, date: Self.month(2026, 1), balanceMinorUnits: 100000, note: nil)
+        let transaction = Transaction(id: 1, importBatchId: 1, accountId: 1, date: Self.month(2026, 2, day: 10), rawDescription: "X", amountMinorUnits: -5000, categoryId: nil, status: .confirmed, categorizedBy: .manual, fingerprint: "a")
+        let rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
+        let result = NetWorthCalculator.monthlyBalance(account: account, snapshots: [snapshot], transactions: [transaction], rate: rate, monthStart: Self.month(2026, 2), monthEnd: Self.month(2026, 2, day: 28))
+        XCTAssertEqual(result?.nativeBalanceMinorUnits, 95000)
+        XCTAssertEqual(result?.isCarriedForward, false)
+    }
+
+    func testMonthlyBalanceExcludesTransactionsAfterTheQueriedMonth() {
+        let account = Account(id: 1, name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
+        let snapshot = BalanceSnapshot(id: 1, accountId: 1, date: Self.month(2026, 1), balanceMinorUnits: 100000, note: nil)
+        let futureTransaction = Transaction(id: 1, importBatchId: 1, accountId: 1, date: Self.month(2026, 3, day: 10), rawDescription: "X", amountMinorUnits: -5000, categoryId: nil, status: .confirmed, categorizedBy: .manual, fingerprint: "a")
+        let rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
+        let result = NetWorthCalculator.monthlyBalance(account: account, snapshots: [snapshot], transactions: [futureTransaction], rate: rate, monthStart: Self.month(2026, 2), monthEnd: Self.month(2026, 2, day: 28))
+        XCTAssertEqual(result?.nativeBalanceMinorUnits, 100000)
+        XCTAssertEqual(result?.isCarriedForward, true)
+    }
 }

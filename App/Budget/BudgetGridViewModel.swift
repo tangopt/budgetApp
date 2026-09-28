@@ -17,6 +17,9 @@ final class BudgetGridViewModel: ObservableObject {
     }
     @Published var forecastEntries: [ForecastEntry] = []
     @Published var forecastGroups: [ForecastGroup] = []
+    @Published var accounts: [Account] = []
+    @Published var balanceSnapshots: [BalanceSnapshot] = []
+    @Published var exchangeRate: ExchangeRateSetting = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
     @Published var selectedYear: Int?
     @Published var errorMessage: String?
     @Published private(set) var availableYears: [Int] = []
@@ -34,6 +37,9 @@ final class BudgetGridViewModel: ObservableObject {
         transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
         forecastEntries = try dbQueue.read { db in try ForecastEntry.fetchAll(db) }
         forecastGroups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
+        accounts = try dbQueue.read { db in try Account.fetchAll(db) }
+        balanceSnapshots = try dbQueue.read { db in try BalanceSnapshot.fetchAll(db) }
+        exchangeRate = try dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db) }
         // Paydays come from the salary category only (not Bonus/refunds) — see PaydaySource.
         let paydayDates = PaydaySource.paydayDates(transactions: transactions, categories: categories)
         periods = PayPeriodDetector.allPeriods(incomeDates: paydayDates, horizon: horizon)
@@ -44,14 +50,42 @@ final class BudgetGridViewModel: ObservableObject {
         BudgetGridCalculator.categoryTotalForCalendarMonth(category: category, year: year, month: month, calendarTotals: calendarTotals)
     }
 
-    func yearlyTotal(_ year: Int) -> Int {
-        BudgetGridCalculator.yearlyTotal(year: year, categories: categories, calendarTotals: calendarTotals)
+    /// The account's balance as of the end of `month`, carried forward from its latest
+    /// prior snapshot when there's nothing recorded that exact month. `nil` when the
+    /// account has no snapshot at or before that month at all.
+    func accountBalance(_ account: Account, year: Int, month: Int) -> MonthlyAccountBalance? {
+        let range = dateRange(forYear: year, month: month)
+        return NetWorthCalculator.monthlyBalance(account: account, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, monthStart: range.start, monthEnd: range.end)
     }
 
-    func yearOverYearChange(_ year: Int) -> Double? {
-        let previousYear = year - 1
-        let previousTotal = availableYears.contains(previousYear) ? yearlyTotal(previousYear) : nil
-        return BudgetGridCalculator.yearOverYearChange(currentYearTotal: yearlyTotal(year), previousYearTotal: previousTotal)
+    /// Sum of every account's GBP-converted balance for `month`; accounts with no data yet
+    /// that month contribute 0, matching how a not-yet-open account has no effect on net worth.
+    func netWorthTotal(year: Int, month: Int) -> Int {
+        accounts.reduce(0) { $0 + (accountBalance($1, year: year, month: month)?.gbpBalanceMinorUnits ?? 0) }
+    }
+
+    /// True when at least one account has data (a snapshot at or before this month) for
+    /// `year`/`month` — distinguishes "no data yet" from "net worth was genuinely zero."
+    private func hasNetWorthData(year: Int, month: Int) -> Bool {
+        accounts.contains { accountBalance($0, year: year, month: month) != nil }
+    }
+
+    /// Change in total GBP net worth from the end of the previous year to the end of
+    /// `year` (both measured at December). `nil` when the previous year-end has no data
+    /// at all (e.g. before any account's first snapshot) — a change needs a baseline.
+    func netWorthChange(_ year: Int) -> Int? {
+        guard hasNetWorthData(year: year - 1, month: 12) else { return nil }
+        return netWorthTotal(year: year, month: 12) - netWorthTotal(year: year - 1, month: 12)
+    }
+
+    /// `netWorthChange` as a fraction of the previous year-end's net worth. `nil` when
+    /// there's no change to show, or the previous year-end was exactly zero (the
+    /// percentage would be meaningless/infinite).
+    func netWorthChangePercent(_ year: Int) -> Double? {
+        guard let change = netWorthChange(year) else { return nil }
+        let previousYearEnd = netWorthTotal(year: year - 1, month: 12)
+        guard previousYearEnd != 0 else { return nil }
+        return Double(change) / Double(abs(previousYearEnd))
     }
 
     /// Falls back to the most recent year with data whenever the current selection is

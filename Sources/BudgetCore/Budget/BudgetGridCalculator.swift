@@ -68,30 +68,6 @@ public enum BudgetGridCalculator {
         return calendarTotals[categoryId]?[year]?[month] ?? 0
     }
 
-    /// Net position for the whole calendar year (income − expenses − transfers), signed
-    /// the same way `periodSummary`'s `moneyRemainingMinorUnits` is — the headline figure
-    /// shown on each year picker chip.
-    public static func yearlyTotal(year: Int, categories: [Category], calendarTotals: [Int64: [Int: [Int: Int]]]) -> Int {
-        var income = 0, expenses = 0, transfers = 0
-        for category in categories {
-            guard let categoryId = category.id else { continue }
-            let monthlyTotal = (calendarTotals[categoryId]?[year] ?? [:]).values.reduce(0, +)
-            switch category.type {
-            case .income: income += monthlyTotal
-            case .expense: expenses -= monthlyTotal
-            case .transfer: transfers -= monthlyTotal
-            }
-        }
-        return income - expenses - transfers
-    }
-
-    /// nil when there's nothing to compare against (no prior year, or the prior year's
-    /// total was exactly zero, which would make a percentage meaningless/infinite).
-    public static func yearOverYearChange(currentYearTotal: Int, previousYearTotal: Int?) -> Double? {
-        guard let previousYearTotal, previousYearTotal != 0 else { return nil }
-        return Double(currentYearTotal - previousYearTotal) / Double(abs(previousYearTotal))
-    }
-
     public static func yearsWithData(transactions: [Transaction]) -> [Int] {
         Set(transactions.map { calendar.component(.year, from: $0.date) }).sorted()
     }

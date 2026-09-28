@@ -9,6 +9,16 @@ public struct AccountBalance {
     public let reconciliationDriftMinorUnits: Int?
 }
 
+public struct MonthlyAccountBalance {
+    public let account: Account
+    public let nativeBalanceMinorUnits: Int
+    public let gbpBalanceMinorUnits: Int
+    /// True when nothing dated within the requested month determined this balance — no
+    /// snapshot, and (for `.imported` accounts) no transaction either — so the figure shown
+    /// is carried forward unchanged from an earlier month.
+    public let isCarriedForward: Bool
+}
+
 /// Sign convention: every balance is signed exactly like `Transaction.amountMinorUnits`
 /// (negative = money you don't have). A credit account's balance is therefore NEGATIVE
 /// when money is owed on it — "I owe £300 on my AMEX" is stored as -30000. That makes
@@ -55,6 +65,26 @@ public enum NetWorthCalculator {
             }
             return AccountBalance(account: account, nativeBalanceMinorUnits: native, gbpBalanceMinorUnits: gbp, reconciliationDriftMinorUnits: nil)
         }
+    }
+
+    /// The account's balance as of `monthEnd`: the latest snapshot at or before it (plus,
+    /// for `.imported` accounts, transactions between that snapshot and `monthEnd`), the same
+    /// carry-forward `runningBalance` already does for "now" — just parameterized to an
+    /// arbitrary month instead of hardcoded to the latest snapshot overall. Returns `nil` when
+    /// there's no snapshot at or before `monthEnd` at all (the account has no data yet).
+    public static func monthlyBalance(account: Account, snapshots: [BalanceSnapshot], transactions: [Transaction], rate: ExchangeRateSetting, monthStart: Date, monthEnd: Date) -> MonthlyAccountBalance? {
+        let accountSnapshots = snapshots.filter { $0.accountId == account.id && $0.date <= monthEnd }.sorted { $0.date > $1.date }
+        guard let latestSnapshot = accountSnapshots.first else { return nil }
+        let transactionsSince = transactions.filter { $0.accountId == account.id && $0.date > latestSnapshot.date && $0.date <= monthEnd }
+        let native = runningBalance(account: account, latestSnapshot: latestSnapshot, transactionsSinceSnapshot: transactionsSince)
+        let gbp: Int
+        switch account.currency {
+        case .gbp: gbp = native
+        case .eur: gbp = Int((Double(native) * rate.eurToGbpRate).rounded())
+        }
+        let latestActivityDate = transactionsSince.map(\.date).max() ?? latestSnapshot.date
+        let isCarriedForward = latestActivityDate < monthStart
+        return MonthlyAccountBalance(account: account, nativeBalanceMinorUnits: native, gbpBalanceMinorUnits: gbp, isCarriedForward: isCarriedForward)
     }
 
     /// Sum of all signed GBP balances. Credit accounts already carry a negative balance

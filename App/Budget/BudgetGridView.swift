@@ -46,6 +46,8 @@ struct BudgetGridView: View {
         case category(Category)
         case groupHeader(CategoryGroup, categories: [Category])
         case groupChild(Category)
+        case account(Account)
+        case netWorthTotal
 
         var id: String {
             switch self {
@@ -53,6 +55,8 @@ struct BudgetGridView: View {
             case .category(let category): return "cat-\(category.id ?? -1)"
             case .groupHeader(let group, let categories): return "group-\(group.id ?? -1)-\(categories.first?.type.rawValue ?? "")"
             case .groupChild(let category): return "groupchild-\(category.id ?? -1)"
+            case .account(let account): return "account-\(account.id ?? -1)"
+            case .netWorthTotal: return "networth-total"
             }
         }
     }
@@ -108,7 +112,12 @@ struct BudgetGridView: View {
             }
             return rows
         }
-        return section("Income", .income) + section("Expenses", .expense) + section("Transfers", .transfer)
+        var accountRows: [GridRow] = [GridRow(kind: .sectionHeader("Accounts"), shaded: false)]
+        for (index, account) in viewModel.accounts.enumerated() {
+            accountRows.append(GridRow(kind: .account(account), shaded: index % 2 == 1))
+        }
+        accountRows.append(GridRow(kind: .netWorthTotal, shaded: false))
+        return section("Income", .income) + section("Expenses", .expense) + section("Transfers", .transfer) + accountRows
     }
 
     var body: some View {
@@ -214,11 +223,19 @@ struct BudgetGridView: View {
                     } label: {
                         VStack(spacing: 2) {
                             Text(String(year)).font(.subheadline).bold()
-                            MoneyText(minorUnits: viewModel.yearlyTotal(year))
-                            if let change = viewModel.yearOverYearChange(year) {
-                                Text("\(change >= 0 ? "↑" : "↓") \(String(format: "%.1f", abs(change) * 100))%")
+                            // Year-over-year change in total net worth, not income minus
+                            // expenses minus transfers — money moved into the user's own
+                            // ISA/savings accounts doesn't reduce net worth, so this doesn't
+                            // swing hugely negative in a year with a big internal transfer.
+                            if let change = viewModel.netWorthChange(year) {
+                                MoneyText(minorUnits: change)
+                            } else {
+                                Text("—").foregroundStyle(.secondary)
+                            }
+                            if let percent = viewModel.netWorthChangePercent(year) {
+                                Text("\(percent >= 0 ? "↑" : "↓") \(String(format: "%.1f", abs(percent) * 100))%")
                                     .font(.caption2)
-                                    .foregroundStyle(change >= 0 ? Color.green : Color.red)
+                                    .foregroundStyle(percent >= 0 ? Color.green : Color.red)
                             }
                         }
                         .padding(8)
@@ -234,7 +251,12 @@ struct BudgetGridView: View {
                     .buttonStyle(.plain)
                 }
             }
+            // Vertical padding, not just horizontal: the selected chip's 2pt stroke sits
+            // right at the row's own edge, and ScrollView sizes its cross-axis tightly to
+            // content — with no vertical breathing room the stroke's top/bottom pixel was
+            // clipped by the scroll view's own bounds.
             .padding(.horizontal)
+            .padding(.vertical, 4)
         }
     }
 
@@ -253,7 +275,7 @@ struct BudgetGridView: View {
             Text(category.name)
                 .frame(width: 220, height: 28, alignment: .leading)
                 .padding(.horizontal, 8)
-                .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
+                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(rowColor(for: category.type)), alignment: .leading)
         case .groupHeader(let group, let categories):
@@ -278,9 +300,23 @@ struct BudgetGridView: View {
             Text(category.name).foregroundStyle(.secondary)
                 .frame(width: 200, height: 28, alignment: .leading)
                 .padding(.leading, 28).padding(.trailing, 8)
-                .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
+                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(rowColor(for: category.type)), alignment: .leading)
+        case .account(let account):
+            Text(account.name)
+                .frame(width: 220, height: 28, alignment: .leading)
+                .padding(.horizontal, 8)
+                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(Color.purple), alignment: .leading)
+        case .netWorthTotal:
+            Text("Net Worth").bold()
+                .frame(width: 220, height: 28, alignment: .leading)
+                .padding(.horizontal, 8)
+                .background(Color.purple.opacity(0.10))
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(Color.purple), alignment: .leading)
         }
     }
 
@@ -305,7 +341,7 @@ struct BudgetGridView: View {
                         let total = viewModel.calendarCategoryTotal(category, year: year, month: month)
                         calendarCell(total)
                             .frame(height: 28)
-                            .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
+                            .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                             .contentShape(Rectangle())
@@ -319,7 +355,7 @@ struct BudgetGridView: View {
                     let yearTotal = (1...12).reduce(0) { $0 + viewModel.calendarCategoryTotal(category, year: year, month: $1) }
                     calendarCell(yearTotal).bold()
                         .frame(height: 28)
-                        .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
+                        .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -358,7 +394,7 @@ struct BudgetGridView: View {
                         let total = viewModel.calendarCategoryTotal(category, year: year, month: month)
                         calendarCell(total)
                             .frame(height: 28)
-                            .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
+                            .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                             .contentShape(Rectangle())
@@ -372,7 +408,7 @@ struct BudgetGridView: View {
                     let yearTotal = (1...12).reduce(0) { $0 + viewModel.calendarCategoryTotal(category, year: year, month: $1) }
                     calendarCell(yearTotal).bold()
                         .frame(height: 28)
-                        .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
+                        .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -383,7 +419,55 @@ struct BudgetGridView: View {
                         }
                 }
             }
+        case .account(let account):
+            if let year = viewModel.selectedYear {
+                HStack(spacing: 0) {
+                    ForEach(1...12, id: \.self) { month in
+                        accountBalanceCell(viewModel.accountBalance(account, year: year, month: month))
+                            .frame(height: 28)
+                            .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                    }
+                    // Year Total shows the year-end (December) balance rather than a sum —
+                    // summing 12 monthly balances isn't a meaningful figure for a balance row.
+                    accountBalanceCell(viewModel.accountBalance(account, year: year, month: 12)).bold()
+                        .frame(height: 28)
+                        .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                }
+            }
+        case .netWorthTotal:
+            if let year = viewModel.selectedYear {
+                HStack(spacing: 0) {
+                    ForEach(1...12, id: \.self) { month in
+                        calendarCell(viewModel.netWorthTotal(year: year, month: month)).bold()
+                            .frame(height: 28)
+                            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                    }
+                    calendarCell(viewModel.netWorthTotal(year: year, month: 12)).bold()
+                        .frame(height: 28)
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                }
+                .background(Color.purple.opacity(0.10))
+            }
         }
+    }
+
+    private func accountBalanceCell(_ balance: MonthlyAccountBalance?) -> some View {
+        Group {
+            if let balance {
+                MoneyText(minorUnits: balance.nativeBalanceMinorUnits, currency: balance.account.currency, alignment: .trailing)
+                    // Carried-forward balances (no fresh snapshot/transaction that month)
+                    // read a bit lighter, so a stale figure doesn't look like a fresh update.
+                    .opacity(balance.isCarriedForward ? 0.55 : 1.0)
+            } else {
+                Text("—").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .frame(width: 120)
+        .padding(.horizontal, 8)
     }
 
     private func calendarCell(_ total: Int) -> some View {
