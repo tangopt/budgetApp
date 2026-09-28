@@ -82,15 +82,33 @@ struct BudgetGridView: View {
         return rows
     }
 
-    private var allRowKinds: [GridRowKind] {
-        var rows: [GridRowKind] = []
-        rows.append(.sectionHeader("Income"))
-        rows += rowKinds(for: .income)
-        rows.append(.sectionHeader("Expenses"))
-        rows += rowKinds(for: .expense)
-        rows.append(.sectionHeader("Transfers"))
-        rows += rowKinds(for: .transfer)
-        return rows
+    /// One grid row plus whether it should render with the alternating-shade
+    /// background. Shading resets to `false` at the top of every section (Income /
+    /// Expenses / Transfers) rather than carrying an arbitrary parity across the
+    /// section boundary.
+    private struct GridRow: Identifiable {
+        let kind: GridRowKind
+        let shaded: Bool
+        var id: String { kind.id }
+    }
+
+    private func rowColor(for type: CategoryType) -> Color {
+        switch type {
+        case .income: return .green
+        case .expense: return .red
+        case .transfer: return .blue
+        }
+    }
+
+    private var allRows: [GridRow] {
+        func section(_ title: String, _ type: CategoryType) -> [GridRow] {
+            var rows: [GridRow] = [GridRow(kind: .sectionHeader(title), shaded: false)]
+            for (index, kind) in rowKinds(for: type).enumerated() {
+                rows.append(GridRow(kind: kind, shaded: index % 2 == 1))
+            }
+            return rows
+        }
+        return section("Income", .income) + section("Expenses", .expense) + section("Transfers", .transfer)
     }
 
     var body: some View {
@@ -139,7 +157,12 @@ struct BudgetGridView: View {
                 }
                 .font(.headline)
                 .background(Color(nsColor: .controlBackgroundColor))
-                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .overlay(Rectangle().frame(height: 1.5).foregroundStyle(Color.primary.opacity(0.18)), alignment: .bottom)
+                // A frozen row that floats above the scrolling body reads better with a
+                // little elevation; kept as a constant subtle shadow rather than toggled by
+                // scroll position, to avoid adding a second scroll-tracked PreferenceKey purely
+                // for a decorative effect.
+                .shadow(color: .black.opacity(0.08), radius: 3, y: 2)
 
                 ScrollView(.vertical) {
                     HStack(alignment: .top, spacing: 0) {
@@ -147,8 +170,8 @@ struct BudgetGridView: View {
                         // never moves left/right; it rides this same vertical ScrollView as
                         // the body, so it stays aligned with its own row.
                         VStack(spacing: 0) {
-                            ForEach(allRowKinds) { row in
-                                rowLabel(row)
+                            ForEach(allRows) { entry in
+                                rowLabel(entry.kind, shaded: entry.shaded)
                             }
                         }
                         // 236 = each label's 220pt frame + 8pt padding either side, matching
@@ -158,8 +181,8 @@ struct BudgetGridView: View {
 
                         ScrollView(.horizontal) {
                             VStack(alignment: .leading, spacing: 0) {
-                                ForEach(allRowKinds) { row in
-                                    rowCells(row)
+                                ForEach(allRows) { entry in
+                                    rowCells(entry.kind, shaded: entry.shaded)
                                 }
                             }
                             .background(GeometryReader { geo in
@@ -216,20 +239,24 @@ struct BudgetGridView: View {
     }
 
     @ViewBuilder
-    private func rowLabel(_ row: GridRowKind) -> some View {
+    private func rowLabel(_ row: GridRowKind, shaded: Bool) -> some View {
         switch row {
         case .sectionHeader(let title):
-            Text(title).font(.subheadline).bold()
-                .frame(width: 220, height: 32, alignment: .leading)
+            Text(title)
+                .font(.caption).bold()
+                .tracking(0.6)
+                .foregroundStyle(.secondary)
+                .frame(width: 220, height: 24, alignment: .leading)
                 .padding(.horizontal, 8)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .background(Color.accentColor.opacity(0.08))
         case .category(let category):
             Text(category.name)
                 .frame(width: 220, height: 28, alignment: .leading)
                 .padding(.horizontal, 8)
+                .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-        case .groupHeader(let group, _):
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(rowColor(for: category.type)), alignment: .leading)
+        case .groupHeader(let group, let categories):
             Button {
                 if let id = group.id {
                     if expandedGroupIds.contains(id) { expandedGroupIds.remove(id) } else { expandedGroupIds.insert(id) }
@@ -244,18 +271,21 @@ struct BudgetGridView: View {
             .buttonStyle(.plain)
             .frame(width: 220, height: 28, alignment: .leading)
             .padding(.horizontal, 8)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+            .background(Color.orange.opacity(0.10))
             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+            .overlay(Rectangle().frame(width: 3).foregroundStyle(categories.first.map { rowColor(for: $0.type) } ?? .clear), alignment: .leading)
         case .groupChild(let category):
             Text(category.name).foregroundStyle(.secondary)
                 .frame(width: 200, height: 28, alignment: .leading)
                 .padding(.leading, 28).padding(.trailing, 8)
+                .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(rowColor(for: category.type)), alignment: .leading)
         }
     }
 
     @ViewBuilder
-    private func rowCells(_ row: GridRowKind) -> some View {
+    private func rowCells(_ row: GridRowKind, shaded: Bool) -> some View {
         switch row {
         case .sectionHeader:
             if viewModel.selectedYear != nil {
@@ -263,19 +293,19 @@ struct BudgetGridView: View {
                     ForEach(1...(12 + 1), id: \.self) { _ in
                         // Same footprint as a calendarCell: 120pt frame + 8pt padding
                         // either side, so the band spans exactly the 13 columns.
-                        Color.clear.frame(width: 120, height: 32).padding(.horizontal, 8)
+                        Color.clear.frame(width: 120, height: 24).padding(.horizontal, 8)
                     }
                 }
-                .background(Color(nsColor: .controlBackgroundColor))
-                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .background(Color.accentColor.opacity(0.08))
             }
         case .category(let category):
             if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in
                         let total = viewModel.calendarCategoryTotal(category, year: year, month: month)
-                        calendarCell(total)
+                        calendarCell(total, tinted: true)
                             .frame(height: 28)
+                            .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                             .contentShape(Rectangle())
@@ -289,6 +319,7 @@ struct BudgetGridView: View {
                     let yearTotal = (1...12).reduce(0) { $0 + viewModel.calendarCategoryTotal(category, year: year, month: $1) }
                     calendarCell(yearTotal).bold()
                         .frame(height: 28)
+                        .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -314,7 +345,7 @@ struct BudgetGridView: View {
                         .frame(height: 28)
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 }
-                .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                .background(Color.orange.opacity(0.10))
             }
         case .groupChild(let category):
             // Identical cell behavior to `.category` — a `@ViewBuilder` function
@@ -325,8 +356,9 @@ struct BudgetGridView: View {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in
                         let total = viewModel.calendarCategoryTotal(category, year: year, month: month)
-                        calendarCell(total)
+                        calendarCell(total, tinted: true)
                             .frame(height: 28)
+                            .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                             .contentShape(Rectangle())
@@ -340,6 +372,7 @@ struct BudgetGridView: View {
                     let yearTotal = (1...12).reduce(0) { $0 + viewModel.calendarCategoryTotal(category, year: year, month: $1) }
                     calendarCell(yearTotal).bold()
                         .frame(height: 28)
+                        .background(shaded ? Color(nsColor: .controlBackgroundColor).opacity(0.35) : Color.clear)
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -353,7 +386,7 @@ struct BudgetGridView: View {
         }
     }
 
-    private func calendarCell(_ total: Int) -> some View {
+    private func calendarCell(_ total: Int, tinted: Bool = false) -> some View {
         Group {
             if total == 0 {
                 Text("—").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
@@ -363,6 +396,10 @@ struct BudgetGridView: View {
         }
         .frame(width: 120)
         .padding(.horizontal, 8)
+        // Soft conditional-formatting-style tint for the whole cell, not just the digits —
+        // a snug pill around the number would need `calendarCell`'s caller-supplied
+        // trailing-aligned MoneyText to report its own intrinsic width, which it doesn't.
+        .background(tinted && total != 0 ? (total < 0 ? Color.red.opacity(0.10) : Color.green.opacity(0.10)) : Color.clear)
     }
 
     private static func monthYearLabel(year: Int, month: Int) -> String {
