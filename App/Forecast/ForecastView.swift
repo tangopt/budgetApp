@@ -26,10 +26,14 @@ struct ForecastView: View {
     private enum ForecastRowKind: Identifiable {
         case sectionHeader(String)
         case category(Category)
+        case groupHeader(CategoryGroup, categories: [Category])
+        case groupChild(Category)
         var id: String {
             switch self {
             case .sectionHeader(let title): return "header-\(title)"
             case .category(let category): return "cat-\(category.id ?? -1)"
+            case .groupHeader(let group, let categories): return "group-\(group.id ?? -1)-\(categories.first?.type.rawValue ?? "")"
+            case .groupChild(let category): return "groupchild-\(category.id ?? -1)"
             }
         }
     }
@@ -48,11 +52,37 @@ struct ForecastView: View {
         }
     }
 
+    /// Categories sharing a `groupId` collapse into one `.groupHeader` row (first-seen
+    /// order wins for where the group appears), expanding to a `.groupChild` row per
+    /// member only when its id is in `expandedGroupIds`. Ungrouped categories render
+    /// exactly as `.category`, interleaved in the section's existing order. Identical
+    /// logic to `BudgetGridView.rowKinds(for:)`.
+    private func rowKinds(for type: CategoryType) -> [ForecastRowKind] {
+        let cats = categoriesByType(type)
+        var rows: [ForecastRowKind] = []
+        var seenGroupIds: Set<Int64> = []
+        for category in cats {
+            if let groupId = category.groupId {
+                guard !seenGroupIds.contains(groupId) else { continue }
+                seenGroupIds.insert(groupId)
+                guard let group = viewModel.categoryGroups.first(where: { $0.id == groupId }) else { continue }
+                let members = cats.filter { $0.groupId == groupId }
+                rows.append(.groupHeader(group, categories: members))
+                if expandedGroupIds.contains(groupId) {
+                    rows += members.map { .groupChild($0) }
+                }
+            } else {
+                rows.append(.category(category))
+            }
+        }
+        return rows
+    }
+
     private var allRows: [ForecastRow] {
         func section(_ title: String, _ type: CategoryType) -> [ForecastRow] {
             var rows: [ForecastRow] = [ForecastRow(kind: .sectionHeader(title), shaded: false)]
-            for (index, category) in categoriesByType(type).enumerated() {
-                rows.append(ForecastRow(kind: .category(category), shaded: index % 2 == 1))
+            for (index, kind) in rowKinds(for: type).enumerated() {
+                rows.append(ForecastRow(kind: kind, shaded: index % 2 == 1))
             }
             return rows
         }
@@ -65,6 +95,10 @@ struct ForecastView: View {
         (1...12).contains { month in
             viewModel.categoryTotal(category, year: year, month: month) != viewModel.previewCategoryTotal(category, year: year, month: month)
         }
+    }
+
+    private func isTwoLineGroup(_ categories: [Category], year: Int) -> Bool {
+        categories.contains { isTwoLine($0, year: year) }
     }
 
     var body: some View {
@@ -334,6 +368,33 @@ struct ForecastView: View {
                 .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(rowColor(for: category.type)), alignment: .leading)
+        case .groupHeader(let group, let categories):
+            let twoLine = isTwoLineGroup(categories, year: selectedYear)
+            Button {
+                if let id = group.id {
+                    if expandedGroupIds.contains(id) { expandedGroupIds.remove(id) } else { expandedGroupIds.insert(id) }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: (group.id.map { expandedGroupIds.contains($0) } ?? false) ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                    Text(group.name).bold()
+                }
+            }
+            .buttonStyle(.plain)
+            .frame(width: 220, height: twoLine ? 44 : 28, alignment: .leading)
+            .padding(.horizontal, 8)
+            .background(Color.orange.opacity(0.10))
+            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+            .overlay(Rectangle().frame(width: 3).foregroundStyle(categories.first.map { rowColor(for: $0.type) } ?? .clear), alignment: .leading)
+        case .groupChild(let category):
+            let twoLine = isTwoLine(category, year: selectedYear)
+            Text(category.name).foregroundStyle(.secondary)
+                .frame(width: 200, height: twoLine ? 44 : 28, alignment: .leading)
+                .padding(.leading, 28).padding(.trailing, 8)
+                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(rowColor(for: category.type)), alignment: .leading)
         }
     }
 
@@ -348,6 +409,48 @@ struct ForecastView: View {
             }
             .background(Color.accentColor.opacity(0.08))
         case .category(let category):
+            let year = selectedYear
+            let twoLine = isTwoLine(category, year: year)
+            HStack(spacing: 0) {
+                ForEach(1...12, id: \.self) { month in
+                    let confirmed = viewModel.categoryTotal(category, year: year, month: month)
+                    let preview = viewModel.previewCategoryTotal(category, year: year, month: month)
+                    forecastCell(confirmed: confirmed, preview: preview, twoLine: twoLine)
+                        .frame(height: twoLine ? 44 : 28)
+                        .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                }
+                let confirmedYearTotal = (1...12).reduce(0) { $0 + viewModel.categoryTotal(category, year: year, month: $1) }
+                let previewYearTotal = (1...12).reduce(0) { $0 + viewModel.previewCategoryTotal(category, year: year, month: $1) }
+                forecastCell(confirmed: confirmedYearTotal, preview: previewYearTotal, twoLine: twoLine, bold: true)
+                    .frame(height: twoLine ? 44 : 28)
+                    .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                    .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+            }
+        case .groupHeader(_, let categories):
+            let year = selectedYear
+            let twoLine = isTwoLineGroup(categories, year: year)
+            HStack(spacing: 0) {
+                ForEach(1...12, id: \.self) { month in
+                    let confirmed = categories.reduce(0) { $0 + viewModel.categoryTotal($1, year: year, month: month) }
+                    let preview = categories.reduce(0) { $0 + viewModel.previewCategoryTotal($1, year: year, month: month) }
+                    forecastCell(confirmed: confirmed, preview: preview, twoLine: twoLine, bold: true)
+                        .frame(height: twoLine ? 44 : 28)
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                }
+                let confirmedYearTotal = (1...12).reduce(0) { sum, month in sum + categories.reduce(0) { $0 + viewModel.categoryTotal($1, year: year, month: month) } }
+                let previewYearTotal = (1...12).reduce(0) { sum, month in sum + categories.reduce(0) { $0 + viewModel.previewCategoryTotal($1, year: year, month: month) } }
+                forecastCell(confirmed: confirmedYearTotal, preview: previewYearTotal, twoLine: twoLine, bold: true)
+                    .frame(height: twoLine ? 44 : 28)
+                    .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+            }
+            .background(Color.orange.opacity(0.10))
+        case .groupChild(let category):
+            // Identical cell behavior to `.category` — a `@ViewBuilder` function returning
+            // `some View` can't call itself recursively, so this repeats the `.category`
+            // branch's body rather than calling `rowCells(.category(...))`.
             let year = selectedYear
             let twoLine = isTwoLine(category, year: year)
             HStack(spacing: 0) {
