@@ -7,9 +7,10 @@ struct ForecastView: View {
     @ObservedObject var viewModel: ForecastViewModel
     @State private var selectedYear: Int
     @State private var horizontalOffset: CGFloat = 0
-    @State private var showNewEntrySheet = false
+    @State private var expandedGroupIds: Set<Int64> = []
+    @State private var showNewScenarioSheet = false
+    @State private var addingItemTo: ForecastGroup?
     @State private var editingEntry: ForecastEntry?
-    @State private var manageExpanded = false
 
     // A plain memberwise init would make `selectedYear` a required call-site argument;
     // this way callers just pass `viewModel`, and the initial year comes from it.
@@ -67,91 +68,85 @@ struct ForecastView: View {
     }
 
     var body: some View {
-        // The whole page scrolls (not just the grid): with "Manage forecast" expanded and
-        // populated with real groups/entries, (headline + picker + grid + panel) can easily
-        // exceed the window's height, and without an enclosing ScrollView here, standard
-        // VStack layout negotiation squeezes the grid's own ScrollView toward a degenerate
-        // size while the panel's content lays out beyond what's reachable — freezing the
-        // whole screen (no scroll container anywhere could reach it). See git history for
-        // the incident this fixes.
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 8) {
-                netWorthHeadline
-                yearPicker
+        HStack(alignment: .top, spacing: 0) {
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 8) {
+                    netWorthHeadline
+                    yearPicker
 
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 0) {
-                        Text("Category").font(.headline).frame(width: 220, alignment: .leading)
-                            .padding(.horizontal, 8).padding(.vertical, 6)
-                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                    VStack(alignment: .leading, spacing: 0) {
                         HStack(spacing: 0) {
-                            ForEach(1...12, id: \.self) { month in
-                                Text(Self.monthLabel(month))
+                            Text("Category").font(.headline).frame(width: 220, alignment: .leading)
+                                .padding(.horizontal, 8).padding(.vertical, 6)
+                                .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                            HStack(spacing: 0) {
+                                ForEach(1...12, id: \.self) { month in
+                                    Text(Self.monthLabel(month))
+                                        .frame(width: 120, alignment: .trailing)
+                                        .padding(.horizontal, 8).padding(.vertical, 6)
+                                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                                }
+                                Text("Year Total").bold()
                                     .frame(width: 120, alignment: .trailing)
                                     .padding(.horizontal, 8).padding(.vertical, 6)
-                                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                             }
-                            Text("Year Total").bold()
-                                .frame(width: 120, alignment: .trailing)
-                                .padding(.horizontal, 8).padding(.vertical, 6)
+                            .offset(x: horizontalOffset)
+                            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                            .clipped()
                         }
-                        .offset(x: horizontalOffset)
-                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                        .clipped()
-                    }
-                    .font(.headline)
-                    .background(Color(nsColor: .controlBackgroundColor))
-                    .overlay(Rectangle().frame(height: 1.5).foregroundStyle(Color.primary.opacity(0.18)), alignment: .bottom)
-                    .shadow(color: .black.opacity(0.08), radius: 3, y: 2)
+                        .font(.headline)
+                        .background(Color(nsColor: .controlBackgroundColor))
+                        .overlay(Rectangle().frame(height: 1.5).foregroundStyle(Color.primary.opacity(0.18)), alignment: .bottom)
+                        .shadow(color: .black.opacity(0.08), radius: 3, y: 2)
 
-                    ScrollView(.vertical) {
-                        HStack(alignment: .top, spacing: 0) {
-                            VStack(spacing: 0) {
-                                ForEach(allRows) { entry in
-                                    rowLabel(entry.kind, shaded: entry.shaded)
-                                }
-                            }
-                            .frame(width: 236, alignment: .leading)
-                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
-
-                            ScrollView(.horizontal) {
-                                VStack(alignment: .leading, spacing: 0) {
+                        ScrollView(.vertical) {
+                            HStack(alignment: .top, spacing: 0) {
+                                VStack(spacing: 0) {
                                     ForEach(allRows) { entry in
-                                        rowCells(entry.kind, shaded: entry.shaded)
+                                        rowLabel(entry.kind, shaded: entry.shaded)
                                     }
                                 }
-                                .background(GeometryReader { geo in
-                                    Color.clear.preference(key: ForecastHorizontalOffsetKey.self, value: geo.frame(in: .named("forecastHScroll")).minX)
-                                })
+                                .frame(width: 236, alignment: .leading)
+                                .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+
+                                ScrollView(.horizontal) {
+                                    VStack(alignment: .leading, spacing: 0) {
+                                        ForEach(allRows) { entry in
+                                            rowCells(entry.kind, shaded: entry.shaded)
+                                        }
+                                    }
+                                    .background(GeometryReader { geo in
+                                        Color.clear.preference(key: ForecastHorizontalOffsetKey.self, value: geo.frame(in: .named("forecastHScroll")).minX)
+                                    })
+                                }
+                                .coordinateSpace(.named("forecastHScroll"))
                             }
-                            .coordinateSpace(.named("forecastHScroll"))
                         }
+                        .frame(height: 480)
+                        .onPreferenceChange(ForecastHorizontalOffsetKey.self) { horizontalOffset = $0 }
                     }
-                    // Bounded height keeps this the fixed-size scrollable viewport the
-                    // frozen-header/frozen-column technique needs — without it, this
-                    // ScrollView sizes to its ideal (unbounded) content height and competes
-                    // for space with manageForecastSection below, which is what caused the
-                    // freeze this fixes. 480 shows a comfortable number of rows (~15-17
-                    // single-line, ~10-11 two-line) before this inner view needs its own
-                    // scroll — picked to roughly match how much of the grid was visible in
-                    // the pre-fix baseline on a normal window before "Manage forecast"
-                    // existed.
-                    .frame(height: 480)
-                    .onPreferenceChange(ForecastHorizontalOffsetKey.self) { horizontalOffset = $0 }
                 }
-                manageForecastSection
+                .padding()
             }
-            .padding()
+            Divider()
+            scenarioPanel
+                .frame(width: 280)
         }
-        .sheet(isPresented: $showNewEntrySheet) {
-            NewForecastEntryView(categories: viewModel.categories) { newGroupName, categoryId, amountMinorUnits, frequency, interval, startDate in
-                viewModel.addHypotheticalEntry(groupName: newGroupName, categoryId: categoryId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate)
-                showNewEntrySheet = false
+        .sheet(isPresented: $showNewScenarioSheet) {
+            ScenarioItemFormView(mode: .newScenario, categories: viewModel.categories) { name, item in
+                viewModel.createScenario(name: name ?? "New scenario", items: [item])
+                showNewScenarioSheet = false
+            }
+        }
+        .sheet(item: $addingItemTo) { group in
+            ScenarioItemFormView(mode: .addItem(to: group), categories: viewModel.categories) { _, item in
+                viewModel.addItem(to: group, item)
+                addingItemTo = nil
             }
         }
         .sheet(item: $editingEntry) { entry in
-            EditForecastEntryView(entry: entry) { amountMinorUnits, frequency, interval in
-                viewModel.updateEntry(entry, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval)
+            EditForecastEntryView(entry: entry) { amountMinorUnits, frequency, interval, endDate in
+                viewModel.updateEntry(entry, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, endDate: endDate)
                 editingEntry = nil
             }
         }
@@ -211,47 +206,113 @@ struct ForecastView: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
     }
 
-    private var manageForecastSection: some View {
-        DisclosureGroup("Manage forecast", isExpanded: $manageExpanded) {
-            VStack(alignment: .leading, spacing: 8) {
+    private var scenarioPanel: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 16) {
                 if let error = viewModel.errorMessage {
                     Text(error).foregroundStyle(.red).font(.callout)
                 }
-                ForEach(viewModel.groups) { group in
-                    HStack {
-                        Toggle(group.name, isOn: Binding(
-                            get: { group.isEnabled },
-                            set: { _ in viewModel.toggleGroup(group) }
-                        ))
-                        if !group.isSystemManaged {
-                            Text("custom").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    ForEach(viewModel.entries.filter { $0.groupId == group.id }) { entry in
-                        HStack {
-                            Toggle(viewModel.categories.first(where: { $0.id == entry.categoryId })?.name ?? "Unknown", isOn: Binding(
-                                get: { entry.isEnabled },
-                                set: { _ in viewModel.toggleEntry(entry) }
-                            ))
-                            .padding(.leading, 24)
-                            Text(entry.status.rawValue).font(.caption).foregroundStyle(.secondary)
-                            Button("Edit…") { editingEntry = entry }
-                                .buttonStyle(.plain)
-                                .font(.caption)
-                            if entry.status == .hypothetical {
-                                Button("Confirm") { viewModel.confirm(entry) }
-                            } else if entry.status == .confirmed {
-                                Button("Un-confirm") { viewModel.unconfirm(entry) }
-                            }
-                        }
+                scenarioPicker
+                if let selectedGroup = viewModel.groups.first(where: { $0.id == viewModel.selectedScenarioGroupId }) {
+                    selectedScenarioSection(selectedGroup)
+                }
+                detectedRecurringSection
+            }
+            .padding()
+        }
+    }
+
+    private var scenarioPicker: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Scenario").font(.caption).foregroundStyle(.secondary)
+            scenarioRow(name: "None (confirmed only)", isSelected: viewModel.selectedScenarioGroupId == nil, badge: nil) {
+                viewModel.selectedScenarioGroupId = nil
+            }
+            ForEach(viewModel.groups.filter { !$0.isSystemManaged }) { group in
+                let isConfirmed = viewModel.entries.contains { $0.groupId == group.id && $0.status == .confirmed }
+                scenarioRow(name: group.name, isSelected: viewModel.selectedScenarioGroupId == group.id, badge: isConfirmed ? "confirmed" : nil) {
+                    guard !isConfirmed else { return }
+                    viewModel.selectedScenarioGroupId = group.id
+                }
+            }
+            Button("+ New scenario…") { showNewScenarioSheet = true }
+                .buttonStyle(.plain).font(.caption).padding(.top, 4)
+        }
+    }
+
+    private func scenarioRow(name: String, isSelected: Bool, badge: String?, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(name).font(.callout)
+                Spacer()
+                if let badge {
+                    Text(badge).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func selectedScenarioSection(_ group: ForecastGroup) -> some View {
+        let isConfirmed = viewModel.entries.contains { $0.groupId == group.id && $0.status == .confirmed }
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("\(group.name) — items").font(.caption).foregroundStyle(.secondary)
+            ForEach(viewModel.entries.filter { $0.groupId == group.id }) { entry in
+                scenarioItemRow(entry)
+            }
+            if !isConfirmed {
+                Button("+ Add item…") { addingItemTo = group }
+                    .buttonStyle(.plain).font(.caption)
+                Button("Confirm scenario") { viewModel.confirmScenario(group) }
+                    .font(.caption)
+                if let impact = viewModel.scenarioNetWorthImpact(atEndOf: selectedYear), impact != 0 {
+                    HStack(spacing: 4) {
+                        Text("With this scenario:").font(.caption).foregroundStyle(.secondary)
+                        MoneyText(minorUnits: impact, font: .caption.bold(), tint: .orange)
+                        Text("by Dec \(String(selectedYear))").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Button("Add hypothetical forecast entry…") { showNewEntrySheet = true }
             }
-            .padding(.top, 8)
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+    }
+
+    private func scenarioItemRow(_ entry: ForecastEntry) -> some View {
+        HStack {
+            Text(viewModel.categories.first(where: { $0.id == entry.categoryId })?.name ?? "Unknown").font(.caption)
+            Spacer()
+            MoneyText(minorUnits: entry.amountMinorUnits, font: .caption)
+            if let endDate = entry.endDate {
+                Text("ends \(Self.monthYearLabel(endDate))").font(.caption2).foregroundStyle(.secondary)
+            }
+            Button("Edit…") { editingEntry = entry }
+                .buttonStyle(.plain).font(.caption)
+        }
+    }
+
+    private var detectedRecurringSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let detectedRecurring = viewModel.groups.first(where: { $0.isSystemManaged }) {
+                Toggle(detectedRecurring.name, isOn: Binding(
+                    get: { detectedRecurring.isEnabled },
+                    set: { _ in viewModel.toggleGroup(detectedRecurring) }
+                )).font(.caption)
+                ForEach(viewModel.entries.filter { $0.groupId == detectedRecurring.id }) { entry in
+                    HStack {
+                        Text(viewModel.categories.first(where: { $0.id == entry.categoryId })?.name ?? "Unknown").font(.caption)
+                        Text(entry.status.rawValue).font(.caption2).foregroundStyle(.secondary)
+                        if let endDate = entry.endDate {
+                            Text("ends \(Self.monthYearLabel(endDate))").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Edit…") { editingEntry = entry }
+                            .buttonStyle(.plain).font(.caption)
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -345,6 +406,13 @@ struct ForecastView: View {
         guard let date = calendar.date(from: components) else { return "\(month)" }
         let formatter = DateFormatter()
         formatter.dateFormat = "MMMM"
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter.string(from: date)
+    }
+
+    private static func monthYearLabel(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMMM yyyy"
         formatter.timeZone = TimeZone(identifier: "UTC")
         return formatter.string(from: date)
     }
