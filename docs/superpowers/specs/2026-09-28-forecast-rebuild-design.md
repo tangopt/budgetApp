@@ -18,20 +18,31 @@ Separately, investigation surfaced that the app's latest real balance snapshot a
 - Transfers (`Category.type == .transfer`) are excluded from every net-worth-affecting calculation — money moving between the user's own accounts doesn't change net worth. This matches the fix already shipped to the Budget grid's year-picker YoY figure.
 - This spec does not touch the Budget grid or add a Dashboard screen — those are separate specs (Budget grid month-hiding depends on this one; Dashboard depends on both).
 
-## 1. Horizon: data-anchored, not date-anchored
+## 1. Horizon: two fixed calendar years, not a rolling window
 
-The forecast horizon is every calendar month **after the latest month with real data** (the later of: the latest transaction date, or the latest balance snapshot date, across all accounts), through **December of next year** (next year relative to today's real calendar date, not relative to the data).
+The screen always covers exactly two calendar years — **this year** (today's real calendar year) and **next year** — each a full January–December, never a rolling "next 12 months" window. This year blends actual and forecast month by month; next year is entirely forecast (no actual data can exist for a future year).
 
-Concretely: if the latest real data is February 2026 and today is September 2026, the horizon is March 2026 through December 2027 — the gap months (March–September 2026) are included as forecast, not skipped, so the year-end projection is complete. Once real data catches up to the present (the common case going forward, as the user keeps importing), this horizon naturally becomes "just the genuinely future months."
-
-`ForecastViewModel` computes this horizon once per `load()`:
+Within this year, a month is **actual** if it's on or before `latestRealMonth` — the later of the latest transaction date's month or the latest balance snapshot date's month, across everything loaded — and **forecast** otherwise. Concretely, with real data currently stopping at February 2026: January–February 2026 show actual category totals (including a category that happens to be £0 that month — same "no data this cell" convention the Budget grid already uses), March–December 2026 show confirmed forecast, and all of 2027 is forecast. Once the user keeps importing and real data catches up to the present, this cutoff naturally advances — no separate "is this the current month" logic is needed beyond comparing against `latestRealMonth`.
 
 ```swift
-/// Every (year, month) from the month after the latest real data through December of
-/// next year (relative to today). Drives both the grid's columns and the net worth
-/// projection's accumulation range.
-private(set) var horizonMonths: [(year: Int, month: Int)] = []
+/// (year, month) of the later of the latest transaction date or the latest balance
+/// snapshot date, across everything `load()` fetched. Drives both which grid cells show
+/// actual vs. forecast, and which month the net worth projection starts accumulating from.
+private(set) var latestRealMonth: (year: Int, month: Int)?
+
+private var thisYear: Int { Self.calendar.component(.year, from: Date()) }
+private var nextYear: Int { thisYear + 1 }
+
+/// True when `(year, month)` is on or before `latestRealMonth` — the grid shows the
+/// actual category total for it rather than the confirmed forecast.
+func isActual(year: Int, month: Int) -> Bool {
+    guard let latestRealMonth else { return false }
+    if year != latestRealMonth.year { return year < latestRealMonth.year }
+    return month <= latestRealMonth.month
+}
 ```
+
+The grid (section 5) shows one year at a time, picked via two year chips — `thisYear` and `nextYear` — reusing the Budget grid's year-picker interaction exactly, rather than showing 24 columns at once.
 
 ## 2. `ForecastViewModel` gains account/balance data
 
@@ -78,16 +89,20 @@ private var currentNetWorthGBP: Int {
     NetWorthCalculator.netWorth(balances: NetWorthCalculator.accountBalances(accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate))
 }
 
-/// Forecast net worth at the end of `year` (December): current net worth plus the
-/// confirmed forecast's accumulated net impact for every horizon month up to and
-/// including that December. `nil` if `year`'s December isn't within the horizon (e.g.
-/// real data already reaches that December, so there's nothing left to forecast).
+/// Forecast net worth at the end of `year` (December, `year` must be `thisYear` or
+/// `nextYear`): current net worth plus the confirmed forecast's accumulated net impact
+/// for every month strictly after `latestRealMonth` through that December. `nil` when
+/// there's no `latestRealMonth` yet (no data loaded at all).
 func forecastNetWorth(atEndOf year: Int) -> Int? {
-    guard horizonMonths.contains(where: { $0.year == year && $0.month == 12 }) else { return nil }
-    let monthsThroughYear = horizonMonths.filter { $0.year < year || ($0.year == year && $0.month <= 12) }
-    let netChange = monthsThroughYear.reduce(0) { sum, month in
-        let range = dateRange(forYear: month.year, month: month.month)
-        return sum + ForecastCalculator.confirmedNetWorthImpact(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: categories, entries: entries, groups: groups)
+    guard let latestRealMonth else { return nil }
+    var netChange = 0
+    var cursor = (year: latestRealMonth.year, month: latestRealMonth.month + 1)
+    if cursor.month > 12 { cursor = (cursor.year + 1, 1) }
+    while cursor.year < year || (cursor.year == year && cursor.month <= 12) {
+        let range = dateRange(forYear: cursor.year, month: cursor.month)
+        netChange += ForecastCalculator.confirmedNetWorthImpact(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: categories, entries: entries, groups: groups)
+        cursor.month += 1
+        if cursor.month > 12 { cursor = (cursor.year + 1, 1) }
     }
     return currentNetWorthGBP + netChange
 }
@@ -109,9 +124,9 @@ This screen shows two such headline pairs: this year's December (forecast vs. la
 
 `ForecastComparisonView.swift` is renamed `ForecastView.swift` (matching `BudgetGridView`/`NetWorthView` naming — the screen's shape changes enough that "Comparison" no longer describes it). Three sections, top to bottom:
 
-**a. Net worth forecast headline.** Two stat blocks side by side (styled like the Budget grid's year-picker chips): "Dec `year`" with the forecast figure and YoY arrow/percent, for this year and next year.
+**a. Net worth forecast headline.** Two stat blocks side by side (styled like the Budget grid's year-picker chips): "Dec `year`" with the forecast figure and YoY arrow/percent, for this year and next year. Always both, regardless of which year is selected below.
 
-**b. Category × month grid.** Same visual language as the Budget grid (right-aligned figures, colored type rail, section headers, zebra striping) — a new, separate view (not shared code with `BudgetGridView`, which stays untouched; sharing would couple two screens with different data sources for no benefit). Rows are categories grouped into Income/Expenses/Transfers sections exactly like the Budget grid (no category-group collapsing here — that's a grid-specific affordance tied to `CategoryGroup`, and forecast rows are sparser). Columns are `horizonMonths`, plus this-year and next-year total columns (July-next-year is far enough out that a running total column disambiguates without needing to scroll).
+**b. Category × month grid.** Same visual language as the Budget grid (right-aligned figures, colored type rail, section headers, zebra striping) — a new, separate view (not shared code with `BudgetGridView`, which stays untouched; sharing would couple two screens with different data sources for no benefit). A year picker (two chips: `thisYear`, `nextYear` — section 1) selects which year's grid is shown below, exactly like the Budget grid's year picker. Rows are categories grouped into Income/Expenses/Transfers sections exactly like the Budget grid (no category-group collapsing here — that's a grid-specific affordance tied to `CategoryGroup`, and forecast rows are sparser). Columns are the selected year's twelve months plus a Year Total column. A month's cell uses the actual category total when `isActual(year:month:)` is true, the confirmed forecast otherwise — the same cell, just a different source for its number; nothing in the layout marks the actual/forecast boundary explicitly beyond the numbers themselves changing character partway through the year.
 
 **c. Manage forecast.** A collapsible section (disclosure group, default collapsed) containing the existing groups/entries management UI (`groupsSection` today) — toggle group/entry enabled, edit an entry, confirm/un-confirm, add a hypothetical entry. Functionally unchanged from today; the "Add hypothetical forecast entry…" button and the two sheets (`NewForecastEntryView`, `EditForecastEntryView`) move here as-is.
 
@@ -136,4 +151,5 @@ Row height is therefore per-category, not per-cell — every cell in a two-line 
 - The Budget grid's month-hiding and blended current-month cell — separate spec, depends on this one.
 - The Dashboard screen — separate spec, depends on this one and the Budget grid spec.
 - Sidebar navigation polish (icons, sections, dynamic window title) — folded into the Dashboard spec per the user's request, not here.
-- Editing which months are forecast vs. real (e.g. manually marking a gap month as "actually zero spend") — the horizon is always data-anchored, not user-adjustable, in this pass.
+- Editing which months are treated as actual vs. forecast (e.g. manually marking a gap month as "actually zero spend") — the `latestRealMonth` cutoff is always data-derived, not user-adjustable, in this pass.
+- Showing more than two years, or letting the user pick an arbitrary year range — always exactly `thisYear` and `nextYear`.
