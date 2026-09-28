@@ -67,63 +67,82 @@ struct ForecastView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            netWorthHeadline
-            yearPicker
+        // The whole page scrolls (not just the grid): with "Manage forecast" expanded and
+        // populated with real groups/entries, (headline + picker + grid + panel) can easily
+        // exceed the window's height, and without an enclosing ScrollView here, standard
+        // VStack layout negotiation squeezes the grid's own ScrollView toward a degenerate
+        // size while the panel's content lays out beyond what's reachable — freezing the
+        // whole screen (no scroll container anywhere could reach it). See git history for
+        // the incident this fixes.
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 8) {
+                netWorthHeadline
+                yearPicker
 
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 0) {
-                    Text("Category").font(.headline).frame(width: 220, alignment: .leading)
-                        .padding(.horizontal, 8).padding(.vertical, 6)
-                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 0) {
-                        ForEach(1...12, id: \.self) { month in
-                            Text(Self.monthLabel(month))
+                        Text("Category").font(.headline).frame(width: 220, alignment: .leading)
+                            .padding(.horizontal, 8).padding(.vertical, 6)
+                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                        HStack(spacing: 0) {
+                            ForEach(1...12, id: \.self) { month in
+                                Text(Self.monthLabel(month))
+                                    .frame(width: 120, alignment: .trailing)
+                                    .padding(.horizontal, 8).padding(.vertical, 6)
+                                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                            }
+                            Text("Year Total").bold()
                                 .frame(width: 120, alignment: .trailing)
                                 .padding(.horizontal, 8).padding(.vertical, 6)
-                                .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                         }
-                        Text("Year Total").bold()
-                            .frame(width: 120, alignment: .trailing)
-                            .padding(.horizontal, 8).padding(.vertical, 6)
+                        .offset(x: horizontalOffset)
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                        .clipped()
                     }
-                    .offset(x: horizontalOffset)
-                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                    .clipped()
-                }
-                .font(.headline)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .overlay(Rectangle().frame(height: 1.5).foregroundStyle(Color.primary.opacity(0.18)), alignment: .bottom)
-                .shadow(color: .black.opacity(0.08), radius: 3, y: 2)
+                    .font(.headline)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .overlay(Rectangle().frame(height: 1.5).foregroundStyle(Color.primary.opacity(0.18)), alignment: .bottom)
+                    .shadow(color: .black.opacity(0.08), radius: 3, y: 2)
 
-                ScrollView(.vertical) {
-                    HStack(alignment: .top, spacing: 0) {
-                        VStack(spacing: 0) {
-                            ForEach(allRows) { entry in
-                                rowLabel(entry.kind, shaded: entry.shaded)
-                            }
-                        }
-                        .frame(width: 236, alignment: .leading)
-                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
-
-                        ScrollView(.horizontal) {
-                            VStack(alignment: .leading, spacing: 0) {
+                    ScrollView(.vertical) {
+                        HStack(alignment: .top, spacing: 0) {
+                            VStack(spacing: 0) {
                                 ForEach(allRows) { entry in
-                                    rowCells(entry.kind, shaded: entry.shaded)
+                                    rowLabel(entry.kind, shaded: entry.shaded)
                                 }
                             }
-                            .background(GeometryReader { geo in
-                                Color.clear.preference(key: ForecastHorizontalOffsetKey.self, value: geo.frame(in: .named("forecastHScroll")).minX)
-                            })
+                            .frame(width: 236, alignment: .leading)
+                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+
+                            ScrollView(.horizontal) {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    ForEach(allRows) { entry in
+                                        rowCells(entry.kind, shaded: entry.shaded)
+                                    }
+                                }
+                                .background(GeometryReader { geo in
+                                    Color.clear.preference(key: ForecastHorizontalOffsetKey.self, value: geo.frame(in: .named("forecastHScroll")).minX)
+                                })
+                            }
+                            .coordinateSpace(.named("forecastHScroll"))
                         }
-                        .coordinateSpace(.named("forecastHScroll"))
                     }
+                    // Bounded height keeps this the fixed-size scrollable viewport the
+                    // frozen-header/frozen-column technique needs — without it, this
+                    // ScrollView sizes to its ideal (unbounded) content height and competes
+                    // for space with manageForecastSection below, which is what caused the
+                    // freeze this fixes. 480 shows a comfortable number of rows (~15-17
+                    // single-line, ~10-11 two-line) before this inner view needs its own
+                    // scroll — picked to roughly match how much of the grid was visible in
+                    // the pre-fix baseline on a normal window before "Manage forecast"
+                    // existed.
+                    .frame(height: 480)
+                    .onPreferenceChange(ForecastHorizontalOffsetKey.self) { horizontalOffset = $0 }
                 }
-                .onPreferenceChange(ForecastHorizontalOffsetKey.self) { horizontalOffset = $0 }
+                manageForecastSection
             }
-            manageForecastSection
+            .padding()
         }
-        .padding()
         .sheet(isPresented: $showNewEntrySheet) {
             NewForecastEntryView(categories: viewModel.categories) { newGroupName, categoryId, amountMinorUnits, frequency, interval, startDate in
                 viewModel.addHypotheticalEntry(groupName: newGroupName, categoryId: categoryId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate)
@@ -170,7 +189,12 @@ struct ForecastView: View {
 
     private func netWorthStat(year: Int, baselineLabel: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Forecast net worth — Dec \(year)").font(.caption).foregroundStyle(.secondary)
+            // String(year) first, not a bare Int interpolated straight into this literal:
+            // interpolating a bare Int directly into Text("...") routes through
+            // LocalizedStringKey's numeric-formatting overload, which applies locale
+            // grouping — "Dec 2,026" instead of "Dec 2026". Converting to String first
+            // sidesteps that overload.
+            Text("Forecast net worth — Dec \(String(year))").font(.caption).foregroundStyle(.secondary)
             if let forecast = viewModel.forecastNetWorth(atEndOf: year) {
                 MoneyText(minorUnits: forecast, font: .title2.bold())
             } else {
@@ -308,10 +332,21 @@ struct ForecastView: View {
         .padding(.horizontal, 8)
     }
 
+    // Same technique as BudgetGridView.monthYearLabel: build a real Date via DateComponents
+    // and format it, rather than reading .monthSymbols off a locale-less Calendar (which
+    // doesn't yield real month names in this runtime — rendered "M01", "M02", ... instead
+    // of "January", "February", ...). The year is arbitrary (only the month matters here;
+    // the year is already shown via the year picker above the grid, not per column).
     private static func monthLabel(_ month: Int) -> String {
+        var components = DateComponents()
+        components.year = 2000; components.month = month; components.day = 1
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        guard let date = calendar.date(from: components) else { return "\(month)" }
         let formatter = DateFormatter()
-        formatter.monthSymbols = Calendar(identifier: .gregorian).monthSymbols
-        return formatter.monthSymbols[month - 1]
+        formatter.dateFormat = "MMMM"
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter.string(from: date)
     }
 }
 
