@@ -189,20 +189,20 @@ struct ForecastView: View {
                 .frame(width: 280)
         }
         .sheet(isPresented: $showNewScenarioSheet) {
-            ScenarioItemFormView(mode: .newScenario, categories: viewModel.categories) { name, item in
+            ScenarioItemFormView(mode: .newScenario, viewModel: viewModel) { name, item in
                 viewModel.createScenario(name: name ?? "New scenario", items: [item])
                 showNewScenarioSheet = false
             }
         }
         .sheet(item: $addingItemTo) { group in
-            ScenarioItemFormView(mode: .addItem(to: group), categories: viewModel.categories) { _, item in
+            ScenarioItemFormView(mode: .addItem(to: group), viewModel: viewModel) { _, item in
                 viewModel.addItem(to: group, item)
                 addingItemTo = nil
             }
         }
         .sheet(item: $editingEntry) { entry in
-            EditForecastEntryView(entry: entry) { amountMinorUnits, frequency, interval, endDate in
-                viewModel.updateEntry(entry, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, endDate: endDate)
+            EditForecastEntryView(entry: entry) { amountMinorUnits, frequency, interval, startDate, endDate in
+                viewModel.updateEntry(entry, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
                 editingEntry = nil
             }
         }
@@ -535,7 +535,6 @@ struct ForecastView: View {
             if twoLine {
                 if preview != confirmed {
                     MoneyText(minorUnits: preview, font: .caption2.monospacedDigit(), alignment: .trailing, tint: .orange)
-                        .opacity(0.7)
                 } else {
                     Color.clear.frame(height: 14)
                 }
@@ -599,6 +598,20 @@ struct ForecastView: View {
         endComponents.second = 59
         return calendar.date(from: endComponents)!
     }
+
+    /// The start-date counterpart to `normalizedEndOfDay`: every occurrence
+    /// `FrequencyExpander` generates is computed by adding steps to `entry.startDate`
+    /// itself, so its time-of-day carries through to every future occurrence, and
+    /// `FrequencyExpander` compares those timestamps directly against period bounds — the
+    /// same class of DST/time-of-day bug `normalizedEndOfDay` fixes for end dates. Picking a
+    /// date-only `DatePicker` value should always mean "the whole calendar day," so this
+    /// normalizes to 00:00:00 UTC on the picked day.
+    fileprivate static func normalizedStartOfDay(_ date: Date) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return calendar.date(from: components)!
+    }
 }
 
 /// The forecast grid body's horizontal scroll offset — same technique as
@@ -615,18 +628,26 @@ struct ScenarioItemFormView: View {
         case addItem(to: ForecastGroup)
     }
     let mode: Mode
-    let categories: [Category]
+    @ObservedObject var viewModel: ForecastViewModel
     let onSave: (String?, ForecastViewModel.ScenarioItem) -> Void // scenario name only non-nil for .newScenario
     @Environment(\.dismiss) private var dismiss
 
+    /// Sentinel `categoryId` value meaning "+ New category…" is selected — real category
+    /// ids are GRDB auto-increment rowids, always positive, so this never collides with one.
+    private static let newCategorySentinel: Int64 = -1
+
     @State private var scenarioName = "New scenario"
     @State private var categoryId: Int64?
+    @State private var newCategoryName = ""
+    @State private var newCategoryType: CategoryType = .expense
     @State private var amountPounds = ""
     @State private var frequency: ForecastFrequency = .monthly
     @State private var interval = 1
     @State private var startDate = Date()
     @State private var hasEndDate = false
     @State private var endDate = Date()
+
+    private var isCreatingNewCategory: Bool { categoryId == Self.newCategorySentinel }
 
     var body: some View {
         Form {
@@ -635,7 +656,20 @@ struct ScenarioItemFormView: View {
             }
             Picker("Category", selection: $categoryId) {
                 Text("Select…").tag(Int64?.none)
-                ForEach(categories) { category in Text(category.name).tag(Int64?.some(category.id!)) }
+                ForEach(viewModel.categories) { category in Text(category.name).tag(Int64?.some(category.id!)) }
+                Text("+ New category…").tag(Int64?.some(Self.newCategorySentinel))
+            }
+            if isCreatingNewCategory {
+                // A scenario item can be for a category that doesn't exist yet (e.g. a
+                // hypothetical new income source or a one-off project). Created together
+                // with the item itself on Save, not immediately — so Cancel here leaves no
+                // orphaned category behind.
+                TextField("New category name", text: $newCategoryName)
+                Picker("New category type", selection: $newCategoryType) {
+                    Text("Expense").tag(CategoryType.expense)
+                    Text("Income").tag(CategoryType.income)
+                }
+                .pickerStyle(.segmented)
             }
             TextField("Amount (£, positive number)", text: $amountPounds)
             Picker("Frequency", selection: $frequency) {
@@ -652,10 +686,21 @@ struct ScenarioItemFormView: View {
                     .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Save") {
-                    guard let categoryId, let minorUnits = Money.parseMinorUnits(amountPounds) else { return }
-                    let category = categories.first { $0.id == categoryId }
-                    let signedMinorUnits = category?.type == .income ? abs(minorUnits) : -abs(minorUnits)
-                    let item = ForecastViewModel.ScenarioItem(categoryId: categoryId, amountMinorUnits: signedMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: hasEndDate ? ForecastView.normalizedEndOfDay(endDate) : nil)
+                    guard let minorUnits = Money.parseMinorUnits(amountPounds) else { return }
+                    let resolvedCategoryId: Int64
+                    let resolvedCategoryType: CategoryType
+                    if isCreatingNewCategory {
+                        let trimmedName = newCategoryName.trimmingCharacters(in: .whitespaces)
+                        guard !trimmedName.isEmpty, let created = viewModel.createCategory(name: trimmedName, type: newCategoryType) else { return }
+                        resolvedCategoryId = created.id!
+                        resolvedCategoryType = created.type
+                    } else {
+                        guard let categoryId, let category = viewModel.categories.first(where: { $0.id == categoryId }) else { return }
+                        resolvedCategoryId = categoryId
+                        resolvedCategoryType = category.type
+                    }
+                    let signedMinorUnits = resolvedCategoryType == .income ? abs(minorUnits) : -abs(minorUnits)
+                    let item = ForecastViewModel.ScenarioItem(categoryId: resolvedCategoryId, amountMinorUnits: signedMinorUnits, frequency: frequency, interval: interval, startDate: ForecastView.normalizedStartOfDay(startDate), endDate: hasEndDate ? ForecastView.normalizedEndOfDay(endDate) : nil)
                     let name: String? = { if case .newScenario = mode { return scenarioName }; return nil }()
                     onSave(name, item)
                 }
@@ -669,21 +714,23 @@ struct ScenarioItemFormView: View {
 
 struct EditForecastEntryView: View {
     let entry: ForecastEntry
-    let onSave: (Int, ForecastFrequency, Int, Date?) -> Void
+    let onSave: (Int, ForecastFrequency, Int, Date, Date?) -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var amountPounds: String
     @State private var frequency: ForecastFrequency
     @State private var interval: Int
+    @State private var startDate: Date
     @State private var hasEndDate: Bool
     @State private var endDate: Date
 
-    init(entry: ForecastEntry, onSave: @escaping (Int, ForecastFrequency, Int, Date?) -> Void) {
+    init(entry: ForecastEntry, onSave: @escaping (Int, ForecastFrequency, Int, Date, Date?) -> Void) {
         self.entry = entry
         self.onSave = onSave
         _amountPounds = State(initialValue: String(format: "%.2f", Double(abs(entry.amountMinorUnits)) / 100))
         _frequency = State(initialValue: entry.frequency)
         _interval = State(initialValue: entry.interval)
+        _startDate = State(initialValue: entry.startDate)
         _hasEndDate = State(initialValue: entry.endDate != nil)
         _endDate = State(initialValue: entry.endDate ?? Date())
     }
@@ -700,6 +747,7 @@ struct EditForecastEntryView: View {
     /// the saved date can't silently drop or include an occurrence near a DST boundary and
     /// so `hasChanges`'s comparison against `entry.endDate` below doesn't spuriously flip
     /// just from toggling the picker without actually changing the day.
+    private var resolvedStartDate: Date { ForecastView.normalizedStartOfDay(startDate) }
     private var resolvedEndDate: Date? { hasEndDate ? ForecastView.normalizedEndOfDay(endDate) : nil }
 
     /// Save is a no-op unless something actually changed: saving an untouched `.auto`
@@ -707,7 +755,7 @@ struct EditForecastEntryView: View {
     /// opt that category out of `AutoForecastGenerator.refresh` for no reason.
     private var hasChanges: Bool {
         guard let signedAmount else { return false }
-        return signedAmount != entry.amountMinorUnits || frequency != entry.frequency || interval != entry.interval || resolvedEndDate != entry.endDate
+        return signedAmount != entry.amountMinorUnits || frequency != entry.frequency || interval != entry.interval || resolvedStartDate != entry.startDate || resolvedEndDate != entry.endDate
     }
 
     var body: some View {
@@ -717,6 +765,7 @@ struct EditForecastEntryView: View {
                 ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(freq.rawValue).tag(freq) }
             }
             Stepper("Every \(interval) \(frequency.rawValue)", value: $interval, in: 1...12)
+            DatePicker("Starting", selection: $startDate, displayedComponents: .date)
             Toggle("Ends on a specific date", isOn: $hasEndDate)
             if hasEndDate {
                 DatePicker("Ends", selection: $endDate, displayedComponents: .date)
@@ -727,7 +776,7 @@ struct EditForecastEntryView: View {
                 Spacer()
                 Button("Save") {
                     guard hasChanges, let signedAmount else { return }
-                    onSave(signedAmount, frequency, interval, resolvedEndDate)
+                    onSave(signedAmount, frequency, interval, resolvedStartDate, resolvedEndDate)
                 }
                 .disabled(!hasChanges)
                 .keyboardShortcut(.defaultAction)

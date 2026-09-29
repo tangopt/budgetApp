@@ -287,20 +287,21 @@ final class ForecastViewModel: ObservableObject {
         recomputeForecastCaches()
     }
 
-    /// Edits an entry's amount/frequency/interval/end-date. If it was auto-detected, this
+    /// Edits an entry's amount/frequency/interval/start-date/end-date. If it was auto-detected, this
     /// promotes it to `.manual` so a future `AutoForecastGenerator.refresh` won't silently
     /// overwrite the edit — mirrors the generator's own skip-on-manual-tuning behavior.
     ///
     /// The write happens against a locally-built copy first; `entries` is only mutated
     /// once that write has actually succeeded, mirroring `BudgetGridViewModel.recategorize`.
     @discardableResult
-    func updateEntry(_ entry: ForecastEntry, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, endDate: Date?) -> Bool {
+    func updateEntry(_ entry: ForecastEntry, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> Bool {
         errorMessage = nil
         guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return false }
         var updated = entries[index]
         updated.amountMinorUnits = amountMinorUnits
         updated.frequency = frequency
         updated.interval = interval
+        updated.startDate = startDate
         updated.endDate = endDate
         if updated.status == .auto {
             updated.status = .manual
@@ -432,5 +433,23 @@ final class ForecastViewModel: ObservableObject {
         if selectedScenarioGroupId == group.id { selectedScenarioGroupId = nil }
         recomputeForecastCaches()
         return true
+    }
+
+    /// Creates a new category — used by `ScenarioItemFormView`'s inline "+ New category…"
+    /// flow, for a scenario item whose category doesn't exist yet. Write-first,
+    /// mutate-on-success, like the other mutators in this file. Returns the created
+    /// category (with its assigned id) on success, `nil` on failure (also sets
+    /// `errorMessage`).
+    func createCategory(name: String, type: CategoryType) -> Category? {
+        errorMessage = nil
+        var category = Category(name: name, type: type)
+        do {
+            try dbQueue.write { db in try category.insert(db) }
+        } catch {
+            errorMessage = "Couldn't create this category: \(error.localizedDescription)"
+            return nil
+        }
+        categories.append(category)
+        return category
     }
 }
