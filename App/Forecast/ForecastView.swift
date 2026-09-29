@@ -11,6 +11,7 @@ struct ForecastView: View {
     @State private var showNewScenarioSheet = false
     @State private var addingItemTo: ForecastGroup?
     @State private var editingEntry: ForecastEntry?
+    @State private var isConfirmingScenario = false
 
     // A plain memberwise init would make `selectedYear` a required call-site argument;
     // this way callers just pass `viewModel`, and the initial year comes from it.
@@ -101,6 +102,18 @@ struct ForecastView: View {
         categories.contains { isTwoLine($0, year: year) }
     }
 
+    /// True when `group` has at least one entry and *every* one of its entries has been
+    /// promoted to `.confirmed` — not just "any entry confirmed". Old-UI data (or a
+    /// partially-confirmed scenario from a future partial-confirm flow) can leave a group
+    /// with a mix of `.confirmed` and still-`.hypothetical` entries; treating that as
+    /// "confirmed" would permanently hide the Add/Confirm controls for entries that are
+    /// still only previewed. Shared by `scenarioPicker` and `selectedScenarioSection` so
+    /// the definition only lives in one place.
+    private func isScenarioConfirmed(_ group: ForecastGroup) -> Bool {
+        let groupEntries = viewModel.entries.filter { $0.groupId == group.id }
+        return !groupEntries.isEmpty && !groupEntries.contains { $0.status == .hypothetical }
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             ScrollView(.vertical) {
@@ -156,6 +169,15 @@ struct ForecastView: View {
                                 .coordinateSpace(.named("forecastHScroll"))
                             }
                         }
+                        // Bounded height keeps this the fixed-size scrollable viewport the
+                        // frozen-header/frozen-column technique needs — without it, this
+                        // ScrollView sizes to its ideal (unbounded) content height and
+                        // competes for space inside the left column's own outer
+                        // `ScrollView` (netWorthHeadline, yearPicker, and the frozen grid
+                        // header all sit above it in that same outer scroll), which would
+                        // otherwise make the whole page scroll instead of just the grid
+                        // body. 480 shows a comfortable number of rows (~15-17 single-line,
+                        // ~10-11 two-line) before this inner view needs its own scroll.
                         .frame(height: 480)
                         .onPreferenceChange(ForecastHorizontalOffsetKey.self) { horizontalOffset = $0 }
                     }
@@ -263,9 +285,13 @@ struct ForecastView: View {
                 viewModel.selectedScenarioGroupId = nil
             }
             ForEach(viewModel.groups.filter { !$0.isSystemManaged }) { group in
-                let isConfirmed = viewModel.entries.contains { $0.groupId == group.id && $0.status == .confirmed }
+                let isConfirmed = isScenarioConfirmed(group)
                 scenarioRow(name: group.name, isSelected: viewModel.selectedScenarioGroupId == group.id, badge: isConfirmed ? "confirmed" : nil) {
-                    guard !isConfirmed else { return }
+                    // A confirmed scenario is still selectable — purely for viewing/editing
+                    // its items. `selectedScenarioSection` already hides the Add/Confirm/
+                    // impact UI when `isScenarioConfirmed` is true, and a fully-confirmed
+                    // group has no hypothetical entries left, so `previewCategoryTotal`
+                    // equals `categoryTotal` and no amber preview line appears.
                     viewModel.selectedScenarioGroupId = group.id
                 }
             }
@@ -291,7 +317,7 @@ struct ForecastView: View {
     }
 
     private func selectedScenarioSection(_ group: ForecastGroup) -> some View {
-        let isConfirmed = viewModel.entries.contains { $0.groupId == group.id && $0.status == .confirmed }
+        let isConfirmed = isScenarioConfirmed(group)
         return VStack(alignment: .leading, spacing: 6) {
             Text("\(group.name) — items").font(.caption).foregroundStyle(.secondary)
             ForEach(viewModel.entries.filter { $0.groupId == group.id }) { entry in
@@ -300,8 +326,14 @@ struct ForecastView: View {
             if !isConfirmed {
                 Button("+ Add item…") { addingItemTo = group }
                     .buttonStyle(.plain).font(.caption)
-                Button("Confirm scenario") { viewModel.confirmScenario(group) }
+                Button("Confirm scenario") { isConfirmingScenario = true }
                     .font(.caption)
+                    .confirmationDialog("Confirm this scenario?", isPresented: $isConfirmingScenario) {
+                        Button("Confirm") { viewModel.confirmScenario(group) }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Its items will be added to your permanent forecast.")
+                    }
                 if let impact = viewModel.scenarioNetWorthImpact(atEndOf: selectedYear), impact != 0 {
                     HStack(spacing: 4) {
                         Text("With this scenario:").font(.caption).foregroundStyle(.secondary)
@@ -309,6 +341,17 @@ struct ForecastView: View {
                         Text("by Dec \(String(selectedYear))").font(.caption).foregroundStyle(.secondary)
                     }
                 }
+            } else {
+                // Reachable now that `scenarioPicker` allows re-selecting a confirmed
+                // scenario. Bulk un-confirms every entry in the group — the mirror image
+                // of `confirmScenario`'s bulk confirm — by looping `unconfirm` (which only
+                // ever operates on one entry) across the group's entries.
+                Button("Un-confirm scenario") {
+                    for entry in viewModel.entries where entry.groupId == group.id {
+                        viewModel.unconfirm(entry)
+                    }
+                }
+                .buttonStyle(.plain).font(.caption)
             }
         }
     }
@@ -318,6 +361,7 @@ struct ForecastView: View {
             Text(viewModel.categories.first(where: { $0.id == entry.categoryId })?.name ?? "Unknown").font(.caption)
             Spacer()
             MoneyText(minorUnits: entry.amountMinorUnits, font: .caption)
+            Text(Self.frequencyLabel(entry)).font(.caption2).foregroundStyle(.secondary)
             if let endDate = entry.endDate {
                 Text("ends \(Self.monthYearLabel(endDate))").font(.caption2).foregroundStyle(.secondary)
             }
@@ -335,6 +379,11 @@ struct ForecastView: View {
                 )).font(.caption)
                 ForEach(viewModel.entries.filter { $0.groupId == detectedRecurring.id }) { entry in
                     HStack {
+                        Toggle("", isOn: Binding(
+                            get: { entry.isEnabled },
+                            set: { _ in viewModel.toggleEntry(entry) }
+                        ))
+                        .labelsHidden()
                         Text(viewModel.categories.first(where: { $0.id == entry.categoryId })?.name ?? "Unknown").font(.caption)
                         Text(entry.status.rawValue).font(.caption2).foregroundStyle(.secondary)
                         if let endDate = entry.endDate {
@@ -519,6 +568,37 @@ struct ForecastView: View {
         formatter.timeZone = TimeZone(identifier: "UTC")
         return formatter.string(from: date)
     }
+
+    /// A short human label for a scenario item's frequency, e.g. "one-off", "monthly",
+    /// or "every 3 months" — lets a one-off and a recurring item of the same amount be
+    /// told apart at a glance in `scenarioItemRow`.
+    private static func frequencyLabel(_ entry: ForecastEntry) -> String {
+        switch entry.frequency {
+        case .once: return "one-off"
+        case .weekly: return entry.interval == 1 ? "weekly" : "every \(entry.interval) weeks"
+        case .monthly: return entry.interval == 1 ? "monthly" : "every \(entry.interval) months"
+        case .annually: return entry.interval == 1 ? "annually" : "every \(entry.interval) years"
+        }
+    }
+
+    /// Normalizes a `Date` picked from a date-only `DatePicker` to 23:59:59 UTC on the
+    /// calendar day the user actually picked, discarding whatever time-of-day the picker's
+    /// initial value happened to carry (today's current time for a fresh `endDate`, or an
+    /// existing entry's stored `endDate` time). Without this, a date picked near a DST
+    /// boundary can carry a time-of-day that lands on the wrong side of an occurrence's own
+    /// timestamp when `FrequencyExpander` compares them, silently including or excluding
+    /// the final occurrence. `fileprivate` (not `private`) so `ScenarioItemFormView` and
+    /// `EditForecastEntryView` — both declared later in this file — can call it too.
+    fileprivate static func normalizedEndOfDay(_ date: Date) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        var endComponents = components
+        endComponents.hour = 23
+        endComponents.minute = 59
+        endComponents.second = 59
+        return calendar.date(from: endComponents)!
+    }
 }
 
 /// The forecast grid body's horizontal scroll offset — same technique as
@@ -537,6 +617,7 @@ struct ScenarioItemFormView: View {
     let mode: Mode
     let categories: [Category]
     let onSave: (String?, ForecastViewModel.ScenarioItem) -> Void // scenario name only non-nil for .newScenario
+    @Environment(\.dismiss) private var dismiss
 
     @State private var scenarioName = "New scenario"
     @State private var categoryId: Int64?
@@ -566,13 +647,19 @@ struct ScenarioItemFormView: View {
             if hasEndDate {
                 DatePicker("Ends", selection: $endDate, displayedComponents: .date)
             }
-            Button("Save") {
-                guard let categoryId, let minorUnits = Money.parseMinorUnits(amountPounds) else { return }
-                let category = categories.first { $0.id == categoryId }
-                let signedMinorUnits = category?.type == .income ? abs(minorUnits) : -abs(minorUnits)
-                let item = ForecastViewModel.ScenarioItem(categoryId: categoryId, amountMinorUnits: signedMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: hasEndDate ? endDate : nil)
-                let name: String? = { if case .newScenario = mode { return scenarioName }; return nil }()
-                onSave(name, item)
+            HStack {
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Save") {
+                    guard let categoryId, let minorUnits = Money.parseMinorUnits(amountPounds) else { return }
+                    let category = categories.first { $0.id == categoryId }
+                    let signedMinorUnits = category?.type == .income ? abs(minorUnits) : -abs(minorUnits)
+                    let item = ForecastViewModel.ScenarioItem(categoryId: categoryId, amountMinorUnits: signedMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: hasEndDate ? ForecastView.normalizedEndOfDay(endDate) : nil)
+                    let name: String? = { if case .newScenario = mode { return scenarioName }; return nil }()
+                    onSave(name, item)
+                }
+                .keyboardShortcut(.defaultAction)
             }
         }
         .padding()
@@ -608,7 +695,12 @@ struct EditForecastEntryView: View {
         return entry.amountMinorUnits < 0 ? -abs(minorUnits) : abs(minorUnits)
     }
 
-    private var resolvedEndDate: Date? { hasEndDate ? endDate : nil }
+    /// Normalized to 23:59:59 UTC on the picked calendar day (see
+    /// `ForecastView.normalizedEndOfDay`) rather than the raw `DatePicker` value, both so
+    /// the saved date can't silently drop or include an occurrence near a DST boundary and
+    /// so `hasChanges`'s comparison against `entry.endDate` below doesn't spuriously flip
+    /// just from toggling the picker without actually changing the day.
+    private var resolvedEndDate: Date? { hasEndDate ? ForecastView.normalizedEndOfDay(endDate) : nil }
 
     /// Save is a no-op unless something actually changed: saving an untouched `.auto`
     /// entry would otherwise promote it to `.manual` (via `updateEntry`) and permanently

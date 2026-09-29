@@ -53,6 +53,30 @@ final class FrequencyExpanderTests: XCTestCase {
         XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [])
     }
 
+    /// Regression test for a bug where `endDate` carried a raw `Date` from a date-only
+    /// `DatePicker` (whatever time-of-day the picker's initial value happened to have —
+    /// "now", or an existing entry's stored time). `ForecastView.normalizedEndOfDay`
+    /// fixes this by always storing 23:59:59 UTC on the picked calendar day. This test
+    /// verifies that once `endDate` is normalized that way, the final intended occurrence
+    /// — which itself lands at 00:00:00 UTC on the very same calendar day, since every
+    /// occurrence here is stepped from a midnight `startDate` — is still included, i.e.
+    /// isn't dropped by an off-by-a-few-hours comparison between the occurrence's own
+    /// timestamp and a mis-normalized end date.
+    func testEndDateNormalizedToEndOfDayIncludesFinalOccurrence() {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        func d(_ y: Int, _ m: Int, _ day: Int) -> Date { utc.date(from: DateComponents(year: y, month: m, day: day))! }
+        // The final intended occurrence is Aug 26, 2026 (start Jun 26 + 2 monthly steps).
+        let normalizedEndOfDay: Date = {
+            var components = utc.dateComponents([.year, .month, .day], from: d(2026, 8, 26))
+            components.hour = 23; components.minute = 59; components.second = 59
+            return utc.date(from: components)!
+        }()
+        let entry = makeEntry(frequency: .monthly, interval: 1, startDate: d(2026, 6, 26), endDate: normalizedEndOfDay)
+        let period = PayPeriod(startDate: d(2026, 8, 1), endDate: d(2026, 8, 31), type: .projected)
+        XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [d(2026, 8, 26)])
+    }
+
     func testMonthEndStartDateDoesNotDriftAfterFebruary() {
         var utc = Calendar(identifier: .gregorian)
         utc.timeZone = TimeZone(identifier: "UTC")!

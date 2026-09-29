@@ -21,9 +21,16 @@ final class ForecastViewModel: ObservableObject {
     /// and headline. `nil` means "None (confirmed only)" — the default. Ephemeral: reset
     /// to `nil` on every `load()`, never persisted. Changing it changes what
     /// `previewCategoryTotal`/`scenarioNetWorthImpact` compute, so it must trigger the
-    /// same cache rebuild any other cache-affecting mutation does.
+    /// same cache rebuild any other cache-affecting mutation does. The `oldValue` guard
+    /// avoids a redundant recompute on a same-value assignment (e.g. re-selecting the
+    /// scenario that's already selected) — `load()` no longer depends on this `didSet`
+    /// firing to rebuild the caches (see its own trailing `recomputeForecastCaches()`
+    /// call), but other call sites still rely on it for a plain selection change.
     @Published var selectedScenarioGroupId: Int64? {
-        didSet { recomputeForecastCaches() }
+        didSet {
+            guard oldValue != selectedScenarioGroupId else { return }
+            recomputeForecastCaches()
+        }
     }
     /// (year, month) of the latest transaction date across everything `load()` fetched.
     /// `nil` before the first successful `load()`, or if there's no transaction data at
@@ -71,16 +78,19 @@ final class ForecastViewModel: ObservableObject {
         transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
         exchangeRate = try dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db) }
         latestRealMonth = Self.computeLatestRealMonth(transactions: transactions, calendar: Self.calendar)
-        selectedScenarioGroupId = nil // resets caches via its own didSet, so no separate recomputeForecastCaches() call needed here
+        selectedScenarioGroupId = nil
+        // Rebuilt explicitly rather than relying on `selectedScenarioGroupId`'s `didSet`
+        // firing: a same-value nil→nil assignment (e.g. reloading while nothing was ever
+        // selected) wouldn't change `oldValue`, so the `didSet`'s own guard would skip the
+        // rebuild — and every other property `load()` sets above (e.g. `latestRealMonth`)
+        // must already be in place before this rebuild runs, which a direct call at the
+        // very end guarantees regardless of what the property observer does.
+        recomputeForecastCaches()
     }
 
     /// Rebuilds `forecastTotalsCache` and `netWorthHeadlineCache` from current state.
-    /// Called once at the end of `load()` (indirectly, via `selectedScenarioGroupId`'s
-    /// `didSet` — several other properties `load()` sets, e.g. `latestRealMonth`, are only
-    /// valid once everything else is already in place, so resetting `selectedScenarioGroupId`
-    /// last and letting its `didSet` fire the rebuild avoids rebuilding with a partially-
-    /// updated, stale mix of state) and after every mutation that changes `entries`/
-    /// `groups`/`selectedScenarioGroupId`.
+    /// Called explicitly at the end of `load()`, and after every mutation that changes
+    /// `entries`/`groups`/`selectedScenarioGroupId`.
     private func recomputeForecastCaches() {
         var totals: [Int64: [Int: [Int: (confirmed: Int, preview: Int)]]] = [:]
         for category in categories {
@@ -223,9 +233,15 @@ final class ForecastViewModel: ObservableObject {
     }
 
     /// `forecastNetWorth(atEndOf: year)` compared to a baseline: last year's real
-    /// year-end net worth when December of `year - 1` is actually covered by real data,
-    /// or last year's *forecast* year-end net worth otherwise. `percent` is `nil` when the
-    /// baseline is zero. Reads from `netWorthHeadlineCache`, falling back to a direct
+    /// year-end net worth when December of `year - 1` is actually covered by real data
+    /// (`isActual(year: year - 1, month: 12)`), or last year's *forecast* year-end net
+    /// worth otherwise — which is always the case when `year == nextYear` (no real data
+    /// can exist for a future year's December), but can also happen when `year ==
+    /// thisYear` if real data is stale enough that it doesn't reach last December (e.g.
+    /// imports lapsed for over a year). Falling back to the forecast baseline in that
+    /// case avoids presenting a stale, carried-forward balance as "vs Dec `year - 1`" —
+    /// which would overstate how much of that figure is real. `percent` is `nil` when
+    /// the baseline is zero. Reads from `netWorthHeadlineCache`, falling back to a direct
     /// calculation for a cache miss.
     func forecastNetWorthYoY(atEndOf year: Int) -> (changeGBP: Int, percent: Double?)? {
         netWorthHeadlineCache[year]?.yoy ?? computeForecastNetWorthYoY(atEndOf: year)
@@ -267,13 +283,6 @@ final class ForecastViewModel: ObservableObject {
     func toggleEntry(_ entry: ForecastEntry) {
         guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return }
         entries[index].isEnabled.toggle()
-        try? dbQueue.write { db in try entries[index].update(db) }
-        recomputeForecastCaches()
-    }
-
-    func confirm(_ entry: ForecastEntry) {
-        guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return }
-        entries[index].status = .confirmed
         try? dbQueue.write { db in try entries[index].update(db) }
         recomputeForecastCaches()
     }
@@ -339,17 +348,23 @@ final class ForecastViewModel: ObservableObject {
     }
 
     /// Creates a new scenario (a non-system-managed `ForecastGroup`) with one or more
-    /// hypothetical entries in a single write. `items` is expected non-empty — the UI
-    /// disables Save with zero items, so this is a precondition, not a runtime error path.
+    /// hypothetical entries in a single write. `items` is expected non-empty — the current
+    /// UI only ever calls this with exactly one item (from `ScenarioItemFormView`'s
+    /// `.newScenario` mode); there is no item-count validation or Save-disabling anywhere
+    /// in that flow, so this is a precondition on the call site, not a runtime error path.
     /// Write-first: `groups`/`entries` are only refetched (to pick up the new
     /// auto-generated ids) once the whole write has actually succeeded, mirroring
     /// `updateEntry`/`unconfirm`/`confirmScenario`'s do/catch → `errorMessage` pattern.
+    /// Also selects the newly created scenario, so the user doesn't have to find and
+    /// select it themselves right after creating it.
     func createScenario(name: String, items: [ScenarioItem]) {
         errorMessage = nil
+        var newGroupId: Int64?
         do {
             try dbQueue.write { db in
                 var group = ForecastGroup(name: name, note: nil, isEnabled: true, isSystemManaged: false)
                 try group.insert(db)
+                newGroupId = group.id
                 for item in items {
                     var entry = ForecastEntry(groupId: group.id!, categoryId: item.categoryId, amountMinorUnits: item.amountMinorUnits, frequency: item.frequency, interval: item.interval, startDate: item.startDate, endDate: item.endDate, isEnabled: true, status: .hypothetical, note: nil)
                     try entry.insert(db)
@@ -361,6 +376,7 @@ final class ForecastViewModel: ObservableObject {
         }
         groups = (try? dbQueue.read { db in try ForecastGroup.fetchAll(db) }) ?? groups
         entries = (try? dbQueue.read { db in try ForecastEntry.fetchAll(db) }) ?? entries
+        selectedScenarioGroupId = newGroupId
         recomputeForecastCaches()
     }
 
@@ -382,10 +398,15 @@ final class ForecastViewModel: ObservableObject {
     }
 
     /// Confirms every entry in `group` at once — a scenario is the unit the user thinks
-    /// in, so confirming happens at that level, not per-entry. Write-first: every entry is
-    /// updated in the same transaction, and `entries` is only mutated once the whole write
-    /// succeeds. Deselects the scenario afterward if it was selected, since a confirmed
-    /// scenario is no longer a "preview" — it's already part of the confirmed forecast.
+    /// in, so confirming happens at that level, not per-entry. Also force-enables the
+    /// group itself: old-UI data could have a scenario group that was toggled off (via
+    /// the previous per-group toggle), and `ForecastCalculator` only counts confirmed
+    /// entries from *enabled* groups — without this, confirming a disabled scenario would
+    /// leave it showing as "confirmed" while silently contributing £0 to every total.
+    /// Write-first: every entry and the group are updated in the same transaction, and
+    /// `entries`/`groups` are only mutated once the whole write succeeds. Deselects the
+    /// scenario afterward if it was selected, since a confirmed scenario is no longer a
+    /// "preview" — it's already part of the confirmed forecast.
     @discardableResult
     func confirmScenario(_ group: ForecastGroup) -> Bool {
         errorMessage = nil
@@ -393,15 +414,21 @@ final class ForecastViewModel: ObservableObject {
         guard !indices.isEmpty else { return false }
         var updated = entries
         for i in indices { updated[i].status = .confirmed }
+        var updatedGroup = group
+        updatedGroup.isEnabled = true
         do {
             try dbQueue.write { db in
                 for i in indices { try updated[i].update(db) }
+                try updatedGroup.update(db)
             }
         } catch {
             errorMessage = "Couldn't confirm this scenario: \(error.localizedDescription)"
             return false
         }
         entries = updated
+        if let groupIndex = groups.firstIndex(where: { $0.id == group.id }) {
+            groups[groupIndex] = updatedGroup
+        }
         if selectedScenarioGroupId == group.id { selectedScenarioGroupId = nil }
         recomputeForecastCaches()
         return true
