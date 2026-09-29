@@ -8,9 +8,10 @@ The app's navigation shell and several screens don't follow macOS Human Interfac
 
 `App/ContentView.swift` drives an 8-item `NavigationSplitView` sidebar (`AppScreen`: Import, Budget, Forecast, Net Worth, Rules, Categories, Uncategorized, Accounts) as a single flat `List` of `Text(screen.rawValue)` rows, no icons, no `Section` grouping. Neither `ContentView.swift` nor `App/BudgetApp.swift` sets a `.navigationTitle` anywhere, so the window title is always the static bundle display name ("Budget"), regardless of the selected screen.
 
-No file in the app calls `.toolbar`. Screens that have a standalone page-level action button position it manually in the content body:
-- `App/Budget/BudgetGridView.swift` — "Export CSV…" button (near line 127)
-- `App/Accounts/AccountsSettingsView.swift` — "Add account" button (near line 44)
+No file in the app calls `.toolbar`. One screen has a genuinely standalone page-level action button, manually positioned in the content body to look native:
+- `App/Budget/BudgetGridView.swift` — "Export CSV…" button (line 127), sitting alone in an `HStack` with a `Spacer()`, no adjacent form dependency.
+
+`App/Accounts/AccountsSettingsView.swift`'s "Add account" button (line 44) looks similar at a glance but isn't a standalone action — it submits the `Name`/`Currency`/`Kind`/`Tracking` `Form` immediately above it in the same body, reading those fields' `@State` directly. This is the same shape as Categories' "Add Group", not Budget's "Export CSV…".
 
 No file calls `.searchable`. Two screens hold a plain, unfiltered list/table that would benefit from it:
 - `App/Uncategorized/UncategorizedView.swift` — a `List` of uncategorized transactions, filterable by `transaction.rawDescription`
@@ -27,7 +28,7 @@ No file calls `.searchable`. Two screens hold a plain, unfiltered list/table tha
 ## Non-Goals
 
 - No change to `BudgetCore`, any view model's data/logic, or any screen's core functionality.
-- No redesign of `Categories`' inline "Add Group" flow into a toolbar/popover — it's a compact data-entry row tied to an adjacent text field, not a standalone page action; forcing it into a toolbar would mean a real interaction redesign, out of scope for a conventions pass.
+- No redesign of `Categories`' inline "Add Group" flow, or `Accounts`' inline "Add account" flow, into a toolbar/popover — both are a compact form submitted by an adjacent button, not a standalone page action; forcing either into a toolbar would mean a real interaction redesign (the form would need to become a sheet/popover), out of scope for a conventions pass. Both stay exactly as they are today.
 - No change to `Import`'s "Import into" account picker — it's a content filter, not a page action, so it stays inline.
 - No new sidebar items, no removal of existing screens, no renaming of any `AppScreen` case's user-facing label (only icons/grouping are added around the existing labels).
 - No addition of a "Dashboard" landing screen — that's separate, already-deferred work, not part of this pass.
@@ -50,12 +51,11 @@ Each row becomes `Label(screen.rawValue, systemImage: screen.systemImage)` inste
 
 ### 3. Toolbar migration
 
-Two buttons move from inline body content into `.toolbar { ToolbarItem(placement: .primaryAction) { ... } }`, on the view that currently renders them:
+One button moves from inline body content into `.toolbar { ToolbarItem(placement: .primaryAction) { ... } }`:
 
-- `BudgetGridView`: "Export CSV…" — same closure/behavior, moved from its current `HStack` into a toolbar item. The `HStack` it currently sits in is checked afterward for whether it still serves a purpose (e.g., if it held other header content) or can be simplified/removed now that the button's gone.
-- `AccountsSettingsView`: "Add account" — same treatment.
+- `BudgetGridView`: "Export CSV…" — same closure/behavior, moved from its current `HStack { Spacer(); Button(...) }` (`BudgetGridView.swift:125-131`) into a toolbar item; the now-empty `HStack`/`Spacer()` wrapper is removed since it existed only to right-align this button.
 
-Both keep their exact existing action closures; only the button's position (inline body → `.toolbar`) changes. `ToolbarItem(placement: .primaryAction)` is the standard placement for a screen's one main affirmative action on macOS (right side of the title bar).
+It keeps its exact existing action closure; only its position (inline body → `.toolbar`) changes. `ToolbarItem(placement: .primaryAction)` is the standard placement for a screen's one main affirmative action on macOS (right side of the title bar).
 
 ### 4. Search
 
@@ -69,7 +69,7 @@ Both default to an empty search field (no filter applied) so existing behavior i
 This entire pass is SwiftUI presentation structure — no `BudgetCore` surface, no view-model logic changes, nothing this codebase's existing test suite pattern (`XCTest` against `BudgetCore`) can exercise. Verification is: a full Debug build (`xcodebuild`) plus a live manual walkthrough of every one of the 8 screens confirming:
 - Every sidebar row shows its icon and sits in the correct section, in the same order as today
 - Selecting each screen updates the window title to match
-- Budget's Export CSV and Accounts' Add account both work identically from their new toolbar position
+- Budget's Export CSV works identically from its new toolbar position
 - Uncategorized and Rules both filter correctly as text is typed into the search field, and show everything again when cleared
 - Light and dark mode both look correct (no hardcoded colors were introduced)
 
@@ -77,8 +77,7 @@ This entire pass is SwiftUI presentation structure — no `BudgetCore` surface, 
 
 - `App/ContentView.swift` — sectioned sidebar with icons, `.navigationTitle`
 - `App/Budget/BudgetGridView.swift` — Export CSV button → toolbar
-- `App/Accounts/AccountsSettingsView.swift` — Add account button → toolbar
 - `App/Uncategorized/UncategorizedView.swift` — `.searchable` + filtered list
 - `App/Rules/RulesView.swift` — `.searchable` + filtered table
 
-No other files change.
+`App/Accounts/AccountsSettingsView.swift` does not change (see Non-Goals — its "Add account" button is a form submission, not a standalone action). No other files change.
