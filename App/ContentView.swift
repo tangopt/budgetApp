@@ -14,6 +14,30 @@ enum AppScreen: String, CaseIterable, Identifiable {
     case uncategorized = "Uncategorized"
     case accounts = "Accounts"
     var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .importReview: return "square.and.arrow.down"
+        case .uncategorized: return "folder.badge.questionmark"
+        case .budgetGrid: return "tablecells"
+        case .forecast: return "chart.line.uptrend.xyaxis"
+        case .netWorth: return "banknote"
+        case .rules: return "wand.and.stars"
+        case .categories: return "tag"
+        case .accounts: return "building.columns"
+        }
+    }
+
+    /// Sidebar section this screen's row is grouped under — see `ContentView.sidebarSections`,
+    /// which groups `AppScreen.allCases` by this value while preserving the order each
+    /// distinct value first appears in `allCases` (not alphabetically).
+    var sidebarSection: String {
+        switch self {
+        case .importReview, .uncategorized: return "Workflow"
+        case .budgetGrid, .forecast, .netWorth: return "Overview"
+        case .rules, .categories, .accounts: return "Settings"
+        }
+    }
 }
 
 struct ContentView: View {
@@ -64,10 +88,35 @@ struct ContentView: View {
         return calendar.date(from: components) ?? Date()
     }
 
+    /// `AppScreen.allCases` grouped by `sidebarSection`, one entry per distinct section
+    /// value in the order that value first appears in `allCases` — not alphabetically, so
+    /// "Workflow" → "Overview" → "Settings" (driven by `.importReview` being first in
+    /// `allCases`, `.budgetGrid` being the first `.sidebarSection == "Overview"` case, etc.)
+    /// stays stable regardless of where a section's later members (e.g. `.uncategorized`)
+    /// happen to sit in `allCases`' own declaration order.
+    private var sidebarSections: [(name: String, screens: [AppScreen])] {
+        var order: [String] = []
+        var grouped: [String: [AppScreen]] = [:]
+        for screen in AppScreen.allCases {
+            let section = screen.sidebarSection
+            if grouped[section] == nil {
+                order.append(section)
+            }
+            grouped[section, default: []].append(screen)
+        }
+        return order.map { (name: $0, screens: grouped[$0] ?? []) }
+    }
+
     var body: some View {
         NavigationSplitView {
-            List(AppScreen.allCases, selection: $selection) { screen in
-                Text(screen.rawValue).tag(screen)
+            List(selection: $selection) {
+                ForEach(sidebarSections, id: \.name) { section in
+                    Section(section.name) {
+                        ForEach(section.screens) { screen in
+                            Label(screen.rawValue, systemImage: screen.systemImage).tag(screen)
+                        }
+                    }
+                }
             }
         } detail: {
             Group {
@@ -118,6 +167,7 @@ struct ContentView: View {
                     Text("Select a screen from the sidebar.")
                 }
             }
+            .navigationTitle(selection?.rawValue ?? "Budget")
         }
         .onAppear {
             refreshSharedState()
