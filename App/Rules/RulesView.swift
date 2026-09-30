@@ -5,9 +5,18 @@ import struct BudgetCore.Category
 
 struct RulesView: View {
     @ObservedObject var viewModel: RulesViewModel
+    @State private var searchText = ""
+
+    /// `viewModel.rules` filtered by a case-insensitive substring match against
+    /// `matchPattern`. An empty `searchText` (the default) matches everything, so
+    /// existing behavior is unchanged until the user actually types.
+    private var filteredRules: [Rule] {
+        guard !searchText.isEmpty else { return viewModel.rules }
+        return viewModel.rules.filter { $0.matchPattern.localizedCaseInsensitiveContains(searchText) }
+    }
 
     var body: some View {
-        Table(viewModel.rules) {
+        Table(filteredRules) {
             TableColumn("Pattern") { rule in Text(rule.matchPattern) }
             TableColumn("Type") { rule in Text(rule.matchType.rawValue) }
             TableColumn("Category") { rule in
@@ -25,5 +34,6 @@ struct RulesView: View {
             }
         }
         .padding()
+        .searchable(text: $searchText, prompt: "Search patterns")
     }
 }
