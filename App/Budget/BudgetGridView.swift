@@ -122,14 +122,6 @@ struct BudgetGridView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Spacer()
-                Button("Export CSV…") {
-                    exportDocument = CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories, periods: viewModel.periods, transactions: viewModel.transactions))
-                    showExporter = true
-                }
-            }
-
             yearPicker
 
             // spacing: 0 so the frozen header sits flush on the body, with no gap for
@@ -204,6 +196,14 @@ struct BudgetGridView: View {
             }
         }
         .padding()
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Export CSV…") {
+                    exportDocument = CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories, periods: viewModel.periods, transactions: viewModel.transactions))
+                    showExporter = true
+                }
+            }
+        }
         .fileExporter(isPresented: $showExporter, document: exportDocument, contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
         // onDismiss clears any recategorize error so it can't bleed into the next,
         // unrelated drill-down.
