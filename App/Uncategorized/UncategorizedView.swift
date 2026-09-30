@@ -6,6 +6,15 @@ import struct BudgetCore.Transaction
 
 struct UncategorizedView: View {
     @ObservedObject var viewModel: UncategorizedViewModel
+    @State private var searchText = ""
+
+    /// `viewModel.transactions` filtered by a case-insensitive substring match against
+    /// `rawDescription`. An empty `searchText` (the default) matches everything, so
+    /// existing behavior is unchanged until the user actually types.
+    private var filteredTransactions: [Transaction] {
+        guard !searchText.isEmpty else { return viewModel.transactions }
+        return viewModel.transactions.filter { $0.rawDescription.localizedCaseInsensitiveContains(searchText) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -22,7 +31,7 @@ struct UncategorizedView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    List(viewModel.transactions) { transaction in
+                    List(filteredTransactions) { transaction in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(transaction.rawDescription)
@@ -39,6 +48,7 @@ struct UncategorizedView: View {
             }
         }
         .padding()
+        .searchable(text: $searchText, prompt: "Search descriptions")
     }
 
     private func categoryPicker(for transaction: Transaction) -> some View {
