@@ -51,27 +51,36 @@ public struct ImportDecision {
 public final class ImportCoordinator {
     private let dbQueue: DatabaseQueue
     private let categorizationService: CategorizationService
+    /// Descriptions per `CategorizationService.categorizeBatch` call. Large enough to cut
+    /// a few hundred sequential on-device model calls down to a handful; small enough to
+    /// keep each individual prompt/response manageable and keep the chance of a
+    /// batch-count mismatch (see `OnDeviceCategorizer.suggestCategories`) low.
+    private static let categorizationBatchSize = 25
 
     public init(dbQueue: DatabaseQueue, categorizationService: CategorizationService) {
         self.dbQueue = dbQueue
         self.categorizationService = categorizationService
     }
 
-    public func stageCSVImport(csvText: String, profile: ImportProfile, accountId: Int64) async throws -> StagedImport {
+    public func stageCSVImport(csvText: String, profile: ImportProfile, accountId: Int64, onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> StagedImport {
         let parseResult = CSVStatementParser.parse(csvText: csvText, profile: profile)
-        return try await stage(parsed: parseResult.transactions, unparsedLines: parseResult.unparsedLines, accountId: accountId)
+        return try await stage(parsed: parseResult.transactions, unparsedLines: parseResult.unparsedLines, accountId: accountId, onProgress: onProgress)
     }
 
-    public func stagePDFImport(lines: [String], config: PDFLayoutConfig, accountId: Int64) async throws -> StagedImport {
+    public func stagePDFImport(lines: [String], config: PDFLayoutConfig, accountId: Int64, onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> StagedImport {
         let parseResult = PDFLineParser.parse(lines: lines, config: config)
-        return try await stage(parsed: parseResult.transactions, unparsedLines: parseResult.unparsedLines, accountId: accountId)
+        return try await stage(parsed: parseResult.transactions, unparsedLines: parseResult.unparsedLines, accountId: accountId, onProgress: onProgress)
     }
 
     /// Shared staging for every statement format: fingerprint (with a within-file
     /// occurrence index so identical-looking rows in one statement don't collide on the
     /// `[accountId, fingerprint]` unique key), split off duplicates of already-imported
-    /// rows, and categorize the rest.
-    private func stage(parsed: [ParsedTransaction], unparsedLines: [String], accountId: Int64) async throws -> StagedImport {
+    /// rows, then categorize the rest in batches (see `categorizationBatchSize`).
+    /// `onProgress(categorized, totalToCategorize)` fires after each batch — the total is
+    /// the count of non-duplicate rows (the actual categorization workload), not the raw
+    /// row count in the file, since duplicates are already known and skipped before this
+    /// count is reported.
+    private func stage(parsed: [ParsedTransaction], unparsedLines: [String], accountId: Int64, onProgress: @Sendable (Int, Int) -> Void) async throws -> StagedImport {
         let (existingFingerprints, categories, rules) = try await dbQueue.read { db in
             (
                 try Set(String.fetchAll(db, sql: "SELECT fingerprint FROM transaction_ WHERE accountId = ?", arguments: [accountId])),
@@ -80,8 +89,8 @@ public final class ImportCoordinator {
             )
         }
 
-        var staged: [StagedTransaction] = []
         var duplicates: [ParsedTransaction] = []
+        var nonDuplicates: [(parsed: ParsedTransaction, fingerprint: String)] = []
         var occurrencesSeen: [String: Int] = [:]
         for parsedTransaction in parsed {
             let baseFingerprint = TransactionFingerprint.compute(
@@ -99,8 +108,20 @@ public final class ImportCoordinator {
                 duplicates.append(parsedTransaction)
                 continue
             }
-            let result = await categorizationService.categorize(description: parsedTransaction.rawDescription, rules: rules, categories: categories)
-            staged.append(StagedTransaction(parsed: parsedTransaction, suggestedCategoryId: result.categoryId, source: result.source, confidence: result.confidence, fingerprint: fingerprint))
+            nonDuplicates.append((parsedTransaction, fingerprint))
+        }
+
+        var staged: [StagedTransaction] = []
+        staged.reserveCapacity(nonDuplicates.count)
+        var categorizedCount = 0
+        for batchStart in stride(from: 0, to: nonDuplicates.count, by: Self.categorizationBatchSize) {
+            let batch = nonDuplicates[batchStart..<min(batchStart + Self.categorizationBatchSize, nonDuplicates.count)]
+            let results = await categorizationService.categorizeBatch(descriptions: batch.map(\.parsed.rawDescription), rules: rules, categories: categories)
+            for (item, result) in zip(batch, results) {
+                staged.append(StagedTransaction(parsed: item.parsed, suggestedCategoryId: result.categoryId, source: result.source, confidence: result.confidence, fingerprint: item.fingerprint))
+            }
+            categorizedCount += batch.count
+            onProgress(categorizedCount, nonDuplicates.count)
         }
         return StagedImport(staged: staged, duplicates: duplicates, unparsedLines: unparsedLines)
     }
@@ -108,8 +129,8 @@ public final class ImportCoordinator {
     /// Force-imports rows that staging flagged as duplicates (a genuine legitimate
     /// collision, per spec). Each gets the lowest occurrence index whose fingerprint is
     /// free in both the database and `alreadyStaged`, so it can be committed alongside
-    /// them without violating the unique key.
-    public func stageForcedDuplicates(_ duplicates: [ParsedTransaction], accountId: Int64, alreadyStaged: [StagedTransaction]) async throws -> [StagedTransaction] {
+    /// them without violating the unique key. Categorizes in the same batches as `stage`.
+    public func stageForcedDuplicates(_ duplicates: [ParsedTransaction], accountId: Int64, alreadyStaged: [StagedTransaction], onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> [StagedTransaction] {
         let (existingFingerprints, categories, rules) = try await dbQueue.read { db in
             (
                 try Set(String.fetchAll(db, sql: "SELECT fingerprint FROM transaction_ WHERE accountId = ?", arguments: [accountId])),
@@ -118,7 +139,7 @@ public final class ImportCoordinator {
             )
         }
         var taken = existingFingerprints.union(alreadyStaged.map(\.fingerprint))
-        var result: [StagedTransaction] = []
+        var items: [(parsed: ParsedTransaction, fingerprint: String)] = []
         for parsedTransaction in duplicates {
             var occurrence = 0
             var fingerprint: String
@@ -131,8 +152,20 @@ public final class ImportCoordinator {
                 occurrence += 1
             } while taken.contains(fingerprint)
             taken.insert(fingerprint)
-            let categorization = await categorizationService.categorize(description: parsedTransaction.rawDescription, rules: rules, categories: categories)
-            result.append(StagedTransaction(parsed: parsedTransaction, suggestedCategoryId: categorization.categoryId, source: categorization.source, confidence: categorization.confidence, fingerprint: fingerprint))
+            items.append((parsedTransaction, fingerprint))
+        }
+
+        var result: [StagedTransaction] = []
+        result.reserveCapacity(items.count)
+        var categorizedCount = 0
+        for batchStart in stride(from: 0, to: items.count, by: Self.categorizationBatchSize) {
+            let batch = items[batchStart..<min(batchStart + Self.categorizationBatchSize, items.count)]
+            let results = await categorizationService.categorizeBatch(descriptions: batch.map(\.parsed.rawDescription), rules: rules, categories: categories)
+            for (item, categorization) in zip(batch, results) {
+                result.append(StagedTransaction(parsed: item.parsed, suggestedCategoryId: categorization.categoryId, source: categorization.source, confidence: categorization.confidence, fingerprint: item.fingerprint))
+            }
+            categorizedCount += batch.count
+            onProgress(categorizedCount, items.count)
         }
         return result
     }

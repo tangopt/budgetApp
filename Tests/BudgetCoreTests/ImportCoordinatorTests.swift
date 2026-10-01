@@ -148,6 +148,48 @@ final class ImportCoordinatorTests: XCTestCase {
         XCTAssertEqual(count, 3)
     }
 
+    // Categorization now runs in batches of 25 (see `ImportCoordinator.categorizationBatchSize`)
+    // instead of one model call per row — this exercises a file with more rows than one
+    // batch to confirm staging still produces every row, in the original file order,
+    // across a batch boundary.
+    func testStagingAcrossMultipleCategorizationBatchesPreservesOrderAndCount() async throws {
+        let (manager, account, profile) = try makeSeededManager()
+        let coordinator = makeCoordinator(manager)
+        var lines = ["Date,Description,Amount"]
+        for i in 1...30 {
+            lines.append("01/07/2026,SHOP \(i),-\(i).00")
+        }
+        let csv = lines.joined(separator: "\n")
+
+        let staged = try await coordinator.stageCSVImport(csvText: csv, profile: profile, accountId: account.id!)
+
+        XCTAssertEqual(staged.staged.count, 30)
+        XCTAssertEqual(staged.staged.map(\.parsed.rawDescription), (1...30).map { "SHOP \($0)" })
+        XCTAssertTrue(staged.staged.allSatisfy { $0.suggestedCategoryId == nil && $0.source == .none })
+    }
+
+    func testStagingReportsProgressAfterEachCategorizationBatch() async throws {
+        let (manager, account, profile) = try makeSeededManager()
+        let coordinator = makeCoordinator(manager)
+        var lines = ["Date,Description,Amount"]
+        for i in 1...30 {
+            lines.append("01/07/2026,SHOP \(i),-\(i).00")
+        }
+        let csv = lines.joined(separator: "\n")
+
+        final class ProgressRecorder: @unchecked Sendable {
+            var calls: [(Int, Int)] = []
+        }
+        let recorder = ProgressRecorder()
+        _ = try await coordinator.stageCSVImport(csvText: csv, profile: profile, accountId: account.id!) { current, total in
+            recorder.calls.append((current, total))
+        }
+
+        // 30 rows at a batch size of 25: one partial report at 25, one final report at 30.
+        XCTAssertEqual(recorder.calls.map(\.0), [25, 30])
+        XCTAssertTrue(recorder.calls.allSatisfy { $0.1 == 30 })
+    }
+
     // C5: committing an import regenerates the "Detected recurring" forecast.
     func testCommitRegeneratesDefaultForecast() async throws {
         let (manager, account, profile) = try makeSeededManager()

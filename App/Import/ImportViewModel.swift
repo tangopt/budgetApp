@@ -26,6 +26,10 @@ final class ImportViewModel: ObservableObject {
     /// real model call per unmatched row, so this can take a while). Guards the staging
     /// entry points against a second concurrent run, e.g. from a double-click.
     @Published private(set) var isStaging = false
+    /// (categorized, total) for the categorization batch currently in flight — `nil`
+    /// before the first batch reports in (e.g. during the initial parse/duplicate lookup)
+    /// and reset to `nil` whenever a new staging run starts or the current one ends.
+    @Published private(set) var stagingProgress: (current: Int, total: Int)?
 
     private let dbQueue: DatabaseQueue
     private let coordinator: ImportCoordinator
@@ -50,7 +54,8 @@ final class ImportViewModel: ObservableObject {
         // two calls can't both get past this guard.
         guard !isStaging else { return }
         isStaging = true
-        defer { isStaging = false }
+        stagingProgress = nil
+        defer { isStaging = false; stagingProgress = nil }
         errorMessage = nil
         statusMessage = nil
         do {
@@ -59,22 +64,33 @@ final class ImportViewModel: ObservableObject {
             guard let profile = try profileStore.find(accountId: accountId, format: .csv) else {
                 return fail("No column mapping saved for this account yet. Run the mapping wizard first.")
             }
-            let result = try await coordinator.stageCSVImport(csvText: csvText, profile: profile, accountId: accountId)
+            let result = try await coordinator.stageCSVImport(csvText: csvText, profile: profile, accountId: accountId, onProgress: makeProgressHandler())
             apply(result, sourceFileName: fileURL.lastPathComponent, accountId: accountId)
         } catch {
             fail("Couldn't read \(fileURL.lastPathComponent): \(error.localizedDescription)")
         }
     }
 
+    /// Progress callbacks arrive from `ImportCoordinator`, which isn't main-actor-isolated,
+    /// so each one hops back via its own `Task` rather than requiring the whole closure
+    /// (and its caller) to be main-actor-isolated. Fine at this call frequency — once per
+    /// categorization batch, not once per row.
+    private func makeProgressHandler() -> @Sendable (Int, Int) -> Void {
+        { [weak self] current, total in
+            Task { @MainActor in self?.stagingProgress = (current, total) }
+        }
+    }
+
     func stagePDF(lines: [String], config: PDFLayoutConfig, account: Account, sourceFileName: String) async {
         guard !isStaging else { return }
         isStaging = true
-        defer { isStaging = false }
+        stagingProgress = nil
+        defer { isStaging = false; stagingProgress = nil }
         errorMessage = nil
         statusMessage = nil
         do {
             guard let accountId = account.id else { return fail("This account hasn't been saved yet.") }
-            let result = try await coordinator.stagePDFImport(lines: lines, config: config, accountId: accountId)
+            let result = try await coordinator.stagePDFImport(lines: lines, config: config, accountId: accountId, onProgress: makeProgressHandler())
             apply(result, sourceFileName: sourceFileName, accountId: accountId)
         } catch {
             fail("Couldn't stage \(sourceFileName): \(error.localizedDescription)")

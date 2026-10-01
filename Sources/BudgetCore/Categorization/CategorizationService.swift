@@ -26,4 +26,46 @@ public final class CategorizationService {
 
         return CategorizationResult(categoryId: nil, source: .none, confidence: 0.0)
     }
+
+    /// Batched form of `categorize`: rule-matches every description first (fast, no model
+    /// call), then sends only the still-unmatched descriptions through one
+    /// `suggestCategories` call instead of one `suggestCategory` call each. Results are
+    /// returned in the same order as `descriptions`, same as calling `categorize` once per
+    /// description would — callers can't tell which path was used from the shape of the
+    /// result, only from `.source` on each one.
+    public func categorizeBatch(descriptions: [String], rules: [Rule], categories: [Category]) async -> [CategorizationResult] {
+        var results = [CategorizationResult?](repeating: nil, count: descriptions.count)
+        var unmatchedIndices: [Int] = []
+        var unmatchedDescriptions: [String] = []
+        for (index, description) in descriptions.enumerated() {
+            if let rule = RuleMatcher.match(description: description, rules: rules) {
+                results[index] = CategorizationResult(categoryId: rule.categoryId, source: .rule, confidence: 1.0)
+            } else {
+                unmatchedIndices.append(index)
+                unmatchedDescriptions.append(description)
+            }
+        }
+
+        if !unmatchedDescriptions.isEmpty {
+            let candidateNames = categories.map(\.name)
+            var suggestions = (try? await categorizer.suggestCategories(descriptions: unmatchedDescriptions, candidateCategoryNames: candidateNames))
+                ?? Array(repeating: nil, count: unmatchedDescriptions.count)
+            // Defensive: `Categorizing` is a protocol, and `categorizeBatch` pairs results
+            // with descriptions purely by array position below — trust no conformer's
+            // count over the one actually given, or a short/long response would either
+            // crash on out-of-bounds or silently pair a guess with the wrong description.
+            if suggestions.count != unmatchedDescriptions.count {
+                suggestions = Array(repeating: nil, count: unmatchedDescriptions.count)
+            }
+            for (offset, index) in unmatchedIndices.enumerated() {
+                if let suggestion = suggestions[offset], let matchedCategory = categories.first(where: { $0.name == suggestion.categoryName }) {
+                    results[index] = CategorizationResult(categoryId: matchedCategory.id, source: .llm, confidence: suggestion.confidence)
+                } else {
+                    results[index] = CategorizationResult(categoryId: nil, source: .none, confidence: 0.0)
+                }
+            }
+        }
+
+        return results.map { $0! }
+    }
 }

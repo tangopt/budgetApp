@@ -39,13 +39,11 @@ struct ImportView: View {
 
             if viewModel.isReviewing {
                 ReviewView(viewModel: viewModel, categories: categories) {}
+            } else if viewModel.isStaging {
+                stagingProgressView
             } else {
-                // Disabled while a staging run is in flight so a second import can't start
-                // concurrently (ImportViewModel also guards its staging entry points).
                 Button("Import CSV statement…") { showFilePicker = true }
-                    .disabled(viewModel.isStaging)
                 Button("Import PDF statement…") { showPDFPicker = true }
-                    .disabled(viewModel.isStaging)
             }
             Spacer(minLength: 0)
         }
@@ -91,6 +89,27 @@ struct ImportView: View {
                 } catch {
                     viewModel.fail("Couldn't save the PDF layout: \(error.localizedDescription)")
                 }
+            }
+        }
+    }
+
+    /// Shown in place of the two "Import…" buttons while a staging run is in flight.
+    /// `stagingProgress` is `nil` until the first categorization batch reports in (the
+    /// initial parse and duplicate lookup happen first) — an indeterminate spinner covers
+    /// that gap so the screen is never silently blank.
+    private var stagingProgressView: some View {
+        VStack(spacing: 8) {
+            if let progress = viewModel.stagingProgress {
+                ProgressView(value: Double(progress.current), total: Double(progress.total))
+                    .frame(maxWidth: 280)
+                Text("Categorizing \(progress.current) of \(progress.total) transactions…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView()
+                Text("Preparing…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
         }
     }
