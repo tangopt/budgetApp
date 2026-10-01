@@ -132,6 +132,85 @@ final class CSVStatementParserTests: XCTestCase {
         XCTAssertEqual(result.unparsedLines.count, 1)
     }
 
+    // Real-world trigger: a UK current-account export (e.g. Lloyds) with separate
+    // "Debit Amount"/"Credit Amount" columns instead of one signed "Amount" column —
+    // previously unsupported, every credit row (salary, refunds, transfers in) silently
+    // landed in unparsedLines.
+    func testParsesSeparateDebitAndCreditColumns() {
+        let csv = """
+        Date,Description,Debit,Credit
+        01/07/2026,TESCO,12.00,
+        02/07/2026,SALARY,,2800.00
+        """
+        let profile = ImportProfile(
+            accountId: 1, format: .csv, csvDelimiter: ",",
+            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
+            csvCreditAmountColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
+        )
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
+        XCTAssertEqual(result.transactions.count, 2)
+        XCTAssertEqual(result.transactions[0].rawDescription, "TESCO")
+        XCTAssertEqual(result.transactions[0].amountMinorUnits, -1200)
+        XCTAssertEqual(result.transactions[1].rawDescription, "SALARY")
+        XCTAssertEqual(result.transactions[1].amountMinorUnits, 280000)
+        XCTAssertTrue(result.unparsedLines.isEmpty)
+    }
+
+    // A debit/credit column's own value is conventionally unsigned (the column itself
+    // already says which direction the money moved) — a debit value should become
+    // negative even if the statement itself wrote it as a positive number, which is the
+    // normal case this feature exists for.
+    func testDebitColumnValueBecomesNegativeRegardlessOfItsOwnSign() {
+        let csv = "Date,Description,Debit,Credit\n01/07/2026,TESCO,12.00,"
+        let profile = ImportProfile(
+            accountId: 1, format: .csv, csvDelimiter: ",",
+            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
+            csvCreditAmountColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
+        )
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
+        XCTAssertEqual(result.transactions.first?.amountMinorUnits, -1200)
+    }
+
+    func testDebitCreditSplitTreatsBothColumnsBlankAsUnparsable() {
+        let csv = "Date,Description,Debit,Credit\n01/07/2026,MYSTERY ROW,,"
+        let profile = ImportProfile(
+            accountId: 1, format: .csv, csvDelimiter: ",",
+            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
+            csvCreditAmountColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
+        )
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
+        XCTAssertTrue(result.transactions.isEmpty)
+        XCTAssertEqual(result.unparsedLines.count, 1)
+    }
+
+    // Genuinely ambiguous data (both columns somehow populated) must never be guessed
+    // at — the row is rejected for manual entry instead of silently picking one value.
+    func testDebitCreditSplitTreatsBothColumnsPresentAsUnparsable() {
+        let csv = "Date,Description,Debit,Credit\n01/07/2026,WEIRD ROW,12.00,8.00"
+        let profile = ImportProfile(
+            accountId: 1, format: .csv, csvDelimiter: ",",
+            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
+            csvCreditAmountColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
+        )
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
+        XCTAssertTrue(result.transactions.isEmpty)
+        XCTAssertEqual(result.unparsedLines.count, 1)
+    }
+
+    // Existing single-amount-column profiles (the vast majority today) have
+    // csvCreditAmountColumnIndex == nil and must behave exactly as before.
+    func testSingleAmountColumnProfileIsUnaffectedByCreditColumnFeature() {
+        let csv = "Date,Description,Amount\n01/07/2026,SAINSBURYS,-45.64"
+        let profile = ImportProfile(
+            accountId: 1, format: .csv, csvDelimiter: ",",
+            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
+            csvDateFormat: "dd/MM/yyyy"
+        )
+        XCTAssertNil(profile.csvCreditAmountColumnIndex)
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
+        XCTAssertEqual(result.transactions.first?.amountMinorUnits, -4564)
+    }
+
     func testMoneyParseMinorUnits() {
         XCTAssertEqual(Money.parseMinorUnits("1,234.56"), 123456)
         XCTAssertEqual(Money.parseMinorUnits("£300"), 30000)

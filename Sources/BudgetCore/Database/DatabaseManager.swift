@@ -29,6 +29,7 @@ public final class DatabaseManager {
         registerCategoryGroupIdMigration(&migrator)
         registerAccountMigration(&migrator)
         registerImportProfileMigration(&migrator)
+        registerImportProfileCreditColumnMigration(&migrator)
         registerImportBatchMigration(&migrator)
         registerTransactionMigration(&migrator)
         registerRuleMigration(&migrator)

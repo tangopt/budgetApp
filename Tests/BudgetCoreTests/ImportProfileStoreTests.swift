@@ -18,6 +18,24 @@ final class ImportProfileStoreTests: XCTestCase {
         XCTAssertEqual(found?.csvDateFormat, "dd/MM/yyyy")
     }
 
+    func testSaveThenFindRoundTripsTheCreditColumnIndex() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
+        try manager.dbQueue.write { db in try account.insert(db) }
+        let store = ImportProfileStore(dbQueue: manager.dbQueue)
+
+        let profile = ImportProfile(
+            accountId: account.id!, format: .csv, csvDelimiter: ",",
+            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
+            csvCreditAmountColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
+        )
+        try store.save(profile)
+
+        let found = try store.find(accountId: account.id!, format: .csv)
+        XCTAssertEqual(found?.csvCreditAmountColumnIndex, 3)
+    }
+
     func testFindReturnsNilWhenNoProfileExists() throws {
         let manager = try DatabaseManager(path: nil)
         try manager.migrate()

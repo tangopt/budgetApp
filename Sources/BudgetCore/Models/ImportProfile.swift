@@ -13,10 +13,18 @@ public struct ImportProfile: Codable, Equatable, Identifiable, FetchableRecord, 
     public var csvDateColumnIndex: Int?
     public var csvDescriptionColumnIndex: Int?
     public var csvAmountColumnIndex: Int?
+    /// When set, the statement splits amounts into two columns instead of one signed
+    /// column: `csvAmountColumnIndex` holds the debit (money out) column and this holds
+    /// the credit (money in) column. Exactly one of the two is expected to have a value
+    /// per row — see `CSVStatementParser` for how a row is resolved (or rejected as
+    /// unparsable) from the two columns. `nil` (the default) means the existing
+    /// single-signed-amount-column behavior, unchanged for every profile saved before
+    /// this field existed.
+    public var csvCreditAmountColumnIndex: Int?
     public var csvDateFormat: String?
     public var pdfLayoutConfig: String?
 
-    public init(id: Int64? = nil, accountId: Int64, format: ImportFormat, csvDelimiter: String? = nil, csvDateColumnIndex: Int? = nil, csvDescriptionColumnIndex: Int? = nil, csvAmountColumnIndex: Int? = nil, csvDateFormat: String? = nil, pdfLayoutConfig: String? = nil) {
+    public init(id: Int64? = nil, accountId: Int64, format: ImportFormat, csvDelimiter: String? = nil, csvDateColumnIndex: Int? = nil, csvDescriptionColumnIndex: Int? = nil, csvAmountColumnIndex: Int? = nil, csvCreditAmountColumnIndex: Int? = nil, csvDateFormat: String? = nil, pdfLayoutConfig: String? = nil) {
         self.id = id
         self.accountId = accountId
         self.format = format
@@ -24,6 +32,7 @@ public struct ImportProfile: Codable, Equatable, Identifiable, FetchableRecord, 
         self.csvDateColumnIndex = csvDateColumnIndex
         self.csvDescriptionColumnIndex = csvDescriptionColumnIndex
         self.csvAmountColumnIndex = csvAmountColumnIndex
+        self.csvCreditAmountColumnIndex = csvCreditAmountColumnIndex
         self.csvDateFormat = csvDateFormat
         self.pdfLayoutConfig = pdfLayoutConfig
     }
@@ -48,6 +57,16 @@ func registerImportProfileMigration(_ migrator: inout DatabaseMigrator) {
             t.column("csvDateFormat", .text)
             t.column("pdfLayoutConfig", .text)
             t.uniqueKey(["accountId", "format"])
+        }
+    }
+}
+
+/// See `registerCategoryGroupIdMigration` for why this is a plain nullable column added
+/// via `alter(table:)` rather than inside the original `create(table:)` block.
+func registerImportProfileCreditColumnMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addCreditAmountColumnIndexToImportProfile") { db in
+        try db.alter(table: "importProfile") { t in
+            t.add(column: "csvCreditAmountColumnIndex", .integer)
         }
     }
 }

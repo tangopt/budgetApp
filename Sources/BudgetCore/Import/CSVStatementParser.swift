@@ -12,6 +12,7 @@ public enum CSVStatementParser {
         let dateIndex = profile.csvDateColumnIndex ?? 0
         let descriptionIndex = profile.csvDescriptionColumnIndex ?? 1
         let amountIndex = profile.csvAmountColumnIndex ?? 2
+        let creditIndex = profile.csvCreditAmountColumnIndex
 
         let formatter = StatementDateFormatter.make(format: dateFormat)
 
@@ -27,12 +28,16 @@ public enum CSVStatementParser {
 
         for line in lines {
             let fields = CSVRowSplitter.split(line: line, delimiter: delimiter)
-            guard fields.count > max(dateIndex, descriptionIndex, amountIndex) else {
+            let requiredIndices = [dateIndex, descriptionIndex, amountIndex, creditIndex].compactMap { $0 }
+            guard fields.count > requiredIndices.max()! else {
                 unparsedLines.append(line)
                 continue
             }
-            guard let date = formatter.date(from: fields[dateIndex]),
-                  let minorUnits = Money.parseMinorUnits(fields[amountIndex]) else {
+            guard let date = formatter.date(from: fields[dateIndex]) else {
+                unparsedLines.append(line)
+                continue
+            }
+            guard let minorUnits = resolveAmount(fields: fields, amountIndex: amountIndex, creditIndex: creditIndex) else {
                 unparsedLines.append(line)
                 continue
             }
@@ -40,6 +45,30 @@ public enum CSVStatementParser {
         }
 
         return CSVParseResult(transactions: transactions, unparsedLines: unparsedLines)
+    }
+
+    /// Single-column statements (`creditIndex == nil`): the amount column already carries
+    /// its own sign, parsed as-is.
+    ///
+    /// Debit/credit-split statements (`creditIndex` set): `amountIndex` is the debit
+    /// (money out) column and `creditIndex` is the credit (money in) column. Exactly one
+    /// is expected to hold a value per row — the other is blank. Debit values become
+    /// negative, credit values become positive, regardless of whatever sign the statement
+    /// itself put on them (debit/credit columns are conventionally unsigned, since the
+    /// column itself already says which direction the money moved). Both columns blank,
+    /// or both holding a value (genuinely ambiguous — which one is the real amount?),
+    /// return `nil` so the row is treated as unparsable rather than guessed at.
+    private static func resolveAmount(fields: [String], amountIndex: Int, creditIndex: Int?) -> Int? {
+        guard let creditIndex else {
+            return Money.parseMinorUnits(fields[amountIndex])
+        }
+        let debitValue = Money.parseMinorUnits(fields[amountIndex])
+        let creditValue = Money.parseMinorUnits(fields[creditIndex])
+        switch (debitValue, creditValue) {
+        case (let debit?, nil): return -abs(debit)
+        case (nil, let credit?): return abs(credit)
+        default: return nil
+        }
     }
 
     /// Splits statement text into non-blank lines, treating LF, CRLF and CR alike.
