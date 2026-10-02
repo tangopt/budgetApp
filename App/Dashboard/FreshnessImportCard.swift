@@ -85,6 +85,9 @@ struct FreshnessImportCard: View {
             }
         }
         .padding(14)
+        // Fill the pane and lead-align in every layout: the stacked variant is only as wide as
+        // its content, which would otherwise shrink and centre the tinted card.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12).fill(tint.opacity(0.1)))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(tint.opacity(0.35)))
     }
