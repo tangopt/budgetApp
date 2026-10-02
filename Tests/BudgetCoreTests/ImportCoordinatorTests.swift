@@ -216,4 +216,94 @@ final class ImportCoordinatorTests: XCTestCase {
         XCTAssertEqual(rentEntry.status, .auto)
         XCTAssertEqual(entries.first { $0.categoryId == income }?.amountMinorUnits, 280000)
     }
+
+    private func utcDate(_ y: Int, _ m: Int, _ d: Int, hour: Int = 0) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar.date(from: DateComponents(year: y, month: m, day: d, hour: hour))!
+    }
+
+    private func balanceProfile(accountId: Int64) -> ImportProfile {
+        ImportProfile(accountId: accountId, format: .csv, csvDelimiter: ",", csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2, csvBalanceColumnIndex: 3, csvDateFormat: "dd/MM/yyyy")
+    }
+
+    // Newest-first, with two rows on 1 Feb (REFUND listed before RENT, as a bank would).
+    private let newestFirstCSV = """
+    Date,Description,Amount,Balance
+    02/03/2026,SHOP C,-2.50,977.50
+    20/02/2026,SHOP B,-15.00,980.00
+    01/02/2026,REFUND,30.00,995.00
+    01/02/2026,RENT,-5.00,965.00
+    31/01/2026,SHOP A,-20.00,970.00
+    15/01/2026,SHOP 0,-10.00,990.00
+    """
+
+    func testStagingAttachesVerifiedStatementBalances() async throws {
+        let (manager, account, _) = try makeSeededManager()
+        let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
+        let staged = try await coordinator.stageCSVImport(csvText: newestFirstCSV, profile: balanceProfile(accountId: account.id!), accountId: account.id!)
+        XCTAssertEqual(staged.statementBalances, .available([
+            StatementBalancePoint(date: utcDate(2026, 2, 1), balanceMinorUnits: 99_500, isClosing: false),
+            StatementBalancePoint(date: utcDate(2026, 3, 1), balanceMinorUnits: 98_000, isClosing: false),
+            StatementBalancePoint(date: utcDate(2026, 3, 2), balanceMinorUnits: 97_750, isClosing: true)
+        ]))
+    }
+
+    func testStatementBalancesAreNotProvidedWithoutABalanceColumn() async throws {
+        let (manager, account, profile) = try makeSeededManager()
+        let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
+        let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n01/07/2026,SHOP,-10.00", profile: profile, accountId: account.id!)
+        XCTAssertEqual(staged.statementBalances, .notProvided)
+    }
+
+    // Balances are a fact about the whole file, so a re-stage whose every row is already
+    // imported (all duplicates) still carries them.
+    func testRestagingAnAlreadyImportedFileStillCarriesBalances() async throws {
+        let (manager, account, _) = try makeSeededManager()
+        let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
+        let profile = balanceProfile(accountId: account.id!)
+        let first = try await coordinator.stageCSVImport(csvText: newestFirstCSV, profile: profile, accountId: account.id!)
+        try coordinator.commit(accountId: account.id!, sourceFileName: "a.csv", staged: first.staged, decisions: [])
+        let second = try await coordinator.stageCSVImport(csvText: newestFirstCSV, profile: profile, accountId: account.id!)
+        XCTAssertEqual(second.staged.count, 0)
+        XCTAssertEqual(second.duplicateCount, 6)
+        XCTAssertEqual(second.statementBalances, first.statementBalances)
+    }
+
+    func testRecordStatementBalancesInsertsThenIsIdempotent() throws {
+        let (manager, account, _) = try makeSeededManager()
+        let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
+        let points = [
+            StatementBalancePoint(date: utcDate(2026, 3, 1), balanceMinorUnits: 98_000, isClosing: false),
+            StatementBalancePoint(date: utcDate(2026, 3, 2), balanceMinorUnits: 97_750, isClosing: true)
+        ]
+        let first = try coordinator.recordStatementBalances(accountId: account.id!, sourceFileName: "a.csv", points: points)
+        XCTAssertEqual(first, StatementBalanceRecording(added: 2, updated: 0))
+        let second = try coordinator.recordStatementBalances(accountId: account.id!, sourceFileName: "a.csv", points: points)
+        XCTAssertEqual(second, StatementBalanceRecording(added: 0, updated: 2))
+
+        let snapshots = try manager.dbQueue.read { db in try BalanceSnapshot.order(Column("date")).fetchAll(db) }
+        XCTAssertEqual(snapshots.map(\.balanceMinorUnits), [98_000, 97_750])
+        XCTAssertEqual(snapshots.first?.note, "Statement balance — a.csv")
+    }
+
+    func testRecordStatementBalancesReplacesSameDateSnapshotButNotATypedOne() throws {
+        let (manager, account, _) = try makeSeededManager()
+        let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
+        try manager.dbQueue.write { db in
+            var sameDate = BalanceSnapshot(accountId: account.id!, date: utcDate(2026, 3, 1), balanceMinorUnits: 1, note: "old")
+            try sameDate.insert(db)
+            // A typed snapshot carries a time of day, so it never matches a statement date.
+            var typed = BalanceSnapshot(accountId: account.id!, date: utcDate(2026, 3, 1, hour: 9), balanceMinorUnits: 2, note: "typed")
+            try typed.insert(db)
+        }
+        let result = try coordinator.recordStatementBalances(
+            accountId: account.id!, sourceFileName: "a.csv",
+            points: [StatementBalancePoint(date: utcDate(2026, 3, 1), balanceMinorUnits: 98_000, isClosing: false)]
+        )
+        XCTAssertEqual(result, StatementBalanceRecording(added: 0, updated: 1))
+        let snapshots = try manager.dbQueue.read { db in try BalanceSnapshot.order(Column("date")).fetchAll(db) }
+        XCTAssertEqual(snapshots.map(\.balanceMinorUnits), [98_000, 2])
+        XCTAssertEqual(snapshots.last?.note, "typed")
+    }
 }

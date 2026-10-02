@@ -28,13 +28,17 @@ public struct StagedImport {
     public let duplicates: [ParsedTransaction]
     /// Statement lines that couldn't be parsed — "couldn't auto-parse, enter manually".
     public let unparsedLines: [String]
+    /// Verified Balance-column result for the whole file (including rows later skipped as
+    /// duplicates). `.notProvided` for PDFs and for CSV profiles without a balance column.
+    public let statementBalances: StatementBalanceResult
 
     public var duplicateCount: Int { duplicates.count }
 
-    public init(staged: [StagedTransaction], duplicates: [ParsedTransaction], unparsedLines: [String]) {
+    public init(staged: [StagedTransaction], duplicates: [ParsedTransaction], unparsedLines: [String], statementBalances: StatementBalanceResult = .notProvided) {
         self.staged = staged
         self.duplicates = duplicates
         self.unparsedLines = unparsedLines
+        self.statementBalances = statementBalances
     }
 }
 
@@ -45,6 +49,16 @@ public struct ImportDecision {
     public init(stagedId: UUID, finalCategoryId: Int64?) {
         self.stagedId = stagedId
         self.finalCategoryId = finalCategoryId
+    }
+}
+
+public struct StatementBalanceRecording: Equatable {
+    public let added: Int
+    public let updated: Int
+
+    public init(added: Int, updated: Int) {
+        self.added = added
+        self.updated = updated
     }
 }
 
@@ -64,7 +78,11 @@ public final class ImportCoordinator {
 
     public func stageCSVImport(csvText: String, profile: ImportProfile, accountId: Int64, onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> StagedImport {
         let parseResult = CSVStatementParser.parse(csvText: csvText, profile: profile)
-        return try await stage(parsed: parseResult.transactions, unparsedLines: parseResult.unparsedLines, accountId: accountId, onProgress: onProgress)
+        let staged = try await stage(parsed: parseResult.transactions, unparsedLines: parseResult.unparsedLines, accountId: accountId, onProgress: onProgress)
+        return StagedImport(
+            staged: staged.staged, duplicates: staged.duplicates, unparsedLines: staged.unparsedLines,
+            statementBalances: StatementBalanceExtractor.extract(from: parseResult.transactions)
+        )
     }
 
     public func stagePDFImport(lines: [String], config: PDFLayoutConfig, accountId: Int64, onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> StagedImport {
@@ -201,6 +219,34 @@ public final class ImportCoordinator {
                 }
             }
             try AutoForecastGenerator.refresh(db: db)
+        }
+    }
+
+    /// Records statement-derived balances as `BalanceSnapshot`s, upserting by exact
+    /// `(accountId, date)`: a snapshot already on that date is updated, otherwise one is
+    /// inserted. Re-recording the same points is therefore idempotent. A snapshot typed on
+    /// the Net Worth screen carries a time of day, so it never matches a statement date
+    /// (UTC midnight) and is never overwritten.
+    public func recordStatementBalances(accountId: Int64, sourceFileName: String, points: [StatementBalancePoint]) throws -> StatementBalanceRecording {
+        let note = "Statement balance — \(sourceFileName)"
+        return try dbQueue.write { db in
+            var added = 0
+            var updated = 0
+            for point in points {
+                if var existing = try BalanceSnapshot
+                    .filter(Column("accountId") == accountId && Column("date") == point.date)
+                    .fetchOne(db) {
+                    existing.balanceMinorUnits = point.balanceMinorUnits
+                    existing.note = note
+                    try existing.update(db)
+                    updated += 1
+                } else {
+                    var snapshot = BalanceSnapshot(accountId: accountId, date: point.date, balanceMinorUnits: point.balanceMinorUnits, note: note)
+                    try snapshot.insert(db)
+                    added += 1
+                }
+            }
+            return StatementBalanceRecording(added: added, updated: updated)
         }
     }
 }
