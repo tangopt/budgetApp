@@ -230,14 +230,16 @@ final class ImportViewModel: ObservableObject {
     var statementBalanceSummary: String? {
         guard case .available(let points) = statementBalances, let closing = points.last else { return nil }
         let day = Self.utcDayFormatter.string(from: closing.date)
-        return "\(points.count) balances from the statement, closing \(Money.format(closing.balanceMinorUnits, currency: lastAccountCurrency)) on \(day)"
+        let count = points.count == 1 ? "1 balance" : "\(points.count) balances"
+        return "\(count) from the statement, closing \(Money.format(closing.balanceMinorUnits, currency: lastAccountCurrency)) on \(day)"
     }
 
     /// Records the verified balances now (the panel's "Record now" button). A no-op when
     /// there is nothing to record or it was already recorded.
     @discardableResult
     func recordStatementBalancesNow() -> Bool {
-        recordStatementBalances(failurePrefix: "Couldn't save the statement balances")
+        errorMessage = nil
+        return recordStatementBalances(failurePrefix: "Couldn't save the statement balances")
     }
 
     /// Called after every successful commit. Records at most once per review, and only if

@@ -304,6 +304,31 @@ final class ImportCoordinatorTests: XCTestCase {
         XCTAssertEqual(result, StatementBalanceRecording(added: 0, updated: 1))
         let snapshots = try manager.dbQueue.read { db in try BalanceSnapshot.order(Column("date")).fetchAll(db) }
         XCTAssertEqual(snapshots.map(\.balanceMinorUnits), [98_000, 2])
+        XCTAssertEqual(snapshots.first?.note, "Statement balance — a.csv")
         XCTAssertEqual(snapshots.last?.note, "typed")
+    }
+
+    func testRecordStatementBalancesNeverTouchesAnotherAccountsSnapshotOnTheSameDate() throws {
+        let (manager, account, _) = try makeSeededManager()
+        let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
+        var joint = Account(name: "Joint", currency: .gbp, kind: .cash, trackingMode: .manual)
+        try manager.dbQueue.write { db in
+            try joint.insert(db)
+            var other = BalanceSnapshot(accountId: joint.id!, date: utcDate(2026, 3, 1), balanceMinorUnits: 12_345, note: "other")
+            try other.insert(db)
+        }
+        let result = try coordinator.recordStatementBalances(
+            accountId: account.id!, sourceFileName: "a.csv",
+            points: [StatementBalancePoint(date: utcDate(2026, 3, 1), balanceMinorUnits: 98_000, isClosing: false)]
+        )
+        XCTAssertEqual(result, StatementBalanceRecording(added: 1, updated: 0))
+        let otherSnapshots = try manager.dbQueue.read { db in try BalanceSnapshot.filter(Column("accountId") == joint.id!).fetchAll(db) }
+        XCTAssertEqual(otherSnapshots.count, 1)
+        XCTAssertEqual(otherSnapshots.first?.balanceMinorUnits, 12_345)
+        XCTAssertEqual(otherSnapshots.first?.note, "other")
+        let ownSnapshots = try manager.dbQueue.read { db in try BalanceSnapshot.filter(Column("accountId") == account.id!).fetchAll(db) }
+        XCTAssertEqual(ownSnapshots.count, 1)
+        XCTAssertEqual(ownSnapshots.first?.balanceMinorUnits, 98_000)
+        XCTAssertEqual(ownSnapshots.first?.note, "Statement balance — a.csv")
     }
 }

@@ -87,7 +87,7 @@ If both a debit and a credit header are found, the suggestion enables the separa
 
 ### Safe live verification
 
-`AppEnvironment` honours an optional `BUDGET_DB_PATH` environment variable (falls back to the Application Support path), so the importer can be exercised against a **copy** of the real database without touching it. Launch with `open --env BUDGET_DB_PATH=… <App>.app`.
+`AppEnvironment` honours an optional `BUDGET_DB_PATH` environment variable (falls back to the Application Support path), so the importer can be exercised against a **copy** of the real database without touching it. Quit any running Budget first (an already-running instance ignores the variable), then either run the binary directly, `BUDGET_DB_PATH="/absolute/path/copy.sqlite" "<App>.app/Contents/MacOS/Budget"`, or use `open -n --env BUDGET_DB_PATH=/absolute/path/copy.sqlite <App>.app`. The path must be absolute; `~` is not expanded.
 
 ## Effects by tracking mode
 
