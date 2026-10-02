@@ -10,11 +10,12 @@ public enum DashboardCalculator {
         guard let dataThrough = input.dataThrough else {
             return DataFreshness(status: .noData, lastImportAt: lastBatch?.importedAt, lastImportFileName: lastBatch?.sourceFileName, dataThrough: nil)
         }
-        let threshold = calendar.date(byAdding: .day, value: -31, to: input.today)!
+        let today = calendar.startOfDay(for: input.today) // `Date()` carries a time of day
+        let threshold = calendar.date(byAdding: .day, value: -31, to: today)!
         let status: DataFreshness.Status
         if dataThrough < threshold {
-            let months = calendar.dateComponents([.month], from: dataThrough, to: input.today).month ?? 0
-            let days = calendar.dateComponents([.day], from: dataThrough, to: input.today).day ?? 0
+            let months = calendar.dateComponents([.month], from: dataThrough, to: today).month ?? 0
+            let days = calendar.dateComponents([.day], from: dataThrough, to: today).day ?? 0
             status = .behind(months: months, days: days)
         } else {
             status = .upToDate
@@ -27,7 +28,8 @@ public enum DashboardCalculator {
     public static func attentionItems(_ input: DashboardInput) -> AttentionItems {
         let uncategorized = input.transactions.filter { $0.categoryId == nil || $0.status == .pendingReview }.count
 
-        let threshold = calendar.date(byAdding: .day, value: -45, to: input.today)!
+        let today = calendar.startOfDay(for: input.today) // `Date()` carries a time of day
+        let threshold = calendar.date(byAdding: .day, value: -45, to: today)!
         var staleCount = 0
         var oldest: Date?
         for account in input.accounts where account.trackingMode != .imported {

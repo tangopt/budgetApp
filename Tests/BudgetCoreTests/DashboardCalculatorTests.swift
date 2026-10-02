@@ -26,6 +26,14 @@ final class DashboardCalculatorTests: XCTestCase {
         XCTAssertEqual(DashboardCalculator.dataFreshness(F.input(today: today, transactions: [F.txn(1, date(2026, 8, 31), -1, category: nil)])).status, .behind(months: 1, days: 32))
     }
 
+    func testFreshnessThresholdIgnoresTheTimeOfDayOfToday() {
+        let afternoon = date(2026, 10, 2).addingTimeInterval(14 * 3600) // what the view model passes: Date()
+        // Exactly 31 days earlier (1 Sep) is still up to date even at 14:00.
+        XCTAssertEqual(DashboardCalculator.dataFreshness(F.input(today: afternoon, transactions: [F.txn(1, date(2026, 9, 1), -1, category: nil)])).status, .upToDate)
+        // 32 days earlier (31 Aug) is behind.
+        XCTAssertEqual(DashboardCalculator.dataFreshness(F.input(today: afternoon, transactions: [F.txn(1, date(2026, 8, 31), -1, category: nil)])).status, .behind(months: 1, days: 32))
+    }
+
     func testNoTransactionsMeansNoData() {
         XCTAssertEqual(DashboardCalculator.dataFreshness(F.input(today: date(2026, 10, 2))).status, .noData)
     }
@@ -60,6 +68,19 @@ final class DashboardCalculatorTests: XCTestCase {
 
         let exactly45 = DashboardCalculator.attentionItems(F.input(today: today, accounts: [accounts[4]], snapshots: [F.snapshot(5, date(2026, 8, 18), 100)]))
         XCTAssertEqual(exactly45.staleBalanceCount, 0)
+    }
+
+    func testStaleThresholdIgnoresTheTimeOfDayOfToday() {
+        let afternoon = date(2026, 10, 2).addingTimeInterval(14 * 3600)
+        let account = Account(id: 5, name: "Edge", currency: .gbp, kind: .cash, trackingMode: .manual)
+        // Exactly 45 days earlier (18 Aug) is still fresh at 14:00.
+        let fresh = DashboardCalculator.attentionItems(F.input(today: afternoon, accounts: [account], snapshots: [F.snapshot(5, date(2026, 8, 18), 100)]))
+        XCTAssertEqual(fresh.staleBalanceCount, 0)
+        XCTAssertNil(fresh.oldestStaleSnapshotDate)
+        // 46 days earlier (17 Aug) is stale.
+        let stale = DashboardCalculator.attentionItems(F.input(today: afternoon, accounts: [account], snapshots: [F.snapshot(5, date(2026, 8, 17), 100)]))
+        XCTAssertEqual(stale.staleBalanceCount, 1)
+        XCTAssertEqual(stale.oldestStaleSnapshotDate, date(2026, 8, 17))
     }
 
     func testCatchAllIssueStates() {
