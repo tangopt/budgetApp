@@ -7,8 +7,8 @@ final class DashboardFlowTests: XCTestCase {
 
     /// Mid-October, data through 13 Oct: rent paid (matches its expectation), groceries
     /// unplanned, dining over its expectation, salary not yet in; two unreviewed outflows.
-    private var blendedInput: DashboardInput {
-        F.input(today: date(2026, 10, 14), transactions: [
+    private var blendedTransactions: [Transaction] {
+        [
             F.txn(1, date(2026, 1, 1), -100_000, category: F.rentId),
             F.txn(2, date(2026, 1, 25), 300_000, category: F.salaryId),
             F.txn(3, date(2026, 10, 1), -100_000, category: F.rentId),
@@ -16,7 +16,11 @@ final class DashboardFlowTests: XCTestCase {
             F.txn(5, date(2026, 10, 13), -55_000, category: F.diningId),
             F.txn(6, date(2026, 10, 5), -3_000, category: nil, status: .pendingReview),
             F.txn(7, date(2026, 10, 6), -2_000, category: F.groceriesId, status: .pendingReview)
-        ])
+        ]
+    }
+
+    private var blendedInput: DashboardInput {
+        F.input(today: date(2026, 10, 14), transactions: blendedTransactions)
     }
 
     // MARK: current month
@@ -57,6 +61,32 @@ final class DashboardFlowTests: XCTestCase {
         let input = F.input(today: date(2026, 10, 14), transactions: [F.txn(1, date(2026, 10, 13), -55_000, category: F.diningId)], entries: withBulk, catchAllId: F.bulkId)
         // Expected 100k rent + 40k dining + 17,139 bulk; actual only dining (55k) → projected 100k + 55k + 17,139.
         XCTAssertEqual(DashboardCalculator.currentMonth(input).expenses.projected, 172_139)
+    }
+
+    // Transfers (Savings here) are neither income nor expense: a confirmed transfer
+    // transaction and a transfer forecast entry must not move any flow figure.
+    func testTransfersAreExcludedFromEveryFlowFigure() {
+        let transferEntry = ForecastEntry(id: 9, groupId: 1, categoryId: F.savingsId, amountMinorUnits: -50_000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 1), endDate: nil, isEnabled: true, status: .manual, note: nil)
+        let withTransfers = F.input(
+            today: date(2026, 10, 14),
+            transactions: blendedTransactions + [F.txn(8, date(2026, 10, 8), -200_000, category: F.savingsId)],
+            entries: F.withDining + [transferEntry]
+        )
+        let baseline = blendedInput
+
+        let month = DashboardCalculator.currentMonth(withTransfers)
+        XCTAssertEqual(month, DashboardCalculator.currentMonth(baseline))
+        XCTAssertEqual(month.income, FlowTotals(actual: 0, expected: 300_000, projected: 300_000))
+        XCTAssertEqual(month.expenses, FlowTotals(actual: 180_000, expected: 140_000, projected: 180_000))
+        XCTAssertEqual(month.unreviewedCount, 2)
+
+        let flows = DashboardCalculator.monthlyFlows(withTransfers, year: 2026)
+        XCTAssertEqual(flows, DashboardCalculator.monthlyFlows(baseline, year: 2026))
+        XCTAssertEqual([flows[9].incomeActual, flows[9].incomeRemaining, flows[9].expenseActual, flows[9].expenseRemaining], [0, 300_000, 180_000, 0])
+
+        let top = DashboardCalculator.topCategories(withTransfers)
+        XCTAssertEqual(top, DashboardCalculator.topCategories(baseline))
+        XCTAssertEqual(top.map(\.name), ["Rent", "Food"])
     }
 
     // MARK: monthly flows

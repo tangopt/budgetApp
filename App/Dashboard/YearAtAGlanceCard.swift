@@ -33,12 +33,23 @@ struct YearAtAGlanceCard: View {
                 total("Expenses", projected: totals.expenseProjected, actual: totals.expenseActual, hasForecast: totals.hasForecast)
                 total("Net saved", projected: totals.netProjected, actual: totals.netActual, hasForecast: totals.hasForecast)
             }
-            Text(isFuture
-                 ? "Forecast months use confirmed entries only. Unreviewed transactions aren't included."
-                 : "Completed year — same totals as the Budget grid.")
+            Text(footnote(isFuture: isFuture))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// Built as a String (the year via `String(_:)`, so it reads "2026", not "2,026").
+    private func footnote(isFuture: Bool) -> String {
+        var text = isFuture ? "Forecast months use confirmed entries only." : "Completed year — same totals as the Budget grid."
+        let unreviewed = viewModel.unreviewed
+        guard unreviewed.count > 0 else {
+            return isFuture ? text + " Unreviewed transactions aren't included." : text
+        }
+        let single = unreviewed.count == 1
+        let out = unreviewed.outflowMinorUnits > 0 ? " (\(DashboardFormat.pounds(unreviewed.outflowMinorUnits)) out)" : ""
+        text += " \(unreviewed.count) unreviewed transaction\(single ? "" : "s")\(out) in \(String(viewModel.selectedYear)) \(single ? "isn't" : "aren't") included."
+        return text
     }
 
     private func total(_ title: String, projected: Int, actual: Int, hasForecast: Bool) -> some View {

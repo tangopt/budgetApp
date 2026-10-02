@@ -109,7 +109,7 @@ struct FreshnessImportCard: View {
     private func accountPicker() -> some View {
         Picker("Import into", selection: $selectedAccountId) {
             ForEach(accounts) { account in
-                Text(account.name).tag(account.id)
+                Text("\(account.name) (\(account.currency.rawValue.uppercased()))").tag(account.id)
             }
         }
         .labelsHidden()
@@ -119,13 +119,19 @@ struct FreshnessImportCard: View {
     /// Account picker plus the two import buttons. `actions` is nil when the selected id
     /// doesn't match a saved account (the picker alone is shown to correct it).
     private func idleControls(actions: ImportFlowActions?) -> some View {
-        HStack {
-            accountPicker()
-            if let actions {
-                // Never truncated ("Import CS…"): the layout above gives them room instead.
-                Button("Import CSV…") { actions.startCSV() }.fixedSize()
-                Button("Import PDF…") { actions.startPDF() }.fixedSize()
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                accountPicker()
+                if let actions {
+                    // Never truncated ("Import CS…"): the layout above gives them room instead.
+                    Button("Import CSV…") { actions.startCSV() }.fixedSize()
+                    Button("Import PDF…") { actions.startPDF() }.fixedSize()
+                }
             }
+            // Capped so a long caption wraps instead of widening the controls (which would
+            // tip the card into its stacked layout earlier than the buttons need).
+            NonGBPImportCaption(account: selectedAccount)
+                .frame(maxWidth: 320, alignment: .leading)
         }
     }
 

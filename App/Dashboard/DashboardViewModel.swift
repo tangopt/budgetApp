@@ -27,6 +27,8 @@ final class DashboardViewModel: ObservableObject {
     @Published private(set) var content: DashboardContent?
     @Published private(set) var flows: [MonthlyFlow] = []
     @Published private(set) var selectedYear: Int
+    /// Unreviewed transactions in the selected year (left out of its totals).
+    @Published private(set) var unreviewed = UnreviewedSummary(count: 0, outflowMinorUnits: 0)
     @Published private(set) var errorMessage: String?
 
     private let dbQueue: DatabaseQueue
@@ -79,6 +81,7 @@ final class DashboardViewModel: ObservableObject {
             )
             if !range.contains(selectedYear) { selectedYear = thisYear }
             flows = DashboardCalculator.monthlyFlows(loaded, year: selectedYear)
+            unreviewed = DashboardCalculator.unreviewed(loaded, year: selectedYear)
             errorMessage = nil
         } catch {
             errorMessage = "Couldn't load the dashboard: \(error.localizedDescription)"
@@ -90,5 +93,6 @@ final class DashboardViewModel: ObservableObject {
         guard let input, content?.yearRange.contains(year) == true else { return }
         selectedYear = year
         flows = DashboardCalculator.monthlyFlows(input, year: year)
+        unreviewed = DashboardCalculator.unreviewed(input, year: year)
     }
 }

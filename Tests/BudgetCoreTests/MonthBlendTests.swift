@@ -42,6 +42,17 @@ final class MonthBlendTests: XCTestCase {
         XCTAssertEqual(MonthBlend.classify(year: 2026, month: 11, dataThrough: dataThrough, today: today), .forecast)
     }
 
+    // The data month is later than the clock's month: the clock is clamped up to the data, so
+    // that later month is the (blended) current month and the clock's own month is history.
+    // Without the `max(today, dataThrough)` clamp October would be forecast and November actual.
+    func testDataInALaterMonthThanTodayMakesThatLaterMonthTheBlendedOne() {
+        let dataThrough = utc(2026, 11, 3), today = utc(2026, 10, 28)
+        XCTAssertEqual(MonthBlend.classify(year: 2026, month: 9, dataThrough: dataThrough, today: today), .actual)
+        XCTAssertEqual(MonthBlend.classify(year: 2026, month: 10, dataThrough: dataThrough, today: today), .actual)
+        XCTAssertEqual(MonthBlend.classify(year: 2026, month: 11, dataThrough: dataThrough, today: today), .blended)
+        XCTAssertEqual(MonthBlend.classify(year: 2026, month: 12, dataThrough: dataThrough, today: today), .forecast)
+    }
+
     func testActualAndForecastMonthsPassTheirOwnValueThrough() {
         XCTAssertEqual(MonthBlend.projectedTotal(actual: -500, expected: -850, categoryType: .expense, monthClass: .actual), -500)
         XCTAssertEqual(MonthBlend.projectedTotal(actual: -500, expected: -850, categoryType: .expense, monthClass: .forecast), -850)

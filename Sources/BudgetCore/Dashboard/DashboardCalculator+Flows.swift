@@ -62,6 +62,19 @@ public struct YearTotals: Equatable {
     public var hasForecast: Bool { incomeProjected != incomeActual || expenseProjected != expenseActual }
 }
 
+/// Transactions with no category or still pending review: left out of every total (like the
+/// Budget grid), so any card showing totals notes them. `outflowMinorUnits` is the money
+/// out among them, as a positive magnitude.
+public struct UnreviewedSummary: Equatable {
+    public let count: Int
+    public let outflowMinorUnits: Int
+
+    public init(count: Int, outflowMinorUnits: Int) {
+        self.count = count
+        self.outflowMinorUnits = outflowMinorUnits
+    }
+}
+
 public struct CategorySpend: Equatable, Identifiable {
     public let name: String
     public let actual: Int
@@ -123,16 +136,28 @@ extension DashboardCalculator {
         let totals = monthTotals(input, year: parts.year, month: parts.month, monthClass: monthClass, includeExpected: true)
 
         let range = MonthRange.of(year: parts.year, month: parts.month)
-        let unreviewed = input.transactions.filter { $0.date >= range.start && $0.date <= range.end && ($0.categoryId == nil || $0.status == .pendingReview) }
-        let outflow = -unreviewed.map(\.amountMinorUnits).filter { $0 < 0 }.reduce(0, +)
+        let unreviewed = unreviewedSummary(input, from: range.start, through: range.end)
 
         return CurrentMonthTracking(
             year: parts.year, month: parts.month,
             dayOfMonth: calendar.component(.day, from: today),
             daysInMonth: calendar.range(of: .day, in: .month, for: today)!.count,
             monthClass: monthClass, income: totals.income, expenses: totals.expenses,
-            unreviewedCount: unreviewed.count, unreviewedOutflowMinorUnits: outflow
+            unreviewedCount: unreviewed.count, unreviewedOutflowMinorUnits: unreviewed.outflowMinorUnits
         )
+    }
+
+    // MARK: Unreviewed
+
+    /// Unreviewed transactions dated within the UTC calendar `year`.
+    public static func unreviewed(_ input: DashboardInput, year: Int) -> UnreviewedSummary {
+        unreviewedSummary(input, from: MonthRange.of(year: year, month: 1).start, through: MonthRange.of(year: year, month: 12).end)
+    }
+
+    private static func unreviewedSummary(_ input: DashboardInput, from start: Date, through end: Date) -> UnreviewedSummary {
+        let unreviewed = input.transactions.filter { $0.date >= start && $0.date <= end && ($0.categoryId == nil || $0.status == .pendingReview) }
+        let outflow = -unreviewed.map(\.amountMinorUnits).filter { $0 < 0 }.reduce(0, +)
+        return UnreviewedSummary(count: unreviewed.count, outflowMinorUnits: outflow)
     }
 
     // MARK: Year at a glance

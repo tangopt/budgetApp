@@ -148,6 +148,8 @@ struct ContentView: View {
                             // The staged rows belong to the account they were staged for;
                             // switching mid-review would be misleading.
                             .disabled(importViewModel.isReviewing)
+                            NonGBPImportCaption(account: selectedImportAccount)
+                                .padding(.horizontal)
                             if let account = selectedImportAccount {
                                 ImportView(
                                     viewModel: importViewModel,
@@ -196,6 +198,11 @@ struct ContentView: View {
         }
         .onChange(of: selectedImportAccountId) { _ in
             if let id = selectedImportAccountId { lastImportAccountId = Int(id) }
+        }
+        .onChange(of: environment.exchangeRateBanner) { _ in
+            // The EUR rate refreshes asynchronously after launch; the dashboard's net worth
+            // and forecast figures depend on it, so recompute if it's what is on screen.
+            if selection == .dashboard { dashboardViewModel.load() }
         }
     }
 
