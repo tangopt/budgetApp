@@ -203,19 +203,15 @@ final class ForecastViewModel: ObservableObject {
     }
 
     private func computeForecastNetWorth(atEndOf year: Int) -> Int? {
-        guard let netChange = sumOverForecastMonths(atEndOf: year, { y, m in
-            let range = dateRange(forYear: y, month: m)
-            return ForecastCalculator.confirmedNetWorthImpact(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: categories, entries: entries, groups: groups)
-        }) else { return nil }
-        return currentNetWorthGBP + netChange
+        guard let latestRealMonth else { return nil }
+        return ForecastProjector.forecastNetWorth(startingNetWorth: currentNetWorthGBP, latestRealMonth: latestRealMonth, atEndOf: year, categories: categories, entries: entries, groups: groups)
     }
 
     /// Walks month-by-month from the month after `latestRealMonth` through December of
     /// `year` (inclusive), summing whatever `perMonth(year, month)` returns for each
-    /// month. `nil` when there's no `latestRealMonth` yet. Shared by
-    /// `computeForecastNetWorth` and `computeScenarioNetWorthImpact`, which differ only in
-    /// what they accumulate per month — factored out so the month-rollover arithmetic
-    /// (`cursor.month += 1; if cursor.month > 12 { … }`) exists in exactly one place.
+    /// month. `nil` when there's no `latestRealMonth` yet. Used by
+    /// `computeScenarioNetWorthImpact`; the confirmed forecast walk lives in
+    /// `ForecastProjector` (which mirrors this month-rollover arithmetic).
     private func sumOverForecastMonths(atEndOf year: Int, _ perMonth: (Int, Int) -> Int) -> Int? {
         guard let latestRealMonth else { return nil }
         var sum = 0
