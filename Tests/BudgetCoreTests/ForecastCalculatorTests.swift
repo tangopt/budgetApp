@@ -133,4 +133,19 @@ final class ForecastCalculatorTests: XCTestCase {
         let delta = ForecastCalculator.previewNetWorthDelta(period: period, categories: [carPayment], entries: entries, groups: groups, selectedScenarioGroupId: nil)
         XCTAssertEqual(delta, 0)
     }
+
+    func testConfirmedEntriesExcludesHypotheticalDisabledAndDisabledGroupEntries() {
+        let groups = [
+            ForecastGroup(id: 1, name: "On", note: nil, isEnabled: true, isSystemManaged: false),
+            ForecastGroup(id: 2, name: "Off", note: nil, isEnabled: false, isSystemManaged: false)
+        ]
+        func entry(_ id: Int64, group: Int64, status: ForecastEntryStatus, enabled: Bool = true) -> ForecastEntry {
+            ForecastEntry(id: id, groupId: group, categoryId: 10, amountMinorUnits: -100, frequency: .monthly, interval: 1, startDate: date(2026, 1, 1), endDate: nil, isEnabled: enabled, status: status, note: nil)
+        }
+        let entries = [
+            entry(1, group: 1, status: .auto), entry(2, group: 1, status: .manual), entry(3, group: 1, status: .confirmed),
+            entry(4, group: 1, status: .hypothetical), entry(5, group: 1, status: .auto, enabled: false), entry(6, group: 2, status: .auto)
+        ]
+        XCTAssertEqual(ForecastCalculator.confirmedEntries(entries: entries, groups: groups).map(\.id), [1, 2, 3])
+    }
 }

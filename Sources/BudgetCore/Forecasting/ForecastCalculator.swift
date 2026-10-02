@@ -38,19 +38,21 @@ public enum ForecastCalculator {
         }
     }
 
-    private static func total(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], selectedScenarioGroupId: Int64?, includeHypothetical: Bool) -> Int {
+    /// The entries that count toward the *confirmed* forecast: enabled, not hypothetical, and
+    /// in an enabled group. Shared by `total` and by the dashboard's upcoming-bills list so
+    /// the two can never apply different rules.
+    public static func confirmedEntries(entries: [ForecastEntry], groups: [ForecastGroup]) -> [ForecastEntry] {
         let enabledGroupIds = Set(groups.filter(\.isEnabled).compactMap(\.id))
-        return entries
+        return entries.filter { $0.isEnabled && $0.status != .hypothetical && enabledGroupIds.contains($0.groupId) }
+    }
+
+    private static func total(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], selectedScenarioGroupId: Int64?, includeHypothetical: Bool) -> Int {
+        let confirmed = confirmedEntries(entries: entries, groups: groups)
+        let hypothetical = includeHypothetical
+            ? entries.filter { $0.isEnabled && $0.status == .hypothetical && $0.groupId == selectedScenarioGroupId }
+            : []
+        return (confirmed + hypothetical)
             .filter { $0.categoryId == categoryId }
-            .filter { $0.isEnabled }
-            .filter { entry in
-                switch entry.status {
-                case .auto, .manual, .confirmed:
-                    return enabledGroupIds.contains(entry.groupId)
-                case .hypothetical:
-                    return includeHypothetical && entry.groupId == selectedScenarioGroupId
-                }
-            }
             .reduce(0) { $0 + FrequencyExpander.amount(for: $1, in: period) }
     }
 }
