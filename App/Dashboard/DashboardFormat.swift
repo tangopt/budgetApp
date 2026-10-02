@@ -40,4 +40,13 @@ enum DashboardFormat {
         let thousands = Double(minorUnits) / 100_000
         return String(format: "%@£%.1fk", thousands < 0 ? "-" : "+", abs(thousands))
     }
+
+    /// Y-axis tick label in thousands of pounds, up to one decimal: "£2.5k", "£0.5k", "£0k",
+    /// "-£0.5k". Rounds to one decimal (never truncates), and a value that rounds to zero
+    /// is shown unsigned.
+    static func axisThousands(_ pounds: Double) -> String {
+        let thousands = (pounds / 100).rounded() / 10 // thousands, rounded to one decimal
+        let body = abs(thousands).formatted(.number.precision(.fractionLength(0...1)).locale(Locale(identifier: "en_GB")))
+        return (thousands < 0 ? "-" : "") + "£" + body + "k"
+    }
 }

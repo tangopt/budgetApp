@@ -6,6 +6,13 @@ import BudgetCore
 struct YearOverYearChart: View {
     let changes: [YearChange]
 
+    @State private var selectedYear: String?
+
+    private var selected: YearChange? {
+        guard let selectedYear else { return nil }
+        return changes.first { label($0) == selectedYear }
+    }
+
     private func label(_ change: YearChange) -> String {
         change.partialFromMonth != nil ? "\(change.year)*" : String(change.year)
     }
@@ -28,12 +35,26 @@ struct YearOverYearChart: View {
                         .annotation(position: change.totalMinorUnits < 0 ? .bottom : .top) { totalLabel(change) }
                 }
             }
+            if let selected {
+                RuleMark(x: .value("Year", label(selected)))
+                    .foregroundStyle(Color.secondary.opacity(0.3))
+                    .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                        VStack(spacing: 0) {
+                            Text(label(selected)).font(.caption2).foregroundStyle(.secondary)
+                            Text(DashboardFormat.pounds(selected.totalMinorUnits)).font(.caption.bold())
+                            Text(DashboardFormat.percent(selected.percent)).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        .padding(4)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)))
+                    }
+            }
         }
+        .chartXSelection(value: $selectedYear)
         .chartYAxis {
             AxisMarks(position: .leading) { value in
                 AxisGridLine()
                 AxisValueLabel {
-                    if let pounds = value.as(Double.self) { Text("£\(Int(pounds / 1000))k") }
+                    if let pounds = value.as(Double.self) { Text(DashboardFormat.axisThousands(pounds)) }
                 }
             }
         }

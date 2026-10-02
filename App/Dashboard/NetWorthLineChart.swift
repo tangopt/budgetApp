@@ -78,7 +78,7 @@ struct NetWorthLineChart: View {
             AxisMarks(position: .leading) { value in
                 AxisGridLine()
                 AxisValueLabel {
-                    if let pounds = value.as(Double.self) { Text("£\(Int(pounds / 1000))k") }
+                    if let pounds = value.as(Double.self) { Text(DashboardFormat.axisThousands(pounds)) }
                 }
             }
         }
