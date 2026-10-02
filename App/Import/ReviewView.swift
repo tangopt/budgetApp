@@ -20,6 +20,8 @@ struct ReviewView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            statementBalancesPanel
+
             if !viewModel.unparsedLines.isEmpty {
                 GroupBox {
                     DisclosureGroup(isExpanded: $showUnparsed) {
@@ -142,6 +144,44 @@ struct ReviewView: View {
                 }
                 .disabled(viewModel.stagedRows.isEmpty)
                 Button("Cancel import", role: .cancel) { viewModel.cancel() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statementBalancesPanel: some View {
+        switch viewModel.statementBalances {
+        case .notProvided:
+            EmptyView()
+        case .unverified(let reason):
+            GroupBox {
+                Label(reason, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                Text("Statement balances")
+            }
+        case .available:
+            GroupBox {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let recorded = viewModel.statementBalancesRecorded {
+                        Label("Recorded \(recorded.added + recorded.updated) balance snapshot(s)", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    } else {
+                        if let summary = viewModel.statementBalanceSummary { Text(summary) }
+                        Toggle("Record them when I confirm", isOn: $viewModel.recordStatementBalancesOnConfirm)
+                        HStack {
+                            Button("Record now") { viewModel.recordStatementBalancesNow() }
+                            Text("Snapshots on the same dates are replaced.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                Label("Statement balances", systemImage: "banknote")
             }
         }
     }

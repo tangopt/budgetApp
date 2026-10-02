@@ -30,12 +30,28 @@ final class ImportViewModel: ObservableObject {
     /// before the first batch reports in (e.g. during the initial parse/duplicate lookup)
     /// and reset to `nil` whenever a new staging run starts or the current one ends.
     @Published private(set) var stagingProgress: (current: Int, total: Int)?
+    /// Verified Balance-column result for the file under review. `.notProvided` for PDFs,
+    /// credit-card accounts, and files without a mapped Balance column.
+    @Published private(set) var statementBalances: StatementBalanceResult = .notProvided
+    /// When on, the statement balances are recorded once, on the first successful commit.
+    @Published var recordStatementBalancesOnConfirm = true
+    /// Set once the balances for the current review have been recorded.
+    @Published private(set) var statementBalancesRecorded: StatementBalanceRecording?
 
     private let dbQueue: DatabaseQueue
     private let coordinator: ImportCoordinator
     private let profileStore: ImportProfileStore
     private var lastSourceFileName: String = ""
     private var lastAccountId: Int64 = 0
+    private var lastAccountCurrency: Currency = .gbp
+
+    private static let utcDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "d MMM yyyy"
+        return formatter
+    }()
 
     init(dbQueue: DatabaseQueue, coordinator: ImportCoordinator, profileStore: ImportProfileStore) {
         self.dbQueue = dbQueue
@@ -65,7 +81,7 @@ final class ImportViewModel: ObservableObject {
                 return fail("No column mapping saved for this account yet. Run the mapping wizard first.")
             }
             let result = try await coordinator.stageCSVImport(csvText: csvText, profile: profile, accountId: accountId, onProgress: makeProgressHandler())
-            apply(result, sourceFileName: fileURL.lastPathComponent, accountId: accountId)
+            apply(result, sourceFileName: fileURL.lastPathComponent, account: account)
         } catch {
             fail("Couldn't read \(fileURL.lastPathComponent): \(error.localizedDescription)")
         }
@@ -91,15 +107,21 @@ final class ImportViewModel: ObservableObject {
         do {
             guard let accountId = account.id else { return fail("This account hasn't been saved yet.") }
             let result = try await coordinator.stagePDFImport(lines: lines, config: config, accountId: accountId, onProgress: makeProgressHandler())
-            apply(result, sourceFileName: sourceFileName, accountId: accountId)
+            apply(result, sourceFileName: sourceFileName, account: account)
         } catch {
             fail("Couldn't stage \(sourceFileName): \(error.localizedDescription)")
         }
     }
 
-    private func apply(_ result: StagedImport, sourceFileName: String, accountId: Int64) {
+    private func apply(_ result: StagedImport, sourceFileName: String, account: Account) {
         lastSourceFileName = sourceFileName
-        lastAccountId = accountId
+        lastAccountId = account.id ?? 0
+        lastAccountCurrency = account.currency
+        // Credit-card statements show balances with bank-specific sign conventions, so the
+        // feature is off for them (see the spec's non-goals).
+        statementBalances = account.kind == .credit ? .notProvided : result.statementBalances
+        statementBalancesRecorded = nil
+        recordStatementBalancesOnConfirm = true
         stagedRows = result.staged.map { ReviewRow(staged: $0, chosenCategoryId: $0.suggestedCategoryId) }
         duplicates = result.duplicates
         unparsedLines = result.unparsedLines
@@ -154,7 +176,8 @@ final class ImportViewModel: ObservableObject {
         }
         let readyIds = Set(ready.map(\.id))
         stagedRows.removeAll { readyIds.contains($0.id) }
-        statusMessage = "Confirmed \(ready.count) transaction(s)."
+        let recordedNote = recordBalancesAfterCommitIfWanted()
+        statusMessage = "Confirmed \(ready.count) transaction(s)." + (recordedNote.map { " " + $0 } ?? "")
         if stagedRows.isEmpty && duplicates.isEmpty && unparsedLines.isEmpty { isReviewing = false }
         return true
     }
@@ -172,6 +195,7 @@ final class ImportViewModel: ObservableObject {
             return false
         }
         stagedRows.removeAll { $0.id == row.id }
+        _ = recordBalancesAfterCommitIfWanted()
         if stagedRows.isEmpty && duplicates.isEmpty && unparsedLines.isEmpty { isReviewing = false }
         return true
     }
@@ -195,9 +219,46 @@ final class ImportViewModel: ObservableObject {
         }
         let savedIds = Set(remaining.map(\.id))
         stagedRows.removeAll { savedIds.contains($0.id) }
-        statusMessage = "Saved \(remaining.count) transaction(s) — assign categories from Uncategorized."
+        let recordedNote = recordBalancesAfterCommitIfWanted()
+        statusMessage = "Saved \(remaining.count) transaction(s) — assign categories from Uncategorized." + (recordedNote.map { " " + $0 } ?? "")
         if stagedRows.isEmpty && duplicates.isEmpty && unparsedLines.isEmpty { isReviewing = false }
         return true
+    }
+
+    /// "8 balances from the statement, closing £27,596.28 on 29 Sep 2026" — `nil` unless
+    /// there is a verified result.
+    var statementBalanceSummary: String? {
+        guard case .available(let points) = statementBalances, let closing = points.last else { return nil }
+        let day = Self.utcDayFormatter.string(from: closing.date)
+        return "\(points.count) balances from the statement, closing \(Money.format(closing.balanceMinorUnits, currency: lastAccountCurrency)) on \(day)"
+    }
+
+    /// Records the verified balances now (the panel's "Record now" button). A no-op when
+    /// there is nothing to record or it was already recorded.
+    @discardableResult
+    func recordStatementBalancesNow() -> Bool {
+        recordStatementBalances(failurePrefix: "Couldn't save the statement balances")
+    }
+
+    /// Called after every successful commit. Records at most once per review, and only if
+    /// the user left the toggle on. Returns a short note for the status line when it
+    /// recorded something. A failure here never undoes the commit that already succeeded.
+    private func recordBalancesAfterCommitIfWanted() -> String? {
+        guard recordStatementBalancesOnConfirm, statementBalancesRecorded == nil, case .available = statementBalances else { return nil }
+        guard recordStatementBalances(failurePrefix: "Transactions were confirmed, but the statement balances couldn't be saved"),
+              let recorded = statementBalancesRecorded else { return nil }
+        return "Recorded \(recorded.added + recorded.updated) balance snapshot(s)."
+    }
+
+    private func recordStatementBalances(failurePrefix: String) -> Bool {
+        guard statementBalancesRecorded == nil, case .available(let points) = statementBalances else { return true }
+        do {
+            statementBalancesRecorded = try coordinator.recordStatementBalances(accountId: lastAccountId, sourceFileName: lastSourceFileName, points: points)
+            return true
+        } catch {
+            fail("\(failurePrefix): \(error.localizedDescription)")
+            return false
+        }
     }
 
     func cancel() {
@@ -210,6 +271,8 @@ final class ImportViewModel: ObservableObject {
         duplicates = []
         unparsedLines = []
         isReviewing = false
+        statementBalances = .notProvided
+        statementBalancesRecorded = nil
     }
 
     /// Reads a user-picked file, honouring security-scoped access if the app is ever
