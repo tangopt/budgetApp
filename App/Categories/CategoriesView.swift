@@ -30,8 +30,22 @@ final class CategoriesViewModel: ObservableObject {
         guard let index = categories.firstIndex(where: { $0.id == category.id }) else { return }
         var updated = categories[index]
         updated.groupId = groupId
-        try dbQueue.write { db in try updated.update(db) }
+        try dbQueue.write { db in try updated.update(db, columns: ["groupId"]) }
         categories[index] = updated
+    }
+
+    /// Designates (or clears) the catch-all expense category. Designating promotes the
+    /// category's auto forecast entry to manual and clears any previous catch-all.
+    func setCatchAll(_ category: Category, enabled: Bool) throws {
+        guard let id = category.id else { return }
+        try dbQueue.write { db in
+            if enabled {
+                try CatchAllCategory.designate(db: db, categoryId: id)
+            } else {
+                try CatchAllCategory.clear(db: db, categoryId: id)
+            }
+        }
+        try load()
     }
 }
 
@@ -55,6 +69,14 @@ struct CategoriesView: View {
                 HStack {
                     Text(category.name)
                     Spacer()
+                    if category.type == .expense {
+                        Toggle("Catch-all", isOn: Binding(
+                            get: { category.isCatchAll },
+                            set: { newValue in try? viewModel.setCatchAll(category, enabled: newValue) }
+                        ))
+                        .toggleStyle(.checkbox)
+                        .help("Use as the catch-all for unplanned spending. Its monthly allowance stays in the forecast, and the auto-forecast never changes it.")
+                    }
                     Picker("", selection: Binding<Int64?>(
                         get: { category.groupId },
                         set: { newValue in try? viewModel.assignCategory(category, toGroupId: newValue) }
