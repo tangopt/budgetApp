@@ -27,10 +27,11 @@ struct DashboardCard<Content: View>: View {
     }
 }
 
-/// A thin progress meter with a marker at "how far through the month we are".
+/// A thin progress meter, optionally with a marker at "how far through the month we are"
+/// (`pace` nil draws no marker).
 struct PaceMeter: View {
     let fraction: Double
-    let pace: Double
+    let pace: Double?
     let tint: Color
 
     var body: some View {
@@ -38,8 +39,10 @@ struct PaceMeter: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(Color(nsColor: .separatorColor).opacity(0.5))
                 Capsule().fill(tint).frame(width: proxy.size.width * min(max(fraction, 0), 1))
-                Rectangle().fill(Color.primary.opacity(0.6)).frame(width: 2)
-                    .offset(x: proxy.size.width * min(max(pace, 0), 1) - 1)
+                if let pace {
+                    Rectangle().fill(Color.primary.opacity(0.6)).frame(width: 2)
+                        .offset(x: proxy.size.width * min(max(pace, 0), 1) - 1)
+                }
             }
         }
         .frame(height: 6)

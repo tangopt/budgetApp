@@ -13,21 +13,28 @@ struct TopCategoriesCard: View {
                 Text("Nothing planned or spent yet this month.").font(.callout).foregroundStyle(.secondary)
             }
             ForEach(categories) { category in
-                HStack {
-                    Text(category.name)
-                    Spacer()
-                    if category.isUnplanned {
-                        Text("\(DashboardFormat.pounds(category.actual)) · unplanned").foregroundStyle(.orange)
-                    } else if hasActuals {
-                        Text("\(DashboardFormat.pounds(category.actual)) of \(DashboardFormat.pounds(category.expected))")
-                            .foregroundStyle(category.isOver ? Color.red : Color.primary)
-                        if category.isOver { Text("+\(DashboardFormat.pounds(category.actual - category.expected))").foregroundStyle(.red) }
-                    } else {
-                        Text("expected \(DashboardFormat.pounds(category.expected))").foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(category.name)
+                        Spacer()
+                        if category.isUnplanned {
+                            Text("\(DashboardFormat.pounds(category.actual)) · unplanned").foregroundStyle(.orange)
+                        } else if hasActuals {
+                            Text("\(DashboardFormat.pounds(category.actual)) of \(DashboardFormat.pounds(category.expected))")
+                                .foregroundStyle(category.isOver ? Color.red : Color.primary)
+                            if category.isOver { Text("+\(DashboardFormat.pounds(category.actual - category.expected))").foregroundStyle(.red) }
+                        } else {
+                            Text("expected \(DashboardFormat.pounds(category.expected))").foregroundStyle(.secondary)
+                        }
+                    }
+                    .font(.callout)
+                    .monospacedDigit()
+                    // Spent so far against what was planned for the month; PaceMeter caps the bar
+                    // at full width, so an over-budget row reads as a full red bar.
+                    if hasActuals && category.expected > 0 {
+                        PaceMeter(fraction: max(Double(category.actual) / Double(category.expected), 0), pace: nil, tint: category.isOver ? .red : .orange)
                     }
                 }
-                .font(.callout)
-                .monospacedDigit()
                 if category.id != categories.last?.id { Divider() }
             }
         }
@@ -130,13 +137,27 @@ struct AccountsCard: View {
     }
 
     /// A credit account's balance is negative when money is owed (positive = in credit), so
-    /// "owed" is only said for the negative case.
+    /// "owed" is only said for the negative case. A non-GBP account shows its native amount
+    /// with the GBP equivalent secondary in parentheses, as the Net Worth screen does.
     @ViewBuilder
     private func balanceText(_ account: AccountSummary) -> some View {
-        if account.kind == .credit && account.gbpBalanceMinorUnits < 0 {
-            Text("\(DashboardFormat.pounds(abs(account.gbpBalanceMinorUnits))) owed").foregroundStyle(.red)
-        } else {
-            Text(DashboardFormat.pounds(account.gbpBalanceMinorUnits))
+        let isOwed = account.kind == .credit && account.gbpBalanceMinorUnits < 0
+        HStack(spacing: 4) {
+            if account.currency == .gbp {
+                if isOwed {
+                    Text("\(DashboardFormat.pounds(abs(account.gbpBalanceMinorUnits))) owed").foregroundStyle(.red)
+                } else {
+                    Text(DashboardFormat.pounds(account.gbpBalanceMinorUnits))
+                }
+            } else {
+                if isOwed {
+                    Text("\(Money.format(abs(account.nativeBalanceMinorUnits), currency: account.currency)) owed").foregroundStyle(.red)
+                } else {
+                    Text(Money.format(account.nativeBalanceMinorUnits, currency: account.currency))
+                }
+                Text("(\(DashboardFormat.pounds(isOwed ? abs(account.gbpBalanceMinorUnits) : account.gbpBalanceMinorUnits)))")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

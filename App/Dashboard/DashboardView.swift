@@ -10,9 +10,6 @@ struct DashboardView: View {
     let profileStore: ImportProfileStore
     let navigate: (AppScreen) -> Void
 
-    // Cards reflow to a single column on narrow windows rather than truncating.
-    private let columns = [GridItem(.adaptive(minimum: 340), spacing: 12, alignment: .top)]
-
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
@@ -37,17 +34,20 @@ struct DashboardView: View {
                 if let content = viewModel.content {
                     FreshnessImportCard(freshness: content.freshness, importViewModel: importViewModel, accounts: accounts, selectedAccountId: $selectedImportAccountId, profileStore: profileStore, navigate: navigate)
                     NetWorthCard(content: content, navigate: navigate)
-                    LazyVGrid(columns: columns, spacing: 12) {
+                    TwoUpRow {
                         YearChangeCard(changes: content.yearChanges, navigate: navigate)
+                    } second: {
                         CurrentMonthCard(month: content.currentMonth, catchAll: content.catchAll, navigate: navigate)
                     }
                     YearAtAGlanceCard(viewModel: viewModel, content: content, navigate: navigate)
-                    LazyVGrid(columns: columns, spacing: 12) {
+                    TwoUpRow {
                         TopCategoriesCard(categories: content.topCategories, hasActuals: content.currentMonth.monthClass == .blended, navigate: navigate)
+                    } second: {
                         AttentionCard(items: content.attention, navigate: navigate)
                     }
-                    LazyVGrid(columns: columns, spacing: 12) {
+                    TwoUpRow {
                         UpcomingBillsCard(bills: content.bills, navigate: navigate)
+                    } second: {
                         AccountsCard(accounts: content.accounts, navigate: navigate)
                     }
                 } else if viewModel.errorMessage == nil {
@@ -55,6 +55,32 @@ struct DashboardView: View {
                 }
             }
             .padding(16)
+        }
+    }
+}
+
+/// Two cards side by side, at equal width, when there is room for both at their minimum
+/// width; stacked one above the other otherwise. Unlike an adaptive grid it never leaves
+/// empty cells on a wide window (it is always exactly two-up or one-up).
+struct TwoUpRow<First: View, Second: View>: View {
+    private static var minimumCardWidth: CGFloat { 340 }
+    private static var spacing: CGFloat { 12 }
+
+    @ViewBuilder let first: First
+    @ViewBuilder let second: Second
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            // `idealWidth` pins each card's ideal width to the minimum, so a card's long
+            // single-line text can't make the side-by-side layout look too wide to fit.
+            HStack(alignment: .top, spacing: Self.spacing) {
+                first.frame(minWidth: Self.minimumCardWidth, idealWidth: Self.minimumCardWidth, maxWidth: .infinity)
+                second.frame(minWidth: Self.minimumCardWidth, idealWidth: Self.minimumCardWidth, maxWidth: .infinity)
+            }
+            VStack(spacing: Self.spacing) {
+                first
+                second
+            }
         }
     }
 }
