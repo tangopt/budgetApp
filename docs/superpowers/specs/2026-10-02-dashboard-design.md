@@ -18,6 +18,7 @@ A visual mockup accompanies this spec in the session where it was produced. This
 - **Snapshots are start-of-month balances dated the 1st.** Month-over-month snapshot differences line up with the *following* month's transaction totals (e.g. Nov→Dec +£7.2k vs November transactions +£10.0k, but −£4.4k for December), so a snapshot dated `YYYY-MM-01` is the balance at the start of that month. All net worth figures on the dashboard use the app's existing convention unchanged (a month's value is the latest snapshot at or before that month's end).
 - **Historical transactions are monthly per-category aggregates**, dated mid-month (e.g. 25 rows on 14 Feb 2026), imported from the spreadsheet. The CSV from the bank (`44116660_…csv`, Lloyds Classic: 16 Feb → 29 Sep 2026, 660 rows, with a running **Balance** column) is real per-transaction data from where the spreadsheet stopped.
 - **Tracking mode today does two things.** (1) `ContentView.importableAccounts` lists only `.imported` accounts, so the Import screen's picker offers none of the six real accounts (all `manual`). (2) For `manual` accounts the balance is the latest snapshot only — transactions never move it; for `.imported` accounts it is the latest snapshot plus transactions dated after it. Budget/Forecast actuals read transactions from *all* accounts regardless of mode.
+- **The auto-forecast rebuilds itself on every import.** `AutoForecastGenerator.refresh` re-derives the "Detected recurring" group from confirmed actuals (bucketed into salary-based pay periods) and deletes any `.auto` entry that no longer shows a clear pattern. Your bulk allowance ("Confirmed other expenses", −£171.39/month) is such an auto entry; "Confirmed other SIGNIFICANT expenses" (avg −£288/month over 12 months, very spiky) has no entry at all. See "Catch-all category".
 - **Import entry points live inside `ImportView`**: two buttons, two `fileImporter`s, the CSV mapping wizard sheet, the PDF layout sheet, and `handlePickedFile`/`handlePickedPDF`. `ImportViewModel` is already owned by `ContentView`, so staging state survives navigation.
 
 ## Goals
@@ -25,6 +26,7 @@ A visual mockup accompanies this spec in the session where it was produced. This
 - A Dashboard screen that becomes the default landing page, first item in the **Overview** sidebar section.
 - Show, in this order: data freshness + import; net worth evolution since 2020 with forecast; year-over-year net worth change since 2020; current month tracking; year at a glance (monthly income/expenses/net, actual + forecast); top categories this month; needs attention; upcoming bills; account balances.
 - Import can be **started** from the dashboard (account picker, Import CSV…, Import PDF…); progress and review stay on the Import screen.
+- The forecast stays realistic after a real import: a designated **catch-all** expense category keeps its monthly allowance (see "Catch-all category").
 - Every figure that also appears on another screen (year-end forecast, current net worth, "expected" amounts, YoY change) comes from the same code path, so the screens can never disagree.
 - Light and dark mode; no hardcoded colors outside chart series hues (which use system palette colors).
 
@@ -45,16 +47,17 @@ Let **D** = the data-through date (latest transaction date, any account) and **T
 | Month M | Class | Values |
 |---|---|---|
 | M ≤ month(D) and M is **not** T's month | **actual** | transaction totals only (identical to the Forecast grid's `isActual` rule) |
-| M = T's month and month(D) = M (some transactions already imported this month) | **blended** | actual so far **+ remaining expected**: confirmed-forecast occurrences dated *after* D through month end, per category |
+| M = T's month and month(D) = M (some transactions already imported this month) | **blended** | per category, the **larger of actual-so-far and the full-month expected amount** (for expenses: the greater spend; for income: the greater income). The part beyond what has already happened is the "still expected" remainder shown hatched |
 | M = T's month and month(D) < M (nothing imported this month yet) | **forecast** | full-month confirmed forecast, shown with the note "No <month> transactions imported yet" |
 | M > month(D), M ≠ T's month | **forecast** | full-month confirmed forecast |
 
 Notes:
 
-- "Remaining expected" is built with `FrequencyExpander.amount(for:in:)` over a `PayPeriod` from the day after D to the month's last day; no new expansion logic. A bill already paid (occurrence date ≤ D) is therefore not double-counted; an expected bill that hasn't shown up simply drops out of the remainder once its date passes.
-- Everything is per category and rolls up through `CategoryGroup` exactly like the Budget/Forecast grids; transfer categories are excluded from income/expense totals (as `confirmedNetWorthImpact` does).
+- **Why "larger of actual and expected" (an envelope per category), not "occurrences after D":** forecast entries are monthly amounts, and the auto-detected ones are dated on an artefact of the spreadsheet import (the 14th of the month). Expanding occurrences after D would make a category's expectation vanish the moment D passes that date, and the projection would jump mid-month. Treating each category's monthly amount as an allowance is stable and matches how the spreadsheet's monthly cell worked. It also means a **bulk "other expenses" allowance counts in full every month** (see Catch-all category) — the practice that keeps the forecast realistic.
+- The comparison is per category and summed afterwards, so overspending in one category is not hidden by underspending in another. A category with actual spend but no expected amount contributes its actual ("unplanned").
+- Everything rolls up through `CategoryGroup` exactly like the Budget/Forecast grids; transfer categories are excluded from income/expense totals (as `confirmedNetWorthImpact` does).
 - A month that is "actual" because it is the last data month is treated as complete even if the data stops mid-month — the same simplification the Forecast grid already makes. (Example: if only the 14 Feb aggregate exists, February reads as a full actual month.)
-- Uncategorized transactions have no category type, so they cannot be placed under Income or Expenses; the cards that need a type carry a footnote when any are present in the period ("N uncategorized transactions aren't included").
+- **Unreviewed transactions** (no category, or saved as pending review) have no confirmed category, so — exactly like the Budget grid — they are not in the totals. The cards that show totals carry a footnote with the count and the money out: "N unreviewed transactions (£X out) aren't included". The catch-all allowance is what stands in for typical unreviewed spending in the projection, so the numbers are not double-counted if they are never categorized.
 - **Sign convention:** money is stored signed (expenses negative). Cards display Income and Expenses as positive magnitudes and Net as signed; internal over/under comparisons use magnitudes.
 
 ## Screen layout
@@ -95,7 +98,7 @@ Window title is "Dashboard" via the existing `.navigationTitle(selection?.rawVal
 ### 4. Current month
 
 - **Month** = calendar month of today (UTC). Header: "October 2026 · day 2 of 31".
-- **Rows:** Income, Expenses, Net. Each shows *actual so far*, *expected for the full month* (a progress meter with a marker at the fraction of the month elapsed), and **projected month-end** (= actual + remaining expected, per the blend rule). Expenses over expected turn red.
+- **Rows:** Income, Expenses, Net. Each shows *actual so far*, *expected for the full month* (a progress meter with a marker at the fraction of the month elapsed), and **projected month-end** (the sum over categories of the larger of actual and expected, per the blend rule). Expenses over expected turn red.
 - **Actual** = confirmed transactions dated in the month, by category type (income / expense; transfers excluded), via `BudgetGridCalculator.calendarTotalsLookup` / `categoryTotalForCalendarMonth`.
 - **Expected** = `ForecastCalculator.confirmedTotal` summed over categories of that type for the whole calendar month — **always from the forecast, independent of `isActual`**. (The Forecast grid hides expected amounts once a month has transactions, so the dashboard cannot read the grid's per-cell totals.)
 - **No actuals yet this month** → projected = expected, with the note "No <month> transactions imported yet."
@@ -111,14 +114,15 @@ Window title is "Dashboard" via the existing `.navigationTitle(selection?.rawVal
 
 ### 6. Top categories this month
 
-Expense categories **rolled up by `CategoryGroup` exactly as the Budget/Forecast grids do**. Top 5 by **projected** month-end spend (actual + remaining expected). Each row: name, *actual of expected*, mini-meter, and the over-flag (actual > expected → red with "+£overage"). No actuals yet → "expected £x" without a meter. A category with actual spend but no expected amount shows the actual with an "unplanned" label. Link: `Forecast ›`.
+Expense categories **rolled up by `CategoryGroup` exactly as the Budget/Forecast grids do**. Top 5 by **projected** month-end spend (per-category larger of actual and expected, summed per group). The catch-all category (below) is just another row here. Each row: name, *actual of expected*, mini-meter, and the over-flag (actual > expected → red with "+£overage"). No actuals yet → "expected £x" without a meter. A category with actual spend but no expected amount shows the actual with an "unplanned" label. Link: `Forecast ›`.
 
 ### 7. Needs attention
 
-Up to two items, each with a link; clear states show a green check:
+Up to three items, each with a link; clear states show a green check:
 
 - **Uncategorized transactions** — count of transactions with `categoryId == nil` or status `.pendingReview` (same predicate as `UncategorizedTransactions.fetch`) → `Uncategorized`.
-- **Stale balances** — accounts whose latest snapshot is more than 45 days old, **excluding `.imported` accounts** (their balance already includes later transactions): "N balances not updated since <oldest date>" → `Net Worth`.
+- **Stale balances** — accounts whose latest snapshot is more than 45 days old (or that have none), **excluding `.imported` accounts** (their balance already includes later transactions): "N balances not updated since <oldest date>" → `Net Worth`.
+- **Forecast realism** — shown only when no catch-all expense category is designated, or the designated one has no enabled confirmed forecast entry: "No catch-all allowance in the forecast — unplanned spending isn't being projected" → `Categories` or `Forecast` respectively.
 
 ### 8. Upcoming bills
 
@@ -135,9 +139,20 @@ The six real accounts are `manual`, and that is the right mode for them: it matc
 1. **The picker excludes them.** `ContentView.importableAccounts` lists only `.imported` accounts, so you cannot import the Lloyds Classic CSV into Lloyds Classic. **In scope for this spec:** the import account picker (Import screen and dashboard card) lists **all accounts**, ordered with the last-used account first. Tracking mode keeps its single meaning — whether transactions move the account's balance — and nothing else.
 2. **Importing does not advance net worth for a `manual` account — and it moves the forecast.** After importing the Feb → Sep CSV, the Budget grid and current-month card update, but net worth stays on the last typed balance (1 Feb 2026) until a new balance is entered. Worse, the forecast is "current net worth + impacts of months after the latest transaction month", so importing through September makes March–September count as actual months while their effect is in no balance: Dec 2026 would fall from £209.8k to roughly £176k (about 3 forecast months, ≈£4.8k each, added to the unchanged £161.3k) purely as bookkeeping. The mockup's "After importing the CSV" state shows this, with a warning banner on the net worth card. Flipping Lloyds Classic to `imported` would not fix this cleanly either: its Feb 2026 snapshot (£33,321.04) plus the spreadsheet's mid-Feb aggregate (+£2,402.16) plus the CSV's net flow would land about £1.6k away from the bank's own figure (£27,596.28 on 29 Sep), because the spreadsheet's early-February totals don't match the bank. The CSV's **Balance** column is the clean fix.
 
-**Recommended follow-up sub-project (separate spec, not part of this one — needs your yes):** *statement balances*. The CSV wizard maps the optional Balance column; on commit, the import records `BalanceSnapshot`s from it — one per month start covered by the statement (the balance after the last transaction before the 1st) plus a closing snapshot at the last transaction date. That reproduces what the spreadsheet's monthly balance row did, automatically, for the account being imported, in either tracking mode. The other five accounts (ISAs, joint, EUR) have no statement and keep being updated by typing balances; the dashboard's stale-balances item reminds you.
+**Statement balances (approved; specified in `2026-10-02-statement-balances-design.md`, planned and built first).** The CSV wizard maps the optional Balance column; the import records `BalanceSnapshot`s from it — one per month start covered by the statement plus a closing snapshot — reproducing what the spreadsheet's monthly balance row did, for the account being imported, in either tracking mode. The other five accounts (ISAs, joint, EUR) have no statement and keep being updated by typing balances; the dashboard's stale-balances item reminds you. **Build order: statement balances → dashboard**, and the first real import should happen after statement balances land.
 
-Because of the forecast effect above, I recommend landing *statement balances* **before** the first real import (build order: dashboard and statement balances can be planned together; the dashboard does not depend on it technically). Until it lands, the dashboard degrades honestly — the net worth card shows a warning banner whenever the latest snapshot is older than the data-through month, the net worth line runs flat at the last snapshot (carry-forward), the freshness card shows data-through D, and the stale-balances item names the accounts to update.
+The dashboard does not depend on statement balances technically, and degrades honestly without them — the net worth card shows a warning banner whenever the latest snapshot is older than the data-through month, the net worth line runs flat at the last snapshot (carry-forward), the freshness card shows data-through D, and the stale-balances item names the accounts to update.
+
+## Catch-all category (forecast realism)
+
+In the spreadsheet a realistic bulk amount sat in its own category every month, standing in for spending that is never itemised, so the forecast stayed realistic. The app already has that category ("Confirmed other expenses", a −£171.39 monthly entry), but nothing marks it as special — and the auto-forecast would delete it on the first real import: `AutoForecastGenerator.refresh` rebuilds the "Detected recurring" group after every committed import and removes any `.auto` entry whose category no longer shows a clear pattern; real bank transactions land in real categories, so the bulk category stops having confirmed activity and its entry would silently disappear, making the forecast more optimistic.
+
+- **Data:** `Category.isCatchAll: Bool` (default false; migration `addIsCatchAllToCategory`). At most one expense category is the catch-all; designating one clears any other.
+- **Categories screen:** expense categories get a "Use as catch-all for unplanned spending" toggle. Designating a category promotes its existing `.auto` forecast entry (if any) to `.manual`, so the amount sticks.
+- **Auto-forecast:** `AutoForecastGenerator.regenerate` skips catch-all categories entirely — never creates, updates or deletes their entries. The allowance is maintained in the Forecast screen like any manual entry; if none exists, none is created.
+- **Dashboard:** the envelope blend rule already counts the allowance in full each month; Top categories shows it as a normal row; the unreviewed footnote names it; Needs attention flags a missing allowance (see "Forecast realism").
+- **After designating, in the live data:** "Confirmed other expenses" becomes the catch-all and keeps −£171.39/month (trailing 12-month average of its actuals: £143). "Confirmed other SIGNIFICANT expenses" (average £288/month, spiky — e.g. −£1,717 in Dec 2025) has **no forecast entry at all** today, so the forecast ignores that kind of spending; adding an allowance for it is a Forecast-screen edit for you, not code.
+- **Not in scope:** auto-routing unreviewed/uncategorized transactions into the catch-all, or suggesting an amount from history.
 
 ## Architecture
 
@@ -145,8 +160,8 @@ New logic is pure and lives in `BudgetCore` (unit-tested); the App layer only lo
 
 ### New in BudgetCore (`Sources/BudgetCore/Dashboard/`)
 
-- `MonthBlend` — classifies months (actual / blended / forecast) for `(D, T)` per the table above and returns per-category blended values for a month.
-- `DashboardCalculator` (pure static functions): `dataFreshness(batches:transactions:today:)`, `currentMonth(...)`, `yearAtAGlance(year:...)`, `netWorthYoY(...)`, `topCategories(...)`, `upcomingBills(...)`, `attentionItems(...)`. Each returns a small value type (`DataFreshness`, `CurrentMonthTracking`, `MonthlyFlow`, `YearChange`, `CategorySpend`, `UpcomingBill`, `AttentionItems`). All take `today: Date` as a parameter so tests never depend on the clock.
+- `MonthBlend` — classifies months (actual / blended / forecast) for `(D, T)` per the table above and gives the projected signed total for one category in a month (actual, expected, or the larger of the two for a blended month).
+- `DashboardCalculator` (pure static functions over a `DashboardInput` value holding the loaded tables and `today`): `dataFreshness`, `netWorthSeries`, `yearOverYear`, `currentMonth`, `monthlyFlows(year:)`, `topCategories`, `upcomingBills`, `attentionItems`, `accountSummaries`. Each returns a small value type (`DataFreshness`, `NetWorthSeries`, `YearChange`, `CurrentMonthTracking`, `MonthlyFlow`, `CategorySpend`, `UpcomingBill`, `AttentionItems`, `AccountSummary`). `today` is part of the input so tests never depend on the clock.
 
 ### Shared computation extracted (so dashboard and existing screens cannot diverge)
 
@@ -166,7 +181,8 @@ New logic is pure and lives in `BudgetCore` (unit-tested); the App layer only lo
 - `ContentView.swift`: add `case dashboard = "Dashboard"` to `AppScreen` immediately after `.importReview` (so Overview's first member is Dashboard and the Overview section keeps its position), `systemImage` `square.grid.2x2`, `sidebarSection` "Overview"; default `selection = .dashboard`; own a `@StateObject DashboardViewModel`; pass a `navigate: (AppScreen) -> Void` closure and the shared `ImportViewModel`/import-account binding into `DashboardView`; `importableAccounts` becomes all accounts (see Import prerequisites).
 - **Import flow extraction:** move the pickers, wizard sheets and `handlePicked*` logic out of `ImportView` into a reusable `ImportFlowHost` that exposes "start CSV" and "start PDF" actions to its content and calls an `onStarted` closure at the moment staging begins (after picking a file whose profile exists, or after the mapping/layout wizard saves — not on cancel). `ImportView` and the dashboard's import card both use it; the Import screen's behavior is otherwise unchanged.
 - `ForecastViewModel.swift` / `BudgetGridViewModel.swift`: delegate to the extracted shared functions above; no behavior change.
-- `project.yml`/Package: no new dependency (`Charts` is a system framework).
+- `Sources/BudgetCore/Models/Category.swift` + `DatabaseManager.swift`: `isCatchAll` column and migration; `Sources/BudgetCore/Forecasting/AutoForecastGenerator.swift`: skip catch-all categories; new `CatchAllCategory.designate(db:categoryId:)` helper (clears others, promotes the entry to manual); `App/Categories/CategoriesView.swift`: the toggle.
+- `project.yml`/Package: no new dependency (`Charts` is a system framework). New files under `App/` are picked up by the generated project when it is regenerated (`xcodegen generate`); `*.xcodeproj` is git-ignored.
 
 ## Error and empty states
 
@@ -182,20 +198,22 @@ New logic is pure and lives in `BudgetCore` (unit-tested); the App layer only lo
 ## Testing
 
 - **BudgetCore (XCTest):**
-  - `MonthBlend` — all four table rows; D on the last day of the month; D on the 1st; no transactions this month; a bill paid before D is not counted in the remainder; a category with actual but no expected; D in a prior year.
+  - `MonthBlend` — all four table rows; D on the last day of the month; D on the 1st; no transactions this month; envelope rule for income and for expense categories (actual below, equal to, and above expected; a refund on an expense category); a category with actual but no expected; D in a prior year; D after today (clock behind) treated as today.
+  - `CatchAllCategory` / `AutoForecastGenerator` — designating clears the previous catch-all and promotes its `.auto` entry to `.manual`; `regenerate` leaves a catch-all's `.auto` and `.manual` entries untouched and deletes nothing, while still deleting a non-catch-all category's stale `.auto` entry.
   - `DashboardCalculator` — freshness thresholds (31-day boundary, months vs days wording, no data); current-month actual/expected/projected including the case where the month has transactions yet expected must still come from the forecast; top-categories group roll-up, ordering by projected, over-expected and unplanned; year-at-a-glance for a past year (all actual), the current year (actual + blended + forecast), and next year (all forecast), with totals "of which actual"; YoY including the 2020 first-data baseline and a negative year; upcoming-bills window edges (today, day 30, entry ending inside the window, hypothetical excluded, income/transfers excluded); attention items (45-day boundary, imported accounts excluded from stale-balances).
   - `ForecastProjector` — December points equal the pre-extraction `forecastNetWorth` on a fixture; `monthEndNetWorth` equals the old `netWorthTotal` on a fixture; `confirmedEntries` leaves existing `ForecastCalculatorTests` green unchanged.
 - **App layer:** clean `xcodebuild`, then a live walkthrough against the real database in both states — today's stale state, and after importing the real CSV into Lloyds Classic on a **copy** of the database (or a throwaway account, removed afterward) — confirming import-from-dashboard hands off to the Import screen with progress, that the current month turns blended, and that light and dark mode render correctly.
 
 ## File summary
 
-- New: `Sources/BudgetCore/Dashboard/MonthBlend.swift`, `Sources/BudgetCore/Dashboard/DashboardCalculator.swift` (+ value types), `Sources/BudgetCore/Forecasting/ForecastProjector.swift`, `App/Dashboard/DashboardViewModel.swift`, `App/Dashboard/DashboardView.swift`, per-card and per-chart views under `App/Dashboard/`, `App/Import/ImportFlowHost.swift`.
+- New: `Sources/BudgetCore/Dashboard/MonthBlend.swift`, `Sources/BudgetCore/Dashboard/DashboardCalculator.swift` (+ value types), `Sources/BudgetCore/Forecasting/ForecastProjector.swift`, `Sources/BudgetCore/Forecasting/CatchAllCategory.swift`, `Sources/BudgetCore/Support/MonthRange.swift`, `App/Dashboard/DashboardViewModel.swift`, `App/Dashboard/DashboardView.swift`, per-card and per-chart views under `App/Dashboard/`, `App/Import/ImportFlowHost.swift`.
 - Modified: `App/ContentView.swift`, `App/Import/ImportView.swift`, `App/Forecast/ForecastViewModel.swift`, `App/Budget/BudgetGridViewModel.swift`, `Sources/BudgetCore/NetWorth/NetWorthCalculator.swift`, `Sources/BudgetCore/Forecasting/ForecastCalculator.swift` (extract `confirmedEntries`; existing `ForecastCalculatorTests` must pass unchanged).
-- New tests: `MonthBlendTests`, `DashboardCalculatorTests`, `ForecastProjectorTests`, plus a `monthEndNetWorth` test in the existing NetWorth calculator tests.
+- New tests: `MonthBlendTests`, `DashboardCalculatorTests`, `ForecastProjectorTests`, `CatchAllCategoryTests`, plus a `monthEndNetWorth` test in the existing NetWorth calculator tests and catch-all cases in the existing auto-forecast tests.
 
 ## Follow-ups (not part of this spec)
 
-1. **Statement balances** (described under Import prerequisites): CSV Balance column → balance snapshots. Recommended next; without it, importing leaves net worth on the last typed balance.
-2. **Budget grid month-hiding** (the other pending part of the original request): hide future months and show the blended current month, reusing `MonthBlend`.
+1. **Budget grid month-hiding** (the other pending part of the original request): hide future months and show the blended current month, reusing `MonthBlend`.
+2. **Forecast anchor double-counts** if a balance is typed for a month *after* the latest transaction month without importing transactions (the forecast adds the in-between months' impacts on top of an already-current balance). Existing behavior, mirrored by the dashboard so the screens agree; worth its own look.
 3. **Sidebar section ordering** is still derived from enum declaration order (a deferred minor from the HIG pass); inserting `.dashboard` is safe as specified, but an explicit `SidebarSection` enum would remove the fragility.
 4. **CSV mapping wizard has no Cancel button** (pre-existing); relevant because the dashboard adds a second entry point into it.
+5. Auto-routing unreviewed transactions to the catch-all, and suggesting catch-all amounts from history.
