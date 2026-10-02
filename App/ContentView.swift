@@ -62,6 +62,7 @@ struct ContentView: View {
     @StateObject private var categoriesViewModel: CategoriesViewModel
     @StateObject private var uncategorizedViewModel: UncategorizedViewModel
     @StateObject private var accountsViewModel: AccountsSettingsViewModel
+    @StateObject private var dashboardViewModel: DashboardViewModel
 
     private let profileStore: ImportProfileStore
 
@@ -79,6 +80,7 @@ struct ContentView: View {
         _categoriesViewModel = StateObject(wrappedValue: CategoriesViewModel(dbQueue: environment.dbQueue))
         _uncategorizedViewModel = StateObject(wrappedValue: UncategorizedViewModel(dbQueue: environment.dbQueue))
         _accountsViewModel = StateObject(wrappedValue: AccountsSettingsViewModel(dbQueue: environment.dbQueue))
+        _dashboardViewModel = StateObject(wrappedValue: DashboardViewModel(dbQueue: environment.dbQueue))
     }
 
     /// How far ahead to project forecasted pay periods in the Budget grid (the Forecast
@@ -125,7 +127,12 @@ struct ContentView: View {
             Group {
                 switch selection {
                 case .dashboard:
-                    Text("Dashboard") // replaced by DashboardView in Task 14
+                    DashboardView(
+                        viewModel: dashboardViewModel, importViewModel: importViewModel,
+                        accounts: accounts, selectedImportAccountId: $selectedImportAccountId,
+                        profileStore: profileStore, navigate: { selection = $0 }
+                    )
+                    .onAppear { dashboardViewModel.load() }
                 case .importReview:
                     if accounts.isEmpty {
                         Text("Add an account under Accounts, then pick it here to import a statement.")
