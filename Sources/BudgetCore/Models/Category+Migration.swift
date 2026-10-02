@@ -25,3 +25,11 @@ func registerCategoryGroupIdMigration(_ migrator: inout DatabaseMigrator) {
         }
     }
 }
+
+func registerCategoryCatchAllMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addIsCatchAllToCategory") { db in
+        try db.alter(table: "category") { t in
+            t.add(column: "isCatchAll", .boolean).notNull().defaults(to: false)
+        }
+    }
+}

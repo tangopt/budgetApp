@@ -226,4 +226,26 @@ final class AutoForecastGeneratorTests: XCTestCase {
         XCTAssertEqual(try autoEntry(income, manager)?.amountMinorUnits, 280000)
         XCTAssertNil(try autoEntry(bonus, manager)) // one-off, not recurring
     }
+
+    // The user keeps a realistic bulk allowance in a catch-all category. After a real import
+    // that category has no recent confirmed activity, so the generator would normally delete
+    // its auto entry (see testStaleAutoEntryIsRemovedWhenPatternNoLongerHolds) — for a
+    // catch-all it must leave the entry alone.
+    func testRegenerateLeavesCatchAllCategoryEntriesUntouched() throws {
+        let (manager, _, _, periods) = try seededManagerWithRentHistory()
+        try manager.dbQueue.write { db in
+            var bulk = Category(name: "Bulk other", type: .expense, isCatchAll: true)
+            try bulk.insert(db)
+            let group = try AutoForecastGenerator.ensureDetectedRecurringGroup(db: db)
+            var entry = ForecastEntry(groupId: group.id!, categoryId: bulk.id!, amountMinorUnits: -17_139, frequency: .monthly, interval: 1, startDate: periods[0].startDate, endDate: nil, isEnabled: true, status: .auto, note: nil)
+            try entry.insert(db)
+
+            try AutoForecastGenerator.regenerate(db: db, actualPeriods: periods)
+
+            let kept = try ForecastEntry.filter(Column("categoryId") == bulk.id!).fetchAll(db)
+            XCTAssertEqual(kept.count, 1)
+            XCTAssertEqual(kept[0].amountMinorUnits, -17_139)
+            XCTAssertEqual(kept[0].status, .auto)
+        }
+    }
 }
