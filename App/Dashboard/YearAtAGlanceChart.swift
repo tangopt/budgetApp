@@ -1,0 +1,54 @@
+import SwiftUI
+import Charts
+import BudgetCore
+
+/// Twelve months of income and expenses side by side (each a solid "actual" part plus a
+/// hatched "still expected" part) with the net as a line. Solid = actual, hatched = forecast.
+struct YearAtAGlanceChart: View {
+    let flows: [MonthlyFlow]
+
+    private static let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    private func name(_ flow: MonthlyFlow) -> String { Self.monthNames[flow.month - 1] }
+    private func pounds(_ minorUnits: Int) -> Double { Double(minorUnits) / 100 }
+
+    var body: some View {
+        Chart {
+            ForEach(flows) { flow in
+                BarMark(x: .value("Month", name(flow)), y: .value("Income", pounds(flow.incomeActual)))
+                    .position(by: .value("Type", "Income"))
+                    .foregroundStyle(Color.green)
+                if flow.incomeRemaining > 0 {
+                    BarMark(x: .value("Month", name(flow)), y: .value("Income", pounds(flow.incomeRemaining)))
+                        .position(by: .value("Type", "Income"))
+                        .foregroundStyle(HatchPattern.style(.green))
+                }
+                BarMark(x: .value("Month", name(flow)), y: .value("Expenses", pounds(flow.expenseActual)))
+                    .position(by: .value("Type", "Expenses"))
+                    .foregroundStyle(Color.orange)
+                if flow.expenseRemaining > 0 {
+                    BarMark(x: .value("Month", name(flow)), y: .value("Expenses", pounds(flow.expenseRemaining)))
+                        .position(by: .value("Type", "Expenses"))
+                        .foregroundStyle(HatchPattern.style(.orange))
+                }
+            }
+            ForEach(flows) { flow in
+                LineMark(x: .value("Month", name(flow)), y: .value("Net", pounds(flow.net)), series: .value("Series", "Net"))
+                    .foregroundStyle(Color.blue)
+                    .lineStyle(StrokeStyle(lineWidth: 1.5))
+                PointMark(x: .value("Month", name(flow)), y: .value("Net", pounds(flow.net)))
+                    .foregroundStyle(Color.blue)
+                    .symbolSize(flow.monthClass == .forecast ? 24 : 40)
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading) { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let pounds = value.as(Double.self) { Text("£\(Int(pounds / 1000))k") }
+                }
+            }
+        }
+        .frame(height: 220)
+        .accessibilityLabel("Monthly income, expenses and net for the selected year, actual and forecast")
+    }
+}
