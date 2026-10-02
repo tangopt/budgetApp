@@ -6,6 +6,7 @@ import GRDB
 
 enum AppScreen: String, CaseIterable, Identifiable {
     case importReview = "Import"
+    case dashboard = "Dashboard"
     case budgetGrid = "Budget"
     case forecast = "Forecast"
     case netWorth = "Net Worth"
@@ -19,6 +20,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
         switch self {
         case .importReview: return "square.and.arrow.down"
         case .uncategorized: return "folder.badge.questionmark"
+        case .dashboard: return "square.grid.2x2"
         case .budgetGrid: return "tablecells"
         case .forecast: return "chart.line.uptrend.xyaxis"
         case .netWorth: return "banknote"
@@ -34,7 +36,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
     var sidebarSection: String {
         switch self {
         case .importReview, .uncategorized: return "Workflow"
-        case .budgetGrid, .forecast, .netWorth: return "Overview"
+        case .dashboard, .budgetGrid, .forecast, .netWorth: return "Overview"
         case .rules, .categories, .accounts: return "Settings"
         }
     }
@@ -42,10 +44,11 @@ enum AppScreen: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @ObservedObject var environment: AppEnvironment
-    @State private var selection: AppScreen? = .importReview
+    @State private var selection: AppScreen? = .dashboard
     @State private var selectedImportAccountId: Int64?
     @State private var accounts: [Account] = []
     @State private var categories: [Category] = []
+    @AppStorage("lastImportAccountId") private var lastImportAccountId = 0
 
     // Each screen's view model is owned once by ContentView and handed down as a
     // stable reference, rather than reconstructed inline in the switch below on
@@ -91,7 +94,7 @@ struct ContentView: View {
     /// `AppScreen.allCases` grouped by `sidebarSection`, one entry per distinct section
     /// value in the order that value first appears in `allCases` — not alphabetically, so
     /// "Workflow" → "Overview" → "Settings" (driven by `.importReview` being first in
-    /// `allCases`, `.budgetGrid` being the first `.sidebarSection == "Overview"` case, etc.)
+    /// `allCases`, `.dashboard` being the first `.sidebarSection == "Overview"` case, etc.)
     /// stays stable regardless of where a section's later members (e.g. `.uncategorized`)
     /// happen to sit in `allCases`' own declaration order.
     private var sidebarSections: [(name: String, screens: [AppScreen])] {
@@ -121,13 +124,15 @@ struct ContentView: View {
         } detail: {
             Group {
                 switch selection {
+                case .dashboard:
+                    Text("Dashboard") // replaced by DashboardView in Task 14
                 case .importReview:
-                    if importableAccounts.isEmpty {
-                        Text("Add an account with tracking mode \"imported\" under Accounts, then pick it here to import a statement.")
+                    if accounts.isEmpty {
+                        Text("Add an account under Accounts, then pick it here to import a statement.")
                     } else {
                         VStack(alignment: .leading, spacing: 0) {
                             Picker("Import into", selection: $selectedImportAccountId) {
-                                ForEach(importableAccounts) { account in
+                                ForEach(accounts) { account in
                                     Text("\(account.name) (\(account.currency.rawValue.uppercased()))").tag(Int64?.some(account.id!))
                                 }
                             }
@@ -182,25 +187,22 @@ struct ContentView: View {
         .onChange(of: accountsViewModel.accounts) { _ in
             refreshSharedState()
         }
-    }
-
-    /// Only `.imported` accounts receive statement imports; `.manual` accounts are
-    /// balance-only (updated from the Net Worth screen).
-    private var importableAccounts: [Account] {
-        accounts.filter { $0.trackingMode == .imported }
+        .onChange(of: selectedImportAccountId) { _ in
+            if let id = selectedImportAccountId { lastImportAccountId = Int(id) }
+        }
     }
 
     private var selectedImportAccount: Account? {
-        importableAccounts.first { $0.id == selectedImportAccountId }
+        accounts.first { $0.id == selectedImportAccountId }
     }
 
     private func refreshSharedState() {
         categories = (try? environment.dbQueue.read { db in try Category.fetchAll(db) }) ?? []
         accounts = (try? environment.dbQueue.read { db in try Account.fetchAll(db) }) ?? []
-        // Keep the user's choice across navigation; fall back to the first importable
-        // account only when nothing (valid) is selected yet.
+        // Keep the user's choice across navigation; otherwise default to the last-used
+        // account (remembered across launches), then the first account.
         if selectedImportAccount == nil {
-            selectedImportAccountId = importableAccounts.first?.id
+            selectedImportAccountId = accounts.first { Int($0.id ?? -1) == lastImportAccountId }?.id ?? accounts.first?.id
         }
     }
 }
