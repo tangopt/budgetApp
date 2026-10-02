@@ -117,7 +117,7 @@ Other accounts without a statement (ISAs, joint, EUR) still need typed balances;
   - `ImportProfileStoreTests` — `csvBalanceColumnIndex` round trip.
   - `StatementBalanceExtractorTests` — newest-first file with same-day ties (the real shape); oldest-first file; points land on 1sts with carry-forward over a quiet 1st; balance taken *after* a transaction dated on the 1st; closing point; last transaction on a 1st (single point, marked closing); single row; first transaction on a 1st; month boundaries across a year end; inconsistent chain → `.unverified`; one missing balance → `.unverified`; no balances → `.notProvided`.
   - `ImportCoordinatorTests` — `stageCSVImport` attaches `.available`; duplicates-only re-stage still carries balances; `recordStatementBalances` inserts, is idempotent, replaces a same-date snapshot, leaves a typed (time-of-day) snapshot alone.
-  - `DatabaseManagerTests` — migration applies on top of an existing profile row.
+  - `DatabaseManagerTests` — the `importProfile` table gains the `csvBalanceColumnIndex` column.
 - **App layer:** clean `xcodebuild`; then against a **copy** of the live database (Lloyds Classic temporarily set to `imported` in the copy), import the real CSV: the wizard pre-selects the Lloyds columns, the panel shows 8 balances with closing £27,596.28, confirming records exactly the 8 values listed above, and Net Worth shows Lloyds Classic at £27,596.28.
 
 ## File summary
