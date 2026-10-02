@@ -79,11 +79,22 @@ struct NetWorthCard: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .windowBackgroundColor)))
     }
 
+    /// Swatch matching the chart: a solid line for actual, a dashed line (same blue) for the
+    /// confirmed forecast.
     private func legend(solid: Bool, _ text: String) -> some View {
         HStack(spacing: 4) {
-            RoundedRectangle(cornerRadius: 1)
-                .fill(solid ? Color.blue : Color.blue.opacity(0.45))
+            if solid {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Color.blue)
+                    .frame(width: 14, height: 3)
+            } else {
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: 1.5))
+                    path.addLine(to: CGPoint(x: 14, y: 1.5))
+                }
+                .stroke(Color.blue, style: StrokeStyle(lineWidth: 2, dash: [3, 2]))
                 .frame(width: 14, height: 3)
+            }
             Text(text)
         }
     }

@@ -19,7 +19,10 @@ struct YearChangeCard: View {
                 .font(.caption)
                 .labelStyle(.titleAndIcon)
                 if let first = changes.first, let month = first.partialFromMonth {
-                    Text("* \(first.year) measured from \(DashboardFormat.monthYear(MonthRange.of(year: first.year, month: month).start)) (first data)")
+                    // Built as a String first: interpolating the Int year straight into a Text
+                    // literal goes through LocalizedStringKey and groups it as "2,020".
+                    let note = "* \(String(first.year)) measured from \(DashboardFormat.monthYear(MonthRange.of(year: first.year, month: month).start)) (first data)"
+                    Text(verbatim: note)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
