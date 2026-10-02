@@ -182,6 +182,18 @@ final class NetWorthCalculatorTests: XCTestCase {
         XCTAssertEqual(NetWorthCalculator.monthEndNetWorth(accounts: [gbp, eur], snapshots: snapshots, transactions: transactions, rate: rate, year: 2026, month: 3), 245_000)
     }
 
+    // Snapshots typed in the Net Worth screen are stamped with `Date()`, a real time of day.
+    // The month window ends at the month's LAST MOMENT, so a snapshot taken at noon on the
+    // last day belongs to that month (and not to the previous one).
+    func testMonthEndNetWorthIncludesASnapshotLaterThanMidnightOnTheLastDayOfTheMonth() {
+        let account = Account(id: 1, name: "Current", currency: .gbp, kind: .cash, trackingMode: .manual)
+        let snapshots = [BalanceSnapshot(id: 1, accountId: 1, date: utc(2026, 3, 31).addingTimeInterval(12 * 3600), balanceMinorUnits: 100_000, note: nil)]
+        let rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: utc(2026, 1, 1))
+
+        XCTAssertEqual(NetWorthCalculator.monthEndNetWorth(accounts: [account], snapshots: snapshots, transactions: [], rate: rate, year: 2026, month: 3), 100_000)
+        XCTAssertNil(NetWorthCalculator.monthEndNetWorth(accounts: [account], snapshots: snapshots, transactions: [], rate: rate, year: 2026, month: 2))
+    }
+
     func testMonthEndNetWorthIsNilBeforeAnyAccountHasData() {
         let gbp = Account(id: 1, name: "Current", currency: .gbp, kind: .cash, trackingMode: .manual)
         let snapshots = [BalanceSnapshot(id: 1, accountId: 1, date: utc(2026, 3, 1), balanceMinorUnits: 100_000, note: nil)]

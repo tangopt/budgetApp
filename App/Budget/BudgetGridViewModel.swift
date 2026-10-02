@@ -52,9 +52,12 @@ final class BudgetGridViewModel: ObservableObject {
 
     /// The account's balance as of the end of `month`, carried forward from its latest
     /// prior snapshot when there's nothing recorded that exact month. `nil` when the
-    /// account has no snapshot at or before that month at all.
+    /// account has no snapshot at or before that month at all. Uses `MonthRange` (end = the
+    /// month's last moment) — the same window `NetWorthCalculator.monthEndNetWorth` sums over,
+    /// so the per-account cells always add up to the Net Worth total row even for a snapshot
+    /// stamped later than midnight on the month's last day.
     func accountBalance(_ account: Account, year: Int, month: Int) -> MonthlyAccountBalance? {
-        let range = dateRange(forYear: year, month: month)
+        let range = MonthRange.of(year: year, month: month)
         return NetWorthCalculator.monthlyBalance(account: account, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, monthStart: range.start, monthEnd: range.end)
     }
 
