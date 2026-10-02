@@ -21,10 +21,15 @@ public struct ImportProfile: Codable, Equatable, Identifiable, FetchableRecord, 
     /// single-signed-amount-column behavior, unchanged for every profile saved before
     /// this field existed.
     public var csvCreditAmountColumnIndex: Int?
+    /// Optional column holding the statement's running balance *after* each row. When set,
+    /// `CSVStatementParser` fills `ParsedTransaction.balanceAfterMinorUnits` and the importer
+    /// can record the account's balance from the statement (see `StatementBalanceExtractor`).
+    /// `nil` (the default) means no balance column — unchanged for every existing profile.
+    public var csvBalanceColumnIndex: Int?
     public var csvDateFormat: String?
     public var pdfLayoutConfig: String?
 
-    public init(id: Int64? = nil, accountId: Int64, format: ImportFormat, csvDelimiter: String? = nil, csvDateColumnIndex: Int? = nil, csvDescriptionColumnIndex: Int? = nil, csvAmountColumnIndex: Int? = nil, csvCreditAmountColumnIndex: Int? = nil, csvDateFormat: String? = nil, pdfLayoutConfig: String? = nil) {
+    public init(id: Int64? = nil, accountId: Int64, format: ImportFormat, csvDelimiter: String? = nil, csvDateColumnIndex: Int? = nil, csvDescriptionColumnIndex: Int? = nil, csvAmountColumnIndex: Int? = nil, csvCreditAmountColumnIndex: Int? = nil, csvBalanceColumnIndex: Int? = nil, csvDateFormat: String? = nil, pdfLayoutConfig: String? = nil) {
         self.id = id
         self.accountId = accountId
         self.format = format
@@ -33,6 +38,7 @@ public struct ImportProfile: Codable, Equatable, Identifiable, FetchableRecord, 
         self.csvDescriptionColumnIndex = csvDescriptionColumnIndex
         self.csvAmountColumnIndex = csvAmountColumnIndex
         self.csvCreditAmountColumnIndex = csvCreditAmountColumnIndex
+        self.csvBalanceColumnIndex = csvBalanceColumnIndex
         self.csvDateFormat = csvDateFormat
         self.pdfLayoutConfig = pdfLayoutConfig
     }
@@ -67,6 +73,15 @@ func registerImportProfileCreditColumnMigration(_ migrator: inout DatabaseMigrat
     migrator.registerMigration("addCreditAmountColumnIndexToImportProfile") { db in
         try db.alter(table: "importProfile") { t in
             t.add(column: "csvCreditAmountColumnIndex", .integer)
+        }
+    }
+}
+
+/// Plain nullable column added via `alter(table:)`, same approach as the credit-column migration.
+func registerImportProfileBalanceColumnMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addBalanceColumnIndexToImportProfile") { db in
+        try db.alter(table: "importProfile") { t in
+            t.add(column: "csvBalanceColumnIndex", .integer)
         }
     }
 }

@@ -18,4 +18,11 @@ final class DatabaseManagerTests: XCTestCase {
         }
         XCTAssertTrue(tableExists)
     }
+
+    func testImportProfileTableHasBalanceColumn() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        let columns = try manager.dbQueue.read { db in try db.columns(in: "importProfile").map(\.name) }
+        XCTAssertTrue(columns.contains("csvBalanceColumnIndex"))
+    }
 }
