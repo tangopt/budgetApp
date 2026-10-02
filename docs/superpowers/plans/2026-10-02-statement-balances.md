@@ -1152,9 +1152,9 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 **Interfaces:**
 - Produces: optional `BUDGET_DB_PATH` environment override (used here and by the dashboard plan's verification).
 
-- [ ] **Step 1: Add the override**
+- [ ] **Step 1: Check the working tree first** — run `git status --short App/AppEnvironment.swift`. At the time this plan was written, `App/AppEnvironment.swift` (with `App/BudgetApp.swift`, `project.yml`, `App/LaunchView.swift`, `App/Assets.xcassets/`, `scripts/`) carried **uncommitted launch-screen / app-icon work that is not part of this plan** (it turns `AppEnvironment.init` into `static func load() async throws`). If the file shows uncommitted changes you did not make: edit it anyway (the change below is tiny), but **commit only if that other work has already been committed** — otherwise leave the edit uncommitted, tell the controller, and let the user decide how to land both. Never `git add` the other files, and never revert them.
 
-In `AppEnvironment.init`, replace the three lines that build `appSupport`, create the directory and compute `dbPath` with:
+- [ ] **Step 2: Add the override** — find where `dbPath` is computed: in the original code it is in `AppEnvironment.init`; if the launch-screen work has landed it is inside `AppEnvironment.load()`'s detached task. Replace the lines that build `appSupport`, create the directory and compute `dbPath` with the following (keep the surrounding code, `try`/`try!` style and everything after it exactly as it is):
 
 ```swift
         let dbPath: String
@@ -1169,18 +1169,20 @@ In `AppEnvironment.init`, replace the three lines that build `appSupport`, creat
         }
 ```
 
-- [ ] **Step 2: Build and commit**
+(Inside the launch-screen version's detached closure, use `try FileManager.default.createDirectory(...)` instead of `try?` to match that code.)
+
+- [ ] **Step 3: Build and commit (subject to Step 1)**
 
 Run: `xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' build 2>&1 | tail -5` → `** BUILD SUCCEEDED **`.
 
 ```bash
-git add App/AppEnvironment.swift
+git add App/AppEnvironment.swift   # only if Step 1 allows
 git commit -m "Allow overriding the database path via BUDGET_DB_PATH for safe testing
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 ```
 
-- [ ] **Step 3: Prepare a copy of the live database (read-only on the original)**
+- [ ] **Step 4: Prepare a copy of the live database (read-only on the original)**
 
 ```bash
 SCRATCH="$(mktemp -d)"   # use your session scratchpad directory if one is provided
@@ -1190,7 +1192,7 @@ sqlite3 "$SCRATCH/budget-copy.sqlite" "update account set trackingMode='imported
 echo "$SCRATCH"
 ```
 
-- [ ] **Step 4: Launch against the copy**
+- [ ] **Step 5: Launch against the copy**
 
 Quit any running Budget app first. Then, with the `.app` path from the Task 7 build output:
 
@@ -1200,7 +1202,7 @@ BUDGET_DB_PATH="$SCRATCH/budget-copy.sqlite" "<DerivedData path>/Build/Products/
 
 (If the app opens the real database instead, stop and fix the override — do not continue.)
 
-- [ ] **Step 5: Walk the import**
+- [ ] **Step 6: Walk the import**
 
 In the app: Import → Import into "Lloyds Classic" → *Import CSV statement…* → choose `~/Downloads/44116660_20264430_1009.csv`.
 Expected:
@@ -1209,7 +1211,7 @@ Expected:
 3. The review screen shows **Statement balances — "8 balances from the statement, closing £27,596.28 on 29 Sep 2026"**, toggle on.
 4. Click *Confirm N ready* (or *Save remaining as Uncategorized*). The panel changes to "Recorded 8 balance snapshot(s)" and the status line mentions it.
 
-- [ ] **Step 6: Verify the stored snapshots**
+- [ ] **Step 7: Verify the stored snapshots**
 
 ```bash
 sqlite3 "$SCRATCH/budget-copy.sqlite" "select date(date), balanceMinorUnits/100.0, note from balanceSnapshot where note like 'Statement balance%' order by date;"
@@ -1230,12 +1232,12 @@ Expected exactly these 8 rows (note: `Statement balance — 44116660_20264430_10
 
 Also open **Net Worth** in the app: Lloyds Classic shows £27,596.28.
 
-- [ ] **Step 7: Idempotency and cleanup**
+- [ ] **Step 8: Idempotency and cleanup**
 
-Re-import the same file (all rows now duplicates): the review shows the panel again; click *Record now* → "Recorded 8 balance snapshot(s)"; re-run the Step 6 query — still exactly 8 rows. Then quit the app and delete the scratch copy:
+Re-import the same file (all rows now duplicates): the review shows the panel again; click *Record now* → "Recorded 8 balance snapshot(s)"; re-run the Step 7 query — still exactly 8 rows. Then quit the app and delete the scratch copy:
 
 ```bash
 rm -rf "$SCRATCH"
 ```
 
-Finally run the full suite once more: `swift test` → all green. No commit is needed for Steps 3–7 (nothing in the repo changed).
+Finally run the full suite once more: `swift test` → all green. No commit is needed for Steps 4–8 (nothing in the repo changed).
