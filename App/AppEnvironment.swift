@@ -23,10 +23,16 @@ final class AppEnvironment: ObservableObject {
     /// `LaunchView` shows the error instead of crashing.
     static func load() async throws -> AppEnvironment {
         let dbQueue = try await Task.detached(priority: .userInitiated) {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("Budget", isDirectory: true)
-            try FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
-            let dbPath = appSupport.appendingPathComponent("budget.sqlite").path
+            let dbPath: String
+            if let override = ProcessInfo.processInfo.environment["BUDGET_DB_PATH"], !override.isEmpty {
+                // Lets the app run against a copy of the database for safe manual testing.
+                dbPath = override
+            } else {
+                let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("Budget", isDirectory: true)
+                try FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
+                dbPath = appSupport.appendingPathComponent("budget.sqlite").path
+            }
 
             let manager = try DatabaseManager(path: dbPath)
             try manager.migrate()
