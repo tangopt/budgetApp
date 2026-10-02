@@ -211,6 +211,48 @@ final class CSVStatementParserTests: XCTestCase {
         XCTAssertEqual(result.transactions.first?.amountMinorUnits, -4564)
     }
 
+    func testParsesBalanceColumnWhenMapped() {
+        let csv = "Date,Description,Amount,Balance\n01/07/2026,SAINSBURYS,-45.64,\"1,954.36\"\n02/07/2026,SALARY,2800.00,4754.36"
+        let profile = ImportProfile(
+            accountId: 1, format: .csv, csvDelimiter: ",",
+            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
+            csvBalanceColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
+        )
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
+        XCTAssertEqual(result.transactions.map(\.balanceAfterMinorUnits), [195436, 475436])
+    }
+
+    func testParsesNegativeBalance() {
+        let csv = "Date,Description,Amount,Balance\n01/07/2026,OVERDRAFT FEE,-5.00,-120.50"
+        let profile = ImportProfile(
+            accountId: 1, format: .csv, csvDelimiter: ",",
+            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
+            csvBalanceColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
+        )
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
+        XCTAssertEqual(result.transactions.first?.balanceAfterMinorUnits, -12050)
+    }
+
+    // A blank or missing balance cell must never cost the transaction itself.
+    func testBlankOrMissingBalanceCellGivesNilWithoutFailingTheRow() {
+        let csv = "Date,Description,Amount,Balance\n01/07/2026,SHOP,-10.00,\n02/07/2026,SHOP,-5.00"
+        let profile = ImportProfile(
+            accountId: 1, format: .csv, csvDelimiter: ",",
+            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
+            csvBalanceColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
+        )
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
+        XCTAssertEqual(result.transactions.count, 2)
+        XCTAssertEqual(result.transactions.map(\.balanceAfterMinorUnits), [nil, nil])
+        XCTAssertTrue(result.unparsedLines.isEmpty)
+    }
+
+    func testBalanceIsNilWhenNoBalanceColumnIsMapped() {
+        let csv = "Date,Description,Amount\n01/07/2026,SAINSBURYS LONDON,-45.64"
+        let result = CSVStatementParser.parse(csvText: csv, profile: standardProfile)
+        XCTAssertNil(result.transactions.first?.balanceAfterMinorUnits)
+    }
+
     func testMoneyParseMinorUnits() {
         XCTAssertEqual(Money.parseMinorUnits("1,234.56"), 123456)
         XCTAssertEqual(Money.parseMinorUnits("£300"), 30000)
