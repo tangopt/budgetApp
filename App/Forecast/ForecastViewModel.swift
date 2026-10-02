@@ -190,10 +190,7 @@ final class ForecastViewModel: ObservableObject {
     /// Total real net worth as of December of `year`, using only real balance snapshot
     /// data (no forecast) — the same calculation `BudgetGridViewModel.netWorthTotal` uses.
     private func realNetWorth(atEndOf year: Int) -> Int {
-        let range = dateRange(forYear: year, month: 12)
-        return accounts.reduce(0) { sum, account in
-            sum + (NetWorthCalculator.monthlyBalance(account: account, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, monthStart: range.start, monthEnd: range.end)?.gbpBalanceMinorUnits ?? 0)
-        }
+        NetWorthCalculator.monthEndNetWorth(accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, year: year, month: 12) ?? 0
     }
 
     /// Forecast net worth at the end of `year` (December; `year` must be `thisYear` or

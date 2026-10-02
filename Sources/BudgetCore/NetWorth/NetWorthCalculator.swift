@@ -87,6 +87,24 @@ public enum NetWorthCalculator {
         return MonthlyAccountBalance(account: account, nativeBalanceMinorUnits: native, gbpBalanceMinorUnits: gbp, isCarriedForward: isCarriedForward)
     }
 
+    /// Total GBP net worth as of the end of the given calendar month: the sum of every
+    /// account's `monthlyBalance` (latest snapshot at or before the month end, plus
+    /// transactions after it for `.imported` accounts). `nil` when no account has any data
+    /// at or before that month — distinguishes "no data yet" from "genuinely zero".
+    /// `BudgetGridViewModel.netWorthTotal` and `ForecastViewModel.realNetWorth` delegate here.
+    public static func monthEndNetWorth(accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], rate: ExchangeRateSetting, year: Int, month: Int) -> Int? {
+        let range = MonthRange.of(year: year, month: month)
+        var total = 0
+        var hasData = false
+        for account in accounts {
+            if let balance = monthlyBalance(account: account, snapshots: snapshots, transactions: transactions, rate: rate, monthStart: range.start, monthEnd: range.end) {
+                total += balance.gbpBalanceMinorUnits
+                hasData = true
+            }
+        }
+        return hasData ? total : nil
+    }
+
     /// Sum of all signed GBP balances. Credit accounts already carry a negative balance
     /// when money is owed (see the sign convention above), so they reduce net worth
     /// without any special-casing.

@@ -61,13 +61,13 @@ final class BudgetGridViewModel: ObservableObject {
     /// Sum of every account's GBP-converted balance for `month`; accounts with no data yet
     /// that month contribute 0, matching how a not-yet-open account has no effect on net worth.
     func netWorthTotal(year: Int, month: Int) -> Int {
-        accounts.reduce(0) { $0 + (accountBalance($1, year: year, month: month)?.gbpBalanceMinorUnits ?? 0) }
+        NetWorthCalculator.monthEndNetWorth(accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, year: year, month: month) ?? 0
     }
 
     /// True when at least one account has data (a snapshot at or before this month) for
     /// `year`/`month` — distinguishes "no data yet" from "net worth was genuinely zero."
     private func hasNetWorthData(year: Int, month: Int) -> Bool {
-        accounts.contains { accountBalance($0, year: year, month: month) != nil }
+        NetWorthCalculator.monthEndNetWorth(accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, year: year, month: month) != nil
     }
 
     /// Change in total GBP net worth from the end of the previous year to the end of

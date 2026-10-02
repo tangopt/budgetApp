@@ -152,4 +152,40 @@ final class NetWorthCalculatorTests: XCTestCase {
         XCTAssertEqual(result?.nativeBalanceMinorUnits, 100000)
         XCTAssertEqual(result?.isCarriedForward, true)
     }
+
+    // MARK: - monthEndNetWorth
+
+    private func utc(_ y: Int, _ m: Int, _ d: Int) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar.date(from: DateComponents(year: y, month: m, day: d))!
+    }
+
+    // Must equal the sum of each account's monthlyBalance — the formula BudgetGridViewModel
+    // and ForecastViewModel each used to carry their own copy of.
+    func testMonthEndNetWorthSumsCarriedForwardAccountBalances() {
+        let gbp = Account(id: 1, name: "Current", currency: .gbp, kind: .cash, trackingMode: .manual)
+        let eur = Account(id: 2, name: "EUR", currency: .eur, kind: .cash, trackingMode: .imported)
+        let snapshots = [
+            BalanceSnapshot(id: 1, accountId: 1, date: utc(2026, 1, 1), balanceMinorUnits: 100_000, note: nil),
+            BalanceSnapshot(id: 2, accountId: 1, date: utc(2026, 3, 1), balanceMinorUnits: 150_000, note: nil),
+            BalanceSnapshot(id: 3, accountId: 2, date: utc(2026, 2, 1), balanceMinorUnits: 200_000, note: nil)
+        ]
+        let transactions = [
+            Transaction(id: 1, importBatchId: 1, accountId: 2, date: utc(2026, 2, 10), rawDescription: "X", amountMinorUnits: -10_000, categoryId: nil, status: .confirmed, categorizedBy: .manual, fingerprint: "x")
+        ]
+        let rate = ExchangeRateSetting(eurToGbpRate: 0.5, updatedAt: utc(2026, 1, 1))
+
+        // Feb 2026: GBP carried forward from Jan (100_000); EUR imported = 200_000 - 10_000 = 190_000 EUR → 95_000 GBP.
+        XCTAssertEqual(NetWorthCalculator.monthEndNetWorth(accounts: [gbp, eur], snapshots: snapshots, transactions: transactions, rate: rate, year: 2026, month: 2), 195_000)
+        // Mar 2026: GBP picks up its new snapshot (150_000); EUR carries 190_000 → 95_000.
+        XCTAssertEqual(NetWorthCalculator.monthEndNetWorth(accounts: [gbp, eur], snapshots: snapshots, transactions: transactions, rate: rate, year: 2026, month: 3), 245_000)
+    }
+
+    func testMonthEndNetWorthIsNilBeforeAnyAccountHasData() {
+        let gbp = Account(id: 1, name: "Current", currency: .gbp, kind: .cash, trackingMode: .manual)
+        let snapshots = [BalanceSnapshot(id: 1, accountId: 1, date: utc(2026, 3, 1), balanceMinorUnits: 100_000, note: nil)]
+        let rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: utc(2026, 1, 1))
+        XCTAssertNil(NetWorthCalculator.monthEndNetWorth(accounts: [gbp], snapshots: snapshots, transactions: [], rate: rate, year: 2026, month: 2))
+    }
 }
