@@ -10,22 +10,32 @@ final class AppEnvironment: ObservableObject {
     /// last saved one at 2 decimal places. `NetWorthView` displays and dismisses it.
     @Published var exchangeRateBanner: String?
 
-    init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Budget", isDirectory: true)
-        try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
-        let dbPath = appSupport.appendingPathComponent("budget.sqlite").path
-
-        let manager = try! DatabaseManager(path: dbPath)
-        try! manager.migrate()
-        try! manager.dbQueue.write { db in
-            try CategorySeeder.seedDefaults(db)
-        }
-        self.dbQueue = manager.dbQueue
+    private init(dbQueue: DatabaseQueue) {
+        self.dbQueue = dbQueue
 
         Task { [weak self] in
             await self?.refreshExchangeRate()
         }
+    }
+
+    /// Opens, migrates and seeds the database off the main thread so the window can show
+    /// `LaunchView` straight away instead of blocking launch. Throws on any setup failure;
+    /// `LaunchView` shows the error instead of crashing.
+    static func load() async throws -> AppEnvironment {
+        let dbQueue = try await Task.detached(priority: .userInitiated) {
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Budget", isDirectory: true)
+            try FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
+            let dbPath = appSupport.appendingPathComponent("budget.sqlite").path
+
+            let manager = try DatabaseManager(path: dbPath)
+            try manager.migrate()
+            try manager.dbQueue.write { db in
+                try CategorySeeder.seedDefaults(db)
+            }
+            return manager.dbQueue
+        }.value
+        return AppEnvironment(dbQueue: dbQueue)
     }
 
     /// Never blocks launch (it's kicked off from `init` as a detached `Task`) and never
