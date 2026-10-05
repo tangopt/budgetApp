@@ -12,6 +12,21 @@ struct ForecastView: View {
     @State private var addingItemTo: ForecastGroup?
     @State private var editingEntry: ForecastEntry?
     @State private var isConfirmingScenario = false
+    @State private var reserveSheet: ReserveSheet?
+    @State private var renamingReserve: Category?
+    @State private var renameText = ""
+    @State private var deletingReserve: Category?
+
+    private enum ReserveSheet: Identifiable {
+        case newReserve
+        case addAmount(Category)
+        var id: String {
+            switch self {
+            case .newReserve: return "new-reserve"
+            case .addAmount(let reserve): return "add-amount-\(reserve.id ?? -1)"
+            }
+        }
+    }
 
     // A plain memberwise init would make `selectedYear` a required call-site argument;
     // this way callers just pass `viewModel`, and the initial year comes from it.
@@ -21,7 +36,7 @@ struct ForecastView: View {
     }
 
     private func categoriesByType(_ type: CategoryType) -> [Category] {
-        viewModel.categories.filter { $0.type == type }
+        viewModel.categories.filter { $0.type == type && !$0.isReserved }
     }
 
     private enum ForecastRowKind: Identifiable {
@@ -29,12 +44,18 @@ struct ForecastView: View {
         case category(Category)
         case groupHeader(CategoryGroup, categories: [Category])
         case groupChild(Category)
+        case reservedHeader
+        case reserve(Category)
+        case reservedTotal
         var id: String {
             switch self {
             case .sectionHeader(let title): return "header-\(title)"
             case .category(let category): return "cat-\(category.id ?? -1)"
             case .groupHeader(let group, let categories): return "group-\(group.id ?? -1)-\(categories.first?.type.rawValue ?? "")"
             case .groupChild(let category): return "groupchild-\(category.id ?? -1)"
+            case .reservedHeader: return "reserved-header"
+            case .reserve(let reserve): return "reserve-\(reserve.id ?? -1)"
+            case .reservedTotal: return "reserved-total"
             }
         }
     }
@@ -87,7 +108,12 @@ struct ForecastView: View {
             }
             return rows
         }
-        return section("Income", .income) + section("Expenses", .expense) + section("Transfers", .transfer)
+        var reservedRows: [ForecastRow] = [ForecastRow(kind: .reservedHeader, shaded: false)]
+        for (index, reserve) in viewModel.reserves.enumerated() {
+            reservedRows.append(ForecastRow(kind: .reserve(reserve), shaded: index % 2 == 1))
+        }
+        if !viewModel.reserves.isEmpty { reservedRows.append(ForecastRow(kind: .reservedTotal, shaded: false)) }
+        return section("Income", .income) + section("Expenses", .expense) + reservedRows + section("Transfers", .transfer)
     }
 
     /// A category renders as a two-line row (confirmed + preview) when any month in the
@@ -205,6 +231,43 @@ struct ForecastView: View {
                 viewModel.updateEntry(entry, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
                 editingEntry = nil
             }
+        }
+        .sheet(item: $reserveSheet) { sheet in
+            switch sheet {
+            case .newReserve:
+                ReserveFormView(mode: .newReserve) { name, amount, frequency, interval, start, end in
+                    if viewModel.addReserve(name: name, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end) {
+                        reserveSheet = nil
+                    }
+                }
+            case .addAmount(let reserve):
+                ReserveFormView(mode: .addAmount(reserve)) { _, amount, frequency, interval, start, end in
+                    if viewModel.addReserveAmount(to: reserve, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end) {
+                        reserveSheet = nil
+                    }
+                }
+            }
+        }
+        .alert("Rename reserve", isPresented: Binding(
+            get: { renamingReserve != nil },
+            set: { if !$0 { renamingReserve = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+            Button("Save") {
+                if let reserve = renamingReserve { viewModel.renameReserve(reserve, to: renameText) }
+                renamingReserve = nil
+            }
+            Button("Cancel", role: .cancel) { renamingReserve = nil }
+        }
+        .confirmationDialog("Delete “\(deletingReserve?.name ?? "")”? Its allowances are removed from the forecast.", isPresented: Binding(
+            get: { deletingReserve != nil },
+            set: { if !$0 { deletingReserve = nil } }
+        ), titleVisibility: .visible) {
+            Button("Delete reserve", role: .destructive) {
+                if let reserve = deletingReserve { viewModel.deleteReserve(reserve) }
+                deletingReserve = nil
+            }
+            Button("Cancel", role: .cancel) { deletingReserve = nil }
         }
     }
 
@@ -444,6 +507,46 @@ struct ForecastView: View {
                 .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(rowColor(for: category.type)), alignment: .leading)
+        case .reservedHeader:
+            HStack {
+                Text("RESERVED")
+                    .font(.caption).bold()
+                    .tracking(0.6)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button { reserveSheet = .newReserve } label: { Image(systemName: "plus") }
+                    .buttonStyle(.borderless)
+                    .help("Add reserve…")
+            }
+            .frame(width: 220, height: 24, alignment: .leading)
+            .padding(.horizontal, 8)
+            .background(Color.accentColor.opacity(0.08))
+        case .reserve(let reserve):
+            let twoLine = isTwoLine(reserve, year: selectedYear)
+            Text(reserve.name)
+                .frame(width: 220, height: twoLine ? 44 : 28, alignment: .leading)
+                .padding(.horizontal, 8)
+                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(.purple), alignment: .leading)
+                .contentShape(Rectangle())
+                .contextMenu {
+                    ForEach(viewModel.reserveEntries(reserve)) { entry in
+                        Button("Edit \(Self.frequencyLabel(entry)) allowance…") { editingEntry = entry }
+                    }
+                    Button("Add amount…") { reserveSheet = .addAmount(reserve) }
+                    Button("Rename…") { renamingReserve = reserve; renameText = reserve.name }
+                    Divider()
+                    Button("Delete reserve…", role: .destructive) { deletingReserve = reserve }
+                }
+        case .reservedTotal:
+            let twoLine = viewModel.reserves.contains { isTwoLine($0, year: selectedYear) }
+            Text("Total reserved").bold()
+                .frame(width: 220, height: twoLine ? 44 : 28, alignment: .leading)
+                .padding(.horizontal, 8)
+                .background(Color.purple.opacity(0.08))
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(.purple), alignment: .leading)
         }
     }
 
@@ -458,25 +561,7 @@ struct ForecastView: View {
             }
             .background(Color.accentColor.opacity(0.08))
         case .category(let category):
-            let year = selectedYear
-            let twoLine = isTwoLine(category, year: year)
-            HStack(spacing: 0) {
-                ForEach(1...12, id: \.self) { month in
-                    let confirmed = viewModel.categoryTotal(category, year: year, month: month)
-                    let preview = viewModel.previewCategoryTotal(category, year: year, month: month)
-                    forecastCell(confirmed: confirmed, preview: preview, twoLine: twoLine)
-                        .frame(height: twoLine ? 44 : 28)
-                        .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
-                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
-                }
-                let confirmedYearTotal = (1...12).reduce(0) { $0 + viewModel.categoryTotal(category, year: year, month: $1) }
-                let previewYearTotal = (1...12).reduce(0) { $0 + viewModel.previewCategoryTotal(category, year: year, month: $1) }
-                forecastCell(confirmed: confirmedYearTotal, preview: previewYearTotal, twoLine: twoLine, bold: true)
-                    .frame(height: twoLine ? 44 : 28)
-                    .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
-                    .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-            }
+            categoryCells(category, shaded: shaded)
         case .groupHeader(_, let categories):
             let year = selectedYear
             let twoLine = isTwoLineGroup(categories, year: year)
@@ -497,28 +582,58 @@ struct ForecastView: View {
             }
             .background(Color.orange.opacity(0.10))
         case .groupChild(let category):
-            // Identical cell behavior to `.category` — a `@ViewBuilder` function returning
-            // `some View` can't call itself recursively, so this repeats the `.category`
-            // branch's body rather than calling `rowCells(.category(...))`.
+            categoryCells(category, shaded: shaded)
+        case .reservedHeader:
+            HStack(spacing: 0) {
+                ForEach(1...(12 + 1), id: \.self) { _ in
+                    Color.clear.frame(width: 120, height: 24).padding(.horizontal, 8)
+                }
+            }
+            .background(Color.accentColor.opacity(0.08))
+        case .reserve(let reserve):
+            // `categoryTotal`/`previewCategoryTotal` already apply the reserve month rule.
+            categoryCells(reserve, shaded: shaded)
+        case .reservedTotal:
             let year = selectedYear
-            let twoLine = isTwoLine(category, year: year)
+            let twoLine = viewModel.reserves.contains { isTwoLine($0, year: year) }
             HStack(spacing: 0) {
                 ForEach(1...12, id: \.self) { month in
-                    let confirmed = viewModel.categoryTotal(category, year: year, month: month)
-                    let preview = viewModel.previewCategoryTotal(category, year: year, month: month)
-                    forecastCell(confirmed: confirmed, preview: preview, twoLine: twoLine)
+                    forecastCell(confirmed: viewModel.reserveTotal(year: year, month: month, preview: false), preview: viewModel.reserveTotal(year: year, month: month, preview: true), twoLine: twoLine, bold: true)
                         .frame(height: twoLine ? 44 : 28)
-                        .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                         .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                 }
-                let confirmedYearTotal = (1...12).reduce(0) { $0 + viewModel.categoryTotal(category, year: year, month: $1) }
-                let previewYearTotal = (1...12).reduce(0) { $0 + viewModel.previewCategoryTotal(category, year: year, month: $1) }
+                let confirmedYearTotal = (1...12).reduce(0) { $0 + viewModel.reserveTotal(year: year, month: $1, preview: false) }
+                let previewYearTotal = (1...12).reduce(0) { $0 + viewModel.reserveTotal(year: year, month: $1, preview: true) }
                 forecastCell(confirmed: confirmedYearTotal, preview: previewYearTotal, twoLine: twoLine, bold: true)
+                    .frame(height: twoLine ? 44 : 28)
+                    .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+            }
+            .background(Color.purple.opacity(0.08))
+        }
+    }
+
+    /// One category's twelve month cells plus its year total — shared by `.category`,
+    /// `.groupChild` and `.reserve` rows.
+    private func categoryCells(_ category: Category, shaded: Bool) -> some View {
+        let year = selectedYear
+        let twoLine = isTwoLine(category, year: year)
+        return HStack(spacing: 0) {
+            ForEach(1...12, id: \.self) { month in
+                let confirmed = viewModel.categoryTotal(category, year: year, month: month)
+                let preview = viewModel.previewCategoryTotal(category, year: year, month: month)
+                forecastCell(confirmed: confirmed, preview: preview, twoLine: twoLine)
                     .frame(height: twoLine ? 44 : 28)
                     .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                     .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
             }
+            let confirmedYearTotal = (1...12).reduce(0) { $0 + viewModel.categoryTotal(category, year: year, month: $1) }
+            let previewYearTotal = (1...12).reduce(0) { $0 + viewModel.previewCategoryTotal(category, year: year, month: $1) }
+            forecastCell(confirmed: confirmedYearTotal, preview: previewYearTotal, twoLine: twoLine, bold: true)
+                .frame(height: twoLine ? 44 : 28)
+                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
         }
     }
 
@@ -656,7 +771,12 @@ struct ScenarioItemFormView: View {
             }
             Picker("Category", selection: $categoryId) {
                 Text("Select…").tag(Int64?.none)
-                ForEach(viewModel.categories) { category in Text(category.name).tag(Int64?.some(category.id!)) }
+                ForEach(viewModel.categories.filter { !$0.isReserved }) { category in Text(category.name).tag(Int64?.some(category.id!)) }
+                if !viewModel.reserves.isEmpty {
+                    Section("Reserved") {
+                        ForEach(viewModel.reserves) { reserve in Text(reserve.name).tag(Int64?.some(reserve.id!)) }
+                    }
+                }
                 Text("+ New category…").tag(Int64?.some(Self.newCategorySentinel))
             }
             if isCreatingNewCategory {
@@ -784,5 +904,54 @@ struct EditForecastEntryView: View {
         }
         .padding()
         .frame(width: 360)
+    }
+}
+
+/// Creates a reserve with its first allowance, or adds another allowance to an existing
+/// one. Modelled on `ScenarioItemFormView`, minus the category picker.
+struct ReserveFormView: View {
+    enum Mode { case newReserve; case addAmount(Category) }
+    let mode: Mode
+    let onSave: (_ name: String, _ amountMinorUnits: Int, ForecastFrequency, Int, Date, Date?) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name = ""
+    @State private var amountPounds = ""
+    @State private var frequency: ForecastFrequency = .monthly
+    @State private var interval = 1
+    @State private var startDate = Date()
+    @State private var hasEndDate = false
+    @State private var endDate = Date()
+
+    var body: some View {
+        Form {
+            switch mode {
+            case .newReserve:
+                TextField("Reserve name", text: $name)
+                Text("A forecast-only allowance for spending you expect but don't plan line by line. It never holds transactions.")
+                    .font(.caption).foregroundStyle(.secondary)
+            case .addAmount(let reserve):
+                Text("Add an amount to \(reserve.name)").font(.headline)
+            }
+            TextField("Amount (£, positive number)", text: $amountPounds)
+            Picker("Frequency", selection: $frequency) {
+                ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(freq.rawValue).tag(freq) }
+            }
+            Stepper("Every \(interval) \(frequency.rawValue)", value: $interval, in: 1...12)
+            DatePicker("Starting", selection: $startDate, displayedComponents: .date)
+            Toggle("Ends on a specific date", isOn: $hasEndDate)
+            if hasEndDate { DatePicker("Ends", selection: $endDate, displayedComponents: .date) }
+            HStack {
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Save") {
+                    guard let minorUnits = Money.parseMinorUnits(amountPounds), minorUnits != 0 else { return }
+                    onSave(name, -abs(minorUnits), frequency, interval, ForecastView.normalizedStartOfDay(startDate), hasEndDate ? ForecastView.normalizedEndOfDay(endDate) : nil)
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding()
+        .frame(width: 420)
     }
 }

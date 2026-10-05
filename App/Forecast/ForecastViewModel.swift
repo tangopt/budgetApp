@@ -160,13 +160,16 @@ final class ForecastViewModel: ObservableObject {
     /// is real (`isActual`), the confirmed forecast otherwise (read from
     /// `forecastTotalsCache`, falling back to a direct calculation for a cache miss).
     func categoryTotal(_ category: Category, year: Int, month: Int) -> Int {
+        if category.isReserved {
+            // Reserves are forecast-only: nothing before the current calendar month,
+            // the allowance from this month on (even if the month already has actuals).
+            guard ReservedCategories.countsAllowance(year: year, month: month, today: Date()) else { return 0 }
+            return forecastValue(category, year: year, month: month, preview: false)
+        }
         if isActual(year: year, month: month) {
             return BudgetGridCalculator.categoryTotalForCalendarMonth(category: category, year: year, month: month, calendarTotals: calendarTotals)
         }
-        guard let categoryId = category.id else { return 0 }
-        if let cached = forecastTotalsCache[categoryId]?[year]?[month] { return cached.confirmed }
-        let range = dateRange(forYear: year, month: month)
-        return ForecastCalculator.confirmedTotal(categoryId: categoryId, period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), entries: entries, groups: groups)
+        return forecastValue(category, year: year, month: month, preview: false)
     }
 
     /// Confirmed total plus the selected scenario's `.hypothetical` entries, if any. For
@@ -174,13 +177,28 @@ final class ForecastViewModel: ObservableObject {
     /// retroactively change history. Reads from `forecastTotalsCache` for a forecast
     /// month, same fallback as `categoryTotal`.
     func previewCategoryTotal(_ category: Category, year: Int, month: Int) -> Int {
+        if category.isReserved {
+            // Same month rule as `categoryTotal`.
+            guard ReservedCategories.countsAllowance(year: year, month: month, today: Date()) else { return 0 }
+            return forecastValue(category, year: year, month: month, preview: true)
+        }
         if isActual(year: year, month: month) {
             return categoryTotal(category, year: year, month: month)
         }
+        return forecastValue(category, year: year, month: month, preview: true)
+    }
+
+    /// The category's forecast total for one month — confirmed, or confirmed plus the
+    /// selected scenario's hypotheticals when `preview` — read from
+    /// `forecastTotalsCache`, falling back to a direct calculation for a cache miss.
+    private func forecastValue(_ category: Category, year: Int, month: Int, preview: Bool) -> Int {
         guard let categoryId = category.id else { return 0 }
-        if let cached = forecastTotalsCache[categoryId]?[year]?[month] { return cached.preview }
+        if let cached = forecastTotalsCache[categoryId]?[year]?[month] { return preview ? cached.preview : cached.confirmed }
         let range = dateRange(forYear: year, month: month)
-        return ForecastCalculator.previewTotal(categoryId: categoryId, period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId)
+        let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
+        return preview
+            ? ForecastCalculator.previewTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId)
+            : ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups)
     }
 
     private var currentNetWorthGBP: Int {
@@ -444,5 +462,100 @@ final class ForecastViewModel: ObservableObject {
         }
         categories.append(category)
         return category
+    }
+
+    // MARK: - Reserves
+
+    /// Reserved (forecast-only) categories, sorted by name.
+    var reserves: [Category] { categories.filter(\.isReserved).sorted { $0.name < $1.name } }
+
+    /// The forecast entries (allowances) filed under `reserve`, oldest start first.
+    func reserveEntries(_ reserve: Category) -> [ForecastEntry] {
+        entries.filter { $0.categoryId == reserve.id }.sorted { $0.startDate < $1.startDate }
+    }
+
+    /// Sum of every reserve's month total (confirmed, or preview when `preview`).
+    func reserveTotal(year: Int, month: Int, preview: Bool) -> Int {
+        reserves.reduce(0) { $0 + (preview ? previewCategoryTotal($1, year: year, month: month) : categoryTotal($1, year: year, month: month)) }
+    }
+
+    /// Creates a reserve and its first confirmed allowance in one write. Write-first,
+    /// reload on success, `errorMessage` on failure.
+    @discardableResult
+    func addReserve(name: String, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> Bool {
+        errorMessage = nil
+        do {
+            try dbQueue.write { db in
+                let reserve = try ReservedCategories.create(db: db, name: name)
+                let group = try ReservedCategories.ensureGroup(db: db)
+                var entry = ForecastEntry(groupId: group.id!, categoryId: reserve.id!, amountMinorUnits: -abs(amountMinorUnits), frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, isEnabled: true, status: .confirmed, note: nil)
+                try entry.insert(db)
+            }
+        } catch ReservedCategoryError.duplicateName {
+            errorMessage = "A category with that name already exists."
+            return false
+        } catch ReservedCategoryError.emptyName {
+            errorMessage = "Enter a name."
+            return false
+        } catch {
+            errorMessage = "Couldn't add this reserve: \(error.localizedDescription)"
+            return false
+        }
+        try? load()
+        return true
+    }
+
+    /// Adds another confirmed allowance to an existing reserve.
+    @discardableResult
+    func addReserveAmount(to reserve: Category, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> Bool {
+        errorMessage = nil
+        guard let reserveId = reserve.id else { return false }
+        do {
+            try dbQueue.write { db in
+                let group = try ReservedCategories.ensureGroup(db: db)
+                var entry = ForecastEntry(groupId: group.id!, categoryId: reserveId, amountMinorUnits: -abs(amountMinorUnits), frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, isEnabled: true, status: .confirmed, note: nil)
+                try entry.insert(db)
+            }
+        } catch {
+            errorMessage = "Couldn't add this amount: \(error.localizedDescription)"
+            return false
+        }
+        try? load()
+        return true
+    }
+
+    @discardableResult
+    func renameReserve(_ reserve: Category, to name: String) -> Bool {
+        errorMessage = nil
+        guard let reserveId = reserve.id else { return false }
+        do {
+            try dbQueue.write { db in try ReservedCategories.rename(db: db, categoryId: reserveId, to: name) }
+        } catch ReservedCategoryError.duplicateName {
+            errorMessage = "A category with that name already exists."
+            return false
+        } catch ReservedCategoryError.emptyName {
+            errorMessage = "Enter a name."
+            return false
+        } catch {
+            errorMessage = "Couldn't rename this reserve: \(error.localizedDescription)"
+            return false
+        }
+        try? load()
+        return true
+    }
+
+    /// Deletes a reserve and its allowances (see `ReservedCategories.delete`).
+    @discardableResult
+    func deleteReserve(_ reserve: Category) -> Bool {
+        errorMessage = nil
+        guard let reserveId = reserve.id else { return false }
+        do {
+            try dbQueue.write { db in try ReservedCategories.delete(db: db, categoryId: reserveId) }
+        } catch {
+            errorMessage = "Couldn't delete this reserve: \(error.localizedDescription)"
+            return false
+        }
+        try? load()
+        return true
     }
 }
