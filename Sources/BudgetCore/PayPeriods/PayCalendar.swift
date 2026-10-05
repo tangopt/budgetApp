@@ -23,6 +23,9 @@ public struct PayCalendar {
     private let salaryByMonth: [PayMonth: Date]   // start of day
     private let manualByMonth: [PayMonth: Date]   // start of day
     private let salaryMonthsSorted: [PayMonth]
+    /// Effective close dates for the span of known (salary/manual) months, forced non-decreasing.
+    private let effectiveByMonth: [PayMonth: Date]
+    private let lastKnownMonth: PayMonth?
 
     static let calendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
@@ -45,6 +48,23 @@ public struct PayCalendar {
         self.manualByMonth = manual
         self.salaryMonthsSorted = salaries.keys.sorted()
         self.today = today
+        let known = Array(salaries.keys) + Array(manual.keys)
+        if let first = known.min(), let last = known.max() {
+            var effective: [PayMonth: Date] = [:]
+            var previous = Self.rawCloseDate(of: first.previous, salaryByMonth: salaries, manualByMonth: manual, salaryMonthsSorted: self.salaryMonthsSorted)
+            var month = first
+            while month <= last {
+                let raw = Self.rawCloseDate(of: month, salaryByMonth: salaries, manualByMonth: manual, salaryMonthsSorted: self.salaryMonthsSorted)
+                previous = max(raw, previous)
+                effective[month] = previous
+                month = month.next
+            }
+            self.effectiveByMonth = effective
+            self.lastKnownMonth = last
+        } else {
+            self.effectiveByMonth = [:]
+            self.lastKnownMonth = nil
+        }
     }
 
     public static func load(db: Database, today: Date) throws -> PayCalendar {
@@ -57,7 +77,12 @@ public struct PayCalendar {
         return .projected
     }
 
-    public func closeDate(of month: PayMonth) -> Date {
+    /// Close date as imported/overridden/projected, before the non-decreasing rule.
+    private func rawCloseDate(of month: PayMonth) -> Date {
+        Self.rawCloseDate(of: month, salaryByMonth: salaryByMonth, manualByMonth: manualByMonth, salaryMonthsSorted: salaryMonthsSorted)
+    }
+
+    private static func rawCloseDate(of month: PayMonth, salaryByMonth: [PayMonth: Date], manualByMonth: [PayMonth: Date], salaryMonthsSorted: [PayMonth]) -> Date {
         if let manual = manualByMonth[month] { return manual }
         if let salary = salaryByMonth[month] { return salary }
         let cal = Self.calendar
@@ -70,6 +95,15 @@ public struct PayCalendar {
         return cal.date(byAdding: .day, value: day - 1, to: first)!
     }
 
+    /// Effective close: never earlier than the previous month's, so an overtaken month is empty.
+    public func closeDate(of month: PayMonth) -> Date {
+        if let effective = effectiveByMonth[month] { return effective }
+        if let last = lastKnownMonth, month > last, let floor = effectiveByMonth[last] {
+            return max(rawCloseDate(of: month), floor) // raw projection beyond the known span is monotonic
+        }
+        return rawCloseDate(of: month)
+    }
+
     public func range(of month: PayMonth) -> (start: Date, end: Date) {
         let cal = Self.calendar
         let start = cal.date(byAdding: .day, value: 1, to: closeDate(of: month.previous))!
@@ -80,7 +114,7 @@ public struct PayCalendar {
     public func month(containing date: Date) -> PayMonth {
         let parts = Self.calendar.dateComponents([.year, .month], from: date)
         var month = PayMonth(year: parts.year!, month: parts.month!)
-        while date > range(of: month).end { month = month.next }
+        while date >= range(of: month.next).start { month = month.next }
         while date < range(of: month).start { month = month.previous }
         return month
     }
@@ -97,7 +131,7 @@ public struct PayCalendar {
     public func validateClose(_ month: PayMonth, on date: Date) throws {
         let day = Self.calendar.startOfDay(for: date)
         guard day >= Self.calendar.startOfDay(for: range(of: month).start) else { throw PayCalendarError.invalidCloseDate }
-        if isClosed(month.next), day >= closeDate(of: month.next) { throw PayCalendarError.invalidCloseDate }
+        if day >= rawCloseDate(of: month.next) { throw PayCalendarError.invalidCloseDate }
     }
 
     public static func close(db: Database, month: PayMonth, on date: Date, today: Date) throws {

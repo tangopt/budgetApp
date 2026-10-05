@@ -126,4 +126,36 @@ final class PayCalendarTests: XCTestCase {
         let c = make([d(2026, 10, 10), d(2026, 10, 15)])
         XCTAssertEqual(c.closeDate(of: pm(2026, 10)), d(2026, 10, 10))
     }
+
+    func testManualCloseBeyondProjectedNextMonthIsRejected() {
+        let c = make([d(2026, 9, 15)])
+        XCTAssertThrowsError(try c.validateClose(pm(2026, 10), on: d(2026, 11, 20))) {
+            XCTAssertEqual($0 as? PayCalendarError, .invalidCloseDate)
+        }
+        XCTAssertNoThrow(try c.validateClose(pm(2026, 10), on: d(2026, 11, 14)))
+        // Must be after close(M-1).
+        XCTAssertThrowsError(try c.validateClose(pm(2026, 10), on: d(2026, 9, 15)))
+    }
+
+    func testOvertakenMonthIsEmpty() {
+        let c = make([d(2026, 9, 15), d(2026, 11, 7)], manual: [PayMonthClose(year: 2026, month: 10, closeDate: d(2026, 11, 10))])
+        XCTAssertEqual(c.closeDate(of: pm(2026, 11)), d(2026, 11, 10))
+        XCTAssertEqual(c.month(containing: s(2026, 11, 8)), pm(2026, 10))
+        XCTAssertEqual(c.month(containing: s(2026, 11, 11)), pm(2026, 12))
+        let r = c.range(of: pm(2026, 11))
+        XCTAssertGreaterThanOrEqual(r.start, r.end)
+        XCTAssertEqual(c.range(of: pm(2026, 10)).end, d(2026, 11, 11).addingTimeInterval(-1))
+    }
+
+    func testPaydayBoundaryStaysInClosingMonth() {
+        let c = make([d(2026, 9, 15), d(2026, 10, 15)])
+        XCTAssertEqual(c.month(containing: d(2026, 10, 16).addingTimeInterval(-0.5)), pm(2026, 10))
+        XCTAssertEqual(c.month(containing: d(2026, 10, 16)), pm(2026, 11))
+    }
+
+    func testLaterSalaryWinsWithinCalendarMonth() {
+        let c = make([d(2026, 9, 1), d(2026, 9, 28)])
+        XCTAssertEqual(c.closeDate(of: pm(2026, 9)), d(2026, 9, 28))
+        XCTAssertEqual(c.closeSource(of: pm(2026, 9)), .salary)
+    }
 }
