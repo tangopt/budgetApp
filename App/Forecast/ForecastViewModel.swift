@@ -61,6 +61,10 @@ final class ForecastViewModel: ObservableObject {
     /// results for `thisYear` and `nextYear` — the headline figures `ForecastView` shows.
     /// Rebuilt alongside `forecastTotalsCache` for the same reason. Keyed by year.
     private var netWorthHeadlineCache: [Int: (forecast: Int?, yoy: (changeGBP: Int, percent: Double?)?, scenarioImpact: Int?)] = [:]
+    /// Each reserve's remaining allowance (after unforecast spending, see
+    /// `ReservedCategories.remainingAllowances`) for every month of `thisYear`/`nextYear`
+    /// in which reserves count. Rebuilt with `forecastTotalsCache`. Keyed by year → month.
+    private var reserveRemainingCache: [Int: [Int: (confirmed: [Int64: Int], preview: [Int64: Int])]] = [:]
     private static let calendar: Calendar = {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(identifier: "UTC")!
@@ -118,6 +122,16 @@ final class ForecastViewModel: ObservableObject {
         }
         forecastTotalsCache = totals
 
+        var remaining: [Int: [Int: (confirmed: [Int64: Int], preview: [Int64: Int])]] = [:]
+        if !reserves.isEmpty {
+            for year in [thisYear, nextYear] {
+                for month in 1...12 where ReservedCategories.countsAllowance(year: year, month: month, today: Date()) {
+                    remaining[year, default: [:]][month] = (computeRemainingReserves(year: year, month: month, preview: false), computeRemainingReserves(year: year, month: month, preview: true))
+                }
+            }
+        }
+        reserveRemainingCache = remaining
+
         var headline: [Int: (forecast: Int?, yoy: (changeGBP: Int, percent: Double?)?, scenarioImpact: Int?)] = [:]
         for year in [thisYear, nextYear] {
             headline[year] = (computeForecastNetWorth(atEndOf: year), computeForecastNetWorthYoY(atEndOf: year), computeScenarioNetWorthImpact(atEndOf: year))
@@ -167,10 +181,11 @@ final class ForecastViewModel: ObservableObject {
     /// `forecastTotalsCache`, falling back to a direct calculation for a cache miss).
     func categoryTotal(_ category: Category, year: Int, month: Int) -> Int {
         if category.isReserved {
-            // Reserves are forecast-only: nothing before the current calendar month,
-            // the allowance from this month on (even if the month already has actuals).
+            // Reserves are forecast-only: nothing before the current calendar month; from
+            // this month on, what's left of the allowance after the month's unforecast
+            // spending (the whole allowance when the month has no actuals).
             guard ReservedCategories.countsAllowance(year: year, month: month, today: Date()) else { return 0 }
-            return forecastValue(category, year: year, month: month, preview: false)
+            return remainingReserveValue(category, year: year, month: month, preview: false)
         }
         if isActual(year: year, month: month) {
             return BudgetGridCalculator.categoryTotalForCalendarMonth(category: category, year: year, month: month, calendarTotals: calendarTotals)
@@ -186,7 +201,7 @@ final class ForecastViewModel: ObservableObject {
         if category.isReserved {
             // Same month rule as `categoryTotal`.
             guard ReservedCategories.countsAllowance(year: year, month: month, today: Date()) else { return 0 }
-            return forecastValue(category, year: year, month: month, preview: true)
+            return remainingReserveValue(category, year: year, month: month, preview: true)
         }
         if isActual(year: year, month: month) {
             return categoryTotal(category, year: year, month: month)
@@ -205,6 +220,24 @@ final class ForecastViewModel: ObservableObject {
         return preview
             ? ForecastCalculator.previewTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId)
             : ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups)
+    }
+
+    /// A reserve's remaining allowance for one month, from `reserveRemainingCache`, falling
+    /// back to a direct calculation for a cache miss.
+    private func remainingReserveValue(_ reserve: Category, year: Int, month: Int, preview: Bool) -> Int {
+        guard let reserveId = reserve.id else { return 0 }
+        if let cached = reserveRemainingCache[year]?[month] { return (preview ? cached.preview : cached.confirmed)[reserveId] ?? 0 }
+        return computeRemainingReserves(year: year, month: month, preview: preview)[reserveId] ?? 0
+    }
+
+    /// Every reserve's allowance (confirmed, or preview when `preview`) reduced by the
+    /// month's unforecast spending, absorbed in name order.
+    private func computeRemainingReserves(year: Int, month: Int, preview: Bool) -> [Int64: Int] {
+        let allowances: [(id: Int64, name: String, allowance: Int)] = reserves.compactMap { reserve in
+            reserve.id.map { ($0, reserve.name, forecastValue(reserve, year: year, month: month, preview: preview)) }
+        }
+        let spend = ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, calendarTotals: calendarTotals, entries: entries, groups: groups)
+        return ReservedCategories.remainingAllowances(allowances, unforecastSpend: spend)
     }
 
     private var currentNetWorthGBP: Int {
@@ -480,7 +513,8 @@ final class ForecastViewModel: ObservableObject {
         entries.filter { $0.categoryId == reserve.id }.sorted { $0.startDate < $1.startDate }
     }
 
-    /// Sum of every reserve's month total (confirmed, or preview when `preview`).
+    /// Sum of every reserve's month total (confirmed, or preview when `preview`) — each the
+    /// remaining allowance after the month's unforecast spending.
     func reserveTotal(year: Int, month: Int, preview: Bool) -> Int {
         reserves.reduce(0) { $0 + (preview ? previewCategoryTotal($1, year: year, month: month) : categoryTotal($1, year: year, month: month)) }
     }

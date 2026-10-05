@@ -118,15 +118,31 @@ extension DashboardCalculator {
     private static func categoryAmounts(_ input: DashboardInput, year: Int, month: Int, monthClass: MonthClass, includeExpected: Bool, visit: (Category, _ actual: Int, _ expected: Int, _ projected: Int) -> Void) {
         let range = MonthRange.of(year: year, month: month)
         let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
+        let reserveRemaining = monthClass == .actual ? [:] : remainingReserves(input, year: year, month: month, period: period, monthClass: monthClass)
         for category in input.categories {
             guard let categoryId = category.id, category.type != .transfer else { continue }
             let actual = monthClass == .forecast ? 0 : (input.calendarTotals[categoryId]?[year]?[month] ?? 0)
             let expected = (monthClass != .actual || includeExpected)
                 ? ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: input.forecastEntries, groups: input.forecastGroups)
                 : 0
-            let projected = MonthBlend.projectedTotal(actual: actual, expected: expected, categoryType: category.type, monthClass: monthClass)
+            // A reserve projects only what's left of its allowance after unforecast spending
+            // (`ReservedCategories.remainingAllowances`); expected stays the full allowance.
+            let projected = reserveRemaining[categoryId]
+                ?? MonthBlend.projectedTotal(actual: actual, expected: expected, categoryType: category.type, monthClass: monthClass)
             visit(category, actual, expected, projected)
         }
+    }
+
+    /// Signed remaining allowance per reserve id for a blended or forecast month. A forecast
+    /// month has no actuals, so nothing is deducted there.
+    private static func remainingReserves(_ input: DashboardInput, year: Int, month: Int, period: PayPeriod, monthClass: MonthClass) -> [Int64: Int] {
+        let reserves: [(id: Int64, name: String, allowance: Int)] = input.categories.compactMap { category in
+            guard category.isReserved, let id = category.id else { return nil }
+            return (id, category.name, ForecastCalculator.confirmedTotal(categoryId: id, period: period, entries: input.forecastEntries, groups: input.forecastGroups))
+        }
+        guard !reserves.isEmpty else { return [:] }
+        let spend = monthClass == .forecast ? 0 : ReservedCategories.unforecastSpend(year: year, month: month, categories: input.categories, calendarTotals: input.calendarTotals, entries: input.forecastEntries, groups: input.forecastGroups)
+        return ReservedCategories.remainingAllowances(reserves, unforecastSpend: spend)
     }
 
     private static func monthTotals(_ input: DashboardInput, year: Int, month: Int, monthClass: MonthClass, includeExpected: Bool) -> MonthTotals {

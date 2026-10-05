@@ -200,6 +200,30 @@ final class DashboardFlowTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(flows[10].expenseRemaining, flows[10].reservedRemaining)
     }
 
+    func testUnforecastSpendReducesTheReserveInTheCurrentMonth() {
+        // Groceries has nothing forecast, so its 60k comes out of the 200k reserve; dining
+        // is forecast and doesn't.
+        let input = F.input(today: date(2026, 10, 14), transactions: [F.txn(1, date(2026, 10, 3), -60_000, category: F.groceriesId), F.txn(2, date(2026, 10, 13), -55_000, category: F.diningId)], entries: F.withDining + [bulkReserve], reservedId: F.bulkId)
+        let month = DashboardCalculator.currentMonth(input)
+        XCTAssertEqual(month.monthClass, .blended)
+        XCTAssertEqual(month.reservedProjected, 140_000)
+        // 100k rent + 60k groceries + max(55k, 40k) dining + 140k remaining reserve.
+        XCTAssertEqual(month.expenses.projected, 355_000)
+        // Expected still shows the full allowance: 100k rent + 40k dining + 200k reserve.
+        XCTAssertEqual(month.expenses.expected, 340_000)
+    }
+
+    func testUnforecastSpendOverTheAllowanceLeavesNothingReserved() {
+        let input = F.input(today: date(2026, 10, 14), transactions: [F.txn(1, date(2026, 10, 3), -230_000, category: F.groceriesId)], entries: F.withDining + [bulkReserve], reservedId: F.bulkId)
+        let month = DashboardCalculator.currentMonth(input)
+        XCTAssertEqual(month.reservedProjected, 0)
+        // 100k rent + 230k groceries + 40k dining + 0 reserve.
+        XCTAssertEqual(month.expenses.projected, 370_000)
+        let flows = DashboardCalculator.monthlyFlows(input, year: 2026)
+        XCTAssertEqual(flows[9].reservedRemaining, 0)
+        XCTAssertEqual(flows[10].reservedRemaining, 200_000)   // November: no actuals yet
+    }
+
     func testTopCategoriesLeavesReservesOut() {
         let input = F.input(today: date(2026, 10, 14), transactions: [F.txn(1, date(2026, 10, 13), -55_000, category: F.diningId)], entries: F.withDining + [bulkReserve], reservedId: F.bulkId)
         XCTAssertFalse(DashboardCalculator.topCategories(input).contains { $0.name == "Bulk other" })

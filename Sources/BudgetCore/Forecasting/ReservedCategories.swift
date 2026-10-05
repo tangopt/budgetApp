@@ -65,6 +65,36 @@ public enum ReservedCategories {
         return MonthRange.index(year: year, month: month) >= MonthRange.index(year: now.year, month: now.month)
     }
 
+    /// What a month's reserves lose to spending nobody planned for: the confirmed spend in
+    /// the calendar month across expense categories (not reserves) with nothing forecast
+    /// that month. Net signed sum, so refunds reduce it; returned as a positive magnitude,
+    /// never below 0. Unreviewed transactions aren't in `calendarTotals`, so never count.
+    public static func unforecastSpend(year: Int, month: Int, categories: [Category], calendarTotals: [Int64: [Int: [Int: Int]]], entries: [ForecastEntry], groups: [ForecastGroup]) -> Int {
+        let range = MonthRange.of(year: year, month: month)
+        let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
+        var net = 0
+        for category in categories where category.type == .expense && !category.isReserved {
+            guard let categoryId = category.id, let actual = calendarTotals[categoryId]?[year]?[month], actual != 0 else { continue }
+            guard ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups) == 0 else { continue }
+            net += actual
+        }
+        return max(0, -net)
+    }
+
+    /// Each reserve's allowance (signed, negative) reduced by `unforecastSpend` (positive),
+    /// absorbed in name order: the first reserve takes the spend until it reaches 0, then
+    /// the next. Every result lies in `allowance...0`.
+    public static func remainingAllowances(_ reserves: [(id: Int64, name: String, allowance: Int)], unforecastSpend: Int) -> [Int64: Int] {
+        var left = max(0, unforecastSpend)
+        var result: [Int64: Int] = [:]
+        for reserve in reserves.sorted(by: { $0.name < $1.name }) {
+            let absorbed = min(left, max(0, -reserve.allowance))
+            result[reserve.id] = reserve.allowance + absorbed
+            left -= absorbed
+        }
+        return result
+    }
+
     private static func reserve(db: Database, _ categoryId: Int64) throws -> Category {
         guard let category = try Category.fetchOne(db, key: categoryId), category.isReserved else {
             throw ReservedCategoryError.notReserved

@@ -148,6 +148,65 @@ final class ReservedCategoriesTests: XCTestCase {
         XCTAssertFalse(ReservedCategories.countsAllowance(year: 2025, month: 12, today: today))
     }
 
+    // MARK: Remaining allowance after unforecast spending
+
+    func testRemainingAllowanceIsReducedByUnforecastSpend() {
+        let result = ReservedCategories.remainingAllowances([(id: 1, name: "Remaining", allowance: -200_000)], unforecastSpend: 60_000)
+        XCTAssertEqual(result, [1: -140_000])
+    }
+
+    func testRemainingAllowanceNeverGoesBeyondZero() {
+        let result = ReservedCategories.remainingAllowances([(id: 1, name: "Remaining", allowance: -200_000)], unforecastSpend: 230_000)
+        XCTAssertEqual(result, [1: 0])
+    }
+
+    func testZeroSpendLeavesTheFullAllowance() {
+        let result = ReservedCategories.remainingAllowances([(id: 1, name: "Remaining", allowance: -200_000), (id: 2, name: "Gifts", allowance: -5_000)], unforecastSpend: 0)
+        XCTAssertEqual(result, [1: -200_000, 2: -5_000])
+    }
+
+    func testSeveralReservesAbsorbSpendInNameOrder() {
+        // "Gifts" sorts before "Remaining": it absorbs first until it reaches 0.
+        let reserves: [(id: Int64, name: String, allowance: Int)] = [(id: 1, name: "Remaining", allowance: -200_000), (id: 2, name: "Gifts", allowance: -5_000)]
+        XCTAssertEqual(ReservedCategories.remainingAllowances(reserves, unforecastSpend: 3_000), [1: -200_000, 2: -2_000])
+        XCTAssertEqual(ReservedCategories.remainingAllowances(reserves, unforecastSpend: 65_000), [1: -140_000, 2: 0])
+        XCTAssertEqual(ReservedCategories.remainingAllowances(reserves, unforecastSpend: 500_000), [1: 0, 2: 0])
+    }
+
+    func testUnforecastSpendCountsOnlyExpenseCategoriesWithNothingForecast() {
+        let groceries = Category(id: 1, name: "Groceries", type: .expense)
+        let dining = Category(id: 2, name: "Dining", type: .expense)          // forecast in October
+        let reserve = Category(id: 3, name: "Remaining", type: .expense, isReserved: true)
+        let salary = Category(id: 4, name: "Salary", type: .income)
+        let savings = Category(id: 5, name: "Savings", type: .transfer)
+        let group = ForecastGroup(id: 1, name: "Planned", note: nil, isEnabled: true, isSystemManaged: false)
+        let diningEntry = ForecastEntry(id: 1, groupId: 1, categoryId: 2, amountMinorUnits: -40_000, frequency: .monthly, interval: 1, startDate: utc(2026, 1, 14), endDate: nil, isEnabled: true, status: .confirmed, note: nil)
+        let reserveEntry = ForecastEntry(id: 2, groupId: 1, categoryId: 3, amountMinorUnits: -200_000, frequency: .monthly, interval: 1, startDate: utc(2026, 1, 1), endDate: nil, isEnabled: true, status: .confirmed, note: nil)
+        func txn(_ id: Int64, _ day: Date, _ amount: Int, _ category: Int64?, _ status: TransactionStatus = .confirmed) -> Transaction {
+            Transaction(id: id, importBatchId: 1, accountId: 1, date: day, rawDescription: "T\(id)", amountMinorUnits: amount, categoryId: category, status: status, categorizedBy: .manual, fingerprint: "fp\(id)")
+        }
+        let transactions = [
+            txn(1, utc(2026, 10, 3), -25_000, 1),              // groceries: counts
+            txn(2, utc(2026, 10, 9), 5_000, 1),                // groceries refund: nets
+            txn(3, utc(2026, 10, 4), -55_000, 2),              // dining: forecast, ignored
+            txn(4, utc(2026, 10, 25), 300_000, 4),             // income, ignored
+            txn(5, utc(2026, 10, 26), -50_000, 5),             // transfer, ignored
+            txn(6, utc(2026, 10, 5), -3_000, nil, .pendingReview),  // unreviewed, ignored
+            txn(7, utc(2026, 10, 6), -2_000, 1, .pendingReview),    // unreviewed, ignored
+            txn(8, utc(2026, 9, 6), -9_000, 1)                 // another month, ignored
+        ]
+        let totals = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
+        let spend = ReservedCategories.unforecastSpend(year: 2026, month: 10, categories: [groceries, dining, reserve, salary, savings], calendarTotals: totals, entries: [diningEntry, reserveEntry], groups: [group])
+        XCTAssertEqual(spend, 20_000)
+    }
+
+    func testUnforecastSpendIsNeverNegative() {
+        let groceries = Category(id: 1, name: "Groceries", type: .expense)
+        let refund = Transaction(id: 1, importBatchId: 1, accountId: 1, date: utc(2026, 10, 3), rawDescription: "Refund", amountMinorUnits: 7_000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "fp1")
+        let totals = BudgetGridCalculator.calendarTotalsLookup(transactions: [refund])
+        XCTAssertEqual(ReservedCategories.unforecastSpend(year: 2026, month: 10, categories: [groceries], calendarTotals: totals, entries: [], groups: []), 0)
+    }
+
     func testCatchAllMigrationCarriesTheFlagOverAndDropsTheColumn() throws {
         let manager = try DatabaseManager(path: nil)
         // Migrate up to (but not including) dropCatchAll, insert a catch-all row, then finish.

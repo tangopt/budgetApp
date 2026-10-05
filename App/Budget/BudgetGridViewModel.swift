@@ -6,17 +6,24 @@ import GRDB
 
 @MainActor
 final class BudgetGridViewModel: ObservableObject {
-    @Published var categories: [Category] = []
+    @Published var categories: [Category] = [] {
+        didSet { reserveRemainingCache = [:] }
+    }
     @Published var categoryGroups: [CategoryGroup] = []
     @Published var periods: [PayPeriod] = []
     @Published var transactions: [Transaction] = [] {
         didSet {
             calendarTotals = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
+            reserveRemainingCache = [:]
             availableYears = BudgetGridCalculator.yearsWithData(transactions: transactions)
         }
     }
-    @Published var forecastEntries: [ForecastEntry] = []
-    @Published var forecastGroups: [ForecastGroup] = []
+    @Published var forecastEntries: [ForecastEntry] = [] {
+        didSet { reserveRemainingCache = [:] }
+    }
+    @Published var forecastGroups: [ForecastGroup] = [] {
+        didSet { reserveRemainingCache = [:] }
+    }
     @Published var accounts: [Account] = []
     @Published var balanceSnapshots: [BalanceSnapshot] = []
     @Published var exchangeRate: ExchangeRateSetting = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
@@ -26,6 +33,10 @@ final class BudgetGridViewModel: ObservableObject {
 
     private let dbQueue: DatabaseQueue
     private var calendarTotals: [Int64: [Int: [Int: Int]]] = [:]
+    /// Remaining allowance per reserve id, memoised per `MonthRange.index` — the grid asks
+    /// for every reserve cell on every render, and each month's answer scans every
+    /// category's forecast. Cleared whenever categories, transactions or forecasts change.
+    private var reserveRemainingCache: [Int: [Int64: Int]] = [:]
 
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
@@ -111,12 +122,22 @@ final class BudgetGridViewModel: ObservableObject {
 
     var reserves: [Category] { categories.filter(\.isReserved).sorted { $0.name < $1.name } }
 
-    /// Reserves are forecast-only, so the grid shows their confirmed allowance from the
-    /// current calendar month on and nothing before it.
+    /// Reserves are forecast-only, so the grid shows nothing before the current calendar
+    /// month and, from it on, what's left of the confirmed allowance after the month's
+    /// unforecast spending (`ReservedCategories.remainingAllowances`).
     func reserveTotal(_ reserve: Category, year: Int, month: Int) -> Int {
         guard let id = reserve.id, ReservedCategories.countsAllowance(year: year, month: month, today: Date()) else { return 0 }
+        let key = MonthRange.index(year: year, month: month)
+        if let cached = reserveRemainingCache[key] { return cached[id] ?? 0 }
         let range = dateRange(forYear: year, month: month)
-        return ForecastCalculator.confirmedTotal(categoryId: id, period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), entries: forecastEntries, groups: forecastGroups)
+        let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
+        let allowances: [(id: Int64, name: String, allowance: Int)] = reserves.compactMap { reserve in
+            reserve.id.map { ($0, reserve.name, ForecastCalculator.confirmedTotal(categoryId: $0, period: period, entries: forecastEntries, groups: forecastGroups)) }
+        }
+        let spend = ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, calendarTotals: calendarTotals, entries: forecastEntries, groups: forecastGroups)
+        let remaining = ReservedCategories.remainingAllowances(allowances, unforecastSpend: spend)
+        reserveRemainingCache[key] = remaining
+        return remaining[id] ?? 0
     }
 
     func dateRange(forYear year: Int, month: Int) -> (start: Date, end: Date) {
