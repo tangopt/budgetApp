@@ -13,11 +13,18 @@ public struct FlowTotals: Equatable {
     }
 }
 
+/// The pay month containing today (`PayCalendar.current`).
 public struct CurrentMonthTracking: Equatable {
     public let year: Int
     public let month: Int
+    /// The pay month's range: start of its first day ... last moment of its close day (UTC).
+    public let start: Date
+    public let end: Date
+    /// Day of the pay month (1 on `start`'s day) and the pay month's length in days.
     public let dayOfMonth: Int
     public let daysInMonth: Int
+    /// Any confirmed or unreviewed transaction dated in the pay month.
+    public let hasTransactions: Bool
     public let monthClass: MonthClass
     public let income: FlowTotals
     public let expenses: FlowTotals
@@ -111,17 +118,18 @@ extension DashboardCalculator {
         var reservedProjected = 0
     }
 
-    /// Per non-transfer category: actual (confirmed transactions), expected (confirmed
-    /// forecast for the whole calendar month — independent of whether the month "is actual"),
-    /// and the projected value under `MonthBlend`. Expected is skipped for actual months
-    /// unless `includeExpected` (the current-month card always wants it).
+    /// Per non-transfer category: actual (confirmed transactions in the pay month), expected
+    /// (confirmed forecast for the whole calendar month of that name — independent of whether
+    /// the month "is actual"), and the projected value under `MonthBlend`. Expected is skipped
+    /// for actual (closed) months unless `includeExpected` (the current-month card always
+    /// wants it). Closed months count no reserve.
     private static func categoryAmounts(_ input: DashboardInput, year: Int, month: Int, monthClass: MonthClass, includeExpected: Bool, visit: (Category, _ actual: Int, _ expected: Int, _ projected: Int) -> Void) {
         let range = MonthRange.of(year: year, month: month)
         let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
         let reserveRemaining = monthClass == .actual ? [:] : remainingReserves(input, year: year, month: month, period: period, monthClass: monthClass)
         for category in input.categories {
             guard let categoryId = category.id, category.type != .transfer else { continue }
-            let actual = monthClass == .forecast ? 0 : (input.calendarTotals[categoryId]?[year]?[month] ?? 0)
+            let actual = monthClass == .forecast ? 0 : (input.monthTotals[categoryId]?[year]?[month] ?? 0)
             let expected = (monthClass != .actual || includeExpected)
                 ? ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: input.forecastEntries, groups: input.forecastGroups)
                 : 0
@@ -133,15 +141,16 @@ extension DashboardCalculator {
         }
     }
 
-    /// Signed remaining allowance per reserve id for a blended or forecast month. A forecast
-    /// month has no actuals, so nothing is deducted there.
+    /// Signed remaining allowance per reserve id for an open (blended or forecast) month: the
+    /// allowance less that pay month's unforecast spend. A forecast month has no actuals, so
+    /// nothing is deducted there.
     private static func remainingReserves(_ input: DashboardInput, year: Int, month: Int, period: PayPeriod, monthClass: MonthClass) -> [Int64: Int] {
         let reserves: [(id: Int64, name: String, allowance: Int)] = input.categories.compactMap { category in
             guard category.isReserved, let id = category.id else { return nil }
             return (id, category.name, ForecastCalculator.confirmedTotal(categoryId: id, period: period, entries: input.forecastEntries, groups: input.forecastGroups))
         }
         guard !reserves.isEmpty else { return [:] }
-        let spend = monthClass == .forecast ? 0 : ReservedCategories.unforecastSpend(year: year, month: month, categories: input.categories, calendarTotals: input.calendarTotals, entries: input.forecastEntries, groups: input.forecastGroups)
+        let spend = monthClass == .forecast ? 0 : ReservedCategories.unforecastSpend(year: year, month: month, categories: input.categories, monthTotals: input.monthTotals, entries: input.forecastEntries, groups: input.forecastGroups)
         return ReservedCategories.remainingAllowances(reserves, unforecastSpend: spend)
     }
 
@@ -165,18 +174,21 @@ extension DashboardCalculator {
     // MARK: Current month
 
     public static func currentMonth(_ input: DashboardInput) -> CurrentMonthTracking {
-        let today = input.effectiveToday
-        let parts = MonthRange.components(of: today)
-        let monthClass = MonthBlend.classify(year: parts.year, month: parts.month, dataThrough: input.dataThrough, today: input.today)
-        let totals = monthTotals(input, year: parts.year, month: parts.month, monthClass: monthClass, includeExpected: true)
+        let month = input.payCalendar.current
+        let monthClass = input.payCalendar.monthClass(month)
+        let totals = monthTotals(input, year: month.year, month: month.month, monthClass: monthClass, includeExpected: true)
 
-        let range = MonthRange.of(year: parts.year, month: parts.month)
+        let range = input.payCalendar.range(of: month)
         let unreviewed = unreviewedSummary(input, from: range.start, through: range.end)
+        let elapsed = calendar.dateComponents([.day], from: range.start, to: calendar.startOfDay(for: input.effectiveToday)).day ?? 0
+        let length = calendar.dateComponents([.day], from: range.start, to: range.end.addingTimeInterval(1)).day ?? 0
+        let hasTransactions = input.transactions.contains { $0.date >= range.start && $0.date <= range.end }
 
         return CurrentMonthTracking(
-            year: parts.year, month: parts.month,
-            dayOfMonth: calendar.component(.day, from: today),
-            daysInMonth: calendar.range(of: .day, in: .month, for: today)!.count,
+            year: month.year, month: month.month,
+            start: range.start, end: range.end,
+            dayOfMonth: elapsed + 1, daysInMonth: length,
+            hasTransactions: hasTransactions,
             monthClass: monthClass, income: totals.income, expenses: totals.expenses,
             reservedProjected: totals.reservedProjected,
             unreviewedCount: unreviewed.count, unreviewedOutflowMinorUnits: unreviewed.outflowMinorUnits
@@ -185,9 +197,11 @@ extension DashboardCalculator {
 
     // MARK: Unreviewed
 
-    /// Unreviewed transactions dated within the UTC calendar `year`.
+    /// Unreviewed transactions dated within the pay year: January's pay month start ...
+    /// December's pay month end.
     public static func unreviewed(_ input: DashboardInput, year: Int) -> UnreviewedSummary {
-        unreviewedSummary(input, from: MonthRange.of(year: year, month: 1).start, through: MonthRange.of(year: year, month: 12).end)
+        let calendar = input.payCalendar
+        return unreviewedSummary(input, from: calendar.range(of: PayMonth(year: year, month: 1)).start, through: calendar.range(of: PayMonth(year: year, month: 12)).end)
     }
 
     private static func unreviewedSummary(_ input: DashboardInput, from start: Date, through end: Date) -> UnreviewedSummary {
@@ -200,7 +214,7 @@ extension DashboardCalculator {
 
     public static func monthlyFlows(_ input: DashboardInput, year: Int) -> [MonthlyFlow] {
         (1...12).map { month in
-            let monthClass = MonthBlend.classify(year: year, month: month, dataThrough: input.dataThrough, today: input.today)
+            let monthClass = input.payCalendar.monthClass(PayMonth(year: year, month: month))
             let totals = monthTotals(input, year: year, month: month, monthClass: monthClass, includeExpected: false)
             let expenseRemaining = max(totals.expenses.projected - totals.expenses.actual, 0)
             return MonthlyFlow(
@@ -220,16 +234,16 @@ extension DashboardCalculator {
 
     // MARK: Top categories
 
-    /// Expense categories for the current month, rolled up by `CategoryGroup` exactly like
+    /// Expense categories for the current pay month, rolled up by `CategoryGroup` exactly like
     /// the grids (a group is the sum of its members; ungrouped categories stand alone),
     /// ranked by projected month-end spend.
     public static func topCategories(_ input: DashboardInput, limit: Int = 5) -> [CategorySpend] {
-        let parts = MonthRange.components(of: input.effectiveToday)
-        let monthClass = MonthBlend.classify(year: parts.year, month: parts.month, dataThrough: input.dataThrough, today: input.today)
+        let current = input.payCalendar.current
+        let monthClass = input.payCalendar.monthClass(current)
         let groupNames = Dictionary(uniqueKeysWithValues: input.categoryGroups.compactMap { group -> (Int64, String)? in group.id.map { ($0, group.name) } })
 
         var rolled: [String: (actual: Int, expected: Int, projected: Int, covered: Bool)] = [:]
-        categoryAmounts(input, year: parts.year, month: parts.month, monthClass: monthClass, includeExpected: true) { category, actual, expected, projected in
+        categoryAmounts(input, year: current.year, month: current.month, monthClass: monthClass, includeExpected: true) { category, actual, expected, projected in
             guard category.type == .expense, !category.isReserved else { return }
             let key = category.groupId.flatMap { groupNames[$0] } ?? category.name
             var entry = rolled[key] ?? (0, 0, 0, true)

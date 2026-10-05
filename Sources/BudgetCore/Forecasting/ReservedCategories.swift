@@ -58,23 +58,17 @@ public enum ReservedCategories {
             .deleteAll(db)
     }
 
-    /// Grids (which have no blended month): a reserve's allowance counts from the current
-    /// calendar month on; earlier months show nothing.
-    public static func countsAllowance(year: Int, month: Int, today: Date) -> Bool {
-        let now = MonthRange.components(of: today)
-        return MonthRange.index(year: year, month: month) >= MonthRange.index(year: now.year, month: now.month)
-    }
-
     /// What a month's reserves lose to spending nobody planned for: the confirmed spend in
-    /// the calendar month across expense categories (not reserves) with nothing forecast
-    /// that month. Net signed sum, so refunds reduce it; returned as a positive magnitude,
-    /// never below 0. Unreviewed transactions aren't in `calendarTotals`, so never count.
-    public static func unforecastSpend(year: Int, month: Int, categories: [Category], calendarTotals: [Int64: [Int: [Int: Int]]], entries: [ForecastEntry], groups: [ForecastGroup]) -> Int {
+    /// the month (`monthTotals`, by pay month) across expense categories (not reserves) with
+    /// nothing forecast for the calendar month of that name. Net signed sum, so refunds
+    /// reduce it; returned as a positive magnitude, never below 0. Unreviewed transactions
+    /// aren't in `monthTotals`, so never count.
+    public static func unforecastSpend(year: Int, month: Int, categories: [Category], monthTotals: [Int64: [Int: [Int: Int]]], entries: [ForecastEntry], groups: [ForecastGroup]) -> Int {
         let range = MonthRange.of(year: year, month: month)
         let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
         var net = 0
         for category in categories where category.type == .expense && !category.isReserved {
-            guard let categoryId = category.id, let actual = calendarTotals[categoryId]?[year]?[month], actual != 0 else { continue }
+            guard let categoryId = category.id, let actual = monthTotals[categoryId]?[year]?[month], actual != 0 else { continue }
             guard ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups) == 0 else { continue }
             net += actual
         }
@@ -93,6 +87,19 @@ public enum ReservedCategories {
             left -= absorbed
         }
         return result
+    }
+
+    /// Each reserve's value for one month of a grid, by the month's class: a closed
+    /// (`.actual`) month counts 0 (its leftover is released); a `.blended` month what's left
+    /// after that pay month's unforecast spend (`remainingAllowances`); a `.forecast` month
+    /// the full allowance (no actuals yet). `unforecastSpend` is only evaluated for a
+    /// blended month.
+    public static func monthAllowances(_ reserves: [(id: Int64, name: String, allowance: Int)], monthClass: MonthClass, unforecastSpend: () -> Int) -> [Int64: Int] {
+        switch monthClass {
+        case .actual: return Dictionary(uniqueKeysWithValues: reserves.map { ($0.id, 0) })
+        case .forecast: return remainingAllowances(reserves, unforecastSpend: 0)
+        case .blended: return remainingAllowances(reserves, unforecastSpend: unforecastSpend())
+        }
     }
 
     private static func reserve(db: Database, _ categoryId: Int64) throws -> Category {

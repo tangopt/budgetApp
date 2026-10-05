@@ -30,12 +30,13 @@ struct BudgetGridView: View {
     @ObservedObject var viewModel: BudgetGridViewModel
     @State private var showExporter = false
     /// Built only when "Export CSV…" is pressed. The export scans every
-    /// category × period × transaction, and `body` re-runs on every horizontal scroll
+    /// category × pay month, and `body` re-runs on every horizontal scroll
     /// frame (via `horizontalOffset`), so it must not be computed in `body`.
     @State private var exportDocument: CSVDocument?
     @State private var drillDownTarget: GridDrillDownTarget?
     @State private var horizontalOffset: CGFloat = 0
     @State private var expandedGroupIds: Set<Int64> = []
+    @State private var closeTarget: CloseMonthTarget?
 
     private func categoriesByType(_ type: CategoryType) -> [Category] {
         viewModel.categories.filter { $0.type == type && !$0.isReserved }
@@ -135,6 +136,20 @@ struct BudgetGridView: View {
         VStack(alignment: .leading, spacing: 8) {
             yearPicker
 
+            // Close/reopen errors from the header menu (a failed Close month… shows in its
+            // sheet instead; the drill-down sheet shows recategorize errors itself).
+            if let error = viewModel.errorMessage, drillDownTarget == nil, closeTarget == nil {
+                HStack(alignment: .top) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                    Text(error).foregroundStyle(.red)
+                    Spacer()
+                    Button("Dismiss") { viewModel.errorMessage = nil }
+                        .buttonStyle(.borderless)
+                }
+                .font(.callout)
+                .padding(.horizontal)
+            }
+
             // spacing: 0 so the frozen header sits flush on the body, with no gap for
             // scrolled rows to show through.
             VStack(alignment: .leading, spacing: 0) {
@@ -148,9 +163,14 @@ struct BudgetGridView: View {
                     if let year = viewModel.selectedYear {
                         HStack(spacing: 0) {
                             ForEach(1...12, id: \.self) { month in
+                                let payMonth = PayMonth(year: year, month: month)
                                 Text(Self.monthYearLabel(year: year, month: month))
                                     .frame(width: 120, alignment: .trailing)
                                     .padding(.horizontal, 8).padding(.vertical, 6)
+                                    .contentShape(Rectangle())
+                                    // Columns are pay months: the tooltip shows the real range.
+                                    .help(PayMonthFormat.range(viewModel.payCalendar.range(of: payMonth)))
+                                    .contextMenu { monthMenu(payMonth) }
                                     .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                             }
                             Text("Year Total").bold()
@@ -210,7 +230,7 @@ struct BudgetGridView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Export CSV…") {
-                    exportDocument = CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories.filter { !$0.isReserved }, periods: viewModel.periods, transactions: viewModel.transactions))
+                    exportDocument = CSVDocument(text: viewModel.exportCSV())
                     showExporter = true
                 }
             }
@@ -222,6 +242,29 @@ struct BudgetGridView: View {
             GridDrillDownSheet(target: target, categories: viewModel.categories, errorMessage: viewModel.errorMessage, liveTransactions: viewModel.transactions) { transaction, categoryId in
                 viewModel.recategorize(transaction, to: categoryId)
             }
+        }
+        .sheet(item: $closeTarget, onDismiss: { viewModel.errorMessage = nil }) { target in
+            CloseMonthView(month: target.month, calendar: viewModel.payCalendar, errorMessage: viewModel.errorMessage) { day in
+                viewModel.closeMonth(target.month, on: day)
+            }
+        }
+    }
+
+    /// The month header's context menu: close an open month, reopen a manually closed one;
+    /// a month closed by its imported salary can't be reopened (the salary *is* the close).
+    @ViewBuilder
+    private func monthMenu(_ month: PayMonth) -> some View {
+        switch viewModel.payCalendar.closeSource(of: month) {
+        case .projected:
+            Button("Close month…") {
+                viewModel.errorMessage = nil
+                closeTarget = CloseMonthTarget(month: month)
+            }
+        case .manual:
+            Button("Reopen") { viewModel.reopenMonth(month) }
+        case .salary:
+            Button("Closed by salary on \(PayMonthFormat.longDay(viewModel.payCalendar.closeDate(of: month)))") {}
+                .disabled(true)
         }
     }
 
@@ -372,7 +415,7 @@ struct BudgetGridView: View {
             if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in
-                        let total = viewModel.calendarCategoryTotal(category, year: year, month: month)
+                        let total = viewModel.payMonthCategoryTotal(category, year: year, month: month)
                         calendarCell(total)
                             .frame(height: 28)
                             .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
@@ -386,7 +429,7 @@ struct BudgetGridView: View {
                                 drillDownTarget = .transactions(title: "\(category.name) — \(Self.monthYearLabel(year: year, month: month))", transactions: matching)
                             }
                     }
-                    let yearTotal = (1...12).reduce(0) { $0 + viewModel.calendarCategoryTotal(category, year: year, month: $1) }
+                    let yearTotal = (1...12).reduce(0) { $0 + viewModel.payMonthCategoryTotal(category, year: year, month: $1) }
                     calendarCell(yearTotal).bold()
                         .frame(height: 28)
                         .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
@@ -447,13 +490,13 @@ struct BudgetGridView: View {
             if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in
-                        let total = categories.reduce(0) { $0 + viewModel.calendarCategoryTotal($1, year: year, month: month) }
+                        let total = categories.reduce(0) { $0 + viewModel.payMonthCategoryTotal($1, year: year, month: month) }
                         calendarCell(total).bold()
                             .frame(height: 28)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                     }
-                    let yearTotal = (1...12).reduce(0) { sum, month in sum + categories.reduce(0) { $0 + viewModel.calendarCategoryTotal($1, year: year, month: month) } }
+                    let yearTotal = (1...12).reduce(0) { sum, month in sum + categories.reduce(0) { $0 + viewModel.payMonthCategoryTotal($1, year: year, month: month) } }
                     calendarCell(yearTotal).bold()
                         .frame(height: 28)
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
@@ -468,7 +511,7 @@ struct BudgetGridView: View {
             if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in
-                        let total = viewModel.calendarCategoryTotal(category, year: year, month: month)
+                        let total = viewModel.payMonthCategoryTotal(category, year: year, month: month)
                         calendarCell(total)
                             .frame(height: 28)
                             .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
@@ -482,7 +525,7 @@ struct BudgetGridView: View {
                                 drillDownTarget = .transactions(title: "\(category.name) — \(Self.monthYearLabel(year: year, month: month))", transactions: matching)
                             }
                     }
-                    let yearTotal = (1...12).reduce(0) { $0 + viewModel.calendarCategoryTotal(category, year: year, month: $1) }
+                    let yearTotal = (1...12).reduce(0) { $0 + viewModel.payMonthCategoryTotal(category, year: year, month: $1) }
                     calendarCell(yearTotal).bold()
                         .frame(height: 28)
                         .background(shaded ? Color.primary.opacity(0.07) : Color.clear)

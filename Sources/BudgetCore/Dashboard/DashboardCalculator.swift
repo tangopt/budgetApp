@@ -44,8 +44,9 @@ public enum DashboardCalculator {
             }
         }
 
-        let parts = MonthRange.components(of: input.effectiveToday)
-        let range = MonthRange.of(year: parts.year, month: parts.month)
+        // Reserve allowances are forecast entries, so the calendar month named by the current pay month.
+        let current = input.payCalendar.current
+        let range = MonthRange.of(year: current.year, month: current.month)
         let thisMonth = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
         let hasReserveAllowance = input.categories.contains { category in
             guard category.isReserved, let id = category.id else { return false }

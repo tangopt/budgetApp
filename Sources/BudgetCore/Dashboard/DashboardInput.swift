@@ -15,10 +15,12 @@ public struct DashboardInput {
     public let rate: ExchangeRateSetting
     /// Latest transaction date across all accounts ("D"); nil when there are no transactions.
     public let dataThrough: Date?
-    /// Confirmed calendar-month totals per category, built once.
-    let calendarTotals: [Int64: [Int: [Int: Int]]]
+    /// Pay-month boundaries (salaries + manual closes), against `effectiveToday`.
+    public let payCalendar: PayCalendar
+    /// Confirmed pay-month totals per category, built once.
+    let monthTotals: [Int64: [Int: [Int: Int]]]
 
-    public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], importBatches: [ImportBatch], rate: ExchangeRateSetting) {
+    public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], importBatches: [ImportBatch], rate: ExchangeRateSetting, manualCloses: [PayMonthClose] = []) {
         self.today = today
         self.accounts = accounts
         self.snapshots = snapshots
@@ -29,8 +31,15 @@ public struct DashboardInput {
         self.forecastGroups = forecastGroups
         self.importBatches = importBatches
         self.rate = rate
-        self.dataThrough = transactions.map(\.date).max()
-        self.calendarTotals = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
+        let dataThrough = transactions.map(\.date).max()
+        self.dataThrough = dataThrough
+        let payCalendar = PayCalendar(
+            salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories),
+            manualCloses: manualCloses,
+            today: dataThrough.map { max(today, $0) } ?? today
+        )
+        self.payCalendar = payCalendar
+        self.monthTotals = PayMonthTotals.lookup(transactions: transactions, calendar: payCalendar)
     }
 
     /// `today`, but never earlier than the data (a clock behind the data counts as "today = D").

@@ -29,6 +29,8 @@ final class DashboardViewModel: ObservableObject {
     /// Unreviewed transactions in the selected year (left out of its totals).
     @Published private(set) var unreviewed = UnreviewedSummary(count: 0, outflowMinorUnits: 0)
     @Published private(set) var errorMessage: String?
+    /// Shown inline in the Close month sheet.
+    @Published private(set) var closeErrorMessage: String?
 
     private let dbQueue: DatabaseQueue
     private let todayProvider: () -> Date
@@ -56,7 +58,8 @@ final class DashboardViewModel: ObservableObject {
                     forecastEntries: try ForecastEntry.fetchAll(db),
                     forecastGroups: try ForecastGroup.fetchAll(db),
                     importBatches: try ImportBatch.fetchAll(db),
-                    rate: try ExchangeRateSetting.currentOrDefault(db: db)
+                    rate: try ExchangeRateSetting.currentOrDefault(db: db),
+                    manualCloses: try PayMonthClose.fetchAll(db)
                 )
             }
             let netWorth = DashboardCalculator.netWorthSeries(loaded)
@@ -85,6 +88,29 @@ final class DashboardViewModel: ObservableObject {
             errorMessage = "Couldn't load the dashboard: \(error.localizedDescription)"
         }
     }
+
+    /// Pay-month boundaries of the last successful load.
+    var payCalendar: PayCalendar? { input?.payCalendar }
+
+    /// Closes `month` on the picked day (00:00 UTC — see `PayCalendar.utcDay`), then reloads.
+    /// On failure sets `closeErrorMessage` and returns false.
+    @discardableResult
+    func closeMonth(_ month: PayMonth, on date: Date) -> Bool {
+        closeErrorMessage = nil
+        do {
+            try dbQueue.write { db in try PayCalendar.close(db: db, month: month, on: date, today: todayProvider()) }
+        } catch PayCalendarError.invalidCloseDate {
+            closeErrorMessage = payCalendar.map { PayMonthFormat.invalidCloseDateMessage(month, calendar: $0) } ?? "Pick a date inside \(PayMonthFormat.name(month))."
+            return false
+        } catch {
+            closeErrorMessage = "Couldn't close \(PayMonthFormat.name(month)): \(error.localizedDescription)"
+            return false
+        }
+        load()
+        return true
+    }
+
+    func clearCloseError() { closeErrorMessage = nil }
 
     /// Recomputes only the year-at-a-glance months, from the already-loaded data.
     func selectYear(_ year: Int) {
