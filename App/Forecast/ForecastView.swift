@@ -166,10 +166,12 @@ struct ForecastView: View {
                                 .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                             HStack(spacing: 0) {
                                 ForEach(1...12, id: \.self) { month in
+                                    let range = viewModel.payCalendar.range(of: PayMonth(year: selectedYear, month: month))
                                     Text(Self.monthLabel(month))
                                         .frame(width: 120, alignment: .trailing)
                                         .padding(.horizontal, 8).padding(.vertical, 6)
                                         .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                                        .help("\(Self.dayLabel(range.start)) – \(Self.dayLabel(range.end))")
                                 }
                                 Text("Year Total").bold()
                                     .frame(width: 120, alignment: .trailing)
@@ -698,6 +700,17 @@ struct ForecastView: View {
         formatter.timeZone = TimeZone(identifier: "UTC")
         return formatter.string(from: date)
     }
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d MMM"
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.locale = Locale(identifier: "en_GB")
+        return formatter
+    }()
+
+    /// "16 Sep" — a pay month boundary day for the column header tooltip.
+    private static func dayLabel(_ date: Date) -> String { dayFormatter.string(from: date) }
 
     private static func monthYearLabel(_ date: Date) -> String {
         let formatter = DateFormatter()

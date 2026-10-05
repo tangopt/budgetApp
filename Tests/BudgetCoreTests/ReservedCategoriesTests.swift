@@ -173,6 +173,16 @@ final class ReservedCategoriesTests: XCTestCase {
         XCTAssertEqual(ReservedCategories.remainingAllowances(reserves, unforecastSpend: 500_000), [1: 0, 2: 0])
     }
 
+    func testMonthAllowancesFollowTheMonthClass() {
+        let reserves: [(id: Int64, name: String, allowance: Int)] = [(id: 1, name: "Remaining", allowance: -200_000), (id: 2, name: "Gifts", allowance: -5_000)]
+        // Closed month: leftover released, spend never consulted.
+        XCTAssertEqual(ReservedCategories.monthAllowances(reserves, monthClass: .actual, unforecastSpend: { XCTFail("not needed"); return 0 }), [1: 0, 2: 0])
+        // Open month that has started: what's left after unforecast spend, in name order.
+        XCTAssertEqual(ReservedCategories.monthAllowances(reserves, monthClass: .blended, unforecastSpend: { 8_000 }), [1: -197_000, 2: 0])
+        // Future month: the full allowance, spend never consulted.
+        XCTAssertEqual(ReservedCategories.monthAllowances(reserves, monthClass: .forecast, unforecastSpend: { XCTFail("not needed"); return 0 }), [1: -200_000, 2: -5_000])
+    }
+
     func testUnforecastSpendCountsOnlyExpenseCategoriesWithNothingForecast() {
         let groceries = Category(id: 1, name: "Groceries", type: .expense)
         let dining = Category(id: 2, name: "Dining", type: .expense)          // forecast in October

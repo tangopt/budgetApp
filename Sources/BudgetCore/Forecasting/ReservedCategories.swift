@@ -96,6 +96,19 @@ public enum ReservedCategories {
         return result
     }
 
+    /// Each reserve's value for one month of a grid, by the month's class: a closed
+    /// (`.actual`) month counts 0 (its leftover is released); a `.blended` month what's left
+    /// after that pay month's unforecast spend (`remainingAllowances`); a `.forecast` month
+    /// the full allowance (no actuals yet). `unforecastSpend` is only evaluated for a
+    /// blended month.
+    public static func monthAllowances(_ reserves: [(id: Int64, name: String, allowance: Int)], monthClass: MonthClass, unforecastSpend: () -> Int) -> [Int64: Int] {
+        switch monthClass {
+        case .actual: return Dictionary(uniqueKeysWithValues: reserves.map { ($0.id, 0) })
+        case .forecast: return remainingAllowances(reserves, unforecastSpend: 0)
+        case .blended: return remainingAllowances(reserves, unforecastSpend: unforecastSpend())
+        }
+    }
+
     private static func reserve(db: Database, _ categoryId: Int64) throws -> Category {
         guard let category = try Category.fetchOne(db, key: categoryId), category.isReserved else {
             throw ReservedCategoryError.notReserved

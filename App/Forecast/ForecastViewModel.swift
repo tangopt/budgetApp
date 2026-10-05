@@ -19,9 +19,8 @@ final class ForecastViewModel: ObservableObject {
     @Published var categoryGroups: [CategoryGroup] = []
     @Published var accounts: [Account] = []
     @Published var balanceSnapshots: [BalanceSnapshot] = []
-    @Published var transactions: [Transaction] = [] {
-        didSet { calendarTotals = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions) }
-    }
+    /// Set only by `load()`, which rebuilds `payCalendar`/`monthTotals` from it.
+    @Published private(set) var transactions: [Transaction] = []
     @Published var exchangeRate: ExchangeRateSetting = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
     @Published var errorMessage: String?
     /// The scenario (non-system-managed `ForecastGroup`) currently previewed in the grid
@@ -39,13 +38,22 @@ final class ForecastViewModel: ObservableObject {
             recomputeForecastCaches()
         }
     }
-    /// (year, month) of the latest transaction date across everything `load()` fetched.
-    /// `nil` before the first successful `load()`, or if there's no transaction data at
-    /// all.
+    /// The pay month containing the latest transaction date across everything `load()`
+    /// fetched. `nil` before the first successful `load()`, or if there's no transaction
+    /// data at all. Only the net-worth headline's walk starts from it; cell values follow
+    /// `monthClass`.
     @Published private(set) var latestRealMonth: (year: Int, month: Int)?
+    /// Month boundaries and classes (salary dates + manual closes), rebuilt by `load()`.
+    @Published private(set) var payCalendar = PayCalendar(salaryDates: [], manualCloses: [], today: Date())
 
     private let dbQueue: DatabaseQueue
-    private var calendarTotals: [Int64: [Int: [Int: Int]]] = [:]
+    /// Confirmed actuals per category per *pay* month (`PayMonthTotals.lookup`), rebuilt by
+    /// `load()` with `payCalendar`.
+    private var monthTotals: [Int64: [Int: [Int: Int]]] = [:]
+    /// `payCalendar.monthClass` for every month of `thisYear`/`nextYear`, rebuilt by `load()`:
+    /// the class is read for every cell on every scroll frame, and computing it walks the
+    /// calendar's close dates.
+    private var monthClassCache: [Int: [Int: MonthClass]] = [:]
     /// Precomputed confirmed/preview forecast totals for every (category, year, month)
     /// cell, covering `thisYear` and `nextYear` — rebuilt by `recomputeForecastCaches()`
     /// at the end of `load()`, after any mutation that changes `entries`/`groups`, and
@@ -54,17 +62,18 @@ final class ForecastViewModel: ObservableObject {
     /// offset change (same frozen-header/frozen-column technique as the Budget grid),
     /// which would otherwise re-run `ForecastCalculator` for every visible cell on every
     /// scroll frame — measured at ~30ms per full-grid pass against the live database,
-    /// well over a 60fps frame budget. Only consulted for *forecast* (non-actual) months;
-    /// actual months already have an O(1) path via `calendarTotals`. Keyed by
+    /// well over a 60fps frame budget. Only consulted for open (blended/forecast) months;
+    /// closed months already have an O(1) path via `monthTotals`. Keyed by
     /// categoryId → year → month.
     private var forecastTotalsCache: [Int64: [Int: [Int: (confirmed: Int, preview: Int)]]] = [:]
     /// Precomputed `forecastNetWorth`/`forecastNetWorthYoY`/`scenarioNetWorthImpact`
     /// results for `thisYear` and `nextYear` — the headline figures `ForecastView` shows.
     /// Rebuilt alongside `forecastTotalsCache` for the same reason. Keyed by year.
     private var netWorthHeadlineCache: [Int: (forecast: Int?, yoy: (changeGBP: Int, percent: Double?)?, scenarioImpact: Int?)] = [:]
-    /// Each reserve's remaining allowance (after unforecast spending, see
-    /// `ReservedCategories.remainingAllowances`) for every month of `thisYear`/`nextYear`
-    /// in which reserves count. Rebuilt with `forecastTotalsCache`. Keyed by year → month.
+    /// Each reserve's value (`ReservedCategories.monthAllowances`: 0 when closed, what's left
+    /// after the pay month's unforecast spending when blended, the full allowance when
+    /// forecast) for every month of `thisYear`/`nextYear`. Rebuilt with
+    /// `forecastTotalsCache`. Keyed by year → month.
     private var reserveRemainingCache: [Int: [Int: (confirmed: [Int64: Int], preview: [Int64: Int])]] = [:]
     private static let calendar: Calendar = {
         var cal = Calendar(identifier: .gregorian)
@@ -87,8 +96,21 @@ final class ForecastViewModel: ObservableObject {
         accounts = try dbQueue.read { db in try Account.fetchAll(db) }
         balanceSnapshots = try dbQueue.read { db in try BalanceSnapshot.fetchAll(db) }
         transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
+        let manualCloses = try dbQueue.read { db in try PayMonthClose.fetchAll(db) }
         exchangeRate = try dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db) }
-        latestRealMonth = Self.computeLatestRealMonth(transactions: transactions, calendar: Self.calendar)
+        // Everything derived from the pay calendar is rebuilt here, before the caches below:
+        // its inputs (transactions, categories, manual closes) only change through `load()`.
+        payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: manualCloses, today: Date())
+        monthTotals = PayMonthTotals.lookup(transactions: transactions, calendar: payCalendar)
+        var classes: [Int: [Int: MonthClass]] = [:]
+        for year in [thisYear, nextYear] {
+            for month in 1...12 { classes[year, default: [:]][month] = payCalendar.monthClass(PayMonth(year: year, month: month)) }
+        }
+        monthClassCache = classes
+        latestRealMonth = transactions.map(\.date).max().map { latest in
+            let month = payCalendar.month(containing: latest)
+            return (month.year, month.month)
+        }
         selectedScenarioGroupId = nil
         // Rebuilt explicitly rather than relying on `selectedScenarioGroupId`'s `didSet`
         // firing: a same-value nil→nil assignment (e.g. reloading while nothing was ever
@@ -126,7 +148,7 @@ final class ForecastViewModel: ObservableObject {
         var remaining: [Int: [Int: (confirmed: [Int64: Int], preview: [Int64: Int])]] = [:]
         if !reserves.isEmpty {
             for year in [thisYear, nextYear] {
-                for month in 1...12 where ReservedCategories.countsAllowance(year: year, month: month, today: Date()) {
+                for month in 1...12 {
                     remaining[year, default: [:]][month] = (computeRemainingReserves(year: year, month: month, preview: false), computeRemainingReserves(year: year, month: month, preview: true))
                 }
             }
@@ -140,30 +162,16 @@ final class ForecastViewModel: ObservableObject {
         netWorthHeadlineCache = headline
     }
 
-    /// Transaction dates only — deliberately NOT balance snapshot dates. A balance
-    /// snapshot recorded via the Net Worth screen's "Update a balance…" flow is stamped
-    /// with `Date()` (today), regardless of how stale the imported transaction data is.
-    /// If snapshot dates fed into this cutoff, recording any balance update would jump
-    /// `latestRealMonth` straight to today's month, retroactively flipping every
-    /// in-between month from "forecast" to "actual" in the grid — and since there's no
-    /// transaction data for those months, every category cell in them would render blank
-    /// ("—"), and the net-worth projection would silently skip their forecasted
-    /// contribution. `realNetWorth`/`currentNetWorthGBP` still use `balanceSnapshots` as
-    /// before — that's a separate concern (actual account balances), not this actual/
-    /// forecast month cutoff.
-    private static func computeLatestRealMonth(transactions: [Transaction], calendar: Calendar) -> (year: Int, month: Int)? {
-        guard let latest = transactions.map(\.date).max() else { return nil }
-        let components = calendar.dateComponents([.year, .month], from: latest)
-        guard let year = components.year, let month = components.month else { return nil }
-        return (year, month)
-    }
-
-    /// True when `(year, month)` is on or before `latestRealMonth` — `categoryTotal`
-    /// returns the actual transaction total for it rather than the confirmed forecast.
-    func isActual(year: Int, month: Int) -> Bool {
-        guard let latestRealMonth else { return false }
-        if year != latestRealMonth.year { return year < latestRealMonth.year }
-        return month <= latestRealMonth.month
+    /// The month's class from `payCalendar` (closed → `.actual`; open and started →
+    /// `.blended`; open and in the future → `.forecast`), from `monthClassCache` for
+    /// `thisYear`/`nextYear`.
+    ///
+    /// `latestRealMonth` (and so the net-worth walk) comes from transaction dates only —
+    /// deliberately NOT balance snapshot dates: a snapshot recorded via the Net Worth
+    /// screen's "Update a balance…" flow is stamped with `Date()` regardless of how stale
+    /// the imported transactions are, and would skip forecast months that have no data.
+    func monthClass(year: Int, month: Int) -> MonthClass {
+        monthClassCache[year]?[month] ?? payCalendar.monthClass(PayMonth(year: year, month: month))
     }
 
     func dateRange(forYear year: Int, month: Int) -> (start: Date, end: Date) {
@@ -177,37 +185,35 @@ final class ForecastViewModel: ObservableObject {
         return (start, end)
     }
 
-    /// The category's total for one month: the actual transaction total when the month
-    /// is real (`isActual`), the confirmed forecast otherwise (read from
-    /// `forecastTotalsCache`, falling back to a direct calculation for a cache miss).
+    /// The category's total for one month, by `monthClass`: a closed month shows the
+    /// pay-month actuals; a blended month `MonthBlend.projectedTotal` of those actuals and
+    /// the confirmed forecast for the calendar month; a forecast month the confirmed
+    /// forecast (read from `forecastTotalsCache`, falling back to a direct calculation for
+    /// a cache miss). Same rules as the Dashboard (`DashboardCalculator.categoryAmounts`).
     func categoryTotal(_ category: Category, year: Int, month: Int) -> Int {
-        if category.isReserved {
-            // Reserves are forecast-only: nothing before the current calendar month; from
-            // this month on, what's left of the allowance after the month's unforecast
-            // spending (the whole allowance when the month has no actuals).
-            guard ReservedCategories.countsAllowance(year: year, month: month, today: Date()) else { return 0 }
-            return remainingReserveValue(category, year: year, month: month, preview: false)
-        }
-        if isActual(year: year, month: month) {
-            return BudgetGridCalculator.categoryTotalForCalendarMonth(category: category, year: year, month: month, calendarTotals: calendarTotals)
-        }
-        return forecastValue(category, year: year, month: month, preview: false)
+        cellTotal(category, year: year, month: month, preview: false)
     }
 
-    /// Confirmed total plus the selected scenario's `.hypothetical` entries, if any. For
-    /// an actual month this always equals `categoryTotal` — a hypothetical can't
-    /// retroactively change history. Reads from `forecastTotalsCache` for a forecast
-    /// month, same fallback as `categoryTotal`.
+    /// Like `categoryTotal`, with the selected scenario's `.hypothetical` entries added to
+    /// the forecast part. A closed month always equals `categoryTotal` — a hypothetical
+    /// can't retroactively change history; a blended month blends the actuals with the
+    /// preview forecast.
     func previewCategoryTotal(_ category: Category, year: Int, month: Int) -> Int {
+        cellTotal(category, year: year, month: month, preview: true)
+    }
+
+    private func cellTotal(_ category: Category, year: Int, month: Int, preview: Bool) -> Int {
+        let kind = monthClass(year: year, month: month)
         if category.isReserved {
-            // Same month rule as `categoryTotal`.
-            guard ReservedCategories.countsAllowance(year: year, month: month, today: Date()) else { return 0 }
-            return remainingReserveValue(category, year: year, month: month, preview: true)
+            // Reserves are forecast-only (`ReservedCategories.monthAllowances`): 0 in a
+            // closed month, what's left after the pay month's unforecast spending in a
+            // blended one, the full allowance in a forecast one.
+            guard kind != .actual else { return 0 }
+            return remainingReserveValue(category, year: year, month: month, preview: preview)
         }
-        if isActual(year: year, month: month) {
-            return categoryTotal(category, year: year, month: month)
-        }
-        return forecastValue(category, year: year, month: month, preview: true)
+        let actual = kind == .forecast ? 0 : (category.id.flatMap { monthTotals[$0]?[year]?[month] } ?? 0)
+        guard kind != .actual else { return actual }
+        return MonthBlend.projectedTotal(actual: actual, expected: forecastValue(category, year: year, month: month, preview: preview), categoryType: category.type, monthClass: kind)
     }
 
     /// The category's forecast total for one month — confirmed, or confirmed plus the
@@ -231,14 +237,16 @@ final class ForecastViewModel: ObservableObject {
         return computeRemainingReserves(year: year, month: month, preview: preview)[reserveId] ?? 0
     }
 
-    /// Every reserve's allowance (confirmed, or preview when `preview`) reduced by the
-    /// month's unforecast spending, absorbed in name order.
+    /// Every reserve's month value (confirmed, or preview when `preview`) by the month's
+    /// class (`ReservedCategories.monthAllowances`): the unforecast spend comes from the pay
+    /// month's actuals and is absorbed in name order.
     private func computeRemainingReserves(year: Int, month: Int, preview: Bool) -> [Int64: Int] {
         let allowances: [(id: Int64, name: String, allowance: Int)] = reserves.compactMap { reserve in
             reserve.id.map { ($0, reserve.name, forecastValue(reserve, year: year, month: month, preview: preview)) }
         }
-        let spend = ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, monthTotals: calendarTotals, entries: entries, groups: groups)
-        return ReservedCategories.remainingAllowances(allowances, unforecastSpend: spend)
+        return ReservedCategories.monthAllowances(allowances, monthClass: monthClass(year: year, month: month)) {
+            ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, monthTotals: monthTotals, entries: entries, groups: groups)
+        }
     }
 
     private var currentNetWorthGBP: Int {
@@ -284,8 +292,8 @@ final class ForecastViewModel: ObservableObject {
     }
 
     /// `forecastNetWorth(atEndOf: year)` compared to a baseline: last year's real
-    /// year-end net worth when December of `year - 1` is actually covered by real data
-    /// (`isActual(year: year - 1, month: 12)`), or last year's *forecast* year-end net
+    /// year-end net worth when December of `year - 1` is closed in the pay calendar
+    /// (`payCalendar.isClosed`), or last year's *forecast* year-end net
     /// worth otherwise — which is always the case when `year == nextYear` (no real data
     /// can exist for a future year's December), but can also happen when `year ==
     /// thisYear` if real data is stale enough that it doesn't reach last December (e.g.
@@ -300,7 +308,7 @@ final class ForecastViewModel: ObservableObject {
 
     private func computeForecastNetWorthYoY(atEndOf year: Int) -> (changeGBP: Int, percent: Double?)? {
         guard let forecast = computeForecastNetWorth(atEndOf: year) else { return nil }
-        let baseline = isActual(year: year - 1, month: 12) ? realNetWorth(atEndOf: year - 1) : (computeForecastNetWorth(atEndOf: year - 1) ?? 0)
+        let baseline = payCalendar.isClosed(PayMonth(year: year - 1, month: 12)) ? realNetWorth(atEndOf: year - 1) : (computeForecastNetWorth(atEndOf: year - 1) ?? 0)
         let change = forecast - baseline
         let percent: Double? = baseline != 0 ? Double(change) / Double(abs(baseline)) : nil
         return (change, percent)
