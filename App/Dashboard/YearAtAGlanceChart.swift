@@ -7,6 +7,13 @@ import BudgetCore
 struct YearAtAGlanceChart: View {
     let flows: [MonthlyFlow]
 
+    @State private var selectedMonth: String?
+
+    private var selected: MonthlyFlow? {
+        guard let selectedMonth else { return nil }
+        return flows.first { name($0) == selectedMonth }
+    }
+
     private static let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     private func name(_ flow: MonthlyFlow) -> String { Self.monthNames[flow.month - 1] }
     private func pounds(_ minorUnits: Int) -> Double { Double(minorUnits) / 100 }
@@ -45,7 +52,15 @@ struct YearAtAGlanceChart: View {
                     .foregroundStyle(Color.blue)
                     .symbolSize(flow.monthClass == .forecast ? 24 : 40)
             }
+            if let selected {
+                RuleMark(x: .value("Month", name(selected)))
+                    .foregroundStyle(Color.secondary.opacity(0.3))
+                    .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                        detail(selected)
+                    }
+            }
         }
+        .chartXSelection(value: $selectedMonth)
         .chartYAxis {
             AxisMarks(position: .leading) { value in
                 AxisGridLine()
@@ -56,5 +71,31 @@ struct YearAtAGlanceChart: View {
         }
         .frame(height: 220)
         .accessibilityLabel("Monthly income, expenses (with reserves) and net for the selected year, actual and forecast")
+    }
+
+    /// Hover card: each figure's actual part and what's still expected, so a forecast or
+    /// current month shows both halves of its bars.
+    private func detail(_ flow: MonthlyFlow) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(name(flow)).font(.caption2).foregroundStyle(.secondary)
+            line("Income", total: flow.incomeTotal, actual: flow.incomeActual, remaining: flow.incomeRemaining)
+            line("Expenses", total: flow.expenseTotal, actual: flow.expenseActual, remaining: flow.expenseRemaining)
+            if flow.reservedRemaining > 0 {
+                Text("of which reserved \(DashboardFormat.pounds(flow.reservedRemaining))").font(.caption2).foregroundStyle(.secondary)
+            }
+            Text("Net \(DashboardFormat.pounds(flow.net))").font(.caption.bold())
+        }
+        .padding(4)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)))
+    }
+
+    @ViewBuilder
+    private func line(_ title: String, total: Int, actual: Int, remaining: Int) -> some View {
+        Text("\(title) \(DashboardFormat.pounds(total))").font(.caption)
+        if remaining > 0 && actual > 0 {
+            Text("actual \(DashboardFormat.pounds(actual)) · expected \(DashboardFormat.pounds(remaining))").font(.caption2).foregroundStyle(.secondary)
+        } else if remaining > 0 {
+            Text("expected").font(.caption2).foregroundStyle(.secondary)
+        }
     }
 }
