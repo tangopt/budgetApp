@@ -10,7 +10,6 @@ final class BudgetGridViewModel: ObservableObject {
         didSet { reserveRemainingCache = [:] }
     }
     @Published var categoryGroups: [CategoryGroup] = []
-    @Published var periods: [PayPeriod] = []
     @Published var transactions: [Transaction] = [] {
         didSet { rebuildPayMonths() }
     }
@@ -55,9 +54,6 @@ final class BudgetGridViewModel: ObservableObject {
         accounts = try dbQueue.read { db in try Account.fetchAll(db) }
         balanceSnapshots = try dbQueue.read { db in try BalanceSnapshot.fetchAll(db) }
         exchangeRate = try dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db) }
-        // Paydays come from the salary category only (not Bonus/refunds) — see PaydaySource.
-        let paydayDates = PaydaySource.paydayDates(transactions: transactions, categories: categories)
-        periods = PayPeriodDetector.allPeriods(incomeDates: paydayDates, horizon: horizon)
         selectDefaultYearIfNeeded()
     }
 
@@ -68,6 +64,12 @@ final class BudgetGridViewModel: ObservableObject {
         monthTotals = PayMonthTotals.lookup(transactions: transactions, calendar: payCalendar)
         reserveRemainingCache = [:]
         availableYears = BudgetGridCalculator.yearsWithData(transactions: transactions, calendar: payCalendar)
+    }
+
+    /// The grid's actuals as CSV: one column per pay month of the grid's years that has
+    /// started, the same totals the cells show. Reserves are forecast-only, so left out.
+    func exportCSV() -> String {
+        BudgetGridExporter.export(categories: categories.filter { !$0.isReserved }, years: availableYears, calendar: payCalendar, monthTotals: monthTotals)
     }
 
     func payMonthCategoryTotal(_ category: Category, year: Int, month: Int) -> Int {

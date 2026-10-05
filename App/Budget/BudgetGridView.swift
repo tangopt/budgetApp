@@ -30,7 +30,7 @@ struct BudgetGridView: View {
     @ObservedObject var viewModel: BudgetGridViewModel
     @State private var showExporter = false
     /// Built only when "Export CSV…" is pressed. The export scans every
-    /// category × period × transaction, and `body` re-runs on every horizontal scroll
+    /// category × pay month, and `body` re-runs on every horizontal scroll
     /// frame (via `horizontalOffset`), so it must not be computed in `body`.
     @State private var exportDocument: CSVDocument?
     @State private var drillDownTarget: GridDrillDownTarget?
@@ -230,7 +230,7 @@ struct BudgetGridView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Export CSV…") {
-                    exportDocument = CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories.filter { !$0.isReserved }, periods: viewModel.periods, transactions: viewModel.transactions))
+                    exportDocument = CSVDocument(text: viewModel.exportCSV())
                     showExporter = true
                 }
             }
