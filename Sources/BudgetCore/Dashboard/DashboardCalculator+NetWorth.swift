@@ -16,9 +16,11 @@ public struct BehindBalances: Equatable {
 public struct NetWorthSeries: Equatable {
     /// Month values from the first snapshot month through the data-through month.
     public let actual: [NetWorthPoint]
-    /// Starts at the pay month containing the data-through date (anchored at the current net
-    /// worth) and runs to
-    /// December of next year — the same walk the Forecast screen's headlines use.
+    /// Starts at the actual series' last month (the calendar month of the data-through date,
+    /// anchored at the current net worth) so the two lines meet, then runs the Forecast
+    /// screen's walk — from the pay month containing the data-through date — to December of
+    /// next year. When the data runs past payday that pay month is the next calendar month,
+    /// which repeats the anchor value.
     public let forecast: [NetWorthPoint]
     public let currentNetWorthMinorUnits: Int?
     public let asOf: Date?
@@ -68,7 +70,9 @@ extension DashboardCalculator {
         }
 
         // Forecast: anchored at the current net worth in the pay month holding the latest
-        // transaction, then the shared month walk from the month after it.
+        // transaction, then the shared month walk from the month after it. The dashed line
+        // also starts where the solid one ends (`dataMonth`): past payday the pay month is the
+        // next calendar month, which would otherwise leave a one-month gap between them.
         let thisYear = MonthRange.components(of: input.today).year
         var forecast: [NetWorthPoint] = []
         var yearEnds: [YearEndForecast] = []
@@ -77,17 +81,20 @@ extension DashboardCalculator {
             let walkStart = (year: payMonth.year, month: payMonth.month)
             let projection = ForecastProjector.monthlyProjection(startingNetWorth: current, latestRealMonth: walkStart, throughYear: thisYear + 1, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups)
             forecast = [NetWorthPoint(year: walkStart.year, month: walkStart.month, valueMinorUnits: current)] + projection
+            if MonthRange.index(year: dataMonth.year, month: dataMonth.month) < MonthRange.index(year: walkStart.year, month: walkStart.month) {
+                forecast.insert(NetWorthPoint(year: dataMonth.year, month: dataMonth.month, valueMinorUnits: current), at: 0)
+            }
 
-            let dataIndex = MonthRange.index(year: dataMonth.year, month: dataMonth.month)
             func forecastValue(atEndOf year: Int) -> Int {
                 ForecastProjector.forecastNetWorth(startingNetWorth: current, latestRealMonth: walkStart, atEndOf: year, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups)
             }
             for year in [thisYear, thisYear + 1] {
                 let value = forecastValue(atEndOf: year)
-                // Baseline rule mirrors ForecastViewModel.forecastNetWorthYoY: last December's
-                // REAL net worth when real data reaches it, else last December's forecast.
+                // Same baseline rule as the Forecast grid (ForecastViewModel
+                // .computeForecastNetWorthYoY): last December's REAL net worth once that pay
+                // month is closed, else last December's forecast.
                 let baseline: Int
-                if MonthRange.index(year: year - 1, month: 12) <= dataIndex {
+                if input.payCalendar.isClosed(PayMonth(year: year - 1, month: 12)) {
                     baseline = monthEndNetWorth(input, year: year - 1, month: 12) ?? 0
                 } else {
                     baseline = forecastValue(atEndOf: year - 1)

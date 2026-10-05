@@ -10,7 +10,9 @@ final class DashboardNetWorthTests: XCTestCase {
             today: date(2026, 4, 15),
             snapshots: [F.snapshot(1, date(2025, 12, 1), 1_000_000), F.snapshot(1, date(2026, 1, 1), 1_100_000), F.snapshot(1, date(2026, 2, 1), 1_200_000)],
             transactions: [F.txn(1, date(2026, 2, 10), -1_000, category: F.rentId)],
-            entries: F.salaryAndRent
+            entries: F.salaryAndRent,
+            // December 2025 closed (on its last day, so pay months still equal calendar months).
+            manualCloses: [PayMonthClose(year: 2025, month: 12, closeDate: date(2025, 12, 31))]
         )
     }
 
@@ -44,6 +46,45 @@ final class DashboardNetWorthTests: XCTestCase {
         XCTAssertEqual(yearEnds[1].valueMinorUnits, 5_600_000)
         XCTAssertEqual(yearEnds[1].changeMinorUnits, 2_400_000)
         XCTAssertEqual(try XCTUnwrap(yearEnds[1].percent), 0.75, accuracy: 0.0001)
+    }
+
+    // Same rule as the Forecast grid: the real December is the baseline only once that pay
+    // month is closed. Data reaching past December doesn't close it on its own.
+    func testYearEndBaselineIsTheForecastWhileLastDecemberIsOpen() throws {
+        let input = F.input(
+            today: date(2026, 4, 15),
+            snapshots: [F.snapshot(1, date(2025, 12, 1), 1_000_000), F.snapshot(1, date(2026, 1, 1), 1_100_000), F.snapshot(1, date(2026, 2, 1), 1_200_000)],
+            transactions: [F.txn(1, date(2026, 2, 10), -1_000, category: F.rentId)],
+            entries: F.salaryAndRent
+        )
+        XCTAssertFalse(input.payCalendar.isClosed(PayMonth(year: 2025, month: 12)))
+        let yearEnd = try XCTUnwrap(DashboardCalculator.netWorthSeries(input).yearEnds.first)
+        let forecastDec2025 = ForecastProjector.forecastNetWorth(startingNetWorth: 1_200_000, latestRealMonth: (2026, 2), atEndOf: 2025, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups)
+        XCTAssertEqual(yearEnd.valueMinorUnits, 3_200_000)
+        XCTAssertEqual(yearEnd.changeMinorUnits, 3_200_000 - forecastDec2025)
+        XCTAssertNotEqual(yearEnd.changeMinorUnits, 2_200_000) // not the real Dec 2025 (1_000_000)
+    }
+
+    // Salary on 15 Sep, data through 20 Sep (past payday), today 5 Oct: the walk starts in
+    // the October pay month, but the dashed line starts where the solid one ends (September).
+    func testForecastStartsWhereTheActualLineEndsWhenDataRunsPastPayday() throws {
+        let snapshots = [F.snapshot(1, date(2026, 7, 1), 1_000_000), F.snapshot(1, date(2026, 9, 1), 1_200_000)]
+        let entries = F.salaryAndRent
+        let input = F.input(
+            today: date(2026, 10, 5), snapshots: snapshots,
+            transactions: [F.txn(1, date(2026, 9, 20), -1_000, category: F.rentId)],
+            entries: entries, salaries: [date(2026, 8, 15), date(2026, 9, 15)]
+        )
+        XCTAssertEqual(input.payCalendar.month(containing: date(2026, 9, 20)), PayMonth(year: 2026, month: 10))
+        let series = DashboardCalculator.netWorthSeries(input)
+        let lastActual = try XCTUnwrap(series.actual.last)
+        let current = try XCTUnwrap(series.currentNetWorthMinorUnits)
+        XCTAssertEqual(lastActual.year, 2026); XCTAssertEqual(lastActual.month, 9)
+        XCTAssertEqual(series.forecast.first, NetWorthPoint(year: 2026, month: 9, valueMinorUnits: current))
+
+        // The rest is unchanged: the October anchor, then the projector's walk from November.
+        let projection = ForecastProjector.monthlyProjection(startingNetWorth: current, latestRealMonth: (2026, 10), throughYear: 2027, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups)
+        XCTAssertEqual(Array(series.forecast.dropFirst()), [NetWorthPoint(year: 2026, month: 10, valueMinorUnits: current)] + projection)
     }
 
     // Importing through April while the balance was last recorded in February: the line runs
@@ -87,7 +128,8 @@ final class DashboardNetWorthTests: XCTestCase {
                 F.snapshot(1, date(2025, 12, 1), 3_000_000), F.snapshot(1, date(2026, 2, 1), 3_300_000)
             ],
             transactions: [F.txn(1, date(2026, 2, 14), -1_000, category: F.rentId)],
-            entries: F.salaryAndRent
+            entries: F.salaryAndRent,
+            manualCloses: [PayMonthClose(year: 2025, month: 12, closeDate: date(2025, 12, 31))]
         )
     }
 
