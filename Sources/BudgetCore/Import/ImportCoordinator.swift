@@ -102,7 +102,7 @@ public final class ImportCoordinator {
         let (existingFingerprints, categories, rules) = try await dbQueue.read { db in
             (
                 try Set(String.fetchAll(db, sql: "SELECT fingerprint FROM transaction_ WHERE accountId = ?", arguments: [accountId])),
-                try Category.fetchAll(db),
+                try Category.fetchAll(db).filter(\.isAssignable),
                 try Rule.fetchAll(db)
             )
         }
@@ -152,7 +152,7 @@ public final class ImportCoordinator {
         let (existingFingerprints, categories, rules) = try await dbQueue.read { db in
             (
                 try Set(String.fetchAll(db, sql: "SELECT fingerprint FROM transaction_ WHERE accountId = ?", arguments: [accountId])),
-                try Category.fetchAll(db),
+                try Category.fetchAll(db).filter(\.isAssignable),
                 try Rule.fetchAll(db)
             )
         }

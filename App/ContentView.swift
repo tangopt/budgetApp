@@ -211,7 +211,7 @@ struct ContentView: View {
     }
 
     private func refreshSharedState() {
-        categories = (try? environment.dbQueue.read { db in try Category.fetchAll(db) }) ?? []
+        categories = (try? environment.dbQueue.read { db in try Category.fetchAll(db) }.filter(\.isAssignable)) ?? []
         accounts = (try? environment.dbQueue.read { db in try Account.fetchAll(db) }) ?? []
         // Keep the user's choice across navigation; otherwise default to the last-used
         // account (remembered across launches), then the first account.

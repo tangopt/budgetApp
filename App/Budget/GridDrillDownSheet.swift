@@ -58,7 +58,7 @@ struct GridDrillDownSheet: View {
                                     onRecategorize(transaction, newValue)
                                 }
                             )) {
-                                ForEach(categories) { category in Text(category.name).tag(Int64?.some(category.id!)) }
+                                ForEach(categories.filter(\.isAssignable)) { category in Text(category.name).tag(Int64?.some(category.id!)) }
                             }
                             .labelsHidden()
                             .frame(width: 180)

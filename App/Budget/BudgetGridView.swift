@@ -38,7 +38,7 @@ struct BudgetGridView: View {
     @State private var expandedGroupIds: Set<Int64> = []
 
     private func categoriesByType(_ type: CategoryType) -> [Category] {
-        viewModel.categories.filter { $0.type == type }
+        viewModel.categories.filter { $0.type == type && !$0.isReserved }
     }
 
     private enum GridRowKind: Identifiable {
@@ -48,6 +48,9 @@ struct BudgetGridView: View {
         case groupChild(Category)
         case account(Account)
         case netWorthTotal
+        case reservedHeader
+        case reserve(Category)
+        case reservedTotal
 
         var id: String {
             switch self {
@@ -57,6 +60,9 @@ struct BudgetGridView: View {
             case .groupChild(let category): return "groupchild-\(category.id ?? -1)"
             case .account(let account): return "account-\(account.id ?? -1)"
             case .netWorthTotal: return "networth-total"
+            case .reservedHeader: return "reserved-header"
+            case .reserve(let reserve): return "reserve-\(reserve.id ?? -1)"
+            case .reservedTotal: return "reserved-total"
             }
         }
     }
@@ -117,7 +123,12 @@ struct BudgetGridView: View {
             accountRows.append(GridRow(kind: .account(account), shaded: index % 2 == 1))
         }
         accountRows.append(GridRow(kind: .netWorthTotal, shaded: false))
-        return section("Income", .income) + section("Expenses", .expense) + section("Transfers", .transfer) + accountRows
+        var reservedRows: [GridRow] = [GridRow(kind: .reservedHeader, shaded: false)]
+        for (index, reserve) in viewModel.reserves.enumerated() {
+            reservedRows.append(GridRow(kind: .reserve(reserve), shaded: index % 2 == 1))
+        }
+        if !viewModel.reserves.isEmpty { reservedRows.append(GridRow(kind: .reservedTotal, shaded: false)) }
+        return section("Income", .income) + section("Expenses", .expense) + reservedRows + section("Transfers", .transfer) + accountRows
     }
 
     var body: some View {
@@ -199,7 +210,7 @@ struct BudgetGridView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Export CSV…") {
-                    exportDocument = CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories, periods: viewModel.periods, transactions: viewModel.transactions))
+                    exportDocument = CSVDocument(text: BudgetGridExporter.export(categories: viewModel.categories.filter { !$0.isReserved }, periods: viewModel.periods, transactions: viewModel.transactions))
                     showExporter = true
                 }
             }
@@ -310,6 +321,29 @@ struct BudgetGridView: View {
                 .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(Color.purple), alignment: .leading)
+        case .reservedHeader:
+            Text(viewModel.reserves.isEmpty ? "RESERVED — add reserves on the Forecast screen" : "RESERVED")
+                .font(.caption).bold()
+                .tracking(0.6)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(width: 220, height: 24, alignment: .leading)
+                .padding(.horizontal, 8)
+                .background(Color.accentColor.opacity(0.08))
+        case .reserve(let reserve):
+            Text(reserve.name)
+                .frame(width: 220, height: 28, alignment: .leading)
+                .padding(.horizontal, 8)
+                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(.purple), alignment: .leading)
+        case .reservedTotal:
+            Text("Total reserved").bold()
+                .frame(width: 220, height: 28, alignment: .leading)
+                .padding(.horizontal, 8)
+                .background(Color.purple.opacity(0.08))
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(.purple), alignment: .leading)
         case .netWorthTotal:
             Text("Net Worth").bold()
                 .frame(width: 220, height: 28, alignment: .leading)
@@ -365,6 +399,49 @@ struct BudgetGridView: View {
                             drillDownTarget = .transactions(title: "\(category.name) — \(year)", transactions: matching)
                         }
                 }
+            }
+        case .reservedHeader:
+            if viewModel.selectedYear != nil {
+                HStack(spacing: 0) {
+                    ForEach(1...(12 + 1), id: \.self) { _ in
+                        Color.clear.frame(width: 120, height: 24).padding(.horizontal, 8)
+                    }
+                }
+                .background(Color.accentColor.opacity(0.08))
+            }
+        case .reserve(let reserve):
+            // Read-only: reserves hold no transactions, so there is nothing to drill into.
+            if let year = viewModel.selectedYear {
+                HStack(spacing: 0) {
+                    ForEach(1...12, id: \.self) { month in
+                        calendarCell(viewModel.reserveTotal(reserve, year: year, month: month))
+                            .frame(height: 28)
+                            .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                    }
+                    let yearTotal = (1...12).reduce(0) { $0 + viewModel.reserveTotal(reserve, year: year, month: $1) }
+                    calendarCell(yearTotal).bold()
+                        .frame(height: 28)
+                        .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                }
+            }
+        case .reservedTotal:
+            if let year = viewModel.selectedYear {
+                HStack(spacing: 0) {
+                    ForEach(1...12, id: \.self) { month in
+                        calendarCell(viewModel.reserves.reduce(0) { $0 + viewModel.reserveTotal($1, year: year, month: month) }).bold()
+                            .frame(height: 28)
+                            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                    }
+                    let yearTotal = (1...12).reduce(0) { sum, month in sum + viewModel.reserves.reduce(0) { $0 + viewModel.reserveTotal($1, year: year, month: month) } }
+                    calendarCell(yearTotal).bold()
+                        .frame(height: 28)
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                }
+                .background(Color.purple.opacity(0.08))
             }
         case .groupHeader(_, let categories):
             if let year = viewModel.selectedYear {

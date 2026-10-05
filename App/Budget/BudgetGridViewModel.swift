@@ -109,6 +109,16 @@ final class BudgetGridViewModel: ObservableObject {
         transactions.filter { $0.categoryId == categoryId && $0.status == .confirmed && $0.date >= startDate && $0.date <= endDate }
     }
 
+    var reserves: [Category] { categories.filter(\.isReserved).sorted { $0.name < $1.name } }
+
+    /// Reserves are forecast-only, so the grid shows their confirmed allowance from the
+    /// current calendar month on and nothing before it.
+    func reserveTotal(_ reserve: Category, year: Int, month: Int) -> Int {
+        guard let id = reserve.id, ReservedCategories.countsAllowance(year: year, month: month, today: Date()) else { return 0 }
+        let range = dateRange(forYear: year, month: month)
+        return ForecastCalculator.confirmedTotal(categoryId: id, period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), entries: forecastEntries, groups: forecastGroups)
+    }
+
     func dateRange(forYear year: Int, month: Int) -> (start: Date, end: Date) {
         var startComponents = DateComponents(); startComponents.year = year; startComponents.month = month; startComponents.day = 1
         let start = Self.calendar.date(from: startComponents)!

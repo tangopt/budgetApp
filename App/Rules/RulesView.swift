@@ -24,7 +24,7 @@ struct RulesView: View {
                     get: { rule.categoryId },
                     set: { newValue in try? viewModel.updateCategory(rule, to: newValue) }
                 )) {
-                    ForEach(viewModel.categories) { category in Text(category.name).tag(category.id!) }
+                    ForEach(viewModel.categories.filter(\.isAssignable)) { category in Text(category.name).tag(category.id!) }
                 }
                 .labelsHidden()
             }

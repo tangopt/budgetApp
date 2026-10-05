@@ -60,7 +60,7 @@ struct UncategorizedView: View {
             }
         )) {
             Text("Uncategorized").tag(Int64?.none)
-            ForEach(viewModel.categories) { category in Text(category.name).tag(Int64?.some(category.id!)) }
+            ForEach(viewModel.categories.filter(\.isAssignable)) { category in Text(category.name).tag(Int64?.some(category.id!)) }
         }
         .labelsHidden()
     }

@@ -215,7 +215,7 @@ struct ReviewView: View {
         )
         return Picker("", selection: binding) {
             Text("Uncategorized").tag(Int64?.none)
-            ForEach(categories) { category in Text(category.name).tag(Int64?.some(category.id!)) }
+            ForEach(categories.filter(\.isAssignable)) { category in Text(category.name).tag(Int64?.some(category.id!)) }
         }
         .labelsHidden()
     }
