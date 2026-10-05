@@ -24,6 +24,7 @@ struct YearAtAGlanceCard: View {
             HStack(spacing: 14) {
                 Label("Income", systemImage: "square.fill").foregroundStyle(.green)
                 Label("Expenses", systemImage: "square.fill").foregroundStyle(.orange)
+                Label("Reserved", systemImage: "square.fill").foregroundStyle(.purple)
                 Label("Net", systemImage: "circle.fill").foregroundStyle(.blue)
                 Text("Solid = actual · hatched = forecast or still expected").foregroundStyle(.secondary)
             }

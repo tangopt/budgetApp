@@ -23,6 +23,15 @@ struct CurrentMonthCard: View {
             }
             row("Income", month.income, tint: .green)
             row("Expenses", month.expenses, tint: month.expenses.actual > month.expenses.expected ? .red : .orange)
+            if month.reservedProjected > 0 {
+                HStack {
+                    Text("of which reserved").font(.caption)
+                    Spacer()
+                    Text(DashboardFormat.pounds(month.reservedProjected)).font(.caption).monospacedDigit()
+                }
+                .foregroundStyle(.secondary)
+                .help("Allowance for expected but uncategorised spending (Forecast › Reserved). Counted in full every month.")
+            }
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text("Net").font(.callout.bold())
@@ -63,6 +72,8 @@ struct CurrentMonthCard: View {
     }
 
     private var unreviewedFootnote: String {
-        "\(month.unreviewedCount) unreviewed transaction\(month.unreviewedCount == 1 ? "" : "s") (\(DashboardFormat.pounds(month.unreviewedOutflowMinorUnits)) out) aren't included."
+        var text = "\(month.unreviewedCount) unreviewed transaction\(month.unreviewedCount == 1 ? "" : "s") (\(DashboardFormat.pounds(month.unreviewedOutflowMinorUnits)) out) aren't included."
+        if month.reservedProjected > 0 { text += " Your reserves (\(DashboardFormat.pounds(month.reservedProjected)) this month) stand in for unplanned spending." }
+        return text
     }
 }

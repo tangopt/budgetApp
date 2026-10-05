@@ -25,10 +25,16 @@ struct YearAtAGlanceChart: View {
                 BarMark(x: .value("Month", name(flow)), y: .value("Expenses", pounds(flow.expenseActual)))
                     .position(by: .value("Type", "Expenses"))
                     .foregroundStyle(Color.orange)
-                if flow.expenseRemaining > 0 {
-                    BarMark(x: .value("Month", name(flow)), y: .value("Expenses", pounds(flow.expenseRemaining)))
+                let otherRemaining = flow.expenseRemaining - flow.reservedRemaining
+                if otherRemaining > 0 {
+                    BarMark(x: .value("Month", name(flow)), y: .value("Expenses", pounds(otherRemaining)))
                         .position(by: .value("Type", "Expenses"))
                         .foregroundStyle(HatchPattern.style(.orange))
+                }
+                if flow.reservedRemaining > 0 {
+                    BarMark(x: .value("Month", name(flow)), y: .value("Expenses", pounds(flow.reservedRemaining)))
+                        .position(by: .value("Type", "Expenses"))
+                        .foregroundStyle(HatchPattern.style(.purple))
                 }
             }
             ForEach(flows) { flow in
@@ -49,6 +55,6 @@ struct YearAtAGlanceChart: View {
             }
         }
         .frame(height: 220)
-        .accessibilityLabel("Monthly income, expenses and net for the selected year, actual and forecast")
+        .accessibilityLabel("Monthly income, expenses (with reserves) and net for the selected year, actual and forecast")
     }
 }
