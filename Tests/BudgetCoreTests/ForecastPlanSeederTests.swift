@@ -128,6 +128,31 @@ final class ForecastPlanSeederTests: XCTestCase {
         }
     }
 
+    func testACorrectionWithNoAutoEntryGoesToThePlanGroupAndIsExcludedFromAutoForecast() throws {
+        let manager = try fixture()
+        try manager.dbQueue.write { db in
+            try ForecastEntry.filter(Column("categoryId") == category(db, "Rent").id!).deleteAll(db)
+            _ = try ForecastPlanSeeder.apply(db: db)
+            let all = try entries(db, "Rent")
+            XCTAssertEqual(all.count, 1)
+            XCTAssertEqual(try ForecastGroup.fetchOne(db, key: all[0].groupId)?.name, ForecastPlanSeeder.planGroupName)
+            XCTAssertEqual(all[0].amountMinorUnits, -290_000)
+            XCTAssertTrue(try category(db, "Rent").excludeFromAutoForecast)
+        }
+    }
+
+    func testACorrectionReEnablesADisabledAutoEntry() throws {
+        let manager = try fixture()
+        try manager.dbQueue.write { db in
+            try db.execute(sql: "UPDATE forecastEntry SET isEnabled = 0 WHERE categoryId = ?", arguments: [category(db, "TV License").id!])
+            _ = try ForecastPlanSeeder.apply(db: db)
+            let entry = try XCTUnwrap(entries(db, "TV License").first)
+            XCTAssertTrue(entry.isEnabled)
+            XCTAssertEqual(entry.amountMinorUnits, -18_000)
+            XCTAssertEqual(entry.status, .manual)
+        }
+    }
+
     func testASecondRunChangesNothing() throws {
         try fixture().dbQueue.write { db in
             XCTAssertFalse(try ForecastPlanSeeder.apply(db: db).isEmpty)

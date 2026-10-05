@@ -128,6 +128,14 @@ final class DashboardCalculatorTests: XCTestCase {
         XCTAssertEqual(bills.map(\.amountMinorUnits), [-40_000, -100_000])
     }
 
+    func testUpcomingBillsExcludeReserves() {
+        let reserve = ForecastEntry(id: 20, groupId: 1, categoryId: F.bulkId, amountMinorUnits: -200_000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 20), endDate: nil, isEnabled: true, status: .manual, note: nil)
+        let input = F.input(today: date(2026, 10, 2), entries: F.withDining + [reserve], reservedId: F.bulkId)
+        let bills = DashboardCalculator.upcomingBills(input, days: 30)
+        XCTAssertFalse(bills.contains { $0.categoryName == "Bulk other" })
+        XCTAssertEqual(bills.map(\.categoryName), ["Dining", "Rent"])
+    }
+
     func testUpcomingBillsIncludeTodayAndExcludeDay31() {
         let bills = DashboardCalculator.upcomingBills(F.input(today: date(2026, 10, 1)), days: 30)
         // Rent on 1 Oct (today) is in; rent on 1 Nov is day 31 → out.

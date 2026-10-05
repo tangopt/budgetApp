@@ -75,7 +75,7 @@ public enum DashboardCalculator {
         let end = calendar.date(byAdding: .day, value: days + 1, to: startOfToday)!.addingTimeInterval(-1)
         let period = PayPeriod(startDate: startOfToday, endDate: end, type: .projected)
         let expenseCategories = Dictionary(uniqueKeysWithValues: input.categories.compactMap { category -> (Int64, String)? in
-            guard category.type == .expense, let id = category.id else { return nil }
+            guard category.type == .expense, !category.isReserved, let id = category.id else { return nil }
             return (id, category.name)
         })
         var bills: [UpcomingBill] = []

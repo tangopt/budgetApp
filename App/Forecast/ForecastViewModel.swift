@@ -7,6 +7,12 @@ import GRDB
 @MainActor
 final class ForecastViewModel: ObservableObject {
     @Published var groups: [ForecastGroup] = []
+
+    /// Groups offered as what-if scenarios: not system-managed, and not the seeded
+    /// "Reserved" / "Spreadsheet plan" groups (those hold confirmed planning data).
+    var scenarioGroups: [ForecastGroup] {
+        groups.filter { !$0.isSystemManaged && $0.name != ReservedCategories.groupName && $0.name != ForecastPlanSeeder.planGroupName }
+    }
     @Published var entries: [ForecastEntry] = []
     @Published var categories: [Category] = []
     @Published var categoryGroups: [CategoryGroup] = []

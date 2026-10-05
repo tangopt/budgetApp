@@ -147,6 +147,20 @@ final class DashboardFlowTests: XCTestCase {
         XCTAssertTrue(top[1].isOver)
     }
 
+    func testCategoryCoveredByAReserveIsNotUnplanned() {
+        let txns = [F.txn(1, date(2026, 10, 5), -25_000, category: F.groceriesId), F.txn(2, date(2026, 10, 6), -10_000, category: F.rentId)]
+        // Rent is covered by a reserve; groceries (rolled into Food) is an ordinary category.
+        let input = F.input(today: date(2026, 10, 14), transactions: txns, entries: [], excludedId: F.rentId)
+        let top = DashboardCalculator.topCategories(input, limit: 5)
+        let covered = top.first { $0.name == "Rent" }!
+        XCTAssertEqual(covered.actual, 10_000)
+        XCTAssertFalse(covered.isUnplanned)
+        XCTAssertTrue(covered.isCoveredByReserve)
+        let ordinary = top.first { $0.name == "Food" }!
+        XCTAssertTrue(ordinary.isUnplanned)
+        XCTAssertFalse(ordinary.isCoveredByReserve)
+    }
+
     func testTopCategoriesAreExpectedOnlyBeforeAnyActualsAndRespectTheLimit() {
         let input = F.input(today: date(2026, 10, 2), transactions: [F.txn(1, date(2026, 2, 14), -55_000, category: F.diningId)])
         let top = DashboardCalculator.topCategories(input, limit: 1)

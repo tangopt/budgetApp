@@ -44,7 +44,8 @@ enum DashboardFixture {
         transactions: [Transaction] = [],
         importBatches: [ImportBatch] = [],
         entries: [ForecastEntry]? = nil,
-        reservedId: Int64? = nil
+        reservedId: Int64? = nil,
+        excludedId: Int64? = nil
     ) -> DashboardInput {
         DashboardInput(
             today: today,
@@ -53,11 +54,11 @@ enum DashboardFixture {
             transactions: transactions,
             categories: [
                 Category(id: salaryId, name: "Salary", type: .income),
-                Category(id: rentId, name: "Rent", type: .expense, isReserved: reservedId == rentId),
+                Category(id: rentId, name: "Rent", type: .expense, isReserved: reservedId == rentId, excludeFromAutoForecast: excludedId == rentId),
                 Category(id: savingsId, name: "Savings", type: .transfer),
-                Category(id: groceriesId, name: "Groceries", type: .expense, groupId: 1, isReserved: reservedId == groceriesId),
-                Category(id: diningId, name: "Dining", type: .expense, groupId: 1, isReserved: reservedId == diningId),
-                Category(id: bulkId, name: "Bulk other", type: .expense, isReserved: reservedId == bulkId)
+                Category(id: groceriesId, name: "Groceries", type: .expense, groupId: 1, isReserved: reservedId == groceriesId, excludeFromAutoForecast: excludedId == groceriesId),
+                Category(id: diningId, name: "Dining", type: .expense, groupId: 1, isReserved: reservedId == diningId, excludeFromAutoForecast: excludedId == diningId),
+                Category(id: bulkId, name: "Bulk other", type: .expense, isReserved: reservedId == bulkId, excludeFromAutoForecast: excludedId == bulkId)
             ],
             categoryGroups: [CategoryGroup(id: 1, name: "Food")],
             forecastEntries: entries ?? withDining,

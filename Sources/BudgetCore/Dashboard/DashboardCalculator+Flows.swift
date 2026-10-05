@@ -86,9 +86,20 @@ public struct CategorySpend: Equatable, Identifiable {
     public let actual: Int
     public let expected: Int
     public let projected: Int
+    /// True when every category rolled into this row is excluded from the auto-forecast
+    /// because a reserve covers it, so a zero expectation is intentional.
+    public let isCoveredByReserve: Bool
     public var id: String { name }
     public var isOver: Bool { expected > 0 && actual > expected }
-    public var isUnplanned: Bool { expected == 0 && actual > 0 }
+    public var isUnplanned: Bool { expected == 0 && actual > 0 && !isCoveredByReserve }
+
+    public init(name: String, actual: Int, expected: Int, projected: Int, isCoveredByReserve: Bool = false) {
+        self.name = name
+        self.actual = actual
+        self.expected = expected
+        self.projected = projected
+        self.isCoveredByReserve = isCoveredByReserve
+    }
 }
 
 extension DashboardCalculator {
@@ -201,16 +212,17 @@ extension DashboardCalculator {
         let monthClass = MonthBlend.classify(year: parts.year, month: parts.month, dataThrough: input.dataThrough, today: input.today)
         let groupNames = Dictionary(uniqueKeysWithValues: input.categoryGroups.compactMap { group -> (Int64, String)? in group.id.map { ($0, group.name) } })
 
-        var rolled: [String: (actual: Int, expected: Int, projected: Int)] = [:]
+        var rolled: [String: (actual: Int, expected: Int, projected: Int, covered: Bool)] = [:]
         categoryAmounts(input, year: parts.year, month: parts.month, monthClass: monthClass, includeExpected: true) { category, actual, expected, projected in
             guard category.type == .expense, !category.isReserved else { return }
             let key = category.groupId.flatMap { groupNames[$0] } ?? category.name
-            var entry = rolled[key] ?? (0, 0, 0)
+            var entry = rolled[key] ?? (0, 0, 0, true)
+            entry.covered = entry.covered && category.excludeFromAutoForecast
             entry.actual -= actual; entry.expected -= expected; entry.projected -= projected
             rolled[key] = entry
         }
         return rolled
-            .map { CategorySpend(name: $0.key, actual: $0.value.actual, expected: $0.value.expected, projected: $0.value.projected) }
+            .map { CategorySpend(name: $0.key, actual: $0.value.actual, expected: $0.value.expected, projected: $0.value.projected, isCoveredByReserve: $0.value.covered) }
             .filter { $0.actual != 0 || $0.expected != 0 || $0.projected != 0 }
             .sorted { $0.projected != $1.projected ? $0.projected > $1.projected : $0.name < $1.name }
             .prefix(limit)

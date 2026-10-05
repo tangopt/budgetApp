@@ -17,7 +17,9 @@ struct TopCategoriesCard: View {
                     HStack {
                         Text(category.name)
                         Spacer()
-                        if category.isUnplanned {
+                        if category.isCoveredByReserve && category.expected == 0 && category.actual > 0 {
+                            Text("\(DashboardFormat.pounds(category.actual)) · covered by reserve").foregroundStyle(.secondary)
+                        } else if category.isUnplanned {
                             Text("\(DashboardFormat.pounds(category.actual)) · unplanned").foregroundStyle(.orange)
                         } else if hasActuals {
                             Text("\(DashboardFormat.pounds(category.actual)) of \(DashboardFormat.pounds(category.expected))")

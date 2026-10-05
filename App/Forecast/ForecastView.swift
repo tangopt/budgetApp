@@ -350,7 +350,7 @@ struct ForecastView: View {
             scenarioRow(name: "None (confirmed only)", isSelected: viewModel.selectedScenarioGroupId == nil, badge: nil) {
                 viewModel.selectedScenarioGroupId = nil
             }
-            ForEach(viewModel.groups.filter { !$0.isSystemManaged }) { group in
+            ForEach(viewModel.scenarioGroups) { group in
                 let isConfirmed = isScenarioConfirmed(group)
                 scenarioRow(name: group.name, isSelected: viewModel.selectedScenarioGroupId == group.id, badge: isConfirmed ? "confirmed" : nil) {
                     // A confirmed scenario is still selectable — purely for viewing/editing

@@ -117,7 +117,7 @@ public enum ForecastPlanSeeder {
             let start = startDate(item)
             if let groupId = detected?.id,
                var entry = try ForecastEntry.filter(Column("categoryId") == categoryId && Column("groupId") == groupId).fetchOne(db) {
-                let matches = entry.amountMinorUnits == item.amountMinorUnits && entry.frequency == item.frequency && entry.interval == item.interval && entry.startDate == start && entry.status == .manual
+                let matches = entry.amountMinorUnits == item.amountMinorUnits && entry.frequency == item.frequency && entry.interval == item.interval && entry.startDate == start && entry.status == .manual && entry.isEnabled
                 guard !matches else { continue }
                 entry.amountMinorUnits = item.amountMinorUnits
                 entry.frequency = item.frequency
@@ -125,13 +125,15 @@ public enum ForecastPlanSeeder {
                 entry.startDate = start
                 entry.endDate = nil
                 entry.status = .manual
+                entry.isEnabled = true
                 entry.note = note
                 try entry.update(db)
                 log.append("\(item.name): corrected to \(describe(item))")
             } else if try ForecastEntry.filter(Column("categoryId") == categoryId && Column("note") == note).fetchCount(db) == 0 {
                 if planGroup == nil { planGroup = try ensurePlanGroup(db: db) }
                 try insert(item, categoryId: categoryId, groupId: planGroup!.id!, db: db)
-                log.append("\(item.name): \(describe(item))")
+                try ReservedCategories.setExcludedFromAutoForecast(db: db, categoryId: categoryId, true)
+                log.append("\(item.name): \(describe(item)) (excluded from auto-forecast)")
             }
         }
         return log
