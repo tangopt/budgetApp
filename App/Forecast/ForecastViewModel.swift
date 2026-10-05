@@ -8,10 +8,11 @@ import GRDB
 final class ForecastViewModel: ObservableObject {
     @Published var groups: [ForecastGroup] = []
 
-    /// Groups offered as what-if scenarios: not system-managed, and not the seeded
-    /// "Reserved" / "Spreadsheet plan" groups (those hold confirmed planning data).
+    /// Groups offered as what-if scenarios: not system-managed, and not the "Reserved" /
+    /// "Spreadsheet plan" / "Planned" groups (those hold confirmed planning data).
     var scenarioGroups: [ForecastGroup] {
-        groups.filter { !$0.isSystemManaged && $0.name != ReservedCategories.groupName && $0.name != ForecastPlanSeeder.planGroupName }
+        let confirmedGroupNames: Set<String> = [ReservedCategories.groupName, ForecastPlanSeeder.planGroupName, PlannedItems.groupName]
+        return groups.filter { !$0.isSystemManaged && !confirmedGroupNames.contains($0.name) }
     }
     @Published var entries: [ForecastEntry] = []
     @Published var categories: [Category] = []
@@ -501,6 +502,29 @@ final class ForecastViewModel: ObservableObject {
         }
         categories.append(category)
         return category
+    }
+
+    // MARK: - Planned items
+
+    /// Adds a confirmed item from a section header's "+" (see `PlannedItems.add`, which
+    /// also takes the category out of the auto-forecast). Write-first, reload on success,
+    /// `errorMessage` on failure.
+    @discardableResult
+    func addPlannedItem(categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> Bool {
+        errorMessage = nil
+        do {
+            try dbQueue.write { db in
+                try PlannedItems.add(db: db, categoryId: categoryId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
+            }
+        } catch PlannedItemsError.reservedCategory {
+            errorMessage = "Reserves get allowances from the Reserved section, not planned items."
+            return false
+        } catch {
+            errorMessage = "Couldn't add this item: \(error.localizedDescription)"
+            return false
+        }
+        try? load()
+        return true
     }
 
     // MARK: - Reserves
