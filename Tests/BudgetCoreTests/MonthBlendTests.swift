@@ -20,4 +20,16 @@ final class MonthBlendTests: XCTestCase {
         XCTAssertEqual(MonthBlend.projectedTotal(actual: 50, expected: -850, categoryType: .expense, monthClass: .blended), -850) // a refund
         XCTAssertEqual(MonthBlend.projectedTotal(actual: -25, expected: 0, categoryType: .expense, monthClass: .blended), -25) // unplanned
     }
+
+    func testBlendedTransferFollowsTheSignOfTheExpectedAmount() {
+        // Outgoing transfer planned: the larger outflow.
+        XCTAssertEqual(MonthBlend.projectedTotal(actual: 0, expected: -1_000, categoryType: .transfer, monthClass: .blended), -1_000)
+        XCTAssertEqual(MonthBlend.projectedTotal(actual: -1_500, expected: -1_000, categoryType: .transfer, monthClass: .blended), -1_500)
+        // Incoming transfer planned: the larger inflow.
+        XCTAssertEqual(MonthBlend.projectedTotal(actual: 0, expected: 2_000, categoryType: .transfer, monthClass: .blended), 2_000)
+        XCTAssertEqual(MonthBlend.projectedTotal(actual: 2_500, expected: 2_000, categoryType: .transfer, monthClass: .blended), 2_500)
+        // Nothing planned: the actual.
+        XCTAssertEqual(MonthBlend.projectedTotal(actual: -300, expected: 0, categoryType: .transfer, monthClass: .blended), -300)
+        XCTAssertEqual(MonthBlend.projectedTotal(actual: 300, expected: 0, categoryType: .transfer, monthClass: .blended), 300)
+    }
 }

@@ -15,7 +15,9 @@ public enum MonthClass: Equatable {
 public enum MonthBlend {
     /// The projected signed total for one category in a month. For a blended month the
     /// category is treated as an allowance (envelope): income takes the larger of actual
-    /// and expected, expense (negative) the larger spend. Transfers are never blended.
+    /// and expected, expense (negative) the larger spend. A transfer follows the sign of
+    /// its expected amount (outgoing → the larger outflow, incoming → the larger inflow,
+    /// nothing expected → the actual). The Dashboard never passes transfers.
     public static func projectedTotal(actual: Int, expected: Int, categoryType: CategoryType, monthClass: MonthClass) -> Int {
         switch monthClass {
         case .actual: return actual
@@ -24,7 +26,10 @@ public enum MonthBlend {
             switch categoryType {
             case .income: return max(actual, expected)
             case .expense: return min(actual, expected)
-            case .transfer: return actual
+            case .transfer:
+                if expected < 0 { return min(actual, expected) }
+                if expected > 0 { return max(actual, expected) }
+                return actual
             }
         }
     }
