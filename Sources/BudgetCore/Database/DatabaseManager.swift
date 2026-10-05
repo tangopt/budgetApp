@@ -40,5 +40,6 @@ public final class DatabaseManager {
         registerForecastEntryMigration(&migrator)
         registerBalanceSnapshotMigration(&migrator)
         registerExchangeRateSettingMigration(&migrator)
+        registerCategoryReservedMigration(&migrator)
     }
 }

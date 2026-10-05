@@ -33,3 +33,25 @@ func registerCategoryCatchAllMigration(_ migrator: inout DatabaseMigrator) {
         }
     }
 }
+
+func registerCategoryReservedMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addReservedCategoryFlags") { db in
+        try db.alter(table: "category") { t in
+            t.add(column: "isReserved", .boolean).notNull().defaults(to: false)
+            t.add(column: "excludeFromAutoForecast", .boolean).notNull().defaults(to: false)
+        }
+        // A reserve is forecast-only: no transaction or rule may point at it.
+        for table in ["transaction_", "rule"] {
+            try db.execute(sql: """
+                CREATE TRIGGER \(table)_reserved_insert BEFORE INSERT ON \(table)
+                WHEN NEW.categoryId IS NOT NULL AND (SELECT isReserved FROM category WHERE id = NEW.categoryId) = 1
+                BEGIN SELECT RAISE(ABORT, 'Reserved categories can''t hold transactions.'); END;
+                """)
+            try db.execute(sql: """
+                CREATE TRIGGER \(table)_reserved_update BEFORE UPDATE OF categoryId ON \(table)
+                WHEN NEW.categoryId IS NOT NULL AND (SELECT isReserved FROM category WHERE id = NEW.categoryId) = 1
+                BEGIN SELECT RAISE(ABORT, 'Reserved categories can''t hold transactions.'); END;
+                """)
+        }
+    }
+}

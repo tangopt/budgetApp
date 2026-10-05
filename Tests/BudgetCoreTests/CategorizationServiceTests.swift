@@ -8,12 +8,15 @@ final class FakeCategorizer: Categorizing {
     /// of results, which real code must never trust blindly.
     var stubbedBatchSuggestions: [CategorySuggestion?]?
     private(set) var lastBatchDescriptions: [String]?
+    private(set) var lastCandidateNames: [String]?
 
     func suggestCategory(description: String, candidateCategoryNames: [String]) async throws -> CategorySuggestion? {
-        stubbedSuggestion
+        lastCandidateNames = candidateCategoryNames
+        return stubbedSuggestion
     }
 
     func suggestCategories(descriptions: [String], candidateCategoryNames: [String]) async throws -> [CategorySuggestion?] {
+        lastCandidateNames = candidateCategoryNames
         lastBatchDescriptions = descriptions
         return stubbedBatchSuggestions ?? descriptions.map { _ in stubbedSuggestion }
     }
@@ -22,6 +25,18 @@ final class FakeCategorizer: Categorizing {
 final class CategorizationServiceTests: XCTestCase {
     let groceries = Category(id: 1, name: "Groceries", type: .expense)
     let eatingOut = Category(id: 2, name: "Eating Out", type: .expense)
+
+    func testReservedCategoriesAreNeverOfferedToTheModel() async {
+        let reserve = Category(id: 3, name: "Remaining for expenses", type: .expense, isReserved: true)
+        let fake = FakeCategorizer()
+        let service = CategorizationService(categorizer: fake)
+
+        _ = await service.categorize(description: "TESCO", rules: [], categories: [groceries, reserve])
+        XCTAssertEqual(fake.lastCandidateNames, ["Groceries"])
+
+        _ = await service.categorizeBatch(descriptions: ["TESCO", "ALDI"], rules: [], categories: [reserve, eatingOut])
+        XCTAssertEqual(fake.lastCandidateNames, ["Eating Out"])
+    }
 
     func testRuleMatchWinsOverLLM() async {
         let rule = Rule(id: 1, matchPattern: "SAINSBURYS", matchType: .contains, categoryId: 1, priority: 10)

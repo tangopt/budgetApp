@@ -14,6 +14,8 @@ public final class CategorizationService {
     }
 
     public func categorize(description: String, rules: [Rule], categories: [Category]) async -> CategorizationResult {
+        // Reserves are forecast-only; the model must never suggest one.
+        let categories = categories.filter(\.isAssignable)
         if let rule = RuleMatcher.match(description: description, rules: rules) {
             return CategorizationResult(categoryId: rule.categoryId, source: .rule, confidence: 1.0)
         }
@@ -34,6 +36,8 @@ public final class CategorizationService {
     /// description would — callers can't tell which path was used from the shape of the
     /// result, only from `.source` on each one.
     public func categorizeBatch(descriptions: [String], rules: [Rule], categories: [Category]) async -> [CategorizationResult] {
+        // Reserves are forecast-only; the model must never suggest one.
+        let categories = categories.filter(\.isAssignable)
         var results = [CategorizationResult?](repeating: nil, count: descriptions.count)
         var unmatchedIndices: [Int] = []
         var unmatchedDescriptions: [String] = []
