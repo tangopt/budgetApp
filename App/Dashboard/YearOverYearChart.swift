@@ -54,6 +54,11 @@ struct YearOverYearChart: View {
                             Text(label(selected)).font(.caption2).foregroundStyle(.secondary)
                             Text(DashboardFormat.pounds(selected.totalMinorUnits)).font(.caption.bold())
                             Text(DashboardFormat.percent(selected.percent)).font(.caption2).foregroundStyle(.secondary)
+                            // A year that is partly forecast shows both parts of the bar.
+                            if selected.forecastMinorUnits != 0 {
+                                Text("Realised \(DashboardFormat.pounds(selected.realisedMinorUnits))").font(.caption2)
+                                Text("Forecast \(DashboardFormat.pounds(selected.forecastMinorUnits))").font(.caption2).foregroundStyle(.secondary)
+                            }
                         }
                         .padding(4)
                         .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)))
