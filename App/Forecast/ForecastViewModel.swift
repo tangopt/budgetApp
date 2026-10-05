@@ -507,7 +507,7 @@ final class ForecastViewModel: ObservableObject {
     // MARK: - Planned items
 
     /// Adds a confirmed item from a section header's "+" (see `PlannedItems.add`, which
-    /// also takes the category out of the auto-forecast). Write-first, reload on success,
+    /// also takes the category out of the auto-forecast for a recurring item). Write-first, reload on success,
     /// `errorMessage` on failure.
     @discardableResult
     func addPlannedItem(categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> Bool {

@@ -62,6 +62,23 @@ final class PlannedItemsTests: XCTestCase {
         }
     }
 
+    func testAOneOffItemLeavesTheAutoForecastAlone() throws {
+        try manager().dbQueue.write { db in
+            var salary = Category(name: "Salary", type: .income)
+            try salary.insert(db)
+            var detected = ForecastGroup(name: "Detected recurring", note: nil, isEnabled: true, isSystemManaged: true)
+            try detected.insert(db)
+            var auto = ForecastEntry(groupId: detected.id!, categoryId: salary.id!, amountMinorUnits: 300_000, frequency: .monthly, interval: 1, startDate: utc(2026, 1, 25), endDate: nil, isEnabled: true, status: .auto, note: nil)
+            try auto.insert(db)
+
+            let bonus = try PlannedItems.add(db: db, categoryId: salary.id!, amountMinorUnits: 100_000, frequency: .once, interval: 1, startDate: utc(2026, 12, 20), endDate: nil)
+
+            XCTAssertFalse(try XCTUnwrap(Category.fetchOne(db, key: salary.id!)).excludeFromAutoForecast)
+            XCTAssertNotNil(try ForecastEntry.fetchOne(db, key: auto.id!))
+            XCTAssertNotNil(try ForecastEntry.fetchOne(db, key: bonus.id!))
+        }
+    }
+
     func testAddReenablesADisabledPlannedGroup() throws {
         try manager().dbQueue.write { db in
             var gym = Category(name: "Gym", type: .expense)
