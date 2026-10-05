@@ -14,7 +14,6 @@ struct ForecastView: View {
     @State private var isConfirmingScenario = false
     @State private var reserveSheet: ReserveSheet?
     @State private var renamingReserve: Category?
-    @State private var renameText = ""
     @State private var deletingReserve: Category?
 
     private enum ReserveSheet: Identifiable {
@@ -33,6 +32,12 @@ struct ForecastView: View {
     init(viewModel: ForecastViewModel) {
         self.viewModel = viewModel
         _selectedYear = State(initialValue: viewModel.thisYear)
+    }
+
+    /// Clears a stale save error as the user edits a reserve form — only when one is set,
+    /// so typing doesn't republish the view model (and redraw the grid) on every keystroke.
+    private func clearErrorMessage() {
+        if viewModel.errorMessage != nil { viewModel.errorMessage = nil }
     }
 
     private func categoriesByType(_ type: CategoryType) -> [Category] {
@@ -232,32 +237,30 @@ struct ForecastView: View {
                 editingEntry = nil
             }
         }
-        .sheet(item: $reserveSheet) { sheet in
+        // Failed saves keep the sheet open and show `errorMessage` inside it; whatever
+        // error is left over when the sheet closes is cleared so it doesn't linger.
+        .sheet(item: $reserveSheet, onDismiss: { viewModel.errorMessage = nil }) { sheet in
             switch sheet {
             case .newReserve:
-                ReserveFormView(mode: .newReserve) { name, amount, frequency, interval, start, end in
+                ReserveFormView(mode: .newReserve, errorMessage: viewModel.errorMessage, onEdit: clearErrorMessage) { name, amount, frequency, interval, start, end in
                     if viewModel.addReserve(name: name, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end) {
                         reserveSheet = nil
                     }
                 }
             case .addAmount(let reserve):
-                ReserveFormView(mode: .addAmount(reserve)) { _, amount, frequency, interval, start, end in
+                ReserveFormView(mode: .addAmount(reserve), errorMessage: viewModel.errorMessage, onEdit: clearErrorMessage) { _, amount, frequency, interval, start, end in
                     if viewModel.addReserveAmount(to: reserve, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end) {
                         reserveSheet = nil
                     }
                 }
             }
         }
-        .alert("Rename reserve", isPresented: Binding(
-            get: { renamingReserve != nil },
-            set: { if !$0 { renamingReserve = nil } }
-        )) {
-            TextField("Name", text: $renameText)
-            Button("Save") {
-                if let reserve = renamingReserve { viewModel.renameReserve(reserve, to: renameText) }
-                renamingReserve = nil
+        .sheet(item: $renamingReserve, onDismiss: { viewModel.errorMessage = nil }) { reserve in
+            RenameReserveView(reserve: reserve, errorMessage: viewModel.errorMessage, onEdit: clearErrorMessage) { name in
+                if viewModel.renameReserve(reserve, to: name) {
+                    renamingReserve = nil
+                }
             }
-            Button("Cancel", role: .cancel) { renamingReserve = nil }
         }
         .confirmationDialog("Delete “\(deletingReserve?.name ?? "")”? Its allowances are removed from the forecast.", isPresented: Binding(
             get: { deletingReserve != nil },
@@ -535,7 +538,7 @@ struct ForecastView: View {
                         Button("Edit \(Self.frequencyLabel(entry)) allowance…") { editingEntry = entry }
                     }
                     Button("Add amount…") { reserveSheet = .addAmount(reserve) }
-                    Button("Rename…") { renamingReserve = reserve; renameText = reserve.name }
+                    Button("Rename…") { renamingReserve = reserve }
                     Divider()
                     Button("Delete reserve…", role: .destructive) { deletingReserve = reserve }
                 }
@@ -912,6 +915,10 @@ struct EditForecastEntryView: View {
 struct ReserveFormView: View {
     enum Mode { case newReserve; case addAmount(Category) }
     let mode: Mode
+    /// The view model's error from the last failed save, shown inline above the buttons.
+    let errorMessage: String?
+    /// Called when the user edits the name or amount, to clear a stale `errorMessage`.
+    let onEdit: () -> Void
     let onSave: (_ name: String, _ amountMinorUnits: Int, ForecastFrequency, Int, Date, Date?) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -923,17 +930,31 @@ struct ReserveFormView: View {
     @State private var hasEndDate = false
     @State private var endDate = Date()
 
+    private var parsedAmount: Int? {
+        guard let minorUnits = Money.parseMinorUnits(amountPounds), minorUnits != 0 else { return nil }
+        return minorUnits
+    }
+
+    /// Save needs a non-zero amount and, for a new reserve, a non-blank name.
+    private var canSave: Bool {
+        guard parsedAmount != nil else { return false }
+        if case .newReserve = mode { return !name.trimmingCharacters(in: .whitespaces).isEmpty }
+        return true
+    }
+
     var body: some View {
         Form {
             switch mode {
             case .newReserve:
                 TextField("Reserve name", text: $name)
+                    .onChange(of: name) { _, _ in onEdit() }
                 Text("A forecast-only allowance for spending you expect but don't plan line by line. It never holds transactions.")
                     .font(.caption).foregroundStyle(.secondary)
             case .addAmount(let reserve):
                 Text("Add an amount to \(reserve.name)").font(.headline)
             }
             TextField("Amount (£, positive number)", text: $amountPounds)
+                .onChange(of: amountPounds) { _, _ in onEdit() }
             Picker("Frequency", selection: $frequency) {
                 ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(freq.rawValue).tag(freq) }
             }
@@ -941,17 +962,66 @@ struct ReserveFormView: View {
             DatePicker("Starting", selection: $startDate, displayedComponents: .date)
             Toggle("Ends on a specific date", isOn: $hasEndDate)
             if hasEndDate { DatePicker("Ends", selection: $endDate, displayedComponents: .date) }
+            if let errorMessage {
+                Text(errorMessage).font(.caption).foregroundStyle(.red)
+            }
             HStack {
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Save") {
-                    guard let minorUnits = Money.parseMinorUnits(amountPounds), minorUnits != 0 else { return }
+                    guard canSave, let minorUnits = parsedAmount else { return }
                     onSave(name, -abs(minorUnits), frequency, interval, ForecastView.normalizedStartOfDay(startDate), hasEndDate ? ForecastView.normalizedEndOfDay(endDate) : nil)
                 }
+                .disabled(!canSave)
                 .keyboardShortcut(.defaultAction)
             }
         }
         .padding()
         .frame(width: 420)
+    }
+}
+
+/// Renames a reserve. A sheet rather than an alert so a failed rename (duplicate or
+/// blank name) can stay open with the typed name kept and the error shown inline.
+struct RenameReserveView: View {
+    let reserve: Category
+    let errorMessage: String?
+    let onEdit: () -> Void
+    let onSave: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name: String
+
+    init(reserve: Category, errorMessage: String?, onEdit: @escaping () -> Void, onSave: @escaping (String) -> Void) {
+        self.reserve = reserve
+        self.errorMessage = errorMessage
+        self.onEdit = onEdit
+        self.onSave = onSave
+        _name = State(initialValue: reserve.name)
+    }
+
+    private var canSave: Bool { !name.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    var body: some View {
+        Form {
+            Text("Rename reserve").font(.headline)
+            TextField("Name", text: $name)
+                .onChange(of: name) { _, _ in onEdit() }
+            if let errorMessage {
+                Text(errorMessage).font(.caption).foregroundStyle(.red)
+            }
+            HStack {
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Save") {
+                    guard canSave else { return }
+                    onSave(name)
+                }
+                .disabled(!canSave)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding()
+        .frame(width: 360)
     }
 }
