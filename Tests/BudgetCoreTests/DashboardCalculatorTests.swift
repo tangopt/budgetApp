@@ -83,21 +83,18 @@ final class DashboardCalculatorTests: XCTestCase {
         XCTAssertEqual(stale.oldestStaleSnapshotDate, date(2026, 8, 17))
     }
 
-    func testCatchAllIssueStates() {
+    func testMissingReserveAllowance() {
         let today = date(2026, 10, 2)
-        XCTAssertEqual(DashboardCalculator.attentionItems(F.input(today: today)).catchAllIssue, .notDesignated)
-        // Designated, but only dining/rent/salary entries exist → no allowance for the bulk category.
-        XCTAssertEqual(DashboardCalculator.attentionItems(F.input(today: today, catchAllId: F.bulkId)).catchAllIssue, .noAllowance)
-        // Designated with an entry of its own → fine.
-        let withBulk = F.withDining + [ForecastEntry(id: 9, groupId: 1, categoryId: F.bulkId, amountMinorUnits: -17_139, frequency: .monthly, interval: 1, startDate: date(2026, 1, 14), endDate: nil, isEnabled: true, status: .manual, note: nil)]
-        XCTAssertNil(DashboardCalculator.attentionItems(F.input(today: today, entries: withBulk, catchAllId: F.bulkId)).catchAllIssue)
-    }
-
-    func testCatchAllAllowanceIsThePositiveMonthlyAmount() {
-        let withBulk = F.withDining + [ForecastEntry(id: 9, groupId: 1, categoryId: F.bulkId, amountMinorUnits: -17_139, frequency: .monthly, interval: 1, startDate: date(2026, 1, 14), endDate: nil, isEnabled: true, status: .manual, note: nil)]
-        let allowance = DashboardCalculator.catchAllAllowance(F.input(today: date(2026, 10, 2), entries: withBulk, catchAllId: F.bulkId))
-        XCTAssertEqual(allowance, CatchAllAllowance(name: "Bulk other", monthlyMinorUnits: 17_139))
-        XCTAssertNil(DashboardCalculator.catchAllAllowance(F.input(today: date(2026, 10, 2))))
+        let bulk = ForecastEntry(id: 9, groupId: 1, categoryId: F.bulkId, amountMinorUnits: -200_000, frequency: .monthly, interval: 1, startDate: date(2026, 10, 1), endDate: nil, isEnabled: true, status: .confirmed, note: nil)
+        // No reserve at all.
+        XCTAssertTrue(DashboardCalculator.attentionItems(F.input(today: today)).missingReserveAllowance)
+        // A reserve with no allowance.
+        XCTAssertTrue(DashboardCalculator.attentionItems(F.input(today: today, reservedId: F.bulkId)).missingReserveAllowance)
+        // A reserve whose allowance covers this month.
+        XCTAssertFalse(DashboardCalculator.attentionItems(F.input(today: today, entries: F.withDining + [bulk], reservedId: F.bulkId)).missingReserveAllowance)
+        // An allowance that ended before this month doesn't count.
+        var ended = bulk; ended.startDate = date(2026, 1, 1); ended.endDate = date(2026, 3, 31)
+        XCTAssertTrue(DashboardCalculator.attentionItems(F.input(today: today, entries: F.withDining + [ended], reservedId: F.bulkId)).missingReserveAllowance)
     }
 
     // MARK: accounts

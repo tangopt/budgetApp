@@ -4,7 +4,6 @@ import BudgetCore
 
 struct CurrentMonthCard: View {
     let month: CurrentMonthTracking
-    let catchAll: CatchAllAllowance?
     let navigate: (AppScreen) -> Void
 
     private var monthName: String {
@@ -64,10 +63,6 @@ struct CurrentMonthCard: View {
     }
 
     private var unreviewedFootnote: String {
-        var text = "\(month.unreviewedCount) unreviewed transaction\(month.unreviewedCount == 1 ? "" : "s") (\(DashboardFormat.pounds(month.unreviewedOutflowMinorUnits)) out) aren't included."
-        if let catchAll, catchAll.monthlyMinorUnits > 0 {
-            text += " Your catch-all (\(catchAll.name), \(DashboardFormat.pounds(catchAll.monthlyMinorUnits))/month) stands in for typical unreviewed spending."
-        }
-        return text
+        "\(month.unreviewedCount) unreviewed transaction\(month.unreviewedCount == 1 ? "" : "s") (\(DashboardFormat.pounds(month.unreviewedOutflowMinorUnits)) out) aren't included."
     }
 }

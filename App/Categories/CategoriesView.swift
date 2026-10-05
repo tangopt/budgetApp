@@ -15,7 +15,7 @@ final class CategoriesViewModel: ObservableObject {
     }
 
     func load() throws {
-        categories = try dbQueue.read { db in try Category.fetchAll(db) }
+        categories = try dbQueue.read { db in try Category.filter(Column("isReserved") == false).fetchAll(db) }
         groups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
     }
 
@@ -34,17 +34,11 @@ final class CategoriesViewModel: ObservableObject {
         categories[index] = updated
     }
 
-    /// Designates (or clears) the catch-all expense category. Designating promotes the
-    /// category's auto forecast entry to manual and clears any previous catch-all.
-    func setCatchAll(_ category: Category, enabled: Bool) throws {
+    /// "Covered by a reserve": the auto-forecast leaves this category alone (and its
+    /// existing auto entries are removed when turning this on).
+    func setExcludedFromAutoForecast(_ category: Category, excluded: Bool) throws {
         guard let id = category.id else { return }
-        try dbQueue.write { db in
-            if enabled {
-                try CatchAllCategory.designate(db: db, categoryId: id)
-            } else {
-                try CatchAllCategory.clear(db: db, categoryId: id)
-            }
-        }
+        try dbQueue.write { db in try ReservedCategories.setExcludedFromAutoForecast(db: db, categoryId: id, excluded) }
         try load()
     }
 }
@@ -70,12 +64,12 @@ struct CategoriesView: View {
                     Text(category.name)
                     Spacer()
                     if category.type == .expense {
-                        Toggle("Catch-all", isOn: Binding(
-                            get: { category.isCatchAll },
-                            set: { newValue in try? viewModel.setCatchAll(category, enabled: newValue) }
+                        Toggle("Exclude from auto-forecast", isOn: Binding(
+                            get: { category.excludeFromAutoForecast },
+                            set: { newValue in try? viewModel.setExcludedFromAutoForecast(category, excluded: newValue) }
                         ))
                         .toggleStyle(.checkbox)
-                        .help("Use as the catch-all for unplanned spending. Its monthly allowance stays in the forecast, and the auto-forecast never changes it.")
+                        .help("Covered by a reserve — the forecast won't detect a recurring amount for it.")
                     }
                     Picker("", selection: Binding<Int64?>(
                         get: { category.groupId },

@@ -17,7 +17,6 @@ struct DashboardContent {
     let attention: AttentionItems
     let bills: [UpcomingBill]
     let accounts: [AccountSummary]
-    let catchAll: CatchAllAllowance?
     /// Selectable years for the year-at-a-glance chart: first data year ... next year.
     let yearRange: ClosedRange<Int>
 }
@@ -76,7 +75,6 @@ final class DashboardViewModel: ObservableObject {
                 attention: DashboardCalculator.attentionItems(loaded),
                 bills: DashboardCalculator.upcomingBills(loaded),
                 accounts: DashboardCalculator.accountSummaries(loaded),
-                catchAll: DashboardCalculator.catchAllAllowance(loaded),
                 yearRange: range
             )
             if !range.contains(selectedYear) { selectedYear = thisYear }

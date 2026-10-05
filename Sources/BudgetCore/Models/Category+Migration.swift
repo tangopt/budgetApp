@@ -55,3 +55,12 @@ func registerCategoryReservedMigration(_ migrator: inout DatabaseMigrator) {
         }
     }
 }
+
+func registerCategoryDropCatchAllMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("dropCatchAll") { db in
+        // The catch-all's job ("keep my allowance; never auto-forecast me") is now
+        // `excludeFromAutoForecast`; reserves replace the single bulk allowance.
+        try db.execute(sql: "UPDATE category SET excludeFromAutoForecast = 1 WHERE isCatchAll = 1")
+        try db.alter(table: "category") { t in t.drop(column: "isCatchAll") }
+    }
+}

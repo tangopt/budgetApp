@@ -37,7 +37,7 @@ struct DashboardView: View {
                     TwoUpRow {
                         YearChangeCard(changes: content.yearChanges, navigate: navigate)
                     } second: {
-                        CurrentMonthCard(month: content.currentMonth, catchAll: content.catchAll, navigate: navigate)
+                        CurrentMonthCard(month: content.currentMonth, navigate: navigate)
                     }
                     YearAtAGlanceCard(viewModel: viewModel, content: content, navigate: navigate)
                     TwoUpRow {

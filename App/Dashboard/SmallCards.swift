@@ -58,13 +58,8 @@ struct AttentionCard: View {
             } else {
                 row(warning: false, "All balances up to date", link: nil) {}
             }
-            switch items.catchAllIssue {
-            case .notDesignated:
-                row(warning: true, "No catch-all allowance in the forecast — unplanned spending isn't being projected", link: "Categories") { navigate(.categories) }
-            case .noAllowance:
-                row(warning: true, "The catch-all category has no monthly allowance in the forecast", link: "Forecast") { navigate(.forecast) }
-            case nil:
-                EmptyView()
+            if items.missingReserveAllowance {
+                row(warning: true, "No reserve for unplanned spending in the forecast", link: "Forecast") { navigate(.forecast) }
             }
         }
     }

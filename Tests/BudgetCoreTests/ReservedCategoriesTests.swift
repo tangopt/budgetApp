@@ -147,4 +147,22 @@ final class ReservedCategoriesTests: XCTestCase {
         XCTAssertTrue(ReservedCategories.countsAllowance(year: 2027, month: 1, today: today))
         XCTAssertFalse(ReservedCategories.countsAllowance(year: 2025, month: 12, today: today))
     }
+
+    func testCatchAllMigrationCarriesTheFlagOverAndDropsTheColumn() throws {
+        let manager = try DatabaseManager(path: nil)
+        // Migrate up to (but not including) dropCatchAll, insert a catch-all row, then finish.
+        try manager.migrate(upTo: "addReservedCategoryFlags")
+        try manager.dbQueue.write { db in
+            try db.execute(sql: "INSERT INTO category (name, type, isCatchAll) VALUES ('Bulk other', 'expense', 1), ('Rent', 'expense', 0)")
+        }
+        try manager.migrate()
+        try manager.dbQueue.read { db in
+            let columns = try db.columns(in: "category").map(\.name)
+            XCTAssertFalse(columns.contains("isCatchAll"))
+            let bulk = try XCTUnwrap(Category.filter(Column("name") == "Bulk other").fetchOne(db))
+            let rent = try XCTUnwrap(Category.filter(Column("name") == "Rent").fetchOne(db))
+            XCTAssertTrue(bulk.excludeFromAutoForecast)
+            XCTAssertFalse(rent.excludeFromAutoForecast)
+        }
+    }
 }

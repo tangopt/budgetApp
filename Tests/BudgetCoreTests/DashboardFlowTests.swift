@@ -58,7 +58,7 @@ final class DashboardFlowTests: XCTestCase {
 
     func testBulkAllowanceCountsInFullEvenWithNoActuals() {
         let withBulk = F.withDining + [ForecastEntry(id: 9, groupId: 1, categoryId: F.bulkId, amountMinorUnits: -17_139, frequency: .monthly, interval: 1, startDate: date(2026, 1, 14), endDate: nil, isEnabled: true, status: .manual, note: nil)]
-        let input = F.input(today: date(2026, 10, 14), transactions: [F.txn(1, date(2026, 10, 13), -55_000, category: F.diningId)], entries: withBulk, catchAllId: F.bulkId)
+        let input = F.input(today: date(2026, 10, 14), transactions: [F.txn(1, date(2026, 10, 13), -55_000, category: F.diningId)], entries: withBulk, reservedId: F.bulkId)
         // Expected 100k rent + 40k dining + 17,139 bulk; actual only dining (55k) → projected 100k + 55k + 17,139.
         XCTAssertEqual(DashboardCalculator.currentMonth(input).expenses.projected, 172_139)
     }

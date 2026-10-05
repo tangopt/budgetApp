@@ -44,23 +44,14 @@ public enum DashboardCalculator {
             }
         }
 
-        let issue: CatchAllIssue?
-        if let catchAll = input.categories.first(where: { $0.isCatchAll }) {
-            let hasAllowance = ForecastCalculator.confirmedEntries(entries: input.forecastEntries, groups: input.forecastGroups).contains { $0.categoryId == catchAll.id }
-            issue = hasAllowance ? nil : .noAllowance
-        } else {
-            issue = .notDesignated
-        }
-        return AttentionItems(uncategorizedCount: uncategorized, staleBalanceCount: staleCount, oldestStaleSnapshotDate: oldest, catchAllIssue: issue)
-    }
-
-    public static func catchAllAllowance(_ input: DashboardInput) -> CatchAllAllowance? {
-        guard let category = input.categories.first(where: { $0.isCatchAll }), let id = category.id else { return nil }
         let parts = MonthRange.components(of: input.effectiveToday)
         let range = MonthRange.of(year: parts.year, month: parts.month)
-        let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
-        let monthly = -ForecastCalculator.confirmedTotal(categoryId: id, period: period, entries: input.forecastEntries, groups: input.forecastGroups)
-        return CatchAllAllowance(name: category.name, monthlyMinorUnits: monthly)
+        let thisMonth = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
+        let hasReserveAllowance = input.categories.contains { category in
+            guard category.isReserved, let id = category.id else { return false }
+            return ForecastCalculator.confirmedTotal(categoryId: id, period: thisMonth, entries: input.forecastEntries, groups: input.forecastGroups) != 0
+        }
+        return AttentionItems(uncategorizedCount: uncategorized, staleBalanceCount: staleCount, oldestStaleSnapshotDate: oldest, missingReserveAllowance: !hasReserveAllowance)
     }
 
     // MARK: Accounts

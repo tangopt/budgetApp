@@ -12,6 +12,13 @@ public final class DatabaseManager {
         }
     }
 
+    /// Tests only: runs migrations up to and including `target`.
+    func migrate(upTo target: String) throws {
+        var migrator = DatabaseMigrator()
+        registerMigrations(&migrator)
+        try migrator.migrate(dbQueue, upTo: target)
+    }
+
     public func migrate() throws {
         var migrator = DatabaseMigrator()
         registerMigrations(&migrator)
@@ -41,5 +48,6 @@ public final class DatabaseManager {
         registerBalanceSnapshotMigration(&migrator)
         registerExchangeRateSettingMigration(&migrator)
         registerCategoryReservedMigration(&migrator)
+        registerCategoryDropCatchAllMigration(&migrator)
     }
 }

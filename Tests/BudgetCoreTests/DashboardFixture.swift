@@ -44,7 +44,7 @@ enum DashboardFixture {
         transactions: [Transaction] = [],
         importBatches: [ImportBatch] = [],
         entries: [ForecastEntry]? = nil,
-        catchAllId: Int64? = nil
+        reservedId: Int64? = nil
     ) -> DashboardInput {
         DashboardInput(
             today: today,
@@ -52,12 +52,12 @@ enum DashboardFixture {
             snapshots: snapshots,
             transactions: transactions,
             categories: [
-                Category(id: salaryId, name: "Salary", type: .income, isCatchAll: false),
-                Category(id: rentId, name: "Rent", type: .expense, isCatchAll: catchAllId == rentId),
-                Category(id: savingsId, name: "Savings", type: .transfer, isCatchAll: false),
-                Category(id: groceriesId, name: "Groceries", type: .expense, groupId: 1, isCatchAll: catchAllId == groceriesId),
-                Category(id: diningId, name: "Dining", type: .expense, groupId: 1, isCatchAll: catchAllId == diningId),
-                Category(id: bulkId, name: "Bulk other", type: .expense, isCatchAll: catchAllId == bulkId)
+                Category(id: salaryId, name: "Salary", type: .income),
+                Category(id: rentId, name: "Rent", type: .expense, isReserved: reservedId == rentId),
+                Category(id: savingsId, name: "Savings", type: .transfer),
+                Category(id: groceriesId, name: "Groceries", type: .expense, groupId: 1, isReserved: reservedId == groceriesId),
+                Category(id: diningId, name: "Dining", type: .expense, groupId: 1, isReserved: reservedId == diningId),
+                Category(id: bulkId, name: "Bulk other", type: .expense, isReserved: reservedId == bulkId)
             ],
             categoryGroups: [CategoryGroup(id: 1, name: "Food")],
             forecastEntries: entries ?? withDining,

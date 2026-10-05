@@ -56,7 +56,7 @@ public enum AutoForecastGenerator {
         for category in categories {
             guard let categoryId = category.id else { continue }
             // Reserves and categories maintained by hand keep whatever entries the user has.
-            if category.isCatchAll || category.isReserved || category.excludeFromAutoForecast { continue }
+            if category.isReserved || category.excludeFromAutoForecast { continue }
             var perPeriodSums: [Int] = []
             for period in sortedPeriods {
                 let sum = try Int.fetchOne(db, sql: """

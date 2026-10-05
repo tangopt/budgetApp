@@ -51,16 +51,13 @@ public struct DataFreshness: Equatable {
     public let dataThrough: Date?
 }
 
-public enum CatchAllIssue: Equatable {
-    case notDesignated
-    case noAllowance
-}
-
 public struct AttentionItems: Equatable {
     public let uncategorizedCount: Int
     public let staleBalanceCount: Int
     public let oldestStaleSnapshotDate: Date?
-    public let catchAllIssue: CatchAllIssue?
+    /// No reserved category has a confirmed allowance for the current month, so unplanned
+    /// spending isn't being projected.
+    public let missingReserveAllowance: Bool
 }
 
 public struct AccountSummary: Equatable, Identifiable {
@@ -78,10 +75,4 @@ public struct UpcomingBill: Equatable, Identifiable {
     /// Signed (negative = money out), per occurrence.
     public let amountMinorUnits: Int
     public var id: String { "\(categoryName)-\(date.timeIntervalSince1970)-\(amountMinorUnits)" }
-}
-
-public struct CatchAllAllowance: Equatable {
-    public let name: String
-    /// Positive magnitude of the confirmed monthly allowance (0 when none).
-    public let monthlyMinorUnits: Int
 }
