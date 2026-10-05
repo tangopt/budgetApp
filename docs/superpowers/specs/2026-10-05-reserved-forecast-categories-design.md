@@ -69,17 +69,21 @@ Schema migration `replaceCatchAllWithReserved` (generic — no personal data):
 ## Rules
 
 **Never holds transactions.**
-- `Transaction` and `Rule` writes go through a database trigger pair (`BEFORE INSERT/UPDATE OF categoryId` on `transaction_` and `rule`) that raises if the target category is reserved; Swift callers surface it as `ReservedCategoryError.cannotAssignTransactions`.
+- Database triggers (`BEFORE INSERT` and `BEFORE UPDATE OF categoryId` on `transaction_` and `rule`) abort with the message "Reserved categories can't hold transactions." if the target category is reserved. Existing error displays show `error.localizedDescription`, which carries that text, so no Swift-side mapping is needed.
 - Every category picker filters out reserves: Review, Uncategorized, Rules, Budget-grid drill-down, and the scenario item form's category list (scenario items for reserves are added from the Reserved section instead, see UI).
 - `CategorizationService.categorize`/`categorizeBatch` drop reserves from the `categories` they are given before building the model's candidate names, so the on-device model can never suggest one. `RuleLearner` only learns from confirmed transactions, which can never be in a reserve.
 
-**Month treatment** (applies to the Forecast grid, Budget grid and Dashboard):
+**Month treatment.**
 
-| Month class (`MonthBlend`) | Reserve contributes |
+Dashboard (uses `MonthBlend`):
+
+| Month class | Reserve contributes |
 |---|---|
-| actual (past) | £0, shown as "—" |
+| actual (past) | £0 |
 | blended (current) | the full confirmed allowance (actual is always 0, so "larger of actual and expected" = allowance) |
 | forecast (future) | the full confirmed allowance |
+
+Forecast and Budget grids (they have no blended month): a reserve shows "—" for months **before the current calendar month** and its confirmed allowance (Forecast grid: also the scenario preview) from the current calendar month on — one rule, `ReservedCategories.countsAllowance(year:month:today:)`. The Forecast screen's net-worth headline keeps its existing cutoff (months after the latest data month), which already includes every future reserve month.
 
 Reserves are expense-typed, so they count in `confirmedNetWorthImpact` and the net-worth projection with no change to that function.
 
@@ -96,12 +100,13 @@ All amounts are signed as the app stores them (expenses/transfers out negative).
 3. **Missing planned items**, in a new manual group "Spreadsheet plan" (`isSystemManaged = false`):
    - Monthly from Oct 2026: Car Payments −£351.25; Council Tax −£350.00; Transfer: Lloyds Joint −£2,000.00.
    - Annual: UK Taxes −£3,200.00 (Dec 2026); Accountant −£720.00 (Dec 2026); Car Insurance −£1,200.00 (May 2027); Car Service −£1,000.00 (May 2027); Car MOT −£150.00 (Aug 2027); Car Tax −£195.00 (Jan 2027).
+   - Each of these categories also gets `excludeFromAutoForecast`: the plan entry is now maintained by hand, and without the flag the next import could add an auto entry in "Detected recurring" alongside it and count the cost twice.
 4. **Corrections to auto entries** — the existing `.auto` entry is updated in place and set to `.manual` (so the auto-forecast keeps it):
    - Rent → −£2,900.00 monthly from Oct 2026.
    - TV License → −£180.00 annually from May 2027.
    - Thames Water → −£350.00 every 6 months from Mar 2027 (Mar and Sep).
 
-**Open question for review — UK Taxes and Accountant are `transfer` categories.** `confirmedNetWorthImpact` ignores transfers, so seeding them as-is shows them in the Forecast grid but does **not** lower the projected net worth by £3,920 in December. Recommendation: the seed tool changes both categories to `expense` (they are money leaving, not moving between own accounts); their history then appears under expenses in the Budget grid and Dashboard. Transfer: Lloyds Joint correctly stays a transfer (own account).
+5. **UK Taxes and Accountant become `expense` categories** (decided 2026-10-05: they are money leaving, not moving between own accounts). `confirmedNetWorthImpact` ignores transfers, so as transfers their December amounts would not lower the projected net worth. Their history then appears under expenses in the Budget grid and Dashboard. This step runs before step 3 and is part of the same transaction. Transfer: Lloyds Joint correctly stays a transfer (own account).
 
 ## UI
 
@@ -110,19 +115,19 @@ All amounts are signed as the app stores them (expenses/transfers out negative).
 - Section header has **Add reserve…** (name + monthly amount + start month → `create` + a monthly entry in the Reserved group). Each reserve row's context menu: Edit allowance (existing `EditForecastEntryView`), Add one-off amount, Rename, Delete reserve (confirmation).
 - A scenario can include a reserve change: the scenario item form lists reserves under a "Reserved" heading in its category picker (the one picker that may show them, since it creates forecast entries, not transactions).
 
-**Budget grid** — the same Reserved section and subtotal, read-only; past months "—"; drill-down disabled for reserve rows.
+**Budget grid** — the same Reserved section and subtotal, read-only; months before the current calendar month "—"; drill-down disabled for reserve rows. Reserves are excluded from the Expenses section and from the grid's CSV export.
 
 **Categories screen** — the catch-all toggle becomes **"Exclude from auto-forecast"** (expense categories), with help text "Covered by a reserve — the forecast won't detect a recurring amount for it." Reserves are not listed here.
 
 **Dashboard**
 - Current month: a separate "Reserved" line (allowance) after the category lines, included in projected spend.
-- Year at a glance: reserves are their own segment in the expense bars and their own line in the hover breakdown.
+- Year at a glance: reserves are their own (hatched purple) segment stacked on the expense bars, with a "Reserved" legend entry. The chart has no hover, so there is no breakdown line.
 - Top categories: excludes reserves.
 - Attention "Forecast realism": shown when no reserved category has an enabled confirmed allowance covering the current month → "No reserve for unplanned spending in the forecast" → `Forecast`. (Replaces the catch-all variant; `catchAllAllowance` is removed.)
 
 ## Error handling
 
-- Assigning a transaction or rule to a reserve: blocked in pickers; if attempted anyway, the trigger error is shown as "Reserved categories can't hold transactions."
+- Assigning a transaction or rule to a reserve: blocked in pickers; if attempted anyway, the trigger's message "Reserved categories can't hold transactions." appears in the screen's existing error banner.
 - Duplicate reserve name: inline "A category with that name already exists."
 - Seed tool: missing category name or unexpected existing data → abort with the list, no writes.
 
