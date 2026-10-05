@@ -49,5 +49,6 @@ public final class DatabaseManager {
         registerExchangeRateSettingMigration(&migrator)
         registerCategoryReservedMigration(&migrator)
         registerCategoryDropCatchAllMigration(&migrator)
+        registerPayMonthCloseMigration(&migrator)
     }
 }
