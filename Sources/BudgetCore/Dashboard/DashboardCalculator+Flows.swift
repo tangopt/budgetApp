@@ -21,6 +21,9 @@ public struct CurrentMonthTracking: Equatable {
     public let monthClass: MonthClass
     public let income: FlowTotals
     public let expenses: FlowTotals
+    /// Positive magnitude of the reserves' projected spend this month; already included in
+    /// `expenses.projected` and `expenses.expected`.
+    public let reservedProjected: Int
     /// Transactions dated this month with no category or still pending review — not in the
     /// totals (like the Budget grid), shown as a footnote.
     public let unreviewedCount: Int
@@ -43,6 +46,9 @@ public struct MonthlyFlow: Equatable, Identifiable {
     public let incomeRemaining: Int
     public let expenseActual: Int
     public let expenseRemaining: Int
+    /// Positive magnitude; the part of `expenseRemaining` that comes from reserves (always
+    /// <= `expenseRemaining`).
+    public let reservedRemaining: Int
 
     public var id: Int { month }
     public var incomeTotal: Int { incomeActual + incomeRemaining }
@@ -91,6 +97,7 @@ extension DashboardCalculator {
     private struct MonthTotals {
         var income = FlowTotals(actual: 0, expected: 0, projected: 0)
         var expenses = FlowTotals(actual: 0, expected: 0, projected: 0)
+        var reservedProjected = 0
     }
 
     /// Per non-transfer category: actual (confirmed transactions), expected (confirmed
@@ -120,6 +127,7 @@ extension DashboardCalculator {
             case .expense:
                 // Signed outflows → positive magnitudes.
                 totals.expenses.actual -= actual; totals.expenses.expected -= expected; totals.expenses.projected -= projected
+                if category.isReserved { totals.reservedProjected -= projected }
             case .transfer:
                 break
             }
@@ -143,6 +151,7 @@ extension DashboardCalculator {
             dayOfMonth: calendar.component(.day, from: today),
             daysInMonth: calendar.range(of: .day, in: .month, for: today)!.count,
             monthClass: monthClass, income: totals.income, expenses: totals.expenses,
+            reservedProjected: totals.reservedProjected,
             unreviewedCount: unreviewed.count, unreviewedOutflowMinorUnits: unreviewed.outflowMinorUnits
         )
     }
@@ -166,10 +175,11 @@ extension DashboardCalculator {
         (1...12).map { month in
             let monthClass = MonthBlend.classify(year: year, month: month, dataThrough: input.dataThrough, today: input.today)
             let totals = monthTotals(input, year: year, month: month, monthClass: monthClass, includeExpected: false)
+            let expenseRemaining = max(totals.expenses.projected - totals.expenses.actual, 0)
             return MonthlyFlow(
                 year: year, month: month, monthClass: monthClass,
                 incomeActual: totals.income.actual, incomeRemaining: max(totals.income.projected - totals.income.actual, 0),
-                expenseActual: totals.expenses.actual, expenseRemaining: max(totals.expenses.projected - totals.expenses.actual, 0)
+                expenseActual: totals.expenses.actual, expenseRemaining: expenseRemaining, reservedRemaining: min(totals.reservedProjected, expenseRemaining)
             )
         }
     }
@@ -193,7 +203,7 @@ extension DashboardCalculator {
 
         var rolled: [String: (actual: Int, expected: Int, projected: Int)] = [:]
         categoryAmounts(input, year: parts.year, month: parts.month, monthClass: monthClass, includeExpected: true) { category, actual, expected, projected in
-            guard category.type == .expense else { return }
+            guard category.type == .expense, !category.isReserved else { return }
             let key = category.groupId.flatMap { groupNames[$0] } ?? category.name
             var entry = rolled[key] ?? (0, 0, 0)
             entry.actual -= actual; entry.expected -= expected; entry.projected -= projected

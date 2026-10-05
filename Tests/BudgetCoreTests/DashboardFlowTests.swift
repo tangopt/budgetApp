@@ -160,4 +160,34 @@ final class DashboardFlowTests: XCTestCase {
         let unplanned = DashboardCalculator.topCategories(input, limit: 5).first { $0.name == "Bulk other" }
         XCTAssertEqual(unplanned?.isUnplanned, true)
     }
+
+    private var bulkReserve: ForecastEntry {
+        ForecastEntry(id: 9, groupId: 1, categoryId: F.bulkId, amountMinorUnits: -200_000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 1), endDate: nil, isEnabled: true, status: .confirmed, note: nil)
+    }
+
+    func testCurrentMonthReportsTheReserveSeparatelyAndInsideExpenses() {
+        let input = F.input(today: date(2026, 10, 14), transactions: [F.txn(1, date(2026, 10, 13), -55_000, category: F.diningId)], entries: F.withDining + [bulkReserve], reservedId: F.bulkId)
+        let month = DashboardCalculator.currentMonth(input)
+        XCTAssertEqual(month.monthClass, .blended)
+        XCTAssertEqual(month.reservedProjected, 200_000)
+        // 100k rent + max(55k actual, 40k expected) dining + 200k reserve.
+        XCTAssertEqual(month.expenses.projected, 355_000)
+    }
+
+    func testReserveIsZeroInActualMonthsAndRemainingInBlendedAndForecastMonths() {
+        let input = F.input(today: date(2026, 10, 14), transactions: [F.txn(1, date(2026, 9, 3), -1_000, category: F.diningId), F.txn(2, date(2026, 10, 13), -55_000, category: F.diningId)], entries: F.withDining + [bulkReserve], reservedId: F.bulkId)
+        let flows = DashboardCalculator.monthlyFlows(input, year: 2026)
+        XCTAssertEqual(flows[8].monthClass, .actual)     // September
+        XCTAssertEqual(flows[8].reservedRemaining, 0)
+        XCTAssertEqual(flows[9].monthClass, .blended)    // October
+        XCTAssertEqual(flows[9].reservedRemaining, 200_000)
+        XCTAssertEqual(flows[10].monthClass, .forecast)  // November
+        XCTAssertEqual(flows[10].reservedRemaining, 200_000)
+        XCTAssertGreaterThanOrEqual(flows[10].expenseRemaining, flows[10].reservedRemaining)
+    }
+
+    func testTopCategoriesLeavesReservesOut() {
+        let input = F.input(today: date(2026, 10, 14), transactions: [F.txn(1, date(2026, 10, 13), -55_000, category: F.diningId)], entries: F.withDining + [bulkReserve], reservedId: F.bulkId)
+        XCTAssertFalse(DashboardCalculator.topCategories(input).contains { $0.name == "Bulk other" })
+    }
 }
