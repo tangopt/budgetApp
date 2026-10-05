@@ -10,10 +10,10 @@ struct CurrentMonthCard: View {
         DashboardFormat.monthYear(MonthRange.of(year: month.year, month: month.month).start)
     }
     private var pace: Double { Double(month.dayOfMonth) / Double(month.daysInMonth) }
-    private var hasActuals: Bool { month.monthClass == .blended }
+    private var hasActuals: Bool { month.hasTransactions }
 
     var body: some View {
-        DashboardCard(title: "\(monthName) · day \(month.dayOfMonth) of \(month.daysInMonth)", linkTitle: "Budget", onLink: { navigate(.budgetGrid) }) {
+        DashboardCard(title: "\(monthName) · \(DashboardFormat.day(month.start))–\(DashboardFormat.day(month.end)) · day \(month.dayOfMonth) of \(month.daysInMonth)", linkTitle: "Budget", onLink: { navigate(.budgetGrid) }) {
             if !hasActuals {
                 Text("No \(monthName) transactions imported yet. Showing expected only.")
                     .font(.caption)

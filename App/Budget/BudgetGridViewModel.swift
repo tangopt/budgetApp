@@ -134,7 +134,7 @@ final class BudgetGridViewModel: ObservableObject {
         let allowances: [(id: Int64, name: String, allowance: Int)] = reserves.compactMap { reserve in
             reserve.id.map { ($0, reserve.name, ForecastCalculator.confirmedTotal(categoryId: $0, period: period, entries: forecastEntries, groups: forecastGroups)) }
         }
-        let spend = ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, calendarTotals: calendarTotals, entries: forecastEntries, groups: forecastGroups)
+        let spend = ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, monthTotals: calendarTotals, entries: forecastEntries, groups: forecastGroups)
         let remaining = ReservedCategories.remainingAllowances(allowances, unforecastSpend: spend)
         reserveRemainingCache[key] = remaining
         return remaining[id] ?? 0

@@ -16,7 +16,8 @@ public struct BehindBalances: Equatable {
 public struct NetWorthSeries: Equatable {
     /// Month values from the first snapshot month through the data-through month.
     public let actual: [NetWorthPoint]
-    /// Starts at the data-through month (anchored at the current net worth) and runs to
+    /// Starts at the pay month containing the data-through date (anchored at the current net
+    /// worth) and runs to
     /// December of next year — the same walk the Forecast screen's headlines use.
     public let forecast: [NetWorthPoint]
     public let currentNetWorthMinorUnits: Int?
@@ -66,17 +67,20 @@ extension DashboardCalculator {
             cursor = (cursor.month == 12) ? (cursor.year + 1, 1) : (cursor.year, cursor.month + 1)
         }
 
-        // Forecast: anchored at the current net worth in the data month, then the shared month walk.
+        // Forecast: anchored at the current net worth in the pay month holding the latest
+        // transaction, then the shared month walk from the month after it.
         let thisYear = MonthRange.components(of: input.today).year
         var forecast: [NetWorthPoint] = []
         var yearEnds: [YearEndForecast] = []
-        if let dataMonth {
-            let projection = ForecastProjector.monthlyProjection(startingNetWorth: current, latestRealMonth: dataMonth, throughYear: thisYear + 1, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups)
-            forecast = [NetWorthPoint(year: dataMonth.year, month: dataMonth.month, valueMinorUnits: current)] + projection
+        if let dataMonth, let dataThrough = input.dataThrough {
+            let payMonth = input.payCalendar.month(containing: dataThrough)
+            let walkStart = (year: payMonth.year, month: payMonth.month)
+            let projection = ForecastProjector.monthlyProjection(startingNetWorth: current, latestRealMonth: walkStart, throughYear: thisYear + 1, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups)
+            forecast = [NetWorthPoint(year: walkStart.year, month: walkStart.month, valueMinorUnits: current)] + projection
 
             let dataIndex = MonthRange.index(year: dataMonth.year, month: dataMonth.month)
             func forecastValue(atEndOf year: Int) -> Int {
-                ForecastProjector.forecastNetWorth(startingNetWorth: current, latestRealMonth: dataMonth, atEndOf: year, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups)
+                ForecastProjector.forecastNetWorth(startingNetWorth: current, latestRealMonth: walkStart, atEndOf: year, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups)
             }
             for year in [thisYear, thisYear + 1] {
                 let value = forecastValue(atEndOf: year)

@@ -56,7 +56,8 @@ final class DashboardViewModel: ObservableObject {
                     forecastEntries: try ForecastEntry.fetchAll(db),
                     forecastGroups: try ForecastGroup.fetchAll(db),
                     importBatches: try ImportBatch.fetchAll(db),
-                    rate: try ExchangeRateSetting.currentOrDefault(db: db)
+                    rate: try ExchangeRateSetting.currentOrDefault(db: db),
+                    manualCloses: try PayMonthClose.fetchAll(db)
                 )
             }
             let netWorth = DashboardCalculator.netWorthSeries(loaded)

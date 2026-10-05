@@ -196,7 +196,7 @@ final class ReservedCategoriesTests: XCTestCase {
             txn(8, utc(2026, 9, 6), -9_000, 1)                 // another month, ignored
         ]
         let totals = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
-        let spend = ReservedCategories.unforecastSpend(year: 2026, month: 10, categories: [groceries, dining, reserve, salary, savings], calendarTotals: totals, entries: [diningEntry, reserveEntry], groups: [group])
+        let spend = ReservedCategories.unforecastSpend(year: 2026, month: 10, categories: [groceries, dining, reserve, salary, savings], monthTotals: totals, entries: [diningEntry, reserveEntry], groups: [group])
         XCTAssertEqual(spend, 20_000)
     }
 
@@ -204,7 +204,7 @@ final class ReservedCategoriesTests: XCTestCase {
         let groceries = Category(id: 1, name: "Groceries", type: .expense)
         let refund = Transaction(id: 1, importBatchId: 1, accountId: 1, date: utc(2026, 10, 3), rawDescription: "Refund", amountMinorUnits: 7_000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "fp1")
         let totals = BudgetGridCalculator.calendarTotalsLookup(transactions: [refund])
-        XCTAssertEqual(ReservedCategories.unforecastSpend(year: 2026, month: 10, categories: [groceries], calendarTotals: totals, entries: [], groups: []), 0)
+        XCTAssertEqual(ReservedCategories.unforecastSpend(year: 2026, month: 10, categories: [groceries], monthTotals: totals, entries: [], groups: []), 0)
     }
 
     func testCatchAllMigrationCarriesTheFlagOverAndDropsTheColumn() throws {

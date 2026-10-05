@@ -14,7 +14,7 @@ enum DashboardFixture {
         calendar.date(from: DateComponents(year: y, month: m, day: d))!
     }
 
-    static let salaryId: Int64 = 1, rentId: Int64 = 2, savingsId: Int64 = 3, groceriesId: Int64 = 4, diningId: Int64 = 5, bulkId: Int64 = 6
+    static let salaryId: Int64 = 1, rentId: Int64 = 2, savingsId: Int64 = 3, groceriesId: Int64 = 4, diningId: Int64 = 5, bulkId: Int64 = 6, incomeId: Int64 = 7
 
     private static func entry(_ id: Int64, _ category: Int64, _ amount: Int, start: Date, status: ForecastEntryStatus = .manual, enabled: Bool = true, end: Date? = nil) -> ForecastEntry {
         ForecastEntry(id: id, groupId: 1, categoryId: category, amountMinorUnits: amount, frequency: .monthly, interval: 1, startDate: start, endDate: end, isEnabled: enabled, status: status, note: nil)
@@ -45,14 +45,21 @@ enum DashboardFixture {
         importBatches: [ImportBatch] = [],
         entries: [ForecastEntry]? = nil,
         reservedId: Int64? = nil,
-        excludedId: Int64? = nil
+        excludedId: Int64? = nil,
+        salaries: [Date] = [],
+        manualCloses: [PayMonthClose] = []
     ) -> DashboardInput {
-        DashboardInput(
+        // `salaries` adds an "Income" category (the one `PaydaySource` reads) with a +3,000
+        // credit on each date, so pay months close on those dates; without it there are no
+        // salaries and pay months equal calendar months.
+        let salaryTransactions = salaries.enumerated().map { txn(Int64(1_000 + $0.offset), $0.element, 300_000, category: incomeId) }
+        let incomeCategories = salaries.isEmpty ? [] : [Category(id: incomeId, name: "Income", type: .income)]
+        return DashboardInput(
             today: today,
             accounts: accounts ?? [Account(id: 1, name: "Current", currency: .gbp, kind: .cash, trackingMode: .manual)],
             snapshots: snapshots,
-            transactions: transactions,
-            categories: [
+            transactions: transactions + salaryTransactions,
+            categories: incomeCategories + [
                 Category(id: salaryId, name: "Salary", type: .income),
                 Category(id: rentId, name: "Rent", type: .expense, isReserved: reservedId == rentId, excludeFromAutoForecast: excludedId == rentId),
                 Category(id: savingsId, name: "Savings", type: .transfer),
@@ -64,7 +71,8 @@ enum DashboardFixture {
             forecastEntries: entries ?? withDining,
             forecastGroups: [ForecastGroup(id: 1, name: "Detected recurring", note: nil, isEnabled: true, isSystemManaged: true)],
             importBatches: importBatches,
-            rate: ExchangeRateSetting(eurToGbpRate: 0.5, updatedAt: date(2026, 1, 1))
+            rate: ExchangeRateSetting(eurToGbpRate: 0.5, updatedAt: date(2026, 1, 1)),
+            manualCloses: manualCloses
         )
     }
 }

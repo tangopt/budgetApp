@@ -66,15 +66,16 @@ public enum ReservedCategories {
     }
 
     /// What a month's reserves lose to spending nobody planned for: the confirmed spend in
-    /// the calendar month across expense categories (not reserves) with nothing forecast
-    /// that month. Net signed sum, so refunds reduce it; returned as a positive magnitude,
-    /// never below 0. Unreviewed transactions aren't in `calendarTotals`, so never count.
-    public static func unforecastSpend(year: Int, month: Int, categories: [Category], calendarTotals: [Int64: [Int: [Int: Int]]], entries: [ForecastEntry], groups: [ForecastGroup]) -> Int {
+    /// the month (`monthTotals`, by pay month) across expense categories (not reserves) with
+    /// nothing forecast for the calendar month of that name. Net signed sum, so refunds
+    /// reduce it; returned as a positive magnitude, never below 0. Unreviewed transactions
+    /// aren't in `monthTotals`, so never count.
+    public static func unforecastSpend(year: Int, month: Int, categories: [Category], monthTotals: [Int64: [Int: [Int: Int]]], entries: [ForecastEntry], groups: [ForecastGroup]) -> Int {
         let range = MonthRange.of(year: year, month: month)
         let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
         var net = 0
         for category in categories where category.type == .expense && !category.isReserved {
-            guard let categoryId = category.id, let actual = calendarTotals[categoryId]?[year]?[month], actual != 0 else { continue }
+            guard let categoryId = category.id, let actual = monthTotals[categoryId]?[year]?[month], actual != 0 else { continue }
             guard ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups) == 0 else { continue }
             net += actual
         }

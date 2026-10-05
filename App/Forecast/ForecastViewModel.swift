@@ -237,7 +237,7 @@ final class ForecastViewModel: ObservableObject {
         let allowances: [(id: Int64, name: String, allowance: Int)] = reserves.compactMap { reserve in
             reserve.id.map { ($0, reserve.name, forecastValue(reserve, year: year, month: month, preview: preview)) }
         }
-        let spend = ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, calendarTotals: calendarTotals, entries: entries, groups: groups)
+        let spend = ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, monthTotals: calendarTotals, entries: entries, groups: groups)
         return ReservedCategories.remainingAllowances(allowances, unforecastSpend: spend)
     }
 

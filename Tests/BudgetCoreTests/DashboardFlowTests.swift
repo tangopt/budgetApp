@@ -19,8 +19,22 @@ final class DashboardFlowTests: XCTestCase {
         ]
     }
 
+    /// Manual closes on the last day of every calendar month from January 2025 through
+    /// `year`/`month`: pay months equal calendar months and those months are closed (`.actual`).
+    /// Manual closes rather than salaries, which would add income to the totals under test.
+    private func closedThrough(_ year: Int, _ month: Int) -> [PayMonthClose] {
+        var closes: [PayMonthClose] = []
+        var cursor = (year: 2025, month: 1)
+        while cursor.year * 12 + cursor.month <= year * 12 + month {
+            let next = cursor.month == 12 ? (cursor.year + 1, 1) : (cursor.year, cursor.month + 1)
+            closes.append(PayMonthClose(year: cursor.year, month: cursor.month, closeDate: date(next.0, next.1, 1).addingTimeInterval(-86_400)))
+            cursor = next
+        }
+        return closes
+    }
+
     private var blendedInput: DashboardInput {
-        F.input(today: date(2026, 10, 14), transactions: blendedTransactions)
+        F.input(today: date(2026, 10, 14), transactions: blendedTransactions, manualCloses: closedThrough(2026, 9))
     }
 
     // MARK: current month
@@ -48,10 +62,13 @@ final class DashboardFlowTests: XCTestCase {
         XCTAssertEqual(DashboardCalculator.currentMonth(blendedInput).expenses.expected, 140_000)
     }
 
-    func testCurrentMonthWithNothingImportedYetIsForecastOnly() {
-        let input = F.input(today: date(2026, 10, 2), transactions: [F.txn(1, date(2026, 2, 14), -55_000, category: F.diningId)])
+    // An open pay month that has started is `.blended` even with nothing imported (projected
+    // = expected then); the card keys "showing expected only" off `hasTransactions`.
+    func testCurrentMonthWithNothingImportedYetShowsExpectedOnly() {
+        let input = F.input(today: date(2026, 10, 2), transactions: [F.txn(1, date(2026, 2, 14), -55_000, category: F.diningId)], manualCloses: closedThrough(2026, 9))
         let month = DashboardCalculator.currentMonth(input)
-        XCTAssertEqual(month.monthClass, .forecast)
+        XCTAssertEqual(month.monthClass, .blended)
+        XCTAssertFalse(month.hasTransactions)
         XCTAssertEqual(month.income, FlowTotals(actual: 0, expected: 300_000, projected: 300_000))
         XCTAssertEqual(month.expenses, FlowTotals(actual: 0, expected: 140_000, projected: 140_000))
     }
@@ -70,7 +87,8 @@ final class DashboardFlowTests: XCTestCase {
         let withTransfers = F.input(
             today: date(2026, 10, 14),
             transactions: blendedTransactions + [F.txn(8, date(2026, 10, 8), -200_000, category: F.savingsId)],
-            entries: F.withDining + [transferEntry]
+            entries: F.withDining + [transferEntry],
+            manualCloses: closedThrough(2026, 9)
         )
         let baseline = blendedInput
 
@@ -189,7 +207,7 @@ final class DashboardFlowTests: XCTestCase {
     }
 
     func testReserveIsZeroInActualMonthsAndRemainingInBlendedAndForecastMonths() {
-        let input = F.input(today: date(2026, 10, 14), transactions: [F.txn(1, date(2026, 9, 3), -1_000, category: F.diningId), F.txn(2, date(2026, 10, 13), -55_000, category: F.diningId)], entries: F.withDining + [bulkReserve], reservedId: F.bulkId)
+        let input = F.input(today: date(2026, 10, 14), transactions: [F.txn(1, date(2026, 9, 3), -1_000, category: F.diningId), F.txn(2, date(2026, 10, 13), -55_000, category: F.diningId)], entries: F.withDining + [bulkReserve], reservedId: F.bulkId, manualCloses: closedThrough(2026, 9))
         let flows = DashboardCalculator.monthlyFlows(input, year: 2026)
         XCTAssertEqual(flows[8].monthClass, .actual)     // September
         XCTAssertEqual(flows[8].reservedRemaining, 0)
@@ -227,5 +245,78 @@ final class DashboardFlowTests: XCTestCase {
     func testTopCategoriesLeavesReservesOut() {
         let input = F.input(today: date(2026, 10, 14), transactions: [F.txn(1, date(2026, 10, 13), -55_000, category: F.diningId)], entries: F.withDining + [bulkReserve], reservedId: F.bulkId)
         XCTAssertFalse(DashboardCalculator.topCategories(input).contains { $0.name == "Bulk other" })
+    }
+
+    // MARK: pay months
+
+    /// Salary on the 15th of January ... `last` month of 2026.
+    private func salaries(through last: Int) -> [Date] { (1...last).map { date(2026, $0, 15) } }
+
+    func testCurrentMonthIsThePayMonthContainingToday() {
+        let input = F.input(
+            today: date(2026, 10, 5),
+            transactions: [F.txn(1, date(2026, 9, 15), -10_000, category: F.groceriesId), F.txn(2, date(2026, 9, 16), -20_000, category: F.groceriesId)],
+            salaries: salaries(through: 9)
+        )
+        let month = DashboardCalculator.currentMonth(input)
+        XCTAssertEqual([month.year, month.month], [2026, 10])
+        XCTAssertEqual(month.start, date(2026, 9, 16))
+        XCTAssertEqual(month.end, date(2026, 10, 16).addingTimeInterval(-1))
+        XCTAssertEqual(month.dayOfMonth, 20)
+        XCTAssertEqual(month.daysInMonth, 30)
+        XCTAssertEqual(month.monthClass, .blended)
+        XCTAssertTrue(month.hasTransactions)
+        XCTAssertEqual(month.expenses.actual, 20_000)
+
+        let flows = DashboardCalculator.monthlyFlows(input, year: 2026)
+        XCTAssertEqual(flows[8].expenseActual, 10_000)   // payday row stays in September
+        XCTAssertEqual(flows[8].incomeActual, 300_000)
+        XCTAssertEqual(flows[9].expenseActual, 20_000)   // the day after belongs to October
+    }
+
+    func testCurrentPayMonthWithNoTransactionsYet() {
+        let input = F.input(today: date(2026, 10, 5), salaries: salaries(through: 9))
+        // October runs 16 Sep - 15 Oct; nothing is dated in it.
+        XCTAssertFalse(DashboardCalculator.currentMonth(input).hasTransactions)
+    }
+
+    func testClosedMonthReleasesItsReserveAndOpenMonthsKeepWhatIsLeft() {
+        let input = F.input(
+            today: date(2026, 10, 5),
+            // 30k unforecast in September's pay month, 60k in October's (16 Sep onwards).
+            transactions: [F.txn(1, date(2026, 9, 10), -30_000, category: F.groceriesId), F.txn(2, date(2026, 9, 20), -60_000, category: F.groceriesId)],
+            entries: F.withDining + [bulkReserve], reservedId: F.bulkId,
+            salaries: salaries(through: 9)
+        )
+        let flows = DashboardCalculator.monthlyFlows(input, year: 2026)
+        XCTAssertEqual(flows[8].monthClass, .actual)       // September: closed by its salary
+        XCTAssertEqual(flows[8].reservedRemaining, 0)
+        XCTAssertEqual(flows[8].expenseRemaining, 0)
+        XCTAssertEqual(flows[9].monthClass, .blended)      // October: open, current
+        XCTAssertEqual(flows[9].reservedRemaining, 140_000)
+        XCTAssertEqual(flows[10].monthClass, .forecast)    // November
+        XCTAssertEqual(flows[10].reservedRemaining, 200_000)
+        XCTAssertEqual(DashboardCalculator.currentMonth(input).reservedProjected, 140_000)
+    }
+
+    func testOpenPastMonthIsBlendedAndKeepsItsReserve() {
+        let input = F.input(today: date(2026, 10, 5), entries: F.withDining + [bulkReserve], reservedId: F.bulkId, salaries: salaries(through: 2))
+        let flows = DashboardCalculator.monthlyFlows(input, year: 2026)
+        XCTAssertEqual(flows[1].monthClass, .actual)       // February: salary imported
+        XCTAssertEqual(flows[2].monthClass, .blended)      // March: never closed
+        XCTAssertEqual(flows[2].reservedRemaining, 200_000)
+    }
+
+    func testManualCloseClosesTheMonth() {
+        let input = F.input(
+            today: date(2026, 10, 5),
+            entries: F.withDining + [bulkReserve], reservedId: F.bulkId,
+            salaries: salaries(through: 9),
+            manualCloses: [PayMonthClose(year: 2026, month: 10, closeDate: date(2026, 10, 3))]
+        )
+        let flows = DashboardCalculator.monthlyFlows(input, year: 2026)
+        XCTAssertEqual(flows[9].monthClass, .actual)
+        XCTAssertEqual(flows[9].reservedRemaining, 0)
+        XCTAssertEqual(input.payCalendar.current, PayMonth(year: 2026, month: 11))
     }
 }
