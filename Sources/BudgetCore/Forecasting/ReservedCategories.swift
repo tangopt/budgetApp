@@ -58,13 +58,6 @@ public enum ReservedCategories {
             .deleteAll(db)
     }
 
-    /// Grids (which have no blended month): a reserve's allowance counts from the current
-    /// calendar month on; earlier months show nothing.
-    public static func countsAllowance(year: Int, month: Int, today: Date) -> Bool {
-        let now = MonthRange.components(of: today)
-        return MonthRange.index(year: year, month: month) >= MonthRange.index(year: now.year, month: now.month)
-    }
-
     /// What a month's reserves lose to spending nobody planned for: the confirmed spend in
     /// the month (`monthTotals`, by pay month) across expense categories (not reserves) with
     /// nothing forecast for the calendar month of that name. Net signed sum, so refunds

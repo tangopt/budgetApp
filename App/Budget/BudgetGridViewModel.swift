@@ -12,11 +12,7 @@ final class BudgetGridViewModel: ObservableObject {
     @Published var categoryGroups: [CategoryGroup] = []
     @Published var periods: [PayPeriod] = []
     @Published var transactions: [Transaction] = [] {
-        didSet {
-            calendarTotals = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
-            reserveRemainingCache = [:]
-            availableYears = BudgetGridCalculator.yearsWithData(transactions: transactions)
-        }
+        didSet { rebuildPayMonths() }
     }
     @Published var forecastEntries: [ForecastEntry] = [] {
         didSet { reserveRemainingCache = [:] }
@@ -30,9 +26,15 @@ final class BudgetGridViewModel: ObservableObject {
     @Published var selectedYear: Int?
     @Published var errorMessage: String?
     @Published private(set) var availableYears: [Int] = []
+    /// Pay-month boundaries (salaries + manual closes). Rebuilt with `monthTotals` whenever
+    /// transactions change (a recategorize can add or remove a salary).
+    @Published private(set) var payCalendar = PayCalendar(salaryDates: [], manualCloses: [], today: Date())
 
     private let dbQueue: DatabaseQueue
-    private var calendarTotals: [Int64: [Int: [Int: Int]]] = [:]
+    private var manualCloses: [PayMonthClose] = []
+    private var lastHorizon: Date?
+    /// Confirmed totals per category per pay month (`PayMonthTotals.lookup`).
+    private var monthTotals: [Int64: [Int: [Int: Int]]] = [:]
     /// Remaining allowance per reserve id, memoised per `MonthRange.index` — the grid asks
     /// for every reserve cell on every render, and each month's answer scans every
     /// category's forecast. Cleared whenever categories, transactions or forecasts change.
@@ -43,6 +45,8 @@ final class BudgetGridViewModel: ObservableObject {
     }
 
     func load(horizon: Date) throws {
+        lastHorizon = horizon
+        manualCloses = try dbQueue.read { db in try PayMonthClose.fetchAll(db) }
         categories = try dbQueue.read { db in try Category.fetchAll(db) }
         categoryGroups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
         transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
@@ -57,8 +61,17 @@ final class BudgetGridViewModel: ObservableObject {
         selectDefaultYearIfNeeded()
     }
 
-    func calendarCategoryTotal(_ category: Category, year: Int, month: Int) -> Int {
-        BudgetGridCalculator.categoryTotalForCalendarMonth(category: category, year: year, month: month, calendarTotals: calendarTotals)
+    /// Rebuilds everything derived from the pay calendar. `load()` sets `manualCloses` and
+    /// `categories` before `transactions`, so this runs once per load with all inputs fresh.
+    private func rebuildPayMonths() {
+        payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: manualCloses, today: Date())
+        monthTotals = PayMonthTotals.lookup(transactions: transactions, calendar: payCalendar)
+        reserveRemainingCache = [:]
+        availableYears = BudgetGridCalculator.yearsWithData(transactions: transactions, calendar: payCalendar)
+    }
+
+    func payMonthCategoryTotal(_ category: Category, year: Int, month: Int) -> Int {
+        category.id.flatMap { monthTotals[$0]?[year]?[month] } ?? 0
     }
 
     /// The account's balance as of the end of `month`, carried forward from its latest
@@ -110,48 +123,85 @@ final class BudgetGridViewModel: ObservableObject {
         }
     }
 
-    private static let calendar: Calendar = {
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(identifier: "UTC")!
-        return cal
-    }()
-
     func transactions(forCategoryId categoryId: Int64, from startDate: Date, to endDate: Date) -> [Transaction] {
         transactions.filter { $0.categoryId == categoryId && $0.status == .confirmed && $0.date >= startDate && $0.date <= endDate }
     }
 
     var reserves: [Category] { categories.filter(\.isReserved).sorted { $0.name < $1.name } }
 
-    /// Reserves are forecast-only, so the grid shows nothing before the current calendar
-    /// month and, from it on, what's left of the confirmed allowance after the month's
-    /// unforecast spending (`ReservedCategories.remainingAllowances`).
+    /// Reserves are forecast-only (`ReservedCategories.monthAllowances`): 0 in a closed pay
+    /// month (its leftover is released), what's left after the pay month's unforecast spend
+    /// in an open month that has started, the full allowance in a future month. Allowances
+    /// are the confirmed forecast for the calendar month of that name.
     func reserveTotal(_ reserve: Category, year: Int, month: Int) -> Int {
-        guard let id = reserve.id, ReservedCategories.countsAllowance(year: year, month: month, today: Date()) else { return 0 }
+        guard let id = reserve.id else { return 0 }
         let key = MonthRange.index(year: year, month: month)
         if let cached = reserveRemainingCache[key] { return cached[id] ?? 0 }
-        let range = dateRange(forYear: year, month: month)
+        let range = MonthRange.of(year: year, month: month)
         let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
         let allowances: [(id: Int64, name: String, allowance: Int)] = reserves.compactMap { reserve in
             reserve.id.map { ($0, reserve.name, ForecastCalculator.confirmedTotal(categoryId: $0, period: period, entries: forecastEntries, groups: forecastGroups)) }
         }
-        let spend = ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, monthTotals: calendarTotals, entries: forecastEntries, groups: forecastGroups)
-        let remaining = ReservedCategories.remainingAllowances(allowances, unforecastSpend: spend)
+        let monthClass = payCalendar.monthClass(PayMonth(year: year, month: month))
+        let remaining = ReservedCategories.monthAllowances(allowances, monthClass: monthClass) {
+            ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, monthTotals: monthTotals, entries: forecastEntries, groups: forecastGroups)
+        }
         reserveRemainingCache[key] = remaining
         return remaining[id] ?? 0
     }
 
+    /// The pay month's range (start of its first day ... last moment of its close day).
     func dateRange(forYear year: Int, month: Int) -> (start: Date, end: Date) {
-        var startComponents = DateComponents(); startComponents.year = year; startComponents.month = month; startComponents.day = 1
-        let start = Self.calendar.date(from: startComponents)!
-        let end = Self.calendar.date(byAdding: DateComponents(month: 1, day: -1), to: start)!
-        return (start, end)
+        payCalendar.range(of: PayMonth(year: year, month: month))
     }
 
+    /// January's pay month start ... December's pay month end, matching the Year Total column.
     func dateRange(forYear year: Int) -> (start: Date, end: Date) {
-        var startComponents = DateComponents(); startComponents.year = year; startComponents.month = 1; startComponents.day = 1
-        let start = Self.calendar.date(from: startComponents)!
-        let end = Self.calendar.date(byAdding: DateComponents(year: 1, day: -1), to: start)!
-        return (start, end)
+        (payCalendar.range(of: PayMonth(year: year, month: 1)).start, payCalendar.range(of: PayMonth(year: year, month: 12)).end)
+    }
+
+    // MARK: Closing months
+
+    /// Closes `month` on the picked day (`date` is already 00:00 UTC on that day — see
+    /// `PayCalendar.utcDay`), then reloads. On failure sets `errorMessage` and returns false.
+    @discardableResult
+    func closeMonth(_ month: PayMonth, on date: Date) -> Bool {
+        errorMessage = nil
+        do {
+            try dbQueue.write { db in try PayCalendar.close(db: db, month: month, on: date, today: Date()) }
+        } catch PayCalendarError.invalidCloseDate {
+            errorMessage = PayMonthFormat.invalidCloseDateMessage(month, calendar: payCalendar)
+            return false
+        } catch {
+            errorMessage = "Couldn't close \(PayMonthFormat.name(month)): \(error.localizedDescription)"
+            return false
+        }
+        return reload()
+    }
+
+    /// Removes `month`'s manual close, then reloads. On failure sets `errorMessage`.
+    @discardableResult
+    func reopenMonth(_ month: PayMonth) -> Bool {
+        errorMessage = nil
+        do {
+            try dbQueue.write { db in try PayCalendar.reopen(db: db, month: month) }
+        } catch {
+            errorMessage = "Couldn't reopen \(PayMonthFormat.name(month)): \(error.localizedDescription)"
+            return false
+        }
+        return reload()
+    }
+
+    /// Re-reads after a close/reopen. The write already succeeded, so a failed re-read only
+    /// leaves the grid stale: say so (returning false keeps the sheet up to show it).
+    private func reload() -> Bool {
+        do {
+            try load(horizon: lastHorizon ?? Date())
+            return true
+        } catch {
+            errorMessage = "Saved, but couldn't reload the grid: \(error.localizedDescription)"
+            return false
+        }
     }
 
     /// Re-categorizes a single already-confirmed transaction (from a drill-down sheet).

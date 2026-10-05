@@ -13,12 +13,6 @@ public struct PeriodSummary {
 }
 
 public enum BudgetGridCalculator {
-    private static let calendar: Calendar = {
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(identifier: "UTC")!
-        return cal
-    }()
-
     public static func categoryTotal(category: Category, period: PayPeriod, transactions: [Transaction], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup]) -> Int {
         switch period.type {
         case .actual:
@@ -48,27 +42,9 @@ public enum BudgetGridCalculator {
         return PeriodSummary(period: period, incomeMinorUnits: income, expensesMinorUnits: expenses, transfersMinorUnits: transfers)
     }
 
-    /// One pass over every transaction, building `[categoryId: [year: [month: minorUnits]]]`.
-    /// Built once when data loads; every cell/year/YoY read is then an O(1) dictionary
-    /// lookup instead of re-scanning the full transaction list (the grid was doing that
-    /// per cell, per render — the real cause of this screen's slowdown with real data).
-    public static func calendarTotalsLookup(transactions: [Transaction]) -> [Int64: [Int: [Int: Int]]] {
-        var result: [Int64: [Int: [Int: Int]]] = [:]
-        for transaction in transactions {
-            guard transaction.status == .confirmed, let categoryId = transaction.categoryId else { continue }
-            let components = calendar.dateComponents([.year, .month], from: transaction.date)
-            guard let year = components.year, let month = components.month else { continue }
-            result[categoryId, default: [:]][year, default: [:]][month, default: 0] += transaction.amountMinorUnits
-        }
-        return result
-    }
-
-    public static func categoryTotalForCalendarMonth(category: Category, year: Int, month: Int, calendarTotals: [Int64: [Int: [Int: Int]]]) -> Int {
-        guard let categoryId = category.id else { return 0 }
-        return calendarTotals[categoryId]?[year]?[month] ?? 0
-    }
-
-    public static func yearsWithData(transactions: [Transaction]) -> [Int] {
-        Set(transactions.map { calendar.component(.year, from: $0.date) }).sorted()
+    /// Years that have a transaction in one of their pay months, ascending — a transaction
+    /// dated 20 Dec belongs to next year when December's salary came on the 15th.
+    public static func yearsWithData(transactions: [Transaction], calendar: PayCalendar) -> [Int] {
+        Set(transactions.map { calendar.month(containing: $0.date).year }).sorted()
     }
 }

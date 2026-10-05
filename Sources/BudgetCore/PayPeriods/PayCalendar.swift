@@ -159,3 +159,32 @@ public enum PayMonthTotals {
         return result
     }
 }
+
+extension PayCalendar {
+    /// The close date the Close month sheet starts on: today for the current month, the
+    /// projected close for earlier months (`min(today, close)`), never before the month's
+    /// start (a future month). UTC start of day.
+    public func suggestedCloseDate(of month: PayMonth) -> Date {
+        let today = Self.calendar.startOfDay(for: self.today)
+        return max(range(of: month).start, min(today, closeDate(of: month)))
+    }
+
+    /// 00:00 UTC on the calendar day `date` falls on in `timeZone`. A date picker's value is
+    /// local midnight — BST midnight is 23:00 UTC the day before — so a picked day goes
+    /// through this before `close(db:month:on:today:)`.
+    public static func utcDay(sameDayAs date: Date, in timeZone: TimeZone) -> Date {
+        var local = Calendar(identifier: .gregorian)
+        local.timeZone = timeZone
+        let parts = local.dateComponents([.year, .month, .day], from: date)
+        return calendar.date(from: DateComponents(year: parts.year, month: parts.month, day: parts.day))!
+    }
+
+    /// The inverse of `utcDay`: midnight in `timeZone` on the calendar day `utcDate` falls
+    /// on in UTC, for showing a pay-calendar day in a date picker.
+    public static func localDay(sameDayAs utcDate: Date, in timeZone: TimeZone) -> Date {
+        var local = Calendar(identifier: .gregorian)
+        local.timeZone = timeZone
+        let parts = calendar.dateComponents([.year, .month, .day], from: utcDate)
+        return local.date(from: DateComponents(year: parts.year, month: parts.month, day: parts.day))!
+    }
+}

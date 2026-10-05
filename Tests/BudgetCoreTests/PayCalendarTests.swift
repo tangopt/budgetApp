@@ -158,4 +158,30 @@ final class PayCalendarTests: XCTestCase {
         XCTAssertEqual(c.closeDate(of: pm(2026, 9)), d(2026, 9, 28))
         XCTAssertEqual(c.closeSource(of: pm(2026, 9)), .salary)
     }
+
+    func testSuggestedCloseDate() {
+        // Today (5 Oct) is inside October's pay month (16 Sep – 15 Oct): today wins.
+        let c = make([d(2026, 8, 15), d(2026, 9, 15)], today: s(2026, 10, 5))
+        XCTAssertEqual(c.suggestedCloseDate(of: pm(2026, 10)), d(2026, 10, 5))
+        // An earlier open month (no salary in it) suggests its projected close.
+        let gap = make([d(2026, 7, 15), d(2026, 9, 15)], today: s(2026, 10, 5))
+        XCTAssertEqual(gap.suggestedCloseDate(of: pm(2026, 8)), d(2026, 8, 15))
+        // A future month never suggests a day before its start.
+        XCTAssertEqual(c.suggestedCloseDate(of: pm(2026, 12)), d(2026, 11, 16))
+    }
+
+    func testUTCDayFromLocalPickerValue() {
+        let london = TimeZone(identifier: "Europe/London")!
+        var local = Calendar(identifier: .gregorian)
+        local.timeZone = london
+        // BST midnight on 5 Oct is 23:00 UTC on 4 Oct.
+        let bstMidnight = local.date(from: DateComponents(year: 2026, month: 10, day: 5))!
+        XCTAssertEqual(bstMidnight, d(2026, 10, 4).addingTimeInterval(23 * 3600))
+        XCTAssertEqual(PayCalendar.utcDay(sameDayAs: bstMidnight, in: london), d(2026, 10, 5))
+        XCTAssertEqual(PayCalendar.localDay(sameDayAs: d(2026, 10, 5), in: london), bstMidnight)
+        // GMT (winter): local midnight is UTC midnight.
+        let gmtMidnight = local.date(from: DateComponents(year: 2026, month: 12, day: 1))!
+        XCTAssertEqual(PayCalendar.utcDay(sameDayAs: gmtMidnight, in: london), d(2026, 12, 1))
+        XCTAssertEqual(PayCalendar.utcDay(sameDayAs: s(2026, 10, 5), in: TimeZone(identifier: "UTC")!), d(2026, 10, 5))
+    }
 }

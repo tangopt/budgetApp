@@ -72,34 +72,24 @@ final class BudgetGridCalculatorCalendarModeTests: XCTestCase {
         return Calendar(identifier: .gregorian).date(from: c)!
     }
 
-    func testCalendarTotalsLookupGroupsByCategoryYearMonth() {
+    func testPayMonthTotalsWithoutSalariesGroupByCalendarMonth() {
         let transactions = [
             Transaction(id: 1, importBatchId: 1, accountId: 1, date: date(2026, 3, 16), rawDescription: "Rent", amountMinorUnits: -280000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "a"),
             Transaction(id: 2, importBatchId: 1, accountId: 1, date: date(2026, 4, 16), rawDescription: "Rent", amountMinorUnits: -280000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "b"),
             Transaction(id: 3, importBatchId: 1, accountId: 1, date: date(2026, 3, 20), rawDescription: "Rent2", amountMinorUnits: -1000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "c")
         ]
-        let lookup = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
+        let lookup = PayMonthTotals.lookup(transactions: transactions, calendar: PayCalendar(salaryDates: [], manualCloses: [], today: date(2026, 10, 5)))
         XCTAssertEqual(lookup[1]?[2026]?[3], -281000)
         XCTAssertEqual(lookup[1]?[2026]?[4], -280000)
     }
 
-    func testCalendarTotalsLookupIgnoresUnconfirmedAndUncategorized() {
+    func testPayMonthTotalsIgnoreUnconfirmedAndUncategorized() {
         let transactions = [
             Transaction(id: 1, importBatchId: 1, accountId: 1, date: date(2026, 3, 16), rawDescription: "Rent", amountMinorUnits: -280000, categoryId: 1, status: .pendingReview, categorizedBy: .none, fingerprint: "a"),
             Transaction(id: 2, importBatchId: 1, accountId: 1, date: date(2026, 3, 16), rawDescription: "X", amountMinorUnits: -500, categoryId: nil, status: .confirmed, categorizedBy: .none, fingerprint: "b")
         ]
-        let lookup = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
+        let lookup = PayMonthTotals.lookup(transactions: transactions, calendar: PayCalendar(salaryDates: [], manualCloses: [], today: date(2026, 10, 5)))
         XCTAssertTrue(lookup.isEmpty)
-    }
-
-    func testCategoryTotalForCalendarMonthReadsFromLookup() {
-        let rent = Category(id: 1, name: "Rent", type: .expense)
-        let transactions = [
-            Transaction(id: 1, importBatchId: 1, accountId: 1, date: date(2026, 3, 16), rawDescription: "Rent", amountMinorUnits: -280000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "a")
-        ]
-        let lookup = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
-        XCTAssertEqual(BudgetGridCalculator.categoryTotalForCalendarMonth(category: rent, year: 2026, month: 3, calendarTotals: lookup), -280000)
-        XCTAssertEqual(BudgetGridCalculator.categoryTotalForCalendarMonth(category: rent, year: 2026, month: 4, calendarTotals: lookup), 0)
     }
 
     func testYearsWithDataReturnsAscendingDistinctYears() {
@@ -108,6 +98,17 @@ final class BudgetGridCalculatorCalendarModeTests: XCTestCase {
             Transaction(id: 2, importBatchId: 1, accountId: 1, date: date(2023, 1, 1), rawDescription: "X", amountMinorUnits: -100, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "b"),
             Transaction(id: 3, importBatchId: 1, accountId: 1, date: date(2025, 12, 1), rawDescription: "X", amountMinorUnits: -100, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "c")
         ]
-        XCTAssertEqual(BudgetGridCalculator.yearsWithData(transactions: transactions), [2023, 2025])
+        XCTAssertEqual(BudgetGridCalculator.yearsWithData(transactions: transactions, calendar: PayCalendar(salaryDates: [], manualCloses: [], today: date(2026, 10, 5))), [2023, 2025])
+    }
+
+    func testYearsWithDataFollowPayMonths() {
+        // December's salary on the 15th: a transaction on 20 Dec 2025 is in January 2026's pay month.
+        let calendar = PayCalendar(salaryDates: [date(2025, 11, 15), date(2025, 12, 15)], manualCloses: [], today: date(2026, 10, 5))
+        let transactions = [
+            Transaction(id: 1, importBatchId: 1, accountId: 1, date: date(2025, 12, 10), rawDescription: "X", amountMinorUnits: -100, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "a"),
+            Transaction(id: 2, importBatchId: 1, accountId: 1, date: date(2025, 12, 20), rawDescription: "X", amountMinorUnits: -100, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "b")
+        ]
+        XCTAssertEqual(BudgetGridCalculator.yearsWithData(transactions: transactions, calendar: calendar), [2025, 2026])
+        XCTAssertEqual(BudgetGridCalculator.yearsWithData(transactions: [transactions[1]], calendar: calendar), [2026])
     }
 }

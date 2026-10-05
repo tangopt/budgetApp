@@ -9,6 +9,7 @@ struct DashboardView: View {
     @Binding var selectedImportAccountId: Int64?
     let profileStore: ImportProfileStore
     let navigate: (AppScreen) -> Void
+    @State private var closeTarget: CloseMonthTarget?
 
     var body: some View {
         ScrollView {
@@ -37,11 +38,14 @@ struct DashboardView: View {
                     TwoUpRow {
                         YearChangeCard(changes: content.yearChanges, navigate: navigate)
                     } second: {
-                        CurrentMonthCard(month: content.currentMonth, navigate: navigate)
+                        CurrentMonthCard(month: content.currentMonth, navigate: navigate) {
+                            viewModel.clearCloseError()
+                            closeTarget = CloseMonthTarget(month: PayMonth(year: content.currentMonth.year, month: content.currentMonth.month))
+                        }
                     }
                     YearAtAGlanceCard(viewModel: viewModel, content: content, navigate: navigate)
                     TwoUpRow {
-                        TopCategoriesCard(categories: content.topCategories, hasActuals: content.currentMonth.monthClass == .blended, navigate: navigate)
+                        TopCategoriesCard(categories: content.topCategories, hasActuals: content.currentMonth.hasTransactions, navigate: navigate)
                     } second: {
                         AttentionCard(items: content.attention, navigate: navigate)
                     }
@@ -55,6 +59,13 @@ struct DashboardView: View {
                 }
             }
             .padding(16)
+        }
+        .sheet(item: $closeTarget, onDismiss: { viewModel.clearCloseError() }) { target in
+            if let calendar = viewModel.payCalendar {
+                CloseMonthView(month: target.month, calendar: calendar, errorMessage: viewModel.closeErrorMessage) { day in
+                    viewModel.closeMonth(target.month, on: day)
+                }
+            }
         }
     }
 }

@@ -140,14 +140,6 @@ final class ReservedCategoriesTests: XCTestCase {
         XCTAssertEqual(ForecastCalculator.confirmedNetWorthImpact(period: november, categories: [reserve], entries: [entry], groups: [group]), -200_000)
     }
 
-    func testCountsAllowanceFromTheCurrentCalendarMonthOn() {
-        let today = utc(2026, 10, 5)
-        XCTAssertFalse(ReservedCategories.countsAllowance(year: 2026, month: 9, today: today))
-        XCTAssertTrue(ReservedCategories.countsAllowance(year: 2026, month: 10, today: today))
-        XCTAssertTrue(ReservedCategories.countsAllowance(year: 2027, month: 1, today: today))
-        XCTAssertFalse(ReservedCategories.countsAllowance(year: 2025, month: 12, today: today))
-    }
-
     // MARK: Remaining allowance after unforecast spending
 
     func testRemainingAllowanceIsReducedByUnforecastSpend() {
@@ -205,7 +197,7 @@ final class ReservedCategoriesTests: XCTestCase {
             txn(7, utc(2026, 10, 6), -2_000, 1, .pendingReview),    // unreviewed, ignored
             txn(8, utc(2026, 9, 6), -9_000, 1)                 // another month, ignored
         ]
-        let totals = BudgetGridCalculator.calendarTotalsLookup(transactions: transactions)
+        let totals = PayMonthTotals.lookup(transactions: transactions, calendar: PayCalendar(salaryDates: [], manualCloses: [], today: utc(2026, 10, 5)))
         let spend = ReservedCategories.unforecastSpend(year: 2026, month: 10, categories: [groceries, dining, reserve, salary, savings], monthTotals: totals, entries: [diningEntry, reserveEntry], groups: [group])
         XCTAssertEqual(spend, 20_000)
     }
@@ -213,7 +205,7 @@ final class ReservedCategoriesTests: XCTestCase {
     func testUnforecastSpendIsNeverNegative() {
         let groceries = Category(id: 1, name: "Groceries", type: .expense)
         let refund = Transaction(id: 1, importBatchId: 1, accountId: 1, date: utc(2026, 10, 3), rawDescription: "Refund", amountMinorUnits: 7_000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "fp1")
-        let totals = BudgetGridCalculator.calendarTotalsLookup(transactions: [refund])
+        let totals = PayMonthTotals.lookup(transactions: [refund], calendar: PayCalendar(salaryDates: [], manualCloses: [], today: utc(2026, 10, 5)))
         XCTAssertEqual(ReservedCategories.unforecastSpend(year: 2026, month: 10, categories: [groceries], monthTotals: totals, entries: [], groups: []), 0)
     }
 

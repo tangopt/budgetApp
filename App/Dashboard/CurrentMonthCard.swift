@@ -5,15 +5,18 @@ import BudgetCore
 struct CurrentMonthCard: View {
     let month: CurrentMonthTracking
     let navigate: (AppScreen) -> Void
+    /// Opens the Close month sheet for this pay month.
+    let closeMonth: () -> Void
 
     private var monthName: String {
         DashboardFormat.monthYear(MonthRange.of(year: month.year, month: month.month).start)
     }
+    private var payMonth: PayMonth { PayMonth(year: month.year, month: month.month) }
     private var pace: Double { Double(month.dayOfMonth) / Double(month.daysInMonth) }
     private var hasActuals: Bool { month.hasTransactions }
 
     var body: some View {
-        DashboardCard(title: "\(monthName) · \(DashboardFormat.day(month.start))–\(DashboardFormat.day(month.end)) · day \(month.dayOfMonth) of \(month.daysInMonth)", linkTitle: "Budget", onLink: { navigate(.budgetGrid) }) {
+        DashboardCard(title: "\(PayMonthFormat.monthName(payMonth)) · \(PayMonthFormat.range((month.start, month.end))) · day \(month.dayOfMonth) of \(month.daysInMonth)", linkTitle: "Budget", onLink: { navigate(.budgetGrid) }) {
             if !hasActuals {
                 Text("No \(monthName) transactions imported yet. Showing expected only.")
                     .font(.caption)
@@ -47,6 +50,14 @@ struct CurrentMonthCard: View {
                 Text(unreviewedFootnote)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            // A closed month (salary imported or closed by hand) is already final.
+            if month.monthClass != .actual {
+                HStack {
+                    Spacer()
+                    Button("Close month…", action: closeMonth)
+                        .help("End \(PayMonthFormat.name(payMonth)) on a chosen day; spending after it counts in \(PayMonthFormat.monthName(payMonth.next)).")
+                }
             }
         }
     }
