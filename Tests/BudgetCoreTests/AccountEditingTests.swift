@@ -112,4 +112,32 @@ final class AccountEditingTests: XCTestCase {
         }) { XCTAssertEqual($0 as? AccountEditError, .accountNotFound) }
         XCTAssertEqual(try m.dbQueue.read { try BalanceSnapshot.fetchCount($0) }, 0)
     }
+
+    func testSavingTwiceOnOneDayKeepsOneSnapshotWithTheSecondValue() throws {
+        let m = try makeDB()
+        try m.dbQueue.write { db in
+            let a = try AccountEditing.add(db: db, name: "A", currency: .gbp, kind: .cash, trackingMode: .manual, openingBalanceEntered: 100, asOf: day(2026, 10, 7))
+            _ = try BalanceUpdates.save(db: db, entries: [.init(accountId: a.id!, enteredMinorUnits: 500, note: "first")], asOf: day(2026, 10, 7))
+            _ = try BalanceUpdates.save(db: db, entries: [.init(accountId: a.id!, enteredMinorUnits: 700, note: "second")], asOf: day(2026, 10, 7))
+            let s = try snapshots(db, a.id!)
+            XCTAssertEqual(s.map(\.balanceMinorUnits), [700])
+            XCTAssertEqual(s.map(\.note), ["second"])
+            XCTAssertEqual(s.map(\.date), [day(2026, 10, 7)])
+        }
+    }
+
+    func testSameDayDriftComparesAgainstThePreviousDaysSnapshot() throws {
+        let m = try makeDB()
+        try m.dbQueue.write { db in
+            let imp = try AccountEditing.add(db: db, name: "Imp", currency: .gbp, kind: .cash, trackingMode: .imported, openingBalanceEntered: 1_000, asOf: day(2026, 10, 6))
+            try addTxn(db, imp.id!, day(2026, 10, 7), -300)
+            // computed from the 6th: 1_000 - 300 = 700; entering 900 -> drift +200
+            let first = try BalanceUpdates.save(db: db, entries: [.init(accountId: imp.id!, enteredMinorUnits: 900, note: nil)], asOf: day(2026, 10, 7))
+            XCTAssertEqual(first, [ReconciliationWarning(accountName: "Imp", driftMinorUnits: 200, currency: .gbp)])
+            // Correcting the same day still compares against the 6th (700), not the 900 being replaced.
+            let second = try BalanceUpdates.save(db: db, entries: [.init(accountId: imp.id!, enteredMinorUnits: 700, note: nil)], asOf: day(2026, 10, 7))
+            XCTAssertTrue(second.isEmpty)
+            XCTAssertEqual(try snapshots(db, imp.id!).map(\.balanceMinorUnits), [1_000, 700])
+        }
+    }
 }

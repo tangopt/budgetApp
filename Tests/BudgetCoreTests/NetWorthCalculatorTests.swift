@@ -182,7 +182,7 @@ final class NetWorthCalculatorTests: XCTestCase {
         XCTAssertEqual(NetWorthCalculator.monthEndNetWorth(accounts: [gbp, eur], snapshots: snapshots, transactions: transactions, rate: rate, year: 2026, month: 3), 245_000)
     }
 
-    // Snapshots typed in the Net Worth screen are stamped with `Date()`, a real time of day.
+    // Legacy snapshots typed in the old Net Worth screen were stamped with `Date()`, a real time of day.
     // The month window ends at the month's LAST MOMENT, so a snapshot taken at noon on the
     // last day belongs to that month (and not to the previous one).
     func testMonthEndNetWorthIncludesASnapshotLaterThanMidnightOnTheLastDayOfTheMonth() {
@@ -199,5 +199,20 @@ final class NetWorthCalculatorTests: XCTestCase {
         let snapshots = [BalanceSnapshot(id: 1, accountId: 1, date: utc(2026, 3, 1), balanceMinorUnits: 100_000, note: nil)]
         let rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: utc(2026, 1, 1))
         XCTAssertNil(NetWorthCalculator.monthEndNetWorth(accounts: [gbp], snapshots: snapshots, transactions: [], rate: rate, year: 2026, month: 2))
+    }
+
+    // Several snapshots can share a date (00:00 UTC on the picked day): the higher id wins.
+    func testSameDaySnapshotsPickTheHigherIdInAccountBalancesAndMonthlyBalance() {
+        let account = Account(id: 1, name: "Current", currency: .gbp, kind: .cash, trackingMode: .manual)
+        let snapshots = [
+            BalanceSnapshot(id: 7, accountId: 1, date: utc(2026, 3, 10), balanceMinorUnits: 200_000, note: nil),
+            BalanceSnapshot(id: 3, accountId: 1, date: utc(2026, 3, 10), balanceMinorUnits: 100_000, note: nil)
+        ]
+        let rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: utc(2026, 1, 1))
+        for ordering in [snapshots, Array(snapshots.reversed())] {
+            XCTAssertEqual(NetWorthCalculator.accountBalances(accounts: [account], snapshots: ordering, transactions: [], rate: rate)[0].nativeBalanceMinorUnits, 200_000)
+            let range = MonthRange.of(year: 2026, month: 3)
+            XCTAssertEqual(NetWorthCalculator.monthlyBalance(account: account, snapshots: ordering, transactions: [], rate: rate, monthStart: range.start, monthEnd: range.end)?.nativeBalanceMinorUnits, 200_000)
+        }
     }
 }

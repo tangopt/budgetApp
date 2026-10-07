@@ -287,13 +287,13 @@ final class ImportCoordinatorTests: XCTestCase {
         XCTAssertEqual(snapshots.first?.note, "Statement balance — a.csv")
     }
 
-    func testRecordStatementBalancesReplacesSameDateSnapshotButNotATypedOne() throws {
+    func testRecordStatementBalancesReplacesSameDateSnapshotButNotALegacyTimeOfDayOne() throws {
         let (manager, account, _) = try makeSeededManager()
         let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
         try manager.dbQueue.write { db in
             var sameDate = BalanceSnapshot(accountId: account.id!, date: utcDate(2026, 3, 1), balanceMinorUnits: 1, note: "old")
             try sameDate.insert(db)
-            // A typed snapshot carries a time of day, so it never matches a statement date.
+            // A legacy typed snapshot carries a time of day, so it never matches a statement date.
             var typed = BalanceSnapshot(accountId: account.id!, date: utcDate(2026, 3, 1, hour: 9), balanceMinorUnits: 2, note: "typed")
             try typed.insert(db)
         }
@@ -306,6 +306,24 @@ final class ImportCoordinatorTests: XCTestCase {
         XCTAssertEqual(snapshots.map(\.balanceMinorUnits), [98_000, 2])
         XCTAssertEqual(snapshots.first?.note, "Statement balance — a.csv")
         XCTAssertEqual(snapshots.last?.note, "typed")
+    }
+
+    // Balances typed on the Accounts screen are dated 00:00 UTC on the picked day, so a
+    // statement balance for that day replaces it: the bank's figure wins.
+    func testRecordStatementBalancesReplacesAMidnightTypedSnapshotOnTheStatementDay() throws {
+        let (manager, account, _) = try makeSeededManager()
+        let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
+        try manager.dbQueue.write { db in
+            _ = try BalanceUpdates.save(db: db, entries: [.init(accountId: account.id!, enteredMinorUnits: 50_000, note: "typed")], asOf: utcDate(2026, 3, 1))
+        }
+        let result = try coordinator.recordStatementBalances(
+            accountId: account.id!, sourceFileName: "a.csv",
+            points: [StatementBalancePoint(date: utcDate(2026, 3, 1), balanceMinorUnits: 98_000, isClosing: false)]
+        )
+        XCTAssertEqual(result, StatementBalanceRecording(added: 0, updated: 1))
+        let snapshots = try manager.dbQueue.read { db in try BalanceSnapshot.filter(Column("accountId") == account.id!).fetchAll(db) }
+        XCTAssertEqual(snapshots.map(\.balanceMinorUnits), [98_000])
+        XCTAssertEqual(snapshots.first?.note, "Statement balance — a.csv")
     }
 
     func testRecordStatementBalancesNeverTouchesAnotherAccountsSnapshotOnTheSameDate() throws {

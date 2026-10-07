@@ -224,9 +224,10 @@ public final class ImportCoordinator {
 
     /// Records statement-derived balances as `BalanceSnapshot`s, upserting by exact
     /// `(accountId, date)`: a snapshot already on that date is updated, otherwise one is
-    /// inserted. Re-recording the same points is therefore idempotent. A snapshot typed on
-    /// the Net Worth screen carries a time of day, so it never matches a statement date
-    /// (UTC midnight) and is never overwritten.
+    /// inserted. Re-recording the same points is therefore idempotent. Balances typed on the
+    /// Accounts screen are dated 00:00 UTC on the picked day too, so a statement balance for
+    /// that same day deliberately replaces the typed one (the bank's figure wins). Legacy
+    /// typed snapshots that carry a time of day never match a statement date and are left alone.
     public func recordStatementBalances(accountId: Int64, sourceFileName: String, points: [StatementBalancePoint]) throws -> StatementBalanceRecording {
         let note = "Statement balance — \(sourceFileName)"
         return try dbQueue.write { db in
@@ -235,6 +236,7 @@ public final class ImportCoordinator {
             for point in points {
                 if var existing = try BalanceSnapshot
                     .filter(Column("accountId") == accountId && Column("date") == point.date)
+                    .order(Column("id").desc)
                     .fetchOne(db) {
                     existing.balanceMinorUnits = point.balanceMinorUnits
                     existing.note = note

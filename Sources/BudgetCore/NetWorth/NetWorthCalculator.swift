@@ -52,9 +52,15 @@ public enum NetWorthCalculator {
         }
     }
 
+    /// Newest-first order for picking an account's latest snapshot: by date, then by id
+    /// (several snapshots can share a date — the most recently inserted one wins).
+    public static func isNewer(_ lhs: BalanceSnapshot, _ rhs: BalanceSnapshot) -> Bool {
+        lhs.date != rhs.date ? lhs.date > rhs.date : (lhs.id ?? 0) > (rhs.id ?? 0)
+    }
+
     public static func accountBalances(accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], rate: ExchangeRateSetting) -> [AccountBalance] {
         accounts.map { account in
-            let accountSnapshots = snapshots.filter { $0.accountId == account.id }.sorted { $0.date > $1.date }
+            let accountSnapshots = snapshots.filter { $0.accountId == account.id }.sorted(by: isNewer)
             let latestSnapshot = accountSnapshots.first
             let transactionsSince = transactions.filter { $0.accountId == account.id && (latestSnapshot == nil || $0.date > latestSnapshot!.date) }
             let native = runningBalance(account: account, latestSnapshot: latestSnapshot, transactionsSinceSnapshot: transactionsSince)
@@ -73,7 +79,7 @@ public enum NetWorthCalculator {
     /// arbitrary month instead of hardcoded to the latest snapshot overall. Returns `nil` when
     /// there's no snapshot at or before `monthEnd` at all (the account has no data yet).
     public static func monthlyBalance(account: Account, snapshots: [BalanceSnapshot], transactions: [Transaction], rate: ExchangeRateSetting, monthStart: Date, monthEnd: Date) -> MonthlyAccountBalance? {
-        let accountSnapshots = snapshots.filter { $0.accountId == account.id && $0.date <= monthEnd }.sorted { $0.date > $1.date }
+        let accountSnapshots = snapshots.filter { $0.accountId == account.id && $0.date <= monthEnd }.sorted(by: isNewer)
         guard let latestSnapshot = accountSnapshots.first else { return nil }
         let transactionsSince = transactions.filter { $0.accountId == account.id && $0.date > latestSnapshot.date && $0.date <= monthEnd }
         let native = runningBalance(account: account, latestSnapshot: latestSnapshot, transactionsSinceSnapshot: transactionsSince)
