@@ -9,6 +9,8 @@ public enum PlannedItemsError: Error, Equatable {
     /// A new category's name is blank, or another category already has it.
     case emptyCategoryName
     case duplicateCategoryName
+    /// A scenario add needs the "Planned" group enabled: it never switches the budget's group on.
+    case plannedGroupDisabled
 }
 
 /// Confirmed forecast items the user adds by hand from the Budget grid's Income /
@@ -25,12 +27,13 @@ public enum PlannedItems {
     /// leaves the flag alone.
     ///
     /// With a `scenarioId` the item goes into that scenario instead, marked `added`; the
-    /// budget and the category's flags are left alone.
+    /// budget and the category's flags are left alone: the "Planned" group is created if
+    /// missing but never switched on (a disabled one throws `plannedGroupDisabled`).
     @discardableResult
     public static func add(db: Database, categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, scenarioId: Int64? = nil) throws -> ForecastEntry {
         guard let category = try Category.fetchOne(db, key: categoryId) else { throw PlannedItemsError.categoryNotFound }
         guard !category.isReserved else { throw PlannedItemsError.reservedCategory }
-        let group = try ensureGroup(db: db)
+        let group = scenarioId == nil ? try ensureGroup(db: db) : try existingOrNewGroup(db: db)
         var entry = ForecastEntry(groupId: group.id!, categoryId: categoryId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, isEnabled: true, status: .confirmed, note: nil,
                                   scenarioId: scenarioId, scenarioChange: scenarioId == nil ? nil : .added)
         try entry.insert(db)
@@ -52,6 +55,14 @@ public enum PlannedItems {
         try category.insert(db)
         let entry = try add(db: db, categoryId: category.id!, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, scenarioId: scenarioId)
         return (category, entry)
+    }
+
+    /// The "Planned" group for a scenario add: created when missing, but a disabled one is
+    /// left as it is (switching it on would change the budget) and refused.
+    private static func existingOrNewGroup(db: Database) throws -> ForecastGroup {
+        guard let existing = try ForecastGroup.filter(Column("name") == groupName).fetchOne(db) else { return try ensureGroup(db: db) }
+        guard existing.isEnabled else { throw PlannedItemsError.plannedGroupDisabled }
+        return existing
     }
 
     /// The "Planned" group, created on first use. A group the user switched off is switched

@@ -45,6 +45,15 @@ final class SpreadsheetPlanGapFillTests: XCTestCase {
             .order(Column("startDate")).fetchAll(db)
     }
 
+    func testPlanIgnoresScenarioEntries() throws {
+        try fixture().dbQueue.write { db in
+            let before = try SpreadsheetPlanGapFill.plan(db: db)
+            let scenario = try Scenarios.create(db: db, name: "Copy of everything")
+            try db.execute(sql: "UPDATE forecastEntry SET amountMinorUnits = amountMinorUnits * 3 WHERE scenarioId = ?", arguments: [scenario.id!])
+            XCTAssertEqual(try SpreadsheetPlanGapFill.plan(db: db), before)
+        }
+    }
+
     func testRentGetsTwoRunsWithEndDates() throws {
         try fixture().dbQueue.write { db in
             _ = try SpreadsheetPlanGapFill.apply(db: db, plan: try SpreadsheetPlanGapFill.plan(db: db))

@@ -14,10 +14,15 @@ public struct RefreshReport: Equatable {
     /// "<Category>: couldn't reapply: source no longer in the budget", one per change whose
     /// budget source has gone (a change is kept as `added`, a removal is dropped).
     public var couldNotReapply: [String]
+    /// Category names of re-applied `changed` / `removed` entries whose budget source has
+    /// since been cut short: it now ends before the scenario entry's span does, or another
+    /// budget entry of the same category starts within that span (a budget split).
+    public var sourceChanged: [String]
 
-    public init(reapplied: [String] = [], couldNotReapply: [String] = []) {
+    public init(reapplied: [String] = [], couldNotReapply: [String] = [], sourceChanged: [String] = []) {
         self.reapplied = reapplied
         self.couldNotReapply = couldNotReapply
+        self.sourceChanged = sourceChanged
     }
 }
 
@@ -79,15 +84,20 @@ public enum Scenarios {
     }
 
     public static func rename(db: Database, scenarioId: Int64, to name: String) throws {
-        guard var scenario = try Scenario.fetchOne(db, key: scenarioId) else { throw ScenarioError.notFound }
-        let trimmed = try validatedName(db: db, name, excluding: scenarioId)
-        scenario.name = trimmed
-        try scenario.update(db, columns: ["name"])
+        try db.inSavepoint {
+            guard var scenario = try Scenario.fetchOne(db, key: scenarioId) else { throw ScenarioError.notFound }
+            scenario.name = try validatedName(db: db, name, excluding: scenarioId)
+            try scenario.update(db, columns: ["name"])
+            return .commit
+        }
     }
 
     /// Deletes the scenario; its entries, their exceptions and its applications cascade.
     public static func delete(db: Database, scenarioId: Int64) throws {
-        _ = try Scenario.deleteOne(db, key: scenarioId)
+        try db.inSavepoint {
+            guard try Scenario.deleteOne(db, key: scenarioId) else { throw ScenarioError.notFound }
+            return .commit
+        }
     }
 
     /// Re-copies today's budget and re-applies the scenario's own changes: unchanged copies
@@ -101,7 +111,6 @@ public enum Scenarios {
         var report = RefreshReport()
         try db.inSavepoint {
             let budget = try ForecastEntry.budget(db)
-            let budgetIds = Set(budget.compactMap(\.id))
             let names = try categoryNames(db)
             var covered: Set<Int64> = []
             for var entry in try ForecastEntry.inScenario(db, id: scenarioId) {
@@ -112,9 +121,10 @@ public enum Scenarios {
                     break
                 case .changed, .removed:
                     let name = names[entry.categoryId] ?? "?"
-                    if let source = entry.sourceEntryId, budgetIds.contains(source) {
-                        covered.insert(source)
+                    if let sourceId = entry.sourceEntryId, let source = budget.first(where: { $0.id == sourceId }) {
+                        covered.insert(sourceId)
                         report.reapplied.append(name)
+                        if sourceCutShort(source, of: entry, budget: budget) { report.sourceChanged.append(name) }
                     } else {
                         report.couldNotReapply.append("\(name): couldn't reapply: source no longer in the budget")
                         if entry.scenarioChange == .removed {
@@ -150,7 +160,9 @@ public enum Scenarios {
             let source = entry.sourceEntryId.flatMap { sources[$0] }
             let kind = entry.scenarioChange!
             var fieldChanges: [String] = []
-            if kind == .changed, let source {
+            if kind == .changed, source == nil {
+                fieldChanges = ["Source no longer in the budget"]
+            } else if kind == .changed, let source {
                 fieldChanges = changes(from: source, to: entry, names: names)
                 let edited = editedOccurrences(entry: entry, own: exceptions[entry.id!] ?? [], source: exceptions[source.id!] ?? [])
                 if edited > 0 { fieldChanges.append("\(edited) occurrence\(edited == 1 ? "" : "s") edited") }
@@ -176,6 +188,16 @@ public enum Scenarios {
             exception.id = nil
             exception.entryId = copy.id!
             try exception.insert(db)
+        }
+    }
+
+    /// Whether the budget cut `source` short within `entry`'s span: it ends earlier, or a
+    /// later budget entry of its category starts inside the span (the budget split it).
+    private static func sourceCutShort(_ source: ForecastEntry, of entry: ForecastEntry, budget: [ForecastEntry]) -> Bool {
+        if let sourceEnd = source.endDate, entry.endDate.map({ sourceEnd < $0 }) ?? true { return true }
+        return budget.contains { other in
+            other.id != source.id && other.categoryId == source.categoryId && other.startDate > source.startDate
+                && other.startDate >= entry.startDate && (entry.endDate.map { other.startDate <= $0 } ?? true)
         }
     }
 

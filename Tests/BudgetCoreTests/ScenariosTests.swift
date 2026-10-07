@@ -473,4 +473,112 @@ final class ScenariosTests: XCTestCase {
         // Unchanged copies (and disabled ones) aren't differences.
         XCTAssertFalse(differences.contains { $0.categoryName == "Gym" || $0.categoryName == "Groceries" })
     }
+
+    // MARK: - Fix round 1
+
+    func testScenarioAddIntoADisabledPlannedGroupThrowsAndLeavesTheBudgetAlone() throws {
+        let f = try fixture()
+        let scenario = try create(f)
+        try f.manager.dbQueue.write { db in
+            try db.execute(sql: "UPDATE forecastGroup SET isEnabled = 0 WHERE id = ?", arguments: [f.plannedGroupId])
+        }
+        let before = try budgetSnapshot(f)
+        let totalBefore = try budgetNovemberTotal(f)
+        XCTAssertThrowsError(try f.manager.dbQueue.write { db in
+            try PlannedItems.add(db: db, categoryId: f.categories["Gym"]!, amountMinorUnits: -4_000, frequency: .monthly, interval: 1, startDate: self.utc(2026, 11, 1), endDate: nil, scenarioId: scenario.id)
+        }) { XCTAssertEqual($0 as? PlannedItemsError, .plannedGroupDisabled) }
+        try f.manager.dbQueue.read { db in
+            XCTAssertEqual(try ForecastGroup.fetchOne(db, key: f.plannedGroupId)?.isEnabled, false)
+        }
+        XCTAssertEqual(try budgetSnapshot(f).0, before.0)
+        XCTAssertEqual(try budgetNovemberTotal(f), totalBefore)
+    }
+
+    func testScenarioAddCreatesAMissingPlannedGroup() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        try manager.dbQueue.write { db in
+            var gym = Category(name: "Gym", type: .expense)
+            try gym.insert(db)
+            let scenario = try Scenarios.create(db: db, name: "S")
+            let entry = try PlannedItems.add(db: db, categoryId: gym.id!, amountMinorUnits: -4_000, frequency: .monthly, interval: 1, startDate: self.utc(2026, 11, 1), endDate: nil, scenarioId: scenario.id)
+            let group = try XCTUnwrap(ForecastGroup.fetchOne(db, key: entry.groupId))
+            XCTAssertEqual(group.name, PlannedItems.groupName)
+            XCTAssertTrue(group.isEnabled)
+        }
+    }
+
+    private func budgetNovemberTotal(_ f: Fixture) throws -> Int {
+        try f.manager.dbQueue.read { db in
+            let range = MonthRange.of(year: 2026, month: 11)
+            return ForecastCalculator.confirmedTotalsByCategory(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected),
+                                                               entries: try ForecastEntry.budget(db), groups: try ForecastGroup.fetchAll(db),
+                                                               exceptions: try PlannedOccurrenceException.fetchAll(db)).values.reduce(0, +)
+        }
+    }
+
+    func testRefreshReportsChangesWhoseSourceWasSplitInTheBudget() throws {
+        let f = try fixture()
+        let scenario = try create(f)
+        let rentCopy = try copy(f, scenario, "Rent")
+        try editOccurrence(f, rentCopy.id!, utc(2026, 10, 31), OccurrenceChange(amountMinorUnits: -120_000))
+        let salaryCopy = try copy(f, scenario, "Salary")
+        try editOccurrence(f, salaryCopy.id!, utc(2026, 10, 25), OccurrenceChange(amountMinorUnits: 320_000))
+        // The budget splits rent from 30 Nov: its source now ends 29 Nov with a successor.
+        try editFollowing(f, f.entries["Rent"]!, utc(2026, 11, 30), OccurrenceChange(amountMinorUnits: -130_000))
+
+        let report = try f.manager.dbQueue.write { db in try Scenarios.refresh(db: db, scenarioId: scenario.id!, now: self.utc(2026, 10, 7)) }
+        XCTAssertEqual(report.reapplied, ["Rent", "Salary"])
+        XCTAssertEqual(report.sourceChanged, ["Rent"])
+        XCTAssertEqual(report.couldNotReapply, [])
+    }
+
+    func testRefreshKeepsAChangedEntrysOwnExceptions() throws {
+        let f = try fixture()
+        let scenario = try create(f)
+        let rentCopy = try copy(f, scenario, "Rent")
+        try editOccurrence(f, rentCopy.id!, utc(2026, 10, 31), OccurrenceChange(amountMinorUnits: -120_000))
+        try f.manager.dbQueue.write { db in // the budget's own exception changes meanwhile
+            try db.execute(sql: "DELETE FROM plannedOccurrenceException WHERE entryId = ?", arguments: [f.entries["Rent"]!])
+        }
+        _ = try f.manager.dbQueue.write { db in try Scenarios.refresh(db: db, scenarioId: scenario.id!) }
+        let kept = try exceptions(f, entryId: rentCopy.id!)
+        XCTAssertEqual(kept.map(\.originalDate), [utc(2026, 10, 31), utc(2026, 12, 31)])
+        XCTAssertEqual(kept.map(\.amountMinorUnits), [-120_000, -110_000])
+    }
+
+    func testDifferencesFlagAChangedEntryWhoseSourceIsGone() throws {
+        let f = try fixture()
+        let scenario = try create(f)
+        let carCopy = try copy(f, scenario, "Car")
+        try editOccurrence(f, carCopy.id!, utc(2026, 12, 15), OccurrenceChange(amountMinorUnits: -31_000))
+        try f.manager.dbQueue.write { db in _ = try ForecastEntry.deleteOne(db, key: f.entries["Car"]!) }
+        let differences = try f.manager.dbQueue.read { db in try Scenarios.differences(db: db, scenarioId: scenario.id!) }
+        XCTAssertEqual(differences.map(\.id), [carCopy.id!])
+        XCTAssertEqual(differences.first?.kind, .changed)
+        XCTAssertEqual(differences.first?.fieldChanges, ["Source no longer in the budget"])
+    }
+
+    func testRenameAndDeleteOfAnUnknownScenarioThrowNotFound() throws {
+        let f = try fixture()
+        XCTAssertThrowsError(try f.manager.dbQueue.write { db in try Scenarios.rename(db: db, scenarioId: 999, to: "X") }) {
+            XCTAssertEqual($0 as? ScenarioError, .notFound)
+        }
+        XCTAssertThrowsError(try f.manager.dbQueue.write { db in try Scenarios.delete(db: db, scenarioId: 999) }) {
+            XCTAssertEqual($0 as? ScenarioError, .notFound)
+        }
+    }
+
+    func testRemoveFromAChangedCopysFirstOccurrenceLeavesATombstone() throws {
+        let f = try fixture()
+        let scenario = try create(f)
+        let carCopy = try copy(f, scenario, "Car")
+        try editOccurrence(f, carCopy.id!, utc(2026, 12, 15), OccurrenceChange(amountMinorUnits: -31_000))
+        XCTAssertEqual(try copy(f, scenario, "Car").scenarioChange, .changed)
+        try editFollowing(f, carCopy.id!, utc(2026, 11, 15), OccurrenceChange(remove: true))
+        let tombstone = try copy(f, scenario, "Car")
+        XCTAssertEqual(tombstone.id, carCopy.id)
+        XCTAssertEqual(tombstone.scenarioChange, .removed)
+        XCTAssertFalse(tombstone.isEnabled)
+    }
 }
