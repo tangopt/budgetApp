@@ -104,13 +104,24 @@ public enum Scenarios {
     /// are deleted and every budget entry not covered by a `changed`/`removed` entry is copied
     /// afresh (with exceptions). A `changed`/`removed` entry whose source is still in the
     /// budget stands in for that source's copy; one whose source is gone is kept as `added`
-    /// (changed) or dropped (removed) and reported. `added` entries are kept.
+    /// (changed) or dropped (removed) and reported. `added` entries are kept. Budget entries
+    /// created by this scenario's own un-undone applies aren't copied (the scenario already
+    /// holds them), and sources those applies ended aren't reported as `sourceChanged`.
     @discardableResult
     public static func refresh(db: Database, scenarioId: Int64, now: Date = Date()) throws -> RefreshReport {
         guard var scenario = try Scenario.fetchOne(db, key: scenarioId) else { throw ScenarioError.notFound }
         var report = RefreshReport()
         try db.inSavepoint {
-            let budget = try ForecastEntry.budget(db)
+            // What this scenario's own un-undone applies did to the budget: the entries they
+            // created stand for scenario entries already here (not copied again), and the
+            // sources they ended weren't cut short by anyone else (not reported).
+            let ownJournals = try ScenarioApplication
+                .filter(Column("scenarioId") == scenarioId && Column("undoneAt") == nil)
+                .fetchAll(db)
+                .compactMap(\.decodedJournal)
+            let ownCreated = Set(ownJournals.flatMap { $0.operations.flatMap { $0.created.map(\.entryId) } })
+            let ownEnded = Set(ownJournals.flatMap { $0.operations.flatMap { $0.modified.map(\.entryId) } })
+            let budget = try ForecastEntry.budget(db).filter { !ownCreated.contains($0.id!) }
             let names = try categoryNames(db)
             var covered: Set<Int64> = []
             for var entry in try ForecastEntry.inScenario(db, id: scenarioId) {
@@ -124,7 +135,7 @@ public enum Scenarios {
                     if let sourceId = entry.sourceEntryId, let source = budget.first(where: { $0.id == sourceId }) {
                         covered.insert(sourceId)
                         report.reapplied.append(name)
-                        if sourceCutShort(source, of: entry, budget: budget) { report.sourceChanged.append(name) }
+                        if !ownEnded.contains(sourceId), sourceCutShort(source, of: entry, budget: budget) { report.sourceChanged.append(name) }
                     } else {
                         report.couldNotReapply.append("\(name): couldn't reapply: source no longer in the budget")
                         if entry.scenarioChange == .removed {

@@ -53,6 +53,12 @@ public struct ScenarioApplyJournal: Codable, Equatable {
     /// What wasn't applied, in words: edits on occurrences the budget treats as confirmed,
     /// differences already applied, removals whose budget source is gone.
     public var skipped: [String]
+    /// The apply's boundary (the current pay month's calendar month start). Nil in journals
+    /// written before it was recorded.
+    public var boundary: Date? = nil
+    /// The largest budget entry id right after the apply: entries with a larger id were
+    /// added since. Nil in journals written before it was recorded.
+    public var lastEntryId: Int64? = nil
 }
 
 extension ScenarioApplication {
@@ -102,6 +108,8 @@ public enum ScenarioApply {
     /// Scenario exceptions on occurrences the budget treats as confirmed
     /// (`PlannedItemEditing.isConfirmed`) aren't copied. What isn't applied is listed in
     /// `skipped`: those edits, differences already applied by an un-undone application,
+    /// changes the budget already has (source over before the boundary and a later entry of
+    /// its category from it, e.g. another scenario's apply: "refresh the scenario"),
     /// removals with nothing left to remove, items with no occurrence from the boundary. When
     /// nothing at all is applied no application is recorded (`appliedNothing`, `id` nil).
     @discardableResult
@@ -139,7 +147,7 @@ public enum ScenarioApply {
                                                entries: budget, groups: groups, exceptions: budgetExceptions, categories: categories)
             }
 
-            var journal = ScenarioApplyJournal(operations: [], enabledGroupIds: [], createdGroupIds: [], skipped: [])
+            var journal = ScenarioApplyJournal(operations: [], enabledGroupIds: [], createdGroupIds: [], skipped: [], boundary: boundary)
             var budgetById = Dictionary(uniqueKeysWithValues: budget.map { ($0.id!, $0) })
             let currentMonth = MonthRange.of(year: current.year, month: current.month)
             let nextMonthStart = currentMonth.end.addingTimeInterval(1)
@@ -182,6 +190,16 @@ public enum ScenarioApply {
                     budgetById[source.id!] = try ForecastEntry.fetchOne(db, key: source.id!)
                 case .changed, .added:
                     let changedSource = scenarioEntry.scenarioChange == .changed ? source : nil
+                    // The budget already went its own way from the boundary (typically another
+                    // scenario's apply of the same change): the source is over and a later entry
+                    // of its category has taken over. Applying would stack a second one.
+                    if let changedSource, try end(db: db, changedSource, before: boundary, dryRun: true) == nil,
+                       let successor = try ForecastEntry.budget(db)
+                        .filter({ $0.id != changedSource.id && $0.categoryId == changedSource.categoryId && $0.startDate >= boundary })
+                        .min(by: { $0.startDate < $1.startDate }) {
+                        journal.skipped.append("\(name): already changed in the budget from \(monthName(successor.startDate)); refresh the scenario")
+                        continue
+                    }
                     // A source whose current-month occurrence the budget has already confirmed
                     // keeps that month; the change applies from the next one.
                     var start = boundary
@@ -226,6 +244,7 @@ public enum ScenarioApply {
                 }
             }
 
+            journal.lastEntryId = try Int64.fetchOne(db, sql: "SELECT MAX(id) FROM forecastEntry WHERE scenarioId IS NULL")
             application.journal = try encode(journal)
             // Nothing applied: no application is recorded (`appliedNothing`), nothing to undo.
             if !journal.operations.isEmpty { try application.insert(db) }
@@ -237,20 +256,31 @@ public enum ScenarioApply {
     /// Undoes the scenario's most recent un-undone application: deletes the entries it
     /// created (exceptions cascade), restores the before-images of the entries it changed and
     /// switches off groups it switched on, in reverse order. Entries edited since are still
-    /// restored (or removed) but reported; ones deleted since are reported.
+    /// restored (or removed) but reported; ones deleted since are reported, and so are budget
+    /// entries of an undone category added after the apply from its boundary on (they stay).
     @discardableResult
     public static func undoLast(db: Database, scenarioId: Int64, now: Date = Date()) throws -> UndoReport {
         guard var application = try latest(db: db, scenarioId: scenarioId) else { throw ScenarioApplyError.nothingToUndo }
         var report = UndoReport()
         try db.inSavepoint {
             let journal = try JSONDecoder().decode(ScenarioApplyJournal.self, from: Data(application.journal.utf8))
+            // Budget entries added after the apply (larger id) from its boundary on, by
+            // category: undoing leaves them in place next to what it restores.
+            let lastId = journal.lastEntryId ?? journal.operations.flatMap { $0.created.map(\.entryId) }.max()
+            let boundary = journal.boundary ?? MonthRange.of(year: MonthRange.components(of: application.appliedAt).year,
+                                                            month: MonthRange.components(of: application.appliedAt).month).start
+            let laterCategoryIds: Set<Int64> = try lastId.map { lastId in
+                Set(try ForecastEntry.budget(db).filter { $0.id! > lastId && $0.startDate >= boundary }.map(\.categoryId))
+            } ?? []
             for operation in journal.operations.reversed() {
                 let name = operation.categoryName
+                var categoryIds: Set<Int64> = []
                 for created in operation.created.reversed() {
                     guard let entry = try ForecastEntry.fetchOne(db, key: created.entryId) else {
                         report.warnings.append("\(name): the item the apply added was already deleted")
                         continue
                     }
+                    categoryIds.insert(entry.categoryId)
                     if try fingerprint(db: db, entryId: created.entryId) != created.after {
                         report.warnings.append("\(name): the item the apply added was edited since; removed anyway")
                     }
@@ -261,12 +291,16 @@ public enum ScenarioApply {
                         report.warnings.append("\(name) couldn't be restored: it's no longer in the budget")
                         continue
                     }
+                    categoryIds.insert(entry.categoryId)
                     if try fingerprint(db: db, entryId: modified.entryId) != modified.after {
                         report.warnings.append("\(name) was edited after applying; restored to before the apply")
                     }
                     entry.endDate = modified.before.endDate
                     entry.isEnabled = modified.before.isEnabled
                     try entry.update(db, columns: ["endDate", "isEnabled"])
+                }
+                if !categoryIds.isDisjoint(with: laterCategoryIds) {
+                    report.warnings.append("\(name): later budget items remain — check the Budget grid")
                 }
                 report.restored.append(name)
             }
@@ -299,7 +333,8 @@ public enum ScenarioApply {
 
     /// Ends `source` the day before `boundary`, or disables it when it starts on/after it.
     /// Nil when it already ends before the boundary (or is disabled): nothing to change.
-    private static func end(db: Database, _ source: ForecastEntry, before boundary: Date) throws -> ScenarioApplyJournal.Modification? {
+    /// With `dryRun` nothing is written: only whether there is anything to change.
+    private static func end(db: Database, _ source: ForecastEntry, before boundary: Date, dryRun: Bool = false) throws -> ScenarioApplyJournal.Modification? {
         let before = ScenarioApplyJournal.EntryState(endDate: source.endDate, isEnabled: source.isEnabled)
         var entry = source
         if source.startDate >= boundary {
@@ -310,7 +345,7 @@ public enum ScenarioApply {
             if let end = entry.endDate, end <= dayBefore { return nil }
             entry.endDate = dayBefore
         }
-        try entry.update(db, columns: ["endDate", "isEnabled"])
+        if !dryRun { try entry.update(db, columns: ["endDate", "isEnabled"]) }
         return ScenarioApplyJournal.Modification(entryId: source.id!, before: before, after: "")
     }
 

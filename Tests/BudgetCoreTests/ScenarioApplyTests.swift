@@ -481,4 +481,89 @@ final class ScenarioApplyTests: XCTestCase {
         XCTAssertFalse(try f.manager.dbQueue.read { db in try ScenarioApply.canUndo(db: db, scenarioId: other.id!) })
         XCTAssertTrue(try canUndo(f))
     }
+    // MARK: - Final review fixes
+
+    /// The scenario's plan, category by category, for each month Nov 2026 – Dec 2027.
+    private func scenarioTotals(_ f: Fixture, _ scenarioId: Int64) throws -> [[Int64: Int]] {
+        try f.manager.dbQueue.read { db in
+            let plan = ScenarioComparison.normalized(PlanInput(entries: try ForecastEntry.inScenario(db, id: scenarioId),
+                                                               exceptions: try PlannedOccurrenceException.fetchAll(db),
+                                                               groups: try ForecastGroup.fetchAll(db)))
+            return (0..<14).map { i in
+                let range = MonthRange.of(year: 2026 + (10 + i) / 12, month: (10 + i) % 12 + 1)
+                return ForecastCalculator.confirmedTotalsByCategory(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected),
+                                                                   entries: plan.entries, groups: plan.groups, exceptions: plan.exceptions)
+            }
+        }
+    }
+
+    func testRefreshAfterApplyDoesNotDoubleCountOrReportTheScenariosOwnApply() throws {
+        let f = try fixture()
+        let before = try scenarioTotals(f, f.scenarioId)
+        try apply(f, ["Phone", "Rent", "Gym"])
+        let report = try f.manager.dbQueue.write { db in try Scenarios.refresh(db: db, scenarioId: f.scenarioId, now: self.utc(2026, 11, 7)) }
+        XCTAssertEqual(try scenarioTotals(f, f.scenarioId), before)
+        XCTAssertEqual(report.sourceChanged, [])
+        XCTAssertEqual(report.couldNotReapply, [])
+        XCTAssertEqual(Set(report.reapplied), ["Rent", "Gym", "Car"])
+    }
+
+    func testRefreshAfterUndoCopiesTheBudgetAgain() throws {
+        let f = try fixture()
+        try apply(f, ["Phone"])
+        _ = try undo(f)
+        let before = try scenarioTotals(f, f.scenarioId)
+        _ = try f.manager.dbQueue.write { db in try Scenarios.refresh(db: db, scenarioId: f.scenarioId) }
+        XCTAssertEqual(try scenarioTotals(f, f.scenarioId), before)
+    }
+
+    func testApplyingAChangeTheBudgetAlreadyHasFromAnotherScenarioIsSkipped() throws {
+        let f = try fixture()
+        let original = try state(f)
+        // A second scenario also changes rent.
+        let otherId = try f.manager.dbQueue.write { db -> Int64 in
+            let other = try Scenarios.create(db: db, name: "Cheaper")
+            var rent = try XCTUnwrap(try ForecastEntry.inScenario(db, id: other.id!).first { $0.sourceEntryId == f.entries["Rent"] })
+            rent.amountMinorUnits = -90_000
+            rent.scenarioChange = .changed
+            try rent.update(db)
+            return other.id!
+        }
+        let afterCreate = try state(f)
+        try apply(f, ["Rent"])
+        let otherRent = try f.manager.dbQueue.read { db in try Scenarios.differences(db: db, scenarioId: otherId).first { $0.categoryName == "Rent" }!.id }
+        let application = try f.manager.dbQueue.write { db in
+            try ScenarioApply.apply(db: db, scenarioId: otherId, differenceIds: [otherRent], calendar: self.calendar, now: self.utc(2026, 11, 5))
+        }
+        XCTAssertEqual(application.skipped, ["Rent: already changed in the budget from Nov 2026; refresh the scenario"])
+        XCTAssertTrue(application.appliedNothing)
+        XCTAssertNil(application.id)
+        XCTAssertEqual(try created(f, "Rent").count, 1)
+        XCTAssertFalse(try f.manager.dbQueue.read { db in try ScenarioApply.canUndo(db: db, scenarioId: otherId) })
+
+        _ = try undo(f)
+        XCTAssertEqual(try state(f), afterCreate)
+        XCTAssertEqual(try created(f, "Rent"), [])
+        XCTAssertNil(try budgetEntry(f, "Rent").endDate)
+        XCTAssertNotEqual(original, afterCreate) // sanity: the second scenario's copies exist
+    }
+
+    func testUndoWarnsAboutLaterBudgetItemsOfAnUndoneCategory() throws {
+        let f = try fixture()
+        try apply(f, ["Rent", "Phone"])
+        let new = try XCTUnwrap(try created(f, "Rent").first)
+        try f.manager.dbQueue.write { db in
+            try PlannedItemEditing.editFollowing(db: db, entryId: new.id!, originalDate: self.utc(2027, 1, 31),
+                                                 change: OccurrenceChange(amountMinorUnits: -125_000), calendar: self.calendar)
+        }
+        let report = try undo(f)
+        XCTAssertTrue(report.warnings.contains("Rent: later budget items remain — check the Budget grid"), "\(report.warnings)")
+        XCTAssertFalse(report.warnings.contains { $0.hasPrefix("Phone") })
+    }
+
+    func testUndoDoesNotWarnWithoutLaterBudgetItems() throws {
+        let f = try fixture()
+        try apply(f, ["Rent", "Gym"])
+        XCTAssertEqual(try undo(f).warnings, [])
+    }
 }
