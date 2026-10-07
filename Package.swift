@@ -18,6 +18,7 @@ let package = Package(
         .executableTarget(name: "MigrateHistory", dependencies: ["BudgetCore"]),
         .executableTarget(name: "MigrateAccountBalances", dependencies: ["BudgetCore"]),
         .executableTarget(name: "SeedCategoryGroups", dependencies: ["BudgetCore"]),
-        .executableTarget(name: "SeedForecastPlan", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")])
+        .executableTarget(name: "SeedForecastPlan", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
+        .executableTarget(name: "FillSpreadsheetPlanGaps", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")])
     ]
 )
