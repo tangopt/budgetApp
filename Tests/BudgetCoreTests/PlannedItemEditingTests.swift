@@ -379,4 +379,32 @@ final class PlannedItemEditingTests: XCTestCase {
         expectError(.invalidInterval) { try editOccurrence(f, utc(2026, 11, 15), OccurrenceChange(interval: 0)) }
         XCTAssertEqual(try entries(f).count, 1)
     }
+
+    // MARK: - Fix round 2
+
+    func testWeeklyToMonthlySplitStartsOnTheSplitDate() throws {
+        let f = try fixture(start: utc(2026, 10, 1), frequency: .weekly)
+        try addException(f, PlannedOccurrenceException(entryId: f.entryId, originalDate: utc(2026, 10, 15), amountMinorUnits: -5))
+        try editFollowing(f, utc(2026, 10, 15), OccurrenceChange(frequency: .monthly))
+        let all = try entries(f)
+        XCTAssertEqual(all.count, 2)
+        let new = all[1]
+        XCTAssertNil(new.anchorDay)
+        let period = PayPeriod(startDate: utc(2026, 10, 1), endDate: utc(2026, 12, 31), type: .projected)
+        XCTAssertEqual(FrequencyExpander.occurrences(for: new, in: period), [utc(2026, 10, 15), utc(2026, 11, 15), utc(2026, 12, 15)])
+        XCTAssertEqual(FrequencyExpander.occurrences(for: all[0], in: period), [utc(2026, 10, 1), utc(2026, 10, 8)])
+        let ex = try exceptions(f)
+        XCTAssertEqual(ex.count, 1) // the edited occurrence's own exception follows the new start
+        XCTAssertEqual(ex[0].entryId, new.id)
+        XCTAssertEqual(ex[0].originalDate, utc(2026, 10, 15))
+        XCTAssertEqual(PlannedOccurrences.occurrences(entries: all, exceptions: ex, in: PayPeriod(startDate: utc(2026, 10, 1), endDate: utc(2026, 10, 31), type: .projected)).map(\.amountMinorUnits), [-100_000, -100_000, -5])
+    }
+
+    func testMonthlyToAnnualSplitKeepsTheMonthEndAnchor() throws {
+        let f = try fixture(start: utc(2026, 10, 31))
+        try editFollowing(f, utc(2027, 2, 28), OccurrenceChange(frequency: .annually))
+        let new = try entries(f)[1]
+        XCTAssertEqual(new.anchorDay, 31)
+        XCTAssertEqual(FrequencyExpander.occurrences(for: new, in: PayPeriod(startDate: utc(2027, 1, 1), endDate: utc(2028, 12, 31), type: .projected)), [utc(2027, 2, 28), utc(2028, 2, 29)])
+    }
 }

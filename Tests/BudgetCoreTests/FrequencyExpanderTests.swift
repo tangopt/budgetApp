@@ -112,4 +112,13 @@ final class FrequencyExpanderTests: XCTestCase {
         let period = PayPeriod(startDate: utc(2027, 1, 1), endDate: utc(2027, 4, 30), type: .projected)
         XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [utc(2027, 1, 31), utc(2027, 2, 28), utc(2027, 3, 31), utc(2027, 4, 30)])
     }
+
+    func testAnchorBeforeStartDayNeverYieldsADateBeforeStart() {
+        var entry = makeEntry(frequency: .monthly, interval: 1, startDate: utc(2026, 10, 15))
+        entry.anchorDay = 1
+        let period = PayPeriod(startDate: utc(2026, 9, 1), endDate: utc(2026, 12, 31), type: .projected)
+        let dates = FrequencyExpander.occurrences(for: entry, in: period)
+        XCTAssertTrue(dates.allSatisfy { $0 >= entry.startDate })
+        XCTAssertEqual(dates, [utc(2026, 11, 1), utc(2026, 12, 1)])
+    }
 }

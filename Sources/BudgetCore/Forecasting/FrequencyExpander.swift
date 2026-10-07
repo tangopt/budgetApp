@@ -48,7 +48,8 @@ public enum FrequencyExpander {
         var stepIndex = 0
         while cursor <= period.endDate && stepIndex < maxIterations {
             if let entryEnd = entry.endDate, cursor > entryEnd { break }
-            if cursor >= period.startDate && cursor <= period.endDate {
+            // An anchor before the start's day would put the first step before the start.
+            if cursor >= entry.startDate && cursor >= period.startDate && cursor <= period.endDate {
                 results.append(cursor)
             }
             stepIndex += 1

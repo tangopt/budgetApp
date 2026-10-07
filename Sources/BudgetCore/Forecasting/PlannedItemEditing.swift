@@ -83,9 +83,9 @@ public enum PlannedItemEditing {
     /// before (or is deleted when `originalDate` is its first occurrence); unless the change
     /// removes all following, a new `.manual` entry in the same group (note kept) starts at
     /// `originalDate` — or the moved date, which must be after the previous occurrence — with
-    /// the changes applied. The new series keeps the original's anchor day (so a split at
-    /// 28 Feb of a series on the 31st still gives 31 Mar), unless the date moves (then the new
-    /// date's day). Exceptions after `originalDate` move to the new entry with the same keys,
+    /// the changes applied. Between monthly/annual schedules the new series keeps the original's
+    /// anchor day (so a split at 28 Feb of a series on the 31st still gives 31 Mar), unless the
+    /// date moves; otherwise (date move, or to/from weekly or once) the new start's day applies. Exceptions after `originalDate` move to the new entry with the same keys,
     /// unless a date move or frequency change shifts the schedule, in which case they are
     /// dropped. The edited occurrence's own exception follows the new entry minus the fields
     /// the change sets, and un-skipped (the edit brings the occurrence back).
@@ -118,7 +118,10 @@ public enum PlannedItemEditing {
                                              amountMinorUnits: change.amountMinorUnits ?? entry.amountMinorUnits,
                                              frequency: frequency, interval: interval, startDate: newStart, endDate: entry.endDate,
                                              isEnabled: entry.isEnabled, status: .manual, note: entry.note)
-                if change.date == nil {
+                // Inherit the day-of-month anchor only between day-of-month schedules (monthly /
+                // annual); a weekly series never used one, so the new start's day applies.
+                let dayOfMonth: Set<ForecastFrequency> = [.monthly, .annually]
+                if change.date == nil, dayOfMonth.contains(entry.frequency), dayOfMonth.contains(frequency) {
                     let anchor = entry.anchorDay ?? utc.component(.day, from: entry.startDate)
                     newEntry.anchorDay = anchor == utc.component(.day, from: newStart) ? nil : anchor
                 }
