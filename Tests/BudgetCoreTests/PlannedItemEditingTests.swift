@@ -321,6 +321,27 @@ final class PlannedItemEditingTests: XCTestCase {
         XCTAssertTrue(try exceptions(f).isEmpty)
     }
 
+    func testRemoveFollowingFromFirstOccurrenceStopsDetectionReAddingIt() throws {
+        let f = try fixture(start: utc(2026, 10, 15), status: .manual)
+        try editFollowing(f, utc(2026, 10, 15), OccurrenceChange(remove: true))
+        try f.manager.dbQueue.read { db in
+            XCTAssertTrue(try XCTUnwrap(Category.fetchOne(db, key: f.rentId)).excludeFromAutoForecast)
+            XCTAssertFalse(try XCTUnwrap(Category.fetchOne(db, key: f.groceriesId)).excludeFromAutoForecast)
+        }
+    }
+
+    func testRemoveFollowingLaterOrReplacingLeavesDetectionAlone() throws {
+        let ended = try fixture(status: .manual)
+        try editFollowing(ended, utc(2026, 11, 15), OccurrenceChange(remove: true))
+        let replaced = try fixture(start: utc(2026, 10, 15), status: .manual)
+        try editFollowing(replaced, utc(2026, 10, 15), OccurrenceChange(amountMinorUnits: -110_000))
+        for f in [ended, replaced] {
+            try f.manager.dbQueue.read { db in
+                XCTAssertFalse(try XCTUnwrap(Category.fetchOne(db, key: f.rentId)).excludeFromAutoForecast)
+            }
+        }
+    }
+
     func testFollowingOnOneOffReplacesIt() throws {
         let f = try fixture(start: utc(2026, 11, 3), status: .manual, frequency: .once)
         try editFollowing(f, utc(2026, 11, 3), OccurrenceChange(amountMinorUnits: -5, date: utc(2026, 11, 9)))

@@ -69,7 +69,7 @@ struct CategoriesView: View {
                             set: { newValue in try? viewModel.setExcludedFromAutoForecast(category, excluded: newValue) }
                         ))
                         .toggleStyle(.checkbox)
-                        .help("Covered by a reserve — the forecast won't detect a recurring amount for it.")
+                        .help("Stops the forecast detecting new recurring amounts for this category. Existing planned items are kept.")
                     }
                     Picker("", selection: Binding<Int64?>(
                         get: { category.groupId },

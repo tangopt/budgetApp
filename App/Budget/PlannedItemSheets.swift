@@ -26,6 +26,27 @@ enum PlanFormat {
         }
     }
 
+    private static func utcFormatter(_ pattern: String) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = pattern
+        return formatter
+    }
+    private static let shortMonthYear = utcFormatter("MMM yyyy")
+    private static let shortDayMonthYear = utcFormatter("d MMM yyyy")
+
+    /// An existing planned series in one line (magnitude, like the grid): "£2,171.08 monthly
+    /// from Feb 2026", "£45.00 every 2 weeks from Nov 2026 until Oct 2027", "£1,000.00
+    /// one-off on 20 Dec 2026". Dates are UTC days.
+    static func series(_ entry: ForecastEntry) -> String {
+        let amount = Money.format(abs(entry.amountMinorUnits), currency: .gbp)
+        if entry.frequency == .once { return "\(amount) one-off on \(shortDayMonthYear.string(from: entry.startDate))" }
+        var line = "\(amount) \(frequency(entry.frequency, interval: entry.interval).lowercased()) from \(shortMonthYear.string(from: entry.startDate))"
+        if let end = entry.endDate { line += " until \(shortMonthYear.string(from: end))" }
+        return line
+    }
+
     /// Help text for a cell or Year Total with unconfirmed money (magnitudes, like the grid).
     static func pendingHelp(value: Int, pending: Int) -> String {
         let actual = value - pending
@@ -212,10 +233,14 @@ enum PlannedItemCategory {
 
 /// "+ Add planned item" from an Income / Expenses / Transfers header: a category of that
 /// section (or "+ New category…" of the section's type, created with the item), an amount, one-off or recurring (weekly / monthly / annually, every N), a start
-/// and an optional end. Saved through `PlannedItems.add`; errors show inline.
+/// and an optional end. Saved through `PlannedItems.add`; errors show inline. Once a
+/// category is picked, its existing planned series are listed: the new item adds to them
+/// (nothing is replaced), so a category planned twice is visible before saving.
 struct AddPlannedItemSheet: View {
     let type: CategoryType
     let categories: [Category]
+    /// Planned items (`ForecastCalculator.confirmedEntries`), for the "Already planned" lines.
+    let plannedEntries: [ForecastEntry]
     let onSave: (PlannedItemCategory, _ amountMinorUnits: Int, ForecastFrequency, _ interval: Int, _ start: Date, _ end: Date?) -> SaveOutcome
     @Environment(\.dismiss) private var dismiss
 
@@ -263,6 +288,12 @@ struct AddPlannedItemSheet: View {
 
     private var canSave: Bool { category != nil && signedAmount != nil }
 
+    /// The picked existing category's planned series, oldest first.
+    private var alreadyPlanned: [ForecastEntry] {
+        guard let categoryId, !isCreatingNewCategory else { return [] }
+        return plannedEntries.filter { $0.categoryId == categoryId }.sorted { $0.startDate < $1.startDate }
+    }
+
     var body: some View {
         Form {
             Text(title).font(.headline)
@@ -275,6 +306,15 @@ struct AddPlannedItemSheet: View {
                 // Created together with the item on Save, in the same write — Cancel or a
                 // failed save leaves no orphaned category behind.
                 TextField("New category name", text: $newCategoryName)
+            }
+            if !alreadyPlanned.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(alreadyPlanned) { entry in
+                        Text("Already planned: \(PlanFormat.series(entry))").font(.callout)
+                    }
+                    Text("This adds to what's already planned. To change an existing item, edit it from the grid.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             MoneyField("Amount", text: $amountText, currency: .gbp)
             Picker("Repeats", selection: $isRecurring) {

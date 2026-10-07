@@ -7,20 +7,20 @@ import GRDB
 @MainActor
 final class BudgetGridViewModel: ObservableObject {
     @Published var categories: [Category] = [] {
-        didSet { reserveRemainingCache = [:] }
+        didSet { reserveRemainingCache = [:]; cellCache = [:] }
     }
     @Published var categoryGroups: [CategoryGroup] = []
     @Published var transactions: [Transaction] = [] {
         didSet { rebuildPayMonths() }
     }
     @Published var forecastEntries: [ForecastEntry] = [] {
-        didSet { reserveRemainingCache = [:]; plannedCache = [:] }
+        didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:] }
     }
     @Published var forecastGroups: [ForecastGroup] = [] {
-        didSet { reserveRemainingCache = [:]; plannedCache = [:] }
+        didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:] }
     }
     @Published var exceptions: [PlannedOccurrenceException] = [] {
-        didSet { reserveRemainingCache = [:]; plannedCache = [:] }
+        didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:] }
     }
     @Published var accounts: [Account] = []
     @Published var balanceSnapshots: [BalanceSnapshot] = []
@@ -44,6 +44,13 @@ final class BudgetGridViewModel: ObservableObject {
     /// Planned (confirmed-forecast) total per category per calendar month, memoised per
     /// `MonthRange.index` for the same reason. Cleared whenever forecasts or exceptions change.
     private var plannedCache: [Int: [Int64: Int]] = [:]
+    /// Each category's Budget cell, memoised per `MonthRange.index` then category id: group,
+    /// section and Year Total rows (and the pending footnote) combine member cells on every
+    /// render, including every horizontal-scroll frame. Cleared with `plannedCache`, when
+    /// categories change, and when the pay calendar is rebuilt.
+    private var cellCache: [Int: [Int64: PlanCell]] = [:]
+    /// `payCalendar.monthClass` per `MonthRange.index`; reset when the calendar is rebuilt.
+    private var monthClassCache: [Int: MonthClass] = [:]
 
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
@@ -70,6 +77,8 @@ final class BudgetGridViewModel: ObservableObject {
         payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: manualCloses, today: Date())
         monthTotals = PayMonthTotals.lookup(transactions: transactions, calendar: payCalendar)
         reserveRemainingCache = [:]
+        cellCache = [:]
+        monthClassCache = [:]
         // The current year is always offered (calendar and pay-month year, which differ late in
         // December), so the plan for it shows even before any transaction lands in it.
         let currentYears = [MonthRange.components(of: Date()).year, payCalendar.current.year]
@@ -154,8 +163,7 @@ final class BudgetGridViewModel: ObservableObject {
         let allowances: [(id: Int64, name: String, allowance: Int)] = reserves.compactMap { reserve in
             reserve.id.map { ($0, reserve.name, ForecastCalculator.confirmedTotal(categoryId: $0, period: period, entries: forecastEntries, groups: forecastGroups, exceptions: exceptions)) }
         }
-        let monthClass = payCalendar.monthClass(PayMonth(year: year, month: month))
-        let remaining = ReservedCategories.monthAllowances(allowances, monthClass: monthClass) {
+        let remaining = ReservedCategories.monthAllowances(allowances, monthClass: monthClass(year: year, month: month)) {
             ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, monthTotals: monthTotals, entries: forecastEntries, groups: forecastGroups, exceptions: exceptions)
         }
         reserveRemainingCache[key] = remaining
@@ -231,14 +239,27 @@ final class BudgetGridViewModel: ObservableObject {
         return totals[categoryId] ?? 0
     }
 
+    /// The pay month's class (`payCalendar.monthClass`), cached until the calendar is rebuilt.
+    private func monthClass(year: Int, month: Int) -> MonthClass {
+        let key = MonthRange.index(year: year, month: month)
+        if let cached = monthClassCache[key] { return cached }
+        let monthClass = payCalendar.monthClass(PayMonth(year: year, month: month))
+        monthClassCache[key] = monthClass
+        return monthClass
+    }
+
     /// A category's Budget cell: the pay month's actual plus whatever the calendar month's plan
-    /// still expects (`PlanStatus.cell`); closed months show the actual alone.
+    /// still expects (`PlanStatus.cell`); closed months show the actual alone. Memoised.
     func cell(_ category: Category, year: Int, month: Int) -> PlanCell {
         guard let id = category.id else { return (0, 0, .none) }
-        return PlanStatus.cell(actual: payMonthCategoryTotal(category, year: year, month: month),
-                               planned: plannedTotal(id, year: year, month: month),
-                               categoryType: category.type,
-                               monthClass: payCalendar.monthClass(PayMonth(year: year, month: month)))
+        let key = MonthRange.index(year: year, month: month)
+        if let cached = cellCache[key]?[id] { return cached }
+        let cell = PlanStatus.cell(actual: payMonthCategoryTotal(category, year: year, month: month),
+                                   planned: plannedTotal(id, year: year, month: month),
+                                   categoryType: category.type,
+                                   monthClass: monthClass(year: year, month: month))
+        cellCache[key, default: [:]][id] = cell
+        return cell
     }
 
     /// A group or section row: its members' cells combined (`PlanStatus.combine`).
@@ -257,6 +278,12 @@ final class BudgetGridViewModel: ObservableObject {
     func reserveCell(_ reserves: [Category], year: Int, month: Int) -> PlanCell {
         let value = reserves.reduce(0) { $0 + reserveTotal($1, year: year, month: month) }
         return (value, value, value == 0 ? .none : .allExpected)
+    }
+
+    /// Every planned item (`ForecastCalculator.confirmedEntries`), for the add sheet's
+    /// "Already planned" lines.
+    var plannedEntries: [ForecastEntry] {
+        ForecastCalculator.confirmedEntries(entries: forecastEntries, groups: forecastGroups)
     }
 
     struct PlannedRow: Identifiable {

@@ -14,11 +14,15 @@ struct DrillDownPlan {
 enum GridDrillDownTarget: Identifiable {
     /// `plan` is nil for a Year Total cell (its drill-down lists transactions only).
     case transactions(title: String, transactions: [Transaction], plan: DrillDownPlan?)
+    /// A reserve's month cell: planned occurrences only (reserves hold no transactions).
+    case planned(title: String, plan: DrillDownPlan)
 
     var id: String {
         switch self {
         case .transactions(let title, let transactions, _):
             return "txn-\(title)-\(transactions.map { String($0.id ?? -1) }.joined(separator: ","))"
+        case .planned(let title, let plan):
+            return "plan-\(title)-\(plan.category.id ?? -1)"
         }
     }
 }
@@ -55,15 +59,11 @@ struct GridDrillDownSheet: View {
                             transactionRow(transaction)
                         }
                     }
-                    if let plan {
-                        PlannedOccurrencesSection(
-                            rows: viewModel.occurrences(category: plan.category, year: plan.year, month: plan.month),
-                            errorMessage: planError,
-                            onEdit: { row in planError = nil; editing = row },
-                            onRemove: { row in planError = nil; removing = row }
-                        )
-                    }
+                    if let plan { plannedSection(plan) }
                 }
+            case .planned(let title, let plan):
+                Text(title).font(.headline)
+                List { plannedSection(plan) }
             }
         }
         .padding()
@@ -84,6 +84,15 @@ struct GridDrillDownSheet: View {
             Button("This and all following", role: .destructive) { remove(row, .thisAndFollowing) }
             Button("Cancel", role: .cancel) { removing = nil }
         }
+    }
+
+    private func plannedSection(_ plan: DrillDownPlan) -> some View {
+        PlannedOccurrencesSection(
+            rows: viewModel.occurrences(category: plan.category, year: plan.year, month: plan.month),
+            errorMessage: planError,
+            onEdit: { row in planError = nil; editing = row },
+            onRemove: { row in planError = nil; removing = row }
+        )
     }
 
     private func transactionRow(_ transaction: Transaction) -> some View {

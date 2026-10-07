@@ -45,36 +45,37 @@ final class PlannedItemsTests: XCTestCase {
         }
     }
 
-    func testAddExcludesTheCategoryFromAutoForecastAndRemovesItsAutoEntries() throws {
+    func testAddExcludesTheCategoryFromAutoForecastAndKeepsItsDetectedItems() throws {
         try manager().dbQueue.write { db in
-            var gym = Category(name: "Gym", type: .expense)
-            try gym.insert(db)
+            var rent = Category(name: "Rent", type: .expense)
+            try rent.insert(db)
             var detected = ForecastGroup(name: "Detected recurring", note: nil, isEnabled: true, isSystemManaged: true)
             try detected.insert(db)
-            var auto = ForecastEntry(groupId: detected.id!, categoryId: gym.id!, amountMinorUnits: -4_000, frequency: .monthly, interval: 1, startDate: utc(2026, 2, 3), endDate: nil, isEnabled: true, status: .auto, note: nil)
-            try auto.insert(db)
+            var existing = ForecastEntry(groupId: detected.id!, categoryId: rent.id!, amountMinorUnits: -217_108, frequency: .monthly, interval: 1, startDate: utc(2026, 2, 3), endDate: nil, isEnabled: true, status: .manual, note: nil)
+            try existing.insert(db)
 
-            let planned = try PlannedItems.add(db: db, categoryId: gym.id!, amountMinorUnits: -4_500, frequency: .monthly, interval: 1, startDate: utc(2026, 11, 1), endDate: nil)
+            let planned = try PlannedItems.add(db: db, categoryId: rent.id!, amountMinorUnits: -4_500, frequency: .monthly, interval: 1, startDate: utc(2026, 11, 1), endDate: nil)
 
-            XCTAssertTrue(try XCTUnwrap(Category.fetchOne(db, key: gym.id!)).excludeFromAutoForecast)
-            XCTAssertNil(try ForecastEntry.fetchOne(db, key: auto.id!))
+            XCTAssertTrue(try XCTUnwrap(Category.fetchOne(db, key: rent.id!)).excludeFromAutoForecast)
+            XCTAssertNotNil(try ForecastEntry.fetchOne(db, key: existing.id!), "existing planned items are kept")
             XCTAssertNotNil(try ForecastEntry.fetchOne(db, key: planned.id!))
+            XCTAssertEqual(try ForecastEntry.filter(Column("categoryId") == rent.id!).fetchCount(db), 2)
         }
     }
 
-    func testAOneOffItemLeavesTheAutoForecastAlone() throws {
+    func testAOneOffItemLeavesTheCategoryAndItsDetectedItemsAlone() throws {
         try manager().dbQueue.write { db in
             var salary = Category(name: "Salary", type: .income)
             try salary.insert(db)
             var detected = ForecastGroup(name: "Detected recurring", note: nil, isEnabled: true, isSystemManaged: true)
             try detected.insert(db)
-            var auto = ForecastEntry(groupId: detected.id!, categoryId: salary.id!, amountMinorUnits: 300_000, frequency: .monthly, interval: 1, startDate: utc(2026, 1, 25), endDate: nil, isEnabled: true, status: .auto, note: nil)
-            try auto.insert(db)
+            var existing = ForecastEntry(groupId: detected.id!, categoryId: salary.id!, amountMinorUnits: 300_000, frequency: .monthly, interval: 1, startDate: utc(2026, 1, 25), endDate: nil, isEnabled: true, status: .manual, note: nil)
+            try existing.insert(db)
 
             let bonus = try PlannedItems.add(db: db, categoryId: salary.id!, amountMinorUnits: 100_000, frequency: .once, interval: 1, startDate: utc(2026, 12, 20), endDate: nil)
 
             XCTAssertFalse(try XCTUnwrap(Category.fetchOne(db, key: salary.id!)).excludeFromAutoForecast)
-            XCTAssertNotNil(try ForecastEntry.fetchOne(db, key: auto.id!))
+            XCTAssertNotNil(try ForecastEntry.fetchOne(db, key: existing.id!))
             XCTAssertNotNil(try ForecastEntry.fetchOne(db, key: bonus.id!))
         }
     }

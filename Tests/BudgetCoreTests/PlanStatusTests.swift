@@ -24,6 +24,14 @@ final class PlanStatusTests: XCTestCase {
         check(PlanStatus.cell(actual: 2000, planned: -10000, categoryType: .transfer, monthClass: .blended), -10000, -12000, .allExpected)
     }
 
+    /// A plan signed against its category's direction (an inward expense plan, an outward
+    /// income plan) expects nothing: the actual alone, nothing pending.
+    func testPlanOppositeToTheCategoryDirectionExpectsNothing() {
+        check(PlanStatus.cell(actual: 0, planned: 5000, categoryType: .expense, monthClass: .blended), 0, 0, .none)
+        check(PlanStatus.cell(actual: -3000, planned: 5000, categoryType: .expense, monthClass: .forecast), -3000, 0, .none)
+        check(PlanStatus.cell(actual: 1000, planned: -2000, categoryType: .income, monthClass: .blended), 1000, 0, .none)
+    }
+
     func testExpenseCovered() {
         check(PlanStatus.cell(actual: -12000, planned: -10000, categoryType: .expense, monthClass: .blended), -12000, 0, .none)
         check(PlanStatus.cell(actual: -10000, planned: -10000, categoryType: .expense, monthClass: .blended), -10000, 0, .none)

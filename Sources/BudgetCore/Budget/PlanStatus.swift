@@ -18,7 +18,9 @@ public enum PlanStatus {
     /// The plan is an envelope in its own direction — expenses outward, income inward,
     /// transfers by the sign of the plan (as `MonthBlend`). `pending` is what the plan still
     /// expects beyond the actual, signed like the plan, so an open month's `value` equals
-    /// `MonthBlend.projectedTotal` for a blended month.
+    /// `MonthBlend.projectedTotal` for a blended month. A plan whose net sign is opposite to
+    /// its category's direction (e.g. an expense category planned net inward, like a refund)
+    /// expects nothing: the cell shows the actual alone with nothing pending.
     public static func cell(actual: Int, planned: Int, categoryType: CategoryType, monthClass: MonthClass) -> (value: Int, pending: Int, state: PendingState) {
         if monthClass == .actual { return (actual, 0, .none) }
         let direction: Int

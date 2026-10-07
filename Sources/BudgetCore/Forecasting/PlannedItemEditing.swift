@@ -47,7 +47,8 @@ public enum PlannedItemEditing {
 
     /// Only this occurrence: upserts its exception (amount, date, category, skip). Changing a
     /// value without `remove` also un-skips a skipped occurrence. An exception left with no
-    /// effect is removed. A `.auto` series becomes `.manual`.
+    /// effect is removed. A legacy `.auto` series (a database from before the migration that
+    /// made detected items `.manual`) becomes `.manual`.
     public static func editOccurrence(db: Database, entryId: Int64, originalDate: Date, change: OccurrenceChange, calendar: PayCalendar) throws {
         try db.inSavepoint {
             var entry = try plannedEntry(db: db, id: entryId, originalDate: originalDate)
@@ -88,7 +89,9 @@ public enum PlannedItemEditing {
     /// date moves; otherwise (date move, or to/from weekly or once) the new start's day applies. Exceptions after `originalDate` move to the new entry with the same keys,
     /// unless a date move or frequency change shifts the schedule, in which case they are
     /// dropped. The edited occurrence's own exception follows the new entry minus the fields
-    /// the change sets, and un-skipped (the edit brings the occurrence back).
+    /// the change sets, and un-skipped (the edit brings the occurrence back). Removing from
+    /// the first occurrence deletes the whole series and also sets the category's
+    /// `excludeFromAutoForecast`, so auto-forecast detection doesn't add it straight back.
     public static func editFollowing(db: Database, entryId: Int64, originalDate: Date, change: OccurrenceChange, calendar: PayCalendar) throws {
         try db.inSavepoint {
             var entry = try plannedEntry(db: db, id: entryId, originalDate: originalDate)
@@ -157,9 +160,13 @@ public enum PlannedItemEditing {
 
             if previous == nil {
                 _ = try entry.delete(db) // first occurrence: the new entry (if any) replaces the series
+                if change.remove {
+                    // The series is gone outright: stop detection re-adding it.
+                    try db.execute(sql: "UPDATE category SET excludeFromAutoForecast = 1 WHERE id = ?", arguments: [entry.categoryId])
+                }
             } else {
                 entry.endDate = utc.date(byAdding: .day, value: -1, to: originalDate)!
-                if entry.status == .auto { entry.status = .manual }
+                if entry.status == .auto { entry.status = .manual } // legacy (pre-migration) `.auto` row
                 try entry.update(db)
             }
             return .commit
@@ -247,6 +254,8 @@ public enum PlannedItemEditing {
         }
     }
 
+    /// Legacy: only databases not yet migrated still hold `.auto` entries (the migration in
+    /// `PlannedOccurrenceException` turns them `.manual`); kept for those.
     private static func makeManual(db: Database, _ entry: inout ForecastEntry) throws {
         guard entry.status == .auto else { return }
         entry.status = .manual

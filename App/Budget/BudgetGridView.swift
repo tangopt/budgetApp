@@ -262,7 +262,7 @@ struct BudgetGridView: View {
             GridDrillDownSheet(target: target, viewModel: viewModel)
         }
         .sheet(item: $addPlannedTarget) { target in
-            AddPlannedItemSheet(type: target.type, categories: viewModel.categories) { category, amount, frequency, interval, start, end in
+            AddPlannedItemSheet(type: target.type, categories: viewModel.categories, plannedEntries: viewModel.plannedEntries) { category, amount, frequency, interval, start, end in
                 switch category {
                 case .existing(let id):
                     return viewModel.addPlannedItem(categoryId: id, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)
@@ -491,7 +491,8 @@ struct BudgetGridView: View {
                 .background(Color.accentColor.opacity(0.08))
             }
         case .reserve(let reserve):
-            // Read-only: reserves hold no transactions, so there is nothing to drill into.
+            // Reserves hold no transactions: a month cell drills into its planned allowance
+            // occurrences only (Edit… / Remove… as for a category).
             if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in
@@ -500,6 +501,12 @@ struct BudgetGridView: View {
                             .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                guard !viewModel.occurrences(category: reserve, year: year, month: month).isEmpty else { return }
+                                drillDownTarget = .planned(title: "\(reserve.name) — \(Self.monthYearLabel(year: year, month: month))",
+                                                           plan: DrillDownPlan(category: reserve, year: year, month: month))
+                            }
                     }
                     planCell(PlanStatus.combine((1...12).map { viewModel.reserveCell([reserve], year: year, month: $0) }), isYearTotal: true).bold()
                         .frame(height: 28)

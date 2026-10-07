@@ -58,8 +58,10 @@ public enum ReservedCategories {
         try category.delete(db)
     }
 
-    /// Turning the flag on deletes the category's `.auto` entries (manual, confirmed and
-    /// hypothetical entries are kept). Returns how many entries were deleted.
+    /// Turning the flag on stops future auto-forecast detection for the category; existing
+    /// planned items (manual, confirmed, hypothetical) are kept. Legacy `.auto` rows from
+    /// databases not yet migrated to `.manual` are deleted when present. Returns how many
+    /// entries were deleted.
     @discardableResult
     public static func setExcludedFromAutoForecast(db: Database, categoryId: Int64, _ excluded: Bool) throws -> Int {
         try db.execute(sql: "UPDATE category SET excludeFromAutoForecast = ? WHERE id = ?", arguments: [excluded, categoryId])

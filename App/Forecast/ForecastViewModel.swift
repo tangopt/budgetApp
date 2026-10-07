@@ -354,11 +354,15 @@ final class ForecastViewModel: ObservableObject {
     ///
     /// The write happens against a locally-built copy first; `entries` is only mutated
     /// once that write has actually succeeded, mirroring `BudgetGridViewModel.recategorize`.
+    ///
+    /// A new start date, frequency or interval reschedules the series, so its per-occurrence
+    /// exceptions (keyed by the old schedule's dates) are deleted in the same write.
     @discardableResult
     func updateEntry(_ entry: ForecastEntry, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> Bool {
         errorMessage = nil
         guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return false }
         var updated = entries[index]
+        let reschedules = updated.startDate != startDate || updated.frequency != frequency || updated.interval != interval
         updated.amountMinorUnits = amountMinorUnits
         updated.frequency = frequency
         updated.interval = interval
@@ -369,11 +373,17 @@ final class ForecastViewModel: ObservableObject {
             updated.status = .manual
         }
         do {
-            try dbQueue.write { db in try updated.update(db) }
+            try dbQueue.write { db in
+                try updated.update(db)
+                if reschedules, let id = updated.id {
+                    _ = try PlannedOccurrenceException.filter(Column("entryId") == id).deleteAll(db)
+                }
+            }
         } catch {
             errorMessage = "Couldn't save the change: \(error.localizedDescription)"
             return false
         }
+        if reschedules { exceptions.removeAll { $0.entryId == updated.id } }
         entries[index] = updated
         recomputeForecastCaches()
         return true

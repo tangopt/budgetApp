@@ -16,11 +16,13 @@ public enum PlannedItemsError: Error, Equatable {
 public enum PlannedItems {
     public static let groupName = "Planned"
 
-    /// Adds a confirmed entry to the "Planned" group (created on first use). A recurring
-    /// item also excludes the category from the auto-forecast so it can't add a duplicate —
-    /// which deletes the category's existing `.auto` entries. A one-off (`.once`) item adds
-    /// on top of the auto-forecast instead (e.g. a bonus on top of the detected salary), so
-    /// the category and its `.auto` entries are left alone.
+    /// Adds a confirmed entry to the "Planned" group (created on first use). It adds to
+    /// whatever the category already has planned — existing items (including "Detected
+    /// recurring" ones) are kept, since two items in one category can be intended; the add
+    /// sheet shows what's already planned so the user can tell. A recurring item also sets
+    /// the category's `excludeFromAutoForecast`, which only stops future detection adding
+    /// another series for it. A one-off (`.once`) item (e.g. a bonus on top of the salary)
+    /// leaves the flag alone.
     @discardableResult
     public static func add(db: Database, categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) throws -> ForecastEntry {
         guard let category = try Category.fetchOne(db, key: categoryId) else { throw PlannedItemsError.categoryNotFound }
