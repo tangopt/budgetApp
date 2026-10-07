@@ -96,13 +96,15 @@ public enum ScenarioComparison {
         return PlanNetWorthSeries(actual: series.actual, forecast: series.forecast.filter { $0.id <= data.horizonIndex })
     }
 
-    /// One row per year from today's to the horizon's.
-    public static func yearSummaries(_ data: ComparisonData, plan: PlanInput, budget: PlanInput) -> [PlanYearSummary] {
+    /// One row per year from today's to the horizon's. `series` is the plan's
+    /// `netWorthSeries` and `budgetSeries` the budget's (the same one for the budget's own
+    /// row), computed once by the caller and shared with the chart.
+    public static func yearSummaries(_ data: ComparisonData, plan: PlanInput, series: PlanNetWorthSeries, budgetSeries: PlanNetWorthSeries) -> [PlanYearSummary] {
         let firstYear = MonthRange.components(of: data.today).year
         guard firstYear <= data.horizonYear else { return [] }
         let planInput = input(data, plan)
-        let planValues = values(netWorthSeries(data, plan: plan))
-        let budgetValues = plan == budget ? planValues : values(netWorthSeries(data, plan: budget))
+        let planValues = values(series)
+        let budgetValues = series == budgetSeries ? planValues : values(budgetSeries)
         return (firstYear...data.horizonYear).map { year in
             let lastMonth = year == data.horizonYear ? data.horizonMonth : 12
             let flows = DashboardCalculator.monthlyFlows(planInput, year: year).filter { $0.month <= lastMonth }

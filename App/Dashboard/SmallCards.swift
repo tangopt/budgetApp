@@ -61,7 +61,7 @@ struct AttentionCard: View {
                 row(warning: false, "All balances up to date", link: nil) {}
             }
             if items.missingReserveAllowance {
-                row(warning: true, "No reserve for unplanned spending in the forecast", link: "Forecast") { navigate(.forecast) }
+                row(warning: true, "No reserve for unplanned spending in the budget", link: "Budget grid") { navigate(.budgetGrid) }
             }
         }
     }

@@ -105,9 +105,15 @@ final class ScenarioComparisonTests: XCTestCase {
 
     // MARK: - Summary
 
+    /// `yearSummaries` with each plan's net worth series computed once, as the lab does.
+    private func summaries(_ plan: PlanInput) -> [PlanYearSummary] {
+        ScenarioComparison.yearSummaries(data, plan: plan, series: ScenarioComparison.netWorthSeries(data, plan: plan),
+                                         budgetSeries: ScenarioComparison.netWorthSeries(data, plan: budget))
+    }
+
     func testYearSummariesGiveYearEndNetWorthTheDifferenceAndTheYearsFlows() {
-        let budgetRows = ScenarioComparison.yearSummaries(data, plan: budget, budget: budget)
-        let scenarioRows = ScenarioComparison.yearSummaries(data, plan: scenario, budget: budget)
+        let budgetRows = summaries(budget)
+        let scenarioRows = summaries(scenario)
 
         XCTAssertEqual(budgetRows, [
             PlanYearSummary(year: 2026, yearEndNetWorth: 3_000_000, differenceVsBudget: 0, income: 3_600_000, expenses: 1_200_000, reserves: 0),
@@ -124,10 +130,10 @@ final class ScenarioComparisonTests: XCTestCase {
 
     func testClosedMonthsUseActualsWhateverThePlanSays() {
         // A scenario that plans a different January still reports January's actuals.
-        let flowsBudget = ScenarioComparison.yearSummaries(data, plan: budget, budget: budget)[0]
+        let flowsBudget = summaries(budget)[0]
         var changed = scenario
         changed.entries.append(entry(16, rentId, -900_000, start: utc(2026, 1, 1), scenarioId: 7, change: .added).with(endDate: utc(2026, 2, 28)))
-        let rows = ScenarioComparison.yearSummaries(data, plan: changed, budget: budget)
+        let rows = summaries(changed)
         XCTAssertEqual(rows[0].income, flowsBudget.income)
         XCTAssertEqual(rows[0].expenses, 1_810_000)
     }

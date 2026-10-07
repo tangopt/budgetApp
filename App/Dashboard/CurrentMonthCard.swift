@@ -33,7 +33,7 @@ struct CurrentMonthCard: View {
                     Text(DashboardFormat.pounds(month.reservedProjected)).font(.caption).monospacedDigit()
                 }
                 .foregroundStyle(.secondary)
-                .help("Allowance for expected but uncategorised spending (Forecast › Reserved). Counted in full every month.")
+                .help("Allowance for expected but uncategorised spending (the Budget grid’s reserves). Counted in full every month.")
             }
             VStack(alignment: .leading, spacing: 2) {
                 HStack {

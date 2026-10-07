@@ -126,13 +126,16 @@ extension DashboardCalculator {
     private static func categoryAmounts(_ input: DashboardInput, year: Int, month: Int, monthClass: MonthClass, includeExpected: Bool, visit: (Category, _ actual: Int, _ expected: Int, _ projected: Int) -> Void) {
         let range = MonthRange.of(year: year, month: month)
         let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
-        let reserveRemaining = monthClass == .actual ? [:] : remainingReserves(input, year: year, month: month, period: period, monthClass: monthClass)
+        let wantsExpected = monthClass != .actual || includeExpected
+        // One expansion of the plan for the month, shared by every category and the reserves.
+        let planned = wantsExpected
+            ? ForecastCalculator.confirmedTotalsByCategory(period: period, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
+            : [:]
+        let reserveRemaining = monthClass == .actual ? [:] : remainingReserves(input, year: year, month: month, planned: planned, monthClass: monthClass)
         for category in input.categories {
             guard let categoryId = category.id, category.type != .transfer else { continue }
             let actual = monthClass == .forecast ? 0 : (input.monthTotals[categoryId]?[year]?[month] ?? 0)
-            let expected = (monthClass != .actual || includeExpected)
-                ? ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
-                : 0
+            let expected = wantsExpected ? (planned[categoryId] ?? 0) : 0
             // A reserve projects only what's left of its allowance after unforecast spending
             // (`ReservedCategories.remainingAllowances`); expected stays the full allowance.
             let projected = reserveRemaining[categoryId]
@@ -144,10 +147,11 @@ extension DashboardCalculator {
     /// Signed remaining allowance per reserve id for an open (blended or forecast) month: the
     /// allowance less that pay month's unforecast spend. A forecast month has no actuals, so
     /// nothing is deducted there.
-    private static func remainingReserves(_ input: DashboardInput, year: Int, month: Int, period: PayPeriod, monthClass: MonthClass) -> [Int64: Int] {
+    /// `planned` is the month's `ForecastCalculator.confirmedTotalsByCategory`.
+    private static func remainingReserves(_ input: DashboardInput, year: Int, month: Int, planned: [Int64: Int], monthClass: MonthClass) -> [Int64: Int] {
         let reserves: [(id: Int64, name: String, allowance: Int)] = input.categories.compactMap { category in
             guard category.isReserved, let id = category.id else { return nil }
-            return (id, category.name, ForecastCalculator.confirmedTotal(categoryId: id, period: period, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions))
+            return (id, category.name, planned[id] ?? 0)
         }
         guard !reserves.isEmpty else { return [:] }
         let spend = monthClass == .forecast ? 0 : ReservedCategories.unforecastSpend(year: year, month: month, categories: input.categories, monthTotals: input.monthTotals, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)

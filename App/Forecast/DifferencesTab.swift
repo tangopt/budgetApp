@@ -27,9 +27,9 @@ struct DifferencesTab: View {
             HStack {
                 Text("“\(scenario.name)” vs the budget").font(.headline)
                 Spacer()
-                if !viewModel.differences.isEmpty {
+                if !viewModel.tickableDifferences.isEmpty {
                     Button(allTicked ? "Untick all" : "Tick all") {
-                        viewModel.tickedDifferenceIds = allTicked ? [] : Set(viewModel.differences.map(\.id))
+                        viewModel.tickedDifferenceIds = allTicked ? [] : Set(viewModel.tickableDifferences.map(\.id))
                     }
                 }
                 Button("Undo last apply") { confirmingUndo = true }
@@ -68,11 +68,12 @@ struct DifferencesTab: View {
     }
 
     private var allTicked: Bool {
-        !viewModel.differences.isEmpty && viewModel.tickedDifferenceIds.count == viewModel.differences.count
+        !viewModel.tickableDifferences.isEmpty && viewModel.tickedDifferenceIds.count == viewModel.tickableDifferences.count
     }
 
     private func differenceRow(_ difference: ScenarioDifference) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        let applied = viewModel.appliedDifferenceIds.contains(difference.id)
+        return HStack(alignment: .top, spacing: 10) {
             Toggle("", isOn: Binding(
                 get: { viewModel.tickedDifferenceIds.contains(difference.id) },
                 set: { ticked in
@@ -81,6 +82,8 @@ struct DifferencesTab: View {
             ))
             .toggleStyle(.checkbox)
             .labelsHidden()
+            .disabled(applied)
+            .help(applied ? "Already applied to the budget. Undo the apply to apply it again." : "")
             Text(Self.kindLabel(difference.kind))
                 .font(.caption.bold())
                 .foregroundStyle(Self.kindColor(difference.kind))
@@ -88,7 +91,16 @@ struct DifferencesTab: View {
                 .background(Capsule().fill(Self.kindColor(difference.kind).opacity(0.15)))
                 .frame(width: 80, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
-                Text(difference.categoryName).fontWeight(.medium)
+                HStack(spacing: 6) {
+                    Text(difference.categoryName).fontWeight(.medium)
+                    if applied {
+                        Text("Applied")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                    }
+                }
                 Text(difference.summary).font(.callout).foregroundStyle(.secondary)
                 ForEach(difference.fieldChanges, id: \.self) { change in
                     Text("• \(change)").font(.callout)

@@ -96,6 +96,9 @@ final class ScenarioLabViewModel: ObservableObject {
     /// The selected scenario's differences (empty for the Budget).
     @Published private(set) var differences: [ScenarioDifference] = []
     @Published private(set) var canUndo = false
+    /// The selected scenario's differences applied by an un-undone apply: shown as
+    /// "Applied", not tickable.
+    @Published private(set) var appliedDifferenceIds: Set<Int64> = []
     /// The selected plan's cells for `gridYear`, by category id then month.
     @Published private(set) var gridCells: [Int64: [Int: ScenarioGridCell]] = [:]
 
@@ -177,7 +180,8 @@ final class ScenarioLabViewModel: ObservableObject {
         budgetPlan = loaded.budgetPlan
         scenarioPlans = loaded.scenarioPlans
         today = Date()
-        payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: loaded.manualCloses, today: today)
+        // As the Dashboard builds it: today never earlier than the latest transaction.
+        payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: loaded.manualCloses, today: today)
         let ids = Set(scenarios.compactMap(\.id))
         if !hasLoaded {
             comparedIds = ids
@@ -211,14 +215,15 @@ final class ScenarioLabViewModel: ObservableObject {
         let data = comparisonData
         let budgetSeries = ScenarioComparison.netWorthSeries(data, plan: budgetPlan)
         var newLines = [PlanLine(id: "budget", name: "Budget", colorIndex: 0, forecast: budgetSeries.forecast)]
+        // Each plan's net worth series once, shared by its chart line and its summary row.
         var rows = [SummaryRow(id: "budget", name: "Budget", isBudget: true,
-                               years: ScenarioComparison.yearSummaries(data, plan: budgetPlan, budget: budgetPlan))]
+                               years: ScenarioComparison.yearSummaries(data, plan: budgetPlan, series: budgetSeries, budgetSeries: budgetSeries))]
         for (index, scenario) in scenarios.enumerated() {
             guard let id = scenario.id, comparedIds.contains(id), let plan = scenarioPlans[id] else { continue }
-            newLines.append(PlanLine(id: "scenario-\(id)", name: scenario.name, colorIndex: index + 1,
-                                     forecast: ScenarioComparison.netWorthSeries(data, plan: plan).forecast))
+            let series = ScenarioComparison.netWorthSeries(data, plan: plan)
+            newLines.append(PlanLine(id: "scenario-\(id)", name: scenario.name, colorIndex: index + 1, forecast: series.forecast))
             rows.append(SummaryRow(id: "scenario-\(id)", name: scenario.name, isBudget: false,
-                                   years: ScenarioComparison.yearSummaries(data, plan: plan, budget: budgetPlan)))
+                                   years: ScenarioComparison.yearSummaries(data, plan: plan, series: series, budgetSeries: budgetSeries)))
         }
         actualLine = budgetSeries.actual
         lines = newLines
@@ -228,19 +233,22 @@ final class ScenarioLabViewModel: ObservableObject {
     private func recomputeSelection() {
         if let id = selectedScenarioId {
             do {
-                (differences, canUndo) = try dbQueue.read { db in
-                    (try Scenarios.differences(db: db, scenarioId: id), try ScenarioApply.canUndo(db: db, scenarioId: id))
+                (differences, canUndo, appliedDifferenceIds) = try dbQueue.read { db in
+                    (try Scenarios.differences(db: db, scenarioId: id), try ScenarioApply.canUndo(db: db, scenarioId: id),
+                     try ScenarioApply.appliedDifferenceIds(db: db, scenarioId: id))
                 }
             } catch {
                 differences = []
                 canUndo = false
+                appliedDifferenceIds = []
                 errorMessage = "Couldn't read this scenario's differences: \(error.localizedDescription)"
             }
         } else {
             differences = []
             canUndo = false
+            appliedDifferenceIds = []
         }
-        tickedDifferenceIds.formIntersection(differences.map(\.id))
+        tickedDifferenceIds.formIntersection(tickableDifferences.map(\.id))
         recomputeGrid()
     }
 
@@ -314,6 +322,11 @@ final class ScenarioLabViewModel: ObservableObject {
 
     // MARK: Apply and undo
 
+    /// The differences not yet applied (by an un-undone apply), in list order.
+    var tickableDifferences: [ScenarioDifference] {
+        differences.filter { !appliedDifferenceIds.contains($0.id) }
+    }
+
     /// The ticked differences, in list order.
     var tickedDifferences: [ScenarioDifference] {
         differences.filter { tickedDifferenceIds.contains($0.id) }
@@ -322,6 +335,15 @@ final class ScenarioLabViewModel: ObservableObject {
     /// Applies the ticked differences to the budget from the current pay month, then shows
     /// what wasn't applied (or "Nothing to apply").
     func applyTicked() {
+        // Reload first: the pay calendar (so the boundary) and the budget as they are now.
+        do {
+            try read()
+        } catch {
+            errorMessage = "Couldn't reload the forecast before applying: \(error.localizedDescription)"
+            return
+        }
+        recomputeComparison()
+        recomputeSelection()
         guard let scenario = selectedScenario, let id = scenario.id else { return }
         let ids = tickedDifferences.map(\.id)
         guard !ids.isEmpty else { return }

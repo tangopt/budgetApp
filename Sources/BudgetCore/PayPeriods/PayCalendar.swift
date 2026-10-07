@@ -67,6 +67,15 @@ public struct PayCalendar {
         }
     }
 
+    /// The calendar the Dashboard and the scenario lab read: paydays from the loaded
+    /// transactions, and today never earlier than the latest transaction (a clock behind the
+    /// data counts as "today = D").
+    public static func forData(transactions: [Transaction], categories: [Category], manualCloses: [PayMonthClose], today: Date) -> PayCalendar {
+        let dataThrough = transactions.map(\.date).max()
+        return PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories),
+                           manualCloses: manualCloses, today: dataThrough.map { max(today, $0) } ?? today)
+    }
+
     public static func load(db: Database, today: Date) throws -> PayCalendar {
         PayCalendar(salaryDates: try PaydaySource.paydayDates(db: db), manualCloses: try PayMonthClose.fetchAll(db), today: today)
     }

@@ -566,4 +566,14 @@ final class ScenarioApplyTests: XCTestCase {
         try apply(f, ["Rent", "Gym"])
         XCTAssertEqual(try undo(f).warnings, [])
     }
+    func testAppliedDifferenceIdsAreThoseOfUnundoneApplications() throws {
+        let f = try fixture()
+        func applied() throws -> Set<Int64> { try f.manager.dbQueue.read { db in try ScenarioApply.appliedDifferenceIds(db: db, scenarioId: f.scenarioId) } }
+        XCTAssertEqual(try applied(), [])
+        try apply(f, ["Gym"])
+        try apply(f, ["Phone"])
+        XCTAssertEqual(try applied(), [try difference(f, "Gym"), try difference(f, "Phone")])
+        _ = try undo(f)
+        XCTAssertEqual(try applied(), [try difference(f, "Gym")])
+    }
 }

@@ -22,12 +22,7 @@ public struct DashboardInput {
     let monthTotals: [Int64: [Int: [Int: Int]]]
 
     public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, manualCloses: [PayMonthClose] = []) {
-        let dataThrough = transactions.map(\.date).max()
-        let payCalendar = PayCalendar(
-            salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories),
-            manualCloses: manualCloses,
-            today: dataThrough.map { max(today, $0) } ?? today
-        )
+        let payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: manualCloses, today: today)
         self.init(today: today, accounts: accounts, snapshots: snapshots, transactions: transactions, categories: categories, categoryGroups: categoryGroups, forecastEntries: forecastEntries, forecastGroups: forecastGroups, exceptions: exceptions, importBatches: importBatches, rate: rate, payCalendar: payCalendar)
     }
 

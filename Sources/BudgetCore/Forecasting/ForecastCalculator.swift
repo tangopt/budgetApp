@@ -8,10 +8,12 @@ public enum ForecastCalculator {
     /// The confirmed forecast's net effect on account balances for one period — income
     /// minus expenses, transfer categories excluded (moving money to the user's own
     /// savings/ISA doesn't change net worth). Signed: positive means net worth grows.
+    /// One expansion of the plan over the period (`confirmedTotalsByCategory`).
     public static func confirmedNetWorthImpact(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException]) -> Int {
-        categories.reduce(0) { sum, category in
+        let totals = confirmedTotalsByCategory(period: period, entries: entries, groups: groups, exceptions: exceptions)
+        return categories.reduce(0) { sum, category in
             guard category.type != .transfer, let categoryId = category.id else { return sum }
-            return sum + confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, exceptions: exceptions)
+            return sum + (totals[categoryId] ?? 0)
         }
     }
 

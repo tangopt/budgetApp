@@ -125,10 +125,7 @@ public enum ScenarioApply {
             }
             let categories = try Category.fetchAll(db)
             let names = Dictionary(uniqueKeysWithValues: categories.map { ($0.id!, $0.name) })
-            let alreadyApplied = Set(try ScenarioApplication
-                .filter(Column("scenarioId") == scenarioId && Column("undoneAt") == nil)
-                .fetchAll(db)
-                .flatMap { $0.decodedJournal?.operations.map(\.differenceId) ?? [] })
+            let alreadyApplied = try appliedDifferenceIds(db: db, scenarioId: scenarioId)
 
             // The budget as it stands before the apply, for the confirmation rule.
             let current = calendar.current
@@ -315,6 +312,15 @@ public enum ScenarioApply {
             return .commit
         }
         return report
+    }
+
+    /// The scenario's differences applied by its un-undone applications (applying them again
+    /// is skipped as "already applied").
+    public static func appliedDifferenceIds(db: Database, scenarioId: Int64) throws -> Set<Int64> {
+        Set(try ScenarioApplication
+            .filter(Column("scenarioId") == scenarioId && Column("undoneAt") == nil)
+            .fetchAll(db)
+            .flatMap { $0.decodedJournal?.operations.map(\.differenceId) ?? [] })
     }
 
     /// Whether the scenario has an application `undoLast` can undo.
