@@ -11,7 +11,9 @@ import GRDB
 ///
 /// Everything shown is derived here when its inputs change (a load, the horizon, the compared
 /// set, the selection, the grid year), never in a view's `body`: the grid re-renders on its
-/// own state changes only, and its horizontal scroll is tracked outside it.
+/// own state changes only, and its horizontal scroll is tracked outside it. The comparison
+/// (chart lines and summary) is computed off the main actor from value-type inputs; a newer
+/// computation cancels the one in flight.
 @MainActor
 final class ScenarioLabViewModel: ObservableObject {
     /// One net worth forecast line of the Compare chart.
@@ -93,6 +95,9 @@ final class ScenarioLabViewModel: ObservableObject {
     @Published private(set) var actualLine: [NetWorthPoint] = []
     @Published private(set) var lines: [PlanLine] = []
     @Published private(set) var summaries: [SummaryRow] = []
+    /// True while the comparison is being computed (the previous results stay shown).
+    @Published private(set) var isComputingComparison = false
+    private var comparisonTask: Task<Void, Never>?
     /// The selected scenario's differences (empty for the Budget).
     @Published private(set) var differences: [ScenarioDifference] = []
     @Published private(set) var canUndo = false
@@ -211,23 +216,59 @@ final class ScenarioLabViewModel: ObservableObject {
 
     // MARK: Derivations
 
+    /// A compared scenario, as the comparison computation takes it.
+    private struct ComparedPlan {
+        let id: Int64
+        let name: String
+        let colorIndex: Int
+        let plan: PlanInput
+    }
+
+    private struct ComparisonResult {
+        let actualLine: [NetWorthPoint]
+        let lines: [PlanLine]
+        let summaries: [SummaryRow]
+    }
+
+    /// Starts computing the comparison off the main actor, cancelling any computation still
+    /// running; its results are published on the main actor unless a newer one started.
     private func recomputeComparison() {
+        comparisonTask?.cancel()
         let data = comparisonData
-        let budgetSeries = ScenarioComparison.netWorthSeries(data, plan: budgetPlan)
-        var newLines = [PlanLine(id: "budget", name: "Budget", colorIndex: 0, forecast: budgetSeries.forecast)]
-        // Each plan's net worth series once, shared by its chart line and its summary row.
-        var rows = [SummaryRow(id: "budget", name: "Budget", isBudget: true,
-                               years: ScenarioComparison.yearSummaries(data, plan: budgetPlan, series: budgetSeries, budgetSeries: budgetSeries))]
-        for (index, scenario) in scenarios.enumerated() {
-            guard let id = scenario.id, comparedIds.contains(id), let plan = scenarioPlans[id] else { continue }
-            let series = ScenarioComparison.netWorthSeries(data, plan: plan)
-            newLines.append(PlanLine(id: "scenario-\(id)", name: scenario.name, colorIndex: index + 1, forecast: series.forecast))
-            rows.append(SummaryRow(id: "scenario-\(id)", name: scenario.name, isBudget: false,
-                                   years: ScenarioComparison.yearSummaries(data, plan: plan, series: series, budgetSeries: budgetSeries)))
+        let budget = budgetPlan
+        let compared: [ComparedPlan] = scenarios.enumerated().compactMap { index, scenario in
+            guard let id = scenario.id, comparedIds.contains(id), let plan = scenarioPlans[id] else { return nil }
+            return ComparedPlan(id: id, name: scenario.name, colorIndex: index + 1, plan: plan)
         }
-        actualLine = budgetSeries.actual
-        lines = newLines
-        summaries = rows
+        isComputingComparison = true
+        comparisonTask = Task { [weak self] in
+            let work = Task.detached(priority: .userInitiated) { Self.computeComparison(data, budget: budget, compared: compared) }
+            let result = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+            guard !Task.isCancelled, let result, let self else { return }
+            actualLine = result.actualLine
+            lines = result.lines
+            summaries = result.summaries
+            isComputingComparison = false
+        }
+    }
+
+    /// Chart lines and summary rows for the Budget and the compared scenarios: the actual
+    /// line once for every plan, each plan's series once (shared by its line and its row).
+    /// Nil when cancelled.
+    nonisolated private static func computeComparison(_ data: ComparisonData, budget: PlanInput, compared: [ComparedPlan]) -> ComparisonResult? {
+        let actuals = ScenarioComparison.actuals(data)
+        let budgetSeries = ScenarioComparison.netWorthSeries(data, plan: budget, actuals: actuals)
+        var lines = [PlanLine(id: "budget", name: "Budget", colorIndex: 0, forecast: budgetSeries.forecast)]
+        var rows = [SummaryRow(id: "budget", name: "Budget", isBudget: true,
+                               years: ScenarioComparison.yearSummaries(data, plan: budget, series: budgetSeries, budgetSeries: budgetSeries))]
+        for scenario in compared {
+            if Task.isCancelled { return nil }
+            let series = ScenarioComparison.netWorthSeries(data, plan: scenario.plan, actuals: actuals)
+            lines.append(PlanLine(id: "scenario-\(scenario.id)", name: scenario.name, colorIndex: scenario.colorIndex, forecast: series.forecast))
+            rows.append(SummaryRow(id: "scenario-\(scenario.id)", name: scenario.name, isBudget: false,
+                                   years: ScenarioComparison.yearSummaries(data, plan: scenario.plan, series: series, budgetSeries: budgetSeries)))
+        }
+        return Task.isCancelled ? nil : ComparisonResult(actualLine: budgetSeries.actual, lines: lines, summaries: rows)
     }
 
     private func recomputeSelection() {
@@ -335,20 +376,29 @@ final class ScenarioLabViewModel: ObservableObject {
     /// Applies the ticked differences to the budget from the current pay month, then shows
     /// what wasn't applied (or "Nothing to apply").
     func applyTicked() {
-        // Reload first: the pay calendar (so the boundary) and the budget as they are now.
+        guard let id = selectedScenarioId else { return }
+        // Reload only what the apply needs, as it is now: the pay calendar (so the boundary)
+        // and the scenario's differences and applied ids. The write's own reload then
+        // refreshes everything, the comparison recomputing in the background.
+        let calendar: PayCalendar
         do {
-            try read()
+            let fresh = try dbQueue.read { db in
+                (closes: try PayMonthClose.fetchAll(db), transactions: try Transaction.fetchAll(db), categories: try Category.fetchAll(db),
+                 differences: try Scenarios.differences(db: db, scenarioId: id), canUndo: try ScenarioApply.canUndo(db: db, scenarioId: id),
+                 applied: try ScenarioApply.appliedDifferenceIds(db: db, scenarioId: id))
+            }
+            calendar = PayCalendar.forData(transactions: fresh.transactions, categories: fresh.categories, manualCloses: fresh.closes, today: Date())
+            differences = fresh.differences
+            canUndo = fresh.canUndo
+            appliedDifferenceIds = fresh.applied
+            tickedDifferenceIds.formIntersection(tickableDifferences.map(\.id))
         } catch {
             errorMessage = "Couldn't reload the forecast before applying: \(error.localizedDescription)"
             return
         }
-        recomputeComparison()
-        recomputeSelection()
-        guard let scenario = selectedScenario, let id = scenario.id else { return }
         let ids = tickedDifferences.map(\.id)
         guard !ids.isEmpty else { return }
         var application: ScenarioApplication?
-        let calendar = payCalendar
         if case .failed(let message) = perform({ db in application = try ScenarioApply.apply(db: db, scenarioId: id, differenceIds: ids, calendar: calendar) }) {
             errorMessage = message
             return

@@ -43,6 +43,10 @@ public struct ScenarioApplyJournal: Codable, Equatable {
         public var categoryName: String
         public var created: [Creation]
         public var modified: [Modification]
+        /// The categories the operation touched (the scenario entry's, and a changed
+        /// source's). Nil in journals written before it was recorded: `categoryIds(db:of:)`
+        /// then reads them from the entries still there.
+        public var categoryIds: [Int64]? = nil
     }
 
     public var operations: [Operation]
@@ -72,6 +76,15 @@ extension ScenarioApplication {
     /// True when the apply changed nothing (every difference skipped): it wasn't recorded
     /// (`id` is nil), so the UI shows "Nothing to apply" with `skipped`.
     public var appliedNothing: Bool { decodedJournal?.operations.isEmpty ?? true }
+
+    /// Budget entries with an id above `lastEntryId` that start on/after `boundary` were
+    /// added after this apply. Older journals fall back to the largest created id and the
+    /// month start of `appliedAt`.
+    func laterThreshold(_ journal: ScenarioApplyJournal) -> (lastEntryId: Int64?, boundary: Date) {
+        let lastId = journal.lastEntryId ?? journal.operations.flatMap { $0.created.map(\.entryId) }.max()
+        let applied = MonthRange.components(of: appliedAt)
+        return (lastId, journal.boundary ?? MonthRange.of(year: applied.year, month: applied.month).start)
+    }
 }
 
 /// What `undoLast` did.
@@ -172,6 +185,7 @@ public enum ScenarioApply {
                 var operation = ScenarioApplyJournal.Operation(differenceId: scenarioEntry.id!, kind: scenarioEntry.scenarioChange!,
                                                                categoryName: name, created: [], modified: [])
                 let source = scenarioEntry.sourceEntryId.flatMap { budgetById[$0] }
+                operation.categoryIds = Array(Set([scenarioEntry.categoryId] + (source.map { [$0.categoryId] } ?? []))).sorted()
 
                 switch scenarioEntry.scenarioChange! {
                 case .removed:
@@ -187,16 +201,6 @@ public enum ScenarioApply {
                     budgetById[source.id!] = try ForecastEntry.fetchOne(db, key: source.id!)
                 case .changed, .added:
                     let changedSource = scenarioEntry.scenarioChange == .changed ? source : nil
-                    // The budget already went its own way from the boundary (typically another
-                    // scenario's apply of the same change): the source is over and a later entry
-                    // of its category has taken over. Applying would stack a second one.
-                    if let changedSource, try end(db: db, changedSource, before: boundary, dryRun: true) == nil,
-                       let successor = try ForecastEntry.budget(db)
-                        .filter({ $0.id != changedSource.id && $0.categoryId == changedSource.categoryId && $0.startDate >= boundary })
-                        .min(by: { $0.startDate < $1.startDate }) {
-                        journal.skipped.append("\(name): already changed in the budget from \(monthName(successor.startDate)); refresh the scenario")
-                        continue
-                    }
                     // A source whose current-month occurrence the budget has already confirmed
                     // keeps that month; the change applies from the next one.
                     var start = boundary
@@ -204,6 +208,17 @@ public enum ScenarioApply {
                         let thisMonth = PayPeriod(startDate: currentMonth.start, endDate: currentMonth.end, type: .projected)
                         let occurrences = PlannedOccurrences.occurrences(entries: [changedSource], exceptions: budgetExceptions, in: thisMonth)
                         if occurrences.contains(where: { confirmed($0, of: changedSource) }) { start = nextMonthStart }
+                    }
+                    // The budget already went its own way from the effective start (typically
+                    // another scenario's apply of the same change, in this pay month or an
+                    // earlier one): the source is over by then and another entry of its
+                    // category is still running. Applying would stack a second one.
+                    if let changedSource, try end(db: db, changedSource, before: start, dryRun: true) == nil,
+                       let successor = try ForecastEntry.budget(db)
+                        .filter({ $0.id != changedSource.id && $0.categoryId == changedSource.categoryId && ($0.endDate.map { $0 >= start } ?? true) })
+                        .min(by: { $0.startDate < $1.startDate }) {
+                        journal.skipped.append("\(name): already changed in the budget from \(monthName(successor.startDate)); refresh the scenario")
+                        continue
                     }
                     guard let newStart = firstOccurrence(of: scenarioEntry, from: start) else {
                         journal.skipped.append("\(name): no occurrence from \(monthName(start))")
@@ -263,21 +278,19 @@ public enum ScenarioApply {
             let journal = try JSONDecoder().decode(ScenarioApplyJournal.self, from: Data(application.journal.utf8))
             // Budget entries added after the apply (larger id) from its boundary on, by
             // category: undoing leaves them in place next to what it restores.
-            let lastId = journal.lastEntryId ?? journal.operations.flatMap { $0.created.map(\.entryId) }.max()
-            let boundary = journal.boundary ?? MonthRange.of(year: MonthRange.components(of: application.appliedAt).year,
-                                                            month: MonthRange.components(of: application.appliedAt).month).start
+            let (lastId, boundary) = application.laterThreshold(journal)
             let laterCategoryIds: Set<Int64> = try lastId.map { lastId in
                 Set(try ForecastEntry.budget(db).filter { $0.id! > lastId && $0.startDate >= boundary }.map(\.categoryId))
             } ?? []
             for operation in journal.operations.reversed() {
                 let name = operation.categoryName
-                var categoryIds: Set<Int64> = []
+                // From the journal, so a created entry deleted since still counts.
+                let categoryIds = try categoryIds(db: db, of: operation)
                 for created in operation.created.reversed() {
                     guard let entry = try ForecastEntry.fetchOne(db, key: created.entryId) else {
                         report.warnings.append("\(name): the item the apply added was already deleted")
                         continue
                     }
-                    categoryIds.insert(entry.categoryId)
                     if try fingerprint(db: db, entryId: created.entryId) != created.after {
                         report.warnings.append("\(name): the item the apply added was edited since; removed anyway")
                     }
@@ -288,7 +301,6 @@ public enum ScenarioApply {
                         report.warnings.append("\(name) couldn't be restored: it's no longer in the budget")
                         continue
                     }
-                    categoryIds.insert(entry.categoryId)
                     if try fingerprint(db: db, entryId: modified.entryId) != modified.after {
                         report.warnings.append("\(name) was edited after applying; restored to before the apply")
                     }
@@ -326,6 +338,14 @@ public enum ScenarioApply {
     /// Whether the scenario has an application `undoLast` can undo.
     public static func canUndo(db: Database, scenarioId: Int64) throws -> Bool {
         try latest(db: db, scenarioId: scenarioId) != nil
+    }
+
+    /// The categories `operation` touched: its recorded `categoryIds`, or for older journals
+    /// those of its created and modified entries still in the database.
+    static func categoryIds(db: Database, of operation: ScenarioApplyJournal.Operation) throws -> Set<Int64> {
+        if let ids = operation.categoryIds { return Set(ids) }
+        let ids = operation.created.map(\.entryId) + operation.modified.map(\.entryId)
+        return Set(try ForecastEntry.filter(keys: ids).fetchAll(db).map(\.categoryId))
     }
 
     // MARK: - Helpers

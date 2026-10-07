@@ -103,6 +103,34 @@ final class ScenarioComparisonTests: XCTestCase {
         XCTAssertEqual(series.forecast, Array(dashboard.forecast.prefix(series.forecast.count)))
     }
 
+    func testSharedActualsGiveEachPlanTheSameSeries() throws {
+        let actuals = try XCTUnwrap(ScenarioComparison.actuals(data))
+        XCTAssertEqual(actuals.actual, ScenarioComparison.netWorthSeries(data, plan: budget).actual)
+        for plan in [budget, scenario] {
+            XCTAssertEqual(ScenarioComparison.netWorthSeries(data, plan: plan, actuals: actuals), ScenarioComparison.netWorthSeries(data, plan: plan))
+        }
+    }
+
+    func testTheDashboardsSeriesIsItsActualsPlusItsForecast() throws {
+        let d = data
+        let input = DashboardInput(today: d.today, accounts: d.accounts, snapshots: d.snapshots, transactions: d.transactions, categories: d.categories, categoryGroups: [],
+                                   forecastEntries: budget.entries, forecastGroups: budget.groups, exceptions: budget.exceptions, importBatches: [], rate: d.rate, payCalendar: d.payCalendar)
+        let actuals = try XCTUnwrap(DashboardCalculator.netWorthActuals(input))
+        let series = DashboardCalculator.netWorthSeries(input)
+        XCTAssertEqual(actuals.actual, series.actual)
+        XCTAssertEqual(actuals.currentNetWorthMinorUnits, series.currentNetWorthMinorUnits)
+        XCTAssertEqual(DashboardCalculator.netWorthForecast(actuals, throughYear: 2027, categories: input.categories, entries: input.forecastEntries,
+                                                            groups: input.forecastGroups, exceptions: input.exceptions), series.forecast)
+    }
+
+    func testNoSnapshotsMeansNoActuals() {
+        let d = data
+        let empty = ComparisonData(today: d.today, accounts: d.accounts, snapshots: [], transactions: d.transactions, categories: d.categories, rate: d.rate,
+                                   payCalendar: d.payCalendar, horizonYear: d.horizonYear, horizonMonth: d.horizonMonth)
+        XCTAssertNil(ScenarioComparison.actuals(empty))
+        XCTAssertEqual(ScenarioComparison.netWorthSeries(empty, plan: budget, actuals: nil), ScenarioComparison.netWorthSeries(empty, plan: budget))
+    }
+
     // MARK: - Summary
 
     /// `yearSummaries` with each plan's net worth series computed once, as the lab does.

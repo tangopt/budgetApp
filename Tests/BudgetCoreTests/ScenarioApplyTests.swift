@@ -576,4 +576,81 @@ final class ScenarioApplyTests: XCTestCase {
         _ = try undo(f)
         XCTAssertEqual(try applied(), [try difference(f, "Gym")])
     }
+
+    // MARK: - Follow-up fixes
+
+    /// A second scenario "Cheaper" changing rent to -900, created before any apply.
+    private func cheaperRentScenario(_ f: Fixture) throws -> (scenarioId: Int64, rentDifference: Int64) {
+        try f.manager.dbQueue.write { db -> (Int64, Int64) in
+            let other = try Scenarios.create(db: db, name: "Cheaper")
+            var rent = try XCTUnwrap(try ForecastEntry.inScenario(db, id: other.id!).first { $0.sourceEntryId == f.entries["Rent"] })
+            rent.amountMinorUnits = -90_000
+            rent.scenarioChange = .changed
+            try rent.update(db)
+            return (other.id!, rent.id!)
+        }
+    }
+
+    func testAChangeAlreadyAppliedFromTheNextMonthBecauseTheCurrentOneIsConfirmedIsSkipped() throws {
+        let f = try fixture()
+        let cheaper = try cheaperRentScenario(f)
+        try spend(f, -100_000, on: utc(2026, 11, 2), category: "Rent")
+        try apply(f, ["Rent"]) // ends the source 30 Nov, new rent from 31 Dec
+        XCTAssertEqual(try budgetEntry(f, "Rent").endDate, utc(2026, 11, 30))
+
+        let application = try f.manager.dbQueue.write { db in
+            try ScenarioApply.apply(db: db, scenarioId: cheaper.scenarioId, differenceIds: [cheaper.rentDifference], calendar: self.calendar, now: self.utc(2026, 11, 5))
+        }
+        XCTAssertEqual(application.skipped, ["Rent: already changed in the budget from Dec 2026; refresh the scenario"])
+        XCTAssertTrue(application.appliedNothing)
+        XCTAssertEqual(try created(f, "Rent").count, 1)
+    }
+
+    func testAChangeAppliedInAnEarlierPayMonthIsSkippedLater() throws {
+        let f = try fixture()
+        let cheaper = try cheaperRentScenario(f)
+        // Applied while October was the current pay month: rent ends 30 Sep, new rent from 31 Oct.
+        let october = PayCalendar(salaryDates: [utc(2026, 8, 31), utc(2026, 9, 30)], manualCloses: [], today: utc(2026, 10, 5))
+        let rentDifference = try difference(f, "Rent")
+        try f.manager.dbQueue.write { db in
+            _ = try ScenarioApply.apply(db: db, scenarioId: f.scenarioId, differenceIds: [rentDifference], calendar: october, now: self.utc(2026, 10, 5))
+        }
+        XCTAssertEqual(try budgetEntry(f, "Rent").endDate, utc(2026, 9, 30))
+        XCTAssertEqual(try created(f, "Rent").map(\.startDate), [utc(2026, 10, 31)])
+
+        // The other scenario's rent change, applied in November.
+        let application = try f.manager.dbQueue.write { db in
+            try ScenarioApply.apply(db: db, scenarioId: cheaper.scenarioId, differenceIds: [cheaper.rentDifference], calendar: self.calendar, now: self.utc(2026, 11, 5))
+        }
+        XCTAssertEqual(application.skipped, ["Rent: already changed in the budget from Oct 2026; refresh the scenario"])
+        XCTAssertTrue(application.appliedNothing)
+        XCTAssertEqual(try created(f, "Rent").count, 1)
+    }
+
+    func testRefreshAfterSplittingAnAppliedEntryInTheBudgetKeepsTheScenarioUnchanged() throws {
+        let f = try fixture()
+        let before = try scenarioTotals(f, f.scenarioId)
+        try apply(f, ["Rent"])
+        let new = try XCTUnwrap(try created(f, "Rent").first)
+        try f.manager.dbQueue.write { db in
+            try PlannedItemEditing.editFollowing(db: db, entryId: new.id!, originalDate: self.utc(2027, 1, 31),
+                                                 change: OccurrenceChange(amountMinorUnits: -125_000), calendar: self.calendar)
+        }
+        XCTAssertEqual(try created(f, "Rent").count, 2) // the budget split it
+        _ = try f.manager.dbQueue.write { db in try Scenarios.refresh(db: db, scenarioId: f.scenarioId, now: self.utc(2026, 11, 7)) }
+        XCTAssertEqual(try scenarioTotals(f, f.scenarioId), before)
+    }
+
+    func testUndoWarnsAboutLaterBudgetItemsEvenWhenTheCreatedEntryWasDeleted() throws {
+        let f = try fixture()
+        try apply(f, ["Phone"])
+        let new = try XCTUnwrap(try created(f, "Phone").first)
+        try f.manager.dbQueue.write { db in
+            _ = try ForecastEntry.deleteOne(db, key: new.id!)
+            _ = try PlannedItems.add(db: db, categoryId: f.categories["Phone"]!, amountMinorUnits: -2_500, frequency: .monthly, interval: 1,
+                                 startDate: self.utc(2027, 1, 10), endDate: nil)
+        }
+        let report = try undo(f)
+        XCTAssertTrue(report.warnings.contains("Phone: later budget items remain — check the Budget grid"), "\(report.warnings)")
+    }
 }

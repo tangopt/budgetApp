@@ -8,7 +8,7 @@ struct TopCategoriesCard: View {
     let navigate: (AppScreen) -> Void
 
     var body: some View {
-        DashboardCard(title: "Top categories this month", linkTitle: "Forecast", onLink: { navigate(.forecast) }) {
+        DashboardCard(title: "Top categories this month", linkTitle: "Budget", onLink: { navigate(.budgetGrid) }) {
             if categories.isEmpty {
                 Text("Nothing planned or spent yet this month.").font(.callout).foregroundStyle(.secondary)
             }
@@ -83,7 +83,7 @@ struct UpcomingBillsCard: View {
     private let shown = 5
 
     var body: some View {
-        DashboardCard(title: "Upcoming bills · 30 days", linkTitle: "Forecast", onLink: { navigate(.forecast) }) {
+        DashboardCard(title: "Upcoming bills · 30 days", linkTitle: "Budget", onLink: { navigate(.budgetGrid) }) {
             if bills.isEmpty {
                 Text("None in the next 30 days.").font(.callout).foregroundStyle(.secondary)
             }
@@ -100,7 +100,7 @@ struct UpcomingBillsCard: View {
                 if index < visible.count - 1 { Divider() }
             }
             if bills.count > shown {
-                Button("+ \(bills.count - shown) more ›") { navigate(.forecast) }.buttonStyle(.link).font(.caption)
+                Button("+ \(bills.count - shown) more ›") { navigate(.budgetGrid) }.buttonStyle(.link).font(.caption)
             }
         }
     }

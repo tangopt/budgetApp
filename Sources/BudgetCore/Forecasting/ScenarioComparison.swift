@@ -91,6 +91,23 @@ public struct ScenarioGridCell: Equatable {
 /// each plan is evaluated with the dashboard's and the Budget grid's own calculators, over
 /// the same actuals and pay calendar.
 public enum ScenarioComparison {
+    /// The plan-independent part of every plan's series (`DashboardCalculator.netWorthActuals`):
+    /// compute it once and pass it to `netWorthSeries(_:plan:actuals:)` for each plan. Nil
+    /// without snapshots.
+    public static func actuals(_ data: ComparisonData) -> NetWorthActuals? {
+        DashboardCalculator.netWorthActuals(input(data, PlanInput(entries: [], exceptions: [], groups: [])))
+    }
+
+    /// The plan's series over shared `actuals` (from `actuals(_:)` with the same `data`).
+    public static func netWorthSeries(_ data: ComparisonData, plan: PlanInput, actuals: NetWorthActuals?) -> PlanNetWorthSeries {
+        guard let actuals else { return PlanNetWorthSeries(actual: [], forecast: []) }
+        let plan = normalized(plan)
+        let forecast = DashboardCalculator.netWorthForecast(actuals, throughYear: data.horizonYear, categories: data.categories, entries: plan.entries,
+                                                            groups: plan.groups, exceptions: plan.exceptions)
+        return PlanNetWorthSeries(actual: actuals.actual, forecast: forecast.filter { $0.id <= data.horizonIndex })
+    }
+
+    /// One plan's series on its own (its actuals computed for it).
     public static func netWorthSeries(_ data: ComparisonData, plan: PlanInput) -> PlanNetWorthSeries {
         let series = DashboardCalculator.netWorthSeries(input(data, plan), forecastThroughYear: data.horizonYear)
         return PlanNetWorthSeries(actual: series.actual, forecast: series.forecast.filter { $0.id <= data.horizonIndex })

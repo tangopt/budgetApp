@@ -10,8 +10,16 @@ struct CompareTab: View {
     var body: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Net worth").font(.headline)
-                if viewModel.actualLine.isEmpty && viewModel.lines.allSatisfy({ $0.forecast.isEmpty }) {
+                HStack(spacing: 8) {
+                    Text("Net worth").font(.headline)
+                    if viewModel.isComputingComparison {
+                        ProgressView().controlSize(.small)
+                        Text("Updating…").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if viewModel.isComputingComparison && viewModel.actualLine.isEmpty && viewModel.lines.isEmpty {
+                    ProgressView().frame(maxWidth: .infinity, minHeight: 120)
+                } else if viewModel.actualLine.isEmpty && viewModel.lines.allSatisfy({ $0.forecast.isEmpty }) {
                     Text("No net worth data yet: add accounts and balances on the Accounts screen.")
                         .foregroundStyle(.secondary)
                 } else {

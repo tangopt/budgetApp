@@ -106,7 +106,9 @@ public enum Scenarios {
     /// budget stands in for that source's copy; one whose source is gone is kept as `added`
     /// (changed) or dropped (removed) and reported. `added` entries are kept. Budget entries
     /// created by this scenario's own un-undone applies aren't copied (the scenario already
-    /// holds them), and sources those applies ended aren't reported as `sourceChanged`.
+    /// holds them), nor are budget entries added after such an apply from its boundary in a
+    /// category it touched (a split of an applied entry); sources those applies ended aren't
+    /// reported as `sourceChanged`.
     @discardableResult
     public static func refresh(db: Database, scenarioId: Int64, now: Date = Date()) throws -> RefreshReport {
         guard var scenario = try Scenario.fetchOne(db, key: scenarioId) else { throw ScenarioError.notFound }
@@ -115,13 +117,25 @@ public enum Scenarios {
             // What this scenario's own un-undone applies did to the budget: the entries they
             // created stand for scenario entries already here (not copied again), and the
             // sources they ended weren't cut short by anyone else (not reported).
-            let ownJournals = try ScenarioApplication
+            let ownApplications = try ScenarioApplication
                 .filter(Column("scenarioId") == scenarioId && Column("undoneAt") == nil)
                 .fetchAll(db)
-                .compactMap(\.decodedJournal)
+                .compactMap { application in application.decodedJournal.map { (application, $0) } }
+            let ownJournals = ownApplications.map(\.1)
             let ownCreated = Set(ownJournals.flatMap { $0.operations.flatMap { $0.created.map(\.entryId) } })
             let ownEnded = Set(ownJournals.flatMap { $0.operations.flatMap { $0.modified.map(\.entryId) } })
-            let budget = try ForecastEntry.budget(db).filter { !ownCreated.contains($0.id!) }
+            // Budget entries added after one of those applies, from its boundary, in a
+            // category it touched: splits of what it created (an edit of "this and
+            // following"), which the scenario's own entry already covers.
+            let ownLater: [(lastEntryId: Int64, boundary: Date, categoryIds: Set<Int64>)] = try ownApplications.compactMap { application, journal in
+                let threshold = application.laterThreshold(journal)
+                guard let lastId = threshold.lastEntryId else { return nil }
+                let categoryIds = try journal.operations.reduce(into: Set<Int64>()) { $0.formUnion(try ScenarioApply.categoryIds(db: db, of: $1)) }
+                return (lastId, threshold.boundary, categoryIds)
+            }
+            let budget = try ForecastEntry.budget(db).filter { entry in
+                !ownCreated.contains(entry.id!) && !ownLater.contains { entry.id! > $0.lastEntryId && entry.startDate >= $0.boundary && $0.categoryIds.contains(entry.categoryId) }
+            }
             let names = try categoryNames(db)
             var covered: Set<Int64> = []
             for var entry in try ForecastEntry.inScenario(db, id: scenarioId) {
