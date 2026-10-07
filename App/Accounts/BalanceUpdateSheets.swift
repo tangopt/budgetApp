@@ -11,6 +11,7 @@ struct UpdateBalanceSheet: View {
     @State private var amountText: String
     @State private var asOf = Date()
     @State private var note = ""
+    @State private var error: String?
 
     init(viewModel: AccountsViewModel, row: AccountRow) {
         self.viewModel = viewModel
@@ -21,7 +22,7 @@ struct UpdateBalanceSheet: View {
     private var amount: Int? { Money.parseMinorUnits(amountText) }
 
     var body: some View {
-        SheetScaffold(title: "Update balance — \(row.account.name)", saveTitle: "Save", canSave: amount != nil, error: viewModel.errorMessage, onCancel: { dismiss() }, onSave: save) {
+        SheetScaffold(title: "Update balance — \(row.account.name)", saveTitle: "Save", canSave: amount != nil, error: error, onCancel: { dismiss() }, onSave: save) {
             HStack {
                 TextField(row.account.kind == .credit ? "Amount owed" : "Balance", text: $amountText)
                 Text(row.account.currency.rawValue.uppercased()).foregroundStyle(.secondary)
@@ -32,24 +33,22 @@ struct UpdateBalanceSheet: View {
             if amount == nil && !amountText.trimmingCharacters(in: .whitespaces).isEmpty {
                 SheetCaption(AccountsFormat.invalidAmountMessage(amountText), isError: true)
             }
-            DatePicker("As of", selection: $asOf, displayedComponents: .date)
+            DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
             TextField("Note (optional)", text: $note)
         }
-        .onAppear { viewModel.errorMessage = nil }
     }
 
     private func save() {
         guard let amount else { return }
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
         let entry = BalanceUpdates.Entry(accountId: row.id, enteredMinorUnits: amount, note: trimmedNote.isEmpty ? nil : trimmedNote)
-        if viewModel.saveBalances([entry], asOf: AccountsFormat.snapshotDay(asOf)) {
-            dismiss()
-        }
+        finish(viewModel.saveBalances([entry], asOf: AccountsFormat.snapshotDay(asOf)), error: $error, dismiss: dismiss)
     }
 }
 
 /// "Update balances…": every account, grouped like the list, prefilled with its current
-/// entered balance; included rows (default all) are saved as of one day.
+/// entered balance; included rows (default: every account that has a balance) are saved as
+/// of one day. Accounts with no balance yet start unticked with an empty field.
 struct UpdateBalancesSheet: View {
     @ObservedObject var viewModel: AccountsViewModel
     let groups: [AccountGroup]
@@ -58,13 +57,14 @@ struct UpdateBalancesSheet: View {
     @State private var included: [Int64: Bool]
     @State private var texts: [Int64: String]
     @State private var asOf = Date()
+    @State private var error: String?
 
     init(viewModel: AccountsViewModel, groups: [AccountGroup]) {
         self.viewModel = viewModel
         self.groups = groups
         let rows = groups.flatMap(\.rows)
-        _included = State(initialValue: Dictionary(uniqueKeysWithValues: rows.map { ($0.id, true) }))
-        _texts = State(initialValue: Dictionary(uniqueKeysWithValues: rows.map { ($0.id, AccountsFormat.enteredAmountText($0)) }))
+        _included = State(initialValue: Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.lastUpdated != nil) }))
+        _texts = State(initialValue: Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.lastUpdated == nil ? "" : AccountsFormat.enteredAmountText($0)) }))
     }
 
     private var includedRows: [AccountRow] {
@@ -87,7 +87,7 @@ struct UpdateBalancesSheet: View {
     }
 
     var body: some View {
-        SheetScaffold(title: "Update balances", saveTitle: saveTitle, canSave: (entries?.isEmpty == false), error: viewModel.errorMessage, width: 480, wrapsInForm: false, onCancel: { dismiss() }, onSave: save) {
+        SheetScaffold(title: "Update balances", saveTitle: saveTitle, canSave: (entries?.isEmpty == false), error: error, width: 480, wrapsInForm: false, onCancel: { dismiss() }, onSave: save) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(groups) { group in
@@ -100,10 +100,9 @@ struct UpdateBalancesSheet: View {
                 .padding(.vertical, 4)
             }
             .frame(maxHeight: 360)
-            DatePicker("As of", selection: $asOf, displayedComponents: .date)
+            DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
             SheetCaption("Credit cards: enter the amount owed. Unchanged rows are saved too, confirming the balance as of that day.")
         }
-        .onAppear { viewModel.errorMessage = nil }
     }
 
     private func rowView(_ row: AccountRow) -> some View {
@@ -132,8 +131,6 @@ struct UpdateBalancesSheet: View {
 
     private func save() {
         guard let entries, !entries.isEmpty else { return }
-        if viewModel.saveBalances(entries, asOf: AccountsFormat.snapshotDay(asOf)) {
-            dismiss()
-        }
+        finish(viewModel.saveBalances(entries, asOf: AccountsFormat.snapshotDay(asOf)), error: $error, dismiss: dismiss)
     }
 }

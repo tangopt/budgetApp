@@ -3,6 +3,15 @@ import Foundation
 import BudgetCore
 import GRDB
 
+/// What a sheet's save did. Sheets dismiss on both saved outcomes; `.failed` carries the
+/// message the sheet shows itself. `.savedButReloadFailed` leaves a "Saved, but …" message
+/// in the screen's `errorMessage` banner (retrying would write the change twice).
+enum SaveOutcome: Equatable {
+    case saved
+    case savedButReloadFailed
+    case failed(String)
+}
+
 @MainActor
 final class AccountsViewModel: ObservableObject {
     @Published private(set) var overview: AccountsOverview?
@@ -14,6 +23,7 @@ final class AccountsViewModel: ObservableObject {
     }
     /// The selected account's snapshots, newest first.
     @Published private(set) var selectedHistory: [BalanceSnapshot] = []
+    /// The screen's banner error (load failures, "Saved, but …"). Sheets keep their own.
     @Published var errorMessage: String?
     /// Reconciliation warnings from the last balance save.
     @Published var warnings: [String] = []
@@ -26,7 +36,8 @@ final class AccountsViewModel: ObservableObject {
     }
 
     /// Returns false (with `errorMessage` set) when the read fails; `overview` then keeps
-    /// its previous value — nil if nothing has loaded yet.
+    /// its previous value — nil if nothing has loaded yet. A successful load clears
+    /// `errorMessage`.
     @discardableResult
     func load() -> Bool {
         do {
@@ -42,6 +53,7 @@ final class AccountsViewModel: ObservableObject {
             if selectedAccountId.map(rowIds.contains) != true { selectedAccountId = rowIds.first }
             // Snapshots may have changed even when the selection didn't.
             updateSelectedHistory()
+            errorMessage = nil
             return true
         } catch {
             errorMessage = "Couldn't load accounts: \(error.localizedDescription)"
@@ -53,8 +65,7 @@ final class AccountsViewModel: ObservableObject {
         overview?.groups.flatMap(\.rows).first { $0.id == selectedAccountId }
     }
 
-    @discardableResult
-    func addAccount(name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode, openingBalanceEntered: Int?, asOf: Date) -> Bool {
+    func addAccount(name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode, openingBalanceEntered: Int?, asOf: Date) -> SaveOutcome {
         perform { db in
             let account = try AccountEditing.add(db: db, name: name, currency: currency, kind: kind, trackingMode: trackingMode, openingBalanceEntered: openingBalanceEntered, asOf: asOf)
             return account.id
@@ -63,8 +74,7 @@ final class AccountsViewModel: ObservableObject {
         }
     }
 
-    @discardableResult
-    func updateAccount(id: Int64, name: String, kind: AccountKind, trackingMode: AccountTrackingMode) -> Bool {
+    func updateAccount(id: Int64, name: String, kind: AccountKind, trackingMode: AccountTrackingMode) -> SaveOutcome {
         perform { db in
             try AccountEditing.update(db: db, accountId: id, name: name, kind: kind, trackingMode: trackingMode)
         }
@@ -74,8 +84,7 @@ final class AccountsViewModel: ObservableObject {
         (try? dbQueue.read { db in try AccountEditing.hasHistory(db: db, accountId: id) }) ?? true
     }
 
-    @discardableResult
-    func saveBalances(_ entries: [BalanceUpdates.Entry], asOf: Date) -> Bool {
+    func saveBalances(_ entries: [BalanceUpdates.Entry], asOf: Date) -> SaveOutcome {
         perform { db in
             try BalanceUpdates.save(db: db, entries: entries, asOf: asOf)
         } onSuccess: { [weak self] result in
@@ -85,24 +94,24 @@ final class AccountsViewModel: ObservableObject {
         }
     }
 
-    /// Write first, then reload; any error lands in `errorMessage` and returns false. A
-    /// failed reload after a successful write also returns false, with a message saying the
-    /// change was saved, so callers don't carry on as if the screen were up to date.
-    private func perform<T>(_ write: (Database) throws -> T, onSuccess: ((T) -> Void)? = nil) -> Bool {
-        errorMessage = nil
+    /// Write first, then reload. A failed write returns `.failed` with a message for the
+    /// sheet and leaves the screen's `errorMessage` alone. A failed reload after a successful
+    /// write returns `.savedButReloadFailed` with a "Saved, but …" banner message, so the
+    /// sheet closes instead of inviting a retry that would save the change twice.
+    private func perform<T>(_ write: (Database) throws -> T, onSuccess: ((T) -> Void)? = nil) -> SaveOutcome {
+        let result: T
         do {
-            let result = try dbQueue.write { db in try write(db) }
-            let reloaded = load()
-            onSuccess?(result)
-            if !reloaded {
-                errorMessage = "Saved, but " + (errorMessage.map { $0.prefix(1).lowercased() + $0.dropFirst() } ?? "couldn't reload accounts.")
-                return false
-            }
-            return true
+            result = try dbQueue.write { db in try write(db) }
         } catch {
-            errorMessage = Self.message(for: error)
-            return false
+            return .failed(Self.message(for: error))
         }
+        let reloaded = load()
+        onSuccess?(result)
+        guard reloaded else {
+            errorMessage = "Saved, but " + (errorMessage.map { $0.prefix(1).lowercased() + $0.dropFirst() } ?? "couldn't reload accounts.")
+            return .savedButReloadFailed
+        }
+        return .saved
     }
 
     private func updateSelectedHistory() {

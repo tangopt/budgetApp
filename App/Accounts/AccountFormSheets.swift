@@ -14,6 +14,7 @@ struct AddAccountSheet: View {
     @State private var trackingMode: AccountTrackingMode = .manual
     @State private var balanceText = ""
     @State private var asOf = Date()
+    @State private var error: String?
 
     private var trimmedBalance: String { balanceText.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var openingBalance: Int? { Money.parseMinorUnits(trimmedBalance) }
@@ -23,7 +24,7 @@ struct AddAccountSheet: View {
     }
 
     var body: some View {
-        SheetScaffold(title: "Add account", saveTitle: "Add account", canSave: canSave, error: viewModel.errorMessage, onCancel: { dismiss() }, onSave: save) {
+        SheetScaffold(title: "Add account", saveTitle: "Add account", canSave: canSave, error: error, onCancel: { dismiss() }, onSave: save) {
             TextField("Name", text: $name)
             Picker("Currency", selection: $currency) {
                 ForEach(Currency.allCases, id: \.self) { Text($0.rawValue.uppercased()).tag($0) }
@@ -38,18 +39,15 @@ struct AddAccountSheet: View {
                 SheetCaption(AccountsFormat.invalidAmountMessage(balanceText), isError: true)
             }
             if !trimmedBalance.isEmpty {
-                DatePicker("As of", selection: $asOf, displayedComponents: .date)
+                DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
             }
         }
-        .onAppear { viewModel.errorMessage = nil }
     }
 
     private func save() {
         guard canSave else { return }
         let balance = trimmedBalance.isEmpty ? nil : openingBalance
-        if viewModel.addAccount(name: name, currency: currency, kind: kind, trackingMode: trackingMode, openingBalanceEntered: balance, asOf: AccountsFormat.snapshotDay(asOf)) {
-            dismiss()
-        }
+        finish(viewModel.addAccount(name: name, currency: currency, kind: kind, trackingMode: trackingMode, openingBalanceEntered: balance, asOf: AccountsFormat.snapshotDay(asOf)), error: $error, dismiss: dismiss)
     }
 }
 
@@ -64,6 +62,7 @@ struct EditAccountSheet: View {
     @State private var kind: AccountKind
     @State private var trackingMode: AccountTrackingMode
     @State private var hasHistory = true
+    @State private var error: String?
 
     init(viewModel: AccountsViewModel, account: Account) {
         self.viewModel = viewModel
@@ -83,7 +82,7 @@ struct EditAccountSheet: View {
     }
 
     var body: some View {
-        SheetScaffold(title: "Edit account", saveTitle: "Save", canSave: canSave, error: viewModel.errorMessage, onCancel: { dismiss() }, onSave: save) {
+        SheetScaffold(title: "Edit account", saveTitle: "Save", canSave: canSave, error: error, onCancel: { dismiss() }, onSave: save) {
             TextField("Name", text: $name)
             LabeledContent("Currency", value: account.currency.rawValue.uppercased())
             KindPicker(selection: $kind, isDisabled: { hasHistory && crossesCredit($0) })
@@ -93,20 +92,27 @@ struct EditAccountSheet: View {
             TrackingPicker(selection: $trackingMode)
         }
         .onAppear {
-            viewModel.errorMessage = nil
             if let id = account.id { hasHistory = viewModel.hasHistory(id) }
         }
     }
 
     private func save() {
         guard canSave, let id = account.id else { return }
-        if viewModel.updateAccount(id: id, name: name, kind: kind, trackingMode: trackingMode) {
-            dismiss()
-        }
+        finish(viewModel.updateAccount(id: id, name: name, kind: kind, trackingMode: trackingMode), error: $error, dismiss: dismiss)
     }
 }
 
 // MARK: - Shared pieces
+
+/// Closes the sheet once the change is saved (even if the reload then failed — the screen
+/// banner says so); otherwise shows the failure in the sheet's own error.
+@MainActor
+func finish(_ outcome: SaveOutcome, error: Binding<String?>, dismiss: DismissAction) {
+    switch outcome {
+    case .saved, .savedButReloadFailed: dismiss()
+    case .failed(let message): error.wrappedValue = message
+    }
+}
 
 private struct KindPicker: View {
     @Binding var selection: AccountKind

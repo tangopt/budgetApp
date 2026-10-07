@@ -167,9 +167,9 @@ final class ForecastViewModel: ObservableObject {
     /// `thisYear`/`nextYear`.
     ///
     /// `latestRealMonth` (and so the net-worth walk) comes from transaction dates only —
-    /// deliberately NOT balance snapshot dates: a snapshot recorded via the Net Worth
-    /// screen's "Update a balance…" flow is stamped with `Date()` regardless of how stale
-    /// the imported transactions are, and would skip forecast months that have no data.
+    /// deliberately NOT balance snapshot dates: a balance typed on the Accounts screen is
+    /// dated by its as-of day (usually today) regardless of how stale the imported
+    /// transactions are, and would skip forecast months that have no data.
     func monthClass(year: Int, month: Int) -> MonthClass {
         monthClassCache[year]?[month] ?? payCalendar.monthClass(PayMonth(year: year, month: month))
     }
