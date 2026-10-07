@@ -53,7 +53,10 @@ public enum ForecastCalculator {
             : []
         // Expand every candidate entry (a re-filed occurrence can belong to another
         // category than its series), then keep occurrences filed under this category.
-        return PlannedOccurrences.occurrences(entries: confirmed + hypothetical, exceptions: exceptions, in: period)
+        // Only entries filed under this category, or with an occurrence re-filed somewhere, can contribute.
+        let refiledEntryIds = Set(exceptions.filter { $0.categoryId != nil }.map(\.entryId))
+        let candidates = (confirmed + hypothetical).filter { $0.categoryId == categoryId || ($0.id.map(refiledEntryIds.contains) ?? false) }
+        return PlannedOccurrences.occurrences(entries: candidates, exceptions: exceptions, in: period)
             .filter { $0.categoryId == categoryId }
             .reduce(0) { $0 + $1.amountMinorUnits }
     }

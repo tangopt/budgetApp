@@ -74,8 +74,8 @@ final class PlannedOccurrencesTests: XCTestCase {
         XCTAssertEqual(PlannedOccurrences.occurrences(entries: [biMonthly], exceptions: [], in: october).map(\.date), [utc(2026, 10, 15)])
         XCTAssertTrue(PlannedOccurrences.occurrences(entries: [biMonthly], exceptions: [], in: period(utc(2026, 9, 1), utc(2026, 9, 30))).isEmpty)
         let annual = ForecastEntry(id: 1, groupId: 1, categoryId: 10, amountMinorUnits: -9900, frequency: .annually, interval: 1, startDate: utc(2025, 10, 9), endDate: nil, isEnabled: true, status: .manual, note: nil)
-        let moved = PlannedOccurrenceException(entryId: 1, originalDate: utc(2026, 10, 9), amountMinorUnits: -12000)
-        XCTAssertEqual(PlannedOccurrences.occurrences(entries: [annual], exceptions: [moved], in: october).map(\.amountMinorUnits), [-12000])
+        let override = PlannedOccurrenceException(entryId: 1, originalDate: utc(2026, 10, 9), amountMinorUnits: -12000)
+        XCTAssertEqual(PlannedOccurrences.occurrences(entries: [annual], exceptions: [override], in: october).map(\.amountMinorUnits), [-12000])
     }
 
     func testMigrationTurnsAutoIntoManual() throws {
@@ -106,6 +106,34 @@ final class PlannedOccurrencesTests: XCTestCase {
             XCTAssertEqual(try PlannedOccurrenceException.fetchCount(db), 1)
             _ = try e.delete(db)
             XCTAssertEqual(try PlannedOccurrenceException.fetchCount(db), 0)
+        }
+    }
+
+    func testFarMoveSeenFromBothMonths() {
+        let ex = PlannedOccurrenceException(entryId: 1, originalDate: utc(2026, 10, 15), date: utc(2027, 2, 10))
+        XCTAssertTrue(PlannedOccurrences.occurrences(entries: [monthly()], exceptions: [ex], in: october).isEmpty)
+        let feb = PlannedOccurrences.occurrences(entries: [monthly()], exceptions: [ex], in: period(utc(2027, 2, 1), utc(2027, 2, 28)))
+        XCTAssertEqual(feb.map(\.date), [utc(2027, 2, 10), utc(2027, 2, 15)])
+    }
+
+    func testBackwardMoveOutOfOctober() {
+        let ex = PlannedOccurrenceException(entryId: 1, originalDate: utc(2026, 10, 15), date: utc(2026, 9, 28))
+        XCTAssertTrue(PlannedOccurrences.occurrences(entries: [monthly()], exceptions: [ex], in: october).isEmpty)
+        let sept = PlannedOccurrences.occurrences(entries: [monthly()], exceptions: [ex], in: period(utc(2026, 9, 1), utc(2026, 9, 30)))
+        XCTAssertEqual(sept.map(\.date), [utc(2026, 9, 15), utc(2026, 9, 28)])
+    }
+
+    func testDeletingReserveNullsRefiledExceptionCategory() throws {
+        let m = try DatabaseManager(path: nil)
+        try m.migrate()
+        try m.dbQueue.write { db in
+            var cat = Category(name: "Rent", type: .expense); try cat.insert(db)
+            let reserve = try ReservedCategories.create(db: db, name: "Fun")
+            let group = try ReservedCategories.ensureGroup(db: db)
+            var e = monthly(); e.id = nil; e.groupId = group.id!; e.categoryId = cat.id!; try e.insert(db)
+            var ex = PlannedOccurrenceException(entryId: e.id!, originalDate: utc(2026, 10, 15), categoryId: reserve.id!); try ex.insert(db)
+            try ReservedCategories.delete(db: db, categoryId: reserve.id!)
+            XCTAssertNil(try PlannedOccurrenceException.fetchOne(db, key: ex.id!)?.categoryId)
         }
     }
 }

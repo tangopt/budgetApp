@@ -6,6 +6,8 @@ import Foundation
 public struct PlannedOccurrenceException: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord {
     public var id: Int64?
     public var entryId: Int64
+    /// Must equal the series' generated occurrence date exactly; build keys only from
+    /// `PlannedOccurrence.originalDate`.
     public var originalDate: Date
     public var isSkipped: Bool
     public var amountMinorUnits: Int?
@@ -38,7 +40,7 @@ func registerPlannedOccurrenceExceptionMigration(_ migrator: inout DatabaseMigra
             t.column("isSkipped", .boolean).notNull().defaults(to: false)
             t.column("amountMinorUnits", .integer)
             t.column("date", .datetime)
-            t.column("categoryId", .integer).references("category")
+            t.column("categoryId", .integer).references("category", onDelete: .setNull)
         }
         try db.create(index: "plannedOccurrenceException_entry_original", on: "plannedOccurrenceException", columns: ["entryId", "originalDate"], unique: true)
         // Detection no longer owns planned items; existing auto entries become manual.

@@ -183,4 +183,17 @@ final class ForecastCalculatorTests: XCTestCase {
         XCTAssertEqual(ForecastCalculator.confirmedNetWorthImpact(period: oct, categories: cats, entries: entries, groups: groups, exceptions: [toTransfer]), 0)
         XCTAssertEqual(ForecastCalculator.previewNetWorthDelta(period: oct, categories: cats, entries: entries, groups: groups, selectedScenarioGroupId: nil, exceptions: [amount]), 0)
     }
+
+    func testPreviewTotalWithScenarioAndExceptionsOnConfirmedEntries() {
+        let oct = PayPeriod(startDate: utcDate(2026, 10, 1), endDate: utcDate(2026, 10, 31), type: .projected)
+        let groups = [ForecastGroup(id: 1, name: "G", note: nil, isEnabled: true, isSystemManaged: false)]
+        let entries = [
+            ForecastEntry(id: 1, groupId: 1, categoryId: 10, amountMinorUnits: -10000, frequency: .monthly, interval: 1, startDate: utcDate(2026, 6, 15), endDate: nil, isEnabled: true, status: .manual, note: nil),
+            ForecastEntry(id: 2, groupId: 1, categoryId: 10, amountMinorUnits: -3000, frequency: .monthly, interval: 1, startDate: utcDate(2026, 6, 20), endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
+        ]
+        let amount = PlannedOccurrenceException(entryId: 1, originalDate: utcDate(2026, 10, 15), amountMinorUnits: -4000)
+        XCTAssertEqual(ForecastCalculator.previewTotal(categoryId: 10, period: oct, entries: entries, groups: groups, selectedScenarioGroupId: 1, exceptions: [amount]), -7000)
+        let refile = PlannedOccurrenceException(entryId: 1, originalDate: utcDate(2026, 10, 15), categoryId: 20)
+        XCTAssertEqual(ForecastCalculator.previewTotal(categoryId: 10, period: oct, entries: entries, groups: groups, selectedScenarioGroupId: 1, exceptions: [refile]), -3000)
+    }
 }
