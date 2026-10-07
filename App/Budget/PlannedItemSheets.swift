@@ -92,7 +92,7 @@ struct PlannedOccurrencesSection: View {
                     Text(row.isConfirmed ? "Confirmed" : "Unconfirmed")
                         .font(.caption)
                         .italic(!row.isConfirmed)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(row.isConfirmed ? Color.secondary : Color.pending)
                         .frame(width: 80, alignment: .trailing)
                     if !row.isConfirmed {
                         Button("Edit…") { onEdit(row) }
