@@ -22,6 +22,18 @@ public struct DashboardInput {
     let monthTotals: [Int64: [Int: [Int: Int]]]
 
     public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, manualCloses: [PayMonthClose] = []) {
+        let dataThrough = transactions.map(\.date).max()
+        let payCalendar = PayCalendar(
+            salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories),
+            manualCloses: manualCloses,
+            today: dataThrough.map { max(today, $0) } ?? today
+        )
+        self.init(today: today, accounts: accounts, snapshots: snapshots, transactions: transactions, categories: categories, categoryGroups: categoryGroups, forecastEntries: forecastEntries, forecastGroups: forecastGroups, exceptions: exceptions, importBatches: importBatches, rate: rate, payCalendar: payCalendar)
+    }
+
+    /// With a pay calendar the caller already built (the scenario comparison reuses the
+    /// dashboard's calculators with each plan's entries over one shared calendar).
+    public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, payCalendar: PayCalendar) {
         self.today = today
         self.accounts = accounts
         self.snapshots = snapshots
@@ -33,13 +45,7 @@ public struct DashboardInput {
         self.exceptions = exceptions
         self.importBatches = importBatches
         self.rate = rate
-        let dataThrough = transactions.map(\.date).max()
-        self.dataThrough = dataThrough
-        let payCalendar = PayCalendar(
-            salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories),
-            manualCloses: manualCloses,
-            today: dataThrough.map { max(today, $0) } ?? today
-        )
+        self.dataThrough = transactions.map(\.date).max()
         self.payCalendar = payCalendar
         self.monthTotals = PayMonthTotals.lookup(transactions: transactions, calendar: payCalendar)
     }

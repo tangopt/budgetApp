@@ -48,7 +48,9 @@ public struct YearChange: Equatable, Identifiable {
 }
 
 extension DashboardCalculator {
-    public static func netWorthSeries(_ input: DashboardInput) -> NetWorthSeries {
+    /// `forecastThroughYear` (default: next year) is how far the forecast line runs; the
+    /// scenario comparison passes its horizon's year. `yearEnds` are always this and next year.
+    public static func netWorthSeries(_ input: DashboardInput, forecastThroughYear: Int? = nil) -> NetWorthSeries {
         guard let firstSnapshot = input.snapshots.map(\.date).min(), let lastSnapshot = input.snapshots.map(\.date).max() else {
             return .empty
         }
@@ -79,7 +81,7 @@ extension DashboardCalculator {
         if let dataMonth, let dataThrough = input.dataThrough {
             let payMonth = input.payCalendar.month(containing: dataThrough)
             let walkStart = (year: payMonth.year, month: payMonth.month)
-            let projection = ForecastProjector.monthlyProjection(startingNetWorth: current, latestRealMonth: walkStart, throughYear: thisYear + 1, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
+            let projection = ForecastProjector.monthlyProjection(startingNetWorth: current, latestRealMonth: walkStart, throughYear: forecastThroughYear ?? thisYear + 1, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
             forecast = [NetWorthPoint(year: walkStart.year, month: walkStart.month, valueMinorUnits: current)] + projection
             if MonthRange.index(year: dataMonth.year, month: dataMonth.month) < MonthRange.index(year: walkStart.year, month: walkStart.month) {
                 forecast.insert(NetWorthPoint(year: dataMonth.year, month: dataMonth.month, valueMinorUnits: current), at: 0)
