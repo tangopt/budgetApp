@@ -16,16 +16,6 @@ struct CSVDocument: FileDocument {
     }
 }
 
-/// The Budget grid body's horizontal scroll offset (content minX in the scroll view's
-/// coordinate space: 0 at rest, negative once scrolled right).
-private struct HorizontalOffsetKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    // Sum, don't overwrite: SwiftUI also reduces in the default (0) from sibling subtrees
-    // that never set this key, and `value = nextValue()` let that 0 clobber the real
-    // offset after scrolling (header stuck). Only one view sets it, so the sum is exact.
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value += nextValue() }
-}
-
 struct BudgetGridView: View {
     @ObservedObject var viewModel: BudgetGridViewModel
     @State private var showExporter = false
@@ -231,15 +221,10 @@ struct BudgetGridView: View {
                                     rowCells(entry.kind, shaded: entry.shaded)
                                 }
                             }
-                            .background(GeometryReader { geo in
-                                Color.clear.preference(key: HorizontalOffsetKey.self, value: geo.frame(in: .named("gridHScroll")).minX)
-                            })
                         }
-                        .coordinateSpace(.named("gridHScroll"))
+                        // The header mirrors the content's offset (negated: content moves left).
+                        .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, x in scrollOffset.update(-x) }
                     }
-                }
-                .onPreferenceChange(HorizontalOffsetKey.self) { [scrollOffset] x in
-                    MainActor.assumeIsolated { scrollOffset.update(x) }
                 }
             }
 

@@ -199,11 +199,8 @@ struct ForecastView: View {
                                             rowCells(entry.kind, shaded: entry.shaded)
                                         }
                                     }
-                                    .background(GeometryReader { geo in
-                                        Color.clear.preference(key: ForecastHorizontalOffsetKey.self, value: geo.frame(in: .named("forecastHScroll")).minX)
-                                    })
                                 }
-                                .coordinateSpace(.named("forecastHScroll"))
+                                .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, x in scrollOffset.update(-x) }
                             }
                         }
                         // Bounded height keeps this the fixed-size scrollable viewport the
@@ -216,9 +213,6 @@ struct ForecastView: View {
                         // body. 480 shows a comfortable number of rows (~15-17 single-line,
                         // ~10-11 two-line) before this inner view needs its own scroll.
                         .frame(height: 480)
-                        .onPreferenceChange(ForecastHorizontalOffsetKey.self) { [scrollOffset] x in
-                            MainActor.assumeIsolated { scrollOffset.update(x) }
-                        }
                     }
                 }
                 .padding()
@@ -750,14 +744,6 @@ struct ForecastView: View {
         let components = calendar.dateComponents([.year, .month, .day], from: date)
         return calendar.date(from: components)!
     }
-}
-
-/// The forecast grid body's horizontal scroll offset — same technique as
-/// `BudgetGridView`'s `HorizontalOffsetKey`, a separate type because SwiftUI
-/// `PreferenceKey`s are matched by type, and this view has its own frozen header.
-private struct ForecastHorizontalOffsetKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value += nextValue() }
 }
 
 struct ScenarioItemFormView: View {

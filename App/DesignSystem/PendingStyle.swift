@@ -11,7 +11,7 @@ extension Color {
         case .darkAqua?, .accessibilityHighContrastDarkAqua?:
             return .systemYellow
         default:
-            return NSColor(srgbRed: 0.62, green: 0.40, blue: 0.0, alpha: 1)  // ~4.8:1 on white
+            return NSColor(srgbRed: 0.55, green: 0.35, blue: 0.0, alpha: 1)  // >= 4.5:1 on plain and shaded rows
         }
     })
 }

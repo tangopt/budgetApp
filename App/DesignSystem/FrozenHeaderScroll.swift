@@ -1,8 +1,8 @@
 // App/DesignSystem/FrozenHeaderScroll.swift
 import SwiftUI
 
-/// The horizontal scroll offset a frozen header row mirrors (content minX in the body's
-/// horizontal scroll view: 0 at rest, negative once scrolled right).
+/// The horizontal scroll offset a frozen header row mirrors (minus the body scroll view's
+/// `contentOffset.x`: 0 at rest, negative once scrolled right).
 ///
 /// It lives in its own object, held by the grid in a plain `@State` (which does *not*
 /// subscribe to `objectWillChange`), and is observed only by `HorizontalOffsetFollower`.
