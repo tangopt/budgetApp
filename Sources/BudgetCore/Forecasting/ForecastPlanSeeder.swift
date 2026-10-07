@@ -123,6 +123,7 @@ public enum ForecastPlanSeeder {
                 entry.frequency = item.frequency
                 entry.interval = item.interval
                 entry.startDate = start
+                entry.anchorDay = nil
                 entry.endDate = nil
                 entry.status = .manual
                 entry.isEnabled = true

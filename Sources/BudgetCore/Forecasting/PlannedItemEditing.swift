@@ -25,11 +25,16 @@ public struct OccurrenceChange: Equatable {
 public enum PlannedItemEditError: Error, Equatable {
     /// The occurrence's pay month is closed, or actuals already cover its category's plan.
     case occurrenceConfirmed
-    /// The new date falls in a closed pay month.
+    /// The new date falls in a closed pay month, or past a neighbouring occurrence of the
+    /// series (only this occurrence: strictly between the previous and next; this and all
+    /// following: strictly after the previous).
     case invalidDate
+    /// An interval below 1.
+    case invalidInterval
     /// A frequency/interval change applies to the series: use `editFollowing`.
     case frequencyNeedsFollowing
-    /// No such planned item, or `originalDate` isn't one of its occurrences.
+    /// No such planned item (an enabled, non-hypothetical entry in an enabled group, as
+    /// `ForecastCalculator.confirmedEntries`), or `originalDate` isn't one of its occurrences.
     case notFound
 }
 
@@ -40,19 +45,30 @@ public enum PlannedItemEditError: Error, Equatable {
 public enum PlannedItemEditing {
     private static let utc = MonthRange.calendar
 
-    /// Only this occurrence: upserts its exception (amount, date, category, skip). An exception
-    /// left with no effect is removed. A `.auto` series becomes `.manual`.
+    /// Only this occurrence: upserts its exception (amount, date, category, skip). Changing a
+    /// value without `remove` also un-skips a skipped occurrence. An exception left with no
+    /// effect is removed. A `.auto` series becomes `.manual`.
     public static func editOccurrence(db: Database, entryId: Int64, originalDate: Date, change: OccurrenceChange, calendar: PayCalendar) throws {
         try db.inSavepoint {
             var entry = try plannedEntry(db: db, id: entryId, originalDate: originalDate)
+            if let interval = change.interval, interval < 1 { throw PlannedItemEditError.invalidInterval }
             if let frequency = change.frequency, frequency != entry.frequency { throw PlannedItemEditError.frequencyNeedsFollowing }
             if let interval = change.interval, interval != entry.interval { throw PlannedItemEditError.frequencyNeedsFollowing }
             let existing = try exception(db: db, entryId: entryId, originalDate: originalDate)
             try requireUnconfirmed(db: db, entry: entry, originalDate: originalDate, existing: existing, calendar: calendar)
-            if !change.remove, let date = change.date { try requireOpen(date, calendar: calendar) }
+            if !change.remove, let date = change.date {
+                try requireOpen(date, calendar: calendar)
+                let (previous, next) = neighbours(of: originalDate, in: entry)
+                if let previous, date <= previous { throw PlannedItemEditError.invalidDate }
+                if let next, date >= next { throw PlannedItemEditError.invalidDate }
+            }
 
             var updated = existing ?? PlannedOccurrenceException(entryId: entryId, originalDate: originalDate)
-            if change.remove { updated.isSkipped = true }
+            if change.remove {
+                updated.isSkipped = true
+            } else if change.amountMinorUnits != nil || change.date != nil || change.categoryId != nil {
+                updated.isSkipped = false // editing a skipped occurrence brings it back
+            }
             if let amount = change.amountMinorUnits { updated.amountMinorUnits = amount == entry.amountMinorUnits ? nil : amount }
             if let date = change.date { updated.date = date == originalDate ? nil : date }
             if let categoryId = change.categoryId { updated.categoryId = categoryId == entry.categoryId ? nil : categoryId }
@@ -66,16 +82,24 @@ public enum PlannedItemEditing {
     /// This and all following: splits the series at `originalDate`. The original ends the day
     /// before (or is deleted when `originalDate` is its first occurrence); unless the change
     /// removes all following, a new `.manual` entry in the same group (note kept) starts at
-    /// `originalDate` — or the moved date — with the changes applied. Exceptions after
-    /// `originalDate` move to the new entry, re-keyed to its occurrence dates, unless a date
-    /// move or frequency change shifts the schedule, in which case they are dropped. The edited
-    /// occurrence's own exception follows the new entry minus the fields the change sets.
+    /// `originalDate` — or the moved date, which must be after the previous occurrence — with
+    /// the changes applied. The new series keeps the original's anchor day (so a split at
+    /// 28 Feb of a series on the 31st still gives 31 Mar), unless the date moves (then the new
+    /// date's day). Exceptions after `originalDate` move to the new entry with the same keys,
+    /// unless a date move or frequency change shifts the schedule, in which case they are
+    /// dropped. The edited occurrence's own exception follows the new entry minus the fields
+    /// the change sets, and un-skipped (the edit brings the occurrence back).
     public static func editFollowing(db: Database, entryId: Int64, originalDate: Date, change: OccurrenceChange, calendar: PayCalendar) throws {
         try db.inSavepoint {
             var entry = try plannedEntry(db: db, id: entryId, originalDate: originalDate)
+            if let interval = change.interval, interval < 1 { throw PlannedItemEditError.invalidInterval }
             let existing = try exception(db: db, entryId: entryId, originalDate: originalDate)
             try requireUnconfirmed(db: db, entry: entry, originalDate: originalDate, existing: existing, calendar: calendar)
-            if !change.remove, let date = change.date { try requireOpen(date, calendar: calendar) }
+            let previous = neighbours(of: originalDate, in: entry).previous
+            if !change.remove, let date = change.date {
+                try requireOpen(date, calendar: calendar)
+                if let previous, date <= previous { throw PlannedItemEditError.invalidDate }
+            }
 
             let later = try PlannedOccurrenceException
                 .filter(Column("entryId") == entryId && Column("originalDate") > originalDate)
@@ -94,6 +118,10 @@ public enum PlannedItemEditing {
                                              amountMinorUnits: change.amountMinorUnits ?? entry.amountMinorUnits,
                                              frequency: frequency, interval: interval, startDate: newStart, endDate: entry.endDate,
                                              isEnabled: entry.isEnabled, status: .manual, note: entry.note)
+                if change.date == nil {
+                    let anchor = entry.anchorDay ?? utc.component(.day, from: entry.startDate)
+                    newEntry.anchorDay = anchor == utc.component(.day, from: newStart) ? nil : anchor
+                }
                 try newEntry.insert(db)
                 let newId = newEntry.id!
 
@@ -110,26 +138,21 @@ public enum PlannedItemEditing {
                 if shifted || later.isEmpty {
                     for exception in later { _ = try exception.delete(db) }
                 } else {
-                    // Same schedule, new anchor: map each exception by its position in the old
-                    // series to the new series' date at that position (month-end anchors can
-                    // differ, e.g. 31 Dec from a 31 Oct start vs 30 Dec from 30 Nov).
-                    let last = later.last!.originalDate
-                    let oldDates = FrequencyExpander.occurrences(for: entry, in: PayPeriod(startDate: originalDate, endDate: last, type: .projected))
-                    let horizon = utc.date(byAdding: .year, value: 1, to: last)!
-                    let newDates = FrequencyExpander.occurrences(for: newEntry, in: PayPeriod(startDate: newStart, endDate: horizon, type: .projected))
+                    // Same schedule and anchor: the new series generates the same dates, so
+                    // the keys stay; anything it doesn't generate (defensive) is dropped.
                     for var exception in later {
-                        guard let index = oldDates.firstIndex(of: exception.originalDate), index < newDates.count else {
+                        let probe = PayPeriod(startDate: exception.originalDate, endDate: exception.originalDate, type: .projected)
+                        guard FrequencyExpander.occurrences(for: newEntry, in: probe).contains(exception.originalDate) else {
                             _ = try exception.delete(db)
                             continue
                         }
                         exception.entryId = newId
-                        exception.originalDate = newDates[index]
                         try exception.update(db)
                     }
                 }
             }
 
-            if originalDate == entry.startDate {
+            if previous == nil {
                 _ = try entry.delete(db) // first occurrence: the new entry (if any) replaces the series
             } else {
                 entry.endDate = utc.date(byAdding: .day, value: -1, to: originalDate)!
@@ -164,12 +187,24 @@ public enum PlannedItemEditing {
 
     // MARK: - Helpers
 
-    /// The planned item (never a hypothetical scenario entry) whose series generates `originalDate`.
+    /// The planned item (per `ForecastCalculator.confirmedEntries`: enabled, not hypothetical,
+    /// in an enabled group) whose series generates `originalDate`.
     private static func plannedEntry(db: Database, id: Int64, originalDate: Date) throws -> ForecastEntry {
-        guard let entry = try ForecastEntry.fetchOne(db, key: id), entry.status != .hypothetical else { throw PlannedItemEditError.notFound }
+        guard let entry = try ForecastEntry.fetchOne(db, key: id),
+              !ForecastCalculator.confirmedEntries(entries: [entry], groups: try ForecastGroup.filter(key: entry.groupId).fetchAll(db)).isEmpty
+        else { throw PlannedItemEditError.notFound }
         let probe = PayPeriod(startDate: originalDate, endDate: originalDate, type: .projected)
         guard FrequencyExpander.occurrences(for: entry, in: probe).contains(originalDate) else { throw PlannedItemEditError.notFound }
         return entry
+    }
+
+    /// The series' generated occurrences either side of `originalDate` (nil at either end).
+    private static func neighbours(of originalDate: Date, in entry: ForecastEntry) -> (previous: Date?, next: Date?) {
+        let before = FrequencyExpander.occurrences(for: entry, in: PayPeriod(startDate: entry.startDate, endDate: originalDate.addingTimeInterval(-1), type: .projected))
+        // One step of any frequency is under 400 days per unit of interval.
+        let horizon = utc.date(byAdding: .day, value: 400 * max(1, entry.interval), to: originalDate)!
+        let after = FrequencyExpander.occurrences(for: entry, in: PayPeriod(startDate: originalDate.addingTimeInterval(1), endDate: horizon, type: .projected))
+        return (before.last, after.first)
     }
 
     private static func exception(db: Database, entryId: Int64, originalDate: Date) throws -> PlannedOccurrenceException? {

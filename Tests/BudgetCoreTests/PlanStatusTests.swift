@@ -17,6 +17,13 @@ final class PlanStatusTests: XCTestCase {
         check(PlanStatus.cell(actual: -4000, planned: -10000, categoryType: .expense, monthClass: .blended), -10000, -6000, .partial)
     }
 
+    /// A refund against an expense plan isn't progress towards it: still all expected.
+    func testActualInTheOppositeDirectionIsAllExpected() {
+        check(PlanStatus.cell(actual: 1000, planned: -10000, categoryType: .expense, monthClass: .blended), -10000, -11000, .allExpected)
+        check(PlanStatus.cell(actual: -500, planned: 300000, categoryType: .income, monthClass: .blended), 300000, 300500, .allExpected)
+        check(PlanStatus.cell(actual: 2000, planned: -10000, categoryType: .transfer, monthClass: .blended), -10000, -12000, .allExpected)
+    }
+
     func testExpenseCovered() {
         check(PlanStatus.cell(actual: -12000, planned: -10000, categoryType: .expense, monthClass: .blended), -12000, 0, .none)
         check(PlanStatus.cell(actual: -10000, planned: -10000, categoryType: .expense, monthClass: .blended), -10000, 0, .none)

@@ -6,7 +6,7 @@ public enum PendingState: Equatable {
     case none
     /// Nothing has happened yet; the whole plan is pending.
     case allExpected
-    /// Some has happened, less than planned.
+    /// Some has happened (in the plan's direction), less than planned.
     case partial
 }
 
@@ -33,6 +33,8 @@ public enum PlanStatus {
         let remaining = max(0, plannedMagnitude - actualMagnitude)
         guard remaining > 0 else { return (actual, 0, .none) }
         let pending = direction * remaining
-        return (actual + pending, pending, actual == 0 ? .allExpected : .partial)
+        // Only an actual in the plan's direction counts as "partly happened"; a refund against
+        // an expense plan (or similar) leaves the whole plan expected.
+        return (actual + pending, pending, actualMagnitude > 0 ? .partial : .allExpected)
     }
 }

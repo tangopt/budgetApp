@@ -362,6 +362,7 @@ final class ForecastViewModel: ObservableObject {
         updated.amountMinorUnits = amountMinorUnits
         updated.frequency = frequency
         updated.interval = interval
+        if updated.startDate != startDate { updated.anchorDay = nil } // a new start sets the day
         updated.startDate = startDate
         updated.endDate = endDate
         if updated.status == .auto {

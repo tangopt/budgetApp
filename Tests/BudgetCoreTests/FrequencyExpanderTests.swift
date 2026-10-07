@@ -85,4 +85,31 @@ final class FrequencyExpanderTests: XCTestCase {
         let period = PayPeriod(startDate: d(2026, 1, 1), endDate: d(2026, 5, 31), type: .projected)
         XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [d(2026, 1, 31), d(2026, 2, 28), d(2026, 3, 31), d(2026, 4, 30), d(2026, 5, 31)])
     }
+
+    // MARK: - Anchor day
+
+    private func utc(_ y: Int, _ m: Int, _ d: Int) -> Date {
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "UTC")!
+        return cal.date(from: DateComponents(year: y, month: m, day: d))!
+    }
+
+    func testMonthlyAnchorDayRestoresMonthEnd() {
+        var entry = makeEntry(frequency: .monthly, interval: 1, startDate: utc(2027, 2, 28))
+        entry.anchorDay = 31
+        let period = PayPeriod(startDate: utc(2027, 2, 1), endDate: utc(2027, 5, 31), type: .projected)
+        XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [utc(2027, 2, 28), utc(2027, 3, 31), utc(2027, 4, 30), utc(2027, 5, 31)])
+    }
+
+    func testAnnualAnchorDayOn29February() {
+        var entry = makeEntry(frequency: .annually, interval: 1, startDate: utc(2027, 2, 28))
+        entry.anchorDay = 29
+        let period = PayPeriod(startDate: utc(2027, 1, 1), endDate: utc(2029, 12, 31), type: .projected)
+        XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [utc(2027, 2, 28), utc(2028, 2, 29), utc(2029, 2, 28)])
+    }
+
+    func testNoAnchorDayUsesTheStartDay() {
+        let entry = makeEntry(frequency: .monthly, interval: 1, startDate: utc(2027, 1, 31))
+        let period = PayPeriod(startDate: utc(2027, 1, 1), endDate: utc(2027, 4, 30), type: .projected)
+        XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [utc(2027, 1, 31), utc(2027, 2, 28), utc(2027, 3, 31), utc(2027, 4, 30)])
+    }
 }

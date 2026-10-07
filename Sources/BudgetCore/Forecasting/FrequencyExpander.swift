@@ -35,7 +35,16 @@ public enum FrequencyExpander {
         // previous occurrence: stepping iteratively drifts month-end dates permanently
         // (31 Jan → 28 Feb → 28 Mar …), which then double-fires or skips against pay
         // periods that are themselves anchored to a fixed day-of-month.
-        var cursor = entry.startDate
+        // Monthly/annual steps land on the anchor day (`anchorDay`, else the start's day),
+        // clamped to the month's length: 31 → 28 Feb → 31 Mar.
+        let anchor = entry.anchorDay ?? calendar.component(.day, from: entry.startDate)
+        func occurrence(_ index: Int) -> Date? {
+            guard let stepped = calendar.date(byAdding: component, value: stepValue * index, to: entry.startDate) else { return nil }
+            guard component != .day, let days = calendar.range(of: .day, in: .month, for: stepped)?.count else { return stepped }
+            let shift = min(anchor, days) - calendar.component(.day, from: stepped)
+            return shift == 0 ? stepped : calendar.date(byAdding: .day, value: shift, to: stepped)
+        }
+        guard var cursor = occurrence(0) else { return results }
         var stepIndex = 0
         while cursor <= period.endDate && stepIndex < maxIterations {
             if let entryEnd = entry.endDate, cursor > entryEnd { break }
@@ -43,7 +52,7 @@ public enum FrequencyExpander {
                 results.append(cursor)
             }
             stepIndex += 1
-            guard let next = calendar.date(byAdding: component, value: stepValue * stepIndex, to: entry.startDate) else { break }
+            guard let next = occurrence(stepIndex) else { break }
             cursor = next
         }
         return results

@@ -27,8 +27,11 @@ public struct ForecastEntry: Codable, Equatable, Identifiable, FetchableRecord, 
     public var isEnabled: Bool
     public var status: ForecastEntryStatus
     public var note: String?
+    /// Day of month monthly/annual occurrences fall on (clamped to the month's length);
+    /// nil = `startDate`'s UTC day. Lets a series split at 28 Feb keep 31 Mar, 30 Apr, …
+    public var anchorDay: Int?
 
-    public init(id: Int64? = nil, groupId: Int64, categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, isEnabled: Bool, status: ForecastEntryStatus, note: String?) {
+    public init(id: Int64? = nil, groupId: Int64, categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, isEnabled: Bool, status: ForecastEntryStatus, note: String?, anchorDay: Int? = nil) {
         self.id = id
         self.groupId = groupId
         self.categoryId = categoryId
@@ -40,6 +43,7 @@ public struct ForecastEntry: Codable, Equatable, Identifiable, FetchableRecord, 
         self.isEnabled = isEnabled
         self.status = status
         self.note = note
+        self.anchorDay = anchorDay
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -63,6 +67,14 @@ func registerForecastEntryMigration(_ migrator: inout DatabaseMigrator) {
             t.column("isEnabled", .boolean).notNull().defaults(to: true)
             t.column("status", .text).notNull()
             t.column("note", .text)
+        }
+    }
+}
+
+func registerForecastEntryAnchorDayMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addForecastEntryAnchorDay") { db in
+        try db.alter(table: "forecastEntry") { t in
+            t.add(column: "anchorDay", .integer)
         }
     }
 }

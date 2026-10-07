@@ -225,17 +225,28 @@ final class PlannedItemEditingTests: XCTestCase {
         XCTAssertEqual(ex[1].date, utc(2027, 1, 20))
     }
 
-    func testFollowingReKeysToTheNewSeriesDates() throws {
-        // Month-end series: 31 Oct, 30 Nov, 31 Dec … ; the new series from 30 Nov produces 30 Dec.
+    func testFollowingKeepsTheMonthEndAnchorAndExceptionKeys() throws {
+        // Rent on the 31st: 31 Oct, 30 Nov, 31 Dec, 31 Jan, 28 Feb, 31 Mar …; split at 28 Feb.
         let f = try fixture(start: utc(2026, 10, 31))
-        try addException(f, PlannedOccurrenceException(entryId: f.entryId, originalDate: utc(2026, 12, 31), amountMinorUnits: -5))
-        try editFollowing(f, utc(2026, 11, 30), OccurrenceChange(amountMinorUnits: -7))
-        let new = try entries(f)[1]
+        try addException(f, PlannedOccurrenceException(entryId: f.entryId, originalDate: utc(2027, 3, 31), amountMinorUnits: -5))
+        try editFollowing(f, utc(2027, 2, 28), OccurrenceChange(amountMinorUnits: -7))
+        let all = try entries(f)
+        let new = all[1]
+        XCTAssertEqual(all[0].endDate, utc(2027, 2, 27))
+        XCTAssertEqual(new.startDate, utc(2027, 2, 28))
+        XCTAssertEqual(new.anchorDay, 31)
+        let generated = FrequencyExpander.occurrences(for: new, in: PayPeriod(startDate: utc(2027, 2, 1), endDate: utc(2027, 5, 31), type: .projected))
+        XCTAssertEqual(generated, [utc(2027, 2, 28), utc(2027, 3, 31), utc(2027, 4, 30), utc(2027, 5, 31)])
         let ex = try exceptions(f)
         XCTAssertEqual(ex.count, 1)
         XCTAssertEqual(ex[0].entryId, new.id)
-        let generated = FrequencyExpander.occurrences(for: new, in: PayPeriod(startDate: utc(2026, 12, 1), endDate: utc(2026, 12, 31), type: .projected))
-        XCTAssertEqual(generated, [ex[0].originalDate])
+        XCTAssertEqual(ex[0].originalDate, utc(2027, 3, 31))
+    }
+
+    func testFollowingWithoutMonthEndKeepsNoAnchor() throws {
+        let f = try fixture()
+        try editFollowing(f, utc(2026, 11, 15), OccurrenceChange(amountMinorUnits: -7))
+        XCTAssertNil(try entries(f)[1].anchorDay)
     }
 
     func testFollowingExceptionOnTheEditedOccurrenceKeepsUnchangedFields() throws {
@@ -258,6 +269,7 @@ final class PlannedItemEditingTests: XCTestCase {
         let all = try entries(f)
         XCTAssertEqual(all[0].endDate, utc(2026, 11, 14))
         XCTAssertEqual(all[1].startDate, utc(2026, 11, 20))
+        XCTAssertNil(all[1].anchorDay) // the moved date's day
         XCTAssertEqual(all[1].amountMinorUnits, -100_000)
         XCTAssertTrue(try exceptions(f).isEmpty)
     }
@@ -317,5 +329,54 @@ final class PlannedItemEditingTests: XCTestCase {
         XCTAssertEqual(all[0].frequency, .once)
         XCTAssertEqual(all[0].startDate, utc(2026, 11, 9))
         XCTAssertEqual(all[0].amountMinorUnits, -5)
+    }
+
+    // MARK: - Fix round 1
+
+    func testDateMovesStayBetweenNeighbouringOccurrences() throws {
+        let f = try fixture()
+        expectError(.invalidDate) { try editOccurrence(f, utc(2026, 11, 15), OccurrenceChange(date: utc(2026, 10, 15))) }
+        expectError(.invalidDate) { try editOccurrence(f, utc(2026, 11, 15), OccurrenceChange(date: utc(2026, 12, 15))) }
+        expectError(.invalidDate) { try editOccurrence(f, utc(2026, 11, 15), OccurrenceChange(date: utc(2027, 1, 2))) }
+        expectError(.invalidDate) { try editFollowing(f, utc(2026, 11, 15), OccurrenceChange(date: utc(2026, 10, 15))) }
+        XCTAssertTrue(try exceptions(f).isEmpty)
+        XCTAssertEqual(try entries(f).count, 1)
+        try editOccurrence(f, utc(2026, 11, 15), OccurrenceChange(date: utc(2026, 10, 16)))
+        try editOccurrence(f, utc(2026, 12, 15), OccurrenceChange(date: utc(2027, 1, 14)))
+        XCTAssertEqual(try exceptions(f).map(\.date), [utc(2026, 10, 16), utc(2027, 1, 14)])
+        try editFollowing(f, utc(2027, 2, 15), OccurrenceChange(date: utc(2027, 3, 20))) // past the next is fine for "following"
+        XCTAssertEqual(try entries(f).last?.startDate, utc(2027, 3, 20))
+    }
+
+    func testValueChangeUnskipsAnOccurrence() throws {
+        let f = try fixture()
+        try editOccurrence(f, utc(2026, 10, 15), OccurrenceChange(remove: true))
+        try editOccurrence(f, utc(2026, 10, 15), OccurrenceChange(amountMinorUnits: -90_000))
+        let ex = try exceptions(f)
+        XCTAssertEqual(ex.count, 1)
+        XCTAssertFalse(ex[0].isSkipped)
+        XCTAssertEqual(ex[0].amountMinorUnits, -90_000)
+    }
+
+    func testOnlyPlannedItemsCanBeEdited() throws {
+        for setup in ["entryDisabled", "groupDisabled", "hypothetical"] {
+            let f = try fixture()
+            try f.manager.dbQueue.write { db in
+                switch setup {
+                case "entryDisabled": try db.execute(sql: "UPDATE forecastEntry SET isEnabled = 0")
+                case "groupDisabled": try db.execute(sql: "UPDATE forecastGroup SET isEnabled = 0")
+                default: try db.execute(sql: "UPDATE forecastEntry SET status = 'hypothetical'")
+                }
+            }
+            expectError(.notFound) { try editOccurrence(f, utc(2026, 10, 15), OccurrenceChange(amountMinorUnits: -1)) }
+            expectError(.notFound) { try editFollowing(f, utc(2026, 10, 15), OccurrenceChange(amountMinorUnits: -1)) }
+        }
+    }
+
+    func testIntervalMustBeAtLeastOne() throws {
+        let f = try fixture()
+        expectError(.invalidInterval) { try editFollowing(f, utc(2026, 11, 15), OccurrenceChange(interval: 0)) }
+        expectError(.invalidInterval) { try editOccurrence(f, utc(2026, 11, 15), OccurrenceChange(interval: 0)) }
+        XCTAssertEqual(try entries(f).count, 1)
     }
 }
