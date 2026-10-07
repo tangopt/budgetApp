@@ -19,6 +19,9 @@ final class BudgetGridViewModel: ObservableObject {
     @Published var forecastGroups: [ForecastGroup] = [] {
         didSet { reserveRemainingCache = [:] }
     }
+    @Published var exceptions: [PlannedOccurrenceException] = [] {
+        didSet { reserveRemainingCache = [:] }
+    }
     @Published var accounts: [Account] = []
     @Published var balanceSnapshots: [BalanceSnapshot] = []
     @Published var exchangeRate: ExchangeRateSetting = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
@@ -51,6 +54,7 @@ final class BudgetGridViewModel: ObservableObject {
         transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
         forecastEntries = try dbQueue.read { db in try ForecastEntry.fetchAll(db) }
         forecastGroups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
+        exceptions = try dbQueue.read { db in try PlannedOccurrenceException.fetchAll(db) }
         accounts = try dbQueue.read { db in try Account.fetchAll(db) }
         balanceSnapshots = try dbQueue.read { db in try BalanceSnapshot.fetchAll(db) }
         exchangeRate = try dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db) }
@@ -142,11 +146,11 @@ final class BudgetGridViewModel: ObservableObject {
         let range = MonthRange.of(year: year, month: month)
         let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
         let allowances: [(id: Int64, name: String, allowance: Int)] = reserves.compactMap { reserve in
-            reserve.id.map { ($0, reserve.name, ForecastCalculator.confirmedTotal(categoryId: $0, period: period, entries: forecastEntries, groups: forecastGroups)) }
+            reserve.id.map { ($0, reserve.name, ForecastCalculator.confirmedTotal(categoryId: $0, period: period, entries: forecastEntries, groups: forecastGroups, exceptions: exceptions)) }
         }
         let monthClass = payCalendar.monthClass(PayMonth(year: year, month: month))
         let remaining = ReservedCategories.monthAllowances(allowances, monthClass: monthClass) {
-            ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, monthTotals: monthTotals, entries: forecastEntries, groups: forecastGroups)
+            ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, monthTotals: monthTotals, entries: forecastEntries, groups: forecastGroups, exceptions: exceptions)
         }
         reserveRemainingCache[key] = remaining
         return remaining[id] ?? 0

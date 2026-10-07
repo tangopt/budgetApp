@@ -131,7 +131,7 @@ extension DashboardCalculator {
             guard let categoryId = category.id, category.type != .transfer else { continue }
             let actual = monthClass == .forecast ? 0 : (input.monthTotals[categoryId]?[year]?[month] ?? 0)
             let expected = (monthClass != .actual || includeExpected)
-                ? ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: input.forecastEntries, groups: input.forecastGroups)
+                ? ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
                 : 0
             // A reserve projects only what's left of its allowance after unforecast spending
             // (`ReservedCategories.remainingAllowances`); expected stays the full allowance.
@@ -147,10 +147,10 @@ extension DashboardCalculator {
     private static func remainingReserves(_ input: DashboardInput, year: Int, month: Int, period: PayPeriod, monthClass: MonthClass) -> [Int64: Int] {
         let reserves: [(id: Int64, name: String, allowance: Int)] = input.categories.compactMap { category in
             guard category.isReserved, let id = category.id else { return nil }
-            return (id, category.name, ForecastCalculator.confirmedTotal(categoryId: id, period: period, entries: input.forecastEntries, groups: input.forecastGroups))
+            return (id, category.name, ForecastCalculator.confirmedTotal(categoryId: id, period: period, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions))
         }
         guard !reserves.isEmpty else { return [:] }
-        let spend = monthClass == .forecast ? 0 : ReservedCategories.unforecastSpend(year: year, month: month, categories: input.categories, monthTotals: input.monthTotals, entries: input.forecastEntries, groups: input.forecastGroups)
+        let spend = monthClass == .forecast ? 0 : ReservedCategories.unforecastSpend(year: year, month: month, categories: input.categories, monthTotals: input.monthTotals, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
         return ReservedCategories.remainingAllowances(reserves, unforecastSpend: spend)
     }
 

@@ -59,7 +59,7 @@ final class DashboardNetWorthTests: XCTestCase {
         )
         XCTAssertFalse(input.payCalendar.isClosed(PayMonth(year: 2025, month: 12)))
         let yearEnd = try XCTUnwrap(DashboardCalculator.netWorthSeries(input).yearEnds.first)
-        let forecastDec2025 = ForecastProjector.forecastNetWorth(startingNetWorth: 1_200_000, latestRealMonth: (2026, 2), atEndOf: 2025, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups)
+        let forecastDec2025 = ForecastProjector.forecastNetWorth(startingNetWorth: 1_200_000, latestRealMonth: (2026, 2), atEndOf: 2025, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
         XCTAssertEqual(yearEnd.valueMinorUnits, 3_200_000)
         XCTAssertEqual(yearEnd.changeMinorUnits, 3_200_000 - forecastDec2025)
         XCTAssertNotEqual(yearEnd.changeMinorUnits, 2_200_000) // not the real Dec 2025 (1_000_000)
@@ -83,7 +83,7 @@ final class DashboardNetWorthTests: XCTestCase {
         XCTAssertEqual(series.forecast.first, NetWorthPoint(year: 2026, month: 9, valueMinorUnits: current))
 
         // The rest is unchanged: the October anchor, then the projector's walk from November.
-        let projection = ForecastProjector.monthlyProjection(startingNetWorth: current, latestRealMonth: (2026, 10), throughYear: 2027, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups)
+        let projection = ForecastProjector.monthlyProjection(startingNetWorth: current, latestRealMonth: (2026, 10), throughYear: 2027, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
         XCTAssertEqual(Array(series.forecast.dropFirst()), [NetWorthPoint(year: 2026, month: 10, valueMinorUnits: current)] + projection)
     }
 

@@ -43,7 +43,7 @@ public enum DashboardCalculator {
         let thisMonth = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
         let hasReserveAllowance = input.categories.contains { category in
             guard category.isReserved, let id = category.id else { return false }
-            return ForecastCalculator.confirmedTotal(categoryId: id, period: thisMonth, entries: input.forecastEntries, groups: input.forecastGroups) != 0
+            return ForecastCalculator.confirmedTotal(categoryId: id, period: thisMonth, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions) != 0
         }
         return AttentionItems(uncategorizedCount: uncategorized, staleBalanceCount: staleCount, oldestStaleSnapshotDate: oldest, missingReserveAllowance: !hasReserveAllowance)
     }
@@ -73,11 +73,10 @@ public enum DashboardCalculator {
             return (id, category.name)
         })
         var bills: [UpcomingBill] = []
-        for entry in ForecastCalculator.confirmedEntries(entries: input.forecastEntries, groups: input.forecastGroups) {
-            guard let name = expenseCategories[entry.categoryId] else { continue }
-            for occurrence in FrequencyExpander.occurrences(for: entry, in: period) {
-                bills.append(UpcomingBill(date: occurrence, categoryName: name, amountMinorUnits: entry.amountMinorUnits))
-            }
+        let confirmed = ForecastCalculator.confirmedEntries(entries: input.forecastEntries, groups: input.forecastGroups)
+        for occurrence in PlannedOccurrences.occurrences(entries: confirmed, exceptions: input.exceptions, in: period) {
+            guard let name = expenseCategories[occurrence.categoryId] else { continue }
+            bills.append(UpcomingBill(date: occurrence.date, categoryName: name, amountMinorUnits: occurrence.amountMinorUnits))
         }
         return bills.sorted { $0.date != $1.date ? $0.date < $1.date : $0.categoryName < $1.categoryName }
     }

@@ -11,6 +11,7 @@ public struct DashboardInput {
     public let categoryGroups: [CategoryGroup]
     public let forecastEntries: [ForecastEntry]
     public let forecastGroups: [ForecastGroup]
+    public let exceptions: [PlannedOccurrenceException]
     public let importBatches: [ImportBatch]
     public let rate: ExchangeRateSetting
     /// Latest transaction date across all accounts ("D"); nil when there are no transactions.
@@ -20,7 +21,7 @@ public struct DashboardInput {
     /// Confirmed pay-month totals per category, built once.
     let monthTotals: [Int64: [Int: [Int: Int]]]
 
-    public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], importBatches: [ImportBatch], rate: ExchangeRateSetting, manualCloses: [PayMonthClose] = []) {
+    public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, manualCloses: [PayMonthClose] = []) {
         self.today = today
         self.accounts = accounts
         self.snapshots = snapshots
@@ -29,6 +30,7 @@ public struct DashboardInput {
         self.categoryGroups = categoryGroups
         self.forecastEntries = forecastEntries
         self.forecastGroups = forecastGroups
+        self.exceptions = exceptions
         self.importBatches = importBatches
         self.rate = rate
         let dataThrough = transactions.map(\.date).max()

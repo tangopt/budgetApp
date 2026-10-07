@@ -141,4 +141,21 @@ final class DashboardCalculatorTests: XCTestCase {
         // Rent on 1 Oct (today) is in; rent on 1 Nov is day 31 → out.
         XCTAssertEqual(bills.map(\.date), [date(2026, 10, 1), date(2026, 10, 14)])
     }
+
+    func testUpcomingBillsHonourASkippedOccurrence() {
+        let skip = PlannedOccurrenceException(entryId: 3, originalDate: date(2026, 10, 14), isSkipped: true)
+        let input = F.input(today: date(2026, 10, 2), entries: F.withDining, exceptions: [skip])
+        let bills = DashboardCalculator.upcomingBills(input, days: 30)
+        XCTAssertEqual(bills.map(\.categoryName), ["Rent"])
+        XCTAssertEqual(bills.map(\.date), [date(2026, 11, 1)])
+    }
+
+    func testUpcomingBillsShowAMovedOccurrenceOnItsNewDateUnderItsNewCategory() {
+        let move = PlannedOccurrenceException(entryId: 2, originalDate: date(2026, 11, 1), amountMinorUnits: -95_000, date: date(2026, 10, 20), categoryId: F.groceriesId)
+        let input = F.input(today: date(2026, 10, 2), entries: F.withDining, exceptions: [move])
+        let bills = DashboardCalculator.upcomingBills(input, days: 30)
+        XCTAssertEqual(bills.map(\.categoryName), ["Dining", "Groceries"])
+        XCTAssertEqual(bills.map(\.date), [date(2026, 10, 14), date(2026, 10, 20)])
+        XCTAssertEqual(bills.map(\.amountMinorUnits), [-40_000, -95_000])
+    }
 }

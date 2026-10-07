@@ -50,6 +50,16 @@ final class DashboardFlowTests: XCTestCase {
         XCTAssertEqual(month.net, FlowTotals(actual: -180_000, expected: 160_000, projected: 120_000))
     }
 
+    func testCurrentMonthExpectedHonoursASkipAndAMove() {
+        // Nothing imported, so the current month is expected-only: rent 100k + dining 40k.
+        let today = date(2026, 10, 14)
+        let skipRent = PlannedOccurrenceException(entryId: 2, originalDate: date(2026, 10, 1), isSkipped: true)
+        XCTAssertEqual(DashboardCalculator.currentMonth(F.input(today: today, entries: F.withDining, exceptions: [skipRent])).expenses.expected, 40_000)
+        // Dining moved into November leaves October with rent only.
+        let moveDining = PlannedOccurrenceException(entryId: 3, originalDate: date(2026, 10, 14), date: date(2026, 11, 3))
+        XCTAssertEqual(DashboardCalculator.currentMonth(F.input(today: today, entries: F.withDining, exceptions: [moveDining])).expenses.expected, 100_000)
+    }
+
     func testUnreviewedTransactionsAreCountedButNotInTheTotals() {
         let month = DashboardCalculator.currentMonth(blendedInput)
         XCTAssertEqual(month.unreviewedCount, 2)

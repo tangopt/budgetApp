@@ -79,14 +79,14 @@ extension DashboardCalculator {
         if let dataMonth, let dataThrough = input.dataThrough {
             let payMonth = input.payCalendar.month(containing: dataThrough)
             let walkStart = (year: payMonth.year, month: payMonth.month)
-            let projection = ForecastProjector.monthlyProjection(startingNetWorth: current, latestRealMonth: walkStart, throughYear: thisYear + 1, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups)
+            let projection = ForecastProjector.monthlyProjection(startingNetWorth: current, latestRealMonth: walkStart, throughYear: thisYear + 1, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
             forecast = [NetWorthPoint(year: walkStart.year, month: walkStart.month, valueMinorUnits: current)] + projection
             if MonthRange.index(year: dataMonth.year, month: dataMonth.month) < MonthRange.index(year: walkStart.year, month: walkStart.month) {
                 forecast.insert(NetWorthPoint(year: dataMonth.year, month: dataMonth.month, valueMinorUnits: current), at: 0)
             }
 
             func forecastValue(atEndOf year: Int) -> Int {
-                ForecastProjector.forecastNetWorth(startingNetWorth: current, latestRealMonth: walkStart, atEndOf: year, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups)
+                ForecastProjector.forecastNetWorth(startingNetWorth: current, latestRealMonth: walkStart, atEndOf: year, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
             }
             for year in [thisYear, thisYear + 1] {
                 let value = forecastValue(atEndOf: year)

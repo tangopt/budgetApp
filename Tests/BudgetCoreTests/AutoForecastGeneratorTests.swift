@@ -132,7 +132,7 @@ final class AutoForecastGeneratorTests: XCTestCase {
         // Projected: fires in the period containing 2 Feb 2027 and in no other.
         let group = try manager.dbQueue.read { db in try ForecastGroup.fetchAll(db) }
         let projected = PayPeriodDetector.generateProjectedPeriods(cadence: PayCadence(averageIntervalDays: 30, lastPayDate: periods.last!.startDate), horizon: utcDate(2027, 3, 1))
-        let totals = projected.map { ForecastCalculator.confirmedTotal(categoryId: tvLicence, period: $0, entries: [entry], groups: group) }
+        let totals = projected.map { ForecastCalculator.confirmedTotal(categoryId: tvLicence, period: $0, entries: [entry], groups: group, exceptions: []) }
         XCTAssertEqual(totals.filter { $0 != 0 }, [-17450])
     }
 

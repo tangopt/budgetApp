@@ -57,6 +57,7 @@ final class DashboardViewModel: ObservableObject {
                     categoryGroups: try CategoryGroup.fetchAll(db),
                     forecastEntries: try ForecastEntry.fetchAll(db),
                     forecastGroups: try ForecastGroup.fetchAll(db),
+                    exceptions: try PlannedOccurrenceException.fetchAll(db),
                     importBatches: try ImportBatch.fetchAll(db),
                     rate: try ExchangeRateSetting.currentOrDefault(db: db),
                     manualCloses: try PayMonthClose.fetchAll(db)

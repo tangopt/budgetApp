@@ -63,13 +63,13 @@ public enum ReservedCategories {
     /// nothing forecast for the calendar month of that name. Net signed sum, so refunds
     /// reduce it; returned as a positive magnitude, never below 0. Unreviewed transactions
     /// aren't in `monthTotals`, so never count.
-    public static func unforecastSpend(year: Int, month: Int, categories: [Category], monthTotals: [Int64: [Int: [Int: Int]]], entries: [ForecastEntry], groups: [ForecastGroup]) -> Int {
+    public static func unforecastSpend(year: Int, month: Int, categories: [Category], monthTotals: [Int64: [Int: [Int: Int]]], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException]) -> Int {
         let range = MonthRange.of(year: year, month: month)
         let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
         var net = 0
         for category in categories where category.type == .expense && !category.isReserved {
             guard let categoryId = category.id, let actual = monthTotals[categoryId]?[year]?[month], actual != 0 else { continue }
-            guard ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups) == 0 else { continue }
+            guard ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, exceptions: exceptions) == 0 else { continue }
             net += actual
         }
         return max(0, -net)

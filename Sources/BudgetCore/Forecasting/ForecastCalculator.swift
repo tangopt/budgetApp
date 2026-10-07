@@ -1,7 +1,7 @@
 import Foundation
 
 public enum ForecastCalculator {
-    public static func confirmedTotal(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException] = []) -> Int {
+    public static func confirmedTotal(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException]) -> Int {
         total(categoryId: categoryId, period: period, entries: entries, groups: groups, exceptions: exceptions, selectedScenarioGroupId: nil, includeHypothetical: false)
     }
 
@@ -10,14 +10,14 @@ public enum ForecastCalculator {
     /// group" (unlike confirmed/auto/manual entries, which are still gated by their own
     /// group's `isEnabled`, unrelated to selection). `nil` means no scenario is selected,
     /// so no hypothetical entries count at all — `previewTotal` then equals `confirmedTotal`.
-    public static func previewTotal(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], selectedScenarioGroupId: Int64?, exceptions: [PlannedOccurrenceException] = []) -> Int {
+    public static func previewTotal(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], selectedScenarioGroupId: Int64?, exceptions: [PlannedOccurrenceException]) -> Int {
         total(categoryId: categoryId, period: period, entries: entries, groups: groups, exceptions: exceptions, selectedScenarioGroupId: selectedScenarioGroupId, includeHypothetical: true)
     }
 
     /// The confirmed forecast's net effect on account balances for one period — income
     /// minus expenses, transfer categories excluded (moving money to the user's own
     /// savings/ISA doesn't change net worth). Signed: positive means net worth grows.
-    public static func confirmedNetWorthImpact(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException] = []) -> Int {
+    public static func confirmedNetWorthImpact(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException]) -> Int {
         categories.reduce(0) { sum, category in
             guard category.type != .transfer, let categoryId = category.id else { return sum }
             return sum + confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, exceptions: exceptions)
@@ -29,7 +29,7 @@ public enum ForecastCalculator {
     /// is the *delta* a scenario would add on top of the confirmed forecast, not a full
     /// preview total by itself. `nil` selection (or a scenario with no entries in a given
     /// category) contributes 0. Signed the same way as `confirmedNetWorthImpact`.
-    public static func previewNetWorthDelta(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], selectedScenarioGroupId: Int64?, exceptions: [PlannedOccurrenceException] = []) -> Int {
+    public static func previewNetWorthDelta(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], selectedScenarioGroupId: Int64?, exceptions: [PlannedOccurrenceException]) -> Int {
         categories.reduce(0) { sum, category in
             guard category.type != .transfer, let categoryId = category.id else { return sum }
             let confirmed = confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, exceptions: exceptions)

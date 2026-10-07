@@ -14,7 +14,7 @@ final class BudgetGridCalculatorTests: XCTestCase {
         let transactions = [
             Transaction(id: 1, importBatchId: 1, accountId: 1, date: date(2026, 6, 28), rawDescription: "RENT", amountMinorUnits: -280000, categoryId: 1, status: .confirmed, categorizedBy: .manual, fingerprint: "a")
         ]
-        let total = BudgetGridCalculator.categoryTotal(category: rent, period: period, transactions: transactions, forecastEntries: [], forecastGroups: [])
+        let total = BudgetGridCalculator.categoryTotal(category: rent, period: period, transactions: transactions, forecastEntries: [], forecastGroups: [], exceptions: [])
         XCTAssertEqual(total, -280000)
     }
 
@@ -23,7 +23,7 @@ final class BudgetGridCalculatorTests: XCTestCase {
         let period = PayPeriod(startDate: date(2026, 9, 26), endDate: date(2026, 10, 25), type: .projected)
         let group = ForecastGroup(id: 1, name: "Detected recurring", note: nil, isEnabled: true, isSystemManaged: true)
         let entry = ForecastEntry(id: 1, groupId: 1, categoryId: 1, amountMinorUnits: -280000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .auto, note: nil)
-        let total = BudgetGridCalculator.categoryTotal(category: rent, period: period, transactions: [], forecastEntries: [entry], forecastGroups: [group])
+        let total = BudgetGridCalculator.categoryTotal(category: rent, period: period, transactions: [], forecastEntries: [entry], forecastGroups: [group], exceptions: [])
         XCTAssertEqual(total, -280000)
     }
 
@@ -37,7 +37,7 @@ final class BudgetGridCalculatorTests: XCTestCase {
             Transaction(id: 2, importBatchId: 1, accountId: 1, date: date(2026, 6, 28), rawDescription: "RENT", amountMinorUnits: -180000, categoryId: 2, status: .confirmed, categorizedBy: .manual, fingerprint: "b"),
             Transaction(id: 3, importBatchId: 1, accountId: 1, date: date(2026, 6, 29), rawDescription: "ISA", amountMinorUnits: -50000, categoryId: 3, status: .confirmed, categorizedBy: .manual, fingerprint: "c")
         ]
-        let summary = BudgetGridCalculator.periodSummary(period: period, categories: [income, rent, isaTransfer], transactions: transactions, forecastEntries: [], forecastGroups: [])
+        let summary = BudgetGridCalculator.periodSummary(period: period, categories: [income, rent, isaTransfer], transactions: transactions, forecastEntries: [], forecastGroups: [], exceptions: [])
         XCTAssertEqual(summary.incomeMinorUnits, 280000)
         XCTAssertEqual(summary.expensesMinorUnits, 180000)
         XCTAssertEqual(summary.transfersMinorUnits, 50000)
@@ -59,7 +59,7 @@ final class BudgetGridCalculatorTests: XCTestCase {
             Transaction(id: 4, importBatchId: 1, accountId: 1, date: date(2026, 7, 3), rawDescription: "SAINSBURYS", amountMinorUnits: -10000, categoryId: 4, status: .confirmed, categorizedBy: .manual, fingerprint: "d"),
             Transaction(id: 5, importBatchId: 1, accountId: 1, date: date(2026, 7, 4), rawDescription: "SAINSBURYS REFUND", amountMinorUnits: 2500, categoryId: 4, status: .confirmed, categorizedBy: .manual, fingerprint: "e")
         ]
-        let summary = BudgetGridCalculator.periodSummary(period: period, categories: [income, isaTransfer, groceries], transactions: transactions, forecastEntries: [], forecastGroups: [])
+        let summary = BudgetGridCalculator.periodSummary(period: period, categories: [income, isaTransfer, groceries], transactions: transactions, forecastEntries: [], forecastGroups: [], exceptions: [])
         XCTAssertEqual(summary.transfersMinorUnits, -30000) // net £300 came back in
         XCTAssertEqual(summary.expensesMinorUnits, 7500)    // refund offsets spend
         XCTAssertEqual(summary.moneyRemainingMinorUnits, 280000 - 7500 + 30000)

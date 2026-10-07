@@ -15,6 +15,7 @@ final class ForecastViewModel: ObservableObject {
         return groups.filter { !$0.isSystemManaged && !confirmedGroupNames.contains($0.name) }
     }
     @Published var entries: [ForecastEntry] = []
+    @Published var exceptions: [PlannedOccurrenceException] = []
     @Published var categories: [Category] = []
     @Published var categoryGroups: [CategoryGroup] = []
     @Published var accounts: [Account] = []
@@ -91,6 +92,7 @@ final class ForecastViewModel: ObservableObject {
     func load() throws {
         groups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
         entries = try dbQueue.read { db in try ForecastEntry.fetchAll(db) }
+        exceptions = try dbQueue.read { db in try PlannedOccurrenceException.fetchAll(db) }
         categories = try dbQueue.read { db in try Category.fetchAll(db) }
         categoryGroups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
         accounts = try dbQueue.read { db in try Account.fetchAll(db) }
@@ -135,8 +137,8 @@ final class ForecastViewModel: ObservableObject {
                     let range = dateRange(forYear: year, month: month)
                     let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
                     byMonth[month] = (
-                        ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups),
-                        ForecastCalculator.previewTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId)
+                        ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, exceptions: exceptions),
+                        ForecastCalculator.previewTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId, exceptions: exceptions)
                     )
                 }
                 byYear[year] = byMonth
@@ -225,8 +227,8 @@ final class ForecastViewModel: ObservableObject {
         let range = dateRange(forYear: year, month: month)
         let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
         return preview
-            ? ForecastCalculator.previewTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId)
-            : ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups)
+            ? ForecastCalculator.previewTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId, exceptions: exceptions)
+            : ForecastCalculator.confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, exceptions: exceptions)
     }
 
     /// A reserve's remaining allowance for one month, from `reserveRemainingCache`, falling
@@ -245,7 +247,7 @@ final class ForecastViewModel: ObservableObject {
             reserve.id.map { ($0, reserve.name, forecastValue(reserve, year: year, month: month, preview: preview)) }
         }
         return ReservedCategories.monthAllowances(allowances, monthClass: monthClass(year: year, month: month)) {
-            ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, monthTotals: monthTotals, entries: entries, groups: groups)
+            ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, monthTotals: monthTotals, entries: entries, groups: groups, exceptions: exceptions)
         }
     }
 
@@ -270,7 +272,7 @@ final class ForecastViewModel: ObservableObject {
 
     private func computeForecastNetWorth(atEndOf year: Int) -> Int? {
         guard let latestRealMonth else { return nil }
-        return ForecastProjector.forecastNetWorth(startingNetWorth: currentNetWorthGBP, latestRealMonth: latestRealMonth, atEndOf: year, categories: categories, entries: entries, groups: groups)
+        return ForecastProjector.forecastNetWorth(startingNetWorth: currentNetWorthGBP, latestRealMonth: latestRealMonth, atEndOf: year, categories: categories, entries: entries, groups: groups, exceptions: exceptions)
     }
 
     /// Walks month-by-month from the month after `latestRealMonth` through December of
@@ -328,7 +330,7 @@ final class ForecastViewModel: ObservableObject {
         guard let selectedScenarioGroupId else { return nil }
         return sumOverForecastMonths(atEndOf: year, { y, m in
             let range = dateRange(forYear: y, month: m)
-            return ForecastCalculator.previewNetWorthDelta(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: categories, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId)
+            return ForecastCalculator.previewNetWorthDelta(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: categories, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId, exceptions: exceptions)
         })
     }
 

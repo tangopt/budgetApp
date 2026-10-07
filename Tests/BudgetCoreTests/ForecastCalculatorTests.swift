@@ -15,7 +15,7 @@ final class ForecastCalculatorTests: XCTestCase {
             ForecastEntry(id: 1, groupId: 1, categoryId: 10, amountMinorUnits: -280000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .auto, note: nil),
             ForecastEntry(id: 2, groupId: 1, categoryId: 10, amountMinorUnits: -5000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
         ]
-        let confirmed = ForecastCalculator.confirmedTotal(categoryId: 10, period: period, entries: entries, groups: groups)
+        let confirmed = ForecastCalculator.confirmedTotal(categoryId: 10, period: period, entries: entries, groups: groups, exceptions: [])
         XCTAssertEqual(confirmed, -280000)
     }
 
@@ -26,7 +26,7 @@ final class ForecastCalculatorTests: XCTestCase {
             ForecastEntry(id: 1, groupId: 1, categoryId: 10, amountMinorUnits: -280000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .auto, note: nil),
             ForecastEntry(id: 2, groupId: 1, categoryId: 10, amountMinorUnits: -5000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
         ]
-        let preview = ForecastCalculator.previewTotal(categoryId: 10, period: period, entries: entries, groups: groups, selectedScenarioGroupId: 1)
+        let preview = ForecastCalculator.previewTotal(categoryId: 10, period: period, entries: entries, groups: groups, selectedScenarioGroupId: 1, exceptions: [])
         XCTAssertEqual(preview, -285000)
     }
 
@@ -41,7 +41,7 @@ final class ForecastCalculatorTests: XCTestCase {
             // This scenario's group (id 2) is enabled, but it isn't the *selected* one (id 1 is selected below) — its hypothetical must not count.
             ForecastEntry(id: 2, groupId: 2, categoryId: 10, amountMinorUnits: -35000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
         ]
-        let preview = ForecastCalculator.previewTotal(categoryId: 10, period: period, entries: entries, groups: groups, selectedScenarioGroupId: 1)
+        let preview = ForecastCalculator.previewTotal(categoryId: 10, period: period, entries: entries, groups: groups, selectedScenarioGroupId: 1, exceptions: [])
         XCTAssertEqual(preview, -280000) // only the auto entry — group 2's hypothetical is excluded
     }
 
@@ -52,7 +52,7 @@ final class ForecastCalculatorTests: XCTestCase {
             ForecastEntry(id: 1, groupId: 1, categoryId: 10, amountMinorUnits: -280000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .auto, note: nil),
             ForecastEntry(id: 2, groupId: 1, categoryId: 10, amountMinorUnits: -5000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
         ]
-        let preview = ForecastCalculator.previewTotal(categoryId: 10, period: period, entries: entries, groups: groups, selectedScenarioGroupId: nil)
+        let preview = ForecastCalculator.previewTotal(categoryId: 10, period: period, entries: entries, groups: groups, selectedScenarioGroupId: nil, exceptions: [])
         XCTAssertEqual(preview, -280000)
     }
 
@@ -62,7 +62,7 @@ final class ForecastCalculatorTests: XCTestCase {
         let entries = [
             ForecastEntry(id: 3, groupId: 2, categoryId: 20, amountMinorUnits: -30000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: true, status: .confirmed, note: nil)
         ]
-        XCTAssertEqual(ForecastCalculator.confirmedTotal(categoryId: 20, period: period, entries: entries, groups: groups), 0)
+        XCTAssertEqual(ForecastCalculator.confirmedTotal(categoryId: 20, period: period, entries: entries, groups: groups, exceptions: []), 0)
     }
 
     func testDisabledIndividualEntryIsExcludedEvenIfGroupEnabled() {
@@ -71,7 +71,7 @@ final class ForecastCalculatorTests: XCTestCase {
         let entries = [
             ForecastEntry(id: 1, groupId: 1, categoryId: 10, amountMinorUnits: -280000, frequency: .monthly, interval: 1, startDate: date(2026, 6, 26), endDate: nil, isEnabled: false, status: .auto, note: nil)
         ]
-        XCTAssertEqual(ForecastCalculator.confirmedTotal(categoryId: 10, period: period, entries: entries, groups: groups), 0)
+        XCTAssertEqual(ForecastCalculator.confirmedTotal(categoryId: 10, period: period, entries: entries, groups: groups, exceptions: []), 0)
     }
 
     func testConfirmedNetWorthImpactSumsIncomeMinusExpensesExcludingTransfers() {
@@ -85,7 +85,7 @@ final class ForecastCalculatorTests: XCTestCase {
             ForecastEntry(id: 2, groupId: 1, categoryId: 2, amountMinorUnits: -180000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 26), endDate: nil, isEnabled: true, status: .auto, note: nil),
             ForecastEntry(id: 3, groupId: 1, categoryId: 3, amountMinorUnits: -50000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 26), endDate: nil, isEnabled: true, status: .auto, note: nil)
         ]
-        let impact = ForecastCalculator.confirmedNetWorthImpact(period: period, categories: [income, rent, isaTransfer], entries: entries, groups: [group])
+        let impact = ForecastCalculator.confirmedNetWorthImpact(period: period, categories: [income, rent, isaTransfer], entries: entries, groups: [group], exceptions: [])
         XCTAssertEqual(impact, 280000 - 180000) // the -50000 transfer is excluded
     }
 
@@ -97,14 +97,14 @@ final class ForecastCalculatorTests: XCTestCase {
             ForecastEntry(id: 1, groupId: 1, categoryId: 1, amountMinorUnits: -20000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 1), endDate: nil, isEnabled: true, status: .auto, note: nil),
             ForecastEntry(id: 2, groupId: 1, categoryId: 1, amountMinorUnits: -5000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 1), endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
         ]
-        let impact = ForecastCalculator.confirmedNetWorthImpact(period: period, categories: [groceries], entries: entries, groups: [group])
+        let impact = ForecastCalculator.confirmedNetWorthImpact(period: period, categories: [groceries], entries: entries, groups: [group], exceptions: [])
         XCTAssertEqual(impact, -20000)
     }
 
     func testConfirmedNetWorthImpactSkipsCategoriesWithNoId() {
         let period = PayPeriod(startDate: date(2026, 3, 1), endDate: date(2026, 3, 31), type: .projected)
         let unsaved = Category(id: nil, name: "Draft", type: .expense)
-        let impact = ForecastCalculator.confirmedNetWorthImpact(period: period, categories: [unsaved], entries: [], groups: [])
+        let impact = ForecastCalculator.confirmedNetWorthImpact(period: period, categories: [unsaved], entries: [], groups: [], exceptions: [])
         XCTAssertEqual(impact, 0)
     }
 
@@ -119,7 +119,7 @@ final class ForecastCalculatorTests: XCTestCase {
             ForecastEntry(id: 2, groupId: 2, categoryId: 2, amountMinorUnits: -35000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 1), endDate: nil, isEnabled: true, status: .hypothetical, note: nil),
             ForecastEntry(id: 3, groupId: 2, categoryId: 3, amountMinorUnits: -20000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 1), endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
         ]
-        let delta = ForecastCalculator.previewNetWorthDelta(period: period, categories: [salary, carPayment, transfer], entries: entries, groups: groups, selectedScenarioGroupId: 2)
+        let delta = ForecastCalculator.previewNetWorthDelta(period: period, categories: [salary, carPayment, transfer], entries: entries, groups: groups, selectedScenarioGroupId: 2, exceptions: [])
         XCTAssertEqual(delta, 100000 - 35000) // transfer excluded; delta is preview minus confirmed (0, nothing confirmed here)
     }
 
@@ -130,7 +130,7 @@ final class ForecastCalculatorTests: XCTestCase {
         let entries = [
             ForecastEntry(id: 2, groupId: 2, categoryId: 2, amountMinorUnits: -35000, frequency: .monthly, interval: 1, startDate: date(2026, 1, 1), endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
         ]
-        let delta = ForecastCalculator.previewNetWorthDelta(period: period, categories: [carPayment], entries: entries, groups: groups, selectedScenarioGroupId: nil)
+        let delta = ForecastCalculator.previewNetWorthDelta(period: period, categories: [carPayment], entries: entries, groups: groups, selectedScenarioGroupId: nil, exceptions: [])
         XCTAssertEqual(delta, 0)
     }
 
@@ -160,7 +160,7 @@ final class ForecastCalculatorTests: XCTestCase {
         let oct = PayPeriod(startDate: utcDate(2026, 10, 1), endDate: utcDate(2026, 10, 31), type: .projected)
         let groups = [ForecastGroup(id: 1, name: "G", note: nil, isEnabled: true, isSystemManaged: false)]
         let entries = [ForecastEntry(id: 1, groupId: 1, categoryId: 10, amountMinorUnits: -10000, frequency: .monthly, interval: 1, startDate: utcDate(2026, 6, 15), endDate: nil, isEnabled: true, status: .manual, note: nil)]
-        XCTAssertEqual(ForecastCalculator.confirmedTotal(categoryId: 10, period: oct, entries: entries, groups: groups), -10000)
+        XCTAssertEqual(ForecastCalculator.confirmedTotal(categoryId: 10, period: oct, entries: entries, groups: groups, exceptions: []), -10000)
         let amount = PlannedOccurrenceException(entryId: 1, originalDate: utcDate(2026, 10, 15), amountMinorUnits: -4000)
         XCTAssertEqual(ForecastCalculator.confirmedTotal(categoryId: 10, period: oct, entries: entries, groups: groups, exceptions: [amount]), -4000)
         let skip = PlannedOccurrenceException(entryId: 1, originalDate: utcDate(2026, 10, 15), isSkipped: true)
@@ -175,7 +175,7 @@ final class ForecastCalculatorTests: XCTestCase {
         let groups = [ForecastGroup(id: 1, name: "G", note: nil, isEnabled: true, isSystemManaged: false)]
         let cats = [Category(id: 10, name: "Rent", type: .expense), Category(id: 20, name: "Isa", type: .transfer)]
         let entries = [ForecastEntry(id: 1, groupId: 1, categoryId: 10, amountMinorUnits: -10000, frequency: .monthly, interval: 1, startDate: utcDate(2026, 6, 15), endDate: nil, isEnabled: true, status: .manual, note: nil)]
-        XCTAssertEqual(ForecastCalculator.confirmedNetWorthImpact(period: oct, categories: cats, entries: entries, groups: groups), -10000)
+        XCTAssertEqual(ForecastCalculator.confirmedNetWorthImpact(period: oct, categories: cats, entries: entries, groups: groups, exceptions: []), -10000)
         let amount = PlannedOccurrenceException(entryId: 1, originalDate: utcDate(2026, 10, 15), amountMinorUnits: -4000)
         XCTAssertEqual(ForecastCalculator.confirmedNetWorthImpact(period: oct, categories: cats, entries: entries, groups: groups, exceptions: [amount]), -4000)
         // Re-filed into a transfer category: no longer a net-worth effect.

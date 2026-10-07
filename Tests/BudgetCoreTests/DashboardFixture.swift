@@ -44,6 +44,7 @@ enum DashboardFixture {
         transactions: [Transaction] = [],
         importBatches: [ImportBatch] = [],
         entries: [ForecastEntry]? = nil,
+        exceptions: [PlannedOccurrenceException] = [],
         reservedId: Int64? = nil,
         excludedId: Int64? = nil,
         salaries: [Date] = [],
@@ -70,6 +71,7 @@ enum DashboardFixture {
             categoryGroups: [CategoryGroup(id: 1, name: "Food")],
             forecastEntries: entries ?? withDining,
             forecastGroups: [ForecastGroup(id: 1, name: "Detected recurring", note: nil, isEnabled: true, isSystemManaged: true)],
+            exceptions: exceptions,
             importBatches: importBatches,
             rate: ExchangeRateSetting(eurToGbpRate: 0.5, updatedAt: date(2026, 1, 1)),
             manualCloses: manualCloses
