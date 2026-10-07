@@ -213,7 +213,7 @@ final class ImportCoordinatorTests: XCTestCase {
         let entries = try await manager.dbQueue.read { db in try ForecastEntry.fetchAll(db) }
         let rentEntry = try XCTUnwrap(entries.first { $0.categoryId == rent })
         XCTAssertEqual(rentEntry.amountMinorUnits, -180000)
-        XCTAssertEqual(rentEntry.status, .auto)
+        XCTAssertEqual(rentEntry.status, .manual) // detection adds ordinary planned items
         XCTAssertEqual(entries.first { $0.categoryId == income }?.amountMinorUnits, 280000)
     }
 

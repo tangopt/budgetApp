@@ -33,9 +33,9 @@ public enum AutoForecastGenerator {
     }
 
     /// Recomputes the default forecast from everything in the database: derives actual
-    /// pay periods from salary paydays (see `PaydaySource`) and regenerates the
-    /// "Detected recurring" group. Called after every committed import so forecasts
-    /// refresh whenever new actuals land. No-op until at least two paydays exist.
+    /// pay periods from salary paydays (see `PaydaySource`) and adds planned items for
+    /// newly detected recurring categories (see `regenerate`). Called after every committed
+    /// import. No-op until at least two paydays exist.
     public static func refresh(db: Database) throws {
         let paydays = try PaydaySource.paydayDates(db: db)
         let actualPeriods = PayPeriodDetector.generateActualPeriods(incomeDates: paydays)
@@ -43,20 +43,26 @@ public enum AutoForecastGenerator {
     }
 
     /// Buckets confirmed transactions into `actualPeriods`, sums per category per
-    /// period (signed), and creates, refreshes or removes an `auto`-status
-    /// ForecastEntry per category in the "Detected recurring" group, according to
-    /// `detectRecurrence`. Entries whose status has been changed away from `.auto`
-    /// (i.e. the user tuned them) are left untouched.
+    /// period (signed), and — for a category with no planned item at all (no
+    /// non-hypothetical entry in any group, enabled or not) — adds one ordinary planned
+    /// item (status `.manual`) in the "Detected recurring" group according to
+    /// `detectRecurrence`. Detection only ever adds: once a category has a plan, the user
+    /// owns it, so existing entries are never updated or deleted. Reserves and categories
+    /// excluded from the auto-forecast are skipped.
     public static func regenerate(db: Database, actualPeriods: [PayPeriod]) throws {
         guard !actualPeriods.isEmpty else { return }
         let group = try ensureDetectedRecurringGroup(db: db)
         let sortedPeriods = actualPeriods.sorted { $0.startDate < $1.startDate }
         let categories = try Category.fetchAll(db)
+        let plannedCategoryIds = Set(try Int64.fetchAll(db, sql: """
+            SELECT DISTINCT categoryId FROM forecastEntry WHERE status != ?
+            """, arguments: [ForecastEntryStatus.hypothetical.rawValue]))
 
         for category in categories {
             guard let categoryId = category.id else { continue }
             // Reserves and categories maintained by hand keep whatever entries the user has.
             if category.isReserved || category.excludeFromAutoForecast { continue }
+            if plannedCategoryIds.contains(categoryId) { continue }
             var perPeriodSums: [Int] = []
             for period in sortedPeriods {
                 let sum = try Int.fetchOne(db, sql: """
@@ -65,18 +71,7 @@ public enum AutoForecastGenerator {
                     """, arguments: [categoryId, period.startDate, period.endDate]) ?? 0
                 perPeriodSums.append(sum)
             }
-
-            let existing = try ForecastEntry
-                .filter(Column("categoryId") == categoryId && Column("groupId") == group.id!)
-                .fetchOne(db)
-            if let existing, existing.status != .auto { continue } // respect manual tuning
-
-            guard let recurrence = detectRecurrence(perPeriodSums: perPeriodSums) else {
-                // No clear pattern (any more): drop a stale auto entry rather than keep
-                // forecasting it, e.g. a one-off purchase that briefly looked monthly.
-                if let existing { try existing.delete(db) }
-                continue
-            }
+            guard let recurrence = detectRecurrence(perPeriodSums: perPeriodSums) else { continue }
 
             let startDate: Date
             switch recurrence.anchor {
@@ -87,21 +82,12 @@ public enum AutoForecastGenerator {
                     SELECT MAX(date) FROM transaction_ WHERE categoryId = ? AND status = 'confirmed'
                     """, arguments: [categoryId]) ?? sortedPeriods.last!.startDate
             }
-
-            if var existing {
-                existing.amountMinorUnits = recurrence.amountMinorUnits
-                existing.frequency = recurrence.frequency
-                existing.interval = recurrence.interval
-                existing.startDate = startDate
-                try existing.update(db)
-            } else {
-                var entry = ForecastEntry(
-                    groupId: group.id!, categoryId: categoryId, amountMinorUnits: recurrence.amountMinorUnits,
-                    frequency: recurrence.frequency, interval: recurrence.interval, startDate: startDate, endDate: nil,
-                    isEnabled: true, status: .auto, note: nil
-                )
-                try entry.insert(db)
-            }
+            var entry = ForecastEntry(
+                groupId: group.id!, categoryId: categoryId, amountMinorUnits: recurrence.amountMinorUnits,
+                frequency: recurrence.frequency, interval: recurrence.interval, startDate: startDate, endDate: nil,
+                isEnabled: true, status: .manual, note: nil
+            )
+            try entry.insert(db)
         }
     }
 

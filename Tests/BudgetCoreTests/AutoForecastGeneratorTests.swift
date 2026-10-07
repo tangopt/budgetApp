@@ -50,8 +50,51 @@ final class AutoForecastGeneratorTests: XCTestCase {
         let entries = try manager.dbQueue.read { db in try ForecastEntry.filter(Column("categoryId") == rentId).fetchAll(db) }
         XCTAssertEqual(entries.count, 1)
         XCTAssertEqual(entries[0].amountMinorUnits, -280000)
-        XCTAssertEqual(entries[0].status, .auto)
+        XCTAssertEqual(entries[0].status, .manual) // added as an ordinary planned item
         XCTAssertEqual(entries[0].frequency, .monthly)
+    }
+
+    /// Detection only adds: an existing entry (whatever its status) is never updated.
+    func testRegenerateNeverUpdatesAnExistingEntry() throws {
+        let (manager, rentId, _, periods) = try seededManagerWithRentHistory()
+        try manager.dbQueue.write { db in
+            let group = try AutoForecastGenerator.ensureDetectedRecurringGroup(db: db)
+            var stale = ForecastEntry(groupId: group.id!, categoryId: rentId, amountMinorUnits: -1, frequency: .annually, interval: 1, startDate: periods[0].startDate, endDate: nil, isEnabled: true, status: .auto, note: nil)
+            try stale.insert(db)
+            try AutoForecastGenerator.regenerate(db: db, actualPeriods: periods)
+        }
+        let entries = try manager.dbQueue.read { db in try ForecastEntry.filter(Column("categoryId") == rentId).fetchAll(db) }
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].amountMinorUnits, -1)
+        XCTAssertEqual(entries[0].frequency, .annually)
+        XCTAssertEqual(entries[0].status, .auto)
+    }
+
+    /// A planned item in any group (even disabled) counts as "has a plan"; a hypothetical
+    /// scenario entry does not.
+    func testRegenerateAddsOnlyWhenTheCategoryHasNoPlannedItem() throws {
+        let (manager, rentId, _, periods) = try seededManagerWithRentHistory()
+        let groceries = try categoryId("Groceries", manager)
+        let utilities = try categoryId("Thames Water", manager)
+        try insert(manager, accountId: try manager.dbQueue.read { db in try Account.fetchOne(db)!.id! }, categoryId: groceries, [(date(2026, 4, 28), -30000), (date(2026, 5, 28), -30000), (date(2026, 6, 28), -30000)])
+        try insert(manager, accountId: try manager.dbQueue.read { db in try Account.fetchOne(db)!.id! }, categoryId: utilities, [(date(2026, 4, 28), -9000), (date(2026, 5, 28), -9000), (date(2026, 6, 28), -9000)])
+        try manager.dbQueue.write { db in
+            var planned = ForecastGroup(name: "Planned", note: nil, isEnabled: false, isSystemManaged: false)
+            var scenario = ForecastGroup(name: "What if", note: nil, isEnabled: true, isSystemManaged: false)
+            try planned.insert(db); try scenario.insert(db)
+            var rentPlan = ForecastEntry(groupId: planned.id!, categoryId: rentId, amountMinorUnits: -250000, frequency: .monthly, interval: 1, startDate: periods[0].startDate, endDate: nil, isEnabled: false, status: .confirmed, note: nil)
+            var groceriesIdea = ForecastEntry(groupId: scenario.id!, categoryId: groceries, amountMinorUnits: -20000, frequency: .monthly, interval: 1, startDate: periods[0].startDate, endDate: nil, isEnabled: true, status: .hypothetical, note: nil)
+            try rentPlan.insert(db); try groceriesIdea.insert(db)
+            try AutoForecastGenerator.regenerate(db: db, actualPeriods: periods)
+            try AutoForecastGenerator.regenerate(db: db, actualPeriods: periods) // idempotent
+        }
+        try manager.dbQueue.read { db in
+            let detected = try AutoForecastGenerator.ensureDetectedRecurringGroup(db: db)
+            let added = try ForecastEntry.filter(Column("groupId") == detected.id!).fetchAll(db)
+            XCTAssertEqual(Set(added.map(\.categoryId)), [groceries, utilities])
+            XCTAssertTrue(added.allSatisfy { $0.status == .manual })
+            XCTAssertEqual(try ForecastEntry.filter(Column("categoryId") == rentId).fetchCount(db), 1)
+        }
     }
 
     func testRegenerateDoesNotOverwriteManuallyTunedEntry() throws {
@@ -189,15 +232,15 @@ final class AutoForecastGeneratorTests: XCTestCase {
         XCTAssertEqual(try autoEntry(joint, manager)?.amountMinorUnits, 50000)
     }
 
-    func testStaleAutoEntryIsRemovedWhenPatternNoLongerHolds() throws {
+    func testEntryIsKeptWhenPatternNoLongerHolds() throws {
         let (manager, accountId) = try makeManager()
         let sport = try categoryId("Sport", manager)
         try insert(manager, accountId: accountId, categoryId: sport, [(utcDate(2025, 1, 28), -4000), (utcDate(2025, 2, 28), -4000)])
         try manager.dbQueue.write { db in try AutoForecastGenerator.regenerate(db: db, actualPeriods: self.monthlyPeriods(count: 2)) }
         XCTAssertNotNil(try autoEntry(sport, manager))
-        // Four more months with no gym payments: no longer monthly.
+        // Four more months with no gym payments: no longer monthly, but detection never deletes.
         try manager.dbQueue.write { db in try AutoForecastGenerator.regenerate(db: db, actualPeriods: self.monthlyPeriods(count: 6)) }
-        XCTAssertNil(try autoEntry(sport, manager))
+        XCTAssertEqual(try autoEntry(sport, manager)?.amountMinorUnits, -4000)
     }
 
     func testDetectRecurrenceClassification() {
