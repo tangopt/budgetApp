@@ -70,7 +70,7 @@ Snapshot dates: `asOf` is a calendar day from a date picker, stored as that day 
 
 **Navigation.** `AppScreen.netWorth` is removed. `.accounts` ("Accounts", icon `building.columns`) moves to the Overview section after Forecast. Every Dashboard `navigate(.netWorth)` becomes `navigate(.accounts)`, and the link titles read "Accounts". `NetWorthView`, `NetWorthViewModel`, `AddSnapshotView`, `AccountsSettingsView` and `AccountsSettingsViewModel` are deleted; `ContentView` observes the new view model's accounts for shared-state refresh.
 
-**`AccountsViewModel`** (`App/Accounts/AccountsViewModel.swift`): loads accounts, snapshots, transactions, rate; publishes `overview`, `selectedAccountId` (default: first row), `selectedHistory: [BalanceSnapshot]` (newest first), `errorMessage`, `warnings: [String]`; actions `add…`, `update…`, `saveBalances…`, each write-first then reload, returning `Bool`.
+**`AccountsViewModel`** (`App/Accounts/AccountsViewModel.swift`): loads accounts, snapshots, transactions, rate; publishes `overview`, `selectedAccountId` (default: first row), `selectedHistory: [BalanceSnapshot]` (newest first), `errorMessage`, `warnings: [String]`; actions `add…`, `update…`, `saveBalances…`, each write-first then reload, returning a `SaveOutcome` (`.saved`, `.savedButReloadFailed`, `.failed`); sheets close on either saved outcome.
 
 **`AccountsView`** (`App/Accounts/AccountsView.swift`), layout as in the mockup:
 - Header: "Net worth · as of <asOf>", the total, "↑/↓ £x vs previous month"; buttons "Update balances…" and "+ Add account".
@@ -84,7 +84,7 @@ Snapshot dates: `asOf` is a calendar day from a date picker, stored as that day 
 - **Add account:** name, currency, kind, tracking, optional opening balance (credit: "amount owed") with an as-of date.
 - **Edit account:** name, kind (credit transitions disabled with the reason when it has history), tracking; currency shown read-only.
 - **Update balance:** one account (from the detail panel), amount, as-of date, note.
-- **Update balances:** every account listed with a text field prefilled with its current entered balance (credit as amount owed), an "include" checkbox per row (default on), one as-of date, Save "Save N balances". Unchanged included rows are saved too (confirms the balance as of that date).
+- **Update balances:** every account listed with a text field prefilled with its current entered balance (credit as amount owed), an "include" checkbox per row (on for accounts that already have a balance; accounts without one start unticked with an empty field), one as-of date, Save "Save N balances". Unchanged included rows are saved too (confirms the balance as of that date).
 
 ## Testing
 
