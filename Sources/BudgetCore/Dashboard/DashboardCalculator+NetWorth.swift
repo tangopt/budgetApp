@@ -92,9 +92,8 @@ extension DashboardCalculator {
             }
             for year in [thisYear, thisYear + 1] {
                 let value = forecastValue(atEndOf: year)
-                // Same baseline rule as the Forecast grid (ForecastViewModel
-                // .computeForecastNetWorthYoY): last December's REAL net worth once that pay
-                // month is closed, else last December's forecast.
+                // Baseline: last December's REAL net worth once that pay month is closed,
+                // else last December's forecast.
                 let baseline: Int
                 if input.payCalendar.isClosed(PayMonth(year: year - 1, month: 12)) {
                     baseline = monthEndNetWorth(input, year: year - 1, month: 12) ?? 0

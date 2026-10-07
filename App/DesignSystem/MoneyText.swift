@@ -21,7 +21,7 @@ struct MoneyText: View {
     var alignment: Alignment? = nil
     /// When set, overrides the sign-based red/green/primary color entirely — for callers
     /// that need a fixed color regardless of the value's sign (e.g. marking a figure as a
-    /// preview/hypothetical, not a real change in either direction).
+    /// pending amount, not a real change in either direction).
     var tint: Color? = nil
 
     var body: some View {

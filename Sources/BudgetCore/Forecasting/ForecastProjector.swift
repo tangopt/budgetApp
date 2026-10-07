@@ -1,7 +1,8 @@
 import Foundation
 
-/// The month-by-month forecast net worth walk, shared by `ForecastViewModel` (year-end
-/// headline figures) and the dashboard (the dashed forecast line) so they cannot diverge.
+/// The month-by-month forecast net worth walk, shared by the dashboard (year-end figures and
+/// the dashed forecast line) and the scenario lab's comparison (through
+/// `DashboardCalculator.netWorthSeries`) so they cannot diverge.
 public enum ForecastProjector {
     /// Running confirmed net worth at the END of every month strictly after
     /// `latestRealMonth`, through December of `throughYear`: starting net worth plus the

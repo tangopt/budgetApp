@@ -313,34 +313,26 @@ final class BudgetGridViewModel: ObservableObject {
         return (value, value, value == 0 ? .none : .allExpected)
     }
 
-    /// Every planned item (`ForecastCalculator.confirmedEntries`), for the add sheet's
-    /// "Already planned" lines.
+    /// Every planned item (`ForecastCalculator.confirmedEntries`): the add sheet's "Already
+    /// planned" lines and the drill-down's occurrences.
     var plannedEntries: [ForecastEntry] {
         ForecastCalculator.confirmedEntries(entries: forecastEntries, groups: forecastGroups)
-    }
-
-    struct PlannedRow: Identifiable {
-        let occurrence: PlannedOccurrence
-        let isConfirmed: Bool
-        let entry: ForecastEntry
-        var id: String { occurrence.id }
     }
 
     /// The planned occurrences filed under `category` (after any re-file) whose date falls in
     /// the calendar month `year`/`month`, each with whether it's confirmed and its series.
     func occurrences(category: Category, year: Int, month: Int) -> [PlannedRow] {
         guard let id = category.id else { return [] }
-        let range = MonthRange.of(year: year, month: month)
-        let planned = ForecastCalculator.confirmedEntries(entries: forecastEntries, groups: forecastGroups)
-        let byId = Dictionary(planned.compactMap { e in e.id.map { ($0, e) } }, uniquingKeysWith: { a, _ in a })
-        return PlannedOccurrences.occurrences(entries: planned, exceptions: exceptions, in: PayPeriod(startDate: range.start, endDate: range.end, type: .projected))
-            .filter { $0.categoryId == id }
-            .compactMap { occurrence in
-                guard let entry = byId[occurrence.entryId] else { return nil }
-                let confirmed = PlannedItemEditing.isConfirmed(entry: entry, occurrence: occurrence, calendar: payCalendar, monthTotals: monthTotals,
-                                                               entries: forecastEntries, groups: forecastGroups, exceptions: exceptions, categories: categories)
-                return PlannedRow(occurrence: occurrence, isConfirmed: confirmed, entry: entry)
-            }
+        return PlannedRow.rows(categoryId: id, year: year, month: month, plan: plannedEntries, exceptions: exceptions) { entry, occurrence in
+            PlannedItemEditing.isLocked(entry: entry, occurrence: occurrence, calendar: payCalendar, monthTotals: monthTotals,
+                                        entries: forecastEntries, groups: forecastGroups, exceptions: exceptions, categories: categories)
+        }
+    }
+
+    /// `editOccurrence` / `editFollowing`, for the drill-down's shared Edit… / Remove….
+    var planEditActions: PlanEditActions {
+        PlanEditActions(editOccurrence: { [unowned self] in editOccurrence($0, change: $1) },
+                        editFollowing: { [unowned self] in editFollowing($0, change: $1) })
     }
 
     // MARK: Editing the plan
@@ -374,12 +366,33 @@ final class BudgetGridViewModel: ObservableObject {
         }
     }
 
-    /// A new reserve with its first allowance, from the Reserved header — the same path as the
-    /// Forecast screen's (`ReservedCategories.addReserve`).
+    /// A new reserve with its first allowance, from the Reserved header
+    /// (`ReservedCategories.addReserve`).
     func addReserve(name: String, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> SaveOutcome {
         perform { db in
             _ = try ReservedCategories.addReserve(db: db, name: name, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
         }
+    }
+
+    /// Another allowance for an existing reserve, in the "Reserved" group (a reserve's row menu).
+    func addReserveAmount(to reserve: Category, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> SaveOutcome {
+        guard let reserveId = reserve.id else { return .failed("This reserve no longer exists.") }
+        return perform { db in
+            let group = try ReservedCategories.ensureGroup(db: db)
+            var entry = ForecastEntry(groupId: group.id!, categoryId: reserveId, amountMinorUnits: -abs(amountMinorUnits), frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, isEnabled: true, status: .confirmed, note: nil)
+            try entry.insert(db)
+        }
+    }
+
+    func renameReserve(_ reserve: Category, to name: String) -> SaveOutcome {
+        guard let reserveId = reserve.id else { return .failed("This reserve no longer exists.") }
+        return perform { db in try ReservedCategories.rename(db: db, categoryId: reserveId, to: name) }
+    }
+
+    /// Deletes a reserve and its allowances (`ReservedCategories.delete`).
+    func deleteReserve(_ reserve: Category) -> SaveOutcome {
+        guard let reserveId = reserve.id else { return .failed("This reserve no longer exists.") }
+        return perform { db in try ReservedCategories.delete(db: db, categoryId: reserveId) }
     }
 
     /// Write first, then reload (exceptions are only read in `load`). A failed write returns
@@ -390,24 +403,9 @@ final class BudgetGridViewModel: ObservableObject {
         do {
             try dbQueue.write { db in try write(db) }
         } catch {
-            return .failed(Self.planMessage(for: error))
+            return .failed(PlanFormat.errorMessage(for: error))
         }
         return reload() ? .saved : .savedButReloadFailed
-    }
-
-    static func planMessage(for error: Error) -> String {
-        switch error {
-        case PlannedItemEditError.occurrenceConfirmed: return "This occurrence has already happened."
-        case PlannedItemEditError.invalidDate: return "Pick a date in an open month."
-        case PlannedItemEditError.frequencyNeedsFollowing: return "A frequency change applies to this and all following occurrences."
-        case PlannedItemEditError.invalidInterval: return "Repeat every 1 or more."
-        case PlannedItemEditError.notFound: return "This planned item no longer exists."
-        case PlannedItemsError.reservedCategory: return "Reserves get allowances from the Reserved section, not planned items."
-        case PlannedItemsError.categoryNotFound: return "That category no longer exists."
-        case PlannedItemsError.emptyCategoryName, ReservedCategoryError.emptyName: return "Enter a name."
-        case PlannedItemsError.duplicateCategoryName, ReservedCategoryError.duplicateName: return "A category with that name already exists."
-        default: return "Couldn't save: \(error.localizedDescription)"
-        }
     }
 
     /// Re-categorizes a single already-confirmed transaction (from a drill-down sheet).

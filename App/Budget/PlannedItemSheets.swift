@@ -3,7 +3,19 @@ import SwiftUI
 import BudgetCore
 import struct BudgetCore.Category
 
-/// Labels shared by the Budget grid's planned-item views.
+/// Whose plan an edit applies to: the budget, or one scenario (the Forecast screen's lab).
+/// Editing an occurrence is scoped by its entry; adding needs the scope.
+enum PlanScope: Equatable {
+    case budget
+    case scenario(id: Int64, name: String)
+
+    var scenarioId: Int64? {
+        if case .scenario(let id, _) = self { return id }
+        return nil
+    }
+}
+
+/// Labels shared by the Budget grid's and the scenario lab's planned-item views.
 enum PlanFormat {
     /// "One-off", "Monthly", "Every 2 weeks".
     static func frequency(_ frequency: ForecastFrequency, interval: Int) -> String {
@@ -47,6 +59,27 @@ enum PlanFormat {
         return line
     }
 
+    /// A plan edit's error in words, for the sheets (budget and scenario edits alike).
+    static func errorMessage(for error: Error) -> String {
+        switch error {
+        case PlannedItemEditError.occurrenceConfirmed: return "This occurrence has already happened."
+        case PlannedItemEditError.invalidDate: return "Pick a date in an open month."
+        case PlannedItemEditError.frequencyNeedsFollowing: return "A frequency change applies to this and all following occurrences."
+        case PlannedItemEditError.invalidInterval: return "Repeat every 1 or more."
+        case PlannedItemEditError.notFound: return "This planned item no longer exists."
+        case PlannedItemsError.reservedCategory: return "Reserves get allowances from the Reserved section, not planned items."
+        case PlannedItemsError.categoryNotFound: return "That category no longer exists."
+        case PlannedItemsError.plannedGroupDisabled: return "The budget's “Planned” group is switched off. Add a planned item in the Budget grid to switch it back on."
+        case PlannedItemsError.emptyCategoryName, ReservedCategoryError.emptyName, ScenarioError.emptyName: return "Enter a name."
+        case PlannedItemsError.duplicateCategoryName, ReservedCategoryError.duplicateName: return "A category with that name already exists."
+        case ScenarioError.duplicateName: return "A scenario with that name already exists."
+        case ScenarioError.notFound: return "This scenario no longer exists."
+        case ScenarioApplyError.nothingToUndo: return "There's no apply to undo."
+        case ScenarioApplyError.notADifference: return "One of the ticked items is no longer a difference. Refresh the list and try again."
+        default: return "Couldn't save: \(error.localizedDescription)"
+        }
+    }
+
     /// Help text for a cell or Year Total with unconfirmed money (magnitudes, like the grid).
     static func pendingHelp(value: Int, pending: Int) -> String {
         let actual = value - pending
@@ -63,14 +96,91 @@ enum PlanEditScope {
 
 // MARK: - Drill-down: planned occurrences
 
+/// One planned occurrence in a drill-down, with whether it can still be edited
+/// (`PlannedItemEditing.isLocked`: confirmed in the budget, a closed month in a scenario)
+/// and its series.
+struct PlannedRow: Identifiable {
+    let occurrence: PlannedOccurrence
+    let isConfirmed: Bool
+    let entry: ForecastEntry
+    var id: String { occurrence.id }
+
+    /// The occurrences of `plan` (a plan's effective entries, `ForecastCalculator.planEntries`)
+    /// filed under `categoryId` (after any re-file) whose date falls in the calendar month
+    /// `year`/`month`, each with `isLocked`.
+    static func rows(categoryId: Int64, year: Int, month: Int, plan: [ForecastEntry], exceptions: [PlannedOccurrenceException], isLocked: (ForecastEntry, PlannedOccurrence) -> Bool) -> [PlannedRow] {
+        let range = MonthRange.of(year: year, month: month)
+        let byId = Dictionary(plan.compactMap { e in e.id.map { ($0, e) } }, uniquingKeysWith: { a, _ in a })
+        return PlannedOccurrences.occurrences(entries: plan, exceptions: exceptions, in: PayPeriod(startDate: range.start, endDate: range.end, type: .projected))
+            .filter { $0.categoryId == categoryId }
+            .compactMap { occurrence in
+                guard let entry = byId[occurrence.entryId] else { return nil }
+                return PlannedRow(occurrence: occurrence, isConfirmed: isLocked(entry, occurrence), entry: entry)
+            }
+    }
+}
+
+/// The two occurrence edits, bound to a plan's view model (`PlannedItemEditing`; the entry
+/// decides whether the budget or a scenario is edited).
+struct PlanEditActions {
+    let editOccurrence: (PlannedOccurrence, OccurrenceChange) -> SaveOutcome
+    let editFollowing: (PlannedOccurrence, OccurrenceChange) -> SaveOutcome
+
+    func save(_ row: PlannedRow, _ change: OccurrenceChange, _ scope: PlanEditScope) -> SaveOutcome {
+        switch scope {
+        case .onlyThis: return editOccurrence(row.occurrence, change)
+        case .thisAndFollowing: return editFollowing(row.occurrence, change)
+        }
+    }
+}
+
+/// The "Planned" list's Edit… sheet and Remove… dialog, shared by the Budget grid's and the
+/// scenario grid's drill-downs: `editing` / `removing` open them; a failed remove lands in
+/// `planError` (a failed edit shows in its own sheet).
+struct PlannedOccurrenceEditing: ViewModifier {
+    @Binding var editing: PlannedRow?
+    @Binding var removing: PlannedRow?
+    @Binding var planError: String?
+    let categories: [Category]
+    let actions: PlanEditActions
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(item: $editing) { row in
+                EditOccurrenceSheet(row: row, categories: categories) { change, scope in actions.save(row, change, scope) }
+            }
+            .confirmationDialog("Remove this planned occurrence?", isPresented: Binding(
+                get: { removing != nil },
+                set: { if !$0 { removing = nil } }
+            ), presenting: removing) { row in
+                Button("Only this occurrence", role: .destructive) { remove(row, .onlyThis) }
+                Button("This and all following", role: .destructive) { remove(row, .thisAndFollowing) }
+                Button("Cancel", role: .cancel) { removing = nil }
+            }
+    }
+
+    private func remove(_ row: PlannedRow, _ scope: PlanEditScope) {
+        let outcome = actions.save(row, OccurrenceChange(remove: true), scope)
+        removing = nil
+        if case .failed(let message) = outcome { planError = message }
+    }
+}
+
+extension View {
+    func plannedOccurrenceEditing(editing: Binding<PlannedRow?>, removing: Binding<PlannedRow?>, planError: Binding<String?>, categories: [Category], actions: PlanEditActions) -> some View {
+        modifier(PlannedOccurrenceEditing(editing: editing, removing: removing, planError: planError, categories: categories, actions: actions))
+    }
+}
+
 /// The drill-down's "Planned" list for one category and calendar month: each occurrence's
 /// date, amount, frequency and whether it's confirmed. Unconfirmed occurrences offer Edit…
-/// and Remove…; the drill-down sheet owns the sheets and dialogs those open.
+/// and Remove…; the drill-down sheet owns the sheets and dialogs those open
+/// (`plannedOccurrenceEditing`).
 struct PlannedOccurrencesSection: View {
-    let rows: [BudgetGridViewModel.PlannedRow]
+    let rows: [PlannedRow]
     let errorMessage: String?
-    let onEdit: (BudgetGridViewModel.PlannedRow) -> Void
-    let onRemove: (BudgetGridViewModel.PlannedRow) -> Void
+    let onEdit: (PlannedRow) -> Void
+    let onRemove: (PlannedRow) -> Void
 
     var body: some View {
         Section("Planned") {
@@ -111,7 +221,7 @@ struct PlannedOccurrencesSection: View {
 /// "This and all following"; a frequency change offers only the latter. Errors show inline
 /// and keep the sheet open.
 struct EditOccurrenceSheet: View {
-    let row: BudgetGridViewModel.PlannedRow
+    let row: PlannedRow
     let categories: [Category]
     let onSave: (OccurrenceChange, PlanEditScope) -> SaveOutcome
     @Environment(\.dismiss) private var dismiss
@@ -125,7 +235,7 @@ struct EditOccurrenceSheet: View {
     @State private var choosingScope = false
     @State private var errorMessage: String?
 
-    init(row: BudgetGridViewModel.PlannedRow, categories: [Category], onSave: @escaping (OccurrenceChange, PlanEditScope) -> SaveOutcome) {
+    init(row: PlannedRow, categories: [Category], onSave: @escaping (OccurrenceChange, PlanEditScope) -> SaveOutcome) {
         self.row = row
         self.categories = categories
         self.onSave = onSave
@@ -231,15 +341,18 @@ enum PlannedItemCategory {
     case new(name: String)
 }
 
-/// "+ Add planned item" from an Income / Expenses / Transfers header: a category of that
+/// "+ Add planned item" from an Income / Expenses / Transfers header (the Budget grid, or a
+/// scenario's grid in the lab): a category of that
 /// section (or "+ New category…" of the section's type, created with the item), an amount, one-off or recurring (weekly / monthly / annually, every N), a start
 /// and an optional end. Saved through `PlannedItems.add`; errors show inline. Once a
 /// category is picked, its existing planned series are listed: the new item adds to them
 /// (nothing is replaced), so a category planned twice is visible before saving.
 struct AddPlannedItemSheet: View {
     let type: CategoryType
+    /// The budget, or the scenario the item is added to (named in the title).
+    let scope: PlanScope
     let categories: [Category]
-    /// Planned items (`ForecastCalculator.confirmedEntries`), for the "Already planned" lines.
+    /// The scope's planned items (`ForecastCalculator.planEntries`), for the "Already planned" lines.
     let plannedEntries: [ForecastEntry]
     let onSave: (PlannedItemCategory, _ amountMinorUnits: Int, ForecastFrequency, _ interval: Int, _ start: Date, _ end: Date?) -> SaveOutcome
     @Environment(\.dismiss) private var dismiss
@@ -263,11 +376,14 @@ struct AddPlannedItemSheet: View {
     }
 
     private var title: String {
+        let base: String
         switch type {
-        case .income: return "Add planned income"
-        case .expense: return "Add planned expense"
-        case .transfer: return "Add planned transfer"
+        case .income: base = "Add planned income"
+        case .expense: base = "Add planned expense"
+        case .transfer: base = "Add planned transfer"
         }
+        if case .scenario(_, let name) = scope { return "\(base) to “\(name)”" }
+        return base
     }
 
     /// Income inward (positive); expenses and transfers outward (negative), as the Forecast

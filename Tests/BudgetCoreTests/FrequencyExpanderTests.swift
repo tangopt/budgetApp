@@ -55,8 +55,8 @@ final class FrequencyExpanderTests: XCTestCase {
 
     /// Regression test for a bug where `endDate` carried a raw `Date` from a date-only
     /// `DatePicker` (whatever time-of-day the picker's initial value happened to have —
-    /// "now", or an existing entry's stored time). `ForecastView.normalizedEndOfDay`
-    /// fixes this by always storing 23:59:59 UTC on the picked calendar day. This test
+    /// "now", or an existing entry's stored time). The add sheets fix this
+    /// by always storing 23:59:59 UTC on the picked calendar day. This test
     /// verifies that once `endDate` is normalized that way, the final intended occurrence
     /// — which itself lands at 00:00:00 UTC on the very same calendar day, since every
     /// occurrence here is stepped from a midnight `startDate` — is still included, i.e.

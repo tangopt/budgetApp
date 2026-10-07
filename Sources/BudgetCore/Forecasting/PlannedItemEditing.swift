@@ -222,6 +222,19 @@ public enum PlannedItemEditing {
         return hasPlan && open.pending == 0
     }
 
+    /// Whether an occurrence can no longer be edited, by its entry's scope (the same rule
+    /// `editOccurrence` / `editFollowing` enforce): a budget occurrence when `isConfirmed`; a
+    /// scenario occurrence only when the calendar month named on its date has a closed pay
+    /// month (a scenario has no confirmation restriction for open months). `entries`,
+    /// `groups` and `exceptions` are the budget's (a scenario occurrence doesn't read them).
+    public static func isLocked(entry: ForecastEntry, occurrence: PlannedOccurrence, calendar: PayCalendar, monthTotals: [Int64: [Int: [Int: Int]]], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException], categories: [Category]) -> Bool {
+        guard entry.scenarioId != nil else {
+            return isConfirmed(entry: entry, occurrence: occurrence, calendar: calendar, monthTotals: monthTotals, entries: entries, groups: groups, exceptions: exceptions, categories: categories)
+        }
+        let (year, month) = MonthRange.components(of: occurrence.date)
+        return calendar.isClosed(PayMonth(year: year, month: month))
+    }
+
     // MARK: - Helpers
 
     /// The planned item (per `ForecastCalculator.planEntries`: enabled, not hypothetical, not a

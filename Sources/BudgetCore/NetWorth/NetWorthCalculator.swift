@@ -97,7 +97,7 @@ public enum NetWorthCalculator {
     /// account's `monthlyBalance` (latest snapshot at or before the month end, plus
     /// transactions after it for `.imported` accounts). `nil` when no account has any data
     /// at or before that month — distinguishes "no data yet" from "genuinely zero".
-    /// `BudgetGridViewModel.netWorthTotal` and `ForecastViewModel.realNetWorth` delegate here.
+    /// `BudgetGridViewModel.netWorthTotal` delegates here.
     public static func monthEndNetWorth(accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], rate: ExchangeRateSetting, year: Int, month: Int) -> Int? {
         let range = MonthRange.of(year: year, month: month)
         var total = 0

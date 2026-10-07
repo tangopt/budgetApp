@@ -192,6 +192,27 @@ final class PlannedItemEditingTests: XCTestCase {
         XCTAssertTrue(PlannedItemEditing.isConfirmed(entry: entry, occurrence: intoSeptember, calendar: calendar, monthTotals: [:], entries: [entry], groups: groups, exceptions: [], categories: categories))
     }
 
+    func testIsLockedFollowsTheEntrysScope() throws {
+        let f = try fixture()
+        let entry = try entries(f)[0]
+        let groups = try f.manager.dbQueue.read { db in try ForecastGroup.fetchAll(db) }
+        let categories = try f.manager.dbQueue.read { db in try Category.fetchAll(db) }
+        let october = PlannedOccurrence(entryId: f.entryId, originalDate: utc(2026, 10, 15), date: utc(2026, 10, 15), categoryId: f.rentId, amountMinorUnits: -100_000, isException: false)
+        let september = PlannedOccurrence(entryId: f.entryId, originalDate: utc(2026, 9, 15), date: utc(2026, 9, 15), categoryId: f.rentId, amountMinorUnits: -100_000, isException: false)
+        let covered: [Int64: [Int: [Int: Int]]] = [f.rentId: [2026: [10: -100_000]]]
+        func locked(_ entry: ForecastEntry, _ occurrence: PlannedOccurrence) -> Bool {
+            PlannedItemEditing.isLocked(entry: entry, occurrence: occurrence, calendar: calendar, monthTotals: covered, entries: [entry], groups: groups, exceptions: [], categories: categories)
+        }
+        // Budget: actuals covering October's plan confirm it, as `isConfirmed`.
+        XCTAssertTrue(locked(entry, october))
+        XCTAssertTrue(locked(entry, september))
+        // Scenario: only a closed month locks; actuals don't.
+        var copy = entry
+        copy.scenarioId = 1
+        XCTAssertFalse(locked(copy, october))
+        XCTAssertTrue(locked(copy, september))
+    }
+
     // MARK: - This and all following
 
     func testFollowingSplitsTheSeries() throws {

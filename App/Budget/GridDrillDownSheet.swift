@@ -32,8 +32,8 @@ struct GridDrillDownSheet: View {
     @ObservedObject var viewModel: BudgetGridViewModel
     @Environment(\.dismiss) private var dismiss
 
-    @State private var editing: BudgetGridViewModel.PlannedRow?
-    @State private var removing: BudgetGridViewModel.PlannedRow?
+    @State private var editing: PlannedRow?
+    @State private var removing: PlannedRow?
     /// A failed Remove… (an Edit… failure shows in its own sheet).
     @State private var planError: String?
 
@@ -68,22 +68,8 @@ struct GridDrillDownSheet: View {
         }
         .padding()
         .frame(width: 560, height: 480)
-        .sheet(item: $editing) { row in
-            EditOccurrenceSheet(row: row, categories: viewModel.categories) { change, scope in
-                switch scope {
-                case .onlyThis: return viewModel.editOccurrence(row.occurrence, change: change)
-                case .thisAndFollowing: return viewModel.editFollowing(row.occurrence, change: change)
-                }
-            }
-        }
-        .confirmationDialog("Remove this planned occurrence?", isPresented: Binding(
-            get: { removing != nil },
-            set: { if !$0 { removing = nil } }
-        ), presenting: removing) { row in
-            Button("Only this occurrence", role: .destructive) { remove(row, .onlyThis) }
-            Button("This and all following", role: .destructive) { remove(row, .thisAndFollowing) }
-            Button("Cancel", role: .cancel) { removing = nil }
-        }
+        .plannedOccurrenceEditing(editing: $editing, removing: $removing, planError: $planError,
+                                  categories: viewModel.categories, actions: viewModel.planEditActions)
     }
 
     private func plannedSection(_ plan: DrillDownPlan) -> some View {
@@ -119,16 +105,5 @@ struct GridDrillDownSheet: View {
             .labelsHidden()
             .frame(width: 180)
         }
-    }
-
-    private func remove(_ row: BudgetGridViewModel.PlannedRow, _ scope: PlanEditScope) {
-        let change = OccurrenceChange(remove: true)
-        let outcome: SaveOutcome
-        switch scope {
-        case .onlyThis: outcome = viewModel.editOccurrence(row.occurrence, change: change)
-        case .thisAndFollowing: outcome = viewModel.editFollowing(row.occurrence, change: change)
-        }
-        removing = nil
-        if case .failed(let message) = outcome { planError = message }
     }
 }

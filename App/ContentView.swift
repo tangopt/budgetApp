@@ -54,7 +54,7 @@ struct ContentView: View {
     // (and any in-progress edits) every time ContentView's own @State changes.
     @StateObject private var importViewModel: ImportViewModel
     @StateObject private var budgetGridViewModel: BudgetGridViewModel
-    @StateObject private var forecastViewModel: ForecastViewModel
+    @StateObject private var scenarioLabViewModel: ScenarioLabViewModel
     @StateObject private var rulesViewModel: RulesViewModel
     @StateObject private var categoriesViewModel: CategoriesViewModel
     @StateObject private var uncategorizedViewModel: UncategorizedViewModel
@@ -71,7 +71,7 @@ struct ContentView: View {
         let coordinator = ImportCoordinator(dbQueue: environment.dbQueue, categorizationService: categorizationService)
         _importViewModel = StateObject(wrappedValue: ImportViewModel(dbQueue: environment.dbQueue, coordinator: coordinator, profileStore: profileStore))
         _budgetGridViewModel = StateObject(wrappedValue: BudgetGridViewModel(dbQueue: environment.dbQueue))
-        _forecastViewModel = StateObject(wrappedValue: ForecastViewModel(dbQueue: environment.dbQueue))
+        _scenarioLabViewModel = StateObject(wrappedValue: ScenarioLabViewModel(dbQueue: environment.dbQueue))
         _rulesViewModel = StateObject(wrappedValue: RulesViewModel(dbQueue: environment.dbQueue))
         _categoriesViewModel = StateObject(wrappedValue: CategoriesViewModel(dbQueue: environment.dbQueue))
         _uncategorizedViewModel = StateObject(wrappedValue: UncategorizedViewModel(dbQueue: environment.dbQueue))
@@ -80,7 +80,7 @@ struct ContentView: View {
     }
 
     /// How far ahead to project forecasted pay periods in the Budget grid (the Forecast
-    /// screen computes its own thisYear/nextYear independently — see `ForecastViewModel`).
+    /// screen's scenario lab has its own horizon picker).
     private var forecastHorizon: Date {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
@@ -158,8 +158,8 @@ struct ContentView: View {
                     BudgetGridView(viewModel: budgetGridViewModel)
                         .onAppear { try? budgetGridViewModel.load(horizon: forecastHorizon) }
                 case .forecast:
-                    ForecastView(viewModel: forecastViewModel)
-                        .onAppear { try? forecastViewModel.load() }
+                    ScenarioLabView(viewModel: scenarioLabViewModel)
+                        .onAppear { scenarioLabViewModel.load() }
                 case .rules:
                     RulesView(viewModel: rulesViewModel)
                         .onAppear { try? rulesViewModel.load() }

@@ -30,8 +30,22 @@ struct BudgetGridView: View {
     @State private var expandedGroupIds: Set<Int64> = []
     @State private var closeTarget: CloseMonthTarget?
     @State private var addPlannedTarget: AddPlannedTarget?
-    @State private var showNewReserve = false
+    @State private var reserveSheet: ReserveSheet?
+    @State private var renamingReserve: Category?
+    @State private var deletingReserve: Category?
+    /// A failed reserve save, shown inside the open reserve sheet.
     @State private var reserveError: String?
+
+    private enum ReserveSheet: Identifiable {
+        case newReserve
+        case addAmount(Category)
+        var id: String {
+            switch self {
+            case .newReserve: return "new-reserve"
+            case .addAmount(let reserve): return "add-amount-\(reserve.id ?? -1)"
+            }
+        }
+    }
 
     /// The section a header's "+ Add planned item" adds to (`.sheet(item:)`).
     private struct AddPlannedTarget: Identifiable {
@@ -140,7 +154,7 @@ struct BudgetGridView: View {
 
             // Close/reopen errors from the header menu (a failed Close month… shows in its
             // sheet instead; the drill-down sheet shows recategorize errors itself).
-            if let error = viewModel.errorMessage, drillDownTarget == nil, closeTarget == nil, addPlannedTarget == nil, !showNewReserve {
+            if let error = viewModel.errorMessage, drillDownTarget == nil, closeTarget == nil, addPlannedTarget == nil, reserveSheet == nil, renamingReserve == nil {
                 HStack(alignment: .top) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
                     Text(error).foregroundStyle(.red)
@@ -254,7 +268,7 @@ struct BudgetGridView: View {
             GridDrillDownSheet(target: target, viewModel: viewModel)
         }
         .sheet(item: $addPlannedTarget) { target in
-            AddPlannedItemSheet(type: target.type, categories: viewModel.categories, plannedEntries: viewModel.plannedEntries) { category, amount, frequency, interval, start, end in
+            AddPlannedItemSheet(type: target.type, scope: .budget, categories: viewModel.categories, plannedEntries: viewModel.plannedEntries) { category, amount, frequency, interval, start, end in
                 switch category {
                 case .existing(let id):
                     return viewModel.addPlannedItem(categoryId: id, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)
@@ -263,19 +277,52 @@ struct BudgetGridView: View {
                 }
             }
         }
-        // The Forecast screen's new-reserve form; a failed save keeps it open with the error.
-        .sheet(isPresented: $showNewReserve, onDismiss: { reserveError = nil }) {
-            ReserveFormView(mode: .newReserve, errorMessage: reserveError, onEdit: { if reserveError != nil { reserveError = nil } }) { name, amount, frequency, interval, start, end in
-                switch viewModel.addReserve(name: name, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end) {
-                case .saved, .savedButReloadFailed: showNewReserve = false
-                case .failed(let message): reserveError = message
+        // Reserve forms: a failed save keeps the sheet open with the error.
+        .sheet(item: $reserveSheet, onDismiss: { reserveError = nil }) { sheet in
+            switch sheet {
+            case .newReserve:
+                ReserveFormView(mode: .newReserve, errorMessage: reserveError, onEdit: clearReserveError) { name, amount, frequency, interval, start, end in
+                    finishReserveSave(viewModel.addReserve(name: name, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)) { reserveSheet = nil }
+                }
+            case .addAmount(let reserve):
+                ReserveFormView(mode: .addAmount(reserve), errorMessage: reserveError, onEdit: clearReserveError) { _, amount, frequency, interval, start, end in
+                    finishReserveSave(viewModel.addReserveAmount(to: reserve, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)) { reserveSheet = nil }
                 }
             }
+        }
+        .sheet(item: $renamingReserve, onDismiss: { reserveError = nil }) { reserve in
+            RenameReserveView(reserve: reserve, errorMessage: reserveError, onEdit: clearReserveError) { name in
+                finishReserveSave(viewModel.renameReserve(reserve, to: name)) { renamingReserve = nil }
+            }
+        }
+        .confirmationDialog("Delete “\(deletingReserve?.name ?? "")”? Its allowances are removed from the plan.", isPresented: Binding(
+            get: { deletingReserve != nil },
+            set: { if !$0 { deletingReserve = nil } }
+        ), titleVisibility: .visible) {
+            Button("Delete reserve", role: .destructive) {
+                if let reserve = deletingReserve, case .failed(let message) = viewModel.deleteReserve(reserve) {
+                    viewModel.errorMessage = message
+                }
+                deletingReserve = nil
+            }
+            Button("Cancel", role: .cancel) { deletingReserve = nil }
         }
         .sheet(item: $closeTarget, onDismiss: { viewModel.errorMessage = nil }) { target in
             CloseMonthView(month: target.month, calendar: viewModel.payCalendar, errorMessage: viewModel.errorMessage) { day in
                 viewModel.closeMonth(target.month, on: day)
             }
+        }
+    }
+
+    private func clearReserveError() {
+        if reserveError != nil { reserveError = nil }
+    }
+
+    /// Closes the reserve sheet on success; keeps it open with the message on failure.
+    private func finishReserveSave(_ outcome: SaveOutcome, close: () -> Void) {
+        switch outcome {
+        case .saved, .savedButReloadFailed: close()
+        case .failed(let message): reserveError = message
         }
     }
 
@@ -414,7 +461,7 @@ struct BudgetGridView: View {
                 Spacer()
                 Button("+ Add reserve…") {
                     viewModel.errorMessage = nil
-                    showNewReserve = true
+                    reserveSheet = .newReserve
                 }
                 .buttonStyle(.borderless)
                 .font(.caption)
@@ -429,6 +476,14 @@ struct BudgetGridView: View {
                 .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(.purple), alignment: .leading)
+                .contentShape(Rectangle())
+                .help("Right-click to add an amount, rename or delete. Click a month to edit its allowance.")
+                .contextMenu {
+                    Button("Add amount…") { viewModel.errorMessage = nil; reserveSheet = .addAmount(reserve) }
+                    Button("Rename…") { viewModel.errorMessage = nil; renamingReserve = reserve }
+                    Divider()
+                    Button("Delete reserve…", role: .destructive) { deletingReserve = reserve }
+                }
         case .reservedTotal:
             Text("Total reserved").bold()
                 .frame(width: 220, height: 28, alignment: .leading)
@@ -613,33 +668,12 @@ struct BudgetGridView: View {
         }
     }
 
-    /// A cell with its unconfirmed part shown: the value italic and `Color.pending` while any of it
-    /// is pending, with `clock` (all expected) or `circle.lefthalf.filled` (partly happened)
-    /// and help text splitting it ("£x actual + £y expected"; a Year Total says
-    /// "Includes £x not yet confirmed").
-    private static let bodyMoneyFont: Font = .system(.body, design: .default).monospacedDigit()
-    private static let captionMoneyFont: Font = .system(.caption, design: .default).monospacedDigit()
+    private static let bodyMoneyFont = PlanCellView.bodyFont
+    private static let captionMoneyFont = PlanCellView.captionFont
 
+    /// A cell with its unconfirmed part shown (`PlanCellView`).
     private func planCell(_ cell: BudgetGridViewModel.PlanCell, isYearTotal: Bool = false, font: Font = bodyMoneyFont) -> some View {
-        HStack(spacing: 4) {
-            if cell.state != .none {
-                Image(systemName: cell.state == .partial ? "circle.lefthalf.filled" : "clock")
-                    .font(.caption2)
-                    .foregroundStyle(Color.pending)
-            }
-            if cell.value == 0 {
-                Text("—").font(font).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
-            } else if cell.pending != 0 {
-                MoneyText(minorUnits: cell.value, font: font.italic(), alignment: .trailing, tint: .pending)
-            } else {
-                MoneyText(minorUnits: cell.value, font: font, alignment: .trailing)
-            }
-        }
-        .frame(width: 120)
-        .padding(.horizontal, 8)
-        .help(cell.pending == 0 ? ""
-              : isYearTotal ? "Includes \(Money.format(abs(cell.pending), currency: .gbp)) not yet confirmed"
-              : PlanFormat.pendingHelp(value: cell.value, pending: cell.pending))
+        PlanCellView(value: cell.value, pending: cell.pending, state: cell.state, isYearTotal: isYearTotal, font: font)
     }
 
     /// Whether any row of `year` still carries unconfirmed money (for the footnote).
