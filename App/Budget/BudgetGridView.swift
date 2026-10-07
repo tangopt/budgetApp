@@ -29,12 +29,14 @@ private struct HorizontalOffsetKey: PreferenceKey {
 struct BudgetGridView: View {
     @ObservedObject var viewModel: BudgetGridViewModel
     @State private var showExporter = false
-    /// Built only when "Export CSV…" is pressed. The export scans every
-    /// category × pay month, and `body` re-runs on every horizontal scroll
-    /// frame (via `horizontalOffset`), so it must not be computed in `body`.
+    /// Built only when "Export CSV…" is pressed: the export scans every
+    /// category × pay month, so it must not be computed in `body`.
     @State private var exportDocument: CSVDocument?
     @State private var drillDownTarget: GridDrillDownTarget?
-    @State private var horizontalOffset: CGFloat = 0
+    /// Held in `@State` (not `@StateObject`/`@ObservedObject`) on purpose: this view must not
+    /// observe it, or every horizontal scroll frame would re-run this whole `body`. Only the
+    /// header's `HorizontalOffsetFollower` observes it.
+    @State private var scrollOffset = HorizontalScrollOffset()
     @State private var expandedGroupIds: Set<Int64> = []
     @State private var closeTarget: CloseMonthTarget?
     @State private var addPlannedTarget: AddPlannedTarget?
@@ -171,23 +173,24 @@ struct BudgetGridView: View {
                         .padding(.horizontal, 8).padding(.vertical, 6)
                         .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                     if let year = viewModel.selectedYear {
-                        HStack(spacing: 0) {
-                            ForEach(1...12, id: \.self) { month in
-                                let payMonth = PayMonth(year: year, month: month)
-                                Text(Self.monthYearLabel(year: year, month: month))
+                        HorizontalOffsetFollower(offset: scrollOffset) {
+                            HStack(spacing: 0) {
+                                ForEach(1...12, id: \.self) { month in
+                                    let payMonth = PayMonth(year: year, month: month)
+                                    Text(Self.monthYearLabel(year: year, month: month))
+                                        .frame(width: 120, alignment: .trailing)
+                                        .padding(.horizontal, 8).padding(.vertical, 6)
+                                        .contentShape(Rectangle())
+                                        // Columns are pay months: the tooltip shows the real range.
+                                        .help(PayMonthFormat.range(viewModel.payCalendar.range(of: payMonth)))
+                                        .contextMenu { monthMenu(payMonth) }
+                                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                                }
+                                Text("Year Total").bold()
                                     .frame(width: 120, alignment: .trailing)
                                     .padding(.horizontal, 8).padding(.vertical, 6)
-                                    .contentShape(Rectangle())
-                                    // Columns are pay months: the tooltip shows the real range.
-                                    .help(PayMonthFormat.range(viewModel.payCalendar.range(of: payMonth)))
-                                    .contextMenu { monthMenu(payMonth) }
-                                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                             }
-                            Text("Year Total").bold()
-                                .frame(width: 120, alignment: .trailing)
-                                .padding(.horizontal, 8).padding(.vertical, 6)
                         }
-                        .offset(x: horizontalOffset)
                         // minWidth: 0 makes this frame take exactly the width it's offered
                         // (what's left of the window after the Category cell) rather than
                         // growing to the 13 columns' full width, which would push the whole
@@ -205,13 +208,15 @@ struct BudgetGridView: View {
                 // for a decorative effect.
                 .shadow(color: .black.opacity(0.08), radius: 3, y: 2)
 
+                // Built once per render and shared by the label column and the cells.
+                let rows = allRows
                 ScrollView(.vertical) {
                     HStack(alignment: .top, spacing: 0) {
                         // Frozen category column: not inside any horizontal scroll, so it
                         // never moves left/right; it rides this same vertical ScrollView as
                         // the body, so it stays aligned with its own row.
                         VStack(spacing: 0) {
-                            ForEach(allRows) { entry in
+                            ForEach(rows) { entry in
                                 rowLabel(entry.kind, shaded: entry.shaded)
                             }
                         }
@@ -222,7 +227,7 @@ struct BudgetGridView: View {
 
                         ScrollView(.horizontal) {
                             VStack(alignment: .leading, spacing: 0) {
-                                ForEach(allRows) { entry in
+                                ForEach(rows) { entry in
                                     rowCells(entry.kind, shaded: entry.shaded)
                                 }
                             }
@@ -233,7 +238,9 @@ struct BudgetGridView: View {
                         .coordinateSpace(.named("gridHScroll"))
                     }
                 }
-                .onPreferenceChange(HorizontalOffsetKey.self) { horizontalOffset = $0 }
+                .onPreferenceChange(HorizontalOffsetKey.self) { [scrollOffset] x in
+                    MainActor.assumeIsolated { scrollOffset.update(x) }
+                }
             }
 
             if let year = viewModel.selectedYear, hasPending(year: year) {
@@ -243,7 +250,7 @@ struct BudgetGridView: View {
                     Text("Italic amounts include planned money not yet confirmed. Hover a cell (or a Year Total) for how much.")
                 }
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.pending)
             }
         }
         .padding()
@@ -621,7 +628,7 @@ struct BudgetGridView: View {
         }
     }
 
-    /// A cell with its unconfirmed part shown: the value italic and secondary while any of it
+    /// A cell with its unconfirmed part shown: the value italic and `Color.pending` while any of it
     /// is pending, with `clock` (all expected) or `circle.lefthalf.filled` (partly happened)
     /// and help text splitting it ("£x actual + £y expected"; a Year Total says
     /// "Includes £x not yet confirmed").
@@ -633,12 +640,12 @@ struct BudgetGridView: View {
             if cell.state != .none {
                 Image(systemName: cell.state == .partial ? "circle.lefthalf.filled" : "clock")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.pending)
             }
             if cell.value == 0 {
                 Text("—").font(font).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
             } else if cell.pending != 0 {
-                MoneyText(minorUnits: cell.value, font: font.italic(), alignment: .trailing, tint: .secondary)
+                MoneyText(minorUnits: cell.value, font: font.italic(), alignment: .trailing, tint: .pending)
             } else {
                 MoneyText(minorUnits: cell.value, font: font, alignment: .trailing)
             }

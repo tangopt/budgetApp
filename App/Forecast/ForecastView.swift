@@ -6,7 +6,9 @@ import struct BudgetCore.Category
 struct ForecastView: View {
     @ObservedObject var viewModel: ForecastViewModel
     @State private var selectedYear: Int
-    @State private var horizontalOffset: CGFloat = 0
+    /// Not observed by this view (plain `@State`), so a horizontal scroll frame re-runs only
+    /// the header's `HorizontalOffsetFollower`, not this whole `body` (see `BudgetGridView`).
+    @State private var scrollOffset = HorizontalScrollOffset()
     @State private var expandedGroupIds: Set<Int64> = []
     @State private var showNewScenarioSheet = false
     @State private var addingItemTo: ForecastGroup?
@@ -157,20 +159,21 @@ struct ForecastView: View {
                             Text("Category").font(.headline).frame(width: 220, alignment: .leading)
                                 .padding(.horizontal, 8).padding(.vertical, 6)
                                 .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
-                            HStack(spacing: 0) {
-                                ForEach(1...12, id: \.self) { month in
-                                    let range = viewModel.payCalendar.range(of: PayMonth(year: selectedYear, month: month))
-                                    Text(Self.monthLabel(month))
+                            HorizontalOffsetFollower(offset: scrollOffset) {
+                                HStack(spacing: 0) {
+                                    ForEach(1...12, id: \.self) { month in
+                                        let range = viewModel.payCalendar.range(of: PayMonth(year: selectedYear, month: month))
+                                        Text(Self.monthLabel(month))
+                                            .frame(width: 120, alignment: .trailing)
+                                            .padding(.horizontal, 8).padding(.vertical, 6)
+                                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                                            .help("\(Self.dayLabel(range.start)) – \(Self.dayLabel(range.end))")
+                                    }
+                                    Text("Year Total").bold()
                                         .frame(width: 120, alignment: .trailing)
                                         .padding(.horizontal, 8).padding(.vertical, 6)
-                                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
-                                        .help("\(Self.dayLabel(range.start)) – \(Self.dayLabel(range.end))")
                                 }
-                                Text("Year Total").bold()
-                                    .frame(width: 120, alignment: .trailing)
-                                    .padding(.horizontal, 8).padding(.vertical, 6)
                             }
-                            .offset(x: horizontalOffset)
                             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                             .clipped()
                         }
@@ -179,10 +182,11 @@ struct ForecastView: View {
                         .overlay(Rectangle().frame(height: 1.5).foregroundStyle(Color.primary.opacity(0.18)), alignment: .bottom)
                         .shadow(color: .black.opacity(0.08), radius: 3, y: 2)
 
+                        let rows = allRows
                         ScrollView(.vertical) {
                             HStack(alignment: .top, spacing: 0) {
                                 VStack(spacing: 0) {
-                                    ForEach(allRows) { entry in
+                                    ForEach(rows) { entry in
                                         rowLabel(entry.kind, shaded: entry.shaded)
                                     }
                                 }
@@ -191,7 +195,7 @@ struct ForecastView: View {
 
                                 ScrollView(.horizontal) {
                                     VStack(alignment: .leading, spacing: 0) {
-                                        ForEach(allRows) { entry in
+                                        ForEach(rows) { entry in
                                             rowCells(entry.kind, shaded: entry.shaded)
                                         }
                                     }
@@ -212,7 +216,9 @@ struct ForecastView: View {
                         // body. 480 shows a comfortable number of rows (~15-17 single-line,
                         // ~10-11 two-line) before this inner view needs its own scroll.
                         .frame(height: 480)
-                        .onPreferenceChange(ForecastHorizontalOffsetKey.self) { horizontalOffset = $0 }
+                        .onPreferenceChange(ForecastHorizontalOffsetKey.self) { [scrollOffset] x in
+                            MainActor.assumeIsolated { scrollOffset.update(x) }
+                        }
                     }
                 }
                 .padding()

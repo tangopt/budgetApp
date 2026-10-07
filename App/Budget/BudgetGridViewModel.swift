@@ -11,7 +11,7 @@ final class BudgetGridViewModel: ObservableObject {
     }
     @Published var categoryGroups: [CategoryGroup] = []
     @Published var transactions: [Transaction] = [] {
-        didSet { rebuildPayMonths() }
+        didSet { rebuildPayMonths(); clearNetWorthCaches() }
     }
     @Published var forecastEntries: [ForecastEntry] = [] {
         didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:] }
@@ -22,9 +22,15 @@ final class BudgetGridViewModel: ObservableObject {
     @Published var exceptions: [PlannedOccurrenceException] = [] {
         didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:] }
     }
-    @Published var accounts: [Account] = []
-    @Published var balanceSnapshots: [BalanceSnapshot] = []
-    @Published var exchangeRate: ExchangeRateSetting = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
+    @Published var accounts: [Account] = [] {
+        didSet { clearNetWorthCaches() }
+    }
+    @Published var balanceSnapshots: [BalanceSnapshot] = [] {
+        didSet { clearNetWorthCaches() }
+    }
+    @Published var exchangeRate: ExchangeRateSetting = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date()) {
+        didSet { clearNetWorthCaches() }
+    }
     @Published var selectedYear: Int?
     @Published var errorMessage: String?
     @Published private(set) var availableYears: [Int] = []
@@ -46,11 +52,17 @@ final class BudgetGridViewModel: ObservableObject {
     private var plannedCache: [Int: [Int64: Int]] = [:]
     /// Each category's Budget cell, memoised per `MonthRange.index` then category id: group,
     /// section and Year Total rows (and the pending footnote) combine member cells on every
-    /// render, including every horizontal-scroll frame. Cleared with `plannedCache`, when
+    /// render. Cleared with `plannedCache`, when
     /// categories change, and when the pay calendar is rebuilt.
     private var cellCache: [Int: [Int64: PlanCell]] = [:]
     /// `payCalendar.monthClass` per `MonthRange.index`; reset when the calendar is rebuilt.
     private var monthClassCache: [Int: MonthClass] = [:]
+    /// Account balance cells per `MonthRange.index` then account id (`nil` = no data yet), and
+    /// the Net Worth row / year-picker totals per `MonthRange.index` (`nil` = no data). Each
+    /// look-up scans every snapshot and transaction, so they're memoised like the plan cells.
+    /// Cleared whenever accounts, snapshots, transactions or the exchange rate change.
+    private var accountBalanceCache: [Int: [Int64: MonthlyAccountBalance?]] = [:]
+    private var netWorthCache: [Int: Int?] = [:]
 
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
@@ -103,19 +115,40 @@ final class BudgetGridViewModel: ObservableObject {
     /// stamped later than midnight on the month's last day.
     func accountBalance(_ account: Account, year: Int, month: Int) -> MonthlyAccountBalance? {
         let range = MonthRange.of(year: year, month: month)
-        return NetWorthCalculator.monthlyBalance(account: account, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, monthStart: range.start, monthEnd: range.end)
+        guard let id = account.id else {
+            return NetWorthCalculator.monthlyBalance(account: account, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, monthStart: range.start, monthEnd: range.end)
+        }
+        let key = MonthRange.index(year: year, month: month)
+        if let cached = accountBalanceCache[key]?[id] { return cached }
+        let balance = NetWorthCalculator.monthlyBalance(account: account, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, monthStart: range.start, monthEnd: range.end)
+        accountBalanceCache[key, default: [:]][id] = .some(balance)
+        return balance
+    }
+
+    /// `NetWorthCalculator.monthEndNetWorth`, memoised (`nil` = no account has data yet).
+    private func monthEndNetWorth(year: Int, month: Int) -> Int? {
+        let key = MonthRange.index(year: year, month: month)
+        if let cached = netWorthCache[key] { return cached }
+        let total = NetWorthCalculator.monthEndNetWorth(accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, year: year, month: month)
+        netWorthCache[key] = .some(total)
+        return total
+    }
+
+    private func clearNetWorthCaches() {
+        accountBalanceCache = [:]
+        netWorthCache = [:]
     }
 
     /// Sum of every account's GBP-converted balance for `month`; accounts with no data yet
     /// that month contribute 0, matching how a not-yet-open account has no effect on net worth.
     func netWorthTotal(year: Int, month: Int) -> Int {
-        NetWorthCalculator.monthEndNetWorth(accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, year: year, month: month) ?? 0
+        monthEndNetWorth(year: year, month: month) ?? 0
     }
 
     /// True when at least one account has data (a snapshot at or before this month) for
     /// `year`/`month` — distinguishes "no data yet" from "net worth was genuinely zero."
     private func hasNetWorthData(year: Int, month: Int) -> Bool {
-        NetWorthCalculator.monthEndNetWorth(accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, year: year, month: month) != nil
+        monthEndNetWorth(year: year, month: month) != nil
     }
 
     /// Change in total GBP net worth from the end of the previous year to the end of
