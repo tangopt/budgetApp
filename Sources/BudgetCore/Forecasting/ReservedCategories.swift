@@ -21,6 +21,17 @@ public enum ReservedCategories {
         return category
     }
 
+    /// A new reserve with its first confirmed allowance (always outward), in the caller's
+    /// write: throws `emptyName` / `duplicateName` before writing anything.
+    @discardableResult
+    public static func addReserve(db: Database, name: String, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) throws -> (reserve: Category, entry: ForecastEntry) {
+        let reserve = try create(db: db, name: name)
+        let group = try ensureGroup(db: db)
+        var entry = ForecastEntry(groupId: group.id!, categoryId: reserve.id!, amountMinorUnits: -abs(amountMinorUnits), frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, isEnabled: true, status: .confirmed, note: nil)
+        try entry.insert(db)
+        return (reserve, entry)
+    }
+
     @discardableResult
     public static func ensureGroup(db: Database) throws -> ForecastGroup {
         if let existing = try ForecastGroup.filter(Column("name") == groupName).fetchOne(db) {

@@ -38,6 +38,8 @@ struct BudgetGridView: View {
     @State private var expandedGroupIds: Set<Int64> = []
     @State private var closeTarget: CloseMonthTarget?
     @State private var addPlannedTarget: AddPlannedTarget?
+    @State private var showNewReserve = false
+    @State private var reserveError: String?
 
     /// The section a header's "+ Add planned item" adds to (`.sheet(item:)`).
     private struct AddPlannedTarget: Identifiable {
@@ -146,7 +148,7 @@ struct BudgetGridView: View {
 
             // Close/reopen errors from the header menu (a failed Close month… shows in its
             // sheet instead; the drill-down sheet shows recategorize errors itself).
-            if let error = viewModel.errorMessage, drillDownTarget == nil, closeTarget == nil, addPlannedTarget == nil {
+            if let error = viewModel.errorMessage, drillDownTarget == nil, closeTarget == nil, addPlannedTarget == nil, !showNewReserve {
                 HStack(alignment: .top) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
                     Text(error).foregroundStyle(.red)
@@ -260,8 +262,22 @@ struct BudgetGridView: View {
             GridDrillDownSheet(target: target, viewModel: viewModel)
         }
         .sheet(item: $addPlannedTarget) { target in
-            AddPlannedItemSheet(type: target.type, categories: viewModel.categories) { categoryId, amount, frequency, interval, start, end in
-                viewModel.addPlannedItem(categoryId: categoryId, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)
+            AddPlannedItemSheet(type: target.type, categories: viewModel.categories) { category, amount, frequency, interval, start, end in
+                switch category {
+                case .existing(let id):
+                    return viewModel.addPlannedItem(categoryId: id, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)
+                case .new(let name):
+                    return viewModel.addPlannedItem(newCategoryName: name, type: target.type, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)
+                }
+            }
+        }
+        // The Forecast screen's new-reserve form; a failed save keeps it open with the error.
+        .sheet(isPresented: $showNewReserve, onDismiss: { reserveError = nil }) {
+            ReserveFormView(mode: .newReserve, errorMessage: reserveError, onEdit: { if reserveError != nil { reserveError = nil } }) { name, amount, frequency, interval, start, end in
+                switch viewModel.addReserve(name: name, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end) {
+                case .saved, .savedButReloadFailed: showNewReserve = false
+                case .failed(let message): reserveError = message
+                }
             }
         }
         .sheet(item: $closeTarget, onDismiss: { viewModel.errorMessage = nil }) { target in
@@ -397,12 +413,21 @@ struct BudgetGridView: View {
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(Color.purple), alignment: .leading)
         case .reservedHeader:
-            Text(viewModel.reserves.isEmpty ? "RESERVED — add reserves on the Forecast screen" : "RESERVED")
-                .font(.caption).bold()
-                .tracking(0.6)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .frame(width: 220, height: 24, alignment: .leading)
+            HStack {
+                Text("RESERVED")
+                    .font(.caption).bold()
+                    .tracking(0.6)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Button("+ Add reserve…") {
+                    viewModel.errorMessage = nil
+                    showNewReserve = true
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+            }
+            .frame(width: 220, height: 24, alignment: .leading)
                 .padding(.horizontal, 8)
                 .background(Color.accentColor.opacity(0.08))
         case .reserve(let reserve):
@@ -439,12 +464,10 @@ struct BudgetGridView: View {
                         // The section's total: every category of the type, combined.
                         let members = categoriesByType(type)
                         ForEach(1...12, id: \.self) { month in
-                            planCell(viewModel.cell(members, year: year, month: month))
-                                .font(.caption).bold()
+                            planCell(viewModel.cell(members, year: year, month: month), font: Self.captionMoneyFont).bold()
                                 .frame(height: 24)
                         }
-                        planCell(viewModel.yearCell(members, year: year), isYearTotal: true)
-                            .font(.caption).bold()
+                        planCell(viewModel.yearCell(members, year: year), isYearTotal: true, font: Self.captionMoneyFont).bold()
                             .frame(height: 24)
                     } else {
                         ForEach(1...(12 + 1), id: \.self) { _ in
@@ -595,7 +618,10 @@ struct BudgetGridView: View {
     /// is pending, with `clock` (all expected) or `circle.lefthalf.filled` (partly happened)
     /// and help text splitting it ("£x actual + £y expected"; a Year Total says
     /// "Includes £x not yet confirmed").
-    private func planCell(_ cell: BudgetGridViewModel.PlanCell, isYearTotal: Bool = false) -> some View {
+    private static let bodyMoneyFont: Font = .system(.body, design: .default).monospacedDigit()
+    private static let captionMoneyFont: Font = .system(.caption, design: .default).monospacedDigit()
+
+    private func planCell(_ cell: BudgetGridViewModel.PlanCell, isYearTotal: Bool = false, font: Font = bodyMoneyFont) -> some View {
         HStack(spacing: 4) {
             if cell.state != .none {
                 Image(systemName: cell.state == .partial ? "circle.lefthalf.filled" : "clock")
@@ -603,11 +629,11 @@ struct BudgetGridView: View {
                     .foregroundStyle(.secondary)
             }
             if cell.value == 0 {
-                Text("—").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
+                Text("—").font(font).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
             } else if cell.pending != 0 {
-                MoneyText(minorUnits: cell.value, font: .system(.body, design: .default).monospacedDigit().italic(), alignment: .trailing, tint: .secondary)
+                MoneyText(minorUnits: cell.value, font: font.italic(), alignment: .trailing, tint: .secondary)
             } else {
-                MoneyText(minorUnits: cell.value, alignment: .trailing)
+                MoneyText(minorUnits: cell.value, font: font, alignment: .trailing)
             }
         }
         .frame(width: 120)

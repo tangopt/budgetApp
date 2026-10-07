@@ -157,7 +157,9 @@ struct EditOccurrenceSheet: View {
                 ForEach(pickerCategories) { category in Text(category.name).tag(category.id!) }
             }
             Picker("Frequency", selection: $frequency) {
-                ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(PlanFormat.frequency(freq, interval: 1)).tag(freq) }
+                ForEach(ForecastFrequency.allCases, id: \.self) { freq in
+                    Text(freq == .once ? "One-off (ends the series here)" : PlanFormat.frequency(freq, interval: 1)).tag(freq)
+                }
             }
             if frequency != .once {
                 Stepper("Every \(interval) \(PlanFormat.unit(frequency, interval: interval))", value: $interval, in: 1...12)
@@ -202,16 +204,26 @@ struct EditOccurrenceSheet: View {
 
 // MARK: - Add planned item
 
+/// The category a new planned item goes to: an existing one, or one created with it.
+enum PlannedItemCategory {
+    case existing(Int64)
+    case new(name: String)
+}
+
 /// "+ Add planned item" from an Income / Expenses / Transfers header: a category of that
-/// section, an amount, one-off or recurring (weekly / monthly / annually, every N), a start
+/// section (or "+ New category…" of the section's type, created with the item), an amount, one-off or recurring (weekly / monthly / annually, every N), a start
 /// and an optional end. Saved through `PlannedItems.add`; errors show inline.
 struct AddPlannedItemSheet: View {
     let type: CategoryType
     let categories: [Category]
-    let onSave: (_ categoryId: Int64, _ amountMinorUnits: Int, ForecastFrequency, _ interval: Int, _ start: Date, _ end: Date?) -> SaveOutcome
+    let onSave: (PlannedItemCategory, _ amountMinorUnits: Int, ForecastFrequency, _ interval: Int, _ start: Date, _ end: Date?) -> SaveOutcome
     @Environment(\.dismiss) private var dismiss
 
+    /// Sentinel for "+ New category…" (real ids are positive rowids).
+    private static let newCategorySentinel: Int64 = -1
+
     @State private var categoryId: Int64?
+    @State private var newCategoryName = ""
     @State private var amountText = ""
     @State private var isRecurring = true
     @State private var frequency: ForecastFrequency = .monthly
@@ -240,7 +252,16 @@ struct AddPlannedItemSheet: View {
         return type == .income ? abs(minorUnits) : -abs(minorUnits)
     }
 
-    private var canSave: Bool { categoryId != nil && signedAmount != nil }
+    private var isCreatingNewCategory: Bool { categoryId == Self.newCategorySentinel }
+
+    private var category: PlannedItemCategory? {
+        guard let categoryId else { return nil }
+        guard isCreatingNewCategory else { return .existing(categoryId) }
+        let name = newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : .new(name: name)
+    }
+
+    private var canSave: Bool { category != nil && signedAmount != nil }
 
     var body: some View {
         Form {
@@ -248,6 +269,12 @@ struct AddPlannedItemSheet: View {
             Picker("Category", selection: $categoryId) {
                 Text("Select…").tag(Int64?.none)
                 ForEach(pickerCategories) { category in Text(category.name).tag(Int64?.some(category.id!)) }
+                Text("+ New category…").tag(Int64?.some(Self.newCategorySentinel))
+            }
+            if isCreatingNewCategory {
+                // Created together with the item on Save, in the same write — Cancel or a
+                // failed save leaves no orphaned category behind.
+                TextField("New category name", text: $newCategoryName)
             }
             MoneyField("Amount", text: $amountText, currency: .gbp)
             Picker("Repeats", selection: $isRecurring) {
@@ -282,18 +309,19 @@ struct AddPlannedItemSheet: View {
         }
         .onChange(of: amountText) { _, _ in errorMessage = nil }
         .onChange(of: categoryId) { _, _ in errorMessage = nil }
+        .onChange(of: newCategoryName) { _, _ in errorMessage = nil }
         .padding()
         .frame(width: 420)
     }
 
     private func save() {
-        guard let categoryId, let amount = signedAmount else { return }
+        guard let category, let amount = signedAmount else { return }
         let start = PayCalendar.utcDay(sameDayAs: startDay, in: .current)
         // The end is the last moment of its UTC day, so an occurrence on that day still counts.
         let end = isRecurring && hasEndDate
             ? PayCalendar.utcDay(sameDayAs: endDay, in: .current).addingTimeInterval(86_399)
             : nil
-        switch onSave(categoryId, amount, isRecurring ? frequency : .once, isRecurring ? interval : 1, start, end) {
+        switch onSave(category, amount, isRecurring ? frequency : .once, isRecurring ? interval : 1, start, end) {
         case .saved, .savedButReloadFailed: dismiss()
         case .failed(let message): errorMessage = message
         }

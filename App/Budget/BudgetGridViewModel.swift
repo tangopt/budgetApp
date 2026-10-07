@@ -306,6 +306,22 @@ final class BudgetGridViewModel: ObservableObject {
         }
     }
 
+    /// A new planned item for a category created with it ("+ New category…"), in one write so
+    /// a failed save leaves no orphaned category (`PlannedItems.add(db:newCategoryName:…)`).
+    func addPlannedItem(newCategoryName: String, type: CategoryType, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> SaveOutcome {
+        perform { db in
+            _ = try PlannedItems.add(db: db, newCategoryName: newCategoryName, type: type, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
+        }
+    }
+
+    /// A new reserve with its first allowance, from the Reserved header — the same path as the
+    /// Forecast screen's (`ReservedCategories.addReserve`).
+    func addReserve(name: String, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> SaveOutcome {
+        perform { db in
+            _ = try ReservedCategories.addReserve(db: db, name: name, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
+        }
+    }
+
     /// Write first, then reload (exceptions are only read in `load`). A failed write returns
     /// `.failed` with a message for the sheet; a failed reload after a successful write
     /// returns `.savedButReloadFailed` with a "Saved, but …" banner, so the sheet closes
@@ -328,6 +344,8 @@ final class BudgetGridViewModel: ObservableObject {
         case PlannedItemEditError.notFound: return "This planned item no longer exists."
         case PlannedItemsError.reservedCategory: return "Reserves get allowances from the Reserved section, not planned items."
         case PlannedItemsError.categoryNotFound: return "That category no longer exists."
+        case PlannedItemsError.emptyCategoryName, ReservedCategoryError.emptyName: return "Enter a name."
+        case PlannedItemsError.duplicateCategoryName, ReservedCategoryError.duplicateName: return "A category with that name already exists."
         default: return "Couldn't save: \(error.localizedDescription)"
         }
     }

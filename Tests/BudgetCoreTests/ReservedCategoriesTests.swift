@@ -226,4 +226,20 @@ final class ReservedCategoriesTests: XCTestCase {
             XCTAssertFalse(rent.excludeFromAutoForecast)
         }
     }
+
+    func testAddReserveCreatesTheReserveAndAnOutwardConfirmedAllowance() throws {
+        try manager().dbQueue.write { db in
+            let (reserve, entry) = try ReservedCategories.addReserve(db: db, name: " Fun ", amountMinorUnits: 20_000, frequency: .monthly, interval: 1, startDate: utc(2026, 11, 1), endDate: nil)
+            XCTAssertEqual(reserve.name, "Fun")
+            XCTAssertTrue(reserve.isReserved)
+            XCTAssertEqual(entry.categoryId, reserve.id)
+            XCTAssertEqual(entry.amountMinorUnits, -20_000)
+            XCTAssertEqual(entry.status, .confirmed)
+            let group = try XCTUnwrap(ForecastGroup.fetchOne(db, key: entry.groupId))
+            XCTAssertEqual(group.name, ReservedCategories.groupName)
+            XCTAssertThrowsError(try ReservedCategories.addReserve(db: db, name: "Fun", amountMinorUnits: 1, frequency: .once, interval: 1, startDate: utc(2026, 11, 1), endDate: nil)) {
+                XCTAssertEqual($0 as? ReservedCategoryError, .duplicateName)
+            }
+        }
+    }
 }

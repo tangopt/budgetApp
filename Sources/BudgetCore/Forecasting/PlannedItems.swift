@@ -6,6 +6,9 @@ public enum PlannedItemsError: Error, Equatable {
     case categoryNotFound
     /// Reserves get allowances through `ReservedCategories`, not planned items.
     case reservedCategory
+    /// A new category's name is blank, or another category already has it.
+    case emptyCategoryName
+    case duplicateCategoryName
 }
 
 /// Confirmed forecast items the user adds by hand from the Budget grid's Income /
@@ -29,6 +32,20 @@ public enum PlannedItems {
             try ReservedCategories.setExcludedFromAutoForecast(db: db, categoryId: categoryId, true)
         }
         return entry
+    }
+
+    /// `add` for a category created on the spot ("+ New category…"): a non-reserved category
+    /// of `type` named `categoryName` (trimmed), then the item. Call it inside one write, so
+    /// a failed add leaves no orphaned category behind.
+    @discardableResult
+    public static func add(db: Database, newCategoryName categoryName: String, type: CategoryType, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) throws -> (category: Category, entry: ForecastEntry) {
+        let trimmed = categoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw PlannedItemsError.emptyCategoryName }
+        guard try Category.filter(Column("name") == trimmed).fetchCount(db) == 0 else { throw PlannedItemsError.duplicateCategoryName }
+        var category = Category(name: trimmed, type: type)
+        try category.insert(db)
+        let entry = try add(db: db, categoryId: category.id!, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
+        return (category, entry)
     }
 
     /// The "Planned" group, created on first use. A group the user switched off is switched

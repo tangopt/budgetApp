@@ -101,4 +101,31 @@ final class PlannedItemsTests: XCTestCase {
             XCTAssertEqual(try ForecastGroup.filter(Column("name") == PlannedItems.groupName).fetchCount(db), 0)
         }
     }
+
+    func testAddWithNewCategoryCreatesTheCategoryAndTheItem() throws {
+        try manager().dbQueue.write { db in
+            let (category, entry) = try PlannedItems.add(db: db, newCategoryName: "  Side gig ", type: .income, amountMinorUnits: 50_000, frequency: .monthly, interval: 1, startDate: utc(2026, 11, 1), endDate: nil)
+            XCTAssertEqual(category.name, "Side gig")
+            XCTAssertEqual(category.type, .income)
+            XCTAssertFalse(category.isReserved)
+            XCTAssertEqual(entry.categoryId, category.id)
+            XCTAssertEqual(try Category.filter(Column("name") == "Side gig").fetchCount(db), 1)
+        }
+    }
+
+    func testAddWithNewCategoryRejectsBlankOrDuplicateNamesWithoutWriting() throws {
+        let m = try manager()
+        try m.dbQueue.write { db in
+            var gym = Category(name: "Gym", type: .expense)
+            try gym.insert(db)
+        }
+        let before = try m.dbQueue.read { db in try Category.fetchCount(db) }
+        for (name, expected) in [("   ", PlannedItemsError.emptyCategoryName), ("Gym", .duplicateCategoryName)] {
+            XCTAssertThrowsError(try m.dbQueue.write { db in
+                try PlannedItems.add(db: db, newCategoryName: name, type: .expense, amountMinorUnits: -100, frequency: .once, interval: 1, startDate: utc(2026, 11, 1), endDate: nil)
+            }) { XCTAssertEqual($0 as? PlannedItemsError, expected) }
+        }
+        XCTAssertEqual(try m.dbQueue.read { db in try Category.fetchCount(db) }, before)
+        XCTAssertEqual(try m.dbQueue.read { db in try ForecastEntry.fetchCount(db) }, 0)
+    }
 }

@@ -538,10 +538,7 @@ final class ForecastViewModel: ObservableObject {
         errorMessage = nil
         do {
             try dbQueue.write { db in
-                let reserve = try ReservedCategories.create(db: db, name: name)
-                let group = try ReservedCategories.ensureGroup(db: db)
-                var entry = ForecastEntry(groupId: group.id!, categoryId: reserve.id!, amountMinorUnits: -abs(amountMinorUnits), frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, isEnabled: true, status: .confirmed, note: nil)
-                try entry.insert(db)
+                try ReservedCategories.addReserve(db: db, name: name, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
             }
         } catch ReservedCategoryError.duplicateName {
             errorMessage = "A category with that name already exists."
