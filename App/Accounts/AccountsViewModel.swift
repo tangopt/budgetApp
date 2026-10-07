@@ -25,7 +25,10 @@ final class AccountsViewModel: ObservableObject {
         self.dbQueue = dbQueue
     }
 
-    func load() {
+    /// Returns false (with `errorMessage` set) when the read fails; `overview` then keeps
+    /// its previous value — nil if nothing has loaded yet.
+    @discardableResult
+    func load() -> Bool {
         do {
             let (accounts, snapshots, transactions, rate) = try dbQueue.read { db in
                 (try Account.fetchAll(db), try BalanceSnapshot.fetchAll(db), try Transaction.fetchAll(db), try ExchangeRateSetting.currentOrDefault(db: db))
@@ -39,8 +42,10 @@ final class AccountsViewModel: ObservableObject {
             if selectedAccountId.map(rowIds.contains) != true { selectedAccountId = rowIds.first }
             // Snapshots may have changed even when the selection didn't.
             updateSelectedHistory()
+            return true
         } catch {
             errorMessage = "Couldn't load accounts: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -80,13 +85,19 @@ final class AccountsViewModel: ObservableObject {
         }
     }
 
-    /// Write first, then reload; any error lands in `errorMessage` and returns false.
+    /// Write first, then reload; any error lands in `errorMessage` and returns false. A
+    /// failed reload after a successful write also returns false, with a message saying the
+    /// change was saved, so callers don't carry on as if the screen were up to date.
     private func perform<T>(_ write: (Database) throws -> T, onSuccess: ((T) -> Void)? = nil) -> Bool {
         errorMessage = nil
         do {
             let result = try dbQueue.write { db in try write(db) }
-            load()
+            let reloaded = load()
             onSuccess?(result)
+            if !reloaded {
+                errorMessage = "Saved, but " + (errorMessage.map { $0.prefix(1).lowercased() + $0.dropFirst() } ?? "couldn't reload accounts.")
+                return false
+            }
             return true
         } catch {
             errorMessage = Self.message(for: error)

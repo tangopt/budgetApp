@@ -8,6 +8,7 @@ import BudgetCore
 struct AccountsView: View {
     @ObservedObject var viewModel: AccountsViewModel
     @ObservedObject var environment: AppEnvironment
+    @State private var activeSheet: AccountsSheet?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -20,22 +21,53 @@ struct AccountsView: View {
                         footer
                     }
                     .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    AccountDetailView(row: viewModel.selectedRow, history: viewModel.selectedHistory)
+                    AccountDetailView(
+                        row: viewModel.selectedRow,
+                        history: viewModel.selectedHistory,
+                        onUpdateBalance: { activeSheet = .updateOne($0) },
+                        onEdit: { activeSheet = .edit($0.account) }
+                    )
                         .frame(width: 320)
                         .frame(maxHeight: .infinity, alignment: .top)
                 }
             } else {
                 commonBanners
-                emptyState
+                // Only claim "no accounts" once a load has succeeded; a failed first load
+                // shows just its error banner.
+                if viewModel.overview != nil {
+                    emptyState
+                }
             }
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .add:
+                AddAccountSheet(viewModel: viewModel)
+            case .edit(let account):
+                EditAccountSheet(viewModel: viewModel, account: account)
+            case .updateOne(let row):
+                UpdateBalanceSheet(viewModel: viewModel, row: row)
+            case .updateAll(let groups):
+                UpdateBalancesSheet(viewModel: viewModel, groups: groups)
+            }
+        }
     }
 
     // MARK: Header
 
     private func header(_ overview: AccountsOverview) -> some View {
+        HStack(alignment: .top) {
+            headerTotals(overview)
+            Spacer()
+            Button("Update balances…") { activeSheet = .updateAll(overview.groups) }
+            Button("+ Add account") { activeSheet = .add }
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private func headerTotals(_ overview: AccountsOverview) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(overview.asOf.map { "Net worth · as of \(DashboardFormat.day($0))" } ?? "Net worth")
                 .font(.callout)
@@ -43,8 +75,12 @@ struct AccountsView: View {
             MoneyText(minorUnits: overview.netWorthGBP, font: .largeTitle.bold().monospacedDigit(), tint: .primary)
             if let change = overview.changeVsPreviousMonthGBP {
                 HStack(spacing: 4) {
-                    Text(change >= 0 ? "↑" : "↓")
-                    Text("\(Money.format(abs(change), currency: .gbp)) vs previous month")
+                    if change == 0 {
+                        Text("No change vs previous month")
+                    } else {
+                        Text(change > 0 ? "↑" : "↓")
+                        Text("\(Money.format(abs(change), currency: .gbp)) vs previous month")
+                    }
                 }
                 .font(.callout)
                 .monospacedDigit()
@@ -106,8 +142,29 @@ struct AccountsView: View {
             Text("Accounts and their balances make up your net worth.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            Button("+ Add account") { activeSheet = .add }
+                .buttonStyle(.borderedProminent)
+                .padding(.top, 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Sheets
+
+private enum AccountsSheet: Identifiable {
+    case add
+    case edit(Account)
+    case updateOne(AccountRow)
+    case updateAll([AccountGroup])
+
+    var id: String {
+        switch self {
+        case .add: return "add"
+        case .edit(let account): return "edit-\(account.id ?? 0)"
+        case .updateOne(let row): return "update-\(row.id)"
+        case .updateAll: return "update-all"
+        }
     }
 }
 
@@ -188,6 +245,8 @@ private struct AccountListRow: View {
 private struct AccountDetailView: View {
     let row: AccountRow?
     let history: [BalanceSnapshot]
+    let onUpdateBalance: (AccountRow) -> Void
+    let onEdit: (AccountRow) -> Void
     @State private var showAllHistory = false
     private let historyLimit = 12
 
@@ -209,6 +268,10 @@ private struct AccountDetailView: View {
                         }
                     }
                     updatedLine(row)
+                    HStack {
+                        Button("Update balance…") { onUpdateBalance(row) }
+                        Button("Edit…") { onEdit(row) }
+                    }
                     chart(row)
                     historyList(row)
                 }
@@ -239,9 +302,10 @@ private struct AccountDetailView: View {
 
     @ViewBuilder
     private func chart(_ row: AccountRow) -> some View {
-        let points = history.reversed().map { (date: $0.date, value: Double($0.balanceMinorUnits) / 100) }
+        // Indexed: same-day snapshots share a date, so the date can't be the identity.
+        let points = history.reversed().enumerated().map { (index: $0.offset, date: $0.element.date, value: Double($0.element.balanceMinorUnits) / 100) }
         if points.count >= 2 {
-            Chart(points, id: \.date) { point in
+            Chart(points, id: \.index) { point in
                 LineMark(x: .value("Date", point.date), y: .value("Balance", point.value))
                     .interpolationMethod(.monotone)
             }
@@ -303,6 +367,23 @@ enum AccountsFormat {
         } else {
             MoneyText(minorUnits: signedMinorUnits, currency: currency, font: font, tint: signedMinorUnits < 0 ? .red : .primary)
         }
+    }
+
+    /// A picked local calendar day as the stored snapshot date (that day, 00:00 UTC).
+    static func snapshotDay(_ picked: Date) -> Date {
+        PayCalendar.utcDay(sameDayAs: picked, in: .current)
+    }
+
+    /// The row's current balance as the user would enter it (amount owed for credit),
+    /// as a plain 2-decimal string for prefilling a text field: "1234.56", "-12.00".
+    static func enteredAmountText(_ row: AccountRow) -> String {
+        let entered = NetWorthCalculator.enteredBalance(signedMinorUnits: row.nativeBalanceMinorUnits, accountKind: row.account.kind)
+        let magnitude = abs(entered)
+        return "\(entered < 0 ? "-" : "")\(magnitude / 100).\(String(format: "%02d", magnitude % 100))"
+    }
+
+    static func invalidAmountMessage(_ text: String) -> String {
+        "“\(text.trimmingCharacters(in: .whitespacesAndNewlines))” isn't a valid amount. Use digits with an optional decimal point, e.g. 1,234.56."
     }
 
     /// "today", "3 days ago", "2 months ago" — whole UTC days / calendar months.

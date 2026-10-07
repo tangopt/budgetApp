@@ -135,7 +135,8 @@ struct AccountsCard: View {
 
     /// A credit account's balance is negative when money is owed (positive = in credit), so
     /// "owed" is only said for the negative case. A non-GBP account shows its native amount
-    /// with the GBP equivalent secondary in parentheses, as the Accounts screen does.
+    /// with the GBP equivalent secondary in parentheses (the Accounts screen instead lists the
+    /// native amount and the GBP balance side by side, without parentheses).
     @ViewBuilder
     private func balanceText(_ account: AccountSummary) -> some View {
         let isOwed = account.kind == .credit && account.gbpBalanceMinorUnits < 0
