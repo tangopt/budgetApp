@@ -266,7 +266,7 @@ final class ScenarioLabViewModel: ObservableObject {
     func createScenario(name: String) -> SaveOutcome {
         var created: Scenario?
         let outcome = perform { db in created = try Scenarios.create(db: db, name: name) }
-        if let id = created?.id { show(id) }
+        if outcome == .saved, let id = created?.id { show(id) }
         return outcome
     }
 
@@ -274,7 +274,7 @@ final class ScenarioLabViewModel: ObservableObject {
         guard let id = scenario.id else { return .failed("This scenario no longer exists.") }
         var created: Scenario?
         let outcome = perform { db in created = try Scenarios.duplicate(db: db, scenarioId: id, name: name) }
-        if let newId = created?.id { show(newId) }
+        if outcome == .saved, let newId = created?.id { show(newId) }
         return outcome
     }
 
@@ -398,6 +398,23 @@ final class ScenarioLabViewModel: ObservableObject {
             case .new(let name):
                 _ = try PlannedItems.add(db: db, newCategoryName: name, type: type, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, scenarioId: scenarioId)
             }
+        }
+    }
+
+    /// A reserve allowance in the selected scenario (`ReservedCategories.addAllowance`); a new
+    /// reserve is a global category, created in the same write.
+    func addReserveAllowance(_ target: ReserveTarget, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> SaveOutcome {
+        guard let scenarioId = selectedScenarioId else { return .failed("Select a scenario to add allowances to it.") }
+        return perform { db in
+            let reserveId: Int64
+            switch target {
+            case .existing(let reserve):
+                guard let id = reserve.id else { throw ReservedCategoryError.notReserved }
+                reserveId = id
+            case .new(let name):
+                reserveId = try ReservedCategories.create(db: db, name: name).id!
+            }
+            _ = try ReservedCategories.addAllowance(db: db, reserveId: reserveId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, scenarioId: scenarioId)
         }
     }
 

@@ -3,20 +3,36 @@ import SwiftUI
 import BudgetCore
 import struct BudgetCore.Category
 
-/// Creates a reserve with its first allowance, or adds another allowance to an existing
-/// one (the Budget grid's Reserved header and reserve rows). A failed save keeps the sheet
-/// open with `errorMessage` shown inline.
+/// Which reserve an allowance goes to: an existing one, or one created with it.
+enum ReserveTarget {
+    case existing(Category)
+    case new(name: String)
+}
+
+/// Creates a reserve with its first allowance, adds another allowance to an existing one
+/// (the Budget grid's Reserved header and reserve rows), or — in a scenario — adds an
+/// allowance to a reserve picked from `reserves` or created with it. A failed save keeps the
+/// sheet open with `errorMessage` shown inline.
 struct ReserveFormView: View {
-    enum Mode { case newReserve; case addAmount(Category) }
+    enum Mode {
+        case newReserve
+        case addAmount(Category)
+        /// A scenario's "+ Add allowance…": pick a reserve or "+ New reserve…".
+        case chooseReserve(reserves: [Category], scenarioName: String)
+    }
     let mode: Mode
     /// The error from the last failed save, shown inline above the buttons.
     let errorMessage: String?
     /// Called when the user edits the name or amount, to clear a stale `errorMessage`.
     let onEdit: () -> Void
-    let onSave: (_ name: String, _ amountMinorUnits: Int, ForecastFrequency, Int, Date, Date?) -> Void
+    let onSave: (ReserveTarget, _ amountMinorUnits: Int, ForecastFrequency, Int, Date, Date?) -> Void
     @Environment(\.dismiss) private var dismiss
 
+    /// Sentinel for "+ New reserve…" (real ids are positive rowids).
+    private static let newReserveSentinel: Int64 = -1
+
     @State private var name = ""
+    @State private var pickedReserveId: Int64?
     @State private var amountPounds = ""
     @State private var frequency: ForecastFrequency = .monthly
     @State private var interval = 1
@@ -30,12 +46,23 @@ struct ReserveFormView: View {
         return minorUnits
     }
 
-    /// Save needs a non-zero amount and, for a new reserve, a non-blank name.
-    private var canSave: Bool {
-        guard parsedAmount != nil else { return false }
-        if case .newReserve = mode { return !name.trimmingCharacters(in: .whitespaces).isEmpty }
-        return true
+    /// Where the allowance goes, once the form says (nil while a name or pick is missing).
+    private var target: ReserveTarget? {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        switch mode {
+        case .newReserve:
+            return trimmed.isEmpty ? nil : .new(name: name)
+        case .addAmount(let reserve):
+            return .existing(reserve)
+        case .chooseReserve(let reserves, _):
+            guard let pickedReserveId else { return nil }
+            if pickedReserveId == Self.newReserveSentinel { return trimmed.isEmpty ? nil : .new(name: name) }
+            return reserves.first { $0.id == pickedReserveId }.map { .existing($0) }
+        }
     }
+
+    /// Save needs a non-zero amount and a reserve (a non-blank name for a new one).
+    private var canSave: Bool { parsedAmount != nil && target != nil }
 
     var body: some View {
         Form {
@@ -47,6 +74,20 @@ struct ReserveFormView: View {
                     .font(.caption).foregroundStyle(.secondary)
             case .addAmount(let reserve):
                 Text("Add an amount to \(reserve.name)").font(.headline)
+            case .chooseReserve(let reserves, let scenarioName):
+                Text("Add a reserve allowance to “\(scenarioName)”").font(.headline)
+                Picker("Reserve", selection: $pickedReserveId) {
+                    Text("Select…").tag(Int64?.none)
+                    ForEach(reserves) { reserve in Text(reserve.name).tag(Int64?.some(reserve.id!)) }
+                    Text("+ New reserve…").tag(Int64?.some(Self.newReserveSentinel))
+                }
+                .onChange(of: pickedReserveId) { _, _ in onEdit() }
+                if pickedReserveId == Self.newReserveSentinel {
+                    TextField("New reserve name", text: $name)
+                        .onChange(of: name) { _, _ in onEdit() }
+                    Text("The reserve itself is shared with the budget and every scenario; this allowance stays in the scenario.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             MoneyField("Amount", text: $amountPounds, currency: .gbp)
                 .onChange(of: amountPounds) { _, _ in onEdit() }
@@ -66,11 +107,11 @@ struct ReserveFormView: View {
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Save") {
-                    guard canSave, let minorUnits = parsedAmount else { return }
+                    guard let target, let minorUnits = parsedAmount else { return }
                     let start = PayCalendar.utcDay(sameDayAs: startDay, in: .current)
                     // The end is the last moment of its UTC day, so an occurrence on that day still counts.
                     let end = hasEndDate ? PayCalendar.utcDay(sameDayAs: endDay, in: .current).addingTimeInterval(86_399) : nil
-                    onSave(name, -abs(minorUnits), frequency, frequency == .once ? 1 : interval, start, end)
+                    onSave(target, -abs(minorUnits), frequency, frequency == .once ? 1 : interval, start, end)
                 }
                 .disabled(!canSave)
                 .keyboardShortcut(.defaultAction)

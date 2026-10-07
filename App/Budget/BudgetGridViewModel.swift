@@ -374,13 +374,11 @@ final class BudgetGridViewModel: ObservableObject {
         }
     }
 
-    /// Another allowance for an existing reserve, in the "Reserved" group (a reserve's row menu).
+    /// Another allowance for an existing reserve (`ReservedCategories.addAllowance`; a reserve's row menu).
     func addReserveAmount(to reserve: Category, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> SaveOutcome {
         guard let reserveId = reserve.id else { return .failed("This reserve no longer exists.") }
         return perform { db in
-            let group = try ReservedCategories.ensureGroup(db: db)
-            var entry = ForecastEntry(groupId: group.id!, categoryId: reserveId, amountMinorUnits: -abs(amountMinorUnits), frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, isEnabled: true, status: .confirmed, note: nil)
-            try entry.insert(db)
+            _ = try ReservedCategories.addAllowance(db: db, reserveId: reserveId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
         }
     }
 

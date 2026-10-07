@@ -281,7 +281,8 @@ struct BudgetGridView: View {
         .sheet(item: $reserveSheet, onDismiss: { reserveError = nil }) { sheet in
             switch sheet {
             case .newReserve:
-                ReserveFormView(mode: .newReserve, errorMessage: reserveError, onEdit: clearReserveError) { name, amount, frequency, interval, start, end in
+                ReserveFormView(mode: .newReserve, errorMessage: reserveError, onEdit: clearReserveError) { target, amount, frequency, interval, start, end in
+                    guard case .new(let name) = target else { return }
                     finishReserveSave(viewModel.addReserve(name: name, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)) { reserveSheet = nil }
                 }
             case .addAmount(let reserve):
@@ -295,7 +296,7 @@ struct BudgetGridView: View {
                 finishReserveSave(viewModel.renameReserve(reserve, to: name)) { renamingReserve = nil }
             }
         }
-        .confirmationDialog("Delete “\(deletingReserve?.name ?? "")”? Its allowances are removed from the plan.", isPresented: Binding(
+        .confirmationDialog("Delete “\(deletingReserve?.name ?? "")”? Its allowances are removed from the plan and from every scenario.", isPresented: Binding(
             get: { deletingReserve != nil },
             set: { if !$0 { deletingReserve = nil } }
         ), titleVisibility: .visible) {

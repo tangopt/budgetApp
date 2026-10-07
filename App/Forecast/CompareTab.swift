@@ -41,6 +41,9 @@ struct ScenarioNetWorthChart: View {
         let pounds: Double
     }
 
+    /// Series are keyed by `PlanLine.id` (names can repeat a reserved word or each other's
+    /// spelling); names are only labels, in the legend and the hover read-out.
+    private static let actualId = "actual"
     private static let actualName = "Actual"
 
     private func plot(_ points: [NetWorthPoint], series: String) -> [Plotted] {
@@ -66,17 +69,18 @@ struct ScenarioNetWorthChart: View {
     }
 
     var body: some View {
-        let names = [Self.actualName] + lines.map(\.name)
+        let ids = [Self.actualId] + lines.map(\.id)
         let colors = [Color.gray] + lines.map { PlanPalette.color($0.colorIndex) }
         let readout = readout
+        VStack(alignment: .leading, spacing: 8) {
         Chart {
-            ForEach(plot(actual, series: Self.actualName)) { point in
+            ForEach(plot(actual, series: Self.actualId)) { point in
                 LineMark(x: .value("Month", point.date), y: .value("Net worth", point.pounds), series: .value("Plan", point.series))
                     .foregroundStyle(by: .value("Plan", point.series))
                     .lineStyle(StrokeStyle(lineWidth: 2))
             }
             ForEach(lines) { line in
-                ForEach(plot(line.forecast, series: line.name)) { point in
+                ForEach(plot(line.forecast, series: line.id)) { point in
                     LineMark(x: .value("Month", point.date), y: .value("Net worth", point.pounds), series: .value("Plan", point.series))
                         .foregroundStyle(by: .value("Plan", point.series))
                         .lineStyle(StrokeStyle(lineWidth: 2, dash: line.colorIndex == 0 ? [] : [6, 3]))
@@ -94,7 +98,7 @@ struct ScenarioNetWorthChart: View {
                     .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(DashboardFormat.monthYear(readout.date)).font(.caption2).foregroundStyle(.secondary)
-                            ForEach(readout.values, id: \.name) { value in
+                            ForEach(Array(readout.values.enumerated()), id: \.offset) { _, value in
                                 HStack(spacing: 4) {
                                     Circle().fill(value.colorIndex.map(PlanPalette.color) ?? .gray).frame(width: 6, height: 6)
                                     Text(value.name).font(.caption2)
@@ -110,8 +114,8 @@ struct ScenarioNetWorthChart: View {
                     }
             }
         }
-        .chartForegroundStyleScale(domain: names, range: colors)
-        .chartLegend(position: .bottom, alignment: .leading)
+        .chartForegroundStyleScale(domain: ids, range: colors)
+        .chartLegend(.hidden)
         .chartXSelection(value: $selectedDate)
         .chartXAxis {
             AxisMarks(values: .stride(by: .year)) { _ in
@@ -129,6 +133,23 @@ struct ScenarioNetWorthChart: View {
         }
         .frame(height: 300)
         .accessibilityLabel("Net worth by month: actual, then the forecast of the budget and each compared scenario")
+            legend
+        }
+    }
+
+    private var legend: some View {
+        HStack(spacing: 14) {
+            legendItem(Self.actualName, color: .gray)
+            ForEach(lines) { line in legendItem(line.name, color: PlanPalette.color(line.colorIndex)) }
+        }
+        .font(.caption)
+    }
+
+    private func legendItem(_ name: String, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(name).lineLimit(1)
+        }
     }
 }
 

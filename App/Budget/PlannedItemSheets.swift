@@ -70,6 +70,8 @@ enum PlanFormat {
         case PlannedItemsError.reservedCategory: return "Reserves get allowances from the Reserved section, not planned items."
         case PlannedItemsError.categoryNotFound: return "That category no longer exists."
         case PlannedItemsError.plannedGroupDisabled: return "The budget's “Planned” group is switched off. Add a planned item in the Budget grid to switch it back on."
+        case ReservedCategoryError.reservedGroupDisabled: return "The budget's “Reserved” group is switched off, so a scenario allowance would count for nothing."
+        case ReservedCategoryError.notReserved: return "That category isn't a reserve."
         case PlannedItemsError.emptyCategoryName, ReservedCategoryError.emptyName, ScenarioError.emptyName: return "Enter a name."
         case PlannedItemsError.duplicateCategoryName, ReservedCategoryError.duplicateName: return "A category with that name already exists."
         case ScenarioError.duplicateName: return "A scenario with that name already exists."
@@ -178,6 +180,9 @@ extension View {
 /// (`plannedOccurrenceEditing`).
 struct PlannedOccurrencesSection: View {
     let rows: [PlannedRow]
+    /// A scenario's occurrences are only locked by a closed month: labelled "Open" /
+    /// "Closed month" rather than "Unconfirmed" / "Confirmed".
+    var inScenario = false
     let errorMessage: String?
     let onEdit: (PlannedRow) -> Void
     let onRemove: (PlannedRow) -> Void
@@ -199,11 +204,11 @@ struct PlannedOccurrencesSection: View {
                     }
                     Spacer()
                     MoneyText(minorUnits: row.occurrence.amountMinorUnits)
-                    Text(row.isConfirmed ? "Confirmed" : "Unconfirmed")
+                    Text(inScenario ? (row.isConfirmed ? "Closed month" : "Open") : (row.isConfirmed ? "Confirmed" : "Unconfirmed"))
                         .font(.caption)
                         .italic(!row.isConfirmed)
                         .foregroundStyle(row.isConfirmed ? Color.secondary : Color.pending)
-                        .frame(width: 80, alignment: .trailing)
+                        .frame(width: 90, alignment: .trailing)
                     if !row.isConfirmed {
                         Button("Edit…") { onEdit(row) }
                         Button("Remove…") { onRemove(row) }

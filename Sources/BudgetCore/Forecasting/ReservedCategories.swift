@@ -6,6 +6,8 @@ public enum ReservedCategoryError: Error, Equatable {
     case emptyName
     case duplicateName
     case notReserved
+    /// A scenario allowance needs the "Reserved" group enabled: it never switches the budget's group on.
+    case reservedGroupDisabled
 }
 
 /// Reserved categories: forecast-only expense buckets for expected but uncategorised
@@ -32,6 +34,22 @@ public enum ReservedCategories {
         return (reserve, entry)
     }
 
+    /// Another confirmed allowance (always outward) for an existing reserve, in the "Reserved"
+    /// group. With a `scenarioId` it goes into that scenario, marked `added`, and the budget
+    /// is left alone: the group is created only when missing and never switched on (a
+    /// disabled one throws `reservedGroupDisabled`, as `PlannedItems.add` does for "Planned").
+    @discardableResult
+    public static func addAllowance(db: Database, reserveId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, scenarioId: Int64? = nil) throws -> ForecastEntry {
+        _ = try reserve(db: db, reserveId)
+        let group = try ensureGroup(db: db)
+        if scenarioId != nil, !group.isEnabled { throw ReservedCategoryError.reservedGroupDisabled }
+        var entry = ForecastEntry(groupId: group.id!, categoryId: reserveId, amountMinorUnits: -abs(amountMinorUnits), frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, isEnabled: true, status: .confirmed, note: nil,
+                                  scenarioId: scenarioId, scenarioChange: scenarioId == nil ? nil : .added)
+        try entry.insert(db)
+        return entry
+    }
+
+    /// The "Reserved" group, created on first use. Never switches a disabled group on.
     @discardableResult
     public static func ensureGroup(db: Database) throws -> ForecastGroup {
         if let existing = try ForecastGroup.filter(Column("name") == groupName).fetchOne(db) {

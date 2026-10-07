@@ -242,4 +242,64 @@ final class ReservedCategoriesTests: XCTestCase {
             }
         }
     }
+
+    func testAddAllowanceInTheBudget() throws {
+        try manager().dbQueue.write { db in
+            let (reserve, _) = try ReservedCategories.addReserve(db: db, name: "Fun", amountMinorUnits: 20_000, frequency: .monthly, interval: 1, startDate: utc(2026, 11, 1), endDate: nil)
+            let entry = try ReservedCategories.addAllowance(db: db, reserveId: reserve.id!, amountMinorUnits: 5_000, frequency: .once, interval: 1, startDate: utc(2026, 12, 1), endDate: nil)
+            XCTAssertEqual(entry.amountMinorUnits, -5_000)
+            XCTAssertEqual(entry.status, .confirmed)
+            XCTAssertNil(entry.scenarioId)
+            XCTAssertNil(entry.scenarioChange)
+            XCTAssertEqual(try ForecastGroup.fetchOne(db, key: entry.groupId)?.name, ReservedCategories.groupName)
+            XCTAssertEqual(try ForecastEntry.budget(db).filter { $0.categoryId == reserve.id }.count, 2)
+            var rent = Category(name: "Rent", type: .expense)
+            try rent.insert(db)
+            XCTAssertThrowsError(try ReservedCategories.addAllowance(db: db, reserveId: rent.id!, amountMinorUnits: 1, frequency: .once, interval: 1, startDate: utc(2026, 12, 1), endDate: nil)) {
+                XCTAssertEqual($0 as? ReservedCategoryError, .notReserved)
+            }
+        }
+    }
+
+    func testAddAllowanceInAScenarioLeavesTheBudgetAlone() throws {
+        try manager().dbQueue.write { db in
+            let (reserve, _) = try ReservedCategories.addReserve(db: db, name: "Fun", amountMinorUnits: 20_000, frequency: .monthly, interval: 1, startDate: utc(2026, 11, 1), endDate: nil)
+            var scenario = Scenario(name: "Lean", createdAt: utc(2026, 10, 1))
+            try scenario.insert(db)
+            let budgetBefore = try ForecastEntry.budget(db)
+            let entry = try ReservedCategories.addAllowance(db: db, reserveId: reserve.id!, amountMinorUnits: 5_000, frequency: .monthly, interval: 1, startDate: utc(2027, 1, 1), endDate: nil, scenarioId: scenario.id)
+            XCTAssertEqual(entry.scenarioId, scenario.id)
+            XCTAssertEqual(entry.scenarioChange, .added)
+            XCTAssertEqual(entry.amountMinorUnits, -5_000)
+            XCTAssertEqual(try ForecastEntry.budget(db), budgetBefore)
+            XCTAssertEqual(try ForecastEntry.inScenario(db, id: scenario.id!).map(\.id), [entry.id])
+        }
+    }
+
+    func testScenarioAllowanceNeverSwitchesTheReservedGroupOn() throws {
+        try manager().dbQueue.write { db in
+            let (reserve, first) = try ReservedCategories.addReserve(db: db, name: "Fun", amountMinorUnits: 20_000, frequency: .monthly, interval: 1, startDate: utc(2026, 11, 1), endDate: nil)
+            try db.execute(sql: "UPDATE forecastGroup SET isEnabled = 0 WHERE id = ?", arguments: [first.groupId])
+            var scenario = Scenario(name: "Lean", createdAt: utc(2026, 10, 1))
+            try scenario.insert(db)
+            XCTAssertThrowsError(try ReservedCategories.addAllowance(db: db, reserveId: reserve.id!, amountMinorUnits: 5_000, frequency: .once, interval: 1, startDate: utc(2027, 1, 1), endDate: nil, scenarioId: scenario.id)) {
+                XCTAssertEqual($0 as? ReservedCategoryError, .reservedGroupDisabled)
+            }
+            XCTAssertEqual(try ForecastGroup.fetchOne(db, key: first.groupId)?.isEnabled, false)
+            XCTAssertTrue(try ForecastEntry.inScenario(db, id: scenario.id!).isEmpty)
+        }
+    }
+
+    func testScenarioAllowanceCreatesAMissingReservedGroup() throws {
+        try manager().dbQueue.write { db in
+            let reserve = try ReservedCategories.create(db: db, name: "Fun")
+            var scenario = Scenario(name: "Lean", createdAt: utc(2026, 10, 1))
+            try scenario.insert(db)
+            let entry = try ReservedCategories.addAllowance(db: db, reserveId: reserve.id!, amountMinorUnits: 5_000, frequency: .once, interval: 1, startDate: utc(2027, 1, 1), endDate: nil, scenarioId: scenario.id)
+            let group = try XCTUnwrap(ForecastGroup.fetchOne(db, key: entry.groupId))
+            XCTAssertEqual(group.name, ReservedCategories.groupName)
+            XCTAssertTrue(group.isEnabled)
+            XCTAssertTrue(try ForecastEntry.budget(db).isEmpty)
+        }
+    }
 }

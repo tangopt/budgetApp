@@ -161,8 +161,8 @@ final class NetWorthCalculatorTests: XCTestCase {
         return calendar.date(from: DateComponents(year: y, month: m, day: d))!
     }
 
-    // Must equal the sum of each account's monthlyBalance — the formula BudgetGridViewModel
-    // and ForecastViewModel each used to carry their own copy of.
+    // Must equal the sum of each account's monthlyBalance — the formula the Budget grid's
+    // Net Worth row relies on (BudgetGridViewModel delegates here).
     func testMonthEndNetWorthSumsCarriedForwardAccountBalances() {
         let gbp = Account(id: 1, name: "Current", currency: .gbp, kind: .cash, trackingMode: .manual)
         let eur = Account(id: 2, name: "EUR", currency: .eur, kind: .cash, trackingMode: .imported)

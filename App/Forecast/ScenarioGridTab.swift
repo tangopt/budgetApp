@@ -18,6 +18,9 @@ struct ScenarioGridTab: View {
     @State private var expandedGroupIds: Set<Int64> = []
     @State private var drillDown: DrillDownTarget?
     @State private var addTarget: AddTarget?
+    @State private var addingAllowance = false
+    /// A failed allowance save, shown inside the open form.
+    @State private var allowanceError: String?
 
     private struct DrillDownTarget: Identifiable {
         let category: Category
@@ -91,6 +94,15 @@ struct ScenarioGridTab: View {
         }
         .sheet(item: $drillDown) { target in
             ScenarioDrillDownSheet(viewModel: viewModel, category: target.category, year: target.year, month: target.month)
+        }
+        .sheet(isPresented: $addingAllowance, onDismiss: { allowanceError = nil }) {
+            ReserveFormView(mode: .chooseReserve(reserves: viewModel.reserves, scenarioName: viewModel.selectedScenario?.name ?? ""),
+                            errorMessage: allowanceError, onEdit: { if allowanceError != nil { allowanceError = nil } }) { target, amount, frequency, interval, start, end in
+                switch viewModel.addReserveAllowance(target, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end) {
+                case .saved, .savedButReloadFailed: addingAllowance = false
+                case .failed(let message): allowanceError = message
+                }
+            }
         }
         .sheet(item: $addTarget) { target in
             AddPlannedItemSheet(type: target.type, scope: target.scope, categories: viewModel.categories, plannedEntries: viewModel.scenarioPlanEntries) { category, amount, frequency, interval, start, end in
@@ -238,8 +250,16 @@ struct ScenarioGridTab: View {
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(rowColor(for: category.type)), alignment: .leading)
         case .reservedHeader:
-            Text("RESERVED").font(.caption).bold().tracking(0.6).foregroundStyle(.secondary)
-                .frame(width: 220, height: 24, alignment: .leading)
+            HStack {
+                Text("RESERVED").font(.caption).bold().tracking(0.6).foregroundStyle(.secondary).lineLimit(1)
+                Spacer()
+                if viewModel.editScope != nil {
+                    Button("+ Add allowance…") { allowanceError = nil; addingAllowance = true }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                }
+            }
+            .frame(width: 220, height: 24, alignment: .leading)
                 .padding(.horizontal, 8)
                 .background(Color.accentColor.opacity(0.08))
         case .reserve(let reserve):
@@ -376,6 +396,7 @@ private struct ScenarioDrillDownSheet: View {
             List {
                 PlannedOccurrencesSection(
                     rows: viewModel.occurrences(category: category, year: year, month: month),
+                    inScenario: true,
                     errorMessage: planError,
                     onEdit: { row in planError = nil; editing = row },
                     onRemove: { row in planError = nil; removing = row }
