@@ -380,10 +380,6 @@ enum AccountsFormat {
         Money.formatInput(NetWorthCalculator.enteredBalance(signedMinorUnits: row.nativeBalanceMinorUnits, accountKind: row.account.kind))
     }
 
-    static func invalidAmountMessage(_ text: String) -> String {
-        "“\(text.trimmingCharacters(in: .whitespacesAndNewlines))” isn't a valid amount. Use digits with an optional decimal point, e.g. 1,234.56."
-    }
-
     /// "today", "3 days ago", "2 months ago" — whole UTC days / calendar months.
     static func age(of date: Date, today: Date = Date()) -> String {
         let calendar = MonthRange.calendar

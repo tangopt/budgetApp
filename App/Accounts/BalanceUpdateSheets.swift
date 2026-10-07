@@ -27,9 +27,6 @@ struct UpdateBalanceSheet: View {
             if row.account.kind == .credit {
                 SheetCaption("Enter what you owe on the card as a positive number.")
             }
-            if amount == nil && !amountText.trimmingCharacters(in: .whitespaces).isEmpty {
-                SheetCaption(AccountsFormat.invalidAmountMessage(amountText), isError: true)
-            }
             DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
             TextField("Note (optional)", text: $note)
         }

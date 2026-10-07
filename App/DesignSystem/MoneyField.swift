@@ -26,6 +26,10 @@ struct MoneyField: View {
     private var isEmpty: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var isInvalid: Bool { isEnabled && !isEmpty && Money.parseMinorUnits(text) == nil }
 
+    static func invalidAmountMessage(_ text: String) -> String {
+        "“\(text.trimmingCharacters(in: .whitespacesAndNewlines))” isn't a valid amount. Use digits with an optional decimal point, e.g. 1,234.56."
+    }
+
     var body: some View {
         HStack {
             TextField(label, text: $text)
@@ -34,7 +38,7 @@ struct MoneyField: View {
                 .focused($focused)
                 .frame(width: width)
                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(isInvalid && !focused ? Color.red : Color.clear))
-                .help(isInvalid ? "“\(text.trimmingCharacters(in: .whitespacesAndNewlines))” isn't a valid amount. Use digits with an optional decimal point, e.g. 1,234.56." : "")
+                .help(isInvalid ? Self.invalidAmountMessage(text) : "")
             Text(currency.rawValue.uppercased())
                 .foregroundStyle(.secondary)
                 .frame(width: 34, alignment: .leading)

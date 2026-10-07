@@ -35,9 +35,6 @@ struct AddAccountSheet: View {
             if kind == .credit {
                 SheetCaption("Enter what you owe on the card as a positive number.")
             }
-            if balanceInvalid {
-                SheetCaption(AccountsFormat.invalidAmountMessage(balanceText), isError: true)
-            }
             if !trimmedBalance.isEmpty {
                 DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
             }
