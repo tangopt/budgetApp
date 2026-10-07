@@ -1,17 +1,17 @@
 import GRDB
 
-public enum AccountKind: String, Codable, CaseIterable {
+public enum AccountKind: String, Codable, CaseIterable, Sendable {
     case cash
     case credit
     case investment
 }
 
-public enum AccountTrackingMode: String, Codable, CaseIterable {
+public enum AccountTrackingMode: String, Codable, CaseIterable, Sendable {
     case imported
     case manual
 }
 
-public struct Account: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord {
+public struct Account: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var id: Int64?
     public var name: String
     public var currency: Currency

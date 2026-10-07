@@ -3,7 +3,7 @@ import Foundation
 
 /// An edit to a single occurrence of a recurring `ForecastEntry`, keyed by
 /// `(entryId, originalDate)` — the date the series would have produced.
-public struct PlannedOccurrenceException: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord {
+public struct PlannedOccurrenceException: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var id: Int64?
     public var entryId: Int64
     /// Must equal the series' generated occurrence date exactly; build keys only from

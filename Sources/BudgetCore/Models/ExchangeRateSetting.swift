@@ -1,7 +1,7 @@
 import GRDB
 import Foundation
 
-public struct ExchangeRateSetting: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord {
+public struct ExchangeRateSetting: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var id: Int64?
     public var eurToGbpRate: Double
     public var updatedAt: Date

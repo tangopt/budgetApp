@@ -1,7 +1,7 @@
 import Foundation
 
 /// A net worth value (GBP minor units) at the end of a calendar month.
-public struct NetWorthPoint: Equatable, Identifiable {
+public struct NetWorthPoint: Equatable, Identifiable, Sendable {
     public let year: Int
     public let month: Int
     public let valueMinorUnits: Int

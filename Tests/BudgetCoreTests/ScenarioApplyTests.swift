@@ -653,4 +653,87 @@ final class ScenarioApplyTests: XCTestCase {
         let report = try undo(f)
         XCTAssertTrue(report.warnings.contains("Phone: later budget items remain — check the Budget grid"), "\(report.warnings)")
     }
+
+    // MARK: - Follow-up review fixes
+
+    private func refresh(_ f: Fixture) throws {
+        _ = try f.manager.dbQueue.write { db in try Scenarios.refresh(db: db, scenarioId: f.scenarioId, now: self.utc(2026, 11, 7)) }
+    }
+
+    /// The budget entry ids the scenario holds copies of (or changes over).
+    private func scenarioSourceIds(_ f: Fixture) throws -> Set<Int64> {
+        try f.manager.dbQueue.read { db in Set(try ForecastEntry.inScenario(db, id: f.scenarioId).compactMap(\.sourceEntryId)) }
+    }
+
+    private func addBudgetItem(_ f: Fixture, _ category: String, _ amount: Int, from start: Date) throws -> Int64 {
+        try f.manager.dbQueue.write { db in
+            try PlannedItems.add(db: db, categoryId: f.categories[category]!, amountMinorUnits: amount, frequency: .monthly, interval: 1, startDate: start, endDate: nil).id!
+        }
+    }
+
+    func testRefreshKeepsANewBudgetItemInTheCategoryOfAnAppliedRemoval() throws {
+        let f = try fixture()
+        try apply(f, ["Gym"])
+        let gym = try addBudgetItem(f, "Gym", -6_000, from: utc(2027, 1, 1))
+        try refresh(f)
+        XCTAssertTrue(try scenarioSourceIds(f).contains(gym))
+    }
+
+    func testRefreshKeepsANewBudgetItemAddedWhileTheAppliedEntryIsStillOpen() throws {
+        let f = try fixture()
+        try apply(f, ["Rent"])
+        let parking = try addBudgetItem(f, "Rent", -5_000, from: utc(2027, 1, 1))
+        try refresh(f)
+        XCTAssertTrue(try scenarioSourceIds(f).contains(parking))
+    }
+
+    func testRefreshDropsASplitOfAnAppliedEntryInTheSameOrAnotherCategory() throws {
+        for category in ["Rent", "Phone"] {
+            let f = try fixture()
+            try apply(f, ["Rent"])
+            let new = try XCTUnwrap(try created(f, "Rent").first)
+            try f.manager.dbQueue.write { db in
+                try PlannedItemEditing.editFollowing(db: db, entryId: new.id!, originalDate: self.utc(2027, 1, 31),
+                                                     change: OccurrenceChange(amountMinorUnits: -125_000, categoryId: f.categories[category]!), calendar: self.calendar)
+            }
+            let split = try XCTUnwrap(try budget(f).max { $0.id! < $1.id! })
+            XCTAssertEqual(split.categoryId, f.categories[category])
+            XCTAssertEqual(split.startDate, utc(2027, 1, 31))
+            try refresh(f)
+            XCTAssertFalse(try scenarioSourceIds(f).contains(split.id!), category)
+        }
+    }
+
+    func testAChangeAlreadyAppliedIsSkippedEvenOnceItsConfirmingTransactionIsGone() throws {
+        let f = try fixture()
+        let cheaper = try cheaperRentScenario(f)
+        try spend(f, -100_000, on: utc(2026, 11, 2), category: "Rent")
+        try apply(f, ["Rent"]) // source ends 30 Nov, new rent from 31 Dec
+        // The confirming transaction is removed: November isn't confirmed any more.
+        try f.manager.dbQueue.write { db in _ = try Transaction.deleteAll(db) }
+
+        let application = try f.manager.dbQueue.write { db in
+            try ScenarioApply.apply(db: db, scenarioId: cheaper.scenarioId, differenceIds: [cheaper.rentDifference], calendar: self.calendar, now: self.utc(2026, 11, 5))
+        }
+        XCTAssertEqual(application.skipped, ["Rent: already changed in the budget from Dec 2026; refresh the scenario"])
+        XCTAssertTrue(application.appliedNothing)
+        XCTAssertEqual(try created(f, "Rent").count, 1)
+        XCTAssertEqual(try budgetEntry(f, "Rent").endDate, utc(2026, 11, 30))
+    }
+
+    func testADisabledEntryOfTheCategoryIsNotASuccessor() throws {
+        let f = try fixture()
+        let cheaper = try cheaperRentScenario(f)
+        // The source already ends before the boundary, and the only other rent entry is off.
+        try f.manager.dbQueue.write { db in
+            try db.execute(sql: "UPDATE forecastEntry SET endDate = ? WHERE id = ?", arguments: [self.utc(2026, 10, 31), f.entries["Rent"]!])
+            var off = try PlannedItems.add(db: db, categoryId: f.categories["Rent"]!, amountMinorUnits: -1, frequency: .monthly, interval: 1, startDate: self.utc(2026, 11, 1), endDate: nil)
+            off.isEnabled = false
+            try off.update(db)
+        }
+        let application = try f.manager.dbQueue.write { db in
+            try ScenarioApply.apply(db: db, scenarioId: cheaper.scenarioId, differenceIds: [cheaper.rentDifference], calendar: self.calendar, now: self.utc(2026, 11, 5))
+        }
+        XCTAssertFalse(application.appliedNothing, "\(application.skipped)")
+    }
 }

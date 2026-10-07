@@ -139,6 +139,9 @@ public enum ScenarioApply {
             let categories = try Category.fetchAll(db)
             let names = Dictionary(uniqueKeysWithValues: categories.map { ($0.id!, $0.name) })
             let alreadyApplied = try appliedDifferenceIds(db: db, scenarioId: scenarioId)
+            // Budget entries created by any scenario's un-undone applies.
+            let appliedCreatedIds = Set(try ScenarioApplication.filter(Column("undoneAt") == nil).fetchAll(db)
+                .flatMap { $0.decodedJournal?.operations.flatMap { $0.created.map(\.entryId) } ?? [] })
 
             // The budget as it stands before the apply, for the confirmation rule.
             let current = calendar.current
@@ -211,14 +214,21 @@ public enum ScenarioApply {
                     }
                     // The budget already went its own way from the effective start (typically
                     // another scenario's apply of the same change, in this pay month or an
-                    // earlier one): the source is over by then and another entry of its
-                    // category is still running. Applying would stack a second one.
-                    if let changedSource, try end(db: db, changedSource, before: start, dryRun: true) == nil,
-                       let successor = try ForecastEntry.budget(db)
-                        .filter({ $0.id != changedSource.id && $0.categoryId == changedSource.categoryId && ($0.endDate.map { $0 >= start } ?? true) })
-                        .min(by: { $0.startDate < $1.startDate }) {
-                        journal.skipped.append("\(name): already changed in the budget from \(monthName(successor.startDate)); refresh the scenario")
-                        continue
+                    // earlier one): an entry an un-undone apply created in the source's
+                    // category is still running then, or the source is over by then and
+                    // another enabled entry of its category is still running. Applying would
+                    // stack a second one.
+                    if let changedSource {
+                        let others = try ForecastEntry.budget(db).filter { other in
+                            other.id != changedSource.id && other.categoryId == changedSource.categoryId && other.isEnabled
+                                && (other.endDate.map { $0 >= start } ?? true)
+                        }
+                        var successors = others.filter { appliedCreatedIds.contains($0.id!) }
+                        if successors.isEmpty, try end(db: db, changedSource, before: start, dryRun: true) == nil { successors = others }
+                        if let successor = successors.min(by: { $0.startDate < $1.startDate }) {
+                            journal.skipped.append("\(name): already changed in the budget from \(monthName(successor.startDate)); refresh the scenario")
+                            continue
+                        }
                     }
                     guard let newStart = firstOccurrence(of: scenarioEntry, from: start) else {
                         journal.skipped.append("\(name): no occurrence from \(monthName(start))")

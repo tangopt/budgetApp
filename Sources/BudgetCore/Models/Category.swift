@@ -1,12 +1,12 @@
 import GRDB
 
-public enum CategoryType: String, Codable, CaseIterable {
+public enum CategoryType: String, Codable, CaseIterable, Sendable {
     case expense
     case transfer
     case income
 }
 
-public struct Category: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord {
+public struct Category: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var id: Int64?
     public var name: String
     public var type: CategoryType

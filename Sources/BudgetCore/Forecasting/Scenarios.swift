@@ -106,9 +106,8 @@ public enum Scenarios {
     /// budget stands in for that source's copy; one whose source is gone is kept as `added`
     /// (changed) or dropped (removed) and reported. `added` entries are kept. Budget entries
     /// created by this scenario's own un-undone applies aren't copied (the scenario already
-    /// holds them), nor are budget entries added after such an apply from its boundary in a
-    /// category it touched (a split of an applied entry); sources those applies ended aren't
-    /// reported as `sourceChanged`.
+    /// holds them), nor are later budget entries continuing them (a split of an applied entry,
+    /// `ownContinuations`); sources those applies ended aren't reported as `sourceChanged`.
     @discardableResult
     public static func refresh(db: Database, scenarioId: Int64, now: Date = Date()) throws -> RefreshReport {
         guard var scenario = try Scenario.fetchOne(db, key: scenarioId) else { throw ScenarioError.notFound }
@@ -124,18 +123,7 @@ public enum Scenarios {
             let ownJournals = ownApplications.map(\.1)
             let ownCreated = Set(ownJournals.flatMap { $0.operations.flatMap { $0.created.map(\.entryId) } })
             let ownEnded = Set(ownJournals.flatMap { $0.operations.flatMap { $0.modified.map(\.entryId) } })
-            // Budget entries added after one of those applies, from its boundary, in a
-            // category it touched: splits of what it created (an edit of "this and
-            // following"), which the scenario's own entry already covers.
-            let ownLater: [(lastEntryId: Int64, boundary: Date, categoryIds: Set<Int64>)] = try ownApplications.compactMap { application, journal in
-                let threshold = application.laterThreshold(journal)
-                guard let lastId = threshold.lastEntryId else { return nil }
-                let categoryIds = try journal.operations.reduce(into: Set<Int64>()) { $0.formUnion(try ScenarioApply.categoryIds(db: db, of: $1)) }
-                return (lastId, threshold.boundary, categoryIds)
-            }
-            let budget = try ForecastEntry.budget(db).filter { entry in
-                !ownCreated.contains(entry.id!) && !ownLater.contains { entry.id! > $0.lastEntryId && entry.startDate >= $0.boundary && $0.categoryIds.contains(entry.categoryId) }
-            }
+            let budget = try ownContinuations(db: db, applications: ownApplications, budget: ForecastEntry.budget(db).filter { !ownCreated.contains($0.id!) })
             let names = try categoryNames(db)
             var covered: Set<Int64> = []
             for var entry in try ForecastEntry.inScenario(db, id: scenarioId) {
@@ -170,6 +158,41 @@ public enum Scenarios {
             return .commit
         }
         return report
+    }
+
+    /// `budget` without the entries that continue what this scenario's own applies created:
+    /// a budget entry added after an apply (id above its `lastEntryId`) that starts after an
+    /// own-created entry of its category has been ended, or the day after one of any
+    /// category (a split moving the series to another category). Dropped entries chain, so
+    /// a split of a split goes too. Genuinely new items (added while the applied entry is
+    /// still open, or in the category of an applied removal) are kept.
+    private static func ownContinuations(db: Database, applications: [(ScenarioApplication, ScenarioApplyJournal)], budget: [ForecastEntry]) throws -> [ForecastEntry] {
+        // (entry, the lastEntryId of the apply it belongs to) for every own-created entry still there.
+        var chain: [(entry: ForecastEntry, lastEntryId: Int64)] = []
+        for (application, journal) in applications {
+            let createdIds = journal.operations.filter { !$0.created.isEmpty }.flatMap { $0.created.map(\.entryId) }
+            guard !createdIds.isEmpty, let lastId = application.laterThreshold(journal).lastEntryId else { continue }
+            chain += try ForecastEntry.filter(keys: createdIds).fetchAll(db).map { ($0, lastId) }
+        }
+        guard !chain.isEmpty else { return budget }
+        var dropped: Set<Int64> = []
+        var grew = true
+        while grew {
+            grew = false
+            for candidate in budget where !dropped.contains(candidate.id!) {
+                let link = chain.first { link in
+                    guard candidate.id! > link.lastEntryId, let end = link.entry.endDate else { return false }
+                    let dayAfter = MonthRange.calendar.date(byAdding: .day, value: 1, to: end)!
+                    return (candidate.categoryId == link.entry.categoryId && candidate.startDate > end) || candidate.startDate == dayAfter
+                }
+                if let link {
+                    dropped.insert(candidate.id!)
+                    chain.append((candidate, link.lastEntryId))
+                    grew = true
+                }
+            }
+        }
+        return budget.filter { !dropped.contains($0.id!) }
     }
 
     /// The scenario's `added`, `changed` and `removed` entries, by entry id.

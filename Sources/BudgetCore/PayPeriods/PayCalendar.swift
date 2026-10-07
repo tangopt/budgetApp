@@ -4,7 +4,7 @@ import GRDB
 
 /// A month as the spreadsheet meant it: from the day after the previous month's salary up
 /// to and including this month's salary date (spec: 2026-10-05-pay-months-design.md).
-public struct PayMonth: Hashable, Comparable, Codable {
+public struct PayMonth: Hashable, Comparable, Codable, Sendable {
     public let year: Int
     public let month: Int
     public init(year: Int, month: Int) { self.year = year; self.month = month }
@@ -18,7 +18,7 @@ public struct PayMonth: Hashable, Comparable, Codable {
 public enum PayCloseSource: Equatable { case manual, salary, projected }
 public enum PayCalendarError: Error, Equatable { case invalidCloseDate }
 
-public struct PayCalendar {
+public struct PayCalendar: Sendable {
     public let today: Date
     private let salaryByMonth: [PayMonth: Date]   // start of day
     private let manualByMonth: [PayMonth: Date]   // start of day

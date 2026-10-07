@@ -1,6 +1,6 @@
 import GRDB
 
-public struct ForecastGroup: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord {
+public struct ForecastGroup: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var id: Int64?
     public var name: String
     public var note: String?

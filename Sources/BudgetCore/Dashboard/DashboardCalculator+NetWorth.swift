@@ -35,7 +35,7 @@ public struct NetWorthSeries: Equatable {
 /// The plan-independent part of a net worth series: the actual months, the current net
 /// worth and where the forecast walk starts. Computed once, it is shared by every plan the
 /// scenario comparison projects.
-public struct NetWorthActuals: Equatable {
+public struct NetWorthActuals: Equatable, Sendable {
     /// As `NetWorthSeries.actual`.
     public let actual: [NetWorthPoint]
     public let currentNetWorthMinorUnits: Int

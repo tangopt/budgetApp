@@ -17,7 +17,7 @@ import GRDB
 @MainActor
 final class ScenarioLabViewModel: ObservableObject {
     /// One net worth forecast line of the Compare chart.
-    struct PlanLine: Identifiable, Equatable {
+    struct PlanLine: Identifiable, Equatable, Sendable {
         /// "budget", or "scenario-<id>".
         let id: String
         let name: String
@@ -27,7 +27,7 @@ final class ScenarioLabViewModel: ObservableObject {
     }
 
     /// One plan's row of the summary table.
-    struct SummaryRow: Identifiable, Equatable {
+    struct SummaryRow: Identifiable, Equatable, Sendable {
         let id: String
         let name: String
         let isBudget: Bool
@@ -112,6 +112,11 @@ final class ScenarioLabViewModel: ObservableObject {
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
         _gridYear = Published(initialValue: MonthRange.components(of: Date()).year)
+    }
+
+    /// A comparison still computing when the lab goes away is cancelled.
+    isolated deinit {
+        comparisonTask?.cancel()
     }
 
     var selectedScenario: Scenario? { scenarios.first { $0.id == selectedScenarioId } }
@@ -217,14 +222,14 @@ final class ScenarioLabViewModel: ObservableObject {
     // MARK: Derivations
 
     /// A compared scenario, as the comparison computation takes it.
-    private struct ComparedPlan {
+    private struct ComparedPlan: Sendable {
         let id: Int64
         let name: String
         let colorIndex: Int
         let plan: PlanInput
     }
 
-    private struct ComparisonResult {
+    private struct ComparisonResult: Sendable {
         let actualLine: [NetWorthPoint]
         let lines: [PlanLine]
         let summaries: [SummaryRow]

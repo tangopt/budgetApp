@@ -3,7 +3,7 @@ import Foundation
 
 /// A manual override of the day a pay month closes (for months with no imported salary yet,
 /// or to correct one). At most one per `(year, month)`.
-public struct PayMonthClose: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord {
+public struct PayMonthClose: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var id: Int64?
     public var year: Int
     public var month: Int

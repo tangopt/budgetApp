@@ -1,19 +1,19 @@
 import GRDB
 import Foundation
 
-public enum TransactionStatus: String, Codable, CaseIterable {
+public enum TransactionStatus: String, Codable, CaseIterable, Sendable {
     case pendingReview
     case confirmed
 }
 
-public enum CategorizedBy: String, Codable, CaseIterable {
+public enum CategorizedBy: String, Codable, CaseIterable, Sendable {
     case rule
     case llm
     case manual
     case none
 }
 
-public struct Transaction: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord {
+public struct Transaction: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var id: Int64?
     public var importBatchId: Int64
     public var accountId: Int64

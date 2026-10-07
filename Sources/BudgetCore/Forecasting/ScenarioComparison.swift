@@ -3,7 +3,7 @@ import Foundation
 /// One plan to compare — the budget's, or one scenario's own entries — as loaded: entries
 /// (`ForecastEntry.budget` or `ForecastEntry.inScenario`, tombstones included), their
 /// exceptions, and the forecast groups.
-public struct PlanInput: Equatable {
+public struct PlanInput: Equatable, Sendable {
     public var entries: [ForecastEntry]
     public var exceptions: [PlannedOccurrenceException]
     public var groups: [ForecastGroup]
@@ -17,7 +17,7 @@ public struct PlanInput: Equatable {
 
 /// What every plan in a comparison shares: the actuals, the pay calendar, today and the
 /// horizon (the last calendar month shown).
-public struct ComparisonData {
+public struct ComparisonData: Sendable {
     public let today: Date
     public let accounts: [Account]
     public let snapshots: [BalanceSnapshot]
@@ -46,7 +46,7 @@ public struct ComparisonData {
 /// A plan's net worth lines: the shared actual months, then its forecast to the horizon
 /// (as `DashboardCalculator.netWorthSeries`: anchored at the current net worth, then
 /// `ForecastProjector.monthlyProjection` with the plan's entries).
-public struct PlanNetWorthSeries: Equatable {
+public struct PlanNetWorthSeries: Equatable, Sendable {
     public let actual: [NetWorthPoint]
     public let forecast: [NetWorthPoint]
 }
@@ -55,7 +55,7 @@ public struct PlanNetWorthSeries: Equatable {
 /// year's months up to the horizon: closed months are actuals, open and future months follow
 /// the plan (`DashboardCalculator.monthlyFlows`). `reserves` is the reserves' part of
 /// `expenses`.
-public struct PlanYearSummary: Equatable {
+public struct PlanYearSummary: Equatable, Sendable {
     public let year: Int
     /// Net worth at the end of December, or of the horizon's month in its last year; nil
     /// when there's no point for that month (no data).

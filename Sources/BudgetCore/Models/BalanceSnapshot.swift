@@ -1,7 +1,7 @@
 import GRDB
 import Foundation
 
-public struct BalanceSnapshot: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord {
+public struct BalanceSnapshot: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var id: Int64?
     public var accountId: Int64
     public var date: Date

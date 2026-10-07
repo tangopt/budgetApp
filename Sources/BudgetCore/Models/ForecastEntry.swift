@@ -1,14 +1,14 @@
 import GRDB
 import Foundation
 
-public enum ForecastFrequency: String, Codable, CaseIterable {
+public enum ForecastFrequency: String, Codable, CaseIterable, Sendable {
     case once
     case weekly
     case monthly
     case annually
 }
 
-public enum ForecastEntryStatus: String, Codable, CaseIterable {
+public enum ForecastEntryStatus: String, Codable, CaseIterable, Sendable {
     case auto
     case manual
     case hypothetical
@@ -17,14 +17,14 @@ public enum ForecastEntryStatus: String, Codable, CaseIterable {
 
 /// How a scenario entry differs from the budget entry it was copied from (`sourceEntryId`).
 /// NULL in the database = an unchanged copy.
-public enum ScenarioChange: String, Codable, CaseIterable {
+public enum ScenarioChange: String, Codable, CaseIterable, Sendable {
     case added
     case changed
     /// A tombstone (kept disabled) for a budget entry the scenario removes.
     case removed
 }
 
-public struct ForecastEntry: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord {
+public struct ForecastEntry: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var id: Int64?
     public var groupId: Int64
     public var categoryId: Int64
