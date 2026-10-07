@@ -83,7 +83,7 @@ public enum SpreadsheetPlanGapFill {
         let missing = requiredCategoryNames.filter { categories[$0] == nil }
         guard missing.isEmpty else { throw SpreadsheetPlanGapFillError.missingCategories(missing) }
 
-        let entries = try ForecastEntry.fetchAll(db)
+        let entries = try ForecastEntry.budget(db)
         let groups = try ForecastGroup.fetchAll(db)
         let exceptions = try PlannedOccurrenceException.fetchAll(db)
         func planned(_ categoryId: Int64, year: Int, month: Int) -> Int {

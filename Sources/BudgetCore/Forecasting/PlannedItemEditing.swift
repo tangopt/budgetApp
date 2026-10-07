@@ -34,7 +34,8 @@ public enum PlannedItemEditError: Error, Equatable {
     /// A frequency/interval change applies to the series: use `editFollowing`.
     case frequencyNeedsFollowing
     /// No such planned item (an enabled, non-hypothetical entry in an enabled group, as
-    /// `ForecastCalculator.confirmedEntries`), or `originalDate` isn't one of its occurrences.
+    /// `ForecastCalculator.planEntries` — budget or scenario, not a `removed` tombstone), or
+    /// `originalDate` isn't one of its occurrences.
     case notFound
 }
 
@@ -42,6 +43,14 @@ public enum PlannedItemEditError: Error, Equatable {
 /// "Editing operations"). An occurrence is identified by `(entryId, originalDate)`, where
 /// `originalDate` is the date the series generates (`FrequencyExpander`), never a moved date.
 /// Each operation runs in its own savepoint: a thrown error leaves the database untouched.
+///
+/// Scenario entries (spec 2026-10-08-scenario-lab-design.md, "Operations") are edited the same
+/// way, scoped by the edited entry: an edit only ever touches entries of the entry's own scope
+/// (the budget, or its scenario). In a scenario only closed pay months are confirmed (actuals
+/// don't confirm an open month), category flags are never set, and edits set change markers:
+/// an unchanged copy becomes `changed`; a split's new entry is `added` (or, replacing a copy
+/// from its first occurrence, the copy's `changed` successor with its `sourceEntryId`); and
+/// removing a copy from its first occurrence leaves a disabled `removed` tombstone.
 public enum PlannedItemEditing {
     private static let utc = MonthRange.calendar
 
@@ -76,6 +85,7 @@ public enum PlannedItemEditing {
             try save(db: db, &updated)
 
             try makeManual(db: db, &entry)
+            try markChanged(db: db, &entry)
             return .commit
         }
     }
@@ -121,7 +131,15 @@ public enum PlannedItemEditing {
                 var newEntry = ForecastEntry(groupId: entry.groupId, categoryId: change.categoryId ?? entry.categoryId,
                                              amountMinorUnits: change.amountMinorUnits ?? entry.amountMinorUnits,
                                              frequency: frequency, interval: interval, startDate: newStart, endDate: entry.endDate,
-                                             isEnabled: entry.isEnabled, status: .manual, note: entry.note)
+                                             isEnabled: entry.isEnabled, status: .manual, note: entry.note,
+                                             scenarioId: entry.scenarioId)
+                if entry.scenarioId != nil {
+                    // From a copy's first occurrence the new entry replaces the copy, so it
+                    // inherits its source; otherwise it's a new series of the scenario.
+                    let replacesCopy = previous == nil && entry.sourceEntryId != nil && entry.scenarioChange != .added
+                    newEntry.sourceEntryId = replacesCopy ? entry.sourceEntryId : nil
+                    newEntry.scenarioChange = replacesCopy ? .changed : .added
+                }
                 // Inherit the day-of-month anchor only between day-of-month schedules (monthly /
                 // annual); a weekly series never used one, so the new start's day applies.
                 let dayOfMonth: Set<ForecastFrequency> = [.monthly, .annually]
@@ -159,9 +177,15 @@ public enum PlannedItemEditing {
                 }
             }
 
-            if previous == nil {
+            if previous == nil, change.remove, entry.scenarioId != nil, entry.sourceEntryId != nil, entry.scenarioChange != .added {
+                // A copy removed outright stays as a tombstone, so Refresh and Apply know the
+                // scenario removes its budget source.
+                entry.isEnabled = false
+                entry.scenarioChange = .removed
+                try entry.update(db)
+            } else if previous == nil {
                 _ = try entry.delete(db) // first occurrence: the new entry (if any) replaces the series
-                if change.remove && entry.frequency != .once {
+                if change.remove && entry.frequency != .once && entry.scenarioId == nil {
                     // The series is gone outright: stop detection re-adding it. A one-off
                     // (e.g. a bonus) says nothing about the category's pattern.
                     try db.execute(sql: "UPDATE category SET excludeFromAutoForecast = 1 WHERE id = ?", arguments: [entry.categoryId])
@@ -169,6 +193,7 @@ public enum PlannedItemEditing {
             } else {
                 entry.endDate = utc.date(byAdding: .day, value: -1, to: originalDate)!
                 if entry.status == .auto { entry.status = .manual } // legacy (pre-migration) `.auto` row
+                if entry.scenarioId != nil && entry.scenarioChange == nil { entry.scenarioChange = .changed }
                 try entry.update(db)
             }
             return .commit
@@ -199,11 +224,12 @@ public enum PlannedItemEditing {
 
     // MARK: - Helpers
 
-    /// The planned item (per `ForecastCalculator.confirmedEntries`: enabled, not hypothetical,
-    /// in an enabled group) whose series generates `originalDate`.
+    /// The planned item (per `ForecastCalculator.planEntries`: enabled, not hypothetical, not a
+    /// scenario tombstone, in an enabled group — budget or scenario) whose series generates
+    /// `originalDate`.
     private static func plannedEntry(db: Database, id: Int64, originalDate: Date) throws -> ForecastEntry {
         guard let entry = try ForecastEntry.fetchOne(db, key: id),
-              !ForecastCalculator.confirmedEntries(entries: [entry], groups: try ForecastGroup.filter(key: entry.groupId).fetchAll(db)).isEmpty
+              !ForecastCalculator.planEntries(entries: [entry], groups: try ForecastGroup.filter(key: entry.groupId).fetchAll(db)).isEmpty
         else { throw PlannedItemEditError.notFound }
         let probe = PayPeriod(startDate: originalDate, endDate: originalDate, type: .projected)
         guard FrequencyExpander.occurrences(for: entry, in: probe).contains(originalDate) else { throw PlannedItemEditError.notFound }
@@ -229,6 +255,11 @@ public enum PlannedItemEditing {
                                            amountMinorUnits: existing?.amountMinorUnits ?? entry.amountMinorUnits,
                                            isException: existing != nil)
         let (year, month) = MonthRange.components(of: occurrence.date)
+        if entry.scenarioId != nil {
+            // A scenario has no confirmation restriction for open months; closed ones stay closed.
+            if calendar.isClosed(PayMonth(year: year, month: month)) { throw PlannedItemEditError.occurrenceConfirmed }
+            return
+        }
         let payRange = calendar.range(of: PayMonth(year: year, month: month))
         let transactions = try Transaction
             .filter(Column("date") >= payRange.start && Column("date") <= payRange.end && Column("status") == TransactionStatus.confirmed.rawValue)
@@ -254,6 +285,13 @@ public enum PlannedItemEditing {
         } else if exception.id != nil {
             _ = try exception.delete(db)
         }
+    }
+
+    /// A scenario's unchanged copy becomes `changed` once edited.
+    private static func markChanged(db: Database, _ entry: inout ForecastEntry) throws {
+        guard entry.scenarioId != nil, entry.scenarioChange == nil else { return }
+        entry.scenarioChange = .changed
+        try entry.update(db)
     }
 
     /// Legacy: only databases not yet migrated still hold `.auto` entries (the migration in
