@@ -9,11 +9,10 @@ enum AppScreen: String, CaseIterable, Identifiable {
     case dashboard = "Dashboard"
     case budgetGrid = "Budget"
     case forecast = "Forecast"
-    case netWorth = "Net Worth"
+    case accounts = "Accounts"
     case rules = "Rules"
     case categories = "Categories"
     case uncategorized = "Uncategorized"
-    case accounts = "Accounts"
     var id: String { rawValue }
 
     var systemImage: String {
@@ -23,7 +22,6 @@ enum AppScreen: String, CaseIterable, Identifiable {
         case .dashboard: return "square.grid.2x2"
         case .budgetGrid: return "tablecells"
         case .forecast: return "chart.line.uptrend.xyaxis"
-        case .netWorth: return "banknote"
         case .rules: return "wand.and.stars"
         case .categories: return "tag"
         case .accounts: return "building.columns"
@@ -36,8 +34,8 @@ enum AppScreen: String, CaseIterable, Identifiable {
     var sidebarSection: String {
         switch self {
         case .importReview, .uncategorized: return "Workflow"
-        case .dashboard, .budgetGrid, .forecast, .netWorth: return "Overview"
-        case .rules, .categories, .accounts: return "Settings"
+        case .dashboard, .budgetGrid, .forecast, .accounts: return "Overview"
+        case .rules, .categories: return "Settings"
         }
     }
 }
@@ -57,11 +55,10 @@ struct ContentView: View {
     @StateObject private var importViewModel: ImportViewModel
     @StateObject private var budgetGridViewModel: BudgetGridViewModel
     @StateObject private var forecastViewModel: ForecastViewModel
-    @StateObject private var netWorthViewModel: NetWorthViewModel
     @StateObject private var rulesViewModel: RulesViewModel
     @StateObject private var categoriesViewModel: CategoriesViewModel
     @StateObject private var uncategorizedViewModel: UncategorizedViewModel
-    @StateObject private var accountsViewModel: AccountsSettingsViewModel
+    @StateObject private var accountsViewModel: AccountsViewModel
     @StateObject private var dashboardViewModel: DashboardViewModel
 
     private let profileStore: ImportProfileStore
@@ -75,11 +72,10 @@ struct ContentView: View {
         _importViewModel = StateObject(wrappedValue: ImportViewModel(dbQueue: environment.dbQueue, coordinator: coordinator, profileStore: profileStore))
         _budgetGridViewModel = StateObject(wrappedValue: BudgetGridViewModel(dbQueue: environment.dbQueue))
         _forecastViewModel = StateObject(wrappedValue: ForecastViewModel(dbQueue: environment.dbQueue))
-        _netWorthViewModel = StateObject(wrappedValue: NetWorthViewModel(dbQueue: environment.dbQueue))
         _rulesViewModel = StateObject(wrappedValue: RulesViewModel(dbQueue: environment.dbQueue))
         _categoriesViewModel = StateObject(wrappedValue: CategoriesViewModel(dbQueue: environment.dbQueue))
         _uncategorizedViewModel = StateObject(wrappedValue: UncategorizedViewModel(dbQueue: environment.dbQueue))
-        _accountsViewModel = StateObject(wrappedValue: AccountsSettingsViewModel(dbQueue: environment.dbQueue))
+        _accountsViewModel = StateObject(wrappedValue: AccountsViewModel(dbQueue: environment.dbQueue))
         _dashboardViewModel = StateObject(wrappedValue: DashboardViewModel(dbQueue: environment.dbQueue))
     }
 
@@ -164,9 +160,6 @@ struct ContentView: View {
                 case .forecast:
                     ForecastView(viewModel: forecastViewModel)
                         .onAppear { try? forecastViewModel.load() }
-                case .netWorth:
-                    NetWorthView(viewModel: netWorthViewModel, environment: environment)
-                        .onAppear { try? netWorthViewModel.load() }
                 case .rules:
                     RulesView(viewModel: rulesViewModel)
                         .onAppear { try? rulesViewModel.load() }
@@ -176,7 +169,8 @@ struct ContentView: View {
                     UncategorizedView(viewModel: uncategorizedViewModel)
                         .onAppear { try? uncategorizedViewModel.load() }
                 case .accounts:
-                    AccountsSettingsView(viewModel: accountsViewModel)
+                    AccountsView(viewModel: accountsViewModel, environment: environment)
+                        .onAppear { accountsViewModel.load() }
                 case .none:
                     Text("Select a screen from the sidebar.")
                 }
@@ -201,8 +195,10 @@ struct ContentView: View {
         }
         .onChange(of: environment.exchangeRateBanner) { _ in
             // The EUR rate refreshes asynchronously after launch; the dashboard's net worth
-            // and forecast figures depend on it, so recompute if it's what is on screen.
+            // and forecast figures (and the Accounts screen's GBP totals) depend on it, so
+            // recompute whichever of them is on screen.
             if selection == .dashboard { dashboardViewModel.load() }
+            if selection == .accounts { accountsViewModel.load() }
         }
     }
 

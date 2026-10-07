@@ -7,7 +7,7 @@ struct YearChangeCard: View {
     let navigate: (AppScreen) -> Void
 
     var body: some View {
-        DashboardCard(title: "Net worth change per year", linkTitle: "Net Worth", onLink: { navigate(.netWorth) }) {
+        DashboardCard(title: "Net worth change per year", linkTitle: "Accounts", onLink: { navigate(.accounts) }) {
             if changes.isEmpty {
                 Text("Needs at least a year of balance history.").font(.callout).foregroundStyle(.secondary)
             } else {

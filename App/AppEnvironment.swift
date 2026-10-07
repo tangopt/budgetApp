@@ -7,7 +7,7 @@ import GRDB
 final class AppEnvironment: ObservableObject {
     let dbQueue: DatabaseQueue
     /// Set once, right after launch, only if the fetched rate actually differs from the
-    /// last saved one at 2 decimal places. `NetWorthView` displays and dismisses it.
+    /// last saved one at 2 decimal places. `AccountsView` displays and dismisses it.
     @Published var exchangeRateBanner: String?
 
     private init(dbQueue: DatabaseQueue) {

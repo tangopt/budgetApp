@@ -56,7 +56,7 @@ struct AttentionCard: View {
             }
             if items.staleBalanceCount > 0 {
                 let since = items.oldestStaleSnapshotDate.map { " since \(DashboardFormat.day($0))" } ?? ""
-                row(warning: true, "\(items.staleBalanceCount) balance\(items.staleBalanceCount == 1 ? "" : "s") not updated\(since)", link: "Update balances") { navigate(.netWorth) }
+                row(warning: true, "\(items.staleBalanceCount) balance\(items.staleBalanceCount == 1 ? "" : "s") not updated\(since)", link: "Update balances") { navigate(.accounts) }
             } else {
                 row(warning: false, "All balances up to date", link: nil) {}
             }
@@ -112,7 +112,7 @@ struct AccountsCard: View {
     private let shown = 4
 
     var body: some View {
-        DashboardCard(title: "Accounts", linkTitle: "Net Worth", onLink: { navigate(.netWorth) }) {
+        DashboardCard(title: "Accounts", linkTitle: "Accounts", onLink: { navigate(.accounts) }) {
             if accounts.isEmpty {
                 Text("No accounts yet.").font(.callout).foregroundStyle(.secondary)
             }
@@ -128,14 +128,14 @@ struct AccountsCard: View {
                 if account.id != visible.last?.id { Divider() }
             }
             if accounts.count > shown {
-                Button("+ \(accounts.count - shown) more ›") { navigate(.netWorth) }.buttonStyle(.link).font(.caption)
+                Button("+ \(accounts.count - shown) more ›") { navigate(.accounts) }.buttonStyle(.link).font(.caption)
             }
         }
     }
 
     /// A credit account's balance is negative when money is owed (positive = in credit), so
     /// "owed" is only said for the negative case. A non-GBP account shows its native amount
-    /// with the GBP equivalent secondary in parentheses, as the Net Worth screen does.
+    /// with the GBP equivalent secondary in parentheses, as the Accounts screen does.
     @ViewBuilder
     private func balanceText(_ account: AccountSummary) -> some View {
         let isOwed = account.kind == .credit && account.gbpBalanceMinorUnits < 0

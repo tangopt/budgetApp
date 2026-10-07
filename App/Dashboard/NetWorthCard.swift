@@ -13,10 +13,10 @@ struct NetWorthCard: View {
     }
 
     var body: some View {
-        DashboardCard(title: title, linkTitle: "Net Worth", onLink: { navigate(.netWorth) }) {
+        DashboardCard(title: title, linkTitle: "Accounts", onLink: { navigate(.accounts) }) {
             if series == .empty {
                 // No balance snapshots at all.
-                Text("No history yet — record a balance on the Net Worth screen.")
+                Text("No history yet — record a balance on the Accounts screen.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
