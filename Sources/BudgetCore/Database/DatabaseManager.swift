@@ -50,5 +50,6 @@ public final class DatabaseManager {
         registerCategoryReservedMigration(&migrator)
         registerCategoryDropCatchAllMigration(&migrator)
         registerPayMonthCloseMigration(&migrator)
+        registerPlannedOccurrenceExceptionMigration(&migrator)
     }
 }

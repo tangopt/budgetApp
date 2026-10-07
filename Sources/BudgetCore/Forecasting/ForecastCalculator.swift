@@ -1,8 +1,8 @@
 import Foundation
 
 public enum ForecastCalculator {
-    public static func confirmedTotal(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup]) -> Int {
-        total(categoryId: categoryId, period: period, entries: entries, groups: groups, selectedScenarioGroupId: nil, includeHypothetical: false)
+    public static func confirmedTotal(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException] = []) -> Int {
+        total(categoryId: categoryId, period: period, entries: entries, groups: groups, exceptions: exceptions, selectedScenarioGroupId: nil, includeHypothetical: false)
     }
 
     /// `selectedScenarioGroupId` scopes which scenario's hypothetical entries count —
@@ -10,17 +10,17 @@ public enum ForecastCalculator {
     /// group" (unlike confirmed/auto/manual entries, which are still gated by their own
     /// group's `isEnabled`, unrelated to selection). `nil` means no scenario is selected,
     /// so no hypothetical entries count at all — `previewTotal` then equals `confirmedTotal`.
-    public static func previewTotal(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], selectedScenarioGroupId: Int64?) -> Int {
-        total(categoryId: categoryId, period: period, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId, includeHypothetical: true)
+    public static func previewTotal(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], selectedScenarioGroupId: Int64?, exceptions: [PlannedOccurrenceException] = []) -> Int {
+        total(categoryId: categoryId, period: period, entries: entries, groups: groups, exceptions: exceptions, selectedScenarioGroupId: selectedScenarioGroupId, includeHypothetical: true)
     }
 
     /// The confirmed forecast's net effect on account balances for one period — income
     /// minus expenses, transfer categories excluded (moving money to the user's own
     /// savings/ISA doesn't change net worth). Signed: positive means net worth grows.
-    public static func confirmedNetWorthImpact(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup]) -> Int {
+    public static func confirmedNetWorthImpact(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException] = []) -> Int {
         categories.reduce(0) { sum, category in
             guard category.type != .transfer, let categoryId = category.id else { return sum }
-            return sum + confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups)
+            return sum + confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, exceptions: exceptions)
         }
     }
 
@@ -29,11 +29,11 @@ public enum ForecastCalculator {
     /// is the *delta* a scenario would add on top of the confirmed forecast, not a full
     /// preview total by itself. `nil` selection (or a scenario with no entries in a given
     /// category) contributes 0. Signed the same way as `confirmedNetWorthImpact`.
-    public static func previewNetWorthDelta(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], selectedScenarioGroupId: Int64?) -> Int {
+    public static func previewNetWorthDelta(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], selectedScenarioGroupId: Int64?, exceptions: [PlannedOccurrenceException] = []) -> Int {
         categories.reduce(0) { sum, category in
             guard category.type != .transfer, let categoryId = category.id else { return sum }
-            let confirmed = confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups)
-            let preview = previewTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId)
+            let confirmed = confirmedTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, exceptions: exceptions)
+            let preview = previewTotal(categoryId: categoryId, period: period, entries: entries, groups: groups, selectedScenarioGroupId: selectedScenarioGroupId, exceptions: exceptions)
             return sum + (preview - confirmed)
         }
     }
@@ -46,13 +46,15 @@ public enum ForecastCalculator {
         return entries.filter { $0.isEnabled && $0.status != .hypothetical && enabledGroupIds.contains($0.groupId) }
     }
 
-    private static func total(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], selectedScenarioGroupId: Int64?, includeHypothetical: Bool) -> Int {
+    private static func total(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException], selectedScenarioGroupId: Int64?, includeHypothetical: Bool) -> Int {
         let confirmed = confirmedEntries(entries: entries, groups: groups)
         let hypothetical = includeHypothetical
             ? entries.filter { $0.isEnabled && $0.status == .hypothetical && $0.groupId == selectedScenarioGroupId }
             : []
-        return (confirmed + hypothetical)
+        // Expand every candidate entry (a re-filed occurrence can belong to another
+        // category than its series), then keep occurrences filed under this category.
+        return PlannedOccurrences.occurrences(entries: confirmed + hypothetical, exceptions: exceptions, in: period)
             .filter { $0.categoryId == categoryId }
-            .reduce(0) { $0 + FrequencyExpander.amount(for: $1, in: period) }
+            .reduce(0) { $0 + $1.amountMinorUnits }
     }
 }
