@@ -48,6 +48,8 @@ public struct ScenarioApplyJournal: Codable, Equatable {
     public var operations: [Operation]
     /// Groups the apply switched on (a disabled "Planned" group receiving an added item).
     public var enabledGroupIds: [Int64]
+    /// Groups the apply created ("Planned" / "Reserved" missing); undo deletes them if empty.
+    public var createdGroupIds: [Int64]
     /// What wasn't applied, in words: edits on occurrences the budget treats as confirmed,
     /// differences already applied, removals whose budget source is gone.
     public var skipped: [String]
@@ -60,6 +62,10 @@ extension ScenarioApplication {
 
     /// The apply's "not applied" list (`ScenarioApplyJournal.skipped`).
     public var skipped: [String] { decodedJournal?.skipped ?? [] }
+
+    /// True when the apply changed nothing (every difference skipped): it wasn't recorded
+    /// (`id` is nil), so the UI shows "Nothing to apply" with `skipped`.
+    public var appliedNothing: Bool { decodedJournal?.operations.isEmpty ?? true }
 }
 
 /// What `undoLast` did.
@@ -82,25 +88,30 @@ public struct UndoReport: Equatable {
 public enum ScenarioApply {
     private static let utc = MonthRange.calendar
 
-    /// Applies the ticked differences (scenario entry ids) to the budget in one savepoint:
-    /// - `added` → a new budget entry (group "Planned", or "Reserved" for a reserve) from the
-    ///   entry's first occurrence on/after the boundary (anchor day kept), plus its exceptions
-    ///   from there;
+    /// Applies the ticked differences (scenario entry ids, duplicates ignored) to the budget
+    /// in one savepoint:
+    /// - `added` → a new budget entry (group "Planned", or "Reserved" for a reserve; created
+    ///   or switched on if needed, journaled) from the entry's first occurrence on/after the
+    ///   boundary (anchor day kept), plus its exceptions from there;
     /// - `removed` → the budget source ends the day before the boundary (disabled instead
     ///   when it hasn't started by then);
     /// - `changed` → the source ends as for `removed`, and a new entry with the scenario's
-    ///   values (in the source's group) starts as for `added`. A `changed` entry whose source
-    ///   is gone is applied as `added`.
+    ///   values (in the source's group) starts as for `added`. When the budget already treats
+    ///   the source's current-month occurrence as confirmed, both happen at the next month
+    ///   instead. A `changed` entry whose source is gone is applied as `added`.
     /// Scenario exceptions on occurrences the budget treats as confirmed
-    /// (`PlannedItemEditing.isConfirmed`) aren't copied; they, differences already applied
-    /// by an un-undone application, and removals whose source is gone are listed in `skipped`.
+    /// (`PlannedItemEditing.isConfirmed`) aren't copied. What isn't applied is listed in
+    /// `skipped`: those edits, differences already applied by an un-undone application,
+    /// removals with nothing left to remove, items with no occurrence from the boundary. When
+    /// nothing at all is applied no application is recorded (`appliedNothing`, `id` nil).
     @discardableResult
     public static func apply(db: Database, scenarioId: Int64, differenceIds: [Int64], calendar: PayCalendar, now: Date = Date()) throws -> ScenarioApplication {
         guard try Scenario.fetchOne(db, key: scenarioId) != nil else { throw ScenarioError.notFound }
         var application = ScenarioApplication(scenarioId: scenarioId, appliedAt: now, journal: "")
         try db.inSavepoint {
             let scenarioEntries = Dictionary(uniqueKeysWithValues: try ForecastEntry.inScenario(db, id: scenarioId).map { ($0.id!, $0) })
-            let chosen = try differenceIds.map { id -> ForecastEntry in
+            var seen: Set<Int64> = []
+            let chosen = try differenceIds.filter { seen.insert($0).inserted }.map { id -> ForecastEntry in
                 guard let entry = scenarioEntries[id], entry.scenarioChange != nil else { throw ScenarioApplyError.notADifference(id) }
                 return entry
             }
@@ -128,8 +139,24 @@ public enum ScenarioApply {
                                                entries: budget, groups: groups, exceptions: budgetExceptions, categories: categories)
             }
 
-            var journal = ScenarioApplyJournal(operations: [], enabledGroupIds: [], skipped: [])
+            var journal = ScenarioApplyJournal(operations: [], enabledGroupIds: [], createdGroupIds: [], skipped: [])
             var budgetById = Dictionary(uniqueKeysWithValues: budget.map { ($0.id!, $0) })
+            let currentMonth = MonthRange.of(year: current.year, month: current.month)
+            let nextMonthStart = currentMonth.end.addingTimeInterval(1)
+
+            /// The group a new entry goes into, created or switched on (and journaled) if needed.
+            func targetGroup(_ name: String, ensure: () throws -> ForecastGroup) throws -> Int64 {
+                if let existing = try ForecastGroup.filter(Column("name") == name).fetchOne(db) {
+                    if !existing.isEnabled {
+                        try db.execute(sql: "UPDATE forecastGroup SET isEnabled = 1 WHERE id = ?", arguments: [existing.id!])
+                        journal.enabledGroupIds.append(existing.id!)
+                    }
+                    return existing.id!
+                }
+                let created = try ensure()
+                journal.createdGroupIds.append(created.id!)
+                return created.id!
+            }
 
             for scenarioEntry in chosen {
                 let name = names[scenarioEntry.categoryId] ?? "?"
@@ -147,31 +174,44 @@ public enum ScenarioApply {
                         journal.skipped.append("\(name): source no longer in the budget")
                         continue
                     }
-                    if let modification = try end(db: db, source, before: boundary) {
-                        operation.modified.append(modification)
-                        budgetById[source.id!] = try ForecastEntry.fetchOne(db, key: source.id!)
+                    guard let modification = try end(db: db, source, before: boundary) else {
+                        journal.skipped.append("\(name): already not in the budget from \(monthName(boundary))")
+                        continue
                     }
+                    operation.modified.append(modification)
+                    budgetById[source.id!] = try ForecastEntry.fetchOne(db, key: source.id!)
                 case .changed, .added:
-                    if scenarioEntry.scenarioChange == .changed, let source {
-                        if let modification = try end(db: db, source, before: boundary) {
-                            operation.modified.append(modification)
-                            budgetById[source.id!] = try ForecastEntry.fetchOne(db, key: source.id!)
-                        }
+                    let changedSource = scenarioEntry.scenarioChange == .changed ? source : nil
+                    // A source whose current-month occurrence the budget has already confirmed
+                    // keeps that month; the change applies from the next one.
+                    var start = boundary
+                    if let changedSource {
+                        let thisMonth = PayPeriod(startDate: currentMonth.start, endDate: currentMonth.end, type: .projected)
+                        let occurrences = PlannedOccurrences.occurrences(entries: [changedSource], exceptions: budgetExceptions, in: thisMonth)
+                        if occurrences.contains(where: { confirmed($0, of: changedSource) }) { start = nextMonthStart }
+                    }
+                    guard let newStart = firstOccurrence(of: scenarioEntry, from: start) else {
+                        journal.skipped.append("\(name): no occurrence from \(monthName(start))")
+                        continue
+                    }
+                    if start != boundary {
+                        journal.skipped.append("\(name): \(monthName(boundary)) is already confirmed in the budget; the change applies from \(monthName(start))")
+                    }
+                    if let changedSource, let modification = try end(db: db, changedSource, before: start) {
+                        operation.modified.append(modification)
+                        budgetById[changedSource.id!] = try ForecastEntry.fetchOne(db, key: changedSource.id!)
                     }
                     let groupId: Int64
-                    if let source, scenarioEntry.scenarioChange == .changed {
-                        groupId = source.groupId
+                    if let changedSource {
+                        groupId = changedSource.groupId
                     } else if categories.first(where: { $0.id == scenarioEntry.categoryId })?.isReserved == true {
-                        groupId = try ReservedCategories.ensureGroup(db: db).id!
+                        groupId = try targetGroup(ReservedCategories.groupName) { try ReservedCategories.ensureGroup(db: db) }
                     } else {
-                        let wasDisabled = try ForecastGroup.filter(Column("name") == PlannedItems.groupName && Column("isEnabled") == false).fetchOne(db)
-                        groupId = try PlannedItems.ensureGroup(db: db).id!
-                        if let wasDisabled, !journal.enabledGroupIds.contains(wasDisabled.id!) { journal.enabledGroupIds.append(wasDisabled.id!) }
+                        groupId = try targetGroup(PlannedItems.groupName) { try PlannedItems.ensureGroup(db: db) }
                     }
-                    if let createdId = try create(db: db, from: scenarioEntry, groupId: groupId, boundary: boundary, name: name,
-                                                  skipped: &journal.skipped, confirmed: confirmed) {
-                        operation.created.append(ScenarioApplyJournal.Creation(entryId: createdId, after: ""))
-                    }
+                    let createdId = try create(db: db, from: scenarioEntry, start: newStart, groupId: groupId, name: name,
+                                               skipped: &journal.skipped, confirmed: confirmed)
+                    operation.created.append(ScenarioApplyJournal.Creation(entryId: createdId, after: ""))
                 }
                 journal.operations.append(operation)
             }
@@ -187,7 +227,8 @@ public enum ScenarioApply {
             }
 
             application.journal = try encode(journal)
-            try application.insert(db)
+            // Nothing applied: no application is recorded (`appliedNothing`), nothing to undo.
+            if !journal.operations.isEmpty { try application.insert(db) }
             return .commit
         }
         return application
@@ -232,6 +273,9 @@ public enum ScenarioApply {
             for groupId in journal.enabledGroupIds {
                 try db.execute(sql: "UPDATE forecastGroup SET isEnabled = 0 WHERE id = ?", arguments: [groupId])
             }
+            for groupId in journal.createdGroupIds.reversed() where try ForecastEntry.filter(Column("groupId") == groupId).fetchCount(db) == 0 {
+                _ = try ForecastGroup.deleteOne(db, key: groupId)
+            }
             application.undoneAt = now
             try application.update(db, columns: ["undoneAt"])
             return .commit
@@ -270,15 +314,17 @@ public enum ScenarioApply {
         return ScenarioApplyJournal.Modification(entryId: source.id!, before: before, after: "")
     }
 
-    /// A budget entry with `scenarioEntry`'s values from its first occurrence on/after
-    /// `boundary` (monthly/annual keep the day-of-month anchor), plus its exceptions from
-    /// there that the budget hasn't confirmed. Nil when it has no occurrence from the boundary.
-    private static func create(db: Database, from scenarioEntry: ForecastEntry, groupId: Int64, boundary: Date, name: String,
-                               skipped: inout [String], confirmed: (PlannedOccurrence, ForecastEntry) -> Bool) throws -> Int64? {
-        let horizon = utc.date(byAdding: .day, value: 400 * max(1, scenarioEntry.interval), to: boundary)!
-        guard let newStart = FrequencyExpander.occurrences(for: scenarioEntry, in: PayPeriod(startDate: boundary, endDate: horizon, type: .projected)).first
-        else { return nil }
+    /// The series' first occurrence on/after `start`; nil when there is none.
+    private static func firstOccurrence(of entry: ForecastEntry, from start: Date) -> Date? {
+        let horizon = utc.date(byAdding: .day, value: 400 * max(1, entry.interval), to: start)!
+        return FrequencyExpander.occurrences(for: entry, in: PayPeriod(startDate: start, endDate: horizon, type: .projected)).first
+    }
 
+    /// A budget entry with `scenarioEntry`'s values from `newStart`, one of its occurrences
+    /// (monthly/annual keep the day-of-month anchor), plus its exceptions from there that
+    /// the budget hasn't confirmed.
+    private static func create(db: Database, from scenarioEntry: ForecastEntry, start newStart: Date, groupId: Int64, name: String,
+                               skipped: inout [String], confirmed: (PlannedOccurrence, ForecastEntry) -> Bool) throws -> Int64 {
         var entry = scenarioEntry
         entry.id = nil
         entry.groupId = groupId
@@ -313,7 +359,7 @@ public enum ScenarioApply {
             exception.entryId = entry.id!
             try exception.insert(db)
         }
-        return entry.id
+        return entry.id!
     }
 
     /// Every stored field of the entry and of its exceptions; nil when the entry is gone.
@@ -343,4 +389,14 @@ public enum ScenarioApply {
     }()
 
     private static func day(_ date: Date) -> String { dayFormatter.string(from: date) }
+
+    private static let monthFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "MMM yyyy"
+        return formatter
+    }()
+
+    private static func monthName(_ date: Date) -> String { monthFormatter.string(from: date) }
 }

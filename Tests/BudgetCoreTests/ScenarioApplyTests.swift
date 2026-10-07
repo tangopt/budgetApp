@@ -31,7 +31,8 @@ final class ScenarioApplyTests: XCTestCase {
     /// 1 Jan) and car (-300 from 15 Dec 2026, not started yet). A scenario copies it, then:
     /// rent changed to -1,200 with exceptions on 31 Oct (closed), 30 Nov and 31 Dec; gym and
     /// car removed; phone added (-20 from 10 Dec); streaming added (-10 from 15 Jun 2026,
-    /// before the boundary); a holiday reserve added (-200 from 1 Dec).
+    /// before the boundary; its 15 Nov moved into October, its 15 Dec at -15); a holiday
+    /// reserve added (-200 from 1 Dec).
     private func fixture() throws -> Fixture {
         let manager = try DatabaseManager(path: nil)
         try manager.migrate()
@@ -82,7 +83,12 @@ final class ScenarioApplyTests: XCTestCase {
                 try removed.update(db)
             }
             try PlannedItems.add(db: db, categoryId: f.categories["Phone"]!, amountMinorUnits: -2_000, frequency: .monthly, interval: 1, startDate: utc(2026, 12, 10), endDate: nil, scenarioId: scenario.id)
-            try PlannedItems.add(db: db, categoryId: f.categories["Streaming"]!, amountMinorUnits: -1_000, frequency: .monthly, interval: 1, startDate: utc(2026, 6, 15), endDate: nil, scenarioId: scenario.id)
+            let streaming = try PlannedItems.add(db: db, categoryId: f.categories["Streaming"]!, amountMinorUnits: -1_000, frequency: .monthly, interval: 1, startDate: utc(2026, 6, 15), endDate: nil, scenarioId: scenario.id)
+            // 15 Nov moved back into closed October (confirmed in the budget); 15 Dec re-priced.
+            var moved = PlannedOccurrenceException(entryId: streaming.id!, originalDate: utc(2026, 11, 15), date: utc(2026, 10, 25))
+            try moved.insert(db)
+            var repriced = PlannedOccurrenceException(entryId: streaming.id!, originalDate: utc(2026, 12, 15), amountMinorUnits: -1_500)
+            try repriced.insert(db)
             var reserve = ForecastEntry(groupId: f.reservedGroupId, categoryId: holiday.id!, amountMinorUnits: -20_000, frequency: .monthly, interval: 1, startDate: utc(2026, 12, 1), endDate: nil, isEnabled: true, status: .confirmed, note: nil, scenarioId: scenario.id, scenarioChange: .added)
             try reserve.insert(db)
         }
@@ -187,16 +193,32 @@ final class ScenarioApplyTests: XCTestCase {
 
     func testApplyCopiesLaterExceptionsAndSkipsOnesTheBudgetHasConfirmed() throws {
         let f = try fixture()
+        let application = try apply(f, ["Streaming"])
+
+        let new = try XCTUnwrap(try created(f, "Streaming").first)
+        let copied = try exceptions(f, entryId: new.id!)
+        // 15 Nov's edit lands in closed October, so the budget treats it as confirmed.
+        XCTAssertEqual(copied.map(\.originalDate), [utc(2026, 12, 15)])
+        XCTAssertEqual(copied.first?.amountMinorUnits, -1_500)
+        XCTAssertEqual(application.skipped, ["Streaming: the 15 Nov 2026 edit wasn't applied (already confirmed in the budget)"])
+    }
+
+    func testApplyChangedWhoseCurrentMonthIsConfirmedAppliesFromTheNextMonth() throws {
+        let f = try fixture()
         // November's rent is already paid in full against the budget's -1,000 plan.
         try spend(f, -100_000, on: utc(2026, 11, 2), category: "Rent")
         let application = try apply(f, ["Rent"])
 
+        XCTAssertEqual(try budgetEntry(f, "Rent").endDate, utc(2026, 11, 30))
         let new = try XCTUnwrap(try created(f, "Rent").first)
-        let copied = try exceptions(f, entryId: new.id!)
-        // 31 Oct is before the boundary; 30 Nov is confirmed in the budget; 31 Dec is copied.
-        XCTAssertEqual(copied.map(\.originalDate), [utc(2026, 12, 31)])
-        XCTAssertEqual(copied.first?.amountMinorUnits, -130_000)
-        XCTAssertEqual(application.skipped, ["Rent: the 30 Nov 2026 edit wasn't applied (already confirmed in the budget)"])
+        XCTAssertEqual(new.startDate, utc(2026, 12, 31))
+        XCTAssertEqual(new.amountMinorUnits, -120_000)
+        XCTAssertEqual(try exceptions(f, entryId: new.id!).map(\.originalDate), [utc(2026, 12, 31)])
+        XCTAssertEqual(application.skipped, ["Rent: Nov 2026 is already confirmed in the budget; the change applies from Dec 2026"])
+
+        _ = try undo(f)
+        XCTAssertNil(try budgetEntry(f, "Rent").endDate)
+        XCTAssertEqual(try created(f, "Rent"), [])
     }
 
     func testApplyCopiesAnUnconfirmedCurrentMonthException() throws {
@@ -281,6 +303,86 @@ final class ScenarioApplyTests: XCTestCase {
         let again = try apply(f, ["Phone"])
         XCTAssertEqual(try created(f, "Phone").count, 1)
         XCTAssertEqual(again.skipped, ["Phone: already applied"])
+        // Nothing applied: nothing recorded.
+        XCTAssertNil(again.id)
+        XCTAssertTrue(again.appliedNothing)
+        XCTAssertEqual(try f.manager.dbQueue.read { db in try ScenarioApplication.fetchCount(db) }, 1)
+    }
+
+    func testDuplicateIdsApplyOnce() throws {
+        let f = try fixture()
+        let id = try difference(f, "Phone")
+        let application = try f.manager.dbQueue.write { db in
+            try ScenarioApply.apply(db: db, scenarioId: f.scenarioId, differenceIds: [id, id], calendar: self.calendar)
+        }
+        XCTAssertEqual(try created(f, "Phone").count, 1)
+        XCTAssertEqual(application.decodedJournal?.operations.count, 1)
+        XCTAssertEqual(application.skipped, [])
+    }
+
+    func testAnItemWithNoOccurrenceFromTheBoundaryIsSkippedAndNotRecorded() throws {
+        let f = try fixture()
+        let once = try f.manager.dbQueue.write { db in
+            try PlannedItems.add(db: db, categoryId: f.categories["Car"]!, amountMinorUnits: -50_000, frequency: .once, interval: 1, startDate: self.utc(2026, 6, 1), endDate: nil, scenarioId: f.scenarioId)
+        }
+        let before = try state(f)
+        let application = try f.manager.dbQueue.write { db in
+            try ScenarioApply.apply(db: db, scenarioId: f.scenarioId, differenceIds: [once.id!], calendar: self.calendar)
+        }
+        XCTAssertEqual(application.skipped, ["Car: no occurrence from Nov 2026"])
+        XCTAssertTrue(application.appliedNothing)
+        XCTAssertNil(application.id)
+        XCTAssertEqual(try state(f), before)
+        XCTAssertFalse(try canUndo(f))
+    }
+
+    func testApplyCreatesMissingGroupsAndUndoRemovesThem() throws {
+        // A budget with neither "Planned" nor "Reserved": the scenario's items sit in their own group.
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        let (scenarioId, ids) = try manager.dbQueue.write { db -> (Int64, [Int64]) in
+            var phone = Category(name: "Phone", type: .expense)
+            try phone.insert(db)
+            var holiday = Category(name: "Holiday", type: .expense, isReserved: true)
+            try holiday.insert(db)
+            var other = ForecastGroup(name: "Other", note: nil, isEnabled: true, isSystemManaged: false)
+            try other.insert(db)
+            let scenario = try Scenarios.create(db: db, name: "S")
+            var ids: [Int64] = []
+            for (category, amount) in [(phone.id!, -2_000), (holiday.id!, -20_000)] {
+                var e = ForecastEntry(groupId: other.id!, categoryId: category, amountMinorUnits: amount, frequency: .monthly, interval: 1, startDate: self.utc(2026, 12, 1), endDate: nil, isEnabled: true, status: .manual, note: nil, scenarioId: scenario.id, scenarioChange: .added)
+                try e.insert(db)
+                ids.append(e.id!)
+            }
+            return (scenario.id!, ids)
+        }
+        func snapshot() throws -> State {
+            try manager.dbQueue.read { db in
+                State(entries: try ForecastEntry.order(Column("id")).fetchAll(db),
+                      exceptions: try PlannedOccurrenceException.order(Column("id")).fetchAll(db),
+                      groups: try ForecastGroup.order(Column("id")).fetchAll(db))
+            }
+        }
+        let before = try snapshot()
+        let application = try manager.dbQueue.write { db in
+            try ScenarioApply.apply(db: db, scenarioId: scenarioId, differenceIds: ids, calendar: self.calendar)
+        }
+        let groups = try manager.dbQueue.read { db in try ForecastGroup.fetchAll(db) }
+        XCTAssertEqual(Set(groups.map(\.name)), ["Other", "Planned", "Reserved"])
+        XCTAssertEqual(application.decodedJournal?.createdGroupIds.count, 2)
+
+        _ = try manager.dbQueue.write { db in try ScenarioApply.undoLast(db: db, scenarioId: scenarioId) }
+        XCTAssertEqual(try snapshot(), before)
+    }
+
+    func testApplyEnablesADisabledReservedGroupAndUndoDisablesIt() throws {
+        let f = try fixture()
+        try f.manager.dbQueue.write { db in try db.execute(sql: "UPDATE forecastGroup SET isEnabled = 0 WHERE id = ?", arguments: [f.reservedGroupId]) }
+        let before = try state(f)
+        try apply(f, ["Holiday"])
+        XCTAssertEqual(try f.manager.dbQueue.read { db in try ForecastGroup.fetchOne(db, key: f.reservedGroupId)?.isEnabled }, true)
+        _ = try undo(f)
+        XCTAssertEqual(try state(f), before)
     }
 
     // MARK: - Undo
