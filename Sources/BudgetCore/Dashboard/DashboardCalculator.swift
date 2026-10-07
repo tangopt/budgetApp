@@ -28,20 +28,13 @@ public enum DashboardCalculator {
     public static func attentionItems(_ input: DashboardInput) -> AttentionItems {
         let uncategorized = input.transactions.filter { $0.categoryId == nil || $0.status == .pendingReview }.count
 
-        let today = calendar.startOfDay(for: input.today) // `Date()` carries a time of day
-        let threshold = calendar.date(byAdding: .day, value: -45, to: today)!
         var staleCount = 0
         var oldest: Date?
-        for account in input.accounts where account.trackingMode != .imported {
+        for account in input.accounts {
             let latest = input.snapshots.filter { $0.accountId == account.id }.map(\.date).max()
-            if let latest {
-                if latest < threshold {
-                    staleCount += 1
-                    oldest = oldest.map { min($0, latest) } ?? latest
-                }
-            } else {
-                staleCount += 1 // never had a balance recorded
-            }
+            guard BalanceStaleness.isStale(account: account, latestSnapshot: latest, today: input.today) else { continue }
+            staleCount += 1
+            if let latest { oldest = oldest.map { min($0, latest) } ?? latest }
         }
 
         // Reserve allowances are forecast entries, so the calendar month named by the current pay month.
