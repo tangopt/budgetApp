@@ -37,4 +37,12 @@ public enum PlanStatus {
         // an expense plan (or similar) leaves the whole plan expected.
         return (actual + pending, pending, actualMagnitude > 0 ? .partial : .allExpected)
     }
+
+    /// A group or section row: members' values and pending amounts summed; the state is
+    /// `.partial` when any member is partial, else `.allExpected` when any member is pending.
+    public static func combine(_ cells: [(value: Int, pending: Int, state: PendingState)]) -> (value: Int, pending: Int, state: PendingState) {
+        let state: PendingState = cells.contains { $0.state == .partial } ? .partial
+            : cells.contains { $0.state != .none } ? .allExpected : .none
+        return (cells.reduce(0) { $0 + $1.value }, cells.reduce(0) { $0 + $1.pending }, state)
+    }
 }

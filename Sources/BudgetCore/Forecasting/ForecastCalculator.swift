@@ -46,6 +46,14 @@ public enum ForecastCalculator {
         return entries.filter { $0.isEnabled && $0.status != .hypothetical && enabledGroupIds.contains($0.groupId) }
     }
 
+    /// `confirmedTotal` for every category at once: one expansion of the planned items over
+    /// `period`, keyed by each occurrence's (possibly re-filed) category. Categories with no
+    /// occurrence are absent (a total of 0).
+    public static func confirmedTotalsByCategory(period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException]) -> [Int64: Int] {
+        PlannedOccurrences.occurrences(entries: confirmedEntries(entries: entries, groups: groups), exceptions: exceptions, in: period)
+            .reduce(into: [:]) { $0[$1.categoryId, default: 0] += $1.amountMinorUnits }
+    }
+
     private static func total(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException], selectedScenarioGroupId: Int64?, includeHypothetical: Bool) -> Int {
         let confirmed = confirmedEntries(entries: entries, groups: groups)
         let hypothetical = includeHypothetical

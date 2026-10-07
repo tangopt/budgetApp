@@ -8,7 +8,7 @@ public enum PlannedItemsError: Error, Equatable {
     case reservedCategory
 }
 
-/// Confirmed forecast items the user adds by hand from the Forecast grid's Income /
+/// Confirmed forecast items the user adds by hand from the Budget grid's Income /
 /// Expenses / Transfers headers. Kept in the "Planned" group.
 public enum PlannedItems {
     public static let groupName = "Planned"
@@ -42,7 +42,7 @@ public enum PlannedItems {
             }
             return existing
         }
-        var group = ForecastGroup(name: groupName, note: "Confirmed items added from the Forecast grid", isEnabled: true, isSystemManaged: false)
+        var group = ForecastGroup(name: groupName, note: "Confirmed items added from the Budget grid", isEnabled: true, isSystemManaged: false)
         try group.insert(db)
         return group
     }

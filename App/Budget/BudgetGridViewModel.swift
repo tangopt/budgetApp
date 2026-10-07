@@ -14,13 +14,13 @@ final class BudgetGridViewModel: ObservableObject {
         didSet { rebuildPayMonths() }
     }
     @Published var forecastEntries: [ForecastEntry] = [] {
-        didSet { reserveRemainingCache = [:] }
+        didSet { reserveRemainingCache = [:]; plannedCache = [:] }
     }
     @Published var forecastGroups: [ForecastGroup] = [] {
-        didSet { reserveRemainingCache = [:] }
+        didSet { reserveRemainingCache = [:]; plannedCache = [:] }
     }
     @Published var exceptions: [PlannedOccurrenceException] = [] {
-        didSet { reserveRemainingCache = [:] }
+        didSet { reserveRemainingCache = [:]; plannedCache = [:] }
     }
     @Published var accounts: [Account] = []
     @Published var balanceSnapshots: [BalanceSnapshot] = []
@@ -41,6 +41,9 @@ final class BudgetGridViewModel: ObservableObject {
     /// for every reserve cell on every render, and each month's answer scans every
     /// category's forecast. Cleared whenever categories, transactions or forecasts change.
     private var reserveRemainingCache: [Int: [Int64: Int]] = [:]
+    /// Planned (confirmed-forecast) total per category per calendar month, memoised per
+    /// `MonthRange.index` for the same reason. Cleared whenever forecasts or exceptions change.
+    private var plannedCache: [Int: [Int64: Int]] = [:]
 
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
@@ -67,7 +70,10 @@ final class BudgetGridViewModel: ObservableObject {
         payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: manualCloses, today: Date())
         monthTotals = PayMonthTotals.lookup(transactions: transactions, calendar: payCalendar)
         reserveRemainingCache = [:]
-        availableYears = BudgetGridCalculator.yearsWithData(transactions: transactions, calendar: payCalendar)
+        // The current year is always offered (calendar and pay-month year, which differ late in
+        // December), so the plan for it shows even before any transaction lands in it.
+        let currentYears = [MonthRange.components(of: Date()).year, payCalendar.current.year]
+        availableYears = Array(Set(BudgetGridCalculator.yearsWithData(transactions: transactions, calendar: payCalendar) + currentYears)).sorted()
     }
 
     /// The grid's actuals as CSV: one column per pay month of the grid's years that has
@@ -207,6 +213,122 @@ final class BudgetGridViewModel: ObservableObject {
         } catch {
             errorMessage = "Saved, but couldn't reload the grid: \(error.localizedDescription)"
             return false
+        }
+    }
+
+    // MARK: The plan
+
+    typealias PlanCell = (value: Int, pending: Int, state: PendingState)
+
+    /// The planned total for `category` in the calendar month named `year`/`month`.
+    private func plannedTotal(_ categoryId: Int64, year: Int, month: Int) -> Int {
+        let key = MonthRange.index(year: year, month: month)
+        if let cached = plannedCache[key] { return cached[categoryId] ?? 0 }
+        let range = MonthRange.of(year: year, month: month)
+        let totals = ForecastCalculator.confirmedTotalsByCategory(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected),
+                                                                  entries: forecastEntries, groups: forecastGroups, exceptions: exceptions)
+        plannedCache[key] = totals
+        return totals[categoryId] ?? 0
+    }
+
+    /// A category's Budget cell: the pay month's actual plus whatever the calendar month's plan
+    /// still expects (`PlanStatus.cell`); closed months show the actual alone.
+    func cell(_ category: Category, year: Int, month: Int) -> PlanCell {
+        guard let id = category.id else { return (0, 0, .none) }
+        return PlanStatus.cell(actual: payMonthCategoryTotal(category, year: year, month: month),
+                               planned: plannedTotal(id, year: year, month: month),
+                               categoryType: category.type,
+                               monthClass: payCalendar.monthClass(PayMonth(year: year, month: month)))
+    }
+
+    /// A group or section row: its members' cells combined (`PlanStatus.combine`).
+    func cell(_ categories: [Category], year: Int, month: Int) -> PlanCell {
+        PlanStatus.combine(categories.map { cell($0, year: year, month: month) })
+    }
+
+    /// The Year Total cell: the twelve displayed values summed, pending summed (for the
+    /// "Includes £x not yet confirmed" footnote), state combined.
+    func yearCell(_ categories: [Category], year: Int) -> PlanCell {
+        PlanStatus.combine((1...12).map { cell(categories, year: year, month: $0) })
+    }
+
+    /// A reserve's month as a cell: what's left of its allowance counts as expected while the
+    /// month is open (reserves never hold transactions).
+    func reserveCell(_ reserves: [Category], year: Int, month: Int) -> PlanCell {
+        let value = reserves.reduce(0) { $0 + reserveTotal($1, year: year, month: month) }
+        return (value, value, value == 0 ? .none : .allExpected)
+    }
+
+    struct PlannedRow: Identifiable {
+        let occurrence: PlannedOccurrence
+        let isConfirmed: Bool
+        let entry: ForecastEntry
+        var id: String { occurrence.id }
+    }
+
+    /// The planned occurrences filed under `category` (after any re-file) whose date falls in
+    /// the calendar month `year`/`month`, each with whether it's confirmed and its series.
+    func occurrences(category: Category, year: Int, month: Int) -> [PlannedRow] {
+        guard let id = category.id else { return [] }
+        let range = MonthRange.of(year: year, month: month)
+        let planned = ForecastCalculator.confirmedEntries(entries: forecastEntries, groups: forecastGroups)
+        let byId = Dictionary(planned.compactMap { e in e.id.map { ($0, e) } }, uniquingKeysWith: { a, _ in a })
+        return PlannedOccurrences.occurrences(entries: planned, exceptions: exceptions, in: PayPeriod(startDate: range.start, endDate: range.end, type: .projected))
+            .filter { $0.categoryId == id }
+            .compactMap { occurrence in
+                guard let entry = byId[occurrence.entryId] else { return nil }
+                let confirmed = PlannedItemEditing.isConfirmed(entry: entry, occurrence: occurrence, calendar: payCalendar, monthTotals: monthTotals,
+                                                               entries: forecastEntries, groups: forecastGroups, exceptions: exceptions, categories: categories)
+                return PlannedRow(occurrence: occurrence, isConfirmed: confirmed, entry: entry)
+            }
+    }
+
+    // MARK: Editing the plan
+
+    /// Only this occurrence (`PlannedItemEditing.editOccurrence`).
+    func editOccurrence(_ occurrence: PlannedOccurrence, change: OccurrenceChange) -> SaveOutcome {
+        perform { [payCalendar] db in
+            try PlannedItemEditing.editOccurrence(db: db, entryId: occurrence.entryId, originalDate: occurrence.originalDate, change: change, calendar: payCalendar)
+        }
+    }
+
+    /// This and all following (`PlannedItemEditing.editFollowing`).
+    func editFollowing(_ occurrence: PlannedOccurrence, change: OccurrenceChange) -> SaveOutcome {
+        perform { [payCalendar] db in
+            try PlannedItemEditing.editFollowing(db: db, entryId: occurrence.entryId, originalDate: occurrence.originalDate, change: change, calendar: payCalendar)
+        }
+    }
+
+    /// A new planned item from a section header (`PlannedItems.add`).
+    func addPlannedItem(categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> SaveOutcome {
+        perform { db in
+            _ = try PlannedItems.add(db: db, categoryId: categoryId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
+        }
+    }
+
+    /// Write first, then reload (exceptions are only read in `load`). A failed write returns
+    /// `.failed` with a message for the sheet; a failed reload after a successful write
+    /// returns `.savedButReloadFailed` with a "Saved, but …" banner, so the sheet closes
+    /// instead of inviting a retry that would save twice.
+    private func perform(_ write: (Database) throws -> Void) -> SaveOutcome {
+        do {
+            try dbQueue.write { db in try write(db) }
+        } catch {
+            return .failed(Self.planMessage(for: error))
+        }
+        return reload() ? .saved : .savedButReloadFailed
+    }
+
+    static func planMessage(for error: Error) -> String {
+        switch error {
+        case PlannedItemEditError.occurrenceConfirmed: return "This occurrence has already happened."
+        case PlannedItemEditError.invalidDate: return "Pick a date in an open month."
+        case PlannedItemEditError.frequencyNeedsFollowing: return "A frequency change applies to this and all following occurrences."
+        case PlannedItemEditError.invalidInterval: return "Repeat every 1 or more."
+        case PlannedItemEditError.notFound: return "This planned item no longer exists."
+        case PlannedItemsError.reservedCategory: return "Reserves get allowances from the Reserved section, not planned items."
+        case PlannedItemsError.categoryNotFound: return "That category no longer exists."
+        default: return "Couldn't save: \(error.localizedDescription)"
         }
     }
 

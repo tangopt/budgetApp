@@ -59,4 +59,23 @@ final class PlanStatusTests: XCTestCase {
                            MonthBlend.projectedTotal(actual: a, expected: p, categoryType: t, monthClass: .blended))
         }
     }
+
+    func testCombinePartialWinsOverAllExpected() {
+        let a = PlanStatus.cell(actual: 0, planned: -10000, categoryType: .expense, monthClass: .blended)
+        let b = PlanStatus.cell(actual: -4000, planned: -10000, categoryType: .expense, monthClass: .blended)
+        let c = PlanStatus.cell(actual: -500, planned: 0, categoryType: .expense, monthClass: .blended)
+        check(PlanStatus.combine([a, b, c]), -20500, -16000, .partial)
+    }
+
+    func testCombineAllExpectedWhenAnyPendingAndNonePartial() {
+        let a = PlanStatus.cell(actual: 0, planned: -10000, categoryType: .expense, monthClass: .blended)
+        let covered = PlanStatus.cell(actual: -12000, planned: -10000, categoryType: .expense, monthClass: .blended)
+        check(PlanStatus.combine([a, covered]), -22000, -10000, .allExpected)
+    }
+
+    func testCombineNothingPending() {
+        let closed = PlanStatus.cell(actual: -4000, planned: -10000, categoryType: .expense, monthClass: .actual)
+        check(PlanStatus.combine([closed, closed]), -8000, 0, .none)
+        check(PlanStatus.combine([]), 0, 0, .none)
+    }
 }

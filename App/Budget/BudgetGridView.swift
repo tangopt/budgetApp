@@ -37,13 +37,21 @@ struct BudgetGridView: View {
     @State private var horizontalOffset: CGFloat = 0
     @State private var expandedGroupIds: Set<Int64> = []
     @State private var closeTarget: CloseMonthTarget?
+    @State private var addPlannedTarget: AddPlannedTarget?
+
+    /// The section a header's "+ Add planned item" adds to (`.sheet(item:)`).
+    private struct AddPlannedTarget: Identifiable {
+        let type: CategoryType
+        var id: String { type.rawValue }
+    }
 
     private func categoriesByType(_ type: CategoryType) -> [Category] {
         viewModel.categories.filter { $0.type == type && !$0.isReserved }
     }
 
     private enum GridRowKind: Identifiable {
-        case sectionHeader(String)
+        /// `type` is nil for the Accounts header (no planned items, no totals).
+        case sectionHeader(String, CategoryType?)
         case category(Category)
         case groupHeader(CategoryGroup, categories: [Category])
         case groupChild(Category)
@@ -55,7 +63,7 @@ struct BudgetGridView: View {
 
         var id: String {
             switch self {
-            case .sectionHeader(let title): return "header-\(title)"
+            case .sectionHeader(let title, _): return "header-\(title)"
             case .category(let category): return "cat-\(category.id ?? -1)"
             case .groupHeader(let group, let categories): return "group-\(group.id ?? -1)-\(categories.first?.type.rawValue ?? "")"
             case .groupChild(let category): return "groupchild-\(category.id ?? -1)"
@@ -113,13 +121,13 @@ struct BudgetGridView: View {
 
     private var allRows: [GridRow] {
         func section(_ title: String, _ type: CategoryType) -> [GridRow] {
-            var rows: [GridRow] = [GridRow(kind: .sectionHeader(title), shaded: false)]
+            var rows: [GridRow] = [GridRow(kind: .sectionHeader(title, type), shaded: false)]
             for (index, kind) in rowKinds(for: type).enumerated() {
                 rows.append(GridRow(kind: kind, shaded: index % 2 == 1))
             }
             return rows
         }
-        var accountRows: [GridRow] = [GridRow(kind: .sectionHeader("Accounts"), shaded: false)]
+        var accountRows: [GridRow] = [GridRow(kind: .sectionHeader("Accounts", nil), shaded: false)]
         for (index, account) in viewModel.accounts.enumerated() {
             accountRows.append(GridRow(kind: .account(account), shaded: index % 2 == 1))
         }
@@ -138,7 +146,7 @@ struct BudgetGridView: View {
 
             // Close/reopen errors from the header menu (a failed Close month… shows in its
             // sheet instead; the drill-down sheet shows recategorize errors itself).
-            if let error = viewModel.errorMessage, drillDownTarget == nil, closeTarget == nil {
+            if let error = viewModel.errorMessage, drillDownTarget == nil, closeTarget == nil, addPlannedTarget == nil {
                 HStack(alignment: .top) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
                     Text(error).foregroundStyle(.red)
@@ -225,6 +233,16 @@ struct BudgetGridView: View {
                 }
                 .onPreferenceChange(HorizontalOffsetKey.self) { horizontalOffset = $0 }
             }
+
+            if let year = viewModel.selectedYear, hasPending(year: year) {
+                HStack(spacing: 4) {
+                    Image(systemName: "clock")
+                    Image(systemName: "circle.lefthalf.filled")
+                    Text("Italic amounts include planned money not yet confirmed. Hover a cell (or a Year Total) for how much.")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
         }
         .padding()
         .toolbar {
@@ -239,8 +257,11 @@ struct BudgetGridView: View {
         // onDismiss clears any recategorize error so it can't bleed into the next,
         // unrelated drill-down.
         .sheet(item: $drillDownTarget, onDismiss: { viewModel.errorMessage = nil }) { target in
-            GridDrillDownSheet(target: target, categories: viewModel.categories, errorMessage: viewModel.errorMessage, liveTransactions: viewModel.transactions) { transaction, categoryId in
-                viewModel.recategorize(transaction, to: categoryId)
+            GridDrillDownSheet(target: target, viewModel: viewModel)
+        }
+        .sheet(item: $addPlannedTarget) { target in
+            AddPlannedItemSheet(type: target.type, categories: viewModel.categories) { categoryId, amount, frequency, interval, start, end in
+                viewModel.addPlannedItem(categoryId: categoryId, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)
             }
         }
         .sheet(item: $closeTarget, onDismiss: { viewModel.errorMessage = nil }) { target in
@@ -317,14 +338,25 @@ struct BudgetGridView: View {
     @ViewBuilder
     private func rowLabel(_ row: GridRowKind, shaded: Bool) -> some View {
         switch row {
-        case .sectionHeader(let title):
-            Text(title)
-                .font(.caption).bold()
-                .tracking(0.6)
-                .foregroundStyle(.secondary)
-                .frame(width: 220, height: 24, alignment: .leading)
-                .padding(.horizontal, 8)
-                .background(Color.accentColor.opacity(0.08))
+        case .sectionHeader(let title, let type):
+            HStack {
+                Text(title)
+                    .font(.caption).bold()
+                    .tracking(0.6)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let type {
+                    Button("+ Add planned item") {
+                        viewModel.errorMessage = nil
+                        addPlannedTarget = AddPlannedTarget(type: type)
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                }
+            }
+            .frame(width: 220, height: 24, alignment: .leading)
+            .padding(.horizontal, 8)
+            .background(Color.accentColor.opacity(0.08))
         case .category(let category):
             Text(category.name)
                 .frame(width: 220, height: 28, alignment: .leading)
@@ -400,49 +432,32 @@ struct BudgetGridView: View {
     @ViewBuilder
     private func rowCells(_ row: GridRowKind, shaded: Bool) -> some View {
         switch row {
-        case .sectionHeader:
-            if viewModel.selectedYear != nil {
+        case .sectionHeader(_, let type):
+            if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
-                    ForEach(1...(12 + 1), id: \.self) { _ in
-                        // Same footprint as a calendarCell: 120pt frame + 8pt padding
-                        // either side, so the band spans exactly the 13 columns.
-                        Color.clear.frame(width: 120, height: 24).padding(.horizontal, 8)
+                    if let type {
+                        // The section's total: every category of the type, combined.
+                        let members = categoriesByType(type)
+                        ForEach(1...12, id: \.self) { month in
+                            planCell(viewModel.cell(members, year: year, month: month))
+                                .font(.caption).bold()
+                                .frame(height: 24)
+                        }
+                        planCell(viewModel.yearCell(members, year: year), isYearTotal: true)
+                            .font(.caption).bold()
+                            .frame(height: 24)
+                    } else {
+                        ForEach(1...(12 + 1), id: \.self) { _ in
+                            // Same footprint as a cell: 120pt frame + 8pt padding either
+                            // side, so the band spans exactly the 13 columns.
+                            Color.clear.frame(width: 120, height: 24).padding(.horizontal, 8)
+                        }
                     }
                 }
                 .background(Color.accentColor.opacity(0.08))
             }
         case .category(let category):
-            if let year = viewModel.selectedYear {
-                HStack(spacing: 0) {
-                    ForEach(1...12, id: \.self) { month in
-                        let total = viewModel.payMonthCategoryTotal(category, year: year, month: month)
-                        calendarCell(total)
-                            .frame(height: 28)
-                            .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
-                            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                guard total != 0 else { return }
-                                let range = viewModel.dateRange(forYear: year, month: month)
-                                let matching = viewModel.transactions(forCategoryId: category.id!, from: range.start, to: range.end)
-                                drillDownTarget = .transactions(title: "\(category.name) — \(Self.monthYearLabel(year: year, month: month))", transactions: matching)
-                            }
-                    }
-                    let yearTotal = (1...12).reduce(0) { $0 + viewModel.payMonthCategoryTotal(category, year: year, month: $1) }
-                    calendarCell(yearTotal).bold()
-                        .frame(height: 28)
-                        .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
-                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            guard yearTotal != 0 else { return }
-                            let range = viewModel.dateRange(forYear: year)
-                            let matching = viewModel.transactions(forCategoryId: category.id!, from: range.start, to: range.end)
-                            drillDownTarget = .transactions(title: "\(category.name) — \(year)", transactions: matching)
-                        }
-                }
-            }
+            categoryCells(category, shaded: shaded)
         case .reservedHeader:
             if viewModel.selectedYear != nil {
                 HStack(spacing: 0) {
@@ -457,14 +472,13 @@ struct BudgetGridView: View {
             if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in
-                        calendarCell(viewModel.reserveTotal(reserve, year: year, month: month))
+                        planCell(viewModel.reserveCell([reserve], year: year, month: month))
                             .frame(height: 28)
                             .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                     }
-                    let yearTotal = (1...12).reduce(0) { $0 + viewModel.reserveTotal(reserve, year: year, month: $1) }
-                    calendarCell(yearTotal).bold()
+                    planCell(PlanStatus.combine((1...12).map { viewModel.reserveCell([reserve], year: year, month: $0) }), isYearTotal: true).bold()
                         .frame(height: 28)
                         .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
@@ -474,13 +488,12 @@ struct BudgetGridView: View {
             if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in
-                        calendarCell(viewModel.reserves.reduce(0) { $0 + viewModel.reserveTotal($1, year: year, month: month) }).bold()
+                        planCell(viewModel.reserveCell(viewModel.reserves, year: year, month: month)).bold()
                             .frame(height: 28)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                     }
-                    let yearTotal = (1...12).reduce(0) { sum, month in sum + viewModel.reserves.reduce(0) { $0 + viewModel.reserveTotal($1, year: year, month: month) } }
-                    calendarCell(yearTotal).bold()
+                    planCell(PlanStatus.combine((1...12).map { viewModel.reserveCell(viewModel.reserves, year: year, month: $0) }), isYearTotal: true).bold()
                         .frame(height: 28)
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 }
@@ -490,55 +503,19 @@ struct BudgetGridView: View {
             if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in
-                        let total = categories.reduce(0) { $0 + viewModel.payMonthCategoryTotal($1, year: year, month: month) }
-                        calendarCell(total).bold()
+                        planCell(viewModel.cell(categories, year: year, month: month)).bold()
                             .frame(height: 28)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                     }
-                    let yearTotal = (1...12).reduce(0) { sum, month in sum + categories.reduce(0) { $0 + viewModel.payMonthCategoryTotal($1, year: year, month: month) } }
-                    calendarCell(yearTotal).bold()
+                    planCell(viewModel.yearCell(categories, year: year), isYearTotal: true).bold()
                         .frame(height: 28)
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 }
                 .background(Color.orange.opacity(0.10))
             }
         case .groupChild(let category):
-            // Identical cell behavior to `.category` — a `@ViewBuilder` function
-            // returning `some View` can't call itself recursively (the compiler can't
-            // resolve a self-referential opaque return type), so this repeats the
-            // `.category` branch's body rather than calling `rowCells(.category(...))`.
-            if let year = viewModel.selectedYear {
-                HStack(spacing: 0) {
-                    ForEach(1...12, id: \.self) { month in
-                        let total = viewModel.payMonthCategoryTotal(category, year: year, month: month)
-                        calendarCell(total)
-                            .frame(height: 28)
-                            .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
-                            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                guard total != 0 else { return }
-                                let range = viewModel.dateRange(forYear: year, month: month)
-                                let matching = viewModel.transactions(forCategoryId: category.id!, from: range.start, to: range.end)
-                                drillDownTarget = .transactions(title: "\(category.name) — \(Self.monthYearLabel(year: year, month: month))", transactions: matching)
-                            }
-                    }
-                    let yearTotal = (1...12).reduce(0) { $0 + viewModel.payMonthCategoryTotal(category, year: year, month: $1) }
-                    calendarCell(yearTotal).bold()
-                        .frame(height: 28)
-                        .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
-                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            guard yearTotal != 0 else { return }
-                            let range = viewModel.dateRange(forYear: year)
-                            let matching = viewModel.transactions(forCategoryId: category.id!, from: range.start, to: range.end)
-                            drillDownTarget = .transactions(title: "\(category.name) — \(year)", transactions: matching)
-                        }
-                }
-            }
+            categoryCells(category, shaded: shaded)
         case .account(let account):
             if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
@@ -572,6 +549,80 @@ struct BudgetGridView: View {
                 }
                 .background(Color.purple.opacity(0.10))
             }
+        }
+    }
+
+    /// A category's twelve month cells and Year Total (for `.category` and `.groupChild`).
+    /// A month cell opens the drill-down (transactions plus planned occurrences) when it has
+    /// a value or anything planned; the Year Total lists the year's transactions.
+    @ViewBuilder
+    private func categoryCells(_ category: Category, shaded: Bool) -> some View {
+        if let year = viewModel.selectedYear, let categoryId = category.id {
+            HStack(spacing: 0) {
+                ForEach(1...12, id: \.self) { month in
+                    let cell = viewModel.cell(category, year: year, month: month)
+                    planCell(cell)
+                        .frame(height: 28)
+                        .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            guard cell.value != 0 || !viewModel.occurrences(category: category, year: year, month: month).isEmpty else { return }
+                            let range = viewModel.dateRange(forYear: year, month: month)
+                            let matching = viewModel.transactions(forCategoryId: categoryId, from: range.start, to: range.end)
+                            drillDownTarget = .transactions(title: "\(category.name) — \(Self.monthYearLabel(year: year, month: month))", transactions: matching,
+                                                            plan: DrillDownPlan(category: category, year: year, month: month))
+                        }
+                }
+                let yearCell = viewModel.yearCell([category], year: year)
+                planCell(yearCell, isYearTotal: true).bold()
+                    .frame(height: 28)
+                    .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                    .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        let range = viewModel.dateRange(forYear: year)
+                        let matching = viewModel.transactions(forCategoryId: categoryId, from: range.start, to: range.end)
+                        guard !matching.isEmpty else { return }
+                        drillDownTarget = .transactions(title: "\(category.name) — \(year)", transactions: matching, plan: nil)
+                    }
+            }
+        }
+    }
+
+    /// A cell with its unconfirmed part shown: the value italic and secondary while any of it
+    /// is pending, with `clock` (all expected) or `circle.lefthalf.filled` (partly happened)
+    /// and help text splitting it ("£x actual + £y expected"; a Year Total says
+    /// "Includes £x not yet confirmed").
+    private func planCell(_ cell: BudgetGridViewModel.PlanCell, isYearTotal: Bool = false) -> some View {
+        HStack(spacing: 4) {
+            if cell.state != .none {
+                Image(systemName: cell.state == .partial ? "circle.lefthalf.filled" : "clock")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if cell.value == 0 {
+                Text("—").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
+            } else if cell.pending != 0 {
+                MoneyText(minorUnits: cell.value, font: .system(.body, design: .default).monospacedDigit().italic(), alignment: .trailing, tint: .secondary)
+            } else {
+                MoneyText(minorUnits: cell.value, alignment: .trailing)
+            }
+        }
+        .frame(width: 120)
+        .padding(.horizontal, 8)
+        .help(cell.pending == 0 ? ""
+              : isYearTotal ? "Includes \(Money.format(abs(cell.pending), currency: .gbp)) not yet confirmed"
+              : PlanFormat.pendingHelp(value: cell.value, pending: cell.pending))
+    }
+
+    /// Whether any row of `year` still carries unconfirmed money (for the footnote).
+    private func hasPending(year: Int) -> Bool {
+        let planned = viewModel.categories.filter { !$0.isReserved }
+        return (1...12).contains { month in
+            viewModel.cell(planned, year: year, month: month).state != .none
+                || viewModel.reserveCell(viewModel.reserves, year: year, month: month).state != .none
         }
     }
 

@@ -15,13 +15,6 @@ struct ForecastView: View {
     @State private var reserveSheet: ReserveSheet?
     @State private var renamingReserve: Category?
     @State private var deletingReserve: Category?
-    @State private var plannedItemSheet: PlannedItemSheet?
-
-    /// The section a "+" on the Income / Expenses / Transfers header adds a confirmed item to.
-    private struct PlannedItemSheet: Identifiable {
-        let type: CategoryType
-        var id: String { type.rawValue }
-    }
 
     private enum ReserveSheet: Identifiable {
         case newReserve
@@ -264,13 +257,6 @@ struct ForecastView: View {
                 }
             }
         }
-        .sheet(item: $plannedItemSheet, onDismiss: { viewModel.errorMessage = nil }) { sheet in
-            ScenarioItemFormView(mode: .plannedItem(sheet.type), viewModel: viewModel) { _, item in
-                if viewModel.addPlannedItem(categoryId: item.categoryId, amountMinorUnits: item.amountMinorUnits, frequency: item.frequency, interval: item.interval, startDate: item.startDate, endDate: item.endDate) {
-                    plannedItemSheet = nil
-                }
-            }
-        }
         .sheet(item: $renamingReserve, onDismiss: { viewModel.errorMessage = nil }) { reserve in
             RenameReserveView(reserve: reserve, errorMessage: viewModel.errorMessage, onEdit: clearErrorMessage) { name in
                 if viewModel.renameReserve(reserve, to: name) {
@@ -483,17 +469,12 @@ struct ForecastView: View {
     @ViewBuilder
     private func rowLabel(_ row: ForecastRowKind, shaded: Bool) -> some View {
         switch row {
-        case .sectionHeader(let title, let type):
-            HStack {
-                Text(title)
-                    .font(.caption).bold()
-                    .tracking(0.6)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button { plannedItemSheet = PlannedItemSheet(type: type) } label: { Image(systemName: "plus") }
-                    .buttonStyle(.borderless)
-                    .help("Add planned item…")
-            }
+        case .sectionHeader(let title, _):
+            // Planned items are added from the Budget grid's section headers.
+            Text(title)
+                .font(.caption).bold()
+                .tracking(0.6)
+                .foregroundStyle(.secondary)
                 .frame(width: 220, height: 24, alignment: .leading)
                 .padding(.horizontal, 8)
                 .background(Color.accentColor.opacity(0.08))
@@ -777,9 +758,6 @@ struct ScenarioItemFormView: View {
     enum Mode {
         case newScenario
         case addItem(to: ForecastGroup)
-        /// A confirmed item for one section of the grid (see `ForecastViewModel.addPlannedItem`):
-        /// only that section's categories, and a new category always gets that type.
-        case plannedItem(CategoryType)
     }
     let mode: Mode
     @ObservedObject var viewModel: ForecastViewModel
@@ -800,34 +778,12 @@ struct ScenarioItemFormView: View {
     @State private var startDate = Date()
     @State private var hasEndDate = false
     @State private var endDate = Date()
-    /// The category this form created on Save (see the Save action).
-    @State private var createdCategoryId: Int64?
 
     private var isCreatingNewCategory: Bool { categoryId == Self.newCategorySentinel }
 
-    private var plannedType: CategoryType? {
-        if case .plannedItem(let type) = mode { return type }
-        return nil
-    }
-
-    /// Planned items list only their section's non-reserved categories; scenarios list
-    /// every non-reserved category, with reserves in their own section.
+    /// Every non-reserved category, with reserves in their own section.
     private var pickerCategories: [Category] {
-        viewModel.categories.filter { !$0.isReserved && (plannedType == nil || $0.type == plannedType) }
-    }
-
-    /// Planned items: Save needs a category (or a new category name) and a non-zero amount.
-    private var canSave: Bool {
-        guard plannedType != nil else { return true }
-        guard let minorUnits = Money.parseMinorUnits(amountPounds), minorUnits != 0 else { return false }
-        if isCreatingNewCategory { return !newCategoryName.trimmingCharacters(in: .whitespaces).isEmpty }
-        return categoryId != nil
-    }
-
-    /// Clears a stale save error as the user edits a planned item (the only mode that
-    /// shows one inline) — only when one is set, so typing doesn't redraw the grid.
-    private func clearErrorMessage() {
-        if plannedType != nil, viewModel.errorMessage != nil { viewModel.errorMessage = nil }
+        viewModel.categories.filter { !$0.isReserved }
     }
 
     var body: some View {
@@ -838,33 +794,26 @@ struct ScenarioItemFormView: View {
             Picker("Category", selection: $categoryId) {
                 Text("Select…").tag(Int64?.none)
                 ForEach(pickerCategories) { category in Text(category.name).tag(Int64?.some(category.id!)) }
-                if plannedType == nil, !viewModel.reserves.isEmpty {
+                if !viewModel.reserves.isEmpty {
                     Section("Reserved") {
                         ForEach(viewModel.reserves) { reserve in Text(reserve.name).tag(Int64?.some(reserve.id!)) }
                     }
                 }
                 Text("+ New category…").tag(Int64?.some(Self.newCategorySentinel))
             }
-            // Not when Save itself just selected the category it created — that would wipe
-            // the error of the save that follows.
-            .onChange(of: categoryId) { _, newValue in if newValue != createdCategoryId { clearErrorMessage() } }
             if isCreatingNewCategory {
                 // A scenario item can be for a category that doesn't exist yet (e.g. a
                 // hypothetical new income source or a one-off project). Created together
                 // with the item itself on Save, not immediately — so Cancel here leaves no
                 // orphaned category behind.
                 TextField("New category name", text: $newCategoryName)
-                    .onChange(of: newCategoryName) { _, _ in clearErrorMessage() }
-                if plannedType == nil {
-                    Picker("New category type", selection: $newCategoryType) {
-                        Text("Expense").tag(CategoryType.expense)
-                        Text("Income").tag(CategoryType.income)
-                    }
-                    .pickerStyle(.segmented)
+                Picker("New category type", selection: $newCategoryType) {
+                    Text("Expense").tag(CategoryType.expense)
+                    Text("Income").tag(CategoryType.income)
                 }
+                .pickerStyle(.segmented)
             }
             MoneyField("Amount", text: $amountPounds, currency: .gbp)
-                .onChange(of: amountPounds) { _, _ in clearErrorMessage() }
             Picker("Frequency", selection: $frequency) {
                 ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(freq.rawValue).tag(freq) }
             }
@@ -874,26 +823,19 @@ struct ScenarioItemFormView: View {
             if hasEndDate {
                 DatePicker("Ends", selection: $endDate, displayedComponents: .date)
             }
-            if plannedType != nil, let errorMessage = viewModel.errorMessage {
-                Text(errorMessage).font(.caption).foregroundStyle(.red)
-            }
             HStack {
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Save") {
-                    guard canSave, let minorUnits = Money.parseMinorUnits(amountPounds) else { return }
+                    guard let minorUnits = Money.parseMinorUnits(amountPounds) else { return }
                     let resolvedCategoryId: Int64
                     let resolvedCategoryType: CategoryType
                     if isCreatingNewCategory {
                         let trimmedName = newCategoryName.trimmingCharacters(in: .whitespaces)
-                        guard !trimmedName.isEmpty, let created = viewModel.createCategory(name: trimmedName, type: plannedType ?? newCategoryType) else { return }
+                        guard !trimmedName.isEmpty, let created = viewModel.createCategory(name: trimmedName, type: newCategoryType) else { return }
                         resolvedCategoryId = created.id!
                         resolvedCategoryType = created.type
-                        // Select the created category so a failed save retried from this
-                        // form reuses it instead of creating it again.
-                        createdCategoryId = created.id
-                        categoryId = created.id
                     } else {
                         guard let categoryId, let category = viewModel.categories.first(where: { $0.id == categoryId }) else { return }
                         resolvedCategoryId = categoryId
@@ -904,7 +846,6 @@ struct ScenarioItemFormView: View {
                     let name: String? = { if case .newScenario = mode { return scenarioName }; return nil }()
                     onSave(name, item)
                 }
-                .disabled(!canSave)
                 .keyboardShortcut(.defaultAction)
             }
         }

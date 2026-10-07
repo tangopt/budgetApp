@@ -196,4 +196,26 @@ final class ForecastCalculatorTests: XCTestCase {
         let refile = PlannedOccurrenceException(entryId: 1, originalDate: utcDate(2026, 10, 15), categoryId: 20)
         XCTAssertEqual(ForecastCalculator.previewTotal(categoryId: 10, period: oct, entries: entries, groups: groups, selectedScenarioGroupId: 1, exceptions: [refile]), -3000)
     }
+
+    func testConfirmedTotalsByCategoryMatchesConfirmedTotal() {
+        let oct = PayPeriod(startDate: utcDate(2026, 10, 1), endDate: utcDate(2026, 10, 31), type: .projected)
+        let groups = [ForecastGroup(id: 1, name: "G", note: nil, isEnabled: true, isSystemManaged: false),
+                      ForecastGroup(id: 2, name: "Off", note: nil, isEnabled: false, isSystemManaged: false)]
+        let entries = [
+            ForecastEntry(id: 1, groupId: 1, categoryId: 10, amountMinorUnits: -10000, frequency: .monthly, interval: 1, startDate: utcDate(2026, 6, 15), endDate: nil, isEnabled: true, status: .manual, note: nil),
+            ForecastEntry(id: 2, groupId: 1, categoryId: 10, amountMinorUnits: -1000, frequency: .weekly, interval: 1, startDate: utcDate(2026, 10, 1), endDate: nil, isEnabled: true, status: .manual, note: nil),
+            ForecastEntry(id: 3, groupId: 1, categoryId: 30, amountMinorUnits: 300000, frequency: .monthly, interval: 1, startDate: utcDate(2026, 1, 25), endDate: nil, isEnabled: true, status: .confirmed, note: nil),
+            ForecastEntry(id: 4, groupId: 1, categoryId: 30, amountMinorUnits: 5000, frequency: .monthly, interval: 1, startDate: utcDate(2026, 1, 25), endDate: nil, isEnabled: true, status: .hypothetical, note: nil),
+            ForecastEntry(id: 5, groupId: 2, categoryId: 30, amountMinorUnits: 7000, frequency: .monthly, interval: 1, startDate: utcDate(2026, 1, 25), endDate: nil, isEnabled: true, status: .manual, note: nil)
+        ]
+        let exceptions = [
+            PlannedOccurrenceException(entryId: 1, originalDate: utcDate(2026, 10, 15), categoryId: 20),
+            PlannedOccurrenceException(entryId: 2, originalDate: utcDate(2026, 10, 8), isSkipped: true)
+        ]
+        let totals = ForecastCalculator.confirmedTotalsByCategory(period: oct, entries: entries, groups: groups, exceptions: exceptions)
+        XCTAssertEqual(totals, [10: -4000, 20: -10000, 30: 300000])
+        for id: Int64 in [10, 20, 30, 40] {
+            XCTAssertEqual(totals[id] ?? 0, ForecastCalculator.confirmedTotal(categoryId: id, period: oct, entries: entries, groups: groups, exceptions: exceptions))
+        }
+    }
 }

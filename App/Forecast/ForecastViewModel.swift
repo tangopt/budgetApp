@@ -515,29 +515,6 @@ final class ForecastViewModel: ObservableObject {
         return category
     }
 
-    // MARK: - Planned items
-
-    /// Adds a confirmed item from a section header's "+" (see `PlannedItems.add`, which
-    /// also takes the category out of the auto-forecast for a recurring item). Write-first, reload on success,
-    /// `errorMessage` on failure.
-    @discardableResult
-    func addPlannedItem(categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> Bool {
-        errorMessage = nil
-        do {
-            try dbQueue.write { db in
-                try PlannedItems.add(db: db, categoryId: categoryId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
-            }
-        } catch PlannedItemsError.reservedCategory {
-            errorMessage = "Reserves get allowances from the Reserved section, not planned items."
-            return false
-        } catch {
-            errorMessage = "Couldn't add this item: \(error.localizedDescription)"
-            return false
-        }
-        try? load()
-        return true
-    }
-
     // MARK: - Reserves
 
     /// Reserved (forecast-only) categories, sorted by name.
