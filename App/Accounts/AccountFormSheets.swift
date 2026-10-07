@@ -31,7 +31,7 @@ struct AddAccountSheet: View {
             }
             KindPicker(selection: $kind)
             TrackingPicker(selection: $trackingMode)
-            TextField(kind == .credit ? "Amount owed (optional)" : "Opening balance (optional)", text: $balanceText)
+            MoneyField(kind == .credit ? "Amount owed (optional)" : "Opening balance (optional)", text: $balanceText, currency: currency)
             if kind == .credit {
                 SheetCaption("Enter what you owe on the card as a positive number.")
             }

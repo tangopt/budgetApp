@@ -375,11 +375,9 @@ enum AccountsFormat {
     }
 
     /// The row's current balance as the user would enter it (amount owed for credit),
-    /// as a plain 2-decimal string for prefilling a text field: "1234.56", "-12.00".
+    /// as a `Money.formatInput` string for prefilling a text field: "1,234.56", "-12.00".
     static func enteredAmountText(_ row: AccountRow) -> String {
-        let entered = NetWorthCalculator.enteredBalance(signedMinorUnits: row.nativeBalanceMinorUnits, accountKind: row.account.kind)
-        let magnitude = abs(entered)
-        return "\(entered < 0 ? "-" : "")\(magnitude / 100).\(String(format: "%02d", magnitude % 100))"
+        Money.formatInput(NetWorthCalculator.enteredBalance(signedMinorUnits: row.nativeBalanceMinorUnits, accountKind: row.account.kind))
     }
 
     static func invalidAmountMessage(_ text: String) -> String {

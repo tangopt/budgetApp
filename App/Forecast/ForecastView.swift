@@ -863,7 +863,7 @@ struct ScenarioItemFormView: View {
                     .pickerStyle(.segmented)
                 }
             }
-            TextField("Amount (£, positive number)", text: $amountPounds)
+            MoneyField("Amount", text: $amountPounds, currency: .gbp)
                 .onChange(of: amountPounds) { _, _ in clearErrorMessage() }
             Picker("Frequency", selection: $frequency) {
                 ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(freq.rawValue).tag(freq) }
@@ -928,7 +928,7 @@ struct EditForecastEntryView: View {
     init(entry: ForecastEntry, onSave: @escaping (Int, ForecastFrequency, Int, Date, Date?) -> Void) {
         self.entry = entry
         self.onSave = onSave
-        _amountPounds = State(initialValue: String(format: "%.2f", Double(abs(entry.amountMinorUnits)) / 100))
+        _amountPounds = State(initialValue: Money.formatInput(abs(entry.amountMinorUnits)))
         _frequency = State(initialValue: entry.frequency)
         _interval = State(initialValue: entry.interval)
         _startDate = State(initialValue: entry.startDate)
@@ -961,7 +961,7 @@ struct EditForecastEntryView: View {
 
     var body: some View {
         Form {
-            TextField("Amount (£)", text: $amountPounds)
+            MoneyField("Amount", text: $amountPounds, currency: .gbp)
             Picker("Frequency", selection: $frequency) {
                 ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(freq.rawValue).tag(freq) }
             }
@@ -1031,7 +1031,7 @@ struct ReserveFormView: View {
             case .addAmount(let reserve):
                 Text("Add an amount to \(reserve.name)").font(.headline)
             }
-            TextField("Amount (£, positive number)", text: $amountPounds)
+            MoneyField("Amount", text: $amountPounds, currency: .gbp)
                 .onChange(of: amountPounds) { _, _ in onEdit() }
             Picker("Frequency", selection: $frequency) {
                 ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(freq.rawValue).tag(freq) }

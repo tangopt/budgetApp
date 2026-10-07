@@ -27,6 +27,23 @@ public enum Money {
         return negative ? "-\(body)" : body
     }
 
+    /// Formats minor units for a text field: thousands separators, always two decimals,
+    /// "-" prefix when negative, no currency symbol ("44,007.51"). Round-trips with
+    /// `parseMinorUnits`.
+    public static func formatInput(_ minorUnits: Int) -> String {
+        let absValue = minorUnits.magnitude
+        let whole = absValue / 100
+        let fraction = absValue % 100
+        // Grouped by hand so the output never depends on the user's locale.
+        var wholeString = ""
+        for (index, digit) in String(whole).reversed().enumerated() {
+            if index > 0, index % 3 == 0 { wholeString.append(",") }
+            wholeString.append(digit)
+        }
+        wholeString = String(wholeString.reversed())
+        return "\(minorUnits < 0 ? "-" : "")\(wholeString).\(String(format: "%02d", fraction))"
+    }
+
     private static let plainDecimalPattern = try! NSRegularExpression(pattern: #"^[+-]?(\d+(\.\d*)?|\.\d+)$"#)
 
     /// Parses a human/bank-formatted amount ("1,234.56", "-45.64", "£300", " 12.5 ")

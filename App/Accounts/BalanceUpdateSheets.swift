@@ -23,10 +23,7 @@ struct UpdateBalanceSheet: View {
 
     var body: some View {
         SheetScaffold(title: "Update balance — \(row.account.name)", saveTitle: "Save", canSave: amount != nil, error: error, onCancel: { dismiss() }, onSave: save) {
-            HStack {
-                TextField(row.account.kind == .credit ? "Amount owed" : "Balance", text: $amountText)
-                Text(row.account.currency.rawValue.uppercased()).foregroundStyle(.secondary)
-            }
+            MoneyField(row.account.kind == .credit ? "Amount owed" : "Balance", text: $amountText, currency: row.account.currency)
             if row.account.kind == .credit {
                 SheetCaption("Enter what you owe on the card as a positive number.")
             }
@@ -107,25 +104,15 @@ struct UpdateBalancesSheet: View {
 
     private func rowView(_ row: AccountRow) -> some View {
         let isIncluded = included[row.id] ?? false
-        let text = texts[row.id] ?? ""
-        let invalid = isIncluded && Money.parseMinorUnits(text) == nil
         return HStack(alignment: .firstTextBaseline) {
             Toggle(isOn: Binding(get: { included[row.id] ?? false }, set: { included[row.id] = $0 })) {
                 Text(row.account.name).lineLimit(1)
             }
             .toggleStyle(.checkbox)
             Spacer()
-            TextField(row.account.kind == .credit ? "Amount owed" : "Balance", text: Binding(get: { texts[row.id] ?? "" }, set: { texts[row.id] = $0 }))
+            MoneyField(row.account.kind == .credit ? "Amount owed" : "Balance", text: Binding(get: { texts[row.id] ?? "" }, set: { texts[row.id] = $0 }), currency: row.account.currency, width: 130)
                 .labelsHidden()
-                .multilineTextAlignment(.trailing)
-                .monospacedDigit()
-                .frame(width: 130)
                 .disabled(!isIncluded)
-                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(invalid ? Color.red : Color.clear))
-                .help(invalid ? AccountsFormat.invalidAmountMessage(text) : "")
-            Text(row.account.currency.rawValue.uppercased())
-                .foregroundStyle(.secondary)
-                .frame(width: 34, alignment: .leading)
         }
     }
 
