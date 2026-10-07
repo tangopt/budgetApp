@@ -44,8 +44,8 @@ public enum AutoForecastGenerator {
 
     /// Buckets confirmed transactions into `actualPeriods`, sums per category per
     /// period (signed), and — for a category with no planned item at all (no
-    /// non-hypothetical entry in any group, enabled or not) — adds one ordinary planned
-    /// item (status `.manual`) in the "Detected recurring" group according to
+    /// non-hypothetical budget entry in any group, enabled or not; scenario entries don't
+    /// count) — adds one ordinary planned item (status `.manual`) in the "Detected recurring" group according to
     /// `detectRecurrence`. Detection only ever adds: once a category has a plan, the user
     /// owns it, so existing entries are never updated or deleted. Reserves and categories
     /// excluded from the auto-forecast are skipped.
@@ -55,7 +55,7 @@ public enum AutoForecastGenerator {
         let sortedPeriods = actualPeriods.sorted { $0.startDate < $1.startDate }
         let categories = try Category.fetchAll(db)
         let plannedCategoryIds = Set(try Int64.fetchAll(db, sql: """
-            SELECT DISTINCT categoryId FROM forecastEntry WHERE status != ?
+            SELECT DISTINCT categoryId FROM forecastEntry WHERE status != ? AND scenarioId IS NULL
             """, arguments: [ForecastEntryStatus.hypothetical.rawValue]))
 
         for category in categories {

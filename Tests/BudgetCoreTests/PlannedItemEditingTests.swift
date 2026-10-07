@@ -330,6 +330,16 @@ final class PlannedItemEditingTests: XCTestCase {
         }
     }
 
+    /// A one-off (e.g. a bonus) gone says nothing about the category's recurring pattern.
+    func testRemovingAOneOffLeavesDetectionAlone() throws {
+        let f = try fixture(start: utc(2026, 10, 15), status: .manual, frequency: .once)
+        try editFollowing(f, utc(2026, 10, 15), OccurrenceChange(remove: true))
+        XCTAssertTrue(try entries(f).isEmpty)
+        try f.manager.dbQueue.read { db in
+            XCTAssertFalse(try XCTUnwrap(Category.fetchOne(db, key: f.rentId)).excludeFromAutoForecast)
+        }
+    }
+
     func testRemoveFollowingLaterOrReplacingLeavesDetectionAlone() throws {
         let ended = try fixture(status: .manual)
         try editFollowing(ended, utc(2026, 11, 15), OccurrenceChange(remove: true))

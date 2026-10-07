@@ -15,6 +15,15 @@ public enum ForecastEntryStatus: String, Codable, CaseIterable {
     case confirmed
 }
 
+/// How a scenario entry differs from the budget entry it was copied from (`sourceEntryId`).
+/// NULL in the database = an unchanged copy.
+public enum ScenarioChange: String, Codable, CaseIterable {
+    case added
+    case changed
+    /// A tombstone (kept disabled) for a budget entry the scenario removes.
+    case removed
+}
+
 public struct ForecastEntry: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord {
     public var id: Int64?
     public var groupId: Int64
@@ -30,8 +39,14 @@ public struct ForecastEntry: Codable, Equatable, Identifiable, FetchableRecord, 
     /// Day of month monthly/annual occurrences fall on (clamped to the month's length);
     /// nil = `startDate`'s UTC day. Lets a series split at 28 Feb keep 31 Mar, 30 Apr, …
     public var anchorDay: Int?
+    /// nil = a budget entry; otherwise the scenario holding it (budget loads use `budget(_:)`).
+    public var scenarioId: Int64?
+    /// A scenario entry's budget source (no FK: the source may since have been deleted).
+    public var sourceEntryId: Int64?
+    /// nil = unchanged copy of its source (or a budget entry).
+    public var scenarioChange: ScenarioChange?
 
-    public init(id: Int64? = nil, groupId: Int64, categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, isEnabled: Bool, status: ForecastEntryStatus, note: String?, anchorDay: Int? = nil) {
+    public init(id: Int64? = nil, groupId: Int64, categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, isEnabled: Bool, status: ForecastEntryStatus, note: String?, anchorDay: Int? = nil, scenarioId: Int64? = nil, sourceEntryId: Int64? = nil, scenarioChange: ScenarioChange? = nil) {
         self.id = id
         self.groupId = groupId
         self.categoryId = categoryId
@@ -44,6 +59,9 @@ public struct ForecastEntry: Codable, Equatable, Identifiable, FetchableRecord, 
         self.status = status
         self.note = note
         self.anchorDay = anchorDay
+        self.scenarioId = scenarioId
+        self.sourceEntryId = sourceEntryId
+        self.scenarioChange = scenarioChange
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -51,6 +69,22 @@ public struct ForecastEntry: Codable, Equatable, Identifiable, FetchableRecord, 
     }
 
     public static let databaseTableName = "forecastEntry"
+
+    /// The budget's entries (`scenarioId IS NULL`). Every load of entries for the budget
+    /// (Dashboard, Budget grid, projection, detection, editing) goes through this.
+    public static var budgetEntries: QueryInterfaceRequest<ForecastEntry> {
+        filter(Column("scenarioId") == nil)
+    }
+
+    /// The budget's entries, by id.
+    public static func budget(_ db: Database) throws -> [ForecastEntry] {
+        try budgetEntries.order(Column("id")).fetchAll(db)
+    }
+
+    /// A scenario's entries (including `removed` tombstones), by id.
+    public static func inScenario(_ db: Database, id scenarioId: Int64) throws -> [ForecastEntry] {
+        try filter(Column("scenarioId") == scenarioId).order(Column("id")).fetchAll(db)
+    }
 }
 
 func registerForecastEntryMigration(_ migrator: inout DatabaseMigrator) {

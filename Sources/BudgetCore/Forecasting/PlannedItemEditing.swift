@@ -90,8 +90,9 @@ public enum PlannedItemEditing {
     /// unless a date move or frequency change shifts the schedule, in which case they are
     /// dropped. The edited occurrence's own exception follows the new entry minus the fields
     /// the change sets, and un-skipped (the edit brings the occurrence back). Removing from
-    /// the first occurrence deletes the whole series and also sets the category's
-    /// `excludeFromAutoForecast`, so auto-forecast detection doesn't add it straight back.
+    /// the first occurrence deletes the whole series and, unless it is a one-off (`.once`),
+    /// also sets the category's `excludeFromAutoForecast`, so auto-forecast detection doesn't
+    /// add it straight back.
     public static func editFollowing(db: Database, entryId: Int64, originalDate: Date, change: OccurrenceChange, calendar: PayCalendar) throws {
         try db.inSavepoint {
             var entry = try plannedEntry(db: db, id: entryId, originalDate: originalDate)
@@ -160,8 +161,9 @@ public enum PlannedItemEditing {
 
             if previous == nil {
                 _ = try entry.delete(db) // first occurrence: the new entry (if any) replaces the series
-                if change.remove {
-                    // The series is gone outright: stop detection re-adding it.
+                if change.remove && entry.frequency != .once {
+                    // The series is gone outright: stop detection re-adding it. A one-off
+                    // (e.g. a bonus) says nothing about the category's pattern.
                     try db.execute(sql: "UPDATE category SET excludeFromAutoForecast = 1 WHERE id = ?", arguments: [entry.categoryId])
                 }
             } else {
@@ -233,7 +235,7 @@ public enum PlannedItemEditing {
             .fetchAll(db)
         let confirmed = isConfirmed(entry: entry, occurrence: occurrence, calendar: calendar,
                                     monthTotals: PayMonthTotals.lookup(transactions: transactions, calendar: calendar),
-                                    entries: try ForecastEntry.fetchAll(db), groups: try ForecastGroup.fetchAll(db),
+                                    entries: try ForecastEntry.budget(db), groups: try ForecastGroup.fetchAll(db),
                                     exceptions: try PlannedOccurrenceException.fetchAll(db), categories: try Category.fetchAll(db))
         if confirmed { throw PlannedItemEditError.occurrenceConfirmed }
     }

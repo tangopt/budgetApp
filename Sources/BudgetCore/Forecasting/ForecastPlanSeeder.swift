@@ -82,7 +82,7 @@ public enum ForecastPlanSeeder {
         // 2. The reserve and its allowance.
         let reserve = try categories[reserveName] ?? ReservedCategories.create(db: db, name: reserveName)
         if categories[reserveName] == nil { log.append("Created reserve \(reserveName)") }
-        if try ForecastEntry.filter(Column("categoryId") == reserve.id!).fetchCount(db) == 0 {
+        if try ForecastEntry.budgetEntries.filter(Column("categoryId") == reserve.id!).fetchCount(db) == 0 {
             let group = try ReservedCategories.ensureGroup(db: db)
             try insert(reserveItem, categoryId: reserve.id!, groupId: group.id!, db: db)
             log.append("\(reserveName): \(describe(reserveItem))")
@@ -92,7 +92,7 @@ public enum ForecastPlanSeeder {
         //    auto-forecast (the reserve or the plan entry is maintained by hand).
         for name in coveredByReserve + planned.map(\.name) {
             let category = categories[name]!
-            let autoCount = try ForecastEntry.filter(Column("categoryId") == category.id! && Column("status") == ForecastEntryStatus.auto.rawValue).fetchCount(db)
+            let autoCount = try ForecastEntry.budgetEntries.filter(Column("categoryId") == category.id! && Column("status") == ForecastEntryStatus.auto.rawValue).fetchCount(db)
             guard !category.excludeFromAutoForecast || autoCount > 0 else { continue }
             let deleted = try ReservedCategories.setExcludedFromAutoForecast(db: db, categoryId: category.id!, true)
             log.append("\(name): excluded from auto-forecast" + (deleted > 0 ? " (removed \(deleted) auto entr\(deleted == 1 ? "y" : "ies"))" : ""))
@@ -102,7 +102,7 @@ public enum ForecastPlanSeeder {
         var planGroup: ForecastGroup?
         for item in planned {
             let categoryId = categories[item.name]!.id!
-            let exists = try ForecastEntry.filter(Column("categoryId") == categoryId && Column("note") == note).fetchCount(db) > 0
+            let exists = try ForecastEntry.budgetEntries.filter(Column("categoryId") == categoryId && Column("note") == note).fetchCount(db) > 0
             guard !exists else { continue }
             if planGroup == nil { planGroup = try ensurePlanGroup(db: db) }
             try insert(item, categoryId: categoryId, groupId: planGroup!.id!, db: db)
@@ -116,7 +116,7 @@ public enum ForecastPlanSeeder {
             let categoryId = categories[item.name]!.id!
             let start = startDate(item)
             if let groupId = detected?.id,
-               var entry = try ForecastEntry.filter(Column("categoryId") == categoryId && Column("groupId") == groupId).fetchOne(db) {
+               var entry = try ForecastEntry.budgetEntries.filter(Column("categoryId") == categoryId && Column("groupId") == groupId).fetchOne(db) {
                 let matches = entry.amountMinorUnits == item.amountMinorUnits && entry.frequency == item.frequency && entry.interval == item.interval && entry.startDate == start && entry.status == .manual && entry.isEnabled
                 guard !matches else { continue }
                 entry.amountMinorUnits = item.amountMinorUnits
@@ -130,7 +130,7 @@ public enum ForecastPlanSeeder {
                 entry.note = note
                 try entry.update(db)
                 log.append("\(item.name): corrected to \(describe(item))")
-            } else if try ForecastEntry.filter(Column("categoryId") == categoryId && Column("note") == note).fetchCount(db) == 0 {
+            } else if try ForecastEntry.budgetEntries.filter(Column("categoryId") == categoryId && Column("note") == note).fetchCount(db) == 0 {
                 if planGroup == nil { planGroup = try ensurePlanGroup(db: db) }
                 try insert(item, categoryId: categoryId, groupId: planGroup!.id!, db: db)
                 try ReservedCategories.setExcludedFromAutoForecast(db: db, categoryId: categoryId, true)

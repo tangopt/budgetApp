@@ -50,8 +50,8 @@ public enum ReservedCategories {
         try category.update(db, columns: ["name"])
     }
 
-    /// Deletes the reserve and every forecast entry for it. Safe because a reserve never
-    /// has transactions or rules.
+    /// Deletes the reserve and every forecast entry for it — budget and scenario entries
+    /// alike (they reference the category). Safe because a reserve never has transactions or rules.
     public static func delete(db: Database, categoryId: Int64) throws {
         let category = try reserve(db: db, categoryId)
         try ForecastEntry.filter(Column("categoryId") == categoryId).deleteAll(db)
@@ -66,7 +66,7 @@ public enum ReservedCategories {
     public static func setExcludedFromAutoForecast(db: Database, categoryId: Int64, _ excluded: Bool) throws -> Int {
         try db.execute(sql: "UPDATE category SET excludeFromAutoForecast = ? WHERE id = ?", arguments: [excluded, categoryId])
         guard excluded else { return 0 }
-        return try ForecastEntry
+        return try ForecastEntry.budgetEntries
             .filter(Column("categoryId") == categoryId && Column("status") == ForecastEntryStatus.auto.rawValue)
             .deleteAll(db)
     }

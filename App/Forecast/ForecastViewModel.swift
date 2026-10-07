@@ -91,7 +91,7 @@ final class ForecastViewModel: ObservableObject {
 
     func load() throws {
         groups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
-        entries = try dbQueue.read { db in try ForecastEntry.fetchAll(db) }
+        entries = try dbQueue.read { db in try ForecastEntry.budget(db) }
         exceptions = try dbQueue.read { db in try PlannedOccurrenceException.fetchAll(db) }
         categories = try dbQueue.read { db in try Category.fetchAll(db) }
         categoryGroups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
@@ -448,7 +448,7 @@ final class ForecastViewModel: ObservableObject {
             return
         }
         groups = (try? dbQueue.read { db in try ForecastGroup.fetchAll(db) }) ?? groups
-        entries = (try? dbQueue.read { db in try ForecastEntry.fetchAll(db) }) ?? entries
+        entries = (try? dbQueue.read { db in try ForecastEntry.budget(db) }) ?? entries
         selectedScenarioGroupId = newGroupId
         recomputeForecastCaches()
     }
@@ -466,7 +466,7 @@ final class ForecastViewModel: ObservableObject {
             errorMessage = "Couldn't add this item to the scenario: \(error.localizedDescription)"
             return
         }
-        entries = (try? dbQueue.read { db in try ForecastEntry.fetchAll(db) }) ?? entries
+        entries = (try? dbQueue.read { db in try ForecastEntry.budget(db) }) ?? entries
         recomputeForecastCaches()
     }
 

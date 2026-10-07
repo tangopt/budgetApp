@@ -52,5 +52,6 @@ public final class DatabaseManager {
         registerPayMonthCloseMigration(&migrator)
         registerPlannedOccurrenceExceptionMigration(&migrator)
         registerForecastEntryAnchorDayMigration(&migrator)
+        registerScenarioMigration(&migrator)
     }
 }

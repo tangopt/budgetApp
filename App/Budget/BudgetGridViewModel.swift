@@ -62,7 +62,7 @@ final class BudgetGridViewModel: ObservableObject {
         categories = try dbQueue.read { db in try Category.fetchAll(db) }
         categoryGroups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
         transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
-        forecastEntries = try dbQueue.read { db in try ForecastEntry.fetchAll(db) }
+        forecastEntries = try dbQueue.read { db in try ForecastEntry.budget(db) }
         forecastGroups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
         exceptions = try dbQueue.read { db in try PlannedOccurrenceException.fetchAll(db) }
         accounts = try dbQueue.read { db in try Account.fetchAll(db) }

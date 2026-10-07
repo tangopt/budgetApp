@@ -38,12 +38,20 @@ public enum ForecastCalculator {
         }
     }
 
-    /// The entries that count toward the *confirmed* forecast: enabled, not hypothetical, and
-    /// in an enabled group. Shared by `total` and by the dashboard's upcoming-bills list so
-    /// the two can never apply different rules.
+    /// The entries that count toward the *confirmed* forecast (the budget's plan): budget
+    /// entries only (`scenarioId == nil`, whatever the caller loaded) that `planEntries`
+    /// keeps. Shared by `total` and by the dashboard's upcoming-bills list so the two can
+    /// never apply different rules.
     public static func confirmedEntries(entries: [ForecastEntry], groups: [ForecastGroup]) -> [ForecastEntry] {
+        planEntries(entries: entries.filter { $0.scenarioId == nil }, groups: groups)
+    }
+
+    /// The effective plan of a set of entries — the budget's, or one scenario's own entries:
+    /// enabled, not hypothetical, not a scenario `removed` tombstone, in an enabled group.
+    /// No scenario filter: pass only the entries of the plan being evaluated.
+    public static func planEntries(entries: [ForecastEntry], groups: [ForecastGroup]) -> [ForecastEntry] {
         let enabledGroupIds = Set(groups.filter(\.isEnabled).compactMap(\.id))
-        return entries.filter { $0.isEnabled && $0.status != .hypothetical && enabledGroupIds.contains($0.groupId) }
+        return entries.filter { $0.isEnabled && $0.status != .hypothetical && $0.scenarioChange != .removed && enabledGroupIds.contains($0.groupId) }
     }
 
     /// `confirmedTotal` for every category at once: one expansion of the planned items over
@@ -57,7 +65,7 @@ public enum ForecastCalculator {
     private static func total(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException], selectedScenarioGroupId: Int64?, includeHypothetical: Bool) -> Int {
         let confirmed = confirmedEntries(entries: entries, groups: groups)
         let hypothetical = includeHypothetical
-            ? entries.filter { $0.isEnabled && $0.status == .hypothetical && $0.groupId == selectedScenarioGroupId }
+            ? entries.filter { $0.scenarioId == nil && $0.isEnabled && $0.status == .hypothetical && $0.groupId == selectedScenarioGroupId }
             : []
         // Expand every candidate entry (a re-filed occurrence can belong to another
         // category than its series), then keep occurrences filed under this category.
