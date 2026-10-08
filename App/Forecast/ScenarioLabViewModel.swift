@@ -86,6 +86,8 @@ final class ScenarioLabViewModel: ObservableObject {
             recomputeGrid()
         }
     }
+    /// The Differences tab's ticked cells (scenario entry ids, unique across scenarios); at
+    /// most one per row (`setTicked`).
     @Published var tickedDifferenceIds: Set<Int64> = []
     @Published var errorMessage: String?
     @Published var notice: Notice?
@@ -118,14 +120,21 @@ final class ScenarioLabViewModel: ObservableObject {
     /// True while the comparison is being computed (the previous results stay shown).
     @Published private(set) var isComputingComparison = false
     private var comparisonTask: Task<Void, Never>?
-    /// `differencesScenario`'s differences (empty when no scenario is ticked).
-    @Published private(set) var differences: [ScenarioDifference] = []
-    @Published private(set) var canUndo = false
-    /// `differencesScenario`'s differences applied by an un-undone apply: shown as
-    /// "Applied", not tickable.
+    /// The Differences tab's scenario columns: the ticked scenarios, in list order.
+    @Published private(set) var differencesScenarios: [Scenario] = []
+    /// The Differences tab's rows (`DifferenceMatrix`) for `differencesScenarios`.
+    @Published private(set) var differenceRows: [DifferenceMatrix.Row] = []
+    /// Differences applied by an un-undone apply (any ticked scenario's): shown as "Applied",
+    /// not tickable.
     @Published private(set) var appliedDifferenceIds: Set<Int64> = []
-    /// The scenario whose differences are loaded, so a change of it clears the ticks.
-    private var differencesScenarioId: Int64?
+    /// The ticked scenarios with an apply to undo, in list order.
+    @Published private(set) var undoableScenarios: [Scenario] = []
+    /// By scenario entry id: an added / changed difference's first occurrence in an open pay
+    /// month, which its Edit… opens. Missing = no Edit….
+    @Published private(set) var editableOccurrences: [Int64: PlannedRow] = [:]
+    /// By scenario id: the budget entries it holds an unchanged copy of (a row's cell shows
+    /// the budget's version there; "—" when the scenario doesn't have the item).
+    @Published private(set) var unchangedCopies: [Int64: Set<Int64>] = [:]
     /// The Grid tab's plan's cells for `gridYear`, by category id then month.
     @Published private(set) var gridCells: [Int64: [Int: ScenarioGridCell]] = [:]
 
@@ -143,11 +152,6 @@ final class ScenarioLabViewModel: ObservableObject {
 
     /// The Grid tab's scenario (nil while the Budget is selected).
     var gridScenario: Scenario? { scenarios.first { $0.id == gridSelection } }
-
-    /// The Differences tab's scenario for now: the first ticked, in list order.
-    var differencesScenario: Scenario? {
-        scenarios.first { $0.id.map(differencesSelection.contains) ?? false }
-    }
 
     /// A plan's `PlanPalette` index: 0 for the Budget (nil), a scenario's position + 1.
     func colorIndex(of scenarioId: Int64?) -> Int {
@@ -316,31 +320,62 @@ final class ScenarioLabViewModel: ObservableObject {
         return Task.isCancelled ? nil : ComparisonResult(actualLine: budgetSeries.actual, lines: lines, summaries: rows)
     }
 
-    /// Loads `differencesScenario`'s differences; the ticks are cleared when it changed.
+    /// Loads the ticked scenarios' differences into the Differences matrix, with what each
+    /// cell offers (applied, Edit…, the budget's version); ticks no longer tickable are dropped.
     private func recomputeDifferences() {
-        let scenarioId = differencesScenario?.id
-        if scenarioId != differencesScenarioId {
-            tickedDifferenceIds = []
-            differencesScenarioId = scenarioId
-        }
-        if let id = scenarioId {
-            do {
-                (differences, canUndo, appliedDifferenceIds) = try dbQueue.read { db in
-                    (try Scenarios.differences(db: db, scenarioId: id), try ScenarioApply.canUndo(db: db, scenarioId: id),
-                     try ScenarioApply.appliedDifferenceIds(db: db, scenarioId: id))
+        let ticked = scenarios.filter { $0.id.map(differencesSelection.contains) ?? false }
+        differencesScenarios = ticked
+        do {
+            let loaded = try dbQueue.read { db in
+                try ticked.compactMap(\.id).map { id in
+                    (id: id, differences: try Scenarios.differences(db: db, scenarioId: id),
+                     canUndo: try ScenarioApply.canUndo(db: db, scenarioId: id),
+                     applied: try ScenarioApply.appliedDifferenceIds(db: db, scenarioId: id))
                 }
-            } catch {
-                differences = []
-                canUndo = false
-                appliedDifferenceIds = []
-                errorMessage = "Couldn't read this scenario's differences: \(error.localizedDescription)"
             }
-        } else {
-            differences = []
-            canUndo = false
+            differenceRows = DifferenceMatrix.rows(differences: loaded.map { (scenarioId: $0.id, differences: $0.differences) })
+            appliedDifferenceIds = loaded.reduce(into: Set<Int64>()) { $0.formUnion($1.applied) }
+            let undoable = Set(loaded.filter(\.canUndo).map(\.id))
+            undoableScenarios = ticked.filter { $0.id.map(undoable.contains) ?? false }
+        } catch {
+            differenceRows = []
             appliedDifferenceIds = []
+            undoableScenarios = []
+            errorMessage = "Couldn't read the scenarios' differences: \(error.localizedDescription)"
         }
-        tickedDifferenceIds.formIntersection(tickableDifferences.map(\.id))
+        var copies: [Int64: Set<Int64>] = [:]
+        for id in ticked.compactMap(\.id) {
+            copies[id] = Set(scenarioPlans[id]?.entries.filter { $0.scenarioChange == nil }.compactMap(\.sourceEntryId) ?? [])
+        }
+        unchangedCopies = copies
+        editableOccurrences = firstOpenOccurrences()
+        tickedDifferenceIds.formIntersection(tickableDifferenceIds)
+    }
+
+    /// Each added / changed, not applied cell's first occurrence in an open (not closed) pay
+    /// month (only closed months lock a scenario occurrence), searched from its series' start
+    /// to its end, or two years past today (its start, if later) for an open-ended series.
+    private func firstOpenOccurrences() -> [Int64: PlannedRow] {
+        var result: [Int64: PlannedRow] = [:]
+        for row in differenceRows {
+            for (scenarioId, difference) in row.cells where difference.kind != .removed && !appliedDifferenceIds.contains(difference.id) {
+                guard let plan = scenarioPlans[scenarioId],
+                      let entry = ForecastCalculator.planEntries(entries: plan.entries.filter { $0.id == difference.id }, groups: plan.groups).first
+                else { continue }
+                guard let end = entry.endDate ?? MonthRange.calendar.date(byAdding: .year, value: 2, to: max(entry.startDate, today)),
+                      entry.startDate <= end
+                else { continue }
+                let first = PlannedOccurrences.occurrences(entries: [entry], exceptions: plan.exceptions.filter { $0.entryId == difference.id },
+                                                           in: PayPeriod(startDate: entry.startDate, endDate: end, type: .projected))
+                    .filter { occurrence in
+                        let (year, month) = MonthRange.components(of: occurrence.date)
+                        return !payCalendar.isClosed(PayMonth(year: year, month: month))
+                    }
+                    .min { $0.date < $1.date }
+                if let first { result[difference.id] = PlannedRow(occurrence: first, isConfirmed: false, entry: entry) }
+            }
+        }
+        return result
     }
 
     private func recomputeGrid() {
@@ -399,62 +434,82 @@ final class ScenarioLabViewModel: ObservableObject {
         return lines
     }
 
-    // MARK: Apply and undo
+    // MARK: Differences: tick, apply, undo, revert
 
-    /// The differences not yet applied (by an un-undone apply), in list order.
-    var tickableDifferences: [ScenarioDifference] {
-        differences.filter { !appliedDifferenceIds.contains($0.id) }
+    /// The cells that can be ticked: every difference not yet applied.
+    private var tickableDifferenceIds: Set<Int64> {
+        Set(differenceRows.flatMap { $0.cells.values.map(\.id) }).subtracting(appliedDifferenceIds)
     }
 
-    /// The ticked differences, in list order.
-    var tickedDifferences: [ScenarioDifference] {
-        differences.filter { tickedDifferenceIds.contains($0.id) }
+    /// Ticks or unticks a cell; ticking unticks the row's other cells, so two versions of one
+    /// budget item never go to the budget together.
+    func setTicked(_ ticked: Bool, _ difference: ScenarioDifference, in row: DifferenceMatrix.Row) {
+        if ticked {
+            tickedDifferenceIds.subtract(row.cells.values.map(\.id))
+            tickedDifferenceIds.insert(difference.id)
+        } else {
+            tickedDifferenceIds.remove(difference.id)
+        }
     }
 
-    /// Applies the ticked differences to the budget from the current pay month, then shows
-    /// what wasn't applied (or "Nothing to apply").
+    /// The ticked differences by scenario, in column then row order (scenarios with none left out).
+    var tickedByScenario: [(scenario: Scenario, differences: [ScenarioDifference])] {
+        differencesScenarios.compactMap { scenario in
+            guard let id = scenario.id else { return nil }
+            let ticked = differenceRows.compactMap { $0.cells[id] }.filter { tickedDifferenceIds.contains($0.id) }
+            return ticked.isEmpty ? nil : (scenario, ticked)
+        }
+    }
+
+    /// Applies the ticked differences to the budget from the current pay month, each
+    /// scenario's with `ScenarioApply.apply`, all in one write; then shows what wasn't applied
+    /// (or "Nothing to apply").
     func applyTicked() {
-        guard let id = differencesScenario?.id else { return }
-        // Reload only what the apply needs, as it is now: the pay calendar (so the boundary)
-        // and the scenario's differences and applied ids. The write's own reload then
-        // refreshes everything, the comparison recomputing in the background.
+        // Reload what the apply needs, as it is now: the pay calendar (so the boundary) and
+        // the differences and applied ids (dropping ticks no longer tickable). The write's own
+        // reload then refreshes everything, the comparison recomputing in the background.
         let calendar: PayCalendar
         do {
             let fresh = try dbQueue.read { db in
-                (closes: try PayMonthClose.fetchAll(db), transactions: try Transaction.fetchAll(db), categories: try Category.fetchAll(db),
-                 differences: try Scenarios.differences(db: db, scenarioId: id), canUndo: try ScenarioApply.canUndo(db: db, scenarioId: id),
-                 applied: try ScenarioApply.appliedDifferenceIds(db: db, scenarioId: id))
+                (closes: try PayMonthClose.fetchAll(db), transactions: try Transaction.fetchAll(db), categories: try Category.fetchAll(db))
             }
             calendar = PayCalendar.forData(transactions: fresh.transactions, categories: fresh.categories, manualCloses: fresh.closes, today: Date())
-            differences = fresh.differences
-            canUndo = fresh.canUndo
-            appliedDifferenceIds = fresh.applied
-            tickedDifferenceIds.formIntersection(tickableDifferences.map(\.id))
         } catch {
             errorMessage = "Couldn't reload the forecast before applying: \(error.localizedDescription)"
             return
         }
-        let ids = tickedDifferences.map(\.id)
-        guard !ids.isEmpty else { return }
-        var application: ScenarioApplication?
-        if case .failed(let message) = perform({ db in application = try ScenarioApply.apply(db: db, scenarioId: id, differenceIds: ids, calendar: calendar) }) {
+        recomputeDifferences()
+        let groups = tickedByScenario.compactMap { group in group.scenario.id.map { (id: $0, name: group.scenario.name, ids: group.differences.map(\.id)) } }
+        guard !groups.isEmpty else { return }
+        var applications: [(name: String, application: ScenarioApplication)] = []
+        if case .failed(let message) = perform({ db in
+            applications = try groups.map { group in
+                (group.name, try ScenarioApply.apply(db: db, scenarioId: group.id, differenceIds: group.ids, calendar: calendar))
+            }
+        }) {
             errorMessage = message
             return
         }
         tickedDifferenceIds = []
-        guard let application else { return }
-        if application.appliedNothing {
-            notice = Notice(title: "Nothing to apply", lines: application.skipped)
+        guard !applications.isEmpty else { return }
+        // Skipped items are prefixed with their scenario when several were applied.
+        let skipped = applications.flatMap { name, application in
+            application.skipped.map { applications.count > 1 ? "\(name): \($0)" : $0 }
+        }
+        let applied = applications.reduce(0) { total, item in
+            total + (item.application.appliedNothing ? 0 : item.application.decodedJournal?.operations.count ?? 0)
+        }
+        if applied == 0 {
+            notice = Notice(title: "Nothing to apply", lines: skipped)
         } else {
-            let applied = application.decodedJournal?.operations.count ?? ids.count
-            let skipped = application.skipped
             notice = Notice(title: "Applied \(applied) item\(applied == 1 ? "" : "s") to the budget",
                             lines: skipped.isEmpty ? ["They're ordinary planned items now: edit them in the Budget grid."] : ["Not applied:"] + skipped)
         }
     }
 
-    func undoLastApply() {
-        guard let id = differencesScenario?.id else { return }
+    /// Undoes `scenario`'s latest apply, then shows what was restored.
+    func undoLastApply(_ scenario: Scenario) {
+        guard let id = scenario.id else { return }
         var report = UndoReport()
         if case .failed(let message) = perform({ db in report = try ScenarioApply.undoLast(db: db, scenarioId: id) }) {
             errorMessage = message
@@ -463,7 +518,15 @@ final class ScenarioLabViewModel: ObservableObject {
         var lines: [String] = []
         if !report.restored.isEmpty { lines.append("Restored: \(report.restored.joined(separator: ", "))") }
         lines += report.warnings
-        notice = Notice(title: "Undid the last apply", lines: lines)
+        notice = Notice(title: "Undid the last apply from “\(scenario.name)”", lines: lines)
+    }
+
+    /// Puts one differing item of `scenario` back to the budget's version (`Scenarios.revert`).
+    func revert(_ difference: ScenarioDifference, in scenario: Scenario) {
+        guard let id = scenario.id else { return }
+        if case .failed(let message) = perform({ db in try Scenarios.revert(db: db, scenarioId: id, entryId: difference.id) }) {
+            errorMessage = message
+        }
     }
 
     // MARK: Editing a scenario's plan

@@ -7,10 +7,11 @@ import BudgetCore
 /// Budget and each ticked scenario and the summary table.
 struct CompareTab: View {
     @ObservedObject var viewModel: ScenarioLabViewModel
+    @Binding var chipPrompts: ScenarioChipPrompts
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ScenarioChips(viewModel: viewModel, mode: .multi(selected: $viewModel.compareSelection))
+            ScenarioChips(viewModel: viewModel, mode: .multi(selected: $viewModel.compareSelection), prompts: $chipPrompts)
             content
         }
     }

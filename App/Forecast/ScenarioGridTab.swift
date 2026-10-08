@@ -17,6 +17,7 @@ import struct BudgetCore.Category
 /// re-runs this `body`.
 struct ScenarioGridTab: View {
     @ObservedObject var viewModel: ScenarioLabViewModel
+    @Binding var chipPrompts: ScenarioChipPrompts
     @State private var scrollOffset = HorizontalScrollOffset()
     @State private var bodyWidth = GridBodyWidth()
     @State private var expandedGroupIds: Set<Int64> = []
@@ -74,7 +75,7 @@ struct ScenarioGridTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ScenarioChips(viewModel: viewModel, mode: .single(selected: $viewModel.gridSelection))
+            ScenarioChips(viewModel: viewModel, mode: .single(selected: $viewModel.gridSelection), prompts: $chipPrompts)
             headerBar
             Picker("Year", selection: $viewModel.gridYear) {
                 ForEach(viewModel.gridYears, id: \.self) { year in Text(String(year)).tag(year) }

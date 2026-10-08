@@ -223,11 +223,13 @@ struct PlannedOccurrencesSection: View {
 
 /// Edits one unconfirmed occurrence: amount, date, category (same type; reserves for a
 /// reserve) and the series' frequency. Save asks for the scope — "Only this occurrence" or
-/// "This and all following"; a frequency change offers only the latter. Errors show inline
-/// and keep the sheet open.
+/// "This and all following"; a frequency change offers only the latter. With a `fixedScope`
+/// (the Forecast Differences tab's Edit…: "This and all following") Save saves straight to
+/// it. Errors show inline and keep the sheet open.
 struct EditOccurrenceSheet: View {
     let row: PlannedRow
     let categories: [Category]
+    let fixedScope: PlanEditScope?
     let onSave: (OccurrenceChange, PlanEditScope) -> SaveOutcome
     @Environment(\.dismiss) private var dismiss
 
@@ -244,9 +246,10 @@ struct EditOccurrenceSheet: View {
     @State private var choosingScope = false
     @State private var errorMessage: String?
 
-    init(row: PlannedRow, categories: [Category], onSave: @escaping (OccurrenceChange, PlanEditScope) -> SaveOutcome) {
+    init(row: PlannedRow, categories: [Category], fixedScope: PlanEditScope? = nil, onSave: @escaping (OccurrenceChange, PlanEditScope) -> SaveOutcome) {
         self.row = row
         self.categories = categories
+        self.fixedScope = fixedScope
         self.onSave = onSave
         _amountText = State(initialValue: Money.formatInput(abs(row.occurrence.amountMinorUnits)))
         _pickedDay = State(initialValue: PayCalendar.localDay(sameDayAs: row.occurrence.date, in: .current))
@@ -336,7 +339,10 @@ struct EditOccurrenceSheet: View {
             if frequency != .once {
                 RecurrenceEndFields(mode: $endMode, endDay: $endDay, count: $occurrenceCount, startDay: pickedDay, lastDate: lastDate)
             }
-            if changesFrequency {
+            if fixedScope == .thisAndFollowing {
+                Text("Changes this and all following occurrences.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if changesFrequency {
                 Text("A frequency or end change applies to this and all following occurrences.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -347,9 +353,12 @@ struct EditOccurrenceSheet: View {
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Save…") { errorMessage = nil; choosingScope = true }
-                    .disabled(change == nil)
-                    .keyboardShortcut(.defaultAction)
+                Button(fixedScope == nil ? "Save…" : "Save") {
+                    errorMessage = nil
+                    if let fixedScope { save(fixedScope) } else { choosingScope = true }
+                }
+                .disabled(change == nil)
+                .keyboardShortcut(.defaultAction)
             }
         }
         .onChange(of: amountText) { _, _ in errorMessage = nil }

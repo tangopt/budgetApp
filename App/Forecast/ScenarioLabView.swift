@@ -3,9 +3,13 @@ import SwiftUI
 import BudgetCore
 
 /// The Forecast screen: the Compare / Differences / Grid tabs and the horizon on top; each
-/// tab shows its own scenario chips (`ScenarioChips`) under them.
+/// tab shows its own scenario chips (`ScenarioChips`) under them. The chips' sheets and
+/// dialogs, and the refresh / apply / undo notices, are presented here.
 struct ScenarioLabView: View {
     @ObservedObject var viewModel: ScenarioLabViewModel
+    /// The chip rows' name sheet and delete confirmation, presented here so that switching
+    /// tabs (a created scenario opens the Grid) never removes their presenter.
+    @State private var chipPrompts = ScenarioChipPrompts()
 
     enum Tab: String, CaseIterable, Identifiable {
         case compare = "Compare"
@@ -40,13 +44,14 @@ struct ScenarioLabView: View {
                 .font(.callout)
             }
             switch viewModel.tab {
-            case .compare: CompareTab(viewModel: viewModel)
-            case .differences: DifferencesTab(viewModel: viewModel)
-            case .grid: ScenarioGridTab(viewModel: viewModel)
+            case .compare: CompareTab(viewModel: viewModel, chipPrompts: $chipPrompts)
+            case .differences: DifferencesTab(viewModel: viewModel, chipPrompts: $chipPrompts)
+            case .grid: ScenarioGridTab(viewModel: viewModel, chipPrompts: $chipPrompts)
             }
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .scenarioChipPrompts($chipPrompts, viewModel: viewModel)
         .alert(viewModel.notice?.title ?? "", isPresented: Binding(
             get: { viewModel.notice != nil },
             set: { if !$0 { viewModel.notice = nil } }

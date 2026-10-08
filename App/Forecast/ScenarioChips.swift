@@ -9,6 +9,10 @@ import BudgetCore
 ///
 /// `.multi` chips are toggles with the Budget always on (Compare, Differences); `.single`
 /// selects one plan, nil being the Budget (Grid).
+///
+/// The name sheet and delete confirmation the chips open are presented by `ScenarioLabView`
+/// (`scenarioChipPrompts`), not by the chip row: creating or duplicating switches to the
+/// Grid tab, which removes the Compare / Differences chip row while its sheet is dismissing.
 struct ScenarioChips: View {
     enum Mode {
         case multi(selected: Binding<Set<Int64>>)
@@ -17,22 +21,7 @@ struct ScenarioChips: View {
 
     @ObservedObject var viewModel: ScenarioLabViewModel
     let mode: Mode
-    @State private var nameSheet: NameSheet?
-    @State private var deleting: Scenario?
-
-    private enum NameSheet: Identifiable {
-        case new
-        case rename(Scenario)
-        case duplicate(Scenario)
-
-        var id: String {
-            switch self {
-            case .new: return "new"
-            case .rename(let scenario): return "rename-\(scenario.id ?? -1)"
-            case .duplicate(let scenario): return "duplicate-\(scenario.id ?? -1)"
-            }
-        }
-    }
+    @Binding var prompts: ScenarioChipPrompts
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -52,31 +41,6 @@ struct ScenarioChips: View {
             .padding(.horizontal, 1)
         }
         .scrollIndicators(.automatic)
-        .sheet(item: $nameSheet) { sheet in
-            switch sheet {
-            case .new:
-                ScenarioNameSheet(title: "New scenario", message: "Starts as a copy of today's budget.", actionLabel: "Create", initialName: "") { name in
-                    viewModel.createScenario(name: name)
-                }
-            case .rename(let scenario):
-                ScenarioNameSheet(title: "Rename scenario", message: nil, actionLabel: "Rename", initialName: scenario.name) { name in
-                    viewModel.rename(scenario, to: name)
-                }
-            case .duplicate(let scenario):
-                ScenarioNameSheet(title: "Duplicate “\(scenario.name)”", message: "Copies the scenario with all its changes.", actionLabel: "Duplicate", initialName: "\(scenario.name) copy") { name in
-                    viewModel.duplicate(scenario, name: name)
-                }
-            }
-        }
-        .confirmationDialog("Delete “\(deleting?.name ?? "")”?", isPresented: Binding(
-            get: { deleting != nil },
-            set: { if !$0 { deleting = nil } }
-        ), titleVisibility: .visible, presenting: deleting) { scenario in
-            Button("Delete scenario", role: .destructive) { viewModel.delete(scenario); deleting = nil }
-            Button("Cancel", role: .cancel) { deleting = nil }
-        } message: { _ in
-            Text("Its changes are deleted. The budget, and anything already applied to it, stays as it is.")
-        }
     }
 
     // MARK: Chips
@@ -102,16 +66,16 @@ struct ScenarioChips: View {
         }
         .help(Self.copiedLabel(scenario))
         .contextMenu {
-            Button("Rename…") { nameSheet = .rename(scenario) }
-            Button("Duplicate…") { nameSheet = .duplicate(scenario) }
+            Button("Rename…") { prompts.nameSheet = .rename(scenario) }
+            Button("Duplicate…") { prompts.nameSheet = .duplicate(scenario) }
             Button("Refresh from budget") { viewModel.refresh(scenario) }
             Divider()
-            Button("Delete…", role: .destructive) { deleting = scenario }
+            Button("Delete…", role: .destructive) { prompts.deleting = scenario }
         }
     }
 
     private var newChip: some View {
-        Button { nameSheet = .new } label: {
+        Button { prompts.nameSheet = .new } label: {
             Label("New scenario", systemImage: "plus")
                 .font(.callout)
                 .padding(.horizontal, 10).padding(.vertical, 5)
@@ -152,6 +116,58 @@ struct ScenarioChips: View {
     static func copiedLabel(_ scenario: Scenario) -> String {
         if let refreshed = scenario.refreshedAt { return "Refreshed \(dayFormatter.string(from: refreshed))" }
         return "Copied \(dayFormatter.string(from: scenario.createdAt))"
+    }
+}
+
+/// What a chip row asked to open: a name sheet (new, rename, duplicate) or the delete
+/// confirmation. Owned by `ScenarioLabView`, shared by every tab's chip row.
+struct ScenarioChipPrompts {
+    enum NameSheet: Identifiable {
+        case new
+        case rename(Scenario)
+        case duplicate(Scenario)
+
+        var id: String {
+            switch self {
+            case .new: return "new"
+            case .rename(let scenario): return "rename-\(scenario.id ?? -1)"
+            case .duplicate(let scenario): return "duplicate-\(scenario.id ?? -1)"
+            }
+        }
+    }
+
+    var nameSheet: NameSheet?
+    var deleting: Scenario?
+}
+
+extension View {
+    /// Presents the chip rows' name sheet and delete confirmation.
+    func scenarioChipPrompts(_ prompts: Binding<ScenarioChipPrompts>, viewModel: ScenarioLabViewModel) -> some View {
+        sheet(item: prompts.nameSheet) { sheet in
+            switch sheet {
+            case .new:
+                ScenarioNameSheet(title: "New scenario", message: "Starts as a copy of today's budget.", actionLabel: "Create", initialName: "") { name in
+                    viewModel.createScenario(name: name)
+                }
+            case .rename(let scenario):
+                ScenarioNameSheet(title: "Rename scenario", message: nil, actionLabel: "Rename", initialName: scenario.name) { name in
+                    viewModel.rename(scenario, to: name)
+                }
+            case .duplicate(let scenario):
+                ScenarioNameSheet(title: "Duplicate “\(scenario.name)”", message: "Copies the scenario with all its changes.", actionLabel: "Duplicate", initialName: "\(scenario.name) copy") { name in
+                    viewModel.duplicate(scenario, name: name)
+                }
+            }
+        }
+        .confirmationDialog("Delete “\(prompts.wrappedValue.deleting?.name ?? "")”?", isPresented: Binding(
+            get: { prompts.wrappedValue.deleting != nil },
+            set: { if !$0 { prompts.wrappedValue.deleting = nil } }
+        ), titleVisibility: .visible, presenting: prompts.wrappedValue.deleting) { scenario in
+            Button("Delete scenario", role: .destructive) { viewModel.delete(scenario); prompts.wrappedValue.deleting = nil }
+            Button("Cancel", role: .cancel) { prompts.wrappedValue.deleting = nil }
+        } message: { _ in
+            Text("Its changes are deleted. The budget, and anything already applied to it, stays as it is.")
+        }
     }
 }
 
