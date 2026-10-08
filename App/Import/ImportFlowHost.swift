@@ -53,7 +53,7 @@ struct ImportFlowHost<Content: View>: View {
             editCSVMapping: hasCSVProfile ? { editCSVMapping() } : nil
         ))
             .task(id: account.id) { refreshHasCSVProfile() }
-            .onChange(of: account.id) { lastCSVFileURL = nil }
+            .onChange(of: account.id) { lastCSVFileURL = nil; editMappingAfterPick = false }
             .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.commaSeparatedText]) { result in
                 switch result {
                 case .success(let url): handlePickedFile(url)
@@ -144,7 +144,13 @@ struct ImportFlowHost<Content: View>: View {
             showFilePicker = true
             return
         }
-        guard let text = readCSV(at: url) else { return }
+        guard let text = readCSV(at: url) else {
+            // The remembered file is gone or unreadable: forget it and ask for a file instead.
+            lastCSVFileURL = nil
+            editMappingAfterPick = true
+            showFilePicker = true
+            return
+        }
         do {
             let existing = try profileStore.find(accountId: accountId, format: .csv)
             pendingCSVMapping = CSVMappingRequest(fileURL: url, csvText: text, existingProfile: existing, stageAfterSave: false)

@@ -85,16 +85,17 @@ struct ScenarioGridTab: View {
     private var isReadOnly: Bool { viewModel.editScope == nil }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             ScenarioChips(viewModel: viewModel, mode: .single(selected: $viewModel.gridSelection), prompts: $chipPrompts)
             headerBar
-                .padding(.vertical, 4)  // with the stack's 8pt: 12pt above and below the bar
+                .padding(.bottom, 12)  // the chips' own 16pt bottom padding sits above the bar
             Picker("Year", selection: $viewModel.gridYear) {
                 ForEach(viewModel.gridYears, id: \.self) { year in Text(String(year)).tag(year) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
+            .padding(.bottom, 8)
             grid
         }
         .sheet(item: $drillDown) { target in
