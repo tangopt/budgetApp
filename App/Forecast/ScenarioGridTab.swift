@@ -3,9 +3,11 @@ import SwiftUI
 import BudgetCore
 import struct BudgetCore.Category
 
-/// The selected plan month by month (categories × the twelve months of a year within the
+/// The Grid chips (one plan: the Budget or a scenario), a header bar in that plan's colour,
+/// then the plan month by month (categories × the twelve months of a year within the
 /// horizon), valued as the Budget grid values it (`ScenarioComparison.gridCells`). For a
-/// scenario, cells that differ from the Budget are highlighted, a month cell opens its
+/// scenario, cells that differ from the Budget are shaded in a light tint of the scenario's
+/// colour, a month cell opens its
 /// planned occurrences with Edit… / Remove…, and section headers add items — the Budget
 /// grid's own sheets, scoped to the scenario. The Budget shows read-only.
 ///
@@ -72,33 +74,21 @@ struct ScenarioGridTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Picker("Year", selection: $viewModel.gridYear) {
-                    ForEach(viewModel.gridYears, id: \.self) { year in Text(String(year)).tag(year) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                Spacer()
-                if let scenario = viewModel.selectedScenario {
-                    Text("“\(scenario.name)”").font(.headline)
-                    HStack(spacing: 4) {
-                        RoundedRectangle(cornerRadius: 3).fill(Self.differsFill).frame(width: 14, height: 10)
-                        Text("differs from the budget")
-                    }
-                    .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text("The budget, read-only. Edit it in the Budget grid.")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
+            ScenarioChips(viewModel: viewModel, mode: .single(selected: $viewModel.gridSelection))
+            headerBar
+            Picker("Year", selection: $viewModel.gridYear) {
+                ForEach(viewModel.gridYears, id: \.self) { year in Text(String(year)).tag(year) }
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
             grid
         }
         .sheet(item: $drillDown) { target in
             ScenarioDrillDownSheet(viewModel: viewModel, category: target.category, year: target.year, month: target.month)
         }
         .sheet(isPresented: $addingAllowance, onDismiss: { allowanceError = nil }) {
-            ReserveFormView(mode: .chooseReserve(reserves: viewModel.reserves, scenarioName: viewModel.selectedScenario?.name ?? ""),
+            ReserveFormView(mode: .chooseReserve(reserves: viewModel.reserves, scenarioName: viewModel.gridScenario?.name ?? ""),
                             errorMessage: allowanceError, onEdit: { if allowanceError != nil { allowanceError = nil } }) { target, amount, frequency, interval, start, end in
                 switch viewModel.addReserveAllowance(target, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end) {
                 case .saved, .savedButReloadFailed: addingAllowance = false
@@ -111,6 +101,30 @@ struct ScenarioGridTab: View {
                 viewModel.addPlannedItem(category, type: target.type, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)
             }
         }
+    }
+
+    /// "Editing <name>" (with the differs legend) or "Budget — read-only", in the plan's colour.
+    private var headerBar: some View {
+        let color = planColor
+        return HStack(spacing: 8) {
+            Circle().fill(color).frame(width: 10, height: 10)
+            if let scenario = viewModel.gridScenario {
+                Text("Editing \(Text(scenario.name).bold())")
+                Spacer()
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 3).fill(differsFill).frame(width: 14, height: 10)
+                        .overlay(RoundedRectangle(cornerRadius: 3).stroke(color.opacity(0.5), lineWidth: 0.5))
+                    Text("differs from the budget")
+                }
+                .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("\(Text("Budget").bold()) — read-only, edit it in the Budget grid")
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.14)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(color.opacity(0.6), lineWidth: 1))
     }
 
     private var grid: some View {
@@ -383,7 +397,11 @@ struct ScenarioGridTab: View {
 
     // MARK: Cells
 
-    private static let differsFill = Color.accentColor.opacity(0.22)
+    /// The Grid tab's plan's `PlanPalette` colour (the Budget's blue when it is selected).
+    private var planColor: Color { PlanPalette.color(viewModel.colorIndex(of: viewModel.gridSelection)) }
+
+    /// A differing cell's shading: a light tint of the scenario's colour.
+    private var differsFill: Color { planColor.opacity(0.22) }
 
     /// Members' cells combined (`PlanStatus.combine`), with the Budget's values summed.
     private func cell(_ categories: [Category], month: Int) -> Cell {
@@ -398,14 +416,14 @@ struct ScenarioGridTab: View {
         return (combined.value, combined.pending, combined.state, months.reduce(0) { $0 + $1.budgetValue })
     }
 
-    /// A plan cell; for a scenario, highlighted with the Budget's value in its help when it differs.
+    /// A plan cell; for a scenario, shaded with the Budget's value in its help when it differs.
     private func cellView(_ cell: Cell, isYearTotal: Bool = false, font: Font = PlanCellView.bodyFont, height: CGFloat = 28) -> some View {
         let differs = !isReadOnly && cell.value != cell.budgetValue
         return PlanCellView(value: cell.value, pending: cell.pending, state: cell.state, isYearTotal: isYearTotal, font: font,
                             extraHelp: differs ? "Budget: \(Money.format(cell.budgetValue, currency: .gbp))" : nil)
             // The fill covers the whole cell (full width and row height), not just the text.
             .frame(height: height)
-            .background(differs ? Self.differsFill : Color.clear)
+            .background(differs ? differsFill : Color.clear)
     }
 
     private func openDrillDown(_ category: Category, year: Int, month: Int) {
@@ -434,7 +452,7 @@ private struct ScenarioDrillDownSheet: View {
                 Button("Close") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
-            if let scenario = viewModel.selectedScenario {
+            if let scenario = viewModel.gridScenario {
                 Text("In “\(scenario.name)”. Changes stay in the scenario until you apply them.")
                     .font(.caption).foregroundStyle(.secondary)
             }

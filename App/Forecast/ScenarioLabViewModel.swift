@@ -9,8 +9,11 @@ import GRDB
 /// "Forecast screen"): the budget and its scenarios, compared over a horizon, with a
 /// scenario's differences applied to the budget (and undone) and its plan edited in a grid.
 ///
-/// Everything shown is derived here when its inputs change (a load, the horizon, the compared
-/// set, the selection, the grid year), never in a view's `body`: the grid re-renders on its
+/// Each tab keeps its own scenario choice (spec 2026-10-08-scenario-lab-tabs-design.md,
+/// "Forecast screen layout"): `compareSelection`, `differencesSelection` and `gridSelection`.
+///
+/// Everything shown is derived here when its inputs change (a load, the horizon, a tab's
+/// selection, the grid year), never in a view's `body`: the grid re-renders on its
 /// own state changes only, and its horizontal scroll is tracked outside it. The comparison
 /// (chart lines and summary) is computed off the main actor from value-type inputs; a newer
 /// computation cancels the one in flight.
@@ -47,16 +50,27 @@ final class ScenarioLabViewModel: ObservableObject {
     /// The lab's open tab; a created or duplicated scenario switches it to the Grid.
     @Published var tab: ScenarioLabView.Tab = .compare
 
-    /// The plan the Differences and Grid tabs show: nil = the Budget.
-    @Published var selectedScenarioId: Int64? {
+    /// Scenarios ticked on the Compare tab, drawn next to the Budget (always drawn).
+    @Published var compareSelection: Set<Int64> = [] {
         didSet {
-            guard oldValue != selectedScenarioId else { return }
-            tickedDifferenceIds = []
-            recomputeSelection()
+            guard oldValue != compareSelection, !isReading else { return }
+            recomputeComparison()
         }
     }
-    /// Scenarios drawn on the Compare tab next to the Budget.
-    @Published private(set) var comparedIds: Set<Int64> = []
+    /// Scenarios ticked on the Differences tab (the Budget is always its first column).
+    @Published var differencesSelection: Set<Int64> = [] {
+        didSet {
+            guard oldValue != differencesSelection, !isReading else { return }
+            recomputeDifferences()
+        }
+    }
+    /// The plan the Grid tab shows: nil = the Budget (read-only).
+    @Published var gridSelection: Int64? {
+        didSet {
+            guard oldValue != gridSelection, !isReading else { return }
+            recomputeGrid()
+        }
+    }
     @Published var horizon: ComparisonHorizon = .default {
         didSet {
             guard oldValue != horizon else { return }
@@ -89,8 +103,11 @@ final class ScenarioLabViewModel: ObservableObject {
     private var groups: [ForecastGroup] = []
     private var budgetPlan = PlanInput(entries: [], exceptions: [], groups: [])
     private var scenarioPlans: [Int64: PlanInput] = [:]
-    /// The first load compares every scenario; later loads keep the user's choice.
+    /// The first load ticks every scenario in Compare and Differences; later loads keep the
+    /// user's choice.
     private var hasLoaded = false
+    /// True while `read()` prunes the selections: their recomputations run once after it.
+    private var isReading = false
 
     // MARK: Derived
 
@@ -101,13 +118,15 @@ final class ScenarioLabViewModel: ObservableObject {
     /// True while the comparison is being computed (the previous results stay shown).
     @Published private(set) var isComputingComparison = false
     private var comparisonTask: Task<Void, Never>?
-    /// The selected scenario's differences (empty for the Budget).
+    /// `differencesScenario`'s differences (empty when no scenario is ticked).
     @Published private(set) var differences: [ScenarioDifference] = []
     @Published private(set) var canUndo = false
-    /// The selected scenario's differences applied by an un-undone apply: shown as
+    /// `differencesScenario`'s differences applied by an un-undone apply: shown as
     /// "Applied", not tickable.
     @Published private(set) var appliedDifferenceIds: Set<Int64> = []
-    /// The selected plan's cells for `gridYear`, by category id then month.
+    /// The scenario whose differences are loaded, so a change of it clears the ticks.
+    private var differencesScenarioId: Int64?
+    /// The Grid tab's plan's cells for `gridYear`, by category id then month.
     @Published private(set) var gridCells: [Int64: [Int: ScenarioGridCell]] = [:]
 
     private let dbQueue: DatabaseQueue
@@ -122,17 +141,29 @@ final class ScenarioLabViewModel: ObservableObject {
         comparisonTask?.cancel()
     }
 
-    var selectedScenario: Scenario? { scenarios.first { $0.id == selectedScenarioId } }
+    /// The Grid tab's scenario (nil while the Budget is selected).
+    var gridScenario: Scenario? { scenarios.first { $0.id == gridSelection } }
+
+    /// The Differences tab's scenario for now: the first ticked, in list order.
+    var differencesScenario: Scenario? {
+        scenarios.first { $0.id.map(differencesSelection.contains) ?? false }
+    }
+
+    /// A plan's `PlanPalette` index: 0 for the Budget (nil), a scenario's position + 1.
+    func colorIndex(of scenarioId: Int64?) -> Int {
+        guard let scenarioId, let index = scenarios.firstIndex(where: { $0.id == scenarioId }) else { return 0 }
+        return index + 1
+    }
 
     /// The Grid tab's years: today's to the horizon's.
     var gridYears: [Int] { horizon.years(today: today) }
 
     var reserves: [Category] { categories.filter(\.isReserved).sorted { $0.name < $1.name } }
 
-    /// The scope edits go to: the selected scenario (nil while the Budget is selected, which
-    /// the lab shows read-only).
+    /// The scope the Grid tab's edits go to: its scenario (nil while the Budget is selected,
+    /// which the lab shows read-only).
     var editScope: PlanScope? {
-        guard let scenario = selectedScenario, let id = scenario.id else { return nil }
+        guard let scenario = gridScenario, let id = scenario.id else { return nil }
         return .scenario(id: id, name: scenario.name)
     }
 
@@ -146,7 +177,8 @@ final class ScenarioLabViewModel: ObservableObject {
             return
         }
         recomputeComparison()
-        recomputeSelection()
+        recomputeDifferences()
+        recomputeGrid()
     }
 
     /// Everything the lab reads, in one database read.
@@ -195,14 +227,19 @@ final class ScenarioLabViewModel: ObservableObject {
         today = Date()
         // As the Dashboard builds it: today never earlier than the latest transaction.
         payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: loaded.manualCloses, today: today)
+        // A deleted scenario leaves every tab's selection; the callers recompute after.
         let ids = Set(scenarios.compactMap(\.id))
+        isReading = true
+        defer { isReading = false }
         if !hasLoaded {
-            comparedIds = ids
+            compareSelection = ids
+            differencesSelection = ids
             hasLoaded = true
         } else {
-            comparedIds.formIntersection(ids)
+            compareSelection.formIntersection(ids)
+            differencesSelection.formIntersection(ids)
         }
-        if let selected = selectedScenarioId, !ids.contains(selected) { selectedScenarioId = nil }
+        if let selected = gridSelection, !ids.contains(selected) { gridSelection = nil }
         clampGridYear()
     }
 
@@ -217,9 +254,9 @@ final class ScenarioLabViewModel: ObservableObject {
                               rate: rate, payCalendar: payCalendar, horizonYear: end.year, horizonMonth: end.month)
     }
 
-    /// The selected plan's entries and exceptions (the Budget's when none is selected).
-    private var selectedPlan: PlanInput {
-        selectedScenarioId.flatMap { scenarioPlans[$0] } ?? budgetPlan
+    /// The Grid tab's plan's entries and exceptions (the Budget's when none is selected).
+    private var gridPlan: PlanInput {
+        gridSelection.flatMap { scenarioPlans[$0] } ?? budgetPlan
     }
 
     // MARK: Derivations
@@ -245,7 +282,7 @@ final class ScenarioLabViewModel: ObservableObject {
         let data = comparisonData
         let budget = budgetPlan
         let compared: [ComparedPlan] = scenarios.enumerated().compactMap { index, scenario in
-            guard let id = scenario.id, comparedIds.contains(id), let plan = scenarioPlans[id] else { return nil }
+            guard let id = scenario.id, compareSelection.contains(id), let plan = scenarioPlans[id] else { return nil }
             return ComparedPlan(id: id, name: scenario.name, colorIndex: index + 1, plan: plan)
         }
         isComputingComparison = true
@@ -279,8 +316,14 @@ final class ScenarioLabViewModel: ObservableObject {
         return Task.isCancelled ? nil : ComparisonResult(actualLine: budgetSeries.actual, lines: lines, summaries: rows)
     }
 
-    private func recomputeSelection() {
-        if let id = selectedScenarioId {
+    /// Loads `differencesScenario`'s differences; the ticks are cleared when it changed.
+    private func recomputeDifferences() {
+        let scenarioId = differencesScenario?.id
+        if scenarioId != differencesScenarioId {
+            tickedDifferenceIds = []
+            differencesScenarioId = scenarioId
+        }
+        if let id = scenarioId {
             do {
                 (differences, canUndo, appliedDifferenceIds) = try dbQueue.read { db in
                     (try Scenarios.differences(db: db, scenarioId: id), try ScenarioApply.canUndo(db: db, scenarioId: id),
@@ -298,28 +341,15 @@ final class ScenarioLabViewModel: ObservableObject {
             appliedDifferenceIds = []
         }
         tickedDifferenceIds.formIntersection(tickableDifferences.map(\.id))
-        recomputeGrid()
     }
 
     private func recomputeGrid() {
-        gridCells = ScenarioComparison.gridCells(comparisonData, scenario: selectedPlan, budget: budgetPlan, year: gridYear)
-    }
-
-    // MARK: Comparing
-
-    func isCompared(_ scenario: Scenario) -> Bool {
-        scenario.id.map(comparedIds.contains) ?? false
-    }
-
-    func setCompared(_ scenario: Scenario, _ compared: Bool) {
-        guard let id = scenario.id else { return }
-        if compared { comparedIds.insert(id) } else { comparedIds.remove(id) }
-        recomputeComparison()
+        gridCells = ScenarioComparison.gridCells(comparisonData, scenario: gridPlan, budget: budgetPlan, year: gridYear)
     }
 
     // MARK: Scenario operations
 
-    /// A new scenario copying the budget, then selected and compared.
+    /// A new scenario copying the budget, then ticked in Compare and Differences and opened in the Grid.
     func createScenario(name: String) -> SaveOutcome {
         var created: Scenario?
         let outcome = perform { db in created = try Scenarios.create(db: db, name: name) }
@@ -384,7 +414,7 @@ final class ScenarioLabViewModel: ObservableObject {
     /// Applies the ticked differences to the budget from the current pay month, then shows
     /// what wasn't applied (or "Nothing to apply").
     func applyTicked() {
-        guard let id = selectedScenarioId else { return }
+        guard let id = differencesScenario?.id else { return }
         // Reload only what the apply needs, as it is now: the pay calendar (so the boundary)
         // and the scenario's differences and applied ids. The write's own reload then
         // refreshes everything, the comparison recomputing in the background.
@@ -424,7 +454,7 @@ final class ScenarioLabViewModel: ObservableObject {
     }
 
     func undoLastApply() {
-        guard let id = selectedScenarioId else { return }
+        guard let id = differencesScenario?.id else { return }
         var report = UndoReport()
         if case .failed(let message) = perform({ db in report = try ScenarioApply.undoLast(db: db, scenarioId: id) }) {
             errorMessage = message
@@ -438,16 +468,16 @@ final class ScenarioLabViewModel: ObservableObject {
 
     // MARK: Editing a scenario's plan
 
-    /// The selected scenario's effective plan (`ForecastCalculator.planEntries`).
+    /// The Grid tab's scenario's effective plan (`ForecastCalculator.planEntries`).
     var scenarioPlanEntries: [ForecastEntry] {
-        guard let id = selectedScenarioId, let plan = scenarioPlans[id] else { return [] }
+        guard let id = gridSelection, let plan = scenarioPlans[id] else { return [] }
         return ForecastCalculator.planEntries(entries: plan.entries, groups: plan.groups)
     }
 
-    /// The selected scenario's occurrences under `category` in the calendar month (empty for
+    /// The Grid tab's scenario's occurrences under `category` in the calendar month (empty for
     /// the Budget, which the lab doesn't edit). Only closed months lock a scenario occurrence.
     func occurrences(category: Category, year: Int, month: Int) -> [PlannedRow] {
-        guard let categoryId = category.id, let id = selectedScenarioId, let plan = scenarioPlans[id] else { return [] }
+        guard let categoryId = category.id, let id = gridSelection, let plan = scenarioPlans[id] else { return [] }
         return PlannedRow.rows(categoryId: categoryId, year: year, month: month, plan: scenarioPlanEntries, exceptions: plan.exceptions) { entry, occurrence in
             PlannedItemEditing.isLocked(entry: entry, occurrence: occurrence, calendar: payCalendar, monthTotals: [:],
                                         entries: budgetPlan.entries, groups: groups, exceptions: budgetPlan.exceptions, categories: categories)
@@ -468,9 +498,9 @@ final class ScenarioLabViewModel: ObservableObject {
             })
     }
 
-    /// A new item in the selected scenario (`PlannedItems.add(…, scenarioId:)`).
+    /// A new item in the Grid tab's scenario (`PlannedItems.add(…, scenarioId:)`).
     func addPlannedItem(_ category: PlannedItemCategory, type: CategoryType, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> SaveOutcome {
-        guard let scenarioId = selectedScenarioId else { return .failed("Select a scenario to add items to it.") }
+        guard let scenarioId = gridSelection else { return .failed("Select a scenario to add items to it.") }
         return perform { db in
             switch category {
             case .existing(let id):
@@ -481,10 +511,10 @@ final class ScenarioLabViewModel: ObservableObject {
         }
     }
 
-    /// A reserve allowance in the selected scenario (`ReservedCategories.addAllowance`); a new
+    /// A reserve allowance in the Grid tab's scenario (`ReservedCategories.addAllowance`); a new
     /// reserve is a global category, created in the same write.
     func addReserveAllowance(_ target: ReserveTarget, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> SaveOutcome {
-        guard let scenarioId = selectedScenarioId else { return .failed("Select a scenario to add allowances to it.") }
+        guard let scenarioId = gridSelection else { return .failed("Select a scenario to add allowances to it.") }
         return perform { db in
             let reserveId: Int64
             switch target {
@@ -500,12 +530,13 @@ final class ScenarioLabViewModel: ObservableObject {
 
     // MARK: Helpers
 
-    /// Selects and compares a just-created scenario and opens its grid (after the reload that fetched it).
+    /// Ticks a just-created scenario in Compare and Differences and opens it in the Grid
+    /// (after the reload that fetched it); each selection's `didSet` recomputes its tab.
     private func show(_ id: Int64) {
-        comparedIds.insert(id)
-        selectedScenarioId = id
+        compareSelection.insert(id)
+        differencesSelection.insert(id)
+        gridSelection = id
         tab = .grid
-        recomputeComparison()
     }
 
     /// Write first, then reload. A failed write returns `.failed` with a message for the
@@ -525,7 +556,8 @@ final class ScenarioLabViewModel: ObservableObject {
             return .savedButReloadFailed
         }
         recomputeComparison()
-        recomputeSelection()
+        recomputeDifferences()
+        recomputeGrid()
         return .saved
     }
 }

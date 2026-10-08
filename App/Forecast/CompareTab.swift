@@ -3,11 +3,19 @@ import SwiftUI
 import Charts
 import BudgetCore
 
-/// Net worth lines for the Budget and each compared scenario, then the summary table.
+/// The Compare chips (Budget always on, scenarios toggled), then net worth lines for the
+/// Budget and each ticked scenario and the summary table.
 struct CompareTab: View {
     @ObservedObject var viewModel: ScenarioLabViewModel
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ScenarioChips(viewModel: viewModel, mode: .multi(selected: $viewModel.compareSelection))
+            content
+        }
+    }
+
+    private var content: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 8) {

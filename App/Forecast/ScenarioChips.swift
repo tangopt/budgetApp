@@ -1,12 +1,22 @@
-// App/Forecast/ScenarioListPanel.swift
+// App/Forecast/ScenarioChips.swift
 import SwiftUI
 import BudgetCore
 
-/// The lab's left panel: "Budget" first, then the scenarios, each with a "compare"
-/// checkbox, a selection highlight and a menu (Rename…, Duplicate…, Refresh from budget,
-/// Delete…); "New scenario…" copies the budget.
-struct ScenarioListPanel: View {
+/// A Forecast tab's plan chips (spec 2026-10-08-scenario-lab-tabs-design.md, "Forecast screen
+/// layout"): "Budget" first, then each scenario in its `PlanPalette` colour, then
+/// "+ New scenario" (copies the budget). A scenario chip's context menu renames, duplicates,
+/// refreshes from the budget or deletes it.
+///
+/// `.multi` chips are toggles with the Budget always on (Compare, Differences); `.single`
+/// selects one plan, nil being the Budget (Grid).
+struct ScenarioChips: View {
+    enum Mode {
+        case multi(selected: Binding<Set<Int64>>)
+        case single(selected: Binding<Int64?>)
+    }
+
     @ObservedObject var viewModel: ScenarioLabViewModel
+    let mode: Mode
     @State private var nameSheet: NameSheet?
     @State private var deleting: Scenario?
 
@@ -25,27 +35,23 @@ struct ScenarioListPanel: View {
     }
 
     var body: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("PLANS")
-                    .font(.caption).bold().tracking(0.6)
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 4)
-                budgetRow
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                budgetChip
                 ForEach(Array(viewModel.scenarios.enumerated()), id: \.element.id) { index, scenario in
-                    scenarioRow(scenario, colorIndex: index + 1)
+                    scenarioChip(scenario, colorIndex: index + 1)
                 }
+                newChip
                 if viewModel.scenarios.isEmpty {
                     Text("A scenario starts as a copy of the budget. Change it freely, compare, then apply what you like.")
                         .font(.caption).foregroundStyle(.secondary)
-                        .padding(.vertical, 6)
+                        .fixedSize()
                 }
-                Button("+ New scenario…") { nameSheet = .new }
-                    .buttonStyle(.borderless)
-                    .padding(.top, 6)
             }
-            .padding()
+            .padding(.vertical, 2)
+            .padding(.horizontal, 1)
         }
+        .scrollIndicators(.automatic)
         .sheet(item: $nameSheet) { sheet in
             switch sheet {
             case .new:
@@ -73,50 +79,66 @@ struct ScenarioListPanel: View {
         }
     }
 
-    private var budgetRow: some View {
-        HStack(spacing: 8) {
-            // The Budget is always on the chart: a fixed, checked box.
-            Toggle("", isOn: .constant(true))
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-                .disabled(true)
-                .help("The budget is always compared")
-            Circle().fill(PlanPalette.color(0)).frame(width: 8, height: 8)
-            Text("Budget").fontWeight(.medium)
-            Spacer()
+    // MARK: Chips
+
+    @ViewBuilder
+    private var budgetChip: some View {
+        switch mode {
+        case .multi:
+            // Always on: Δ and the differences are measured against it.
+            PlanChip(name: "Budget", color: PlanPalette.color(0), isSelected: true, isEmphasised: true, action: nil)
+                .help("The budget is always shown")
+        case .single(let selected):
+            PlanChip(name: "Budget", color: PlanPalette.color(0), isSelected: selected.wrappedValue == nil, isEmphasised: true) {
+                selected.wrappedValue = nil
+            }
+            .help("The budget, read-only")
         }
-        .modifier(SelectableRow(isSelected: viewModel.selectedScenarioId == nil) { viewModel.selectedScenarioId = nil })
     }
 
-    private func scenarioRow(_ scenario: Scenario, colorIndex: Int) -> some View {
-        HStack(spacing: 8) {
-            Toggle("", isOn: Binding(
-                get: { viewModel.isCompared(scenario) },
-                set: { viewModel.setCompared(scenario, $0) }
-            ))
-            .toggleStyle(.checkbox)
-            .labelsHidden()
-            .help("Compare")
-            Circle().fill(PlanPalette.color(colorIndex)).frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(scenario.name).lineLimit(1)
-                Text(Self.copiedLabel(scenario)).font(.caption2).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Menu {
-                Button("Rename…") { nameSheet = .rename(scenario) }
-                Button("Duplicate…") { nameSheet = .duplicate(scenario) }
-                Button("Refresh from budget") { viewModel.refresh(scenario) }
-                Divider()
-                Button("Delete…", role: .destructive) { deleting = scenario }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
+    private func scenarioChip(_ scenario: Scenario, colorIndex: Int) -> some View {
+        PlanChip(name: scenario.name, color: PlanPalette.color(colorIndex), isSelected: isSelected(scenario), isEmphasised: false) {
+            select(scenario)
         }
-        .modifier(SelectableRow(isSelected: viewModel.selectedScenarioId == scenario.id) { viewModel.selectedScenarioId = scenario.id })
+        .help(Self.copiedLabel(scenario))
+        .contextMenu {
+            Button("Rename…") { nameSheet = .rename(scenario) }
+            Button("Duplicate…") { nameSheet = .duplicate(scenario) }
+            Button("Refresh from budget") { viewModel.refresh(scenario) }
+            Divider()
+            Button("Delete…", role: .destructive) { deleting = scenario }
+        }
+    }
+
+    private var newChip: some View {
+        Button { nameSheet = .new } label: {
+            Label("New scenario", systemImage: "plus")
+                .font(.callout)
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .overlay(Capsule().stroke(Color.secondary.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("A new scenario, starting as a copy of today's budget")
+    }
+
+    private func isSelected(_ scenario: Scenario) -> Bool {
+        guard let id = scenario.id else { return false }
+        switch mode {
+        case .multi(let selected): return selected.wrappedValue.contains(id)
+        case .single(let selected): return selected.wrappedValue == id
+        }
+    }
+
+    private func select(_ scenario: Scenario) {
+        guard let id = scenario.id else { return }
+        switch mode {
+        case .multi(let selected):
+            if selected.wrappedValue.contains(id) { selected.wrappedValue.remove(id) } else { selected.wrappedValue.insert(id) }
+        case .single(let selected):
+            selected.wrappedValue = id
+        }
     }
 
     private static let dayFormatter: DateFormatter = {
@@ -133,18 +155,33 @@ struct ScenarioListPanel: View {
     }
 }
 
-/// A list row that selects on click, with the accent highlight when selected.
-private struct SelectableRow: ViewModifier {
+/// One chip: colour dot + name; selected = filled with a tint of the plan's colour and
+/// bordered in it. Without an action it is shown but not clickable.
+private struct PlanChip: View {
+    let name: String
+    let color: Color
     let isSelected: Bool
-    let select: () -> Void
+    let isEmphasised: Bool
+    let action: (() -> Void)?
 
-    func body(content: Content) -> some View {
-        content
-            .padding(.horizontal, 8).padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 8).fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 1.5))
-            .contentShape(Rectangle())
-            .onTapGesture(perform: select)
+    var body: some View {
+        let label = HStack(spacing: 6) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(name).lineLimit(1).fontWeight(isEmphasised ? .medium : .regular)
+        }
+        .font(.callout)
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(Capsule().fill(isSelected ? color.opacity(0.18) : Color.clear))
+        .overlay(Capsule().stroke(isSelected ? color : Color.secondary.opacity(0.35), lineWidth: isSelected ? 1.5 : 1))
+        .contentShape(Capsule())
+        if let action {
+            Button(action: action) { label }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+        } else {
+            label
+                .accessibilityAddTraits(.isSelected)
+        }
     }
 }
 

@@ -2,20 +2,21 @@
 import SwiftUI
 import BudgetCore
 
-/// The selected scenario's differences from the budget, each with a checkbox; "Apply to
-/// budget…" applies the ticked ones from the current pay month, "Undo last apply" undoes the
-/// scenario's latest apply.
+/// The Differences chips, then the first ticked scenario's differences from the budget, each
+/// with a checkbox; "Apply to budget…" applies the ticked ones from the current pay month,
+/// "Undo last apply" undoes the scenario's latest apply.
 struct DifferencesTab: View {
     @ObservedObject var viewModel: ScenarioLabViewModel
     @State private var confirmingApply = false
     @State private var confirmingUndo = false
 
     var body: some View {
-        if let scenario = viewModel.selectedScenario {
-            content(scenario)
-        } else {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Select a scenario on the left to see how it differs from the budget.")
+        VStack(alignment: .leading, spacing: 12) {
+            ScenarioChips(viewModel: viewModel, mode: .multi(selected: $viewModel.differencesSelection))
+            if let scenario = viewModel.differencesScenario {
+                content(scenario)
+            } else {
+                Text("Tick a scenario above to see how it differs from the budget.")
                     .foregroundStyle(.secondary)
                 Spacer()
             }
