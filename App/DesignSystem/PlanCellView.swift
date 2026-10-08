@@ -33,8 +33,8 @@ struct PlanCellView: View {
                 MoneyText(minorUnits: value, font: font, alignment: .trailing)
             }
         }
-        .frame(width: 120)
-        .padding(.horizontal, 8)
+        .frame(width: GridMetrics.cellWidth)
+        .padding(.horizontal, GridMetrics.cellPadding)
         .help(help)
     }
 

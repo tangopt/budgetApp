@@ -16,6 +16,7 @@ import struct BudgetCore.Category
 struct ScenarioGridTab: View {
     @ObservedObject var viewModel: ScenarioLabViewModel
     @State private var scrollOffset = HorizontalScrollOffset()
+    @State private var bodyWidth = GridBodyWidth()
     @State private var expandedGroupIds: Set<Int64> = []
     @State private var drillDown: DrillDownTarget?
     @State private var addTarget: AddTarget?
@@ -116,29 +117,33 @@ struct ScenarioGridTab: View {
         let year = viewModel.gridYear
         let rows = allRows
         return VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 0) {
-                Text("Category").font(.headline).frame(width: 220, alignment: .leading)
-                    .padding(.horizontal, 8).padding(.vertical, 6)
-                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
-                HorizontalOffsetFollower(offset: scrollOffset) {
-                    HStack(spacing: 0) {
-                        ForEach(1...12, id: \.self) { month in
-                            Text(PayMonthFormat.name(PayMonth(year: year, month: month)))
-                                .frame(width: 120, alignment: .trailing)
-                                .padding(.horizontal, 8).padding(.vertical, 6)
-                                .help(PayMonthFormat.range(viewModel.payCalendar.range(of: PayMonth(year: year, month: month))))
-                                .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+            // The header row takes the body's measured width (`GridBodyWidth`), so the pinned
+            // Year Total header sits exactly over its column whatever the scroller style.
+            BodyWidthFollower(width: bodyWidth) {
+                HStack(spacing: 0) {
+                    Text("Category").font(.headline).frame(width: 220, alignment: .leading)
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                    HorizontalOffsetFollower(offset: scrollOffset) {
+                        HStack(spacing: 0) {
+                            ForEach(1...12, id: \.self) { month in
+                                Text(PayMonthFormat.name(PayMonth(year: year, month: month)))
+                                    .frame(width: GridMetrics.cellWidth, alignment: .trailing)
+                                    .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
+                                    .help(PayMonthFormat.range(viewModel.payCalendar.range(of: PayMonth(year: year, month: month))))
+                                    .monthSeparator(month)
+                            }
                         }
                     }
+                    // As in `BudgetGridView`: no wider than the body's month scroller, so the
+                    // pinned Year Total sits right after December in a wide window.
+                    .frame(minWidth: 0, maxWidth: GridMetrics.monthsWidth, alignment: .leading)
+                    .clipped()
+                    Text("Year Total").bold()
+                        .frame(width: GridMetrics.cellWidth, alignment: .trailing)
+                        .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
+                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
                 }
-                // As in `BudgetGridView`: no wider than the body's month scroller, so the
-                // pinned Year Total sits right after December in a wide window.
-                .frame(minWidth: 0, maxWidth: Self.monthsWidth, alignment: .leading)
-                .clipped()
-                Text("Year Total").bold()
-                    .frame(width: 120, alignment: .trailing)
-                    .padding(.horizontal, 8).padding(.vertical, 6)
-                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .font(.headline)
@@ -160,17 +165,18 @@ struct ScenarioGridTab: View {
                         }
                     }
                     .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, x in scrollOffset.update(-x) }
-                    .frame(maxWidth: Self.monthsWidth)
+                    .frame(maxWidth: GridMetrics.monthsWidth)
 
                     // Frozen Year Total column, pinned on the right (fixed row heights, as
                     // the label and month cells, so the three columns line up).
                     VStack(spacing: 0) {
                         ForEach(rows) { row in yearTotalCell(row.kind, shaded: row.shaded) }
                     }
-                    .frame(width: Self.columnWidth)
+                    .frame(width: GridMetrics.columnWidth)
                     .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { bodyWidth.update($0) }
             }
         }
     }
@@ -316,7 +322,7 @@ struct ScenarioGridTab: View {
                         .frame(height: 28)
                         .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                        .monthSeparator(month)
                         .contentShape(Rectangle())
                         .onTapGesture { openDrillDown(category, year: year, month: month) }
                 }
@@ -325,7 +331,7 @@ struct ScenarioGridTab: View {
             combinedRow(categories, background: Color.orange.opacity(0.10))
         case .reservedHeader:
             HStack(spacing: 0) {
-                ForEach(1...12, id: \.self) { _ in Color.clear.frame(width: 120, height: 24).padding(.horizontal, 8) }
+                ForEach(1...12, id: \.self) { _ in Color.clear.frame(width: GridMetrics.columnWidth, height: 24) }
             }
             .background(Color.accentColor.opacity(0.08))
         case .reservedTotal:
@@ -339,7 +345,7 @@ struct ScenarioGridTab: View {
                 cellView(cell(categories, month: month)).bold()
                     .frame(height: 28)
                     .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                    .monthSeparator(month)
             }
         }
         .background(background)
@@ -361,7 +367,7 @@ struct ScenarioGridTab: View {
         case .groupHeader(_, let categories):
             combinedYearTotal(categories, background: Color.orange.opacity(0.10))
         case .reservedHeader:
-            Color.clear.frame(width: 120, height: 24).padding(.horizontal, 8)
+            Color.clear.frame(width: GridMetrics.columnWidth, height: 24)
                 .background(Color.accentColor.opacity(0.08))
         case .reservedTotal:
             combinedYearTotal(viewModel.reserves, background: Color.purple.opacity(0.08))
@@ -374,10 +380,6 @@ struct ScenarioGridTab: View {
             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
             .background(background)
     }
-
-    /// A cell's footprint (120pt frame + 8pt padding either side) and the twelve months' width.
-    private static let columnWidth: CGFloat = 136
-    private static let monthsWidth: CGFloat = 12 * columnWidth
 
     // MARK: Cells
 
