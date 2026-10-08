@@ -88,6 +88,7 @@ struct ScenarioGridTab: View {
         VStack(alignment: .leading, spacing: 8) {
             ScenarioChips(viewModel: viewModel, mode: .single(selected: $viewModel.gridSelection), prompts: $chipPrompts)
             headerBar
+                .padding(.vertical, 4)  // with the stack's 8pt: 12pt above and below the bar
             Picker("Year", selection: $viewModel.gridYear) {
                 ForEach(viewModel.gridYears, id: \.self) { year in Text(String(year)).tag(year) }
             }

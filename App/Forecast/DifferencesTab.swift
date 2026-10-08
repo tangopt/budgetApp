@@ -28,7 +28,7 @@ struct DifferencesTab: View {
     private static let scenarioWidth: CGFloat = 280
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             ScenarioChips(viewModel: viewModel, mode: .multi(selected: $viewModel.differencesSelection), prompts: $chipPrompts)
             if viewModel.differencesScenarios.isEmpty {
                 Text("Tick a scenario above to see how it differs from the budget.")
@@ -72,8 +72,9 @@ struct DifferencesTab: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Text("The ticked scenarios vs the budget").font(.headline)
+            // Actions on their own row below the chips.
             HStack {
-                Text("The ticked scenarios vs the budget").font(.headline)
                 Spacer()
                 if !viewModel.tickedDifferenceIds.isEmpty {
                     Button("Untick all") { viewModel.tickedDifferenceIds = [] }

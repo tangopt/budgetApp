@@ -24,6 +24,17 @@ struct ScenarioChips: View {
     @Binding var prompts: ScenarioChipPrompts
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Text("Scenarios").font(.callout).foregroundStyle(.secondary)
+                chipScroll
+            }
+            Divider()
+        }
+        .padding(.bottom, 16)
+    }
+
+    private var chipScroll: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 budgetChip

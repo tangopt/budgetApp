@@ -2,7 +2,7 @@
 import SwiftUI
 import BudgetCore
 
-/// The Forecast screen: the Compare / Differences / Grid tabs and the horizon on top; each
+/// The Forecast screen: the Compare / Differences / Grid tabs and the horizon in the window toolbar; each
 /// tab shows its own scenario chips (`ScenarioChips`) under them. The chips' sheets and
 /// dialogs, and the refresh / apply / undo notices, are presented here.
 struct ScenarioLabView: View {
@@ -20,19 +20,6 @@ struct ScenarioLabView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Picker("View", selection: $viewModel.tab) {
-                    ForEach(Tab.allCases) { tab in Text(tab.rawValue).tag(tab) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 320)
-                Spacer()
-                Picker("Horizon", selection: $viewModel.horizon) {
-                    ForEach(ComparisonHorizon.allCases) { horizon in Text(horizon.label).tag(horizon) }
-                }
-                .frame(maxWidth: 240)
-            }
             if let error = viewModel.errorMessage {
                 HStack(alignment: .top) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
@@ -49,8 +36,24 @@ struct ScenarioLabView: View {
             case .grid: ScenarioGridTab(viewModel: viewModel, chipPrompts: $chipPrompts)
             }
         }
-        .padding()
+        .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Window toolbar items live only while this screen is shown.
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("View", selection: $viewModel.tab) {
+                    ForEach(Tab.allCases) { tab in Text(tab.rawValue).tag(tab) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 280)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Picker("Horizon", selection: $viewModel.horizon) {
+                    ForEach(ComparisonHorizon.allCases) { horizon in Text(horizon.label).tag(horizon) }
+                }
+            }
+        }
         .scenarioChipPrompts($chipPrompts, viewModel: viewModel)
         .alert(viewModel.notice?.title ?? "", isPresented: Binding(
             get: { viewModel.notice != nil },

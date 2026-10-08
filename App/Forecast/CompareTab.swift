@@ -10,7 +10,7 @@ struct CompareTab: View {
     @Binding var chipPrompts: ScenarioChipPrompts
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             ScenarioChips(viewModel: viewModel, mode: .multi(selected: $viewModel.compareSelection), prompts: $chipPrompts)
             content
         }
