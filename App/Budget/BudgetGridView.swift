@@ -500,21 +500,11 @@ struct BudgetGridView: View {
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(rowColor(for: category.type)), alignment: .leading)
         case .groupHeader(let group, let categories):
-            Button {
+            GroupNameCell(name: group.name, isExpanded: group.id.map { expandedGroupIds.contains($0) } ?? false) {
                 if let id = group.id {
                     if expandedGroupIds.contains(id) { expandedGroupIds.remove(id) } else { expandedGroupIds.insert(id) }
                 }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: (group.id.map { expandedGroupIds.contains($0) } ?? false) ? "chevron.down" : "chevron.right")
-                        .font(.caption2)
-                    Text(group.name).bold()
-                }
             }
-            .buttonStyle(.plain)
-            .frame(width: 220, height: 28, alignment: .leading)
-            .padding(.horizontal, 8)
-            .background(Color.orange.opacity(0.10))
             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
             .overlay(Rectangle().frame(width: 3).foregroundStyle(categories.first.map { rowColor(for: $0.type) } ?? .clear), alignment: .leading)
         case .groupChild(let category):
