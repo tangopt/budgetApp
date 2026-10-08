@@ -97,35 +97,30 @@ struct ScenarioNetWorthChart: View {
             RuleMark(x: .value("Today", today))
                 .foregroundStyle(Color.secondary)
                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                .annotation(position: .top, alignment: .leading, spacing: 2) {
+                .annotation(position: .bottom, alignment: .leading, spacing: 2) {
                     Text("Today").font(.caption2).foregroundStyle(.secondary)
                 }
             if let readout {
                 RuleMark(x: .value("Selected", readout.date))
                     .foregroundStyle(Color.secondary.opacity(0.5))
-                    .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(DashboardFormat.monthYear(readout.date)).font(.caption2).foregroundStyle(.secondary)
-                            ForEach(Array(readout.values.enumerated()), id: \.offset) { _, value in
-                                HStack(spacing: 4) {
-                                    Circle().fill(value.colorIndex.map(PlanPalette.color) ?? .gray).frame(width: 6, height: 6)
-                                    Text(value.name).font(.caption2)
-                                    Spacer(minLength: 8)
-                                    Text(DashboardFormat.pounds(value.minorUnits)).font(.caption.bold()).monospacedDigit()
-                                }
-                            }
-                        }
-                        .padding(6)
-                        .frame(minWidth: 160)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
-                    }
             }
         }
         .chartForegroundStyleScale(domain: ids, range: colors)
         .chartLegend(.hidden)
-        // Room above the plot for the "Today" label, so the hover read-out never covers it.
-        .chartPlotStyle { plot in plot.padding(.top, 20) }
+        .chartOverlay { proxy in
+            // The read-out sits just inside the plot's top edge, following the hovered month but
+            // clamped to the plot's width; "Today" is labelled at the bottom, so they never meet.
+            GeometryReader { geometry in
+                if let readout, let frame = proxy.plotFrame.map({ geometry[$0] }), let x = proxy.position(forX: readout.date) {
+                    let width: CGFloat = 190
+                    let left = min(max(frame.minX + x - width / 2, frame.minX), frame.maxX - width)
+                    readoutBox(readout)
+                        .frame(width: width)
+                        .offset(x: left, y: frame.minY + 4)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
         .chartXSelection(value: $selectedDate)
         .chartXAxis {
             AxisMarks(values: .stride(by: .year)) { _ in
@@ -145,6 +140,23 @@ struct ScenarioNetWorthChart: View {
         .accessibilityLabel("Net worth by month: actual, then the forecast of the budget and each compared scenario")
             legend
         }
+    }
+
+    private func readoutBox(_ readout: (date: Date, values: [(name: String, colorIndex: Int?, minorUnits: Int)])) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(DashboardFormat.monthYear(readout.date)).font(.caption2).foregroundStyle(.secondary)
+            ForEach(Array(readout.values.enumerated()), id: \.offset) { _, value in
+                HStack(spacing: 4) {
+                    Circle().fill(value.colorIndex.map(PlanPalette.color) ?? .gray).frame(width: 6, height: 6)
+                    Text(value.name).font(.caption2).lineLimit(1)
+                    Spacer(minLength: 8)
+                    Text(DashboardFormat.pounds(value.minorUnits)).font(.caption.bold()).monospacedDigit()
+                }
+            }
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
     }
 
     private var legend: some View {
@@ -170,7 +182,10 @@ struct SummaryTable: View {
     /// The horizon's last month: its year's block is labelled "to <month>".
     let horizon: (year: Int, month: Int)
 
-    private static let columns = ["Net worth", "Δ vs Budget", "Income", "Expenses", "Reserves (unspent)"]
+    private static let columns = ["Year-end net worth", "Δ vs Budget", "Income", "Expenses", "Reserves (unspent)"]
+
+    private static let columnWidth: CGFloat = 120
+    private static let planWidth: CGFloat = 170
 
     private var years: [Int] { rows.first?.years.map(\.year) ?? [] }
 
@@ -196,9 +211,10 @@ struct SummaryTable: View {
                 .background(Color.accentColor.opacity(0.08))
             Grid(alignment: .trailing, horizontalSpacing: 12, verticalSpacing: 0) {
                 GridRow {
-                    Text("Plan").font(.caption.bold()).gridColumnAlignment(.leading)
+                    Text("Plan").font(.caption.bold()).frame(width: Self.planWidth, alignment: .leading).gridColumnAlignment(.leading)
                     ForEach(Self.columns, id: \.self) { column in
-                        Text(column).font(.caption).foregroundStyle(.secondary)
+                        Text(column).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            .frame(width: Self.columnWidth, alignment: .trailing)
                     }
                 }
                 .padding(.vertical, 4)
@@ -207,17 +223,19 @@ struct SummaryTable: View {
                     GridRow {
                         Text(row.name).fontWeight(row.isBudget ? .semibold : .regular)
                             .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(width: Self.planWidth, alignment: .leading)
                         if let summary = row.years.first(where: { $0.year == year }) {
                             amount(summary.yearEndNetWorth)
                             if row.isBudget {
-                                Text("—").foregroundStyle(.secondary)
+                                amount(nil)
                             } else {
                                 amount(summary.differenceVsBudget, signed: true)
                             }
                             amount(summary.income)
                             amount(-summary.expenses)
                             amount(summary.reserves == 0 ? nil : -summary.reserves)
+                        } else {
+                            ForEach(0..<Self.columns.count, id: \.self) { _ in amount(nil) }
                         }
                     }
                     .padding(.vertical, 4)
@@ -230,6 +248,14 @@ struct SummaryTable: View {
 
     @ViewBuilder
     private func amount(_ minorUnits: Int?, signed: Bool = false) -> some View {
+        Group {
+            amountContent(minorUnits, signed: signed)
+        }
+        .frame(width: Self.columnWidth, alignment: .trailing)
+    }
+
+    @ViewBuilder
+    private func amountContent(_ minorUnits: Int?, signed: Bool) -> some View {
         if let minorUnits {
             if signed && minorUnits > 0 {
                 Text("+" + Money.format(minorUnits, currency: .gbp)).font(.body.monospacedDigit()).foregroundStyle(.green)

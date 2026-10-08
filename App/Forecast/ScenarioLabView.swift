@@ -6,6 +6,7 @@ import BudgetCore
 /// Differences / Grid tabs on the right.
 struct ScenarioLabView: View {
     @ObservedObject var viewModel: ScenarioLabViewModel
+
     enum Tab: String, CaseIterable, Identifiable {
         case compare = "Compare"
         case differences = "Differences"
