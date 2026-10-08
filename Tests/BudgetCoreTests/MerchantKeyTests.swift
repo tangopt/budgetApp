@@ -30,4 +30,16 @@ final class MerchantKeyTests: XCTestCase {
         XCTAssertEqual(MerchantKey.make(""), "")
         XCTAssertEqual(MerchantKey.make("   "), "")
     }
+
+    func testGenericOrProcessorOnlyKeyKeepsFullDescription() {
+        XCTAssertEqual(MerchantKey.make("AB1 LIMITED"), "AB1 LIMITED")
+        XCTAssertEqual(MerchantKey.make("99P STORES LTD"), "99P STORES LTD")
+        XCTAssertEqual(MerchantKey.make("3 MOBILE"), "3 MOBILE")
+        XCTAssertEqual(MerchantKey.make("PAYPAL *12345"), "PAYPAL *12345")
+        XCTAssertEqual(MerchantKey.make("MARKS&SPENCER PLC"), "MARKS&SPENCER PLC")
+    }
+
+    func testProcessorPrefixWithMerchantIsKept() {
+        XCTAssertEqual(MerchantKey.make("PAYPAL *STEAM GAMES"), "PAYPAL STEAM GAMES")
+    }
 }

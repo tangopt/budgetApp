@@ -201,7 +201,6 @@ final class ImportViewModel: ObservableObject {
     }
 
     var readyRows: [ReviewRow] { partitionedRows.ready }
-    var needsAttentionRows: [ReviewRow] { partitionedRows.needsAttention }
 
     /// Each section's rows grouped by merchant key (spec §4), computed together so a view
     /// can read it once per body.

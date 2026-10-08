@@ -76,6 +76,7 @@ final class UncategorizedViewModel: ObservableObject {
             var updated = target
             updated.categoryId = categoryId
             updated.status = .confirmed
+            updated.categorizedBy = .manual
             return (updated, remember(target))
         }
         do {

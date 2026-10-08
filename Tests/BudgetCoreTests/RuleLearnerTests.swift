@@ -75,7 +75,7 @@ final class RuleLearnerTests: XCTestCase {
     func testProcessorOnlyKeysFallBackToFullDescription() throws {
         XCTAssertEqual(try learnedRules("PAYPAL *12345").map(\.matchPattern), ["PAYPAL *12345"])
         XCTAssertEqual(try learnedRules("PAYPAL *STEAM GAMES").map(\.matchPattern), ["PAYPAL STEAM GAMES"])
-        XCTAssertEqual(MerchantKey.make("AMZN MKTP UK*AB12CD"), "AMZN MKTP")
+        XCTAssertEqual(MerchantKey.make("AMZN MKTP UK*AB12CD"), "AMZN MKTP UK*AB12CD")
         XCTAssertEqual(try learnedRules("AMZN MKTP UK*AB12CD").map(\.matchPattern), ["AMZN MKTP UK*AB12CD"])
     }
 }
