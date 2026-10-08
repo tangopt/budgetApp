@@ -53,4 +53,29 @@ final class RuleLearnerTests: XCTestCase {
         try manager.dbQueue.write { db in try RuleLearner.learn(description: "  ", categoryId: groceries, db: db) }
         XCTAssertEqual(try manager.dbQueue.read { db in try Rule.fetchCount(db) }, 0)
     }
+
+    private func learnedRules(_ description: String) throws -> [Rule] {
+        let (manager, groceries, _) = try makeManager()
+        try manager.dbQueue.write { db in try RuleLearner.learn(description: description, categoryId: groceries, db: db) }
+        return try manager.dbQueue.read { db in try Rule.fetchAll(db) }
+    }
+
+    func testKeyRulesMatchTheDescriptionTheyWereLearnedFrom() throws {
+        for (learned, variant) in [("SQ *DONUTELIER CAR", "SQ *DONUTELIER CAR 2"), ("Shake Shack - Argy", "Shake Shack - Argy 77"), ("CARD 1234 TESCO STORES", "CARD 9876 TESCO STORES")] {
+            let rules = try learnedRules(learned)
+            XCTAssertNotNil(RuleMatcher.match(description: learned, rules: rules), learned)
+            XCTAssertNotNil(RuleMatcher.match(description: variant, rules: rules), variant)
+        }
+    }
+
+    func testShortKeyBelowTheFloorUsesFullDescription() throws {
+        XCTAssertEqual(try learnedRules("TFL 123").map(\.matchPattern), ["TFL 123"])
+    }
+
+    func testProcessorOnlyKeysFallBackToFullDescription() throws {
+        XCTAssertEqual(try learnedRules("PAYPAL *12345").map(\.matchPattern), ["PAYPAL *12345"])
+        XCTAssertEqual(try learnedRules("PAYPAL *STEAM GAMES").map(\.matchPattern), ["PAYPAL STEAM GAMES"])
+        XCTAssertEqual(MerchantKey.make("AMZN MKTP UK*AB12CD"), "AMZN MKTP")
+        XCTAssertEqual(try learnedRules("AMZN MKTP UK*AB12CD").map(\.matchPattern), ["AMZN MKTP UK*AB12CD"])
+    }
 }

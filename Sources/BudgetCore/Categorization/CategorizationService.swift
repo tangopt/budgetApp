@@ -30,22 +30,23 @@ public final class CategorizationService {
     }
 
     /// Batched form of `categorize`: rule-matches every description first (fast, no model
-    /// call), then tries the history of past categorised transactions, then sends only the still-unmatched descriptions through one
-    /// `suggestCategories` call instead of one `suggestCategory` call each. Results are
+    /// call), then tries the history of past categorised transactions, then sends only the
+    /// still-unmatched descriptions through one `suggestCategories` call instead of one `suggestCategory` call each. Results are
     /// returned in the same order as `descriptions`, same as calling `categorize` once per
     /// description would — callers can't tell which path was used from the shape of the
     /// result, only from `.source` on each one.
     public func categorizeBatch(descriptions: [String], rules: [Rule], categories: [Category], history: [HistoryEntry] = []) async -> [CategorizationResult] {
         // Reserves are forecast-only; the model must never suggest one.
         let categories = categories.filter(\.isAssignable)
+        let historyIndex = HistoryIndex(history)
         var results = [CategorizationResult?](repeating: nil, count: descriptions.count)
         var unmatchedIndices: [Int] = []
         var unmatchedDescriptions: [String] = []
         for (index, description) in descriptions.enumerated() {
             if let rule = RuleMatcher.match(description: description, rules: rules) {
                 results[index] = CategorizationResult(categoryId: rule.categoryId, source: .rule, confidence: 1.0)
-            } else if !history.isEmpty,
-                      let hit = HistoryCategorizer.suggest(merchantKey: MerchantKey.make(description), history: history),
+            } else if !historyIndex.isEmpty,
+                      let hit = historyIndex.suggest(merchantKey: MerchantKey.make(description)),
                       categories.contains(where: { $0.id == hit.categoryId }) {
                 results[index] = CategorizationResult(categoryId: hit.categoryId, source: .history, confidence: hit.share)
             } else {

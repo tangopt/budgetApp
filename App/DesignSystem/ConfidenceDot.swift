@@ -2,8 +2,8 @@
 import SwiftUI
 import BudgetCore
 
-/// Green = a rule matched (deterministic). Orange = the on-device model suggested
-/// something above `ReviewPartitioning.highConfidenceThreshold`. Gray = a weak or absent
+/// Green = a rule matched (deterministic). Orange = past transactions of the same merchant
+/// agreed (history), or the on-device model suggested something above `ReviewPartitioning.highConfidenceThreshold`. Gray = a weak or absent
 /// suggestion — this row needs a look.
 struct ConfidenceDot: View {
     let source: CategorizedBy

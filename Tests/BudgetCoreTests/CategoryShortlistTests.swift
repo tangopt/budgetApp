@@ -26,6 +26,10 @@ final class CategoryShortlistTests: XCTestCase {
             try add(cats[2], daysAgo: 10)
             for _ in 0..<5 { try add(cats[2], daysAgo: 200) }   // outside the window
             try add(nil, daysAgo: 1)
+            // Pending-review rows never count (the database refuses reserved-category rows outright).
+            n += 1
+            var pending = Transaction(importBatchId: batch.id!, accountId: account.id!, date: now, rawDescription: "P", amountMinorUnits: -1, categoryId: cats[2], status: .pendingReview, categorizedBy: .manual, fingerprint: "p\(n)")
+            try pending.insert(db)
             return (cats[0], cats[1], cats[2])
         }
         let since = now.addingTimeInterval(-90 * day)

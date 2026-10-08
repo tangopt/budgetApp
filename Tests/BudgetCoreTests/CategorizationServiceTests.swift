@@ -172,4 +172,14 @@ final class CategorizationServiceTests: XCTestCase {
         XCTAssertNil(results[0].categoryId)
         XCTAssertEqual(results[0].source, .none)
     }
+
+    func testHistoryPointingAtAnUnknownCategoryFallsThroughToTheModel() async {
+        let history = [HistoryEntry(merchantKey: "GONE SHOP", categoryId: 99), HistoryEntry(merchantKey: "GONE SHOP", categoryId: 99)]
+        let fake = FakeCategorizer()
+        fake.stubbedSuggestion = CategorySuggestion(categoryName: "Eating Out", confidence: 0.8)
+        let service = CategorizationService(categorizer: fake)
+        let results = await service.categorizeBatch(descriptions: ["GONE SHOP"], rules: [], categories: [groceries, eatingOut], history: history)
+        XCTAssertEqual(results[0].source, .llm)
+        XCTAssertEqual(results[0].categoryId, 2)
+    }
 }
