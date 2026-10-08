@@ -17,8 +17,8 @@ struct GroupNameCell: View {
         }
         .frame(width: 220, height: 28, alignment: .leading)
         .padding(.horizontal, 8)
-        .background(Color.orange.opacity(0.10))
         .background(Color.primary.opacity(hovering ? 0.06 : 0))
+        .background(Color.orange.opacity(0.10))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture(perform: toggle)
