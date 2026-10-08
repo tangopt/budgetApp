@@ -410,6 +410,25 @@ struct AddPlannedItemSheet: View {
     let onSave: (PlannedItemCategory, _ amountMinorUnits: Int, ForecastFrequency, _ interval: Int, _ start: Date, _ end: Date?) -> SaveOutcome
     @Environment(\.dismiss) private var dismiss
 
+    /// Opened from an empty grid cell: `initialCategoryId` is preselected (still editable) and
+    /// `initialDate` (a UTC day) makes it a one-off on that date (`CellAddDate`).
+    init(type: CategoryType, scope: PlanScope, categories: [Category], plannedEntries: [ForecastEntry],
+         initialCategoryId: Int64? = nil, initialDate: Date? = nil,
+         onSave: @escaping (PlannedItemCategory, _ amountMinorUnits: Int, ForecastFrequency, _ interval: Int, _ start: Date, _ end: Date?) -> SaveOutcome) {
+        self.type = type
+        self.scope = scope
+        self.categories = categories
+        self.plannedEntries = plannedEntries
+        self.onSave = onSave
+        _categoryId = State(initialValue: initialCategoryId)
+        if let initialDate {
+            let day = PayCalendar.localDay(sameDayAs: initialDate, in: .current)
+            _isRecurring = State(initialValue: false)
+            _startDay = State(initialValue: day)
+            _endDay = State(initialValue: day)
+        }
+    }
+
     /// Sentinel for "+ New category…" (real ids are positive rowids).
     private static let newCategorySentinel: Int64 = -1
 
@@ -537,5 +556,15 @@ struct AddPlannedItemSheet: View {
         case .saved, .savedButReloadFailed: dismiss()
         case .failed(let message): errorMessage = message
         }
+    }
+}
+
+/// The date an empty grid cell's add sheet opens on: today if the cell's calendar month is the
+/// current one, else the 1st of it (a UTC day, like the rest of the plan code).
+enum CellAddDate {
+    static func date(year: Int, month: Int, now: Date = Date()) -> Date {
+        let today = PayCalendar.utcDay(sameDayAs: now, in: .current)
+        let current = MonthRange.components(of: today)
+        return current.year == year && current.month == month ? today : MonthRange.of(year: year, month: month).start
     }
 }

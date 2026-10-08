@@ -42,10 +42,13 @@ struct BudgetGridView: View {
     private enum ReserveSheet: Identifiable {
         case newReserve
         case addAmount(Category)
+        /// An empty month cell's Add amount: the start pre-filled to `date`.
+        case addAmountOn(Category, date: Date)
         var id: String {
             switch self {
             case .newReserve: return "new-reserve"
             case .addAmount(let reserve): return "add-amount-\(reserve.id ?? -1)"
+            case .addAmountOn(let reserve, let date): return "add-amount-\(reserve.id ?? -1)-\(date.timeIntervalSince1970)"
             }
         }
     }
@@ -53,7 +56,15 @@ struct BudgetGridView: View {
     /// The section a header's "+ Add planned item" adds to (`.sheet(item:)`).
     private struct AddPlannedTarget: Identifiable {
         let type: CategoryType
-        var id: String { type.rawValue }
+        /// From an empty month cell: the category preselected and the one-off's date.
+        var categoryId: Int64?
+        var date: Date?
+        var id: String { "\(type.rawValue)-\(categoryId ?? -1)-\(date?.timeIntervalSince1970 ?? 0)" }
+    }
+
+    /// Whether an empty cell of this pay month may be clicked to add (open or future month).
+    private func canAdd(year: Int, month: Int) -> Bool {
+        !viewModel.payCalendar.isClosed(PayMonth(year: year, month: month))
     }
 
     private func categoriesByType(_ type: CategoryType) -> [Category] {
@@ -324,7 +335,8 @@ struct BudgetGridView: View {
             GridDrillDownSheet(target: target, viewModel: viewModel)
         }
         .sheet(item: $addPlannedTarget) { target in
-            AddPlannedItemSheet(type: target.type, scope: .budget, categories: viewModel.categories, plannedEntries: viewModel.plannedEntries) { category, amount, frequency, interval, start, end in
+            AddPlannedItemSheet(type: target.type, scope: .budget, categories: viewModel.categories, plannedEntries: viewModel.plannedEntries,
+                                initialCategoryId: target.categoryId, initialDate: target.date) { category, amount, frequency, interval, start, end in
                 switch category {
                 case .existing(let id):
                     return viewModel.addPlannedItem(categoryId: id, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)
@@ -343,6 +355,10 @@ struct BudgetGridView: View {
                 }
             case .addAmount(let reserve):
                 ReserveFormView(mode: .addAmount(reserve), errorMessage: reserveError, onEdit: clearReserveError) { _, amount, frequency, interval, start, end in
+                    finishReserveSave(viewModel.addReserveAmount(to: reserve, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)) { reserveSheet = nil }
+                }
+            case .addAmountOn(let reserve, let date):
+                ReserveFormView(mode: .addAmount(reserve), errorMessage: reserveError, initialDate: date, onEdit: clearReserveError) { _, amount, frequency, interval, start, end in
                     finishReserveSave(viewModel.addReserveAmount(to: reserve, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)) { reserveSheet = nil }
                 }
             }
@@ -728,7 +744,13 @@ struct BudgetGridView: View {
                             .monthSeparator(month)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                guard !viewModel.occurrences(category: reserve, year: year, month: month).isEmpty else { return }
+                                guard !viewModel.occurrences(category: reserve, year: year, month: month).isEmpty else {
+                                    if canAdd(year: year, month: month) {
+                                        viewModel.errorMessage = nil
+                                        reserveSheet = .addAmountOn(reserve, date: CellAddDate.date(year: year, month: month))
+                                    }
+                                    return
+                                }
                                 drillDownTarget = .planned(title: "\(reserve.name) — \(Self.monthYearLabel(year: year, month: month))",
                                                            plan: DrillDownPlan(category: reserve, year: year, month: month))
                             }
@@ -860,7 +882,7 @@ struct BudgetGridView: View {
 
     /// A category's twelve month cells (for `.category` and `.groupChild`). A month cell
     /// opens the drill-down (transactions plus planned occurrences) when it has a value or
-    /// anything planned. Its Year Total (`yearTotalCell`) lists the year's transactions.
+    /// anything planned; an empty one in an open or future month opens Add planned item. Its Year Total (`yearTotalCell`) lists the year's transactions.
     @ViewBuilder
     private func categoryCells(_ category: Category, shaded: Bool) -> some View {
         if let year = viewModel.selectedYear, let categoryId = category.id {
@@ -874,7 +896,14 @@ struct BudgetGridView: View {
                         .monthSeparator(month)
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            guard cell.value != 0 || !viewModel.occurrences(category: category, year: year, month: month).isEmpty else { return }
+                            guard cell.value != 0 || !viewModel.occurrences(category: category, year: year, month: month).isEmpty else {
+                                // Empty (no actual, nothing planned): an open or future month adds a planned item.
+                                if canAdd(year: year, month: month) {
+                                    viewModel.errorMessage = nil
+                                    addPlannedTarget = AddPlannedTarget(type: category.type, categoryId: categoryId, date: CellAddDate.date(year: year, month: month))
+                                }
+                                return
+                            }
                             let range = viewModel.dateRange(forYear: year, month: month)
                             let matching = viewModel.transactions(forCategoryId: categoryId, from: range.start, to: range.end)
                             drillDownTarget = .transactions(title: "\(category.name) — \(Self.monthYearLabel(year: year, month: month))", transactions: matching,

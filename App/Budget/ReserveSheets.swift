@@ -28,6 +28,20 @@ struct ReserveFormView: View {
     let onSave: (ReserveTarget, _ amountMinorUnits: Int, ForecastFrequency, Int, Date, Date?) -> Void
     @Environment(\.dismiss) private var dismiss
 
+    /// `initialDate` (a UTC day) pre-fills the start, for an empty reserve cell's Add amount.
+    init(mode: Mode, errorMessage: String?, initialDate: Date? = nil, onEdit: @escaping () -> Void,
+         onSave: @escaping (ReserveTarget, _ amountMinorUnits: Int, ForecastFrequency, Int, Date, Date?) -> Void) {
+        self.mode = mode
+        self.errorMessage = errorMessage
+        self.onEdit = onEdit
+        self.onSave = onSave
+        if let initialDate {
+            let day = PayCalendar.localDay(sameDayAs: initialDate, in: .current)
+            _startDay = State(initialValue: day)
+            _endDay = State(initialValue: day)
+        }
+    }
+
     /// Sentinel for "+ New reserve…" (real ids are positive rowids).
     private static let newReserveSentinel: Int64 = -1
 

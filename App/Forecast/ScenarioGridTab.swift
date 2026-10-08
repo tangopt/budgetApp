@@ -24,6 +24,8 @@ struct ScenarioGridTab: View {
     @State private var drillDown: DrillDownTarget?
     @State private var addTarget: AddTarget?
     @State private var addingAllowance = false
+    /// An empty reserve cell's Add allowance: the reserve and the start date.
+    @State private var cellAllowance: CellAllowance?
     /// A failed allowance save, shown inside the open form.
     @State private var allowanceError: String?
 
@@ -37,7 +39,16 @@ struct ScenarioGridTab: View {
     private struct AddTarget: Identifiable {
         let type: CategoryType
         let scope: PlanScope
-        var id: String { type.rawValue }
+        /// From an empty cell: the category preselected and the one-off's date.
+        var categoryId: Int64?
+        var date: Date?
+        var id: String { "\(type.rawValue)-\(categoryId ?? -1)-\(date?.timeIntervalSince1970 ?? 0)" }
+    }
+
+    private struct CellAllowance: Identifiable {
+        let reserve: Category
+        let date: Date
+        var id: String { "\(reserve.id ?? -1)-\(date.timeIntervalSince1970)" }
     }
 
     private enum RowKind: Identifiable {
@@ -97,8 +108,18 @@ struct ScenarioGridTab: View {
                 }
             }
         }
+        .sheet(item: $cellAllowance, onDismiss: { allowanceError = nil }) { cell in
+            ReserveFormView(mode: .addAmount(cell.reserve), errorMessage: allowanceError, initialDate: cell.date,
+                            onEdit: { if allowanceError != nil { allowanceError = nil } }) { target, amount, frequency, interval, start, end in
+                switch viewModel.addReserveAllowance(target, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end) {
+                case .saved, .savedButReloadFailed: cellAllowance = nil
+                case .failed(let message): allowanceError = message
+                }
+            }
+        }
         .sheet(item: $addTarget) { target in
-            AddPlannedItemSheet(type: target.type, scope: target.scope, categories: viewModel.categories, plannedEntries: viewModel.scenarioPlanEntries) { category, amount, frequency, interval, start, end in
+            AddPlannedItemSheet(type: target.type, scope: target.scope, categories: viewModel.categories, plannedEntries: viewModel.scenarioPlanEntries,
+                                initialCategoryId: target.categoryId, initialDate: target.date) { category, amount, frequency, interval, start, end in
                 viewModel.addPlannedItem(category, type: target.type, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)
             }
         }
@@ -331,6 +352,7 @@ struct ScenarioGridTab: View {
             }
             .background(Color.accentColor.opacity(0.08))
         case .category(let category), .groupChild(let category), .reserve(let category):
+            let isReserve = category.isReserved
             HStack(spacing: 0) {
                 ForEach(1...12, id: \.self) { month in
                     cellView(cell([category], month: month))
@@ -339,7 +361,7 @@ struct ScenarioGridTab: View {
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                         .monthSeparator(month)
                         .contentShape(Rectangle())
-                        .onTapGesture { openDrillDown(category, year: year, month: month) }
+                        .onTapGesture { cellTapped(category, year: year, month: month, isReserve: isReserve) }
                 }
             }
         case .groupHeader(_, let categories):
@@ -425,6 +447,26 @@ struct ScenarioGridTab: View {
             // The fill covers the whole cell (full width and row height), not just the text.
             .frame(height: height)
             .background(differs ? differsFill : Color.clear)
+    }
+
+    /// A month cell: its planned occurrences open the drill-down; an empty one (no value, nothing
+    /// planned) in an open or future month adds an item (a reserve: an allowance) to the selected
+    /// scenario. Nothing while the Budget is selected.
+    private func cellTapped(_ category: Category, year: Int, month: Int, isReserve: Bool) {
+        guard !isReadOnly else { return }
+        guard viewModel.occurrences(category: category, year: year, month: month).isEmpty,
+              (viewModel.gridCells[category.id ?? -1]?[month]?.value ?? 0) == 0 else {
+            openDrillDown(category, year: year, month: month)
+            return
+        }
+        guard !viewModel.payCalendar.isClosed(PayMonth(year: year, month: month)), let scope = viewModel.editScope else { return }
+        let date = CellAddDate.date(year: year, month: month)
+        if isReserve {
+            allowanceError = nil
+            cellAllowance = CellAllowance(reserve: category, date: date)
+        } else if let id = category.id {
+            addTarget = AddTarget(type: category.type, scope: scope, categoryId: id, date: date)
+        }
     }
 
     private func openDrillDown(_ category: Category, year: Int, month: Int) {
