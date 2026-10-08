@@ -14,6 +14,7 @@ public enum CSVStatementParser {
         let amountIndex = profile.csvAmountColumnIndex ?? 2
         let creditIndex = profile.csvCreditAmountColumnIndex
         let balanceIndex = profile.csvBalanceColumnIndex
+        let negate = profile.csvNegateAmounts && profile.csvCreditAmountColumnIndex == nil
 
         let formatter = StatementDateFormatter.make(format: dateFormat)
 
@@ -38,10 +39,11 @@ public enum CSVStatementParser {
                 unparsedLines.append(line)
                 continue
             }
-            guard let minorUnits = resolveAmount(fields: fields, amountIndex: amountIndex, creditIndex: creditIndex) else {
+            guard var minorUnits = resolveAmount(fields: fields, amountIndex: amountIndex, creditIndex: creditIndex) else {
                 unparsedLines.append(line)
                 continue
             }
+            if negate { minorUnits = -minorUnits }
             let balance: Int? = balanceIndex.flatMap { $0 < fields.count ? Money.parseMinorUnits(fields[$0]) : nil }
             transactions.append(ParsedTransaction(date: date, rawDescription: fields[descriptionIndex], amountMinorUnits: minorUnits, balanceAfterMinorUnits: balance))
         }

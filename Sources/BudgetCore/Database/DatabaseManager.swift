@@ -53,5 +53,6 @@ public final class DatabaseManager {
         registerPlannedOccurrenceExceptionMigration(&migrator)
         registerForecastEntryAnchorDayMigration(&migrator)
         registerScenarioMigration(&migrator)
+        registerImportProfileNegateAmountsMigration(&migrator)
     }
 }

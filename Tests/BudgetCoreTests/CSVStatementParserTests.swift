@@ -263,4 +263,20 @@ final class CSVStatementParserTests: XCTestCase {
         XCTAssertNil(Money.parseMinorUnits("1.2.3"))
         XCTAssertNil(Money.parseMinorUnits("1.005"))
     }
+
+    func testNegateAmountsFlipsSingleColumn() {
+        let csv = "Date,Description,Amount\n01/07/2026,SHOP,45.64\n02/07/2026,PAY,-2800.00"
+        var profile = ImportProfile(accountId: 1, format: .csv, csvDelimiter: ",", csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2, csvDateFormat: "dd/MM/yyyy")
+        profile.csvNegateAmounts = true
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
+        XCTAssertEqual(result.transactions.map(\.amountMinorUnits), [-4564, 280000])
+    }
+
+    func testNegateAmountsLeavesSplitColumnsUnchanged() {
+        let csv = "Date,Description,Out,In\n01/07/2026,SHOP,45.64,\n02/07/2026,PAY,,2800.00"
+        var profile = ImportProfile(accountId: 1, format: .csv, csvDelimiter: ",", csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2, csvCreditAmountColumnIndex: 3, csvDateFormat: "dd/MM/yyyy")
+        profile.csvNegateAmounts = true
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
+        XCTAssertEqual(result.transactions.map(\.amountMinorUnits), [-4564, 280000])
+    }
 }

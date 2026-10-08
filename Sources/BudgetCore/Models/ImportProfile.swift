@@ -28,8 +28,11 @@ public struct ImportProfile: Codable, Equatable, Identifiable, FetchableRecord, 
     public var csvBalanceColumnIndex: Int?
     public var csvDateFormat: String?
     public var pdfLayoutConfig: String?
+    /// Flips the sign of a single signed amount column (statements that list spending as
+    /// positive). Ignored for split debit/credit columns. Default false.
+    public var csvNegateAmounts: Bool
 
-    public init(id: Int64? = nil, accountId: Int64, format: ImportFormat, csvDelimiter: String? = nil, csvDateColumnIndex: Int? = nil, csvDescriptionColumnIndex: Int? = nil, csvAmountColumnIndex: Int? = nil, csvCreditAmountColumnIndex: Int? = nil, csvBalanceColumnIndex: Int? = nil, csvDateFormat: String? = nil, pdfLayoutConfig: String? = nil) {
+    public init(id: Int64? = nil, accountId: Int64, format: ImportFormat, csvDelimiter: String? = nil, csvDateColumnIndex: Int? = nil, csvDescriptionColumnIndex: Int? = nil, csvAmountColumnIndex: Int? = nil, csvCreditAmountColumnIndex: Int? = nil, csvBalanceColumnIndex: Int? = nil, csvDateFormat: String? = nil, pdfLayoutConfig: String? = nil, csvNegateAmounts: Bool = false) {
         self.id = id
         self.accountId = accountId
         self.format = format
@@ -41,6 +44,7 @@ public struct ImportProfile: Codable, Equatable, Identifiable, FetchableRecord, 
         self.csvBalanceColumnIndex = csvBalanceColumnIndex
         self.csvDateFormat = csvDateFormat
         self.pdfLayoutConfig = pdfLayoutConfig
+        self.csvNegateAmounts = csvNegateAmounts
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -82,6 +86,15 @@ func registerImportProfileBalanceColumnMigration(_ migrator: inout DatabaseMigra
     migrator.registerMigration("addBalanceColumnIndexToImportProfile") { db in
         try db.alter(table: "importProfile") { t in
             t.add(column: "csvBalanceColumnIndex", .integer)
+        }
+    }
+}
+
+/// NOT NULL with a default so every profile saved before this existed keeps the old behavior.
+func registerImportProfileNegateAmountsMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addCSVNegateAmounts") { db in
+        try db.alter(table: "importProfile") { t in
+            t.add(column: "csvNegateAmounts", .boolean).notNull().defaults(to: false)
         }
     }
 }
