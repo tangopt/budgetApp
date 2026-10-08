@@ -21,11 +21,20 @@ final class UncategorizedViewModel: ObservableObject {
     }
 
     func load() throws {
-        transactions = try dbQueue.read { db in try UncategorizedTransactions.fetch(db: db) }
-        categories = try dbQueue.read { db in try Category.fetchAll(db) }
-        categoryGroups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
-        let since = Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
-        recentCategoryIds = try dbQueue.read { db in try CategoryShortlist.recent(db: db, since: since, limit: 5) }
+        let since = Self.recentSince()
+        (transactions, categories, categoryGroups, recentCategoryIds) = try dbQueue.read { db in
+            (
+                try UncategorizedTransactions.fetch(db: db),
+                try Category.fetchAll(db),
+                try CategoryGroup.fetchAll(db),
+                try CategoryShortlist.recent(db: db, since: since, limit: 5)
+            )
+        }
+    }
+
+    /// The picker's Recent section covers the last 90 days.
+    private static func recentSince() -> Date {
+        Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
     }
 
     /// Assigns a category, marks the transaction confirmed, and learns a rule from the
@@ -55,6 +64,10 @@ final class UncategorizedViewModel: ObservableObject {
             return false
         }
         transactions.remove(at: index)
+        // The assignment just counted towards Recent; a failed refresh keeps the old list.
+        if let recent = try? dbQueue.read({ db in try CategoryShortlist.recent(db: db, since: Self.recentSince(), limit: 5) }) {
+            recentCategoryIds = recent
+        }
         return true
     }
 }

@@ -2,6 +2,7 @@
 import Foundation
 import BudgetCore
 import GRDB
+import os
 
 struct ReviewRow: Identifiable {
     let staged: StagedTransaction
@@ -149,15 +150,21 @@ final class ImportViewModel: ObservableObject {
         }
     }
 
+    private static let logger = Logger(subsystem: "com.personal.budget", category: "Import")
+
     /// Loads what the category picker needs once per review. Failing here only costs the
-    /// picker its group headings and Recent section, so errors are not surfaced.
+    /// picker its group headings and Recent section, so it's logged rather than shown.
     private func loadPickerContext() {
         let since = Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
-        let context = try? dbQueue.read { db in
-            (try CategoryGroup.fetchAll(db), try CategoryShortlist.recent(db: db, since: since, limit: 5))
+        do {
+            (categoryGroups, recentCategoryIds) = try dbQueue.read { db in
+                (try CategoryGroup.fetchAll(db), try CategoryShortlist.recent(db: db, since: since, limit: 5))
+            }
+        } catch {
+            Self.logger.error("Couldn't load category picker groups/recent: \(error.localizedDescription, privacy: .public)")
+            categoryGroups = []
+            recentCategoryIds = []
         }
-        categoryGroups = context?.0 ?? []
-        recentCategoryIds = context?.1 ?? []
     }
 
     func dismissDuplicates() { duplicates = [] }
