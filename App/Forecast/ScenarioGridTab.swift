@@ -9,9 +9,10 @@ import struct BudgetCore.Category
 /// planned occurrences with Edit… / Remove…, and section headers add items — the Budget
 /// grid's own sheets, scoped to the scenario. The Budget shows read-only.
 ///
-/// Same frozen header / frozen column technique as `BudgetGridView`: the horizontal offset
-/// lives in a `HorizontalScrollOffset` held in plain `@State` and observed only by the
-/// header's `HorizontalOffsetFollower`, so scrolling never re-runs this `body`.
+/// Same frozen header / frozen columns (category left, Year Total right) technique as
+/// `BudgetGridView`: the horizontal offset lives in a `HorizontalScrollOffset` held in plain
+/// `@State` and observed only by the header's `HorizontalOffsetFollower`, so scrolling never
+/// re-runs this `body`.
 struct ScenarioGridTab: View {
     @ObservedObject var viewModel: ScenarioLabViewModel
     @State private var scrollOffset = HorizontalScrollOffset()
@@ -128,14 +129,18 @@ struct ScenarioGridTab: View {
                                 .help(PayMonthFormat.range(viewModel.payCalendar.range(of: PayMonth(year: year, month: month))))
                                 .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                         }
-                        Text("Year Total").bold()
-                            .frame(width: 120, alignment: .trailing)
-                            .padding(.horizontal, 8).padding(.vertical, 6)
                     }
                 }
-                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                // As in `BudgetGridView`: no wider than the body's month scroller, so the
+                // pinned Year Total sits right after December in a wide window.
+                .frame(minWidth: 0, maxWidth: Self.monthsWidth, alignment: .leading)
                 .clipped()
+                Text("Year Total").bold()
+                    .frame(width: 120, alignment: .trailing)
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .font(.headline)
             .background(Color(nsColor: .controlBackgroundColor))
             .overlay(Rectangle().frame(height: 1.5).foregroundStyle(Color.primary.opacity(0.18)), alignment: .bottom)
@@ -155,7 +160,17 @@ struct ScenarioGridTab: View {
                         }
                     }
                     .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, x in scrollOffset.update(-x) }
+                    .frame(maxWidth: Self.monthsWidth)
+
+                    // Frozen Year Total column, pinned on the right (fixed row heights, as
+                    // the label and month cells, so the three columns line up).
+                    VStack(spacing: 0) {
+                        ForEach(rows) { row in yearTotalCell(row.kind, shaded: row.shaded) }
+                    }
+                    .frame(width: Self.columnWidth)
+                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -292,7 +307,6 @@ struct ScenarioGridTab: View {
                 ForEach(1...12, id: \.self) { month in
                     cellView(cell(members, month: month), font: PlanCellView.captionFont, height: 24).bold()
                 }
-                cellView(yearCell(members), isYearTotal: true, font: PlanCellView.captionFont, height: 24).bold()
             }
             .background(Color.accentColor.opacity(0.08))
         case .category(let category), .groupChild(let category), .reserve(let category):
@@ -306,16 +320,12 @@ struct ScenarioGridTab: View {
                         .contentShape(Rectangle())
                         .onTapGesture { openDrillDown(category, year: year, month: month) }
                 }
-                cellView(yearCell([category]), isYearTotal: true).bold()
-                    .frame(height: 28)
-                    .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
-                    .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
             }
         case .groupHeader(_, let categories):
             combinedRow(categories, background: Color.orange.opacity(0.10))
         case .reservedHeader:
             HStack(spacing: 0) {
-                ForEach(1...13, id: \.self) { _ in Color.clear.frame(width: 120, height: 24).padding(.horizontal, 8) }
+                ForEach(1...12, id: \.self) { _ in Color.clear.frame(width: 120, height: 24).padding(.horizontal, 8) }
             }
             .background(Color.accentColor.opacity(0.08))
         case .reservedTotal:
@@ -331,12 +341,43 @@ struct ScenarioGridTab: View {
                     .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                     .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
             }
-            cellView(yearCell(categories), isYearTotal: true).bold()
-                .frame(height: 28)
-                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
         }
         .background(background)
     }
+
+    /// A row's Year Total, for the pinned right-hand column: the row's height and background,
+    /// and the differs fill (from `cellView`) when it differs from the budget.
+    @ViewBuilder
+    private func yearTotalCell(_ row: RowKind, shaded: Bool) -> some View {
+        switch row {
+        case .sectionHeader(_, let type):
+            cellView(yearCell(categoriesByType(type)), isYearTotal: true, font: PlanCellView.captionFont, height: 24).bold()
+                .background(Color.accentColor.opacity(0.08))
+        case .category(let category), .groupChild(let category), .reserve(let category):
+            cellView(yearCell([category]), isYearTotal: true).bold()
+                .frame(height: 28)
+                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+        case .groupHeader(_, let categories):
+            combinedYearTotal(categories, background: Color.orange.opacity(0.10))
+        case .reservedHeader:
+            Color.clear.frame(width: 120, height: 24).padding(.horizontal, 8)
+                .background(Color.accentColor.opacity(0.08))
+        case .reservedTotal:
+            combinedYearTotal(viewModel.reserves, background: Color.purple.opacity(0.08))
+        }
+    }
+
+    private func combinedYearTotal(_ categories: [Category], background: Color) -> some View {
+        cellView(yearCell(categories), isYearTotal: true).bold()
+            .frame(height: 28)
+            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+            .background(background)
+    }
+
+    /// A cell's footprint (120pt frame + 8pt padding either side) and the twelve months' width.
+    private static let columnWidth: CGFloat = 136
+    private static let monthsWidth: CGFloat = 12 * columnWidth
 
     // MARK: Cells
 
