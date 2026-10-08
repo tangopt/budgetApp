@@ -38,7 +38,8 @@ struct ReserveFormView: View {
     @State private var interval = 1
     /// Local midnight of the picked days (a `DatePicker` works in the local time zone).
     @State private var startDay = PayCalendar.localDay(sameDayAs: PayCalendar.utcDay(sameDayAs: Date(), in: .current), in: .current)
-    @State private var hasEndDate = false
+    @State private var endMode: RecurrenceEndMode = .never
+    @State private var occurrenceCount = 12
     @State private var endDay = PayCalendar.localDay(sameDayAs: PayCalendar.utcDay(sameDayAs: Date(), in: .current), in: .current)
 
     private var parsedAmount: Int? {
@@ -59,6 +60,11 @@ struct ReserveFormView: View {
             if pickedReserveId == Self.newReserveSentinel { return trimmed.isEmpty ? nil : .new(name: name) }
             return reserves.first { $0.id == pickedReserveId }.map { .existing($0) }
         }
+    }
+
+    /// The date of the Nth occurrence for "After N" (the Nth, from the start, of the form's schedule).
+    private var lastDate: Date {
+        RecurrenceEnd.endDate(start: PayCalendar.utcDay(sameDayAs: startDay, in: .current), frequency: frequency, interval: interval, anchorDay: nil, occurrences: RecurrenceEndFields.clamped(occurrenceCount))
     }
 
     /// Save needs a non-zero amount and a reserve (a non-blank name for a new one).
@@ -98,8 +104,9 @@ struct ReserveFormView: View {
                 Stepper("Every \(interval) \(PlanFormat.unit(frequency, interval: interval))", value: $interval, in: 1...12)
             }
             DatePicker("Starting", selection: $startDay, displayedComponents: .date)
-            Toggle("Ends on a specific date", isOn: $hasEndDate)
-            if hasEndDate { DatePicker("Ends", selection: $endDay, in: startDay..., displayedComponents: .date) }
+            if frequency != .once {
+                RecurrenceEndFields(mode: $endMode, endDay: $endDay, count: $occurrenceCount, startDay: startDay, lastDate: lastDate)
+            }
             if let errorMessage {
                 Text(errorMessage).font(.caption).foregroundStyle(.red)
             }
@@ -109,8 +116,7 @@ struct ReserveFormView: View {
                 Button("Save") {
                     guard let target, let minorUnits = parsedAmount else { return }
                     let start = PayCalendar.utcDay(sameDayAs: startDay, in: .current)
-                    // The end is the last moment of its UTC day, so an occurrence on that day still counts.
-                    let end = hasEndDate ? PayCalendar.utcDay(sameDayAs: endDay, in: .current).addingTimeInterval(86_399) : nil
+                    let end = frequency == .once ? nil : RecurrenceEndFields.resolve(mode: endMode, endDay: endDay, count: occurrenceCount, lastDate: lastDate)
                     onSave(target, -abs(minorUnits), frequency, frequency == .once ? 1 : interval, start, end)
                 }
                 .disabled(!canSave)

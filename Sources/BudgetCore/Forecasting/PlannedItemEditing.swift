@@ -9,15 +9,19 @@ public struct OccurrenceChange: Equatable {
     /// Series-level: only `editFollowing` accepts a frequency or interval change.
     public var frequency: ForecastFrequency?
     public var interval: Int?
+    /// Series-level, `editFollowing` only: nil leaves the end as it is, `.some(nil)` removes it,
+    /// `.some(date)` sets it.
+    public var endDate: Date??
     /// Skip this occurrence (`editOccurrence`) or end the series here (`editFollowing`).
     public var remove: Bool = false
 
-    public init(amountMinorUnits: Int? = nil, date: Date? = nil, categoryId: Int64? = nil, frequency: ForecastFrequency? = nil, interval: Int? = nil, remove: Bool = false) {
+    public init(amountMinorUnits: Int? = nil, date: Date? = nil, categoryId: Int64? = nil, frequency: ForecastFrequency? = nil, interval: Int? = nil, endDate: Date?? = nil, remove: Bool = false) {
         self.amountMinorUnits = amountMinorUnits
         self.date = date
         self.categoryId = categoryId
         self.frequency = frequency
         self.interval = interval
+        self.endDate = endDate
         self.remove = remove
     }
 }
@@ -31,7 +35,7 @@ public enum PlannedItemEditError: Error, Equatable {
     case invalidDate
     /// An interval below 1.
     case invalidInterval
-    /// A frequency/interval change applies to the series: use `editFollowing`.
+    /// A frequency/interval/end-date change applies to the series: use `editFollowing`.
     case frequencyNeedsFollowing
     /// No such planned item (an enabled, non-hypothetical entry in an enabled group, as
     /// `ForecastCalculator.planEntries` — budget or scenario, not a `removed` tombstone), or
@@ -64,6 +68,7 @@ public enum PlannedItemEditing {
             if let interval = change.interval, interval < 1 { throw PlannedItemEditError.invalidInterval }
             if let frequency = change.frequency, frequency != entry.frequency { throw PlannedItemEditError.frequencyNeedsFollowing }
             if let interval = change.interval, interval != entry.interval { throw PlannedItemEditError.frequencyNeedsFollowing }
+            if change.endDate != nil { throw PlannedItemEditError.frequencyNeedsFollowing }
             let existing = try exception(db: db, entryId: entryId, originalDate: originalDate)
             try requireUnconfirmed(db: db, entry: entry, originalDate: originalDate, existing: existing, calendar: calendar)
             if !change.remove, let date = change.date {
@@ -127,10 +132,12 @@ public enum PlannedItemEditing {
                 let newStart = change.date ?? originalDate
                 let frequency = change.frequency ?? entry.frequency
                 let interval = change.interval ?? entry.interval
+                let endDate = change.endDate ?? entry.endDate
+                if let endDate, endDate < newStart { throw PlannedItemEditError.invalidDate }
                 let shifted = newStart != originalDate || frequency != entry.frequency || interval != entry.interval
                 var newEntry = ForecastEntry(groupId: entry.groupId, categoryId: change.categoryId ?? entry.categoryId,
                                              amountMinorUnits: change.amountMinorUnits ?? entry.amountMinorUnits,
-                                             frequency: frequency, interval: interval, startDate: newStart, endDate: entry.endDate,
+                                             frequency: frequency, interval: interval, startDate: newStart, endDate: endDate,
                                              isEnabled: entry.isEnabled, status: .manual, note: entry.note,
                                              scenarioId: entry.scenarioId)
                 if entry.scenarioId != nil {

@@ -237,6 +237,10 @@ struct EditOccurrenceSheet: View {
     @State private var categoryId: Int64
     @State private var frequency: ForecastFrequency
     @State private var interval: Int
+    @State private var endMode: RecurrenceEndMode
+    @State private var occurrenceCount = 12
+    /// Local midnight of the picked end day.
+    @State private var endDay: Date
     @State private var choosingScope = false
     @State private var errorMessage: String?
 
@@ -249,6 +253,8 @@ struct EditOccurrenceSheet: View {
         _categoryId = State(initialValue: row.occurrence.categoryId)
         _frequency = State(initialValue: row.entry.frequency)
         _interval = State(initialValue: row.entry.interval)
+        _endMode = State(initialValue: row.entry.endDate == nil ? .never : .onDate)
+        _endDay = State(initialValue: PayCalendar.localDay(sameDayAs: row.entry.endDate ?? row.occurrence.date, in: .current))
     }
 
     private var current: Category? { categories.first { $0.id == row.occurrence.categoryId } }
@@ -270,6 +276,29 @@ struct EditOccurrenceSheet: View {
 
     private var pickedDate: Date { PayCalendar.utcDay(sameDayAs: pickedDay, in: .current) }
 
+    /// The anchor day the new series would inherit (as `PlannedItemEditing.editFollowing`):
+    /// kept only between day-of-month schedules when the date doesn't move.
+    private var inheritedAnchorDay: Int? {
+        let dayOfMonth: Set<ForecastFrequency> = [.monthly, .annually]
+        guard pickedDate == row.occurrence.date, dayOfMonth.contains(row.entry.frequency), dayOfMonth.contains(frequency) else { return nil }
+        return row.entry.anchorDay ?? MonthRange.calendar.component(.day, from: row.entry.startDate)
+    }
+
+    /// The Nth occurrence counted from the edited occurrence (the new series' start).
+    private var lastDate: Date {
+        RecurrenceEnd.endDate(start: pickedDate, frequency: frequency, interval: interval, anchorDay: inheritedAnchorDay, occurrences: RecurrenceEndFields.clamped(occurrenceCount))
+    }
+
+    /// The series' end after the edit, as an `OccurrenceChange.endDate` (nil = unchanged).
+    private var endChange: Date?? {
+        guard frequency != .once else { return nil }
+        let resolved = RecurrenceEndFields.resolve(mode: endMode, endDay: endDay, count: occurrenceCount, lastDate: lastDate)
+        guard let current = row.entry.endDate else { return resolved.map { .some($0) } }
+        guard let resolved else { return .some(nil) }
+        // Same UTC day counts as unchanged (the stored end may be midnight or end of day).
+        return MonthRange.calendar.isDate(resolved, inSameDayAs: current) ? nil : .some(resolved)
+    }
+
     /// Only what changed; nil fields stay as they are.
     private var change: OccurrenceChange? {
         guard let signedAmount else { return nil }
@@ -279,10 +308,12 @@ struct EditOccurrenceSheet: View {
         if categoryId != row.occurrence.categoryId { change.categoryId = categoryId }
         if frequency != row.entry.frequency { change.frequency = frequency }
         if interval != row.entry.interval { change.interval = interval }
+        if let endChange { change.endDate = endChange }
         return change == OccurrenceChange() ? nil : change
     }
 
-    private var changesFrequency: Bool { frequency != row.entry.frequency || interval != row.entry.interval }
+    /// A frequency, interval or end change applies to the series, so only "This and all following".
+    private var changesFrequency: Bool { frequency != row.entry.frequency || interval != row.entry.interval || endChange != nil }
 
     var body: some View {
         Form {
@@ -300,8 +331,11 @@ struct EditOccurrenceSheet: View {
             if frequency != .once {
                 Stepper("Every \(interval) \(PlanFormat.unit(frequency, interval: interval))", value: $interval, in: 1...12)
             }
+            if frequency != .once {
+                RecurrenceEndFields(mode: $endMode, endDay: $endDay, count: $occurrenceCount, startDay: pickedDay, lastDate: lastDate)
+            }
             if changesFrequency {
-                Text("A frequency change applies to this and all following occurrences.")
+                Text("A frequency or end change applies to this and all following occurrences.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let errorMessage {
@@ -372,9 +406,15 @@ struct AddPlannedItemSheet: View {
     @State private var frequency: ForecastFrequency = .monthly
     @State private var interval = 1
     @State private var startDay = PayCalendar.localDay(sameDayAs: PayCalendar.utcDay(sameDayAs: Date(), in: .current), in: .current)
-    @State private var hasEndDate = false
+    @State private var endMode: RecurrenceEndMode = .never
+    @State private var occurrenceCount = 12
     @State private var endDay = PayCalendar.localDay(sameDayAs: PayCalendar.utcDay(sameDayAs: Date(), in: .current), in: .current)
     @State private var errorMessage: String?
+
+    /// The date of the Nth occurrence for "After N", from the picked start.
+    private var lastDate: Date {
+        RecurrenceEnd.endDate(start: PayCalendar.utcDay(sameDayAs: startDay, in: .current), frequency: frequency, interval: interval, anchorDay: nil, occurrences: RecurrenceEndFields.clamped(occurrenceCount))
+    }
 
     private var pickerCategories: [Category] {
         categories.filter { $0.type == type && !$0.isReserved && $0.isAssignable }.sorted { $0.name < $1.name }
@@ -451,10 +491,7 @@ struct AddPlannedItemSheet: View {
             }
             DatePicker(isRecurring ? "Starting" : "Date", selection: $startDay, displayedComponents: .date)
             if isRecurring {
-                Toggle("Ends on a specific date", isOn: $hasEndDate)
-                if hasEndDate {
-                    DatePicker("Ends", selection: $endDay, in: startDay..., displayedComponents: .date)
-                }
+                RecurrenceEndFields(mode: $endMode, endDay: $endDay, count: $occurrenceCount, startDay: startDay, lastDate: lastDate)
             }
             if let errorMessage {
                 Text(errorMessage).font(.callout).foregroundStyle(.red)
@@ -478,10 +515,7 @@ struct AddPlannedItemSheet: View {
     private func save() {
         guard let category, let amount = signedAmount else { return }
         let start = PayCalendar.utcDay(sameDayAs: startDay, in: .current)
-        // The end is the last moment of its UTC day, so an occurrence on that day still counts.
-        let end = isRecurring && hasEndDate
-            ? PayCalendar.utcDay(sameDayAs: endDay, in: .current).addingTimeInterval(86_399)
-            : nil
+        let end = isRecurring ? RecurrenceEndFields.resolve(mode: endMode, endDay: endDay, count: occurrenceCount, lastDate: lastDate) : nil
         switch onSave(category, amount, isRecurring ? frequency : .once, isRecurring ? interval : 1, start, end) {
         case .saved, .savedButReloadFailed: dismiss()
         case .failed(let message): errorMessage = message

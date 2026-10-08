@@ -62,6 +62,25 @@ final class PlannedItemEditingTests: XCTestCase {
         }
     }
 
+    func testEditFollowingSetsAndClearsTheSeriesEndDate() throws {
+        let f = try fixture(start: utc(2026, 10, 15))
+        try editFollowing(f, utc(2026, 11, 15), OccurrenceChange(endDate: .some(utc(2027, 2, 15))))
+        XCTAssertEqual(try entries(f).last?.endDate, utc(2027, 2, 15))
+        XCTAssertEqual(try entries(f).last?.startDate, utc(2026, 11, 15))
+        let g = try entries(f).last!
+        try f.manager.dbQueue.write { db in
+            try PlannedItemEditing.editFollowing(db: db, entryId: g.id!, originalDate: utc(2026, 12, 15), change: OccurrenceChange(endDate: .some(nil)), calendar: self.calendar)
+        }
+        XCTAssertNil(try entries(f).last?.endDate)
+    }
+
+    func testEditOccurrenceRejectsAnEndDateChange() throws {
+        let f = try fixture(start: utc(2026, 10, 15))
+        XCTAssertThrowsError(try editOccurrence(f, utc(2026, 11, 15), OccurrenceChange(endDate: .some(utc(2027, 2, 15))))) {
+            XCTAssertEqual($0 as? PlannedItemEditError, .frequencyNeedsFollowing)
+        }
+    }
+
     private func exceptions(_ f: Fixture) throws -> [PlannedOccurrenceException] {
         try f.manager.dbQueue.read { db in try PlannedOccurrenceException.order(Column("originalDate")).fetchAll(db) }
     }
