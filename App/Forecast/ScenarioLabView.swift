@@ -6,8 +6,6 @@ import BudgetCore
 /// Differences / Grid tabs on the right.
 struct ScenarioLabView: View {
     @ObservedObject var viewModel: ScenarioLabViewModel
-    @State private var tab: Tab = .compare
-
     enum Tab: String, CaseIterable, Identifiable {
         case compare = "Compare"
         case differences = "Differences"
@@ -22,7 +20,7 @@ struct ScenarioLabView: View {
             Divider()
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Picker("View", selection: $tab) {
+                    Picker("View", selection: $viewModel.tab) {
                         ForEach(Tab.allCases) { tab in Text(tab.rawValue).tag(tab) }
                     }
                     .pickerStyle(.segmented)
@@ -44,7 +42,7 @@ struct ScenarioLabView: View {
                     }
                     .font(.callout)
                 }
-                switch tab {
+                switch viewModel.tab {
                 case .compare: CompareTab(viewModel: viewModel)
                 case .differences: DifferencesTab(viewModel: viewModel)
                 case .grid: ScenarioGridTab(viewModel: viewModel)

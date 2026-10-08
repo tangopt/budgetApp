@@ -290,9 +290,9 @@ struct ScenarioGridTab: View {
             let members = categoriesByType(type)
             HStack(spacing: 0) {
                 ForEach(1...12, id: \.self) { month in
-                    cellView(cell(members, month: month), font: PlanCellView.captionFont).bold().frame(height: 24)
+                    cellView(cell(members, month: month), font: PlanCellView.captionFont, height: 24).bold()
                 }
-                cellView(yearCell(members), isYearTotal: true, font: PlanCellView.captionFont).bold().frame(height: 24)
+                cellView(yearCell(members), isYearTotal: true, font: PlanCellView.captionFont, height: 24).bold()
             }
             .background(Color.accentColor.opacity(0.08))
         case .category(let category), .groupChild(let category), .reserve(let category):
@@ -356,10 +356,12 @@ struct ScenarioGridTab: View {
     }
 
     /// A plan cell; for a scenario, highlighted with the Budget's value in its help when it differs.
-    private func cellView(_ cell: Cell, isYearTotal: Bool = false, font: Font = PlanCellView.bodyFont) -> some View {
+    private func cellView(_ cell: Cell, isYearTotal: Bool = false, font: Font = PlanCellView.bodyFont, height: CGFloat = 28) -> some View {
         let differs = !isReadOnly && cell.value != cell.budgetValue
         return PlanCellView(value: cell.value, pending: cell.pending, state: cell.state, isYearTotal: isYearTotal, font: font,
                             extraHelp: differs ? "Budget: \(Money.format(cell.budgetValue, currency: .gbp))" : nil)
+            // The fill covers the whole cell (full width and row height), not just the text.
+            .frame(height: height)
             .background(differs ? Self.differsFill : Color.clear)
     }
 

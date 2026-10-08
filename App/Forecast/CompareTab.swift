@@ -103,7 +103,7 @@ struct ScenarioNetWorthChart: View {
             if let readout {
                 RuleMark(x: .value("Selected", readout.date))
                     .foregroundStyle(Color.secondary.opacity(0.5))
-                    .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                    .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(DashboardFormat.monthYear(readout.date)).font(.caption2).foregroundStyle(.secondary)
                             ForEach(Array(readout.values.enumerated()), id: \.offset) { _, value in
@@ -124,6 +124,8 @@ struct ScenarioNetWorthChart: View {
         }
         .chartForegroundStyleScale(domain: ids, range: colors)
         .chartLegend(.hidden)
+        // Room above the plot for the "Today" label, so the hover read-out never covers it.
+        .chartPlotStyle { plot in plot.padding(.top, 20) }
         .chartXSelection(value: $selectedDate)
         .chartXAxis {
             AxisMarks(values: .stride(by: .year)) { _ in
@@ -161,15 +163,14 @@ struct ScenarioNetWorthChart: View {
     }
 }
 
-/// Rows = plans; per year: year-end net worth, the difference vs the Budget, income,
-/// expenses and the reserves' unspent part (`ScenarioComparison.yearSummaries`).
+/// One block per year; rows = plans: year-end net worth, the difference vs the Budget,
+/// income, expenses and the reserves' unspent part (`ScenarioComparison.yearSummaries`).
 struct SummaryTable: View {
     let rows: [ScenarioLabViewModel.SummaryRow]
-    /// The horizon's last month: its year's column group is labelled "to <month>".
+    /// The horizon's last month: its year's block is labelled "to <month>".
     let horizon: (year: Int, month: Int)
 
     private static let columns = ["Net worth", "Δ vs Budget", "Income", "Expenses", "Reserves (unspent)"]
-    private static let columnWidth: CGFloat = 112
 
     private var years: [Int] { rows.first?.years.map(\.year) ?? [] }
 
@@ -179,42 +180,38 @@ struct SummaryTable: View {
     }
 
     var body: some View {
-        ScrollView(.horizontal) {
-            Grid(alignment: .trailing, horizontalSpacing: 0, verticalSpacing: 0) {
+        VStack(alignment: .leading, spacing: 16) {
+            ForEach(years, id: \.self) { year in
+                yearBlock(year)
+            }
+        }
+    }
+
+    private func yearBlock(_ year: Int) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(yearLabel(year))
+                .font(.subheadline.bold())
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.accentColor.opacity(0.08))
+            Grid(alignment: .trailing, horizontalSpacing: 12, verticalSpacing: 0) {
                 GridRow {
-                    Text("").frame(width: 160)
-                    ForEach(years, id: \.self) { year in
-                        Text(yearLabel(year))
-                            .font(.subheadline.bold())
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 4)
-                            .background(Color.accentColor.opacity(0.08))
-                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
-                            .gridCellColumns(Self.columns.count)
+                    Text("Plan").font(.caption.bold()).gridColumnAlignment(.leading)
+                    ForEach(Self.columns, id: \.self) { column in
+                        Text(column).font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                GridRow {
-                    Text("Plan").font(.caption.bold()).frame(width: 160, alignment: .leading)
-                    ForEach(years, id: \.self) { year in
-                        ForEach(Array(Self.columns.enumerated()), id: \.offset) { index, column in
-                            Text(column)
-                                .font(.caption).foregroundStyle(.secondary)
-                                .frame(width: Self.columnWidth, alignment: .trailing)
-                                .padding(.vertical, 4)
-                                .overlay(index == 0 ? Rectangle().frame(width: 1).foregroundStyle(.separator) : nil, alignment: .leading)
-                        }
-                    }
-                }
+                .padding(.vertical, 4)
                 Divider().gridCellUnsizedAxes(.horizontal)
                 ForEach(rows) { row in
                     GridRow {
                         Text(row.name).fontWeight(row.isBudget ? .semibold : .regular)
                             .lineLimit(1)
-                            .frame(width: 160, alignment: .leading)
-                        ForEach(row.years, id: \.year) { summary in
-                            amount(summary.yearEndNetWorth, leadingRule: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if let summary = row.years.first(where: { $0.year == year }) {
+                            amount(summary.yearEndNetWorth)
                             if row.isBudget {
-                                Text("—").foregroundStyle(.secondary).frame(width: Self.columnWidth, alignment: .trailing)
+                                Text("—").foregroundStyle(.secondary)
                             } else {
                                 amount(summary.differenceVsBudget, signed: true)
                             }
@@ -227,24 +224,20 @@ struct SummaryTable: View {
                     Divider().gridCellUnsizedAxes(.horizontal)
                 }
             }
-            .padding(.bottom, 4)
+            .padding(.horizontal, 8)
         }
     }
 
     @ViewBuilder
-    private func amount(_ minorUnits: Int?, signed: Bool = false, leadingRule: Bool = false) -> some View {
-        Group {
-            if let minorUnits {
-                if signed && minorUnits > 0 {
-                    Text("+" + Money.format(minorUnits, currency: .gbp)).font(.body.monospacedDigit()).foregroundStyle(.green)
-                } else {
-                    MoneyText(minorUnits: minorUnits)
-                }
+    private func amount(_ minorUnits: Int?, signed: Bool = false) -> some View {
+        if let minorUnits {
+            if signed && minorUnits > 0 {
+                Text("+" + Money.format(minorUnits, currency: .gbp)).font(.body.monospacedDigit()).foregroundStyle(.green)
             } else {
-                Text("—").foregroundStyle(.secondary)
+                MoneyText(minorUnits: minorUnits)
             }
+        } else {
+            Text("—").foregroundStyle(.secondary)
         }
-        .frame(width: Self.columnWidth, alignment: .trailing)
-        .overlay(leadingRule ? Rectangle().frame(width: 1).foregroundStyle(.separator) : nil, alignment: .leading)
     }
 }

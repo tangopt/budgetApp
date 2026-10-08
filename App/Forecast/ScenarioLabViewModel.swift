@@ -44,6 +44,9 @@ final class ScenarioLabViewModel: ObservableObject {
     // MARK: Lab state
 
     @Published private(set) var scenarios: [Scenario] = []
+    /// The lab's open tab; a created or duplicated scenario switches it to the Grid.
+    @Published var tab: ScenarioLabView.Tab = .compare
+
     /// The plan the Differences and Grid tabs show: nil = the Budget.
     @Published var selectedScenarioId: Int64? {
         didSet {
@@ -497,10 +500,11 @@ final class ScenarioLabViewModel: ObservableObject {
 
     // MARK: Helpers
 
-    /// Selects and compares a just-created scenario (after the reload that fetched it).
+    /// Selects and compares a just-created scenario and opens its grid (after the reload that fetched it).
     private func show(_ id: Int64) {
         comparedIds.insert(id)
         selectedScenarioId = id
+        tab = .grid
         recomputeComparison()
     }
 
