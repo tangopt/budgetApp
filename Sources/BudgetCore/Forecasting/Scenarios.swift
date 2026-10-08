@@ -38,8 +38,15 @@ public struct ScenarioDifference: Equatable, Identifiable {
     /// `changed` only: field by field ("Amount: -£300.00 → -£350.00"), plus "N occurrences
     /// edited" when its exceptions differ from the source's.
     public var fieldChanges: [String]
+    /// `changed` / `removed` only: the budget entry this one was copied from, while it still exists.
+    public var sourceEntryId: Int64?
+    /// `changed` / `removed` only: that budget entry's series in words.
+    public var sourceSummary: String?
 
-    public init(id: Int64, kind: ScenarioChange, categoryName: String, summary: String, fieldChanges: [String]) {
+    public init(id: Int64, kind: ScenarioChange, categoryName: String, summary: String, fieldChanges: [String],
+                sourceEntryId: Int64? = nil, sourceSummary: String? = nil) {
+        self.sourceEntryId = sourceEntryId
+        self.sourceSummary = sourceSummary
         self.id = id
         self.kind = kind
         self.categoryName = categoryName
@@ -217,7 +224,24 @@ public enum Scenarios {
             }
             let described = kind == .removed ? (source ?? entry) : entry
             return ScenarioDifference(id: entry.id!, kind: kind, categoryName: names[entry.categoryId] ?? "?",
-                                      summary: summary(described), fieldChanges: fieldChanges)
+                                      summary: summary(described), fieldChanges: fieldChanges,
+                                      sourceEntryId: source?.id, sourceSummary: source.map(summary))
+        }
+    }
+
+    /// Puts one scenario item back to the budget's version: the entry is deleted (exceptions
+    /// cascade) and, for `changed`/`removed` entries whose budget source still exists, replaced
+    /// by a fresh unchanged copy of it (with its exceptions), as `create`/`refresh` copy.
+    public static func revert(db: Database, scenarioId: Int64, entryId: Int64) throws {
+        try db.inSavepoint {
+            guard let entry = try ForecastEntry.fetchOne(db, key: entryId), entry.scenarioId == scenarioId else { throw ScenarioError.notFound }
+            _ = try entry.delete(db)
+            if entry.scenarioChange == .changed || entry.scenarioChange == .removed,
+               let sourceId = entry.sourceEntryId,
+               let source = try ForecastEntry.budgetEntries.filter(key: sourceId).fetchOne(db) {
+                try copy(db: db, source, scenarioId: scenarioId, sourceEntryId: sourceId, change: nil)
+            }
+            return .commit
         }
     }
 

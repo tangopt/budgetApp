@@ -581,4 +581,118 @@ final class ScenariosTests: XCTestCase {
         XCTAssertEqual(tombstone.scenarioChange, .removed)
         XCTAssertFalse(tombstone.isEnabled)
     }
+
+    // MARK: - Revert
+
+    private func revert(_ f: Fixture, _ scenarioId: Int64, _ entryId: Int64) throws {
+        try f.manager.dbQueue.write { db in try Scenarios.revert(db: db, scenarioId: scenarioId, entryId: entryId) }
+    }
+
+    func testRevertAnAddedEntryDeletesItAndLeavesTheOthers() throws {
+        let f = try fixture()
+        let scenario = try create(f)
+        let added = try f.manager.dbQueue.write { db in
+            try PlannedItems.add(db: db, categoryId: f.categories["Gym"]!, amountMinorUnits: -4_000, frequency: .monthly, interval: 1, startDate: self.utc(2026, 11, 1), endDate: nil, scenarioId: scenario.id)
+        }
+        let before = try scenarioEntries(f, scenario.id!).count
+        try revert(f, scenario.id!, added.id!)
+        let after = try scenarioEntries(f, scenario.id!)
+        XCTAssertEqual(after.count, before - 1)
+        XCTAssertFalse(after.contains { $0.id == added.id })
+    }
+
+    func testRevertAChangedEntryRestoresAFreshCopyWithTheSourcesExceptions() throws {
+        let f = try fixture()
+        let scenario = try create(f)
+        let rentCopy = try copy(f, scenario, "Rent")
+        try editOccurrence(f, rentCopy.id!, utc(2026, 10, 31), OccurrenceChange(amountMinorUnits: -120_000))
+        try editFollowing(f, rentCopy.id!, utc(2026, 11, 30), OccurrenceChange(amountMinorUnits: -130_000))
+        XCTAssertEqual(try copy(f, scenario, "Rent").scenarioChange, .changed)
+        try revert(f, scenario.id!, rentCopy.id!)
+        let fresh = try copy(f, scenario, "Rent")
+        XCTAssertNotEqual(fresh.id, rentCopy.id)
+        XCTAssertNil(fresh.scenarioChange)
+        XCTAssertEqual(fresh.sourceEntryId, f.entries["Rent"])
+        XCTAssertEqual(fresh.amountMinorUnits, -100_000)
+        XCTAssertNil(fresh.endDate)
+        XCTAssertEqual(fresh.anchorDay, 31)
+        XCTAssertEqual(fresh.note, "flat")
+        XCTAssertEqual(try exceptions(f, entryId: fresh.id!).map(\.originalDate), [utc(2026, 12, 31)])
+        XCTAssertEqual(try exceptions(f, entryId: fresh.id!).map(\.amountMinorUnits), [-110_000])
+        // The edit-following split left an added entry behind; it's reverted on its own.
+        XCTAssertEqual(try scenarioEntries(f, scenario.id!).filter { $0.scenarioChange == .added }.count, 1)
+        XCTAssertNil(try f.manager.dbQueue.read { db in try ForecastEntry.fetchOne(db, key: rentCopy.id!) })
+    }
+
+    func testRevertARemovedTombstoneCopiesTheBudgetEntryBackEnabled() throws {
+        let f = try fixture()
+        let scenario = try create(f)
+        let carCopy = try copy(f, scenario, "Car")
+        try editFollowing(f, carCopy.id!, utc(2026, 11, 15), OccurrenceChange(remove: true))
+        XCTAssertEqual(try copy(f, scenario, "Car").scenarioChange, .removed)
+        try revert(f, scenario.id!, carCopy.id!)
+        let back = try copy(f, scenario, "Car")
+        XCTAssertNil(back.scenarioChange)
+        XCTAssertTrue(back.isEnabled)
+        XCTAssertEqual(back.amountMinorUnits, -30_000)
+        XCTAssertEqual(try scenarioEntries(f, scenario.id!).filter { $0.sourceEntryId == f.entries["Car"] }.count, 1)
+    }
+
+    func testRevertWhenTheSourceIsGoneJustDeletesTheScenarioEntry() throws {
+        let f = try fixture()
+        let scenario = try create(f)
+        let carCopy = try copy(f, scenario, "Car")
+        try editOccurrence(f, carCopy.id!, utc(2026, 12, 15), OccurrenceChange(amountMinorUnits: -31_000))
+        try f.manager.dbQueue.write { db in _ = try ForecastEntry.deleteOne(db, key: f.entries["Car"]!) }
+        // The scenario entry keeps its (dangling) sourceEntryId.
+        try revert(f, scenario.id!, carCopy.id!)
+        XCTAssertFalse(try scenarioEntries(f, scenario.id!).contains { $0.categoryId == f.categories["Car"] })
+    }
+
+    func testRevertOnlyTouchesTheGivenScenario() throws {
+        let f = try fixture()
+        let one = try create(f, "One")
+        let two = try create(f, "Two")
+        let oneCar = try copy(f, one, "Car")
+        let twoCar = try copy(f, two, "Car")
+        try editOccurrence(f, oneCar.id!, utc(2026, 12, 15), OccurrenceChange(amountMinorUnits: -31_000))
+        try editOccurrence(f, twoCar.id!, utc(2026, 12, 15), OccurrenceChange(amountMinorUnits: -32_000))
+        try revert(f, one.id!, oneCar.id!)
+        XCTAssertEqual(try copy(f, two, "Car").id, twoCar.id)
+        XCTAssertEqual(try copy(f, two, "Car").scenarioChange, .changed)
+        XCTAssertNil(try copy(f, one, "Car").scenarioChange)
+    }
+
+    func testRevertRejectsAnEntryOfAnotherScenarioOrAnUnknownOne() throws {
+        let f = try fixture()
+        let one = try create(f, "One")
+        let two = try create(f, "Two")
+        let twoCar = try copy(f, two, "Car")
+        XCTAssertThrowsError(try self.revert(f, one.id!, twoCar.id!)) { XCTAssertEqual($0 as? ScenarioError, .notFound) }
+        XCTAssertThrowsError(try self.revert(f, one.id!, 9_999)) { XCTAssertEqual($0 as? ScenarioError, .notFound) }
+        XCTAssertNotNil(try scenarioEntries(f, two.id!).first { $0.id == twoCar.id })
+    }
+
+    func testDifferencesCarryTheSourceEntryAndItsSummary() throws {
+        let f = try fixture()
+        let scenario = try create(f)
+        let carCopy = try copy(f, scenario, "Car")
+        try editFollowing(f, carCopy.id!, utc(2026, 11, 15), OccurrenceChange(amountMinorUnits: -35_000))
+        let phoneCopy = try copy(f, scenario, "Phone")
+        try editFollowing(f, phoneCopy.id!, utc(2026, 11, 10), OccurrenceChange(remove: true))
+        _ = try f.manager.dbQueue.write { db in
+            try PlannedItems.add(db: db, categoryId: f.categories["Salary"]!, amountMinorUnits: 100_000, frequency: .once, interval: 1, startDate: self.utc(2026, 12, 20), endDate: nil, scenarioId: scenario.id)
+        }
+        let differences = try f.manager.dbQueue.read { db in try Scenarios.differences(db: db, scenarioId: scenario.id!) }
+        let car = try XCTUnwrap(differences.first { $0.kind == .changed })
+        XCTAssertEqual(car.sourceEntryId, f.entries["Car"])
+        XCTAssertEqual(car.sourceSummary, "-£300.00 monthly from 15 Nov 2026")
+        let phone = try XCTUnwrap(differences.first { $0.kind == .removed })
+        XCTAssertEqual(phone.sourceEntryId, f.entries["Phone"])
+        XCTAssertEqual(phone.sourceSummary, "-£20.00 monthly from 10 Nov 2026")
+        for added in differences.filter({ $0.kind == .added }) {
+            XCTAssertNil(added.sourceEntryId)
+            XCTAssertNil(added.sourceSummary)
+        }
+    }
 }
