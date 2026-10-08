@@ -36,6 +36,9 @@ struct ImportView: View {
                     stagingProgressView
                 } else {
                     Button("Import CSV statement…") { actions.startCSV() }
+                    if let editCSVMapping = actions.editCSVMapping {
+                        Button("Edit column mapping…") { editCSVMapping() }
+                    }
                     Button("Import PDF statement…") { actions.startPDF() }
                 }
                 Spacer(minLength: 0)

@@ -2,76 +2,174 @@
 import SwiftUI
 import BudgetCore
 
+/// The CSV column-mapping sheet: pick a role for each column straight from the file, with
+/// a live check of the whole file and a preview of the transactions it would import.
+/// Opens prefilled from `existingProfile` when editing, otherwise from the header names.
 struct CSVMappingWizardView: View {
     let account: Account
-    let sampleHeaderRow: [String]
     let onSave: (ImportProfile) -> Void
 
-    @State private var dateColumn: Int
-    @State private var descriptionColumn: Int
-    @State private var amountColumn: Int
-    @State private var hasSeparateCreditColumn: Bool
-    @State private var creditColumn: Int
-    @State private var balanceColumn: Int?
-    @State private var dateFormat = "dd/MM/yyyy"
+    @StateObject private var model: CSVMappingModel
+    @State private var showUnreadable = false
+    /// Set when Save is pressed while something is still missing; cleared on the next change.
+    @State private var saveAttemptMessage: String?
+    @Environment(\.dismiss) private var dismiss
 
-    /// Pre-selects columns from the header names (`CSVColumnSuggester`); anything it
-    /// can't recognise falls back to the old positional defaults (0, 1, 2, 3), clamped to
-    /// the header's width.
-    init(account: Account, sampleHeaderRow: [String], onSave: @escaping (ImportProfile) -> Void) {
+    private static let unreadableListLimit = 10
+
+    init(account: Account, csvText: String, existingProfile: ImportProfile?, onSave: @escaping (ImportProfile) -> Void) {
         self.account = account
-        self.sampleHeaderRow = sampleHeaderRow
         self.onSave = onSave
-        let suggestion = CSVColumnSuggester.suggest(header: sampleHeaderRow)
-        let lastIndex = max(sampleHeaderRow.count - 1, 0)
-        _dateColumn = State(initialValue: suggestion.dateColumn ?? min(0, lastIndex))
-        _descriptionColumn = State(initialValue: suggestion.descriptionColumn ?? min(1, lastIndex))
-        _amountColumn = State(initialValue: suggestion.amountColumn ?? min(2, lastIndex))
-        _hasSeparateCreditColumn = State(initialValue: suggestion.hasSeparateDebitCredit)
-        _creditColumn = State(initialValue: suggestion.creditColumn ?? min(3, lastIndex))
-        _balanceColumn = State(initialValue: suggestion.balanceColumn)
+        _model = StateObject(wrappedValue: CSVMappingModel(account: account, csvText: csvText, existingProfile: existingProfile))
     }
 
     var body: some View {
-        Form {
-            Picker("Date column", selection: $dateColumn) {
-                ForEach(sampleHeaderRow.indices, id: \.self) { i in Text(sampleHeaderRow[i]).tag(i) }
-            }
-            Picker("Description column", selection: $descriptionColumn) {
-                ForEach(sampleHeaderRow.indices, id: \.self) { i in Text(sampleHeaderRow[i]).tag(i) }
-            }
-            Toggle("This statement splits amounts into separate debit/credit columns", isOn: $hasSeparateCreditColumn)
-            Picker(hasSeparateCreditColumn ? "Debit column" : "Amount column", selection: $amountColumn) {
-                ForEach(sampleHeaderRow.indices, id: \.self) { i in Text(sampleHeaderRow[i]).tag(i) }
-            }
-            if hasSeparateCreditColumn {
-                Picker("Credit column", selection: $creditColumn) {
-                    ForEach(sampleHeaderRow.indices, id: \.self) { i in Text(sampleHeaderRow[i]).tag(i) }
-                }
-            }
-            if account.kind != .credit {
-                Picker("Balance column", selection: $balanceColumn) {
-                    Text("None").tag(Int?.none)
-                    ForEach(sampleHeaderRow.indices, id: \.self) { i in Text(sampleHeaderRow[i]).tag(Int?.some(i)) }
-                }
-                Text("With a Balance column the importer can record this account's balance from the statement.")
-                    .font(.caption)
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Map columns — \(account.name)")
+                    .font(.title2.weight(.semibold))
+                Text("Choose what each column holds. Columns set to Ignore aren't imported.")
                     .foregroundStyle(.secondary)
             }
-            TextField("Date format (e.g. dd/MM/yyyy)", text: $dateFormat)
-            Button("Save mapping") {
-                let profile = ImportProfile(
-                    accountId: account.id!, format: .csv, csvDelimiter: ",",
-                    csvDateColumnIndex: dateColumn, csvDescriptionColumnIndex: descriptionColumn,
-                    csvAmountColumnIndex: amountColumn,
-                    csvCreditAmountColumnIndex: hasSeparateCreditColumn ? creditColumn : nil,
-                    csvBalanceColumnIndex: account.kind == .credit ? nil : balanceColumn,
-                    csvDateFormat: dateFormat
-                )
-                onSave(profile)
+            .padding([.horizontal, .top], 20)
+            .padding(.bottom, 12)
+
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 16) {
+                    CSVMappingTable(model: model)
+                    optionsRow
+                    Divider()
+                    CSVMappingPreview(transactions: previewTransactions, currency: model.currency, showsBalance: showsBalanceInPreview)
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 12)
+            }
+
+            Divider()
+            buttonRow
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+        }
+        .frame(minWidth: 900, idealWidth: 1100, minHeight: 600, idealHeight: 720)
+        .onChange(of: model.check) { saveAttemptMessage = nil }
+        .onChange(of: model.effectiveDateFormat) { saveAttemptMessage = nil }
+    }
+
+    // MARK: - Options row
+
+    private var optionsRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 16) {
+                dateFormatControls
+                if model.hasSignedAmountColumn {
+                    Toggle("Flip sign", isOn: $model.negateAmounts)
+                        .toggleStyle(.checkbox)
+                        .help("For banks that export spending as positive numbers.")
+                }
+                Spacer(minLength: 0)
+            }
+            if model.noFormatMatches {
+                Text("None of the usual date formats reads every date in this column. Type the format, e.g. dd/MM/yyyy.")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
+            liveCheck
+        }
+    }
+
+    private var dateFormatControls: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Picker("Date format", selection: $model.selectedDateFormat) {
+                ForEach(model.dateFormatCandidates, id: \.self) { format in
+                    Text(format).tag(Optional(format))
+                }
+                if !model.dateFormatCandidates.isEmpty { Divider() }
+                Text("Custom…").tag(String?.none)
+            }
+            .pickerStyle(.menu)
+            .fixedSize()
+            if model.selectedDateFormat == nil {
+                TextField("e.g. dd/MM/yyyy", text: $model.customDateFormat)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 160)
             }
         }
-        .padding()
-        .frame(width: 440)
+    }
+
+    @ViewBuilder
+    private var liveCheck: some View {
+        switch model.check {
+        case .missing(let roles):
+            Label("Still needed: \(CSVMappingModel.missingDescription(roles))", systemImage: "exclamationmark.circle.fill")
+                .foregroundStyle(.red)
+        case .parsed(let rowCount, let unreadable, _):
+            if unreadable.isEmpty {
+                Label("\(rowsRead(rowCount)), 0 problems", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Label("\(rowsRead(rowCount)), \(unreadable.count) can't be read", systemImage: "exclamationmark.circle.fill")
+                            .foregroundStyle(.red)
+                        Button(showUnreadable ? "Hide" : "Show") { showUnreadable.toggle() }
+                            .buttonStyle(.link)
+                    }
+                    if showUnreadable {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(unreadable.prefix(Self.unreadableListLimit).enumerated()), id: \.offset) { _, line in
+                                Text(line)
+                                    .font(.callout.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .textSelection(.enabled)
+                            }
+                            if unreadable.count > Self.unreadableListLimit {
+                                Text("…and \(unreadable.count - Self.unreadableListLimit) more")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.leading, 24)
+                    }
+                }
+            }
+        }
+    }
+
+    private func rowsRead(_ count: Int) -> String {
+        count == 1 ? "1 row read" : "\(count) rows read"
+    }
+
+    private var previewTransactions: [ParsedTransaction] {
+        if case .parsed(_, _, let preview) = model.check { return preview }
+        return []
+    }
+
+    private var showsBalanceInPreview: Bool {
+        model.allowBalance && model.mapping.roles.contains(.balance)
+    }
+
+    // MARK: - Buttons
+
+    private var buttonRow: some View {
+        HStack(spacing: 12) {
+            if let saveAttemptMessage {
+                Text(saveAttemptMessage)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
+            Spacer()
+            Button("Cancel", role: .cancel) { dismiss() }
+                .keyboardShortcut(.cancelAction)
+            Button("Save mapping") {
+                if let profile = model.makeProfile() {
+                    onSave(profile)
+                } else {
+                    saveAttemptMessage = model.saveBlocker
+                }
+            }
+            .keyboardShortcut(.defaultAction)
+        }
     }
 }

@@ -6,6 +6,19 @@ import UniformTypeIdentifiers
 struct ImportFlowActions {
     let startCSV: () -> Void
     let startPDF: () -> Void
+    /// Reopens the column-mapping sheet prefilled from the saved CSV profile — `nil` when the
+    /// account has none yet.
+    let editCSVMapping: (() -> Void)?
+}
+
+/// One presentation of the column-mapping sheet: the file it's shown with, and whether the
+/// file should be imported once the mapping is saved.
+private struct CSVMappingRequest: Identifiable {
+    let id = UUID()
+    let fileURL: URL
+    let csvText: String
+    let existingProfile: ImportProfile?
+    let stageAfterSave: Bool
 }
 
 /// Owns everything needed to START an import — the two file pickers, the column-mapping and
@@ -21,14 +34,26 @@ struct ImportFlowHost<Content: View>: View {
     @ViewBuilder let content: (ImportFlowActions) -> Content
 
     @State private var showFilePicker = false
-    @State private var pendingHeaderRowForWizard: [String]?
-    @State private var pendingFileURL: URL?
+    @State private var pendingCSVMapping: CSVMappingRequest?
+    /// The last CSV picked here, so "Edit column mapping…" can reopen the sheet with it
+    /// rather than asking for a file again.
+    @State private var lastCSVFileURL: URL?
+    /// Set by "Edit column mapping…" when there's no last file: the next picked file opens
+    /// the sheet (prefilled from the saved profile) instead of importing straight away.
+    @State private var editMappingAfterPick = false
+    @State private var hasCSVProfile = false
     @State private var showPDFPicker = false
     @State private var pendingPDFLines: [String]?
     @State private var pendingPDFFileName = "statement.pdf"
 
     var body: some View {
-        content(ImportFlowActions(startCSV: { showFilePicker = true }, startPDF: { showPDFPicker = true }))
+        content(ImportFlowActions(
+            startCSV: { editMappingAfterPick = false; showFilePicker = true },
+            startPDF: { showPDFPicker = true },
+            editCSVMapping: hasCSVProfile ? { editCSVMapping() } : nil
+        ))
+            .task(id: account.id) { refreshHasCSVProfile() }
+            .onChange(of: account.id) { lastCSVFileURL = nil }
             .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.commaSeparatedText]) { result in
                 switch result {
                 case .success(let url): handlePickedFile(url)
@@ -41,16 +66,17 @@ struct ImportFlowHost<Content: View>: View {
                 case .failure(let error): viewModel.fail("Couldn't open the file: \(error.localizedDescription)")
                 }
             }
-            .sheet(item: Binding(get: { pendingHeaderRowForWizard.map { Wrapped(value: $0) } }, set: { _ in pendingHeaderRowForWizard = nil })) { wrapped in
-                CSVMappingWizardView(account: account, sampleHeaderRow: wrapped.value) { profile in
-                    pendingHeaderRowForWizard = nil
+            .sheet(item: $pendingCSVMapping) { request in
+                CSVMappingWizardView(account: account, csvText: request.csvText, existingProfile: request.existingProfile) { profile in
+                    pendingCSVMapping = nil
                     do {
                         try profileStore.save(profile)
                     } catch {
                         viewModel.fail("Couldn't save the column mapping: \(error.localizedDescription)")
                         return
                     }
-                    if let url = pendingFileURL { startCSVStaging(url) }
+                    hasCSVProfile = true
+                    if request.stageAfterSave { startCSVStaging(request.fileURL) }
                 }
             }
             .sheet(item: Binding(get: { pendingPDFLines.map { Wrapped(value: $0) } }, set: { _ in pendingPDFLines = nil })) { wrapped in
@@ -83,32 +109,70 @@ struct ImportFlowHost<Content: View>: View {
 
     private func handlePickedFile(_ url: URL) {
         viewModel.errorMessage = nil
-        pendingFileURL = url
+        let editing = editMappingAfterPick
+        editMappingAfterPick = false
         guard let accountId = account.id else {
             viewModel.fail("This account hasn't been saved yet.")
             return
         }
+        guard let text = readCSV(at: url) else { return }
+        lastCSVFileURL = url
+        do {
+            let existing = try profileStore.find(accountId: accountId, format: .csv)
+            if existing != nil && !editing {
+                startCSVStaging(url)
+            } else {
+                // A new mapping, or an edit with the file about to be imported: either way
+                // the file is imported once the mapping is saved.
+                pendingCSVMapping = CSVMappingRequest(fileURL: url, csvText: text, existingProfile: existing, stageAfterSave: true)
+            }
+        } catch {
+            viewModel.fail("Couldn't load this account's import settings: \(error.localizedDescription)")
+        }
+    }
+
+    /// "Edit column mapping…": reopens the sheet with the last file picked here (saving only
+    /// replaces the mapping), or asks for the next file to import first.
+    private func editCSVMapping() {
+        viewModel.errorMessage = nil
+        guard let accountId = account.id else {
+            viewModel.fail("This account hasn't been saved yet.")
+            return
+        }
+        guard let url = lastCSVFileURL else {
+            editMappingAfterPick = true
+            showFilePicker = true
+            return
+        }
+        guard let text = readCSV(at: url) else { return }
+        do {
+            let existing = try profileStore.find(accountId: accountId, format: .csv)
+            pendingCSVMapping = CSVMappingRequest(fileURL: url, csvText: text, existingProfile: existing, stageAfterSave: false)
+        } catch {
+            viewModel.fail("Couldn't load this account's import settings: \(error.localizedDescription)")
+        }
+    }
+
+    /// The file's text, or `nil` (with the error shown) when it can't be read or is empty.
+    private func readCSV(at url: URL) -> String? {
         let text: String
         do {
             text = try ImportViewModel.readText(at: url)
         } catch {
             viewModel.fail("Couldn't read \(url.lastPathComponent) as UTF-8 text: \(error.localizedDescription)")
-            return
+            return nil
         }
         // CSVStatementParser.splitLines handles LF, CRLF and CR line endings alike.
-        guard let firstLine = CSVStatementParser.splitLines(text).first else {
+        guard !CSVStatementParser.splitLines(text).isEmpty else {
             viewModel.fail("\(url.lastPathComponent) is empty.")
-            return
+            return nil
         }
-        do {
-            if try profileStore.find(accountId: accountId, format: .csv) != nil {
-                startCSVStaging(url)
-            } else {
-                pendingHeaderRowForWizard = CSVRowSplitter.split(line: firstLine, delimiter: ",")
-            }
-        } catch {
-            viewModel.fail("Couldn't load this account's import settings: \(error.localizedDescription)")
-        }
+        return text
+    }
+
+    private func refreshHasCSVProfile() {
+        guard let accountId = account.id else { hasCSVProfile = false; return }
+        hasCSVProfile = (try? profileStore.find(accountId: accountId, format: .csv)) != nil
     }
 
     private func handlePickedPDF(_ url: URL) {
