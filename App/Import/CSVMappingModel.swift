@@ -18,6 +18,12 @@ final class CSVMappingModel: ObservableObject {
 
     static let sampleRowCount = 8
     static let previewCount = 8
+    /// Format detection looks at this many non-blank Date values from the top of the file,
+    /// so a footer or summary line further down shows up as "can't be read" in the live
+    /// check instead of ruling out every format.
+    static let detectionValueCount = 50
+    /// Typing a custom date format re-parses the whole file, so wait for a pause.
+    static let customFormatDebounce: Duration = .milliseconds(250)
 
     let header: [String]
     let sampleRows: [[String]]
@@ -31,8 +37,8 @@ final class CSVMappingModel: ObservableObject {
     @Published private(set) var mapping: CSVColumnMapping
     @Published private(set) var dateFormatCandidates: [String] = []
     /// `nil` means "Custom…", read from `customDateFormat`.
-    @Published var selectedDateFormat: String? { didSet { if selectedDateFormat != oldValue { recompute() } } }
-    @Published var customDateFormat: String { didSet { if selectedDateFormat == nil, customDateFormat != oldValue { recompute() } } }
+    @Published var selectedDateFormat: String? { didSet { if selectedDateFormat != oldValue, !isUpdatingRoles { recompute() } } }
+    @Published var customDateFormat: String { didSet { if selectedDateFormat == nil, customDateFormat != oldValue { scheduleRecompute() } } }
     @Published var negateAmounts: Bool { didSet { if negateAmounts != oldValue { recompute() } } }
     @Published private(set) var check: Check = .missing([])
 
@@ -41,6 +47,10 @@ final class CSVMappingModel: ObservableObject {
     /// Every data row (header excluded), split once — the Date column's values feed format
     /// detection whenever a different column becomes Date.
     private let dataRows: [[String]]
+    /// True inside `setRole`, so a format change it causes doesn't parse the file a second time.
+    private var isUpdatingRoles = false
+    /// The pending debounced recompute after a Custom… keystroke.
+    private var pendingRecompute: Task<Void, Never>?
 
     init(account: Account, csvText: String, existingProfile: ImportProfile?) {
         self.csvText = csvText
@@ -52,7 +62,13 @@ final class CSVMappingModel: ObservableObject {
         let header = rows.first ?? []
         let dataRows = Array(rows.dropFirst())
         let sampleRows = Array(dataRows.prefix(Self.sampleRowCount))
-        let columnCount = max(header.count, sampleRows.map(\.count).max() ?? 0)
+        // Never narrower than the saved mapping, so editing can't silently drop a mapped column.
+        let profileColumns = [
+            existingProfile?.csvDateColumnIndex, existingProfile?.csvDescriptionColumnIndex,
+            existingProfile?.csvAmountColumnIndex, existingProfile?.csvCreditAmountColumnIndex,
+            existingProfile?.csvBalanceColumnIndex
+        ].compactMap { $0 }
+        let columnCount = max(header.count, sampleRows.map(\.count).max() ?? 0, (profileColumns.max() ?? -1) + 1)
         self.header = header
         self.dataRows = dataRows
         self.sampleRows = sampleRows
@@ -109,15 +125,17 @@ final class CSVMappingModel: ObservableObject {
 
     var hasSignedAmountColumn: Bool { mapping.roles.contains(.amount) }
 
-    /// True when a Date column is mapped but none of the known formats reads all its values.
+    /// True when a Date column is mapped but none of the known formats reads its leading values.
     var noFormatMatches: Bool {
         mapping.roles.contains(.date) && dateFormatCandidates.isEmpty
     }
 
     func setRole(_ role: CSVColumnRole, forColumn index: Int) {
         let previousDateColumn = mapping.roles.firstIndex(of: .date)
+        isUpdatingRoles = true
         mapping.assign(role, toColumn: index)
         if mapping.roles.firstIndex(of: .date) != previousDateColumn { refreshDateFormats() }
+        isUpdatingRoles = false
         recompute()
     }
 
@@ -135,6 +153,8 @@ final class CSVMappingModel: ObservableObject {
 
     /// The profile to save, or `nil` while `saveBlocker` is set.
     func makeProfile() -> ImportProfile? {
+        // Don't judge a Custom… format by the check from before the last keystroke.
+        if pendingRecompute != nil { recompute() }
         guard saveBlocker == nil else { return nil }
         return draftProfile()
     }
@@ -160,7 +180,18 @@ final class CSVMappingModel: ObservableObject {
         selectedDateFormat = dateFormatCandidates.first
     }
 
+    private func scheduleRecompute() {
+        pendingRecompute?.cancel()
+        pendingRecompute = Task { [weak self] in
+            try? await Task.sleep(for: Self.customFormatDebounce)
+            guard !Task.isCancelled else { return }
+            self?.recompute()
+        }
+    }
+
     private func recompute() {
+        pendingRecompute?.cancel()
+        pendingRecompute = nil
         guard let profile = draftProfile() else {
             check = .missing(mapping.missingRoles)
             return
@@ -175,7 +206,11 @@ final class CSVMappingModel: ObservableObject {
 
     private static func detectFormats(mapping: CSVColumnMapping, dataRows: [[String]]) -> [String] {
         guard let dateColumn = mapping.roles.firstIndex(of: .date) else { return [] }
-        return CSVDateFormatDetector.candidates(values: dataRows.compactMap { $0[safe: dateColumn] })
+        let values = dataRows.lazy
+            .compactMap { $0[safe: dateColumn] }
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .prefix(detectionValueCount)
+        return CSVDateFormatDetector.candidates(values: Array(values))
     }
 }
 
