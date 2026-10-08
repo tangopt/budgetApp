@@ -601,6 +601,9 @@ struct BudgetGridView: View {
         case .sectionHeader(_, nil), .reservedHeader:
             HStack(spacing: 0) { emptyBandCell; emptyBandCell }
                 .background(Color.accentColor.opacity(0.08))
+        case .category(let category) where category.id == nil, .groupChild(let category) where category.id == nil:
+            // Nothing without an id, like `yearTotalCell`.
+            EmptyView()
         default:
             let current = yearValue(row, year: year)
             let prior = yearValue(row, year: previous)
@@ -617,7 +620,7 @@ struct BudgetGridView: View {
                     }
                 }
                 .multiYearValueCell()
-                Text(DashboardFormat.percent(delta?.fraction))
+                Text(DashboardFormat.percent(delta?.amount == 0 ? nil : delta?.fraction))
                     .multiYearValueCell()
             }
             .font(isSectionHeader ? Self.captionMoneyFont : Self.bodyMoneyFont)
@@ -648,7 +651,7 @@ struct BudgetGridView: View {
         case .account(let account):
             return viewModel.accountBalance(account, year: year, month: 12).map { ($0.nativeBalanceMinorUnits, $0.account.currency) }
         case .netWorthTotal:
-            return (viewModel.netWorthTotal(year: year, month: 12), .gbp)
+            return viewModel.monthEndNetWorth(year: year, month: 12).map { ($0, .gbp) }
         }
     }
 

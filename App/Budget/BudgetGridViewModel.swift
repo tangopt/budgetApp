@@ -130,7 +130,7 @@ final class BudgetGridViewModel: ObservableObject {
     }
 
     /// `NetWorthCalculator.monthEndNetWorth`, memoised (`nil` = no account has data yet).
-    private func monthEndNetWorth(year: Int, month: Int) -> Int? {
+    func monthEndNetWorth(year: Int, month: Int) -> Int? {
         let key = MonthRange.index(year: year, month: month)
         if let cached = netWorthCache[key] { return cached }
         let total = NetWorthCalculator.monthEndNetWorth(accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, year: year, month: month)

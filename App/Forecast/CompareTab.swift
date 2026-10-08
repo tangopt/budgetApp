@@ -26,7 +26,9 @@ struct CompareTab: View {
                     ScenarioNetWorthChart(actual: viewModel.actualLine, lines: viewModel.lines, today: viewModel.today)
                 }
                 Text("Summary").font(.headline)
-                SummaryTable(rows: viewModel.summaries, horizon: viewModel.horizon.endMonth(today: viewModel.today))
+                ScrollView(.horizontal) {
+                    SummaryTable(rows: viewModel.summaries, horizon: viewModel.horizon.endMonth(today: viewModel.today))
+                }
             }
             .padding(.bottom)
         }
@@ -97,7 +99,7 @@ struct ScenarioNetWorthChart: View {
             RuleMark(x: .value("Today", today))
                 .foregroundStyle(Color.secondary)
                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                .annotation(position: .bottom, alignment: .leading, spacing: 2) {
+                .annotation(position: .top, alignment: .leading, spacing: 2) {
                     Text("Today").font(.caption2).foregroundStyle(.secondary)
                 }
             if let readout {
@@ -109,14 +111,14 @@ struct ScenarioNetWorthChart: View {
         .chartLegend(.hidden)
         .chartOverlay { proxy in
             // The read-out sits just inside the plot's top edge, following the hovered month but
-            // clamped to the plot's width; "Today" is labelled at the bottom, so they never meet.
+            // clamped to the plot's width; below the "Today" label at the rule's top, so they never meet.
             GeometryReader { geometry in
                 if let readout, let frame = proxy.plotFrame.map({ geometry[$0] }), let x = proxy.position(forX: readout.date) {
                     let width: CGFloat = 190
-                    let left = min(max(frame.minX + x - width / 2, frame.minX), frame.maxX - width)
+                    let left = max(frame.minX, min(max(frame.minX + x - width / 2, frame.minX), frame.maxX - width))
                     readoutBox(readout)
                         .frame(width: width)
-                        .offset(x: left, y: frame.minY + 4)
+                        .offset(x: left, y: frame.minY + 18)
                         .allowsHitTesting(false)
                 }
             }

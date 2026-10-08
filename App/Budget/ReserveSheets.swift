@@ -23,7 +23,7 @@ struct ReserveFormView: View {
     let mode: Mode
     /// The error from the last failed save, shown inline above the buttons.
     let errorMessage: String?
-    /// Called when the user edits the name or amount, to clear a stale `errorMessage`.
+    /// Called when the user edits the name, amount or end, to clear a stale `errorMessage`.
     let onEdit: () -> Void
     let onSave: (ReserveTarget, _ amountMinorUnits: Int, ForecastFrequency, Int, Date, Date?) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -123,6 +123,9 @@ struct ReserveFormView: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
+        .onChange(of: endMode) { _, _ in onEdit() }
+        .onChange(of: endDay) { _, _ in onEdit() }
+        .onChange(of: occurrenceCount) { _, _ in onEdit() }
         .padding()
         .frame(width: 420)
     }
