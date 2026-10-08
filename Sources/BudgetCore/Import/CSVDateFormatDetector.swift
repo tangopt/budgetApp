@@ -17,10 +17,10 @@ public enum CSVDateFormatDetector {
         return knownFormats.filter { format in
             let formatter = StatementDateFormatter.make(format: format)
             // DateFormatter is lenient about separators and padding ("2026/10/01" reads as
-            // yyyy-MM-dd), so require the parsed date to print back as the same text.
+            // yyyy-MM-dd), so require the parsed date to print back as the same text (case aside: banks often upper-case months).
             return trimmed.allSatisfy { value in
                 guard let date = formatter.date(from: value) else { return false }
-                return formatter.string(from: date) == value
+                return formatter.string(from: date).caseInsensitiveCompare(value) == .orderedSame
             }
         }
     }

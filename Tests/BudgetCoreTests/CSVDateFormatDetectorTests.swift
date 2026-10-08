@@ -30,4 +30,19 @@ final class CSVDateFormatDetectorTests: XCTestCase {
     func testBlanksIgnored() {
         XCTAssertEqual(CSVDateFormatDetector.candidates(values: ["", "2026-10-01", "  "]), ["yyyy-MM-dd"])
     }
+
+    func testUnpaddedValuesMatchSingleDigitFormatOnly() {
+        let result = CSVDateFormatDetector.candidates(values: ["1/10/2026"])
+        XCTAssertTrue(result.contains("d/M/yyyy"))
+        XCTAssertFalse(result.contains("dd/MM/yyyy"))
+    }
+
+    func testTwoDigitYear() {
+        XCTAssertEqual(CSVDateFormatDetector.candidates(values: ["01/10/26"]), ["dd/MM/yy"])
+    }
+
+    func testUppercaseAndLowercaseMonths() {
+        XCTAssertTrue(CSVDateFormatDetector.candidates(values: ["01 OCT 2026"]).contains("dd MMM yyyy"))
+        XCTAssertTrue(CSVDateFormatDetector.candidates(values: ["1 oct 2026"]).contains("d MMM yyyy"))
+    }
 }

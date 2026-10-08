@@ -85,6 +85,7 @@ public struct CSVColumnMapping: Equatable, Sendable {
         return ImportProfile(
             accountId: accountId,
             format: .csv,
+            csvDelimiter: ",",
             csvDateColumnIndex: date,
             csvDescriptionColumnIndex: description,
             csvAmountColumnIndex: split ? column(of: .moneyOut) : column(of: .amount),
