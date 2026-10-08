@@ -7,8 +7,17 @@ import os
 struct ReviewRow: Identifiable {
     let staged: StagedTransaction
     var chosenCategoryId: Int64?
+    /// "Remember for <key>": whether a changed category also learns a rule on commit.
+    /// `nil` until the category is set or the toggle is touched (spec §4).
+    var learnRule: Bool?
     var id: UUID { staged.id }
+
+    var decision: ImportDecision {
+        ImportDecision(stagedId: staged.id, finalCategoryId: chosenCategoryId, learnRule: learnRule ?? false)
+    }
 }
+
+typealias ReviewItemId = ReviewSelectionId<UUID>
 
 @MainActor
 final class ImportViewModel: ObservableObject {
@@ -180,6 +189,36 @@ final class ImportViewModel: ObservableObject {
         return stagedRows.filter { !readyIds.contains($0.id) }
     }
 
+    /// Each section's rows grouped by merchant key (spec §4).
+    var needsAttentionGroups: [ReviewGroup<ReviewRow>] {
+        ReviewGrouping.groups(needsAttentionRows, scope: "attention", description: \.staged.parsed.rawDescription)
+    }
+
+    var readyGroups: [ReviewGroup<ReviewRow>] {
+        ReviewGrouping.groups(readyRows, scope: "ready", description: \.staged.parsed.rawDescription)
+    }
+
+    /// Sets the category of every listed row, recording whether each should learn a rule.
+    func setCategory(_ categoryId: Int64?, forRowIds ids: [UUID], learnRule: Bool) {
+        let idSet = Set(ids)
+        for index in stagedRows.indices where idSet.contains(stagedRows[index].id) {
+            stagedRows[index].chosenCategoryId = categoryId
+            stagedRows[index].learnRule = learnRule
+        }
+    }
+
+    /// The group row's Remember toggle: on while no row in the group has opted out.
+    func remembers(_ group: ReviewGroup<ReviewRow>) -> Bool {
+        group.rows.allSatisfy { $0.learnRule ?? ReviewGrouping.rememberDefault(rowCount: group.rows.count) }
+    }
+
+    func setRemember(_ remember: Bool, forRowIds ids: [UUID]) {
+        let idSet = Set(ids)
+        for index in stagedRows.indices where idSet.contains(stagedRows[index].id) {
+            stagedRows[index].learnRule = remember
+        }
+    }
+
     /// Commits only the "ready" rows, leaving "needs attention" rows still staged for
     /// further review. Each partial confirm creates its own `ImportBatch` row (a minor,
     /// harmless duplication of what used to always be exactly one batch per file — nothing
@@ -189,7 +228,7 @@ final class ImportViewModel: ObservableObject {
         errorMessage = nil
         let ready = readyRows
         guard !ready.isEmpty else { return true }
-        let decisions = ready.map { ImportDecision(stagedId: $0.staged.id, finalCategoryId: $0.chosenCategoryId) }
+        let decisions = ready.map(\.decision)
         do {
             try coordinator.commit(accountId: lastAccountId, sourceFileName: lastSourceFileName, staged: ready.map(\.staged), decisions: decisions)
         } catch {
@@ -208,15 +247,26 @@ final class ImportViewModel: ObservableObject {
     /// button and Return-to-confirm-and-advance keyboard handling in Task 7).
     @discardableResult
     func confirmRow(_ row: ReviewRow) -> Bool {
+        confirmRows([row])
+    }
+
+    /// Commits the given rows together — a single row, or every row of a group.
+    @discardableResult
+    func confirmRows(_ rows: [ReviewRow]) -> Bool {
         errorMessage = nil
-        let decisions = [ImportDecision(stagedId: row.staged.id, finalCategoryId: row.chosenCategoryId)]
+        // Re-read the rows so a caller holding an older copy still commits current choices.
+        let ids = Set(rows.map(\.id))
+        let rows = stagedRows.filter { ids.contains($0.id) }
+        guard !rows.isEmpty else { return true }
         do {
-            try coordinator.commit(accountId: lastAccountId, sourceFileName: lastSourceFileName, staged: [row.staged], decisions: decisions)
+            try coordinator.commit(accountId: lastAccountId, sourceFileName: lastSourceFileName, staged: rows.map(\.staged), decisions: rows.map(\.decision))
         } catch {
-            fail("Couldn't confirm this transaction: \(error.localizedDescription)")
+            fail(rows.count == 1 ? "Couldn't confirm this transaction: \(error.localizedDescription)"
+                                 : "Couldn't confirm these transactions: \(error.localizedDescription)")
             return false
         }
-        stagedRows.removeAll { $0.id == row.id }
+        let confirmedIds = Set(rows.map(\.id))
+        stagedRows.removeAll { confirmedIds.contains($0.id) }
         _ = recordBalancesAfterCommitIfWanted()
         if stagedRows.isEmpty && duplicates.isEmpty && unparsedLines.isEmpty { isReviewing = false }
         return true
@@ -232,7 +282,7 @@ final class ImportViewModel: ObservableObject {
         errorMessage = nil
         let remaining = stagedRows
         guard !remaining.isEmpty else { return true }
-        let decisions = remaining.map { ImportDecision(stagedId: $0.staged.id, finalCategoryId: $0.chosenCategoryId) }
+        let decisions = remaining.map(\.decision)
         do {
             try coordinator.commit(accountId: lastAccountId, sourceFileName: lastSourceFileName, staged: remaining.map(\.staged), decisions: decisions)
         } catch {

@@ -15,6 +15,8 @@ struct CategoryPickerButton: View {
     /// Sign drives the type filter (out → expense/transfer, in → income/transfer); `nil`
     /// or zero shows every category.
     let amountMinorUnits: Int?
+    /// Shown when nothing is selected — "Mixed" for a group whose rows differ.
+    var placeholder: String = "Choose category"
 
     @State private var isPresented = false
 
@@ -28,7 +30,7 @@ struct CategoryPickerButton: View {
             isPresented = true
         } label: {
             HStack(spacing: 4) {
-                Text(selectedName ?? "Choose category")
+                Text(selectedName ?? placeholder)
                     .foregroundStyle(selectedName == nil ? .secondary : .primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -58,13 +60,17 @@ struct CategoryPickerButton: View {
     }
 }
 
-private struct CategoryPickerPopover: View {
+/// The picker's popover content, also used directly by bulk "Set category…" buttons,
+/// which add the "Remember for <key>" toggle below the list.
+struct CategoryPickerPopover: View {
     let selection: Int64?
     let categories: [Category]
     let groups: [CategoryGroup]
     let suggestedId: Int64?
     let recentIds: [Int64]
     let amountMinorUnits: Int?
+    var remember: Binding<Bool>? = nil
+    var rememberLabel: String = ""
     let onPick: (Int64?) -> Void
     let onCancel: () -> Void
 
@@ -157,8 +163,17 @@ private struct CategoryPickerPopover: View {
                     proxy.scrollTo(entries[newValue].id)
                 }
             }
+            if let remember {
+                Divider()
+                Toggle(rememberLabel, isOn: remember)
+                    .toggleStyle(.checkbox)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+            }
         }
-        .frame(width: 280, height: 360)
+        .frame(width: 280, height: remember == nil ? 360 : 392)
         .onAppear {
             resetHighlight()
             searchFocused = true
