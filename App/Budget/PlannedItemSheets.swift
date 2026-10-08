@@ -284,9 +284,11 @@ struct EditOccurrenceSheet: View {
         return row.entry.anchorDay ?? MonthRange.calendar.component(.day, from: row.entry.startDate)
     }
 
-    /// The Nth occurrence counted from the edited occurrence (the new series' start).
+    /// The Nth occurrence counted from the new series' start: the occurrence's original date
+    /// unless the date is moved (exactly the start `PlannedItemEditing.editFollowing` uses).
     private var lastDate: Date {
-        RecurrenceEnd.endDate(start: pickedDate, frequency: frequency, interval: interval, anchorDay: inheritedAnchorDay, occurrences: RecurrenceEndFields.clamped(occurrenceCount))
+        let start = pickedDate == row.occurrence.date ? row.occurrence.originalDate : pickedDate
+        return RecurrenceEnd.endDate(start: start, frequency: frequency, interval: interval, anchorDay: inheritedAnchorDay, occurrences: RecurrenceEndFields.clamped(occurrenceCount))
     }
 
     /// The series' end after the edit, as an `OccurrenceChange.endDate` (nil = unchanged).
@@ -352,6 +354,9 @@ struct EditOccurrenceSheet: View {
         }
         .onChange(of: amountText) { _, _ in errorMessage = nil }
         .onChange(of: pickedDay) { _, _ in errorMessage = nil }
+        .onChange(of: endMode) { _, _ in errorMessage = nil }
+        .onChange(of: endDay) { _, _ in errorMessage = nil }
+        .onChange(of: occurrenceCount) { _, _ in errorMessage = nil }
         .confirmationDialog("Apply this change to", isPresented: $choosingScope) {
             if !changesFrequency {
                 Button("Only this occurrence") { save(.onlyThis) }
@@ -508,6 +513,9 @@ struct AddPlannedItemSheet: View {
         .onChange(of: amountText) { _, _ in errorMessage = nil }
         .onChange(of: categoryId) { _, _ in errorMessage = nil }
         .onChange(of: newCategoryName) { _, _ in errorMessage = nil }
+        .onChange(of: endMode) { _, _ in errorMessage = nil }
+        .onChange(of: endDay) { _, _ in errorMessage = nil }
+        .onChange(of: occurrenceCount) { _, _ in errorMessage = nil }
         .padding()
         .frame(width: 420)
     }

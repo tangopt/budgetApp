@@ -25,6 +25,7 @@ public enum RecurrenceEnd {
         guard let limit = calendar.date(byAdding: unit, value: stepValue * (occurrences + 1), to: start) else { return start }
         let entry = ForecastEntry(groupId: 0, categoryId: 0, amountMinorUnits: 0, frequency: frequency, interval: step, startDate: start, endDate: nil, isEnabled: true, status: .manual, note: nil, anchorDay: anchorDay)
         let dates = FrequencyExpander.occurrences(for: entry, in: PayPeriod(startDate: start, endDate: limit, type: .projected))
+        assert(dates.count >= occurrences, "RecurrenceEnd: expected \(occurrences) occurrences, generated \(dates.count)")
         return dates.count >= occurrences ? dates[occurrences - 1] : (dates.last ?? start)
     }
 }

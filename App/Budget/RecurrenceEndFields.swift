@@ -43,6 +43,10 @@ struct RecurrenceEndFields: View {
                 TextField("", value: $count, format: .number)
                     .frame(width: 50)
                     .multilineTextAlignment(.trailing)
+                    .onChange(of: count) { _, new in
+                        let clamped = Self.clamped(new)
+                        if clamped != new { count = clamped }
+                    }
                 Stepper("", value: $count, in: 1...999)
                     .labelsHidden()
                 Text(count == 1 ? "occurrence" : "occurrences")

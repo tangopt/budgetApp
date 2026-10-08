@@ -81,6 +81,45 @@ final class PlannedItemEditingTests: XCTestCase {
         }
     }
 
+    func testEditFollowingOnAMovedOccurrenceWithAfterNEndYieldsExactlyN() throws {
+        let f = try fixture(start: utc(2026, 10, 31))
+        // The 30 Nov occurrence of a monthly series on the 31st, moved to 2 Dec by an exception.
+        try addException(f, PlannedOccurrenceException(entryId: f.entryId, originalDate: utc(2026, 11, 30), date: utc(2026, 12, 2)))
+        let end = RecurrenceEnd.endDate(start: utc(2026, 11, 30), frequency: .monthly, interval: 1, anchorDay: 31, occurrences: 3)
+        try editFollowing(f, utc(2026, 11, 30), OccurrenceChange(endDate: .some(end)))
+        let new = try entries(f).last!
+        XCTAssertEqual(new.startDate, utc(2026, 11, 30))
+        let far = PayPeriod(startDate: utc(2026, 11, 1), endDate: utc(2028, 1, 1), type: .projected)
+        XCTAssertEqual(FrequencyExpander.occurrences(for: new, in: far), [utc(2026, 11, 30), utc(2026, 12, 31), utc(2027, 1, 31)])
+    }
+
+    func testEditFollowingRejectsAnEndBeforeTheNewStart() throws {
+        let f = try fixture(start: utc(2026, 10, 15))
+        XCTAssertThrowsError(try editFollowing(f, utc(2026, 11, 15), OccurrenceChange(endDate: .some(utc(2026, 11, 1))))) {
+            XCTAssertEqual($0 as? PlannedItemEditError, .invalidDate)
+        }
+        XCTAssertEqual(try entries(f).count, 1)
+    }
+
+    func testEndChangeOnAScenarioCopyFromItsFirstOccurrenceMarksItChanged() throws {
+        let f = try fixture(start: utc(2026, 10, 15))
+        let copyId: Int64 = try f.manager.dbQueue.write { db in
+            var scenario = Scenario(name: "What if", createdAt: self.utc(2026, 10, 1))
+            try scenario.insert(db)
+            var copy = ForecastEntry(groupId: f.groupId, categoryId: f.rentId, amountMinorUnits: -100_000, frequency: .monthly, interval: 1, startDate: self.utc(2026, 10, 15), endDate: nil, isEnabled: true, status: .manual, note: nil, scenarioId: scenario.id!, sourceEntryId: f.entryId)
+            try copy.insert(db)
+            return copy.id!
+        }
+        try f.manager.dbQueue.write { db in
+            try PlannedItemEditing.editFollowing(db: db, entryId: copyId, originalDate: self.utc(2026, 10, 15), change: OccurrenceChange(endDate: .some(self.utc(2027, 3, 15))), calendar: self.calendar)
+        }
+        let all = try entries(f).filter { $0.scenarioId != nil }
+        XCTAssertEqual(all.count, 1)
+        XCTAssertEqual(all[0].scenarioChange, .changed)
+        XCTAssertEqual(all[0].sourceEntryId, f.entryId)
+        XCTAssertEqual(all[0].endDate, utc(2027, 3, 15))
+    }
+
     private func exceptions(_ f: Fixture) throws -> [PlannedOccurrenceException] {
         try f.manager.dbQueue.read { db in try PlannedOccurrenceException.order(Column("originalDate")).fetchAll(db) }
     }
