@@ -9,6 +9,9 @@ import GRDB
 final class UncategorizedViewModel: ObservableObject {
     @Published var transactions: [Transaction] = []
     @Published var categories: [Category] = []
+    /// Category groups and recently used categories for the category picker.
+    @Published var categoryGroups: [CategoryGroup] = []
+    @Published var recentCategoryIds: [Int64] = []
     @Published var errorMessage: String?
 
     private let dbQueue: DatabaseQueue
@@ -20,6 +23,9 @@ final class UncategorizedViewModel: ObservableObject {
     func load() throws {
         transactions = try dbQueue.read { db in try UncategorizedTransactions.fetch(db: db) }
         categories = try dbQueue.read { db in try Category.fetchAll(db) }
+        categoryGroups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
+        let since = Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
+        recentCategoryIds = try dbQueue.read { db in try CategoryShortlist.recent(db: db, since: since, limit: 5) }
     }
 
     /// Assigns a category, marks the transaction confirmed, and learns a rule from the

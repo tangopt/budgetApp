@@ -10,14 +10,18 @@ public struct StagedTransaction: Equatable, Identifiable {
     /// Assigned at staging time, including the within-file occurrence index (see
     /// `TransactionFingerprint.compute(occurrence:)`), and persisted as-is on commit.
     public let fingerprint: String
+    /// For `.history` suggestions, how many past transactions back it (see
+    /// `CategorizationResult.historyCount`); `nil` for every other source.
+    public let historyCount: Int?
 
-    public init(id: UUID = UUID(), parsed: ParsedTransaction, suggestedCategoryId: Int64?, source: CategorizedBy, confidence: Double, fingerprint: String) {
+    public init(id: UUID = UUID(), parsed: ParsedTransaction, suggestedCategoryId: Int64?, source: CategorizedBy, confidence: Double, fingerprint: String, historyCount: Int? = nil) {
         self.id = id
         self.parsed = parsed
         self.suggestedCategoryId = suggestedCategoryId
         self.source = source
         self.confidence = confidence
         self.fingerprint = fingerprint
+        self.historyCount = historyCount
     }
 }
 
@@ -140,7 +144,7 @@ public final class ImportCoordinator {
             let batch = nonDuplicates[batchStart..<min(batchStart + Self.categorizationBatchSize, nonDuplicates.count)]
             let results = await categorizationService.categorizeBatch(descriptions: batch.map(\.parsed.rawDescription), rules: rules, categories: categories, history: history)
             for (item, result) in zip(batch, results) {
-                staged.append(StagedTransaction(parsed: item.parsed, suggestedCategoryId: result.categoryId, source: result.source, confidence: result.confidence, fingerprint: item.fingerprint))
+                staged.append(StagedTransaction(parsed: item.parsed, suggestedCategoryId: result.categoryId, source: result.source, confidence: result.confidence, fingerprint: item.fingerprint, historyCount: result.historyCount))
             }
             categorizedCount += batch.count
             onProgress(categorizedCount, nonDuplicates.count)
@@ -185,7 +189,7 @@ public final class ImportCoordinator {
             let batch = items[batchStart..<min(batchStart + Self.categorizationBatchSize, items.count)]
             let results = await categorizationService.categorizeBatch(descriptions: batch.map(\.parsed.rawDescription), rules: rules, categories: categories, history: history)
             for (item, categorization) in zip(batch, results) {
-                result.append(StagedTransaction(parsed: item.parsed, suggestedCategoryId: categorization.categoryId, source: categorization.source, confidence: categorization.confidence, fingerprint: item.fingerprint))
+                result.append(StagedTransaction(parsed: item.parsed, suggestedCategoryId: categorization.categoryId, source: categorization.source, confidence: categorization.confidence, fingerprint: item.fingerprint, historyCount: categorization.historyCount))
             }
             categorizedCount += batch.count
             onProgress(categorizedCount, items.count)

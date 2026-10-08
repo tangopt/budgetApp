@@ -4,6 +4,9 @@ public struct CategorizationResult: Equatable {
     public let categoryId: Int64?
     public let source: CategorizedBy
     public let confidence: Double
+    /// For `.history` results, how many past transactions of the merchant used the
+    /// suggested category ("Suggested from N past transactions"); `nil` otherwise.
+    public var historyCount: Int? = nil
 }
 
 public final class CategorizationService {
@@ -48,7 +51,7 @@ public final class CategorizationService {
             } else if !historyIndex.isEmpty,
                       let hit = historyIndex.suggest(merchantKey: MerchantKey.make(description)),
                       categories.contains(where: { $0.id == hit.categoryId }) {
-                results[index] = CategorizationResult(categoryId: hit.categoryId, source: .history, confidence: hit.share)
+                results[index] = CategorizationResult(categoryId: hit.categoryId, source: .history, confidence: hit.share, historyCount: hit.count)
             } else {
                 unmatchedIndices.append(index)
                 unmatchedDescriptions.append(description)

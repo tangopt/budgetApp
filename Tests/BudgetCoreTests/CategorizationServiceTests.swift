@@ -154,13 +154,16 @@ final class CategorizationServiceTests: XCTestCase {
         XCTAssertEqual(results[0].categoryId, 1)
         XCTAssertEqual(results[0].source, .history)
         XCTAssertEqual(results[0].confidence, 0.75, accuracy: 0.0001)
+        XCTAssertEqual(results[0].historyCount, 3)
         XCTAssertEqual(results[1].source, .llm)
+        XCTAssertNil(results[1].historyCount)
         XCTAssertEqual(fake.lastBatchDescriptions, ["NANDOS"])
 
         let rule = Rule(id: 1, matchPattern: "TESCO", matchType: .contains, categoryId: 2, priority: 10)
         let ruled = await service.categorizeBatch(descriptions: ["TESCO STORES 2041"], rules: [rule], categories: [groceries, eatingOut], history: history)
         XCTAssertEqual(ruled[0].categoryId, 2)
         XCTAssertEqual(ruled[0].source, .rule)
+        XCTAssertNil(ruled[0].historyCount)
     }
 
     func testHistorySuggestingANonAssignableCategoryFallsThrough() async {

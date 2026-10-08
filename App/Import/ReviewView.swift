@@ -191,7 +191,7 @@ struct ReviewView: View {
             ConfidenceDot(source: row.staged.source, confidence: row.staged.confidence)
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.staged.parsed.rawDescription)
-                Text(row.staged.parsed.date.formatted(date: .abbreviated, time: .omitted))
+                Text(detailLine(for: row))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -213,10 +213,20 @@ struct ReviewView: View {
                 }
             }
         )
-        return Picker("", selection: binding) {
-            Text("Uncategorized").tag(Int64?.none)
-            ForEach(categories.filter(\.isAssignable)) { category in Text(category.name).tag(Int64?.some(category.id!)) }
-        }
-        .labelsHidden()
+        return CategoryPickerButton(
+            selection: binding,
+            categories: categories,
+            groups: viewModel.categoryGroups,
+            suggestedId: row.staged.suggestedCategoryId,
+            recentIds: viewModel.recentCategoryIds,
+            amountMinorUnits: row.staged.parsed.amountMinorUnits
+        )
+    }
+
+    /// "1 Oct 2026 · Suggested from 3 past transactions" for history suggestions.
+    private func detailLine(for row: ReviewRow) -> String {
+        let date = row.staged.parsed.date.formatted(date: .abbreviated, time: .omitted)
+        guard row.staged.source == .history, let count = row.staged.historyCount else { return date }
+        return "\(date) · Suggested from \(count) past transaction\(count == 1 ? "" : "s")"
     }
 }

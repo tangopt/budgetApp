@@ -93,6 +93,7 @@ final class ImportCoordinatorTests: XCTestCase {
         let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n01/07/2026,TESCO STORES 3312,-9.00", profile: profile, accountId: account.id!)
         XCTAssertEqual(staged.staged[0].suggestedCategoryId, groceries.id)
         XCTAssertEqual(staged.staged[0].source, .history)
+        XCTAssertEqual(staged.staged[0].historyCount, 2)
     }
 
     func makeCoordinator(_ manager: DatabaseManager) -> ImportCoordinator {

@@ -37,6 +37,9 @@ final class ImportViewModel: ObservableObject {
     @Published var recordStatementBalancesOnConfirm = true
     /// Set once the balances for the current review have been recorded.
     @Published private(set) var statementBalancesRecorded: StatementBalanceRecording?
+    /// Category groups and recently used categories for the review rows' category picker.
+    @Published private(set) var categoryGroups: [CategoryGroup] = []
+    @Published private(set) var recentCategoryIds: [Int64] = []
 
     private let dbQueue: DatabaseQueue
     private let coordinator: ImportCoordinator
@@ -123,6 +126,7 @@ final class ImportViewModel: ObservableObject {
         statementBalancesRecorded = nil
         recordStatementBalancesOnConfirm = true
         stagedRows = result.staged.map { ReviewRow(staged: $0, chosenCategoryId: $0.suggestedCategoryId) }
+        loadPickerContext()
         duplicates = result.duplicates
         unparsedLines = result.unparsedLines
         isReviewing = true
@@ -143,6 +147,17 @@ final class ImportViewModel: ObservableObject {
         } catch {
             fail("Couldn't stage the duplicates: \(error.localizedDescription)")
         }
+    }
+
+    /// Loads what the category picker needs once per review. Failing here only costs the
+    /// picker its group headings and Recent section, so errors are not surfaced.
+    private func loadPickerContext() {
+        let since = Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
+        let context = try? dbQueue.read { db in
+            (try CategoryGroup.fetchAll(db), try CategoryShortlist.recent(db: db, since: since, limit: 5))
+        }
+        categoryGroups = context?.0 ?? []
+        recentCategoryIds = context?.1 ?? []
     }
 
     func dismissDuplicates() { duplicates = [] }

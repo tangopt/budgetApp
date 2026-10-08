@@ -52,16 +52,19 @@ struct UncategorizedView: View {
     }
 
     private func categoryPicker(for transaction: Transaction) -> some View {
-        Picker("", selection: Binding<Int64?>(
-            get: { transaction.categoryId },
-            set: { newValue in
-                guard let newValue else { return }
-                viewModel.assignCategory(transaction, to: newValue)
-            }
-        )) {
-            Text("Uncategorized").tag(Int64?.none)
-            ForEach(viewModel.categories.filter(\.isAssignable)) { category in Text(category.name).tag(Int64?.some(category.id!)) }
-        }
-        .labelsHidden()
+        CategoryPickerButton(
+            selection: Binding<Int64?>(
+                get: { transaction.categoryId },
+                set: { newValue in
+                    guard let newValue else { return }
+                    viewModel.assignCategory(transaction, to: newValue)
+                }
+            ),
+            categories: viewModel.categories,
+            groups: viewModel.categoryGroups,
+            suggestedId: nil,
+            recentIds: viewModel.recentCategoryIds,
+            amountMinorUnits: transaction.amountMinorUnits
+        )
     }
 }
