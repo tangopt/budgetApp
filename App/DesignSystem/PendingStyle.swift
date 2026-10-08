@@ -4,7 +4,7 @@ import AppKit
 
 extension Color {
     /// Expected (not yet confirmed) money: a darker amber in light mode so it reads on
-    /// white, the system yellow in dark mode. Used with italic amounts, the clock /
+    /// white, the system yellow in dark mode. Used with italic amounts, the full-circle /
     /// half-circle icons, the grid's caption, and "Unconfirmed" labels.
     static let pending = Color(nsColor: NSColor(name: "pendingAmount") { appearance in
         switch appearance.bestMatch(from: [.darkAqua, .aqua, .accessibilityHighContrastDarkAqua, .accessibilityHighContrastAqua]) {

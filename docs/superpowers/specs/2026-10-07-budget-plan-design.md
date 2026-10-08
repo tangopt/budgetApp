@@ -84,7 +84,7 @@ An occurrence is **confirmed** when its pay month is closed, or when its categor
 
 ## Budget grid
 
-- Months: closed → actuals (as now). Open (started or not) → `PlanStatus.cell` value = actual + pending, pending styled unconfirmed (secondary colour, italic) with an icon: `clock` for `.allExpected`, `circle.lefthalf.filled` for `.partial`; help text "£x actual + £y expected" / "£y expected".
+- Months: closed → actuals (as now). Open (started or not) → `PlanStatus.cell` value = actual + pending, pending styled unconfirmed (secondary colour, italic) with an icon: `circle.fill` for `.allExpected`, `circle.lefthalf.filled` for `.partial`; help text "£x actual + £y expected" / "£y expected".
 - Reserves: as now (closed 0, open what's left), shown with the `.allExpected` icon while they count.
 - Group and section rows sum their members' values; the icon shows when any member is pending (partial if any member is partial).
 - Year total sums the displayed values; footnote "Includes £x not yet confirmed" when any pending.

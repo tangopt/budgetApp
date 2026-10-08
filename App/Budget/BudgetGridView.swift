@@ -244,7 +244,7 @@ struct BudgetGridView: View {
 
             if let year = viewModel.selectedYear, hasPending(year: year) {
                 HStack(spacing: 4) {
-                    Image(systemName: "clock")
+                    Image(systemName: "circle.fill")
                     Image(systemName: "circle.lefthalf.filled")
                     Text("Italic amounts include planned money not yet confirmed. Hover a cell (or a Year Total) for how much.")
                 }

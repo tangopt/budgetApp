@@ -3,7 +3,7 @@ import SwiftUI
 import BudgetCore
 
 /// A plan grid cell (the Budget grid and the scenario lab's grid) with its unconfirmed part
-/// shown: the value italic and `Color.pending` while any of it is pending, with `clock` (all
+/// shown: the value italic and `Color.pending` while any of it is pending, with `circle.fill` (all
 /// expected) or `circle.lefthalf.filled` (partly happened), and help text splitting it
 /// ("£x actual + £y expected"; a Year Total says "Includes £x not yet confirmed").
 struct PlanCellView: View {
@@ -21,7 +21,7 @@ struct PlanCellView: View {
     var body: some View {
         HStack(spacing: 4) {
             if state != .none {
-                Image(systemName: state == .partial ? "circle.lefthalf.filled" : "clock")
+                Image(systemName: state == .partial ? "circle.lefthalf.filled" : "circle.fill")
                     .font(.caption2)
                     .foregroundStyle(Color.pending)
             }
