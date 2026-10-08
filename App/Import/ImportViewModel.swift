@@ -19,6 +19,16 @@ struct ReviewRow: Identifiable {
 
 typealias ReviewItemId = ReviewSelectionId<UUID>
 
+/// The review list's two sections, grouped by merchant key.
+struct ReviewSections {
+    let needsAttention: [ReviewGroup<ReviewRow>]
+    let ready: [ReviewGroup<ReviewRow>]
+
+    var all: [ReviewGroup<ReviewRow>] { needsAttention + ready }
+    var needsAttentionCount: Int { needsAttention.reduce(0) { $0 + $1.rows.count } }
+    var readyCount: Int { ready.reduce(0) { $0 + $1.rows.count } }
+}
+
 @MainActor
 final class ImportViewModel: ObservableObject {
     @Published var stagedRows: [ReviewRow] = []
@@ -179,23 +189,28 @@ final class ImportViewModel: ObservableObject {
     func dismissDuplicates() { duplicates = [] }
     func dismissUnparsedLines() { unparsedLines = [] }
 
-    var readyRows: [ReviewRow] {
+    /// Both sections' rows, partitioned once.
+    private var partitionedRows: (ready: [ReviewRow], needsAttention: [ReviewRow]) {
         let readyIds = Set(ReviewPartitioning.partition(stagedRows.map(\.staged)).ready.map(\.id))
-        return stagedRows.filter { readyIds.contains($0.id) }
+        var ready: [ReviewRow] = []
+        var needsAttention: [ReviewRow] = []
+        for row in stagedRows {
+            if readyIds.contains(row.id) { ready.append(row) } else { needsAttention.append(row) }
+        }
+        return (ready, needsAttention)
     }
 
-    var needsAttentionRows: [ReviewRow] {
-        let readyIds = Set(ReviewPartitioning.partition(stagedRows.map(\.staged)).ready.map(\.id))
-        return stagedRows.filter { !readyIds.contains($0.id) }
-    }
+    var readyRows: [ReviewRow] { partitionedRows.ready }
+    var needsAttentionRows: [ReviewRow] { partitionedRows.needsAttention }
 
-    /// Each section's rows grouped by merchant key (spec §4).
-    var needsAttentionGroups: [ReviewGroup<ReviewRow>] {
-        ReviewGrouping.groups(needsAttentionRows, scope: "attention", description: \.staged.parsed.rawDescription)
-    }
-
-    var readyGroups: [ReviewGroup<ReviewRow>] {
-        ReviewGrouping.groups(readyRows, scope: "ready", description: \.staged.parsed.rawDescription)
+    /// Each section's rows grouped by merchant key (spec §4), computed together so a view
+    /// can read it once per body.
+    var reviewSections: ReviewSections {
+        let (ready, needsAttention) = partitionedRows
+        return ReviewSections(
+            needsAttention: ReviewGrouping.groups(needsAttention, scope: "attention", description: \.staged.parsed.rawDescription),
+            ready: ReviewGrouping.groups(ready, scope: "ready", description: \.staged.parsed.rawDescription)
+        )
     }
 
     /// Sets the category of every listed row, recording whether each should learn a rule.
@@ -207,9 +222,21 @@ final class ImportViewModel: ObservableObject {
         }
     }
 
-    /// The group row's Remember toggle: on while no row in the group has opted out.
-    func remembers(_ group: ReviewGroup<ReviewRow>) -> Bool {
-        group.rows.allSatisfy { $0.learnRule ?? ReviewGrouping.rememberDefault(rowCount: group.rows.count) }
+    /// The group picker: sets every row in the group, each keeping the Remember value its
+    /// group checkbox currently shows for it (so a mixed checkbox stays mixed).
+    func setCategory(_ categoryId: Int64?, for group: ReviewGroup<ReviewRow>) {
+        let remember = Dictionary(uniqueKeysWithValues: group.rows.map { ($0.id, remembers($0, in: group)) })
+        for index in stagedRows.indices {
+            guard let learnRule = remember[stagedRows[index].id] else { continue }
+            stagedRows[index].chosenCategoryId = categoryId
+            stagedRows[index].learnRule = learnRule
+        }
+    }
+
+    /// Whether this row of a group is ticked in the group's Remember checkbox: its own
+    /// choice, or the group default (on for 2+ rows) until one is made.
+    func remembers(_ row: ReviewRow, in group: ReviewGroup<ReviewRow>) -> Bool {
+        row.learnRule ?? ReviewGrouping.rememberDefault(rowCount: group.rows.count)
     }
 
     func setRemember(_ remember: Bool, forRowIds ids: [UUID]) {

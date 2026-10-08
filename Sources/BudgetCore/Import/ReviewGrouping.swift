@@ -82,7 +82,9 @@ public enum ReviewGrouping {
     public static func selectedRowIds<Row: Identifiable>(_ selection: Set<ReviewSelectionId<Row.ID>>, in groups: [ReviewGroup<Row>]) -> [Row.ID] {
         var result: [Row.ID] = []
         for group in groups {
-            let wholeGroup = selection.contains(group.id)
+            // A group id only selects while it is still a multi-row group (a stale id can
+            // linger after confirming leaves one row).
+            let wholeGroup = group.isMultiRow && selection.contains(group.id)
             for row in group.rows where wholeGroup || selection.contains(.row(row.id)) {
                 result.append(row.id)
             }
@@ -97,5 +99,10 @@ public enum ReviewGrouping {
             guard group.isMultiRow else { return [group.selectionId] }
             return [group.id] + (expanded.contains(group.id) ? group.rows.map { .row($0.id) } : [])
         }
+    }
+
+    /// Every line that can be selected (all groups expanded) — used to drop stale ids.
+    public static func selectableItems<Row: Identifiable>(_ groups: [ReviewGroup<Row>]) -> [ReviewSelectionId<Row.ID>] {
+        visibleItems(groups, expanded: Set(groups.map(\.id)))
     }
 }

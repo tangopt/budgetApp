@@ -88,4 +88,15 @@ final class ReviewGroupingTests: XCTestCase {
         XCTAssertEqual(ReviewGrouping.visibleItems(grouped, expanded: []), [tesco, .row(2)])
         XCTAssertEqual(ReviewGrouping.visibleItems(grouped, expanded: [tesco]), [tesco, .row(1), .row(3), .row(2)])
     }
+
+    func testStaleGroupIdDoesNotSelectASingleRowGroup() {
+        let grouped = groups([Row(id: 1, description: "TESCO 1"), Row(id: 2, description: "AMAZON")])
+        let selection: Set<ReviewSelectionId<Int>> = [.group(scope: "s", key: "TESCO")]
+        XCTAssertEqual(ReviewGrouping.selectedRowIds(selection, in: grouped), [])
+    }
+
+    func testSelectableItemsIncludeEveryGroupAndRow() {
+        let rows = [Row(id: 1, description: "TESCO 1"), Row(id: 2, description: "AMAZON"), Row(id: 3, description: "TESCO 2")]
+        XCTAssertEqual(ReviewGrouping.selectableItems(groups(rows)), [.group(scope: "s", key: "TESCO"), .row(1), .row(3), .row(2)])
+    }
 }

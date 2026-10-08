@@ -23,6 +23,7 @@ struct ReviewView: View {
     }
 
     var body: some View {
+        let sections = viewModel.reviewSections
         VStack(alignment: .leading, spacing: 12) {
             statementBalancesPanel
 
@@ -92,18 +93,16 @@ struct ReviewView: View {
             }
 
             List(selection: $selection) {
-                let attentionGroups = viewModel.needsAttentionGroups
-                if !attentionGroups.isEmpty {
-                    Section("Needs your attention (\(viewModel.needsAttentionRows.count))") {
-                        ForEach(attentionGroups) { group in
+                if !sections.needsAttention.isEmpty {
+                    Section("Needs your attention (\(sections.needsAttentionCount))") {
+                        ForEach(sections.needsAttention) { group in
                             groupContent(group, showInlineConfirm: true)
                         }
                     }
                 }
-                let readyGroups = viewModel.readyGroups
-                if !readyGroups.isEmpty {
-                    DisclosureGroup("Ready to confirm (\(viewModel.readyRows.count))", isExpanded: $showReady) {
-                        ForEach(readyGroups) { group in
+                if !sections.ready.isEmpty {
+                    DisclosureGroup("Ready to confirm (\(sections.readyCount))", isExpanded: $showReady) {
+                        ForEach(sections.ready) { group in
                             groupContent(group, showInlineConfirm: false)
                         }
                     }
@@ -114,14 +113,22 @@ struct ReviewView: View {
                 // Return confirms a single selected row or group once every row in it has a
                 // category, then moves to the first line still showing.
                 guard selection.count == 1 else { return .ignored }
-                let rows = rows(for: selection)
+                let rows = rows(for: selection, in: sections)
                 guard !rows.isEmpty, rows.allSatisfy({ $0.chosenCategoryId != nil }) else { return .ignored }
                 // On failure, keep the selection so its error and state stay put.
                 guard viewModel.confirmRows(rows) else { return .handled }
-                let visible = ReviewGrouping.visibleItems(viewModel.needsAttentionGroups, expanded: expandedGroups)
-                    + (showReady ? ReviewGrouping.visibleItems(viewModel.readyGroups, expanded: expandedGroups) : [])
+                let after = viewModel.reviewSections
+                let visible = ReviewGrouping.visibleItems(after.needsAttention, expanded: expandedGroups)
+                    + (showReady ? ReviewGrouping.visibleItems(after.ready, expanded: expandedGroups) : [])
                 selection = visible.first.map { [$0] } ?? []
                 return .handled
+            }
+            // Confirming (inline, a group, Confirm N ready) removes rows and can turn a group
+            // into a single row, so drop selected ids that no longer name a line.
+            .onChange(of: viewModel.stagedRows.map(\.id)) { _, _ in
+                let selectable = Set(ReviewGrouping.selectableItems(viewModel.reviewSections.all))
+                selection.formIntersection(selectable)
+                expandedGroups.formIntersection(selectable)
             }
 
             if uncategorizedCount > 0 {
@@ -135,13 +142,13 @@ struct ReviewView: View {
             }
 
             HStack {
-                setCategoryButton
-                Button("Confirm \(viewModel.readyRows.count) ready") {
+                setCategoryButton(sections)
+                Button("Confirm \(sections.readyCount) ready") {
                     if viewModel.confirmReady() && viewModel.stagedRows.isEmpty {
                         onCommitted()
                     }
                 }
-                .disabled(viewModel.readyRows.isEmpty)
+                .disabled(sections.ready.isEmpty)
                 .keyboardShortcut(.defaultAction)
                 // The only way to commit rows with no category picked at all (they can't
                 // use Confirm/Confirm-ready) — they're saved as Uncategorized to assign later.
@@ -193,8 +200,8 @@ struct ReviewView: View {
     }
 
     /// Every staged row the given selection covers, in display order.
-    private func rows(for selection: Set<ReviewItemId>) -> [ReviewRow] {
-        let groups = viewModel.needsAttentionGroups + viewModel.readyGroups
+    private func rows(for selection: Set<ReviewItemId>, in sections: ReviewSections) -> [ReviewRow] {
+        let groups = sections.all
         let ids = ReviewGrouping.selectedRowIds(selection, in: groups)
         let rowsById = Dictionary(uniqueKeysWithValues: groups.flatMap(\.rows).map { ($0.id, $0) })
         return ids.compactMap { rowsById[$0] }
@@ -209,9 +216,9 @@ struct ReviewView: View {
                     reviewRow(row, showInlineConfirm: showInlineConfirm).tag(ReviewItemId.row(row.id))
                 }
             } label: {
-                groupRow(group, showInlineConfirm: showInlineConfirm)
+                // Selection tags go on row views: the label is the group's outline row.
+                groupRow(group, showInlineConfirm: showInlineConfirm).tag(group.id)
             }
-            .tag(group.id)
         } else if let row = group.rows.first {
             reviewRow(row, showInlineConfirm: showInlineConfirm).tag(group.selectionId)
         }
@@ -239,10 +246,14 @@ struct ReviewView: View {
             }
             Spacer()
             MoneyText(minorUnits: ReviewGrouping.total(amounts))
-            Toggle("Remember", isOn: Binding(
-                get: { viewModel.remembers(group) },
-                set: { viewModel.setRemember($0, forRowIds: group.rows.map(\.id)) }
-            ))
+            // One source per row, so the checkbox shows mixed when rows differ (e.g. after one
+            // row was changed on its own); clicking it sets them all.
+            Toggle("Remember", sources: group.rows.map { row in
+                Binding(
+                    get: { viewModel.remembers(row, in: group) },
+                    set: { viewModel.setRemember($0, forRowIds: [row.id]) }
+                )
+            }, isOn: \.self)
             .toggleStyle(.checkbox)
             .help("Remember for \(group.key): learn a rule so future \(group.key) transactions get this category")
             groupPicker(for: group).frame(width: 200)
@@ -259,7 +270,7 @@ struct ReviewView: View {
         let binding = Binding<Int64?>(
             get: { if case .uniform(let id) = state { return id } else { return nil } },
             set: { newValue in
-                viewModel.setCategory(newValue, forRowIds: group.rows.map(\.id), learnRule: viewModel.remembers(group))
+                viewModel.setCategory(newValue, for: group)
             }
         )
         return CategoryPickerButton(
@@ -288,8 +299,8 @@ struct ReviewView: View {
 
     /// Applies one category to every selected row (a selected group = all its rows), with
     /// the "Remember for <key>" toggle in the popover.
-    private var setCategoryButton: some View {
-        let rows = rows(for: selection)
+    private func setCategoryButton(_ sections: ReviewSections) -> some View {
+        let rows = rows(for: selection, in: sections)
         return Button("Set category…") {
             bulkRemember = ReviewGrouping.rememberDefault(rowCount: rows.count)
             showSetCategory = true
