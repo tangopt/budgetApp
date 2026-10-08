@@ -42,9 +42,16 @@ public struct ScenarioDifference: Equatable, Identifiable {
     public var sourceEntryId: Int64?
     /// `changed` / `removed` only: that budget entry's series in words.
     public var sourceSummary: String?
+    /// When the series starts: the budget source's for `changed`/`removed` rows that have one, else the entry's.
+    public var startDate: Date
+    /// `changed` / `removed` only: the budget source's category (a scenario may re-file the item).
+    public var sourceCategoryName: String?
 
     public init(id: Int64, kind: ScenarioChange, categoryName: String, summary: String, fieldChanges: [String],
-                sourceEntryId: Int64? = nil, sourceSummary: String? = nil) {
+                sourceEntryId: Int64? = nil, sourceSummary: String? = nil,
+                startDate: Date = .distantPast, sourceCategoryName: String? = nil) {
+        self.startDate = startDate
+        self.sourceCategoryName = sourceCategoryName
         self.sourceEntryId = sourceEntryId
         self.sourceSummary = sourceSummary
         self.id = id
@@ -225,16 +232,20 @@ public enum Scenarios {
             let described = kind == .removed ? (source ?? entry) : entry
             return ScenarioDifference(id: entry.id!, kind: kind, categoryName: names[entry.categoryId] ?? "?",
                                       summary: summary(described), fieldChanges: fieldChanges,
-                                      sourceEntryId: source?.id, sourceSummary: source.map(summary))
+                                      sourceEntryId: source?.id, sourceSummary: source.map(summary),
+                                      startDate: (source ?? entry).startDate,
+                                      sourceCategoryName: source.flatMap { names[$0.categoryId] })
         }
     }
 
-    /// Puts one scenario item back to the budget's version: the entry is deleted (exceptions
+    /// Puts one scenario item back to the budget's version (an unchanged copy is left alone): the entry is deleted (exceptions
     /// cascade) and, for `changed`/`removed` entries whose budget source still exists, replaced
     /// by a fresh unchanged copy of it (with its exceptions), as `create`/`refresh` copy.
     public static func revert(db: Database, scenarioId: Int64, entryId: Int64) throws {
         try db.inSavepoint {
             guard let entry = try ForecastEntry.fetchOne(db, key: entryId), entry.scenarioId == scenarioId else { throw ScenarioError.notFound }
+            // An unchanged copy is already the budget's version.
+            guard entry.scenarioChange != nil else { return .commit }
             _ = try entry.delete(db)
             if entry.scenarioChange == .changed || entry.scenarioChange == .removed,
                let sourceId = entry.sourceEntryId,

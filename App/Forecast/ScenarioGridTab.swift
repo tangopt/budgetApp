@@ -109,7 +109,7 @@ struct ScenarioGridTab: View {
             }
         }
         .sheet(item: $cellAllowance, onDismiss: { allowanceError = nil }) { cell in
-            ReserveFormView(mode: .addAmount(cell.reserve), errorMessage: allowanceError, initialDate: cell.date,
+            ReserveFormView(mode: .addAmountInScenario(cell.reserve, scenarioName: viewModel.gridScenario?.name ?? ""), errorMessage: allowanceError, initialDate: cell.date,
                             onEdit: { if allowanceError != nil { allowanceError = nil } }) { target, amount, frequency, interval, start, end in
                 switch viewModel.addReserveAllowance(target, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end) {
                 case .saved, .savedButReloadFailed: cellAllowance = nil

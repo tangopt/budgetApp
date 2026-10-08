@@ -17,6 +17,8 @@ struct ReserveFormView: View {
     enum Mode {
         case newReserve
         case addAmount(Category)
+        /// An empty reserve cell in a scenario's grid: the allowance goes to that scenario.
+        case addAmountInScenario(Category, scenarioName: String)
         /// A scenario's "+ Add allowance…": pick a reserve or "+ New reserve…".
         case chooseReserve(reserves: [Category], scenarioName: String)
     }
@@ -67,7 +69,7 @@ struct ReserveFormView: View {
         switch mode {
         case .newReserve:
             return trimmed.isEmpty ? nil : .new(name: name)
-        case .addAmount(let reserve):
+        case .addAmount(let reserve), .addAmountInScenario(let reserve, _):
             return .existing(reserve)
         case .chooseReserve(let reserves, _):
             guard let pickedReserveId else { return nil }
@@ -94,6 +96,8 @@ struct ReserveFormView: View {
                     .font(.caption).foregroundStyle(.secondary)
             case .addAmount(let reserve):
                 Text("Add an amount to \(reserve.name)").font(.headline)
+            case .addAmountInScenario(let reserve, let scenarioName):
+                Text("Add an amount to \(reserve.name) in “\(scenarioName)”").font(.headline)
             case .chooseReserve(let reserves, let scenarioName):
                 Text("Add a reserve allowance to “\(scenarioName)”").font(.headline)
                 Picker("Reserve", selection: $pickedReserveId) {

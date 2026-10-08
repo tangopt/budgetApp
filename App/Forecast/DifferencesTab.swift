@@ -59,8 +59,9 @@ struct DifferencesTab: View {
         ), titleVisibility: .visible, presenting: reverting) { target in
             Button("Revert", role: .destructive) { viewModel.revert(target.difference, in: target.scenario); reverting = nil }
             Button("Cancel", role: .cancel) { reverting = nil }
-        } message: { _ in
-            Text("Your edits to this item in the scenario are lost.")
+        } message: { target in
+            Text("Your edits to this item in the scenario are lost."
+                + (target.difference.kind == .changed ? " If this item was split with “This and all following”, revert its continuation too, or it will be counted twice." : ""))
         }
         .sheet(item: $editing) { row in
             EditOccurrenceSheet(row: row, categories: viewModel.categories, fixedScope: .thisAndFollowing) { change, scope in

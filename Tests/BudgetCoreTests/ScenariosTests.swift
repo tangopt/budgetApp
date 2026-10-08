@@ -462,6 +462,10 @@ final class ScenariosTests: XCTestCase {
         XCTAssertEqual(differences.map(\.kind), [.changed, .changed, .removed, .added, .changed, .added])
         XCTAssertEqual(differences.map(\.categoryName), ["Rent", "Salary", "Phone", "Rent", "Phone", "Salary"])
         XCTAssertEqual(differences[0].id, rentCopy.id)
+        // A budget-backed row keeps the source's category and start even when the scenario re-files it.
+        XCTAssertEqual(differences[4].sourceCategoryName, "Car")
+        XCTAssertEqual(differences[0].startDate, utc(2026, 2, 28))
+        XCTAssertNil(differences[3].sourceCategoryName)
         XCTAssertEqual(differences[0].summary, "-£1,000.00 monthly from 28 Feb 2026 until 29 Nov 2026")
         XCTAssertEqual(differences[0].fieldChanges, ["End: none → 29 Nov 2026"])
         XCTAssertEqual(differences[1].fieldChanges, ["1 occurrence edited"])
@@ -586,6 +590,15 @@ final class ScenariosTests: XCTestCase {
 
     private func revert(_ f: Fixture, _ scenarioId: Int64, _ entryId: Int64) throws {
         try f.manager.dbQueue.write { db in try Scenarios.revert(db: db, scenarioId: scenarioId, entryId: entryId) }
+    }
+
+    func testRevertingAnUnchangedCopyDoesNothing() throws {
+        let f = try fixture()
+        let scenario = try create(f)
+        let rent = try copy(f, scenario, "Rent")
+        let before = try scenarioEntries(f, scenario.id!)
+        try revert(f, scenario.id!, rent.id!)
+        XCTAssertEqual(try scenarioEntries(f, scenario.id!), before)
     }
 
     func testRevertAnAddedEntryDeletesItAndLeavesTheOthers() throws {

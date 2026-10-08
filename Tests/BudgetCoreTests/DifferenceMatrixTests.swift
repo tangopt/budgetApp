@@ -4,8 +4,9 @@ import XCTest
 /// The Differences tab's matrix builder (spec 2026-10-08-scenario-lab-tabs-design.md): pure,
 /// rows keyed by budget source id or added entry, one cell per scenario.
 final class DifferenceMatrixTests: XCTestCase {
-    private func diff(_ id: Int64, _ kind: ScenarioChange, _ category: String, source: Int64? = nil, sourceSummary: String? = nil, summary: String = "s") -> ScenarioDifference {
-        ScenarioDifference(id: id, kind: kind, categoryName: category, summary: summary, fieldChanges: [], sourceEntryId: source, sourceSummary: sourceSummary)
+    private func diff(_ id: Int64, _ kind: ScenarioChange, _ category: String, source: Int64? = nil, sourceSummary: String? = nil, summary: String = "s", start: Date = .distantPast, sourceCategory: String? = nil) -> ScenarioDifference {
+        ScenarioDifference(id: id, kind: kind, categoryName: category, summary: summary, fieldChanges: [], sourceEntryId: source, sourceSummary: sourceSummary,
+                           startDate: start, sourceCategoryName: sourceCategory)
     }
 
     func testTwoScenariosChangingTheSameBudgetItemShareOneRow() {
@@ -45,6 +46,36 @@ final class DifferenceMatrixTests: XCTestCase {
         ])
         XCTAssertEqual(rows.map(\.categoryName), ["Apples", "Car", "Car", "Rent"])
         XCTAssertEqual(rows.map(\.id), ["added-1-13", "added-1-11", "source-9", "source-1"])
+    }
+
+    func testRowsOfOneCategorySortByStartDateNotByIdText() {
+        let early = Date(timeIntervalSince1970: 1_000_000), late = Date(timeIntervalSince1970: 2_000_000)
+        let rows = DifferenceMatrix.rows(differences: [
+            (scenarioId: 1, differences: [
+                diff(1, .changed, "Car", source: 10, sourceSummary: "a", start: late),
+                diff(2, .changed, "Car", source: 9, sourceSummary: "b", start: early),
+            ]),
+        ])
+        XCTAssertEqual(rows.map(\.id), ["source-9", "source-10"])
+        // Same category and date: numeric id order, so source-9 comes before source-10.
+        let tied = DifferenceMatrix.rows(differences: [
+            (scenarioId: 1, differences: [
+                diff(1, .changed, "Car", source: 10, sourceSummary: "a", start: early),
+                diff(2, .changed, "Car", source: 9, sourceSummary: "b", start: early),
+            ]),
+        ])
+        XCTAssertEqual(tied.map(\.id), ["source-9", "source-10"])
+    }
+
+    func testABudgetRowIsLabelledAndSortedByTheSourceCategory() {
+        let rows = DifferenceMatrix.rows(differences: [
+            (scenarioId: 1, differences: [
+                diff(1, .changed, "Phone", source: 5, sourceSummary: "car", sourceCategory: "Car"),
+                diff(2, .added, "Bike"),
+            ]),
+        ])
+        XCTAssertEqual(rows.map(\.categoryName), ["Bike", "Car"])
+        XCTAssertEqual(rows[1].cells[1]?.categoryName, "Phone")
     }
 
     func testNoDifferencesNoRows() {
