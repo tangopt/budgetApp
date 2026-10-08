@@ -30,12 +30,12 @@ public final class CategorizationService {
     }
 
     /// Batched form of `categorize`: rule-matches every description first (fast, no model
-    /// call), then sends only the still-unmatched descriptions through one
+    /// call), then tries the history of past categorised transactions, then sends only the still-unmatched descriptions through one
     /// `suggestCategories` call instead of one `suggestCategory` call each. Results are
     /// returned in the same order as `descriptions`, same as calling `categorize` once per
     /// description would — callers can't tell which path was used from the shape of the
     /// result, only from `.source` on each one.
-    public func categorizeBatch(descriptions: [String], rules: [Rule], categories: [Category]) async -> [CategorizationResult] {
+    public func categorizeBatch(descriptions: [String], rules: [Rule], categories: [Category], history: [HistoryEntry] = []) async -> [CategorizationResult] {
         // Reserves are forecast-only; the model must never suggest one.
         let categories = categories.filter(\.isAssignable)
         var results = [CategorizationResult?](repeating: nil, count: descriptions.count)
@@ -44,6 +44,10 @@ public final class CategorizationService {
         for (index, description) in descriptions.enumerated() {
             if let rule = RuleMatcher.match(description: description, rules: rules) {
                 results[index] = CategorizationResult(categoryId: rule.categoryId, source: .rule, confidence: 1.0)
+            } else if !history.isEmpty,
+                      let hit = HistoryCategorizer.suggest(merchantKey: MerchantKey.make(description), history: history),
+                      categories.contains(where: { $0.id == hit.categoryId }) {
+                results[index] = CategorizationResult(categoryId: hit.categoryId, source: .history, confidence: hit.share)
             } else {
                 unmatchedIndices.append(index)
                 unmatchedDescriptions.append(description)

@@ -59,6 +59,42 @@ final class ImportCoordinatorTests: XCTestCase {
         XCTAssertTrue(rules.contains { $0.matchPattern.contains("NANDOS CROYDON") && $0.categoryId == eatingOut.id })
     }
 
+    func testCommitLearnsAKeyRuleOnlyWhenLearnRuleIsTrue() async throws {
+        let (manager, account, profile) = try makeSeededManager()
+        let eatingOut = try await manager.dbQueue.read { db in try Category.filter(Column("name") == "Eating Out").fetchOne(db)! }
+        let coordinator = makeCoordinator(manager)
+        let csv = "Date,Description,Amount\n01/07/2026,NANDOS CROYDON 2041,-22.50\n02/07/2026,PIZZA PLACE 9981,-12.00"
+        let staged = try await coordinator.stageCSVImport(csvText: csv, profile: profile, accountId: account.id!)
+
+        let decisions = [
+            ImportDecision(stagedId: staged.staged[0].id, finalCategoryId: eatingOut.id!, learnRule: true),
+            ImportDecision(stagedId: staged.staged[1].id, finalCategoryId: eatingOut.id!, learnRule: false)
+        ]
+        try coordinator.commit(accountId: account.id!, sourceFileName: "july.csv", staged: staged.staged, decisions: decisions)
+
+        let rules = try await manager.dbQueue.read { db in try Rule.fetchAll(db) }
+        XCTAssertEqual(rules.map(\.matchPattern), ["NANDOS CROYDON"])
+    }
+
+    func testStagingSuggestsFromHistoryOfAllAccounts() async throws {
+        let (manager, account, profile) = try makeSeededManager()
+        let groceries = try await manager.dbQueue.read { db in try Category.filter(Column("name") == "Groceries").fetchOne(db)! }
+        var other = Account(name: "Other", currency: .gbp, kind: .cash, trackingMode: .imported)
+        try await manager.dbQueue.write { db in
+            try other.insert(db)
+            var batch = ImportBatch(accountId: other.id!, sourceFileName: "o.csv", importedAt: Date())
+            try batch.insert(db)
+            for i in 0..<2 {
+                var t = Transaction(importBatchId: batch.id!, accountId: other.id!, date: Date(), rawDescription: "TESCO STORES 10\(i)", amountMinorUnits: -500, categoryId: groceries.id!, status: .confirmed, categorizedBy: .manual, fingerprint: "h\(i)")
+                try t.insert(db)
+            }
+        }
+        let coordinator = makeCoordinator(manager)
+        let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n01/07/2026,TESCO STORES 3312,-9.00", profile: profile, accountId: account.id!)
+        XCTAssertEqual(staged.staged[0].suggestedCategoryId, groceries.id)
+        XCTAssertEqual(staged.staged[0].source, .history)
+    }
+
     func makeCoordinator(_ manager: DatabaseManager) -> ImportCoordinator {
         ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
     }

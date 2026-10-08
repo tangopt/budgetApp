@@ -12,6 +12,7 @@ struct ConfidenceDot: View {
     private var color: Color {
         switch source {
         case .rule: return .green
+        case .history: return .orange
         case .llm: return confidence >= ReviewPartitioning.highConfidenceThreshold ? .orange : .gray
         case .manual, .none: return .gray
         }
@@ -20,6 +21,7 @@ struct ConfidenceDot: View {
     private var label: String {
         switch source {
         case .rule: return "Matched rule"
+        case .history: return "Suggested from past transactions"
         case .llm: return confidence >= ReviewPartitioning.highConfidenceThreshold
             ? "Suggested by on-device model"
             : "Weak suggestion from on-device model"

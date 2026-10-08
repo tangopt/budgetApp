@@ -9,6 +9,7 @@ public enum TransactionStatus: String, Codable, CaseIterable, Sendable {
 public enum CategorizedBy: String, Codable, CaseIterable, Sendable {
     case rule
     case llm
+    case history
     case manual
     case none
 }

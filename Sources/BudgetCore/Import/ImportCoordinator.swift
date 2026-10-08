@@ -45,10 +45,13 @@ public struct StagedImport {
 public struct ImportDecision {
     public let stagedId: UUID
     public let finalCategoryId: Int64?
+    /// Whether an overridden category should also be learned as a rule on commit.
+    public let learnRule: Bool
 
-    public init(stagedId: UUID, finalCategoryId: Int64?) {
+    public init(stagedId: UUID, finalCategoryId: Int64?, learnRule: Bool = true) {
         self.stagedId = stagedId
         self.finalCategoryId = finalCategoryId
+        self.learnRule = learnRule
     }
 }
 
@@ -99,11 +102,12 @@ public final class ImportCoordinator {
     /// row count in the file, since duplicates are already known and skipped before this
     /// count is reported.
     private func stage(parsed: [ParsedTransaction], unparsedLines: [String], accountId: Int64, onProgress: @Sendable (Int, Int) -> Void) async throws -> StagedImport {
-        let (existingFingerprints, categories, rules) = try await dbQueue.read { db in
+        let (existingFingerprints, categories, rules, history) = try await dbQueue.read { db in
             (
                 try Set(String.fetchAll(db, sql: "SELECT fingerprint FROM transaction_ WHERE accountId = ?", arguments: [accountId])),
                 try Category.fetchAll(db).filter(\.isAssignable),
-                try Rule.fetchAll(db)
+                try Rule.fetchAll(db),
+                try HistoryCategorizer.load(db: db)
             )
         }
 
@@ -134,7 +138,7 @@ public final class ImportCoordinator {
         var categorizedCount = 0
         for batchStart in stride(from: 0, to: nonDuplicates.count, by: Self.categorizationBatchSize) {
             let batch = nonDuplicates[batchStart..<min(batchStart + Self.categorizationBatchSize, nonDuplicates.count)]
-            let results = await categorizationService.categorizeBatch(descriptions: batch.map(\.parsed.rawDescription), rules: rules, categories: categories)
+            let results = await categorizationService.categorizeBatch(descriptions: batch.map(\.parsed.rawDescription), rules: rules, categories: categories, history: history)
             for (item, result) in zip(batch, results) {
                 staged.append(StagedTransaction(parsed: item.parsed, suggestedCategoryId: result.categoryId, source: result.source, confidence: result.confidence, fingerprint: item.fingerprint))
             }
@@ -149,11 +153,12 @@ public final class ImportCoordinator {
     /// free in both the database and `alreadyStaged`, so it can be committed alongside
     /// them without violating the unique key. Categorizes in the same batches as `stage`.
     public func stageForcedDuplicates(_ duplicates: [ParsedTransaction], accountId: Int64, alreadyStaged: [StagedTransaction], onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> [StagedTransaction] {
-        let (existingFingerprints, categories, rules) = try await dbQueue.read { db in
+        let (existingFingerprints, categories, rules, history) = try await dbQueue.read { db in
             (
                 try Set(String.fetchAll(db, sql: "SELECT fingerprint FROM transaction_ WHERE accountId = ?", arguments: [accountId])),
                 try Category.fetchAll(db).filter(\.isAssignable),
-                try Rule.fetchAll(db)
+                try Rule.fetchAll(db),
+                try HistoryCategorizer.load(db: db)
             )
         }
         var taken = existingFingerprints.union(alreadyStaged.map(\.fingerprint))
@@ -178,7 +183,7 @@ public final class ImportCoordinator {
         var categorizedCount = 0
         for batchStart in stride(from: 0, to: items.count, by: Self.categorizationBatchSize) {
             let batch = items[batchStart..<min(batchStart + Self.categorizationBatchSize, items.count)]
-            let results = await categorizationService.categorizeBatch(descriptions: batch.map(\.parsed.rawDescription), rules: rules, categories: categories)
+            let results = await categorizationService.categorizeBatch(descriptions: batch.map(\.parsed.rawDescription), rules: rules, categories: categories, history: history)
             for (item, categorization) in zip(batch, results) {
                 result.append(StagedTransaction(parsed: item.parsed, suggestedCategoryId: categorization.categoryId, source: categorization.source, confidence: categorization.confidence, fingerprint: item.fingerprint))
             }
@@ -194,6 +199,7 @@ public final class ImportCoordinator {
     /// assignment) — never dropped, since they still move the account's balance.
     public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision]) throws {
         let decisionById = Dictionary(decisions.map { ($0.stagedId, $0.finalCategoryId) }, uniquingKeysWith: { _, last in last })
+        let learnById = Dictionary(decisions.map { ($0.stagedId, $0.learnRule) }, uniquingKeysWith: { _, last in last })
         try dbQueue.write { db in
             var batch = ImportBatch(accountId: accountId, sourceFileName: sourceFileName, importedAt: Date())
             try batch.insert(db)
@@ -214,8 +220,8 @@ public final class ImportCoordinator {
                     fingerprint: stagedTransaction.fingerprint
                 )
                 try transaction.insert(db)
-                if wasOverridden, let finalCategoryId {
-                    try RuleLearner.learnFromCorrection(description: stagedTransaction.parsed.rawDescription, categoryId: finalCategoryId, db: db)
+                if wasOverridden, learnById[stagedTransaction.id] ?? true, let finalCategoryId {
+                    try RuleLearner.learn(description: stagedTransaction.parsed.rawDescription, categoryId: finalCategoryId, db: db)
                 }
             }
             try AutoForecastGenerator.refresh(db: db)

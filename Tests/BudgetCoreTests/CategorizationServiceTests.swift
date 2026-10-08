@@ -142,4 +142,34 @@ final class CategorizationServiceTests: XCTestCase {
         XCTAssertEqual(results, [])
         XCTAssertNil(fake.lastBatchDescriptions)
     }
+
+    func testHistoryBeatsTheModelButLosesToARule() async {
+        let history = [HistoryEntry(merchantKey: "TESCO STORES", categoryId: 1), HistoryEntry(merchantKey: "TESCO STORES", categoryId: 1),
+                       HistoryEntry(merchantKey: "TESCO STORES", categoryId: 1), HistoryEntry(merchantKey: "TESCO STORES", categoryId: 2)]
+        let fake = FakeCategorizer()
+        fake.stubbedSuggestion = CategorySuggestion(categoryName: "Eating Out", confidence: 0.9)
+        let service = CategorizationService(categorizer: fake)
+
+        let results = await service.categorizeBatch(descriptions: ["TESCO STORES 2041", "NANDOS"], rules: [], categories: [groceries, eatingOut], history: history)
+        XCTAssertEqual(results[0].categoryId, 1)
+        XCTAssertEqual(results[0].source, .history)
+        XCTAssertEqual(results[0].confidence, 0.75, accuracy: 0.0001)
+        XCTAssertEqual(results[1].source, .llm)
+        XCTAssertEqual(fake.lastBatchDescriptions, ["NANDOS"])
+
+        let rule = Rule(id: 1, matchPattern: "TESCO", matchType: .contains, categoryId: 2, priority: 10)
+        let ruled = await service.categorizeBatch(descriptions: ["TESCO STORES 2041"], rules: [rule], categories: [groceries, eatingOut], history: history)
+        XCTAssertEqual(ruled[0].categoryId, 2)
+        XCTAssertEqual(ruled[0].source, .rule)
+    }
+
+    func testHistorySuggestingANonAssignableCategoryFallsThrough() async {
+        let reserve = Category(id: 3, name: "Remaining for expenses", type: .expense, isReserved: true)
+        let history = [HistoryEntry(merchantKey: "X SHOP", categoryId: 3), HistoryEntry(merchantKey: "X SHOP", categoryId: 3)]
+        let fake = FakeCategorizer()
+        let service = CategorizationService(categorizer: fake)
+        let results = await service.categorizeBatch(descriptions: ["X SHOP"], rules: [], categories: [groceries, reserve], history: history)
+        XCTAssertNil(results[0].categoryId)
+        XCTAssertEqual(results[0].source, .none)
+    }
 }
