@@ -31,7 +31,11 @@ final class BudgetGridViewModel: ObservableObject {
     @Published var exchangeRate: ExchangeRateSetting = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date()) {
         didSet { clearNetWorthCaches() }
     }
-    @Published var selectedYear: Int?
+    /// The years shown, sorted, never empty once loaded: one year shows its twelve months,
+    /// several show each year's total with the change from the previous selected year.
+    @Published private(set) var selectedYears: [Int] = []
+    /// The single selected year (the month view); nil when several are selected.
+    var selectedYear: Int? { selectedYears.count == 1 ? selectedYears[0] : nil }
     @Published var errorMessage: String?
     @Published private(set) var availableYears: [Int] = []
     /// Pay-month boundaries (salaries + manual closes). Rebuilt with `monthTotals` whenever
@@ -169,11 +173,30 @@ final class BudgetGridViewModel: ObservableObject {
         return Double(change) / Double(abs(previousYearEnd))
     }
 
-    /// Falls back to the most recent year with data whenever the current selection is
-    /// unset or no longer has data (e.g. right after `load()`).
+    /// Drops selected years that no longer have data, falling back to the most recent year
+    /// with data whenever nothing is left (e.g. right after the first `load()`).
     private func selectDefaultYearIfNeeded() {
-        if selectedYear == nil || !availableYears.contains(selectedYear!) {
-            selectedYear = availableYears.last
+        let kept = selectedYears.filter(availableYears.contains)
+        if !kept.isEmpty {
+            if kept != selectedYears { selectedYears = kept }
+        } else if let latest = availableYears.last {
+            selectedYears = [latest]
+        }
+    }
+
+    /// A plain click on a year: show just that year.
+    func selectYear(_ year: Int) {
+        selectedYears = [year]
+    }
+
+    /// A ⌘-click on a year: add it to, or remove it from, the selection (the last selected
+    /// year stays selected).
+    func toggleYear(_ year: Int) {
+        if let index = selectedYears.firstIndex(of: year) {
+            guard selectedYears.count > 1 else { return }
+            selectedYears.remove(at: index)
+        } else {
+            selectedYears = (selectedYears + [year]).sorted()
         }
     }
 
@@ -304,6 +327,11 @@ final class BudgetGridViewModel: ObservableObject {
     /// "Includes £x not yet confirmed" footnote), state combined.
     func yearCell(_ categories: [Category], year: Int) -> PlanCell {
         PlanStatus.combine((1...12).map { cell(categories, year: year, month: $0) })
+    }
+
+    /// A reserve row's (or the Total reserved row's) Year Total: its twelve month cells combined.
+    func reserveYearCell(_ reserves: [Category], year: Int) -> PlanCell {
+        PlanStatus.combine((1...12).map { reserveCell(reserves, year: year, month: $0) })
     }
 
     /// A reserve's month as a cell: what's left of its allowance counts as expected while the
