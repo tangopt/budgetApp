@@ -8,12 +8,15 @@ struct ReviewRow: Identifiable {
     let staged: StagedTransaction
     var chosenCategoryId: Int64?
     /// "Remember for <key>": whether a changed category also learns a rule on commit.
-    /// `nil` until the category is set or the toggle is touched (spec §4).
+    /// `nil` until the category is set or the toggle is touched (spec §4); an unset row
+    /// follows its group's default (`ReviewGrouping.remembers`), resolved for the decision
+    /// by `ImportViewModel`.
     var learnRule: Bool?
     var id: UUID { staged.id }
 
-    var decision: ImportDecision {
-        ImportDecision(stagedId: staged.id, finalCategoryId: chosenCategoryId, learnRule: learnRule ?? false)
+    /// The commit decision, with `learnRule` already resolved to what the checkbox shows.
+    func decision(learnRule resolved: Bool) -> ImportDecision {
+        ImportDecision(stagedId: staged.id, finalCategoryId: chosenCategoryId, learnRule: resolved)
     }
 }
 
@@ -252,7 +255,17 @@ final class ImportViewModel: ObservableObject {
     /// Whether this row of a group is ticked in the group's Remember checkbox: its own
     /// choice, or the group default (on for 2+ rows) until one is made.
     func remembers(_ row: ReviewRow, in group: ReviewGroup<ReviewRow>) -> Bool {
-        row.learnRule ?? ReviewGrouping.rememberDefault(rowCount: group.rows.count)
+        ReviewGrouping.remembers(choice: row.learnRule, groupRowCount: group.rows.count)
+    }
+
+    /// Each unconfirmed row's Remember value as its checkbox currently shows it, keyed by
+    /// row id (confirmed rows were resolved when confirmed — see `confirmRows`).
+    private var displayedRemember: [UUID: Bool] {
+        var result: [UUID: Bool] = [:]
+        for group in reviewSections.all {
+            for row in group.rows { result[row.id] = remembers(row, in: group) }
+        }
+        return result
     }
 
     func setRemember(_ remember: Bool, forRowIds ids: [UUID]) {
@@ -276,8 +289,14 @@ final class ImportViewModel: ObservableObject {
     /// saved until Finish import, so Cancel import still leaves no trace.
     func confirmRows(_ rows: [ReviewRow]) {
         errorMessage = nil
-        let stagedIds = Set(stagedRows.map(\.id))
-        confirmedIds.formUnion(rows.map(\.id).filter { stagedIds.contains($0) })
+        let ids = Set(rows.map(\.id))
+        // Freeze Remember as shown right now: the Confirmed section groups rows
+        // differently, so an unset row's group default could otherwise change.
+        let remember = displayedRemember
+        for index in stagedRows.indices where ids.contains(stagedRows[index].id) && !confirmedIds.contains(stagedRows[index].id) {
+            if stagedRows[index].learnRule == nil { stagedRows[index].learnRule = remember[stagedRows[index].id] }
+            confirmedIds.insert(stagedRows[index].id)
+        }
     }
 
     /// Undo: returns confirmed rows to their unconfirmed section, categories kept.
@@ -294,8 +313,14 @@ final class ImportViewModel: ObservableObject {
     @discardableResult
     func finish(unconfirmed: UnconfirmedRowsChoice) -> Bool {
         errorMessage = nil
+        let remember = displayedRemember
         let plan = ImportFinishPlan.make(
-            rows: stagedRows.map { ImportFinishPlan.Row(staged: $0.staged, decision: $0.decision) },
+            rows: stagedRows.map { row in
+                // Confirmed rows carry the value frozen at confirm; the rest use what their
+                // checkbox shows now. Every row is one or the other, so `false` is unreachable.
+                let learnRule = row.learnRule ?? remember[row.id] ?? false
+                return ImportFinishPlan.Row(staged: row.staged, decision: row.decision(learnRule: learnRule))
+            },
             confirmedIds: confirmedIds, unconfirmed: unconfirmed
         )
         var points: [StatementBalancePoint] = []

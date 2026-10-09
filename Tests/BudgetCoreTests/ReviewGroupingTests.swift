@@ -55,6 +55,15 @@ final class ReviewGroupingTests: XCTestCase {
         XCTAssertNil(ReviewGrouping.sharedSign([]))
     }
 
+    // What the Remember checkbox shows is what gets saved: an explicit choice wins,
+    // otherwise rows of a 2+ row group learn and a single row doesn't.
+    func testRemembersResolvesAnUnsetChoiceFromTheGroupSize() {
+        XCTAssertTrue(ReviewGrouping.remembers(choice: nil, groupRowCount: 2))
+        XCTAssertFalse(ReviewGrouping.remembers(choice: nil, groupRowCount: 1))
+        XCTAssertFalse(ReviewGrouping.remembers(choice: false, groupRowCount: 3))
+        XCTAssertTrue(ReviewGrouping.remembers(choice: true, groupRowCount: 1))
+    }
+
     func testRememberDefaultsOnForTwoOrMoreRows() {
         XCTAssertFalse(ReviewGrouping.rememberDefault(rowCount: 0))
         XCTAssertFalse(ReviewGrouping.rememberDefault(rowCount: 1))

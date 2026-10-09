@@ -41,7 +41,8 @@ struct ImportView: View {
                     }
                     Button("Import PDF statement…") { actions.startPDF() }
                 }
-                Spacer(minLength: 0)
+                // ReviewView fills the height itself (its list takes what's left).
+                if !viewModel.isReviewing { Spacer(minLength: 0) }
             }
             .padding()
         }

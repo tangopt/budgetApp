@@ -23,6 +23,20 @@ struct ReviewView: View {
 
     var body: some View {
         let sections = viewModel.reviewSections
+        // Only the transactions list scrolls: the notices, status and actions above it are
+        // pinned, and the expanded notice lists scroll inside their own bounded height.
+        VStack(alignment: .leading, spacing: 12) {
+            header(sections)
+                // Sized before the list, which then takes whatever height is left.
+                .layoutPriority(1)
+            transactionList(sections)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    /// Statement balances, unparsed lines, duplicates, the progress caption, any error and
+    /// the action buttons.
+    private func header(_ sections: ReviewSections) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             statementBalancesPanel
 
@@ -41,7 +55,7 @@ struct ReviewView: View {
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .frame(maxHeight: 120)
+                            .frame(maxHeight: Self.noticeListMaxHeight)
                             Button("Dismiss") { viewModel.dismissUnparsedLines() }
                         }
                     } label: {
@@ -71,7 +85,7 @@ struct ReviewView: View {
                                     }
                                 }
                             }
-                            .frame(maxHeight: 120)
+                            .frame(maxHeight: Self.noticeListMaxHeight)
                             HStack {
                                 Button("Import anyway") {
                                     isForcing = true
@@ -90,49 +104,6 @@ struct ReviewView: View {
                     }
                 }
             }
-
-            List(selection: $selection) {
-                if !sections.needsAttention.isEmpty {
-                    Section("Needs your attention (\(sections.needsAttentionCount))") {
-                        ForEach(sections.needsAttention) { group in
-                            groupContent(group, showInlineConfirm: true)
-                        }
-                    }
-                }
-                if !sections.ready.isEmpty {
-                    DisclosureGroup("Ready to confirm (\(sections.readyCount))", isExpanded: $showReady) {
-                        ForEach(sections.ready) { group in
-                            groupContent(group, showInlineConfirm: false)
-                        }
-                    }
-                }
-                if !sections.confirmed.isEmpty {
-                    DisclosureGroup("Confirmed (\(sections.confirmedCount))", isExpanded: $showConfirmed) {
-                        ForEach(sections.confirmed) { group in
-                            confirmedGroupContent(group)
-                        }
-                    }
-                }
-            }
-            .frame(minHeight: 240)
-            .onKeyPress(.return) {
-                // Return confirms a single selected row or group once every row in it has a
-                // category, then moves to the first line still showing.
-                guard selection.count == 1 else { return .ignored }
-                let rows = rows(for: selection, in: sections)
-                guard !rows.isEmpty, rows.allSatisfy({ $0.chosenCategoryId != nil }) else { return .ignored }
-                viewModel.confirmRows(rows)
-                let after = viewModel.reviewSections
-                let visible = ReviewGrouping.visibleItems(after.needsAttention, expanded: expandedGroups)
-                    + (showReady ? ReviewGrouping.visibleItems(after.ready, expanded: expandedGroups) : [])
-                selection = visible.first.map { [$0] } ?? []
-                return .handled
-            }
-            // Confirming (inline, a group, Confirm N ready) moves rows to Confirmed and Undo
-            // moves them back, which can turn a group into a single row, so drop selected
-            // ids that no longer name a line.
-            .onChange(of: viewModel.stagedRows.map(\.id)) { _, _ in pruneSelection() }
-            .onChange(of: viewModel.confirmedIds) { _, _ in pruneSelection() }
 
             Text(progressCaption)
                 .font(.caption)
@@ -184,6 +155,54 @@ struct ReviewView: View {
                 }
             }
         }
+    }
+
+    private static let noticeListMaxHeight: CGFloat = 160
+
+    private func transactionList(_ sections: ReviewSections) -> some View {
+        List(selection: $selection) {
+            if !sections.needsAttention.isEmpty {
+                Section("Needs your attention (\(sections.needsAttentionCount))") {
+                    ForEach(sections.needsAttention) { group in
+                        groupContent(group, showInlineConfirm: true)
+                    }
+                }
+            }
+            if !sections.ready.isEmpty {
+                DisclosureGroup("Ready to confirm (\(sections.readyCount))", isExpanded: $showReady) {
+                    ForEach(sections.ready) { group in
+                        groupContent(group, showInlineConfirm: false)
+                    }
+                }
+            }
+            if !sections.confirmed.isEmpty {
+                DisclosureGroup("Confirmed (\(sections.confirmedCount))", isExpanded: $showConfirmed) {
+                    ForEach(sections.confirmed) { group in
+                        confirmedGroupContent(group)
+                    }
+                }
+            }
+        }
+        // Takes the height the pinned header leaves; it scrolls, the page doesn't.
+        .frame(minHeight: 160, maxHeight: .infinity)
+        .onKeyPress(.return) {
+            // Return confirms a single selected row or group once every row in it has a
+            // category, then moves to the first line still showing.
+            guard selection.count == 1 else { return .ignored }
+            let rows = rows(for: selection, in: sections)
+            guard !rows.isEmpty, rows.allSatisfy({ $0.chosenCategoryId != nil }) else { return .ignored }
+            viewModel.confirmRows(rows)
+            let after = viewModel.reviewSections
+            let visible = ReviewGrouping.visibleItems(after.needsAttention, expanded: expandedGroups)
+                + (showReady ? ReviewGrouping.visibleItems(after.ready, expanded: expandedGroups) : [])
+            selection = visible.first.map { [$0] } ?? []
+            return .handled
+        }
+        // Confirming (inline, a group, Confirm N ready) moves rows to Confirmed and Undo
+        // moves them back, which can turn a group into a single row, so drop selected
+        // ids that no longer name a line.
+        .onChange(of: viewModel.stagedRows.map(\.id)) { _, _ in pruneSelection() }
+        .onChange(of: viewModel.confirmedIds) { _, _ in pruneSelection() }
     }
 
     private func pruneSelection() {

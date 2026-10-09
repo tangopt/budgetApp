@@ -77,6 +77,13 @@ public enum ReviewGrouping {
         rowCount >= 2
     }
 
+    /// Whether a row learns a rule: its explicit Remember choice, else the default for the
+    /// group it's shown in. Used both for the checkbox and for the saved decision, so what
+    /// the checkbox shows is what happens.
+    public static func remembers(choice: Bool?, groupRowCount: Int) -> Bool {
+        choice ?? rememberDefault(rowCount: groupRowCount)
+    }
+
     /// Every row the selection covers (a selected group means all its rows), in display
     /// order and without duplicates. Ids that no longer exist are ignored.
     public static func selectedRowIds<Row: Identifiable>(_ selection: Set<ReviewSelectionId<Row.ID>>, in groups: [ReviewGroup<Row>]) -> [Row.ID] {
