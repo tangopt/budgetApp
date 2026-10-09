@@ -34,9 +34,19 @@ struct ReviewView: View {
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
-    /// Statement balances, unparsed lines, duplicates, the progress caption, any error and
-    /// the action buttons.
+    /// The notices, then the caption, error and action buttons.
     private func header(_ sections: ReviewSections) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            notices
+                // The notices share one bounded height, their expanded lists shrinking to
+                // fit, so on a short window the transactions list keeps its minimum.
+                .frame(maxHeight: Self.noticesMaxHeight, alignment: .top)
+            actions(sections)
+        }
+    }
+
+    /// Statement balances, unparsed lines and duplicates.
+    private var notices: some View {
         VStack(alignment: .leading, spacing: 12) {
             statementBalancesPanel
 
@@ -104,7 +114,12 @@ struct ReviewView: View {
                     }
                 }
             }
+        }
+    }
 
+    /// The progress caption, any error and the action buttons.
+    private func actions(_ sections: ReviewSections) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
             Text(progressCaption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -151,13 +166,25 @@ struct ReviewView: View {
                     }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("Unconfirmed transactions keep a category if you chose one; the rest go to Uncategorized to assign later. Left-out transactions are imported again next time.")
+                    Text(finishChoiceMessage)
                 }
             }
         }
     }
 
     private static let noticeListMaxHeight: CGFloat = 160
+    private static let noticesMaxHeight: CGFloat = 220
+
+    private var finishChoiceMessage: String {
+        var lines = ["Unconfirmed transactions keep a category if you chose one; the rest go to Uncategorized to assign later."]
+        if viewModel.confirmedCount > 0 {
+            lines.append("Left-out transactions are imported again next time.")
+            if viewModel.recordStatementBalancesOnConfirm, case .available = viewModel.statementBalances {
+                lines.append("The statement balances are recorded either way.")
+            }
+        }
+        return lines.joined(separator: " ")
+    }
 
     private func transactionList(_ sections: ReviewSections) -> some View {
         List(selection: $selection) {
@@ -179,6 +206,9 @@ struct ReviewView: View {
                 DisclosureGroup("Confirmed (\(sections.confirmedCount))", isExpanded: $showConfirmed) {
                     ForEach(sections.confirmed) { group in
                         confirmedGroupContent(group)
+                            // ForEach tags each line with its id; confirmed lines must not
+                            // be selectable (Return would fall through to Confirm N ready).
+                            .selectionDisabled()
                     }
                 }
             }
@@ -390,12 +420,12 @@ struct ReviewView: View {
     }
 
     /// A confirmed group or row: dimmed, with its category and an Undo that returns it to
-    /// its unconfirmed section (category kept). Untagged, so it can't be selected.
+    /// its unconfirmed section (category kept). Not selectable.
     @ViewBuilder
     private func confirmedGroupContent(_ group: ReviewGroup<ReviewRow>) -> some View {
         if group.isMultiRow {
             DisclosureGroup(isExpanded: expansion(of: group.id)) {
-                ForEach(group.rows) { row in confirmedRow(row) }
+                ForEach(group.rows) { row in confirmedRow(row).selectionDisabled() }
             } label: {
                 HStack {
                     Text(group.key)

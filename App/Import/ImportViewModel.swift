@@ -341,7 +341,8 @@ final class ImportViewModel: ObservableObject {
             return false
         }
         let pendingCount = plan.decisions.filter { $0.finalCategoryId == nil }.count
-        var parts = ["Saved \(plan.staged.count) transaction(s) from \(lastSourceFileName)."]
+        var parts = [plan.isEmpty ? "No new transactions to save from \(lastSourceFileName)."
+                                  : "Saved \(plan.staged.count) transaction(s) from \(lastSourceFileName)."]
         if pendingCount > 0 { parts.append("\(pendingCount) to assign from Uncategorized.") }
         let snapshotCount = recorded.added + recorded.updated
         if snapshotCount > 0 { parts.append("Recorded \(snapshotCount) balance snapshot(s).") }

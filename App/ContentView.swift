@@ -43,6 +43,10 @@ enum AppScreen: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @ObservedObject var environment: AppEnvironment
     @State private var selection: AppScreen? = .dashboard
+    /// What the sidebar List shows as selected. A click lands here first and is then either
+    /// accepted into `selection` or reverted (see `sidebarSelectionChanged`), so the
+    /// sidebar highlight always matches the screen on show.
+    @State private var sidebarSelection: AppScreen? = .dashboard
     /// Where the sidebar was asked to go while confirmed import rows were still unsaved;
     /// set while the "Save the N confirmed transactions?" alert is up.
     @State private var pendingSelection: AppScreen?
@@ -114,7 +118,7 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: sidebarSelection) {
+            List(selection: $sidebarSelection) {
                 ForEach(sidebarSections, id: \.name) { section in
                     Section(section.name) {
                         ForEach(section.screens) { screen in
@@ -200,7 +204,10 @@ struct ContentView: View {
         .onAppear {
             refreshSharedState()
         }
+        .onChange(of: sidebarSelection) { newValue in sidebarSelectionChanged(to: newValue) }
         .onChange(of: selection) { _ in
+            // Screens can also be changed in code (the Dashboard's links, the alert below).
+            if sidebarSelection != selection { sidebarSelection = selection }
             // Re-read accounts/categories on every navigation so a newly-added
             // account (via the Accounts screen) or category shows up immediately
             // in Import's account picker and the Forecast/Budget category lists,
@@ -223,19 +230,18 @@ struct ContentView: View {
     }
 
     /// The sidebar's selection, guarded: leaving the Import screen while confirmed rows are
-    /// unsaved asks first (confirming no longer saves anything — Finish import does).
-    private var sidebarSelection: Binding<AppScreen?> {
-        Binding(
-            get: { selection },
-            set: { newValue in
-                if selection == .importReview, newValue != .importReview, importViewModel.isReviewing, importViewModel.confirmedCount > 0 {
-                    pendingSelection = newValue
-                    showUnsavedImportAlert = true
-                } else {
-                    selection = newValue
-                }
-            }
-        )
+    /// unsaved asks first (confirming no longer saves anything — Finish import does). A
+    /// refused click is reverted on the next runloop turn, since the sidebar's outline view
+    /// keeps the clicked row highlighted if the change is just ignored.
+    private func sidebarSelectionChanged(to newValue: AppScreen?) {
+        guard newValue != selection else { return }
+        if selection == .importReview, importViewModel.isReviewing, importViewModel.confirmedCount > 0 {
+            pendingSelection = newValue
+            showUnsavedImportAlert = true
+            DispatchQueue.main.async { sidebarSelection = selection }
+        } else {
+            selection = newValue
+        }
     }
 
     private var selectedImportAccount: Account? {
