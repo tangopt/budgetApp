@@ -201,10 +201,13 @@ public final class ImportCoordinator {
     /// forecast from the updated actuals. Rows left without a category are saved with
     /// `categoryId: nil` / `.pendingReview` ("Uncategorized", awaiting manual
     /// assignment) — never dropped, since they still move the account's balance.
-    public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision]) throws {
+    /// `statementBalancePoints` are recorded in the same transaction (see
+    /// `recordStatementBalances`), so a failed commit leaves no balances behind either.
+    @discardableResult
+    public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statementBalancePoints: [StatementBalancePoint] = []) throws -> StatementBalanceRecording {
         let decisionById = Dictionary(decisions.map { ($0.stagedId, $0.finalCategoryId) }, uniquingKeysWith: { _, last in last })
         let learnById = Dictionary(decisions.map { ($0.stagedId, $0.learnRule) }, uniquingKeysWith: { _, last in last })
-        try dbQueue.write { db in
+        return try dbQueue.write { db in
             var batch = ImportBatch(accountId: accountId, sourceFileName: sourceFileName, importedAt: Date())
             try batch.insert(db)
             for stagedTransaction in staged {
@@ -229,6 +232,7 @@ public final class ImportCoordinator {
                 }
             }
             try AutoForecastGenerator.refresh(db: db)
+            return try Self.upsertStatementBalances(accountId: accountId, sourceFileName: sourceFileName, points: statementBalancePoints, db: db)
         }
     }
 
@@ -239,26 +243,30 @@ public final class ImportCoordinator {
     /// that same day deliberately replaces the typed one (the bank's figure wins). Legacy
     /// typed snapshots that carry a time of day never match a statement date and are left alone.
     public func recordStatementBalances(accountId: Int64, sourceFileName: String, points: [StatementBalancePoint]) throws -> StatementBalanceRecording {
-        let note = "Statement balance — \(sourceFileName)"
-        return try dbQueue.write { db in
-            var added = 0
-            var updated = 0
-            for point in points {
-                if var existing = try BalanceSnapshot
-                    .filter(Column("accountId") == accountId && Column("date") == point.date)
-                    .order(Column("id").desc)
-                    .fetchOne(db) {
-                    existing.balanceMinorUnits = point.balanceMinorUnits
-                    existing.note = note
-                    try existing.update(db)
-                    updated += 1
-                } else {
-                    var snapshot = BalanceSnapshot(accountId: accountId, date: point.date, balanceMinorUnits: point.balanceMinorUnits, note: note)
-                    try snapshot.insert(db)
-                    added += 1
-                }
-            }
-            return StatementBalanceRecording(added: added, updated: updated)
+        try dbQueue.write { db in
+            try Self.upsertStatementBalances(accountId: accountId, sourceFileName: sourceFileName, points: points, db: db)
         }
+    }
+
+    private static func upsertStatementBalances(accountId: Int64, sourceFileName: String, points: [StatementBalancePoint], db: Database) throws -> StatementBalanceRecording {
+        let note = "Statement balance — \(sourceFileName)"
+        var added = 0
+        var updated = 0
+        for point in points {
+            if var existing = try BalanceSnapshot
+                .filter(Column("accountId") == accountId && Column("date") == point.date)
+                .order(Column("id").desc)
+                .fetchOne(db) {
+                existing.balanceMinorUnits = point.balanceMinorUnits
+                existing.note = note
+                try existing.update(db)
+                updated += 1
+            } else {
+                var snapshot = BalanceSnapshot(accountId: accountId, date: point.date, balanceMinorUnits: point.balanceMinorUnits, note: note)
+                try snapshot.insert(db)
+                added += 1
+            }
+        }
+        return StatementBalanceRecording(added: added, updated: updated)
     }
 }

@@ -15,12 +15,11 @@ struct ReviewView: View {
     @State private var selection: Set<ReviewItemId> = []
     @State private var expandedGroups: Set<ReviewItemId> = []
     @State private var showReady = false
+    @State private var showConfirmed = false
     @State private var showSetCategory = false
     @State private var bulkRemember = false
-
-    private var uncategorizedCount: Int {
-        viewModel.stagedRows.filter { $0.chosenCategoryId == nil }.count
-    }
+    @State private var showFinishChoice = false
+    @State private var showCancelConfirmation = false
 
     var body: some View {
         let sections = viewModel.reviewSections
@@ -107,6 +106,13 @@ struct ReviewView: View {
                         }
                     }
                 }
+                if !sections.confirmed.isEmpty {
+                    DisclosureGroup("Confirmed (\(sections.confirmedCount))", isExpanded: $showConfirmed) {
+                        ForEach(sections.confirmed) { group in
+                            confirmedGroupContent(group)
+                        }
+                    }
+                }
             }
             .frame(minHeight: 240)
             .onKeyPress(.return) {
@@ -115,27 +121,22 @@ struct ReviewView: View {
                 guard selection.count == 1 else { return .ignored }
                 let rows = rows(for: selection, in: sections)
                 guard !rows.isEmpty, rows.allSatisfy({ $0.chosenCategoryId != nil }) else { return .ignored }
-                // On failure, keep the selection so its error and state stay put.
-                guard viewModel.confirmRows(rows) else { return .handled }
+                viewModel.confirmRows(rows)
                 let after = viewModel.reviewSections
                 let visible = ReviewGrouping.visibleItems(after.needsAttention, expanded: expandedGroups)
                     + (showReady ? ReviewGrouping.visibleItems(after.ready, expanded: expandedGroups) : [])
                 selection = visible.first.map { [$0] } ?? []
                 return .handled
             }
-            // Confirming (inline, a group, Confirm N ready) removes rows and can turn a group
-            // into a single row, so drop selected ids that no longer name a line.
-            .onChange(of: viewModel.stagedRows.map(\.id)) { _, _ in
-                let selectable = Set(ReviewGrouping.selectableItems(viewModel.reviewSections.all))
-                selection.formIntersection(selectable)
-                expandedGroups.formIntersection(selectable)
-            }
+            // Confirming (inline, a group, Confirm N ready) moves rows to Confirmed and Undo
+            // moves them back, which can turn a group into a single row, so drop selected
+            // ids that no longer name a line.
+            .onChange(of: viewModel.stagedRows.map(\.id)) { _, _ in pruneSelection() }
+            .onChange(of: viewModel.confirmedIds) { _, _ in pruneSelection() }
 
-            if uncategorizedCount > 0 {
-                Text("\(uncategorizedCount) transaction(s) will be saved as Uncategorized for you to assign later.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text(progressCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             if let error = viewModel.errorMessage {
                 Text(error).foregroundStyle(.red).font(.callout)
@@ -143,22 +144,66 @@ struct ReviewView: View {
 
             HStack {
                 setCategoryButton(sections)
-                Button("Confirm \(sections.readyCount) ready") {
-                    if viewModel.confirmReady() && viewModel.stagedRows.isEmpty {
+                // Only marks rows confirmed, so the default (Return) shortcut commits nothing.
+                Button("Confirm \(sections.readyCount) ready") { viewModel.confirmReady() }
+                    .disabled(sections.ready.isEmpty)
+                    .keyboardShortcut(.defaultAction)
+                Spacer()
+                Button("Cancel import", role: .cancel) {
+                    if viewModel.confirmedCount > 0 { showCancelConfirmation = true } else { viewModel.cancel() }
+                }
+                .confirmationDialog("Discard this import?", isPresented: $showCancelConfirmation) {
+                    Button("Discard \(viewModel.confirmedCount) confirmed", role: .destructive) { viewModel.cancel() }
+                    Button("Keep reviewing", role: .cancel) {}
+                } message: {
+                    Text("Nothing from \(viewModel.confirmedCount == 1 ? "this transaction" : "these transactions") has been saved yet.")
+                }
+                // The only button that writes anything: one commit for the whole review.
+                // ⌘Return, not Return, which stays with Return-to-confirm on a selected line.
+                Button("Finish import") {
+                    if viewModel.unconfirmedCount > 0 {
+                        showFinishChoice = true
+                    } else if viewModel.finish(unconfirmed: .leaveOut) {
                         onCommitted()
                     }
                 }
-                .disabled(sections.ready.isEmpty)
-                .keyboardShortcut(.defaultAction)
-                // The only way to commit rows with no category picked at all (they can't
-                // use Confirm/Confirm-ready) — they're saved as Uncategorized to assign later.
-                Button("Save \(viewModel.stagedRows.count) remaining as Uncategorized") {
-                    if viewModel.saveRemainingAsUncategorized() { onCommitted() }
+                .keyboardShortcut(.return, modifiers: .command)
+                .buttonStyle(.borderedProminent)
+                .confirmationDialog(finishChoiceTitle, isPresented: $showFinishChoice) {
+                    Button("Save \(viewModel.unconfirmedCount) unconfirmed as Uncategorized") {
+                        if viewModel.finish(unconfirmed: .saveAsUncategorized) { onCommitted() }
+                    }
+                    if viewModel.confirmedCount > 0 {
+                        Button("Leave them out") {
+                            if viewModel.finish(unconfirmed: .leaveOut) { onCommitted() }
+                        }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Unconfirmed transactions keep a category if you chose one; the rest go to Uncategorized to assign later. Left-out transactions are imported again next time.")
                 }
-                .disabled(viewModel.stagedRows.isEmpty)
-                Button("Cancel import", role: .cancel) { viewModel.cancel() }
             }
         }
+    }
+
+    private func pruneSelection() {
+        let sections = viewModel.reviewSections
+        selection.formIntersection(Set(ReviewGrouping.selectableItems(sections.all)))
+        expandedGroups.formIntersection(Set(ReviewGrouping.selectableItems(sections.all + sections.confirmed)))
+    }
+
+    private var finishChoiceTitle: String {
+        let unconfirmed = viewModel.unconfirmedCount
+        let rows = unconfirmed == 1 ? "1 transaction isn't" : "\(unconfirmed) transactions aren't"
+        return "\(rows) confirmed yet"
+    }
+
+    /// What Finish import will save, kept in view since confirming no longer saves.
+    private var progressCaption: String {
+        let confirmed = viewModel.confirmedCount
+        let unconfirmed = viewModel.unconfirmedCount
+        if confirmed == 0 && unconfirmed == 0 { return "No transactions to save — Finish import ends this review." }
+        return "\(confirmed) confirmed, \(unconfirmed) still to review. Nothing is saved until you finish the import."
     }
 
     @ViewBuilder
@@ -178,19 +223,12 @@ struct ReviewView: View {
         case .available:
             GroupBox {
                 VStack(alignment: .leading, spacing: 6) {
-                    if let recorded = viewModel.statementBalancesRecorded {
-                        Label("Recorded \(recorded.added + recorded.updated) balance snapshot(s)", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    } else {
-                        if let summary = viewModel.statementBalanceSummary { Text(summary) }
-                        Toggle("Record them when I confirm", isOn: $viewModel.recordStatementBalancesOnConfirm)
-                        HStack {
-                            Button("Record now") { viewModel.recordStatementBalancesNow() }
-                            Text("Snapshots on the same dates are replaced.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    if let summary = viewModel.statementBalanceSummary { Text(summary) }
+                    // Recorded by Finish import, with the transactions — never before.
+                    Toggle("Record them when I finish the import", isOn: $viewModel.recordStatementBalancesOnConfirm)
+                    Text("Snapshots on the same dates are replaced.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } label: {
@@ -258,7 +296,7 @@ struct ReviewView: View {
             .help("Remember for \(group.key): learn a rule so future \(group.key) transactions get this category")
             groupPicker(for: group).frame(width: 200)
             if showInlineConfirm {
-                Button("Confirm") { _ = viewModel.confirmRows(group.rows) }
+                Button("Confirm") { viewModel.confirmRows(group.rows) }
                     .disabled(group.rows.contains { $0.chosenCategoryId == nil })
             }
         }
@@ -332,6 +370,55 @@ struct ReviewView: View {
         return "Remember for these \(keys.count) merchants"
     }
 
+    /// A confirmed group or row: dimmed, with its category and an Undo that returns it to
+    /// its unconfirmed section (category kept). Untagged, so it can't be selected.
+    @ViewBuilder
+    private func confirmedGroupContent(_ group: ReviewGroup<ReviewRow>) -> some View {
+        if group.isMultiRow {
+            DisclosureGroup(isExpanded: expansion(of: group.id)) {
+                ForEach(group.rows) { row in confirmedRow(row) }
+            } label: {
+                HStack {
+                    Text(group.key)
+                    Text("× \(group.rows.count)").foregroundStyle(.secondary)
+                    Spacer()
+                    MoneyText(minorUnits: ReviewGrouping.total(group.rows.map(\.staged.parsed.amountMinorUnits)))
+                    Text(categoryText(ReviewGrouping.categoryState(of: group.rows.map(\.chosenCategoryId))))
+                        .frame(width: 200, alignment: .leading)
+                    Button("Undo") { viewModel.unconfirmRows(group.rows) }
+                        .help("Back to review")
+                }
+                .foregroundStyle(.secondary)
+            }
+        } else if let row = group.rows.first {
+            confirmedRow(row)
+        }
+    }
+
+    private func confirmedRow(_ row: ReviewRow) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.staged.parsed.rawDescription)
+                Text(row.staged.parsed.date.formatted(date: .abbreviated, time: .omitted)).font(.caption)
+            }
+            Spacer()
+            MoneyText(minorUnits: row.staged.parsed.amountMinorUnits)
+            Text(categoryText(.uniform(row.chosenCategoryId)))
+                .frame(width: 200, alignment: .leading)
+            Button("Undo") { viewModel.unconfirmRows([row]) }
+                .help("Back to review")
+        }
+        .foregroundStyle(.secondary)
+    }
+
+    private func categoryText(_ state: ReviewCategoryState) -> String {
+        switch state {
+        case .mixed: return "Mixed"
+        case .uniform(nil): return "Uncategorized"
+        case .uniform(let id?): return categories.first { $0.id == id }?.name ?? "Uncategorized"
+        }
+    }
+
     private func reviewRow(_ row: ReviewRow, showInlineConfirm: Bool) -> some View {
         HStack {
             ConfidenceDot(source: row.staged.source, confidence: row.staged.confidence)
@@ -344,7 +431,7 @@ struct ReviewView: View {
             MoneyText(minorUnits: row.staged.parsed.amountMinorUnits)
             categoryPicker(for: row).frame(width: 200)
             if showInlineConfirm {
-                Button("Confirm") { _ = viewModel.confirmRow(row) }
+                Button("Confirm") { viewModel.confirmRow(row) }
                     .disabled(row.chosenCategoryId == nil)
             }
         }

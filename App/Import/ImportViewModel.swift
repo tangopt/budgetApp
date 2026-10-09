@@ -19,14 +19,18 @@ struct ReviewRow: Identifiable {
 
 typealias ReviewItemId = ReviewSelectionId<UUID>
 
-/// The review list's two sections, grouped by merchant key.
+/// The review list's sections, grouped by merchant key. Confirmed rows sit in their own
+/// section until Finish import saves them.
 struct ReviewSections {
     let needsAttention: [ReviewGroup<ReviewRow>]
     let ready: [ReviewGroup<ReviewRow>]
+    let confirmed: [ReviewGroup<ReviewRow>]
 
+    /// The unconfirmed sections — the ones whose lines can be selected and categorised.
     var all: [ReviewGroup<ReviewRow>] { needsAttention + ready }
     var needsAttentionCount: Int { needsAttention.reduce(0) { $0 + $1.rows.count } }
     var readyCount: Int { ready.reduce(0) { $0 + $1.rows.count } }
+    var confirmedCount: Int { confirmed.reduce(0) { $0 + $1.rows.count } }
 }
 
 @MainActor
@@ -37,8 +41,11 @@ final class ImportViewModel: ObservableObject {
     @Published var duplicates: [ParsedTransaction] = []
     /// Statement lines that couldn't be parsed — shown as "couldn't auto-parse".
     @Published var unparsedLines: [String] = []
-    /// True from a successful staging until commit/cancel, even if every row turned out
-    /// to be a duplicate or unparsable (so those lists are still shown to the user).
+    /// Rows the user confirmed on the Review screen. Confirming only marks a row here;
+    /// nothing is written until Finish import commits the whole review at once.
+    @Published private(set) var confirmedIds: Set<UUID> = []
+    /// True from a successful staging until Finish import/cancel, even if every row turned
+    /// out to be a duplicate or unparsable (so those lists are still shown to the user).
     @Published var isReviewing = false
     @Published var errorMessage: String?
     @Published var statusMessage: String?
@@ -53,10 +60,8 @@ final class ImportViewModel: ObservableObject {
     /// Verified Balance-column result for the file under review. `.notProvided` for PDFs,
     /// credit-card accounts, and files without a mapped Balance column.
     @Published private(set) var statementBalances: StatementBalanceResult = .notProvided
-    /// When on, the statement balances are recorded once, on the first successful commit.
+    /// When on, Finish import records the statement balances with the transactions.
     @Published var recordStatementBalancesOnConfirm = true
-    /// Set once the balances for the current review have been recorded.
-    @Published private(set) var statementBalancesRecorded: StatementBalanceRecording?
     /// Category groups and recently used categories for the review rows' category picker.
     @Published private(set) var categoryGroups: [CategoryGroup] = []
     @Published private(set) var recentCategoryIds: [Int64] = []
@@ -143,8 +148,8 @@ final class ImportViewModel: ObservableObject {
         // Credit-card statements show balances with bank-specific sign conventions, so the
         // feature is off for them (see the spec's non-goals).
         statementBalances = account.kind == .credit ? .notProvided : result.statementBalances
-        statementBalancesRecorded = nil
         recordStatementBalancesOnConfirm = true
+        confirmedIds = []
         stagedRows = result.staged.map { ReviewRow(staged: $0, chosenCategoryId: $0.suggestedCategoryId) }
         loadPickerContext()
         duplicates = result.duplicates
@@ -189,15 +194,26 @@ final class ImportViewModel: ObservableObject {
     func dismissDuplicates() { duplicates = [] }
     func dismissUnparsedLines() { unparsedLines = [] }
 
-    /// Both sections' rows, partitioned once.
-    private var partitionedRows: (ready: [ReviewRow], needsAttention: [ReviewRow]) {
+    var confirmedCount: Int { confirmedIds.count }
+    var unconfirmedCount: Int { stagedRows.count - confirmedIds.count }
+
+    /// Every section's rows, partitioned once. A confirmed row leaves its section for
+    /// "Confirmed" and returns to it on Undo.
+    private var partitionedRows: (ready: [ReviewRow], needsAttention: [ReviewRow], confirmed: [ReviewRow]) {
         let readyIds = Set(ReviewPartitioning.partition(stagedRows.map(\.staged)).ready.map(\.id))
         var ready: [ReviewRow] = []
         var needsAttention: [ReviewRow] = []
+        var confirmed: [ReviewRow] = []
         for row in stagedRows {
-            if readyIds.contains(row.id) { ready.append(row) } else { needsAttention.append(row) }
+            if confirmedIds.contains(row.id) {
+                confirmed.append(row)
+            } else if readyIds.contains(row.id) {
+                ready.append(row)
+            } else {
+                needsAttention.append(row)
+            }
         }
-        return (ready, needsAttention)
+        return (ready, needsAttention, confirmed)
     }
 
     var readyRows: [ReviewRow] { partitionedRows.ready }
@@ -205,10 +221,11 @@ final class ImportViewModel: ObservableObject {
     /// Each section's rows grouped by merchant key (spec §4), computed together so a view
     /// can read it once per body.
     var reviewSections: ReviewSections {
-        let (ready, needsAttention) = partitionedRows
+        let (ready, needsAttention, confirmed) = partitionedRows
         return ReviewSections(
             needsAttention: ReviewGrouping.groups(needsAttention, scope: "attention", description: \.staged.parsed.rawDescription),
-            ready: ReviewGrouping.groups(ready, scope: "ready", description: \.staged.parsed.rawDescription)
+            ready: ReviewGrouping.groups(ready, scope: "ready", description: \.staged.parsed.rawDescription),
+            confirmed: ReviewGrouping.groups(confirmed, scope: "confirmed", description: \.staged.parsed.rawDescription)
         )
     }
 
@@ -245,81 +262,66 @@ final class ImportViewModel: ObservableObject {
         }
     }
 
-    /// Commits only the "ready" rows, leaving "needs attention" rows still staged for
-    /// further review. Each partial confirm creates its own `ImportBatch` row (a minor,
-    /// harmless duplication of what used to always be exactly one batch per file — nothing
-    /// else in the app depends on "one batch per import").
-    @discardableResult
-    func confirmReady() -> Bool {
-        errorMessage = nil
-        let ready = readyRows
-        guard !ready.isEmpty else { return true }
-        let decisions = ready.map(\.decision)
-        do {
-            try coordinator.commit(accountId: lastAccountId, sourceFileName: lastSourceFileName, staged: ready.map(\.staged), decisions: decisions)
-        } catch {
-            fail("Couldn't confirm the ready transactions: \(error.localizedDescription)")
-            return false
-        }
-        let readyIds = Set(ready.map(\.id))
-        stagedRows.removeAll { readyIds.contains($0.id) }
-        let recordedNote = recordBalancesAfterCommitIfWanted()
-        statusMessage = "Confirmed \(ready.count) transaction(s)." + (recordedNote.map { " " + $0 } ?? "")
-        if stagedRows.isEmpty && duplicates.isEmpty && unparsedLines.isEmpty { isReviewing = false }
-        return true
+    /// Marks every "ready" row confirmed (in memory only — see `finish`).
+    func confirmReady() {
+        confirmRows(readyRows)
     }
 
-    /// Commits a single row (used by both the needs-attention section's inline confirm
-    /// button and Return-to-confirm-and-advance keyboard handling in Task 7).
-    @discardableResult
-    func confirmRow(_ row: ReviewRow) -> Bool {
+    /// Marks a single row confirmed (the inline Confirm button and Return-to-confirm).
+    func confirmRow(_ row: ReviewRow) {
         confirmRows([row])
     }
 
-    /// Commits the given rows together — a single row, or every row of a group.
-    @discardableResult
-    func confirmRows(_ rows: [ReviewRow]) -> Bool {
+    /// Marks the given rows confirmed — a single row, or every row of a group. Nothing is
+    /// saved until Finish import, so Cancel import still leaves no trace.
+    func confirmRows(_ rows: [ReviewRow]) {
         errorMessage = nil
-        // Re-read the rows so a caller holding an older copy still commits current choices.
-        let ids = Set(rows.map(\.id))
-        let rows = stagedRows.filter { ids.contains($0.id) }
-        guard !rows.isEmpty else { return true }
-        do {
-            try coordinator.commit(accountId: lastAccountId, sourceFileName: lastSourceFileName, staged: rows.map(\.staged), decisions: rows.map(\.decision))
-        } catch {
-            fail(rows.count == 1 ? "Couldn't confirm this transaction: \(error.localizedDescription)"
-                                 : "Couldn't confirm these transactions: \(error.localizedDescription)")
-            return false
-        }
-        let confirmedIds = Set(rows.map(\.id))
-        stagedRows.removeAll { confirmedIds.contains($0.id) }
-        _ = recordBalancesAfterCommitIfWanted()
-        if stagedRows.isEmpty && duplicates.isEmpty && unparsedLines.isEmpty { isReviewing = false }
-        return true
+        let stagedIds = Set(stagedRows.map(\.id))
+        confirmedIds.formUnion(rows.map(\.id).filter { stagedIds.contains($0) })
     }
 
-    /// Commits every remaining staged row (whatever categories are or aren't chosen) — the
-    /// escape hatch for rows Confirm/Confirm-ready can't reach (no category picked at all).
-    /// Rows without a category are saved as Uncategorized (`.pendingReview`) by
-    /// `ImportCoordinator.commit`; rows with one keep it. Mirrors the old single-shot
-    /// commit()'s behavior, scoped to whatever's left after confirmReady/confirmRow.
+    /// Undo: returns confirmed rows to their unconfirmed section, categories kept.
+    func unconfirmRows(_ rows: [ReviewRow]) {
+        confirmedIds.subtract(rows.map(\.id))
+    }
+
+    /// Finish import: saves the confirmed rows — plus, by `unconfirmed`, the rest as
+    /// Uncategorized (or with the category chosen for them) — in ONE commit, so one
+    /// `ImportBatch`. Statement balances, when wanted, are recorded in the same write;
+    /// with no rows to save they're recorded on their own (never an empty batch). Rules
+    /// are learned only by this commit, per each row's `learnRule`. Ends the review on
+    /// success; on failure keeps it unchanged with the error shown.
     @discardableResult
-    func saveRemainingAsUncategorized() -> Bool {
+    func finish(unconfirmed: UnconfirmedRowsChoice) -> Bool {
         errorMessage = nil
-        let remaining = stagedRows
-        guard !remaining.isEmpty else { return true }
-        let decisions = remaining.map(\.decision)
+        let plan = ImportFinishPlan.make(
+            rows: stagedRows.map { ImportFinishPlan.Row(staged: $0.staged, decision: $0.decision) },
+            confirmedIds: confirmedIds, unconfirmed: unconfirmed
+        )
+        var points: [StatementBalancePoint] = []
+        if recordStatementBalancesOnConfirm, case .available(let available) = statementBalances { points = available }
+        let recorded: StatementBalanceRecording
         do {
-            try coordinator.commit(accountId: lastAccountId, sourceFileName: lastSourceFileName, staged: remaining.map(\.staged), decisions: decisions)
+            if plan.isEmpty {
+                recorded = points.isEmpty ? StatementBalanceRecording(added: 0, updated: 0)
+                    : try coordinator.recordStatementBalances(accountId: lastAccountId, sourceFileName: lastSourceFileName, points: points)
+            } else {
+                recorded = try coordinator.commit(
+                    accountId: lastAccountId, sourceFileName: lastSourceFileName,
+                    staged: plan.staged, decisions: plan.decisions, statementBalancePoints: points
+                )
+            }
         } catch {
-            fail("Couldn't save the remaining transactions: \(error.localizedDescription)")
+            fail("Couldn't finish the import: \(error.localizedDescription)")
             return false
         }
-        let savedIds = Set(remaining.map(\.id))
-        stagedRows.removeAll { savedIds.contains($0.id) }
-        let recordedNote = recordBalancesAfterCommitIfWanted()
-        statusMessage = "Saved \(remaining.count) transaction(s) — assign categories from Uncategorized." + (recordedNote.map { " " + $0 } ?? "")
-        if stagedRows.isEmpty && duplicates.isEmpty && unparsedLines.isEmpty { isReviewing = false }
+        let pendingCount = plan.decisions.filter { $0.finalCategoryId == nil }.count
+        var parts = ["Saved \(plan.staged.count) transaction(s) from \(lastSourceFileName)."]
+        if pendingCount > 0 { parts.append("\(pendingCount) to assign from Uncategorized.") }
+        let snapshotCount = recorded.added + recorded.updated
+        if snapshotCount > 0 { parts.append("Recorded \(snapshotCount) balance snapshot(s).") }
+        reset()
+        statusMessage = parts.joined(separator: " ")
         return true
     }
 
@@ -332,47 +334,21 @@ final class ImportViewModel: ObservableObject {
         return "\(count) from the statement, closing \(Money.format(closing.balanceMinorUnits, currency: lastAccountCurrency)) on \(day)"
     }
 
-    /// Records the verified balances now (the panel's "Record now" button). A no-op when
-    /// there is nothing to record or it was already recorded.
-    @discardableResult
-    func recordStatementBalancesNow() -> Bool {
-        errorMessage = nil
-        return recordStatementBalances(failurePrefix: "Couldn't save the statement balances")
-    }
-
-    /// Called after every successful commit. Records at most once per review, and only if
-    /// the user left the toggle on. Returns a short note for the status line when it
-    /// recorded something. A failure here never undoes the commit that already succeeded.
-    private func recordBalancesAfterCommitIfWanted() -> String? {
-        guard recordStatementBalancesOnConfirm, statementBalancesRecorded == nil, case .available = statementBalances else { return nil }
-        guard recordStatementBalances(failurePrefix: "Transactions were confirmed, but the statement balances couldn't be saved"),
-              let recorded = statementBalancesRecorded else { return nil }
-        return "Recorded \(recorded.added + recorded.updated) balance snapshot(s)."
-    }
-
-    private func recordStatementBalances(failurePrefix: String) -> Bool {
-        guard statementBalancesRecorded == nil, case .available(let points) = statementBalances else { return true }
-        do {
-            statementBalancesRecorded = try coordinator.recordStatementBalances(accountId: lastAccountId, sourceFileName: lastSourceFileName, points: points)
-            return true
-        } catch {
-            fail("\(failurePrefix): \(error.localizedDescription)")
-            return false
-        }
-    }
-
+    /// Discards the whole review, confirmed rows included. Nothing was written before
+    /// Finish import, so this leaves no batch, transactions, balances or rules behind.
     func cancel() {
         errorMessage = nil
+        statusMessage = nil
         reset()
     }
 
     private func reset() {
         stagedRows = []
+        confirmedIds = []
         duplicates = []
         unparsedLines = []
         isReviewing = false
         statementBalances = .notProvided
-        statementBalancesRecorded = nil
     }
 
     /// Reads a user-picked file, honouring security-scoped access if the app is ever

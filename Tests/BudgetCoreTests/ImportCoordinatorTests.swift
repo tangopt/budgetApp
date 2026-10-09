@@ -386,4 +386,50 @@ final class ImportCoordinatorTests: XCTestCase {
         XCTAssertEqual(ownSnapshots.first?.balanceMinorUnits, 98_000)
         XCTAssertEqual(ownSnapshots.first?.note, "Statement balance — a.csv")
     }
+
+    // Finish import: every row of a review is saved by one commit — one ImportBatch.
+    func testCommitSavesEveryRowInOneBatch() async throws {
+        let (manager, account, profile) = try makeSeededManager()
+        let coordinator = makeCoordinator(manager)
+        let csv = "Date,Description,Amount\n01/07/2026,TESCO,-12.00\n02/07/2026,PRET,-3.30\n03/07/2026,MYSTERY,-1.00"
+        let staged = try await coordinator.stageCSVImport(csvText: csv, profile: profile, accountId: account.id!)
+        try coordinator.commit(accountId: account.id!, sourceFileName: "july.csv", staged: staged.staged, decisions: acceptAll(staged))
+
+        let (batches, transactions) = try await manager.dbQueue.read { db in (try ImportBatch.fetchAll(db), try Transaction.fetchAll(db)) }
+        XCTAssertEqual(batches.count, 1)
+        XCTAssertEqual(transactions.count, 3)
+        XCTAssertTrue(transactions.allSatisfy { $0.importBatchId == batches.first?.id })
+    }
+
+    func testCommitRecordsStatementBalancesInTheSameWrite() async throws {
+        let (manager, account, profile) = try makeSeededManager()
+        let coordinator = makeCoordinator(manager)
+        let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n01/03/2026,TESCO,-12.00", profile: profile, accountId: account.id!)
+        let points = [
+            StatementBalancePoint(date: utcDate(2026, 3, 1), balanceMinorUnits: 98_000, isClosing: false),
+            StatementBalancePoint(date: utcDate(2026, 3, 2), balanceMinorUnits: 97_750, isClosing: true)
+        ]
+        let recorded = try coordinator.commit(accountId: account.id!, sourceFileName: "a.csv", staged: staged.staged, decisions: acceptAll(staged), statementBalancePoints: points)
+
+        XCTAssertEqual(recorded, StatementBalanceRecording(added: 2, updated: 0))
+        let snapshots = try await manager.dbQueue.read { db in try BalanceSnapshot.order(Column("date")).fetchAll(db) }
+        XCTAssertEqual(snapshots.map(\.balanceMinorUnits), [98_000, 97_750])
+        XCTAssertEqual(snapshots.first?.note, "Statement balance — a.csv")
+    }
+
+    // Balances are part of the commit's write, so a commit that fails leaves none behind.
+    func testAFailedCommitRecordsNoStatementBalances() async throws {
+        let (manager, account, profile) = try makeSeededManager()
+        let coordinator = makeCoordinator(manager)
+        let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n01/03/2026,TESCO,-12.00", profile: profile, accountId: account.id!)
+        try coordinator.commit(accountId: account.id!, sourceFileName: "a.csv", staged: staged.staged, decisions: acceptAll(staged))
+
+        // Committing the same staged rows again violates the [accountId, fingerprint] key.
+        let points = [StatementBalancePoint(date: utcDate(2026, 3, 1), balanceMinorUnits: 98_000, isClosing: true)]
+        XCTAssertThrowsError(try coordinator.commit(accountId: account.id!, sourceFileName: "a.csv", staged: staged.staged, decisions: acceptAll(staged), statementBalancePoints: points))
+
+        let (batches, snapshots) = try await manager.dbQueue.read { db in (try ImportBatch.fetchCount(db), try BalanceSnapshot.fetchCount(db)) }
+        XCTAssertEqual(batches, 1)
+        XCTAssertEqual(snapshots, 0)
+    }
 }

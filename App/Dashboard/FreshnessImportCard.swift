@@ -145,7 +145,10 @@ struct FreshnessImportCard: View {
             }
         } else if importViewModel.isReviewing {
             HStack {
-                Text("Import ready to review").font(.callout)
+                // Confirmed rows aren't saved until Finish import, so say so.
+                Text(importViewModel.confirmedCount > 0
+                     ? "Import in review · \(importViewModel.confirmedCount) confirmed, not saved yet"
+                     : "Import ready to review").font(.callout)
                 Button("Resume review ›") { navigate(.importReview) }.buttonStyle(.link).fixedSize()
             }
         } else if accounts.isEmpty {

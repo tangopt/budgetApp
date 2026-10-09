@@ -43,6 +43,10 @@ enum AppScreen: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @ObservedObject var environment: AppEnvironment
     @State private var selection: AppScreen? = .dashboard
+    /// Where the sidebar was asked to go while confirmed import rows were still unsaved;
+    /// set while the "Save the N confirmed transactions?" alert is up.
+    @State private var pendingSelection: AppScreen?
+    @State private var showUnsavedImportAlert = false
     @State private var selectedImportAccountId: Int64?
     @State private var accounts: [Account] = []
     @State private var categories: [Category] = []
@@ -110,7 +114,7 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selection) {
+            List(selection: sidebarSelection) {
                 ForEach(sidebarSections, id: \.name) { section in
                     Section(section.name) {
                         ForEach(section.screens) { screen in
@@ -177,6 +181,22 @@ struct ContentView: View {
             }
             .navigationTitle(selection?.rawValue ?? "Budget")
         }
+        .alert(
+            "Save the \(importViewModel.confirmedCount) confirmed transaction\(importViewModel.confirmedCount == 1 ? "" : "s")?",
+            isPresented: $showUnsavedImportAlert
+        ) {
+            Button("Save") {
+                // Saves only the confirmed rows; on failure stay on the review to show why.
+                if importViewModel.finish(unconfirmed: .leaveOut) { selection = pendingSelection }
+            }
+            Button("Discard", role: .destructive) {
+                importViewModel.cancel()
+                selection = pendingSelection
+            }
+            Button("Keep reviewing", role: .cancel) {}
+        } message: {
+            Text("Nothing from this import has been saved yet. Unconfirmed transactions aren't saved either way.")
+        }
         .onAppear {
             refreshSharedState()
         }
@@ -200,6 +220,22 @@ struct ContentView: View {
             if selection == .dashboard { dashboardViewModel.load() }
             if selection == .accounts { accountsViewModel.load() }
         }
+    }
+
+    /// The sidebar's selection, guarded: leaving the Import screen while confirmed rows are
+    /// unsaved asks first (confirming no longer saves anything — Finish import does).
+    private var sidebarSelection: Binding<AppScreen?> {
+        Binding(
+            get: { selection },
+            set: { newValue in
+                if selection == .importReview, newValue != .importReview, importViewModel.isReviewing, importViewModel.confirmedCount > 0 {
+                    pendingSelection = newValue
+                    showUnsavedImportAlert = true
+                } else {
+                    selection = newValue
+                }
+            }
+        )
     }
 
     private var selectedImportAccount: Account? {
