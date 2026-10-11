@@ -37,10 +37,9 @@ struct ReviewView: View {
     /// The notices, then the caption, error and action buttons.
     private func header(_ sections: ReviewSections) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            notices
-                // The notices share one bounded height, their expanded lists shrinking to
-                // fit, so on a short window the transactions list keeps its minimum.
-                .frame(maxHeight: Self.noticesMaxHeight, alignment: .top)
+            // Exactly as tall as the notices when they fit; capped and scrollable when
+            // they don't, so the transactions list keeps its minimum.
+            BoundedScroll(maxHeight: Self.noticesMaxHeight) { notices }
             actions(sections)
         }
     }
@@ -57,7 +56,7 @@ struct ReviewView: View {
                             Text("These lines couldn't be auto-parsed and were not imported. Enter them manually if they're real transactions.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            ScrollView {
+                            BoundedScroll(maxHeight: Self.noticeListMaxHeight) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     ForEach(Array(viewModel.unparsedLines.enumerated()), id: \.offset) { _, line in
                                         Text(line).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
@@ -65,7 +64,6 @@ struct ReviewView: View {
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .frame(maxHeight: Self.noticeListMaxHeight)
                             Button("Dismiss") { viewModel.dismissUnparsedLines() }
                         }
                     } label: {
@@ -82,7 +80,7 @@ struct ReviewView: View {
                             Text("Already imported for this account, so skipped. Import them anyway only if they're genuinely separate transactions.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            ScrollView {
+                            BoundedScroll(maxHeight: Self.noticeListMaxHeight) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     ForEach(Array(viewModel.duplicates.enumerated()), id: \.offset) { _, duplicate in
                                         HStack {
@@ -95,7 +93,6 @@ struct ReviewView: View {
                                     }
                                 }
                             }
-                            .frame(maxHeight: Self.noticeListMaxHeight)
                             HStack {
                                 Button("Import anyway") {
                                     isForcing = true
@@ -508,5 +505,22 @@ struct ReviewView: View {
         let date = row.staged.parsed.date.formatted(date: .abbreviated, time: .omitted)
         guard row.staged.source == .history, let count = row.staged.historyCount else { return date }
         return "\(date) · Suggested from \(count) past transaction\(count == 1 ? "" : "s")"
+    }
+}
+
+/// A vertical scroll view that is exactly as tall as its content up to `maxHeight`, then
+/// scrolls. (A bare ScrollView takes all the height offered, leaving a gap under short content.)
+struct BoundedScroll<Content: View>: View {
+    let maxHeight: CGFloat
+    @ViewBuilder let content: Content
+    @State private var contentHeight: CGFloat = 0
+
+    var body: some View {
+        ScrollView {
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+        }
+        .frame(height: min(contentHeight, maxHeight))
     }
 }
