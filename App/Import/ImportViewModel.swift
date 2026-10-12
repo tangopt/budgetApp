@@ -3,6 +3,7 @@ import Foundation
 import BudgetCore
 import GRDB
 import os
+import struct BudgetCore.Category
 
 struct ReviewRow: Identifiable {
     let staged: StagedTransaction
@@ -12,11 +13,16 @@ struct ReviewRow: Identifiable {
     /// follows its group's default (`ReviewGrouping.remembers`), resolved for the decision
     /// by `ImportViewModel`.
     var learnRule: Bool?
+    /// Set once the user picks this row's category by hand (its own picker or Set
+    /// category…): a single row's Remember then defaults on (spec §3).
+    var pickedByHand = false
+    /// Saved with the transaction on commit (spec §5).
+    var note: String?
     var id: UUID { staged.id }
 
     /// The commit decision, with `learnRule` already resolved to what the checkbox shows.
     func decision(learnRule resolved: Bool) -> ImportDecision {
-        ImportDecision(stagedId: staged.id, finalCategoryId: chosenCategoryId, learnRule: resolved)
+        ImportDecision(stagedId: staged.id, finalCategoryId: chosenCategoryId, learnRule: resolved, note: note)
     }
 }
 
@@ -38,7 +44,9 @@ struct ReviewSections {
 
 @MainActor
 final class ImportViewModel: ObservableObject {
-    @Published var stagedRows: [ReviewRow] = []
+    @Published var stagedRows: [ReviewRow] = [] {
+        didSet { refreshReviewKeysIfNeeded() }
+    }
     /// Rows skipped as already imported — shown in a dismissible, expandable list and
     /// force-importable (spec: Error handling).
     @Published var duplicates: [ParsedTransaction] = []
@@ -65,7 +73,9 @@ final class ImportViewModel: ObservableObject {
     @Published private(set) var statementBalances: StatementBalanceResult = .notProvided
     /// When on, Finish import records the statement balances with the transactions.
     @Published var recordStatementBalancesOnConfirm = true
-    /// Category groups and recently used categories for the review rows' category picker.
+    /// Categories, category groups and recently used categories for the review rows'
+    /// category picker. "New category…" adds to `categories`.
+    @Published private(set) var categories: [Category] = []
     @Published private(set) var categoryGroups: [CategoryGroup] = []
     @Published private(set) var recentCategoryIds: [Int64] = []
 
@@ -75,6 +85,11 @@ final class ImportViewModel: ObservableObject {
     private var lastSourceFileName: String = ""
     private var lastAccountId: Int64 = 0
     private var lastAccountCurrency: Currency = .gbp
+    /// Every row's review key (`ReviewKey.groupKeys`), computed over the whole review so
+    /// partitioning and every section group alike. Recomputed only when the rows themselves
+    /// change (`reviewKeyRowIds`), not when a category or note is set.
+    private var reviewKeys: [UUID: String] = [:]
+    private var reviewKeyRowIds: [UUID] = []
 
     private static let utcDayFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -184,14 +199,22 @@ final class ImportViewModel: ObservableObject {
     private func loadPickerContext() {
         let since = Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
         do {
-            (categoryGroups, recentCategoryIds) = try dbQueue.read { db in
-                (try CategoryGroup.fetchAll(db), try CategoryShortlist.recent(db: db, since: since, limit: 5))
+            (categories, categoryGroups, recentCategoryIds) = try dbQueue.read { db in
+                (try Category.fetchAll(db), try CategoryGroup.fetchAll(db), try CategoryShortlist.recent(db: db, since: since, limit: 5))
             }
         } catch {
-            Self.logger.error("Couldn't load category picker groups/recent: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't load category picker context: \(error.localizedDescription, privacy: .public)")
+            categories = []
             categoryGroups = []
             recentCategoryIds = []
         }
+    }
+
+    /// The picker's "New category…" (spec §4): creates the category and adds it to the list.
+    func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
+        let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
+        categories.append(category)
+        return category
     }
 
     func dismissDuplicates() { duplicates = [] }
@@ -200,11 +223,12 @@ final class ImportViewModel: ObservableObject {
     var confirmedCount: Int { confirmedIds.count }
     var unconfirmedCount: Int { stagedRows.count - confirmedIds.count }
 
-    /// Every row's review key (`ReviewKey.groupKeys`), computed once over the whole review
-    /// so partitioning and every section group alike.
-    private var reviewKeys: [UUID: String] {
+    private func refreshReviewKeysIfNeeded() {
+        let ids = stagedRows.map(\.id)
+        guard ids != reviewKeyRowIds else { return }
+        reviewKeyRowIds = ids
         let keys = ReviewKey.groupKeys(descriptions: stagedRows.map(\.staged.parsed.rawDescription))
-        return Dictionary(zip(stagedRows.map(\.id), keys), uniquingKeysWith: { first, _ in first })
+        reviewKeys = Dictionary(zip(ids, keys), uniquingKeysWith: { first, _ in first })
     }
 
     /// Every section's rows, partitioned once (by review group). A confirmed row leaves its
@@ -242,13 +266,29 @@ final class ImportViewModel: ObservableObject {
         )
     }
 
-    /// Sets the category of every listed row, recording whether each should learn a rule.
-    func setCategory(_ categoryId: Int64?, forRowIds ids: [UUID], learnRule: Bool) {
+    /// Sets the category of every listed row, recording whether each should learn a rule
+    /// (`nil`: its group default). `pickedByHand` marks a choice the user made for these
+    /// rows themselves, which ticks a single row's Remember (spec §3).
+    func setCategory(_ categoryId: Int64?, forRowIds ids: [UUID], learnRule: Bool?, pickedByHand: Bool = false) {
         let idSet = Set(ids)
         for index in stagedRows.indices where idSet.contains(stagedRows[index].id) {
             stagedRows[index].chosenCategoryId = categoryId
             stagedRows[index].learnRule = learnRule
+            if pickedByHand { stagedRows[index].pickedByHand = true }
         }
+    }
+
+    /// Set category…'s Remember default for these rows: off for one processor group's
+    /// purchases, otherwise on (a single row too — it is being picked by hand).
+    func setCategoryRememberDefault(for rows: [ReviewRow]) -> Bool {
+        let keys = Set(rows.map { reviewKeys[$0.id] ?? "" })
+        let isProcessorGroup = keys.count == 1 && keys.first.map(ReviewKey.isProcessorGroup) == true
+        return ReviewGrouping.rememberDefault(rowCount: rows.count, isProcessorGroup: isProcessorGroup, pickedByHand: true)
+    }
+
+    func setNote(_ note: String?, forRowId id: UUID) {
+        guard let index = stagedRows.firstIndex(where: { $0.id == id }) else { return }
+        stagedRows[index].note = Transaction.normalizedNote(note)
     }
 
     /// The group picker: sets every row in the group, each keeping the Remember value its
@@ -263,9 +303,11 @@ final class ImportViewModel: ObservableObject {
     }
 
     /// Whether this row of a group is ticked in the group's Remember checkbox: its own
-    /// choice, or the group default (on for 2+ rows) until one is made.
+    /// choice, or the group default until one is made (on for 2+ rows unless a processor
+    /// group; a single row once its category was picked by hand).
     func remembers(_ row: ReviewRow, in group: ReviewGroup<ReviewRow>) -> Bool {
-        ReviewGrouping.remembers(choice: row.learnRule, groupRowCount: group.rows.count, isProcessorGroup: group.isProcessorGroup)
+        ReviewGrouping.remembers(choice: row.learnRule, groupRowCount: group.rows.count,
+                                 isProcessorGroup: group.isProcessorGroup, pickedByHand: row.pickedByHand)
     }
 
     /// Each unconfirmed row's Remember value as its checkbox currently shows it, keyed by

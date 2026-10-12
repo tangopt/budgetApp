@@ -5,7 +5,6 @@ import struct BudgetCore.Category
 
 struct ReviewView: View {
     @ObservedObject var viewModel: ImportViewModel
-    let categories: [Category]
     let onCommitted: () -> Void
 
     @State private var showUnparsed = true
@@ -18,8 +17,15 @@ struct ReviewView: View {
     @State private var showConfirmed = false
     @State private var showSetCategory = false
     @State private var bulkRemember = false
+    /// Set category…'s "New category…": the sheet's draft, opened once the popover has
+    /// closed, and the rows it will be applied to.
+    @State private var pendingBulkDraft: NewCategoryDraft?
+    @State private var bulkDraft: NewCategoryDraft?
+    @State private var bulkDraftRowIds: [UUID] = []
     @State private var showFinishChoice = false
     @State private var showCancelConfirmation = false
+
+    private var categories: [Category] { viewModel.categories }
 
     var body: some View {
         let sections = viewModel.reviewSections
@@ -304,7 +310,7 @@ struct ReviewView: View {
                 groupRow(group, showInlineConfirm: showInlineConfirm).tag(group.id)
             }
         } else if let row = group.rows.first {
-            reviewRow(row, showInlineConfirm: showInlineConfirm).tag(group.selectionId)
+            reviewRow(row, showInlineConfirm: showInlineConfirm, singleRowGroup: group).tag(group.selectionId)
         }
     }
 
@@ -364,7 +370,8 @@ struct ReviewView: View {
             suggestedId: sharedSuggestion(group.rows),
             recentIds: viewModel.recentCategoryIds,
             amountMinorUnits: ReviewGrouping.sharedSign(group.rows.map(\.staged.parsed.amountMinorUnits)),
-            placeholder: state == .mixed ? "Mixed" : "Choose category"
+            placeholder: state == .mixed ? "Mixed" : "Choose category",
+            createCategory: viewModel.createCategory
         )
     }
 
@@ -386,10 +393,19 @@ struct ReviewView: View {
     private func setCategoryButton(_ sections: ReviewSections) -> some View {
         let rows = rows(for: selection, in: sections)
         return Button("Set category…") {
-            bulkRemember = ReviewGrouping.rememberDefault(rowCount: rows.count)
+            bulkRemember = viewModel.setCategoryRememberDefault(for: rows)
             showSetCategory = true
         }
         .disabled(rows.isEmpty)
+        .onChange(of: showSetCategory) { _, presented in
+            guard !presented, let draft = pendingBulkDraft else { return }
+            pendingBulkDraft = nil
+            // A sheet presented while the popover is still closing can fail to appear.
+            DispatchQueue.main.async { bulkDraft = draft }
+        }
+        .newCategorySheet(draft: $bulkDraft, groups: viewModel.categoryGroups, create: viewModel.createCategory) { category in
+            viewModel.setCategory(category.id, forRowIds: bulkDraftRowIds, learnRule: bulkRemember, pickedByHand: true)
+        }
         .popover(isPresented: $showSetCategory, arrowEdge: .top) {
             let current = ReviewGrouping.categoryState(of: rows.map(\.chosenCategoryId))
             CategoryPickerPopover(
@@ -402,10 +418,15 @@ struct ReviewView: View {
                 remember: $bulkRemember,
                 rememberLabel: rememberLabel(for: rows),
                 onPick: { picked in
-                    viewModel.setCategory(picked, forRowIds: rows.map(\.id), learnRule: bulkRemember)
+                    viewModel.setCategory(picked, forRowIds: rows.map(\.id), learnRule: bulkRemember, pickedByHand: true)
                     showSetCategory = false
                 },
-                onCancel: { showSetCategory = false }
+                onCancel: { showSetCategory = false },
+                onNewCategory: { name in
+                    bulkDraftRowIds = rows.map(\.id)
+                    pendingBulkDraft = NewCategoryDraft(name: name, amountMinorUnits: ReviewGrouping.sharedSign(rows.map(\.staged.parsed.amountMinorUnits)))
+                    showSetCategory = false
+                }
             )
         }
     }
@@ -465,7 +486,9 @@ struct ReviewView: View {
         }
     }
 
-    private func reviewRow(_ row: ReviewRow, showInlineConfirm: Bool) -> some View {
+    /// A row on its own (`singleRowGroup` set: it gets its own Remember checkbox, spec §3)
+    /// or inside an expanded group (whose line holds the checkbox).
+    private func reviewRow(_ row: ReviewRow, showInlineConfirm: Bool, singleRowGroup: ReviewGroup<ReviewRow>? = nil) -> some View {
         HStack {
             ConfidenceDot(source: row.staged.source, confidence: row.staged.confidence)
             VStack(alignment: .leading, spacing: 2) {
@@ -475,7 +498,16 @@ struct ReviewView: View {
             }
             Spacer()
             MoneyText(minorUnits: row.staged.parsed.amountMinorUnits)
-            categoryPicker(for: row).frame(width: 200)
+            NoteButton(note: row.note) { viewModel.setNote($0, forRowId: row.id) }
+            if let group = singleRowGroup {
+                Toggle("Remember", isOn: Binding(
+                    get: { viewModel.remembers(row, in: group) },
+                    set: { viewModel.setRemember($0, forRowIds: [row.id]) }
+                ))
+                .toggleStyle(.checkbox)
+                .help("Remember for \(group.key): learn a rule so future \(group.key) transactions get this category")
+            }
+            categoryPicker(for: row, isSingleRow: singleRowGroup != nil).frame(width: 200)
             if showInlineConfirm {
                 Button("Confirm") { viewModel.confirmRow(row) }
                     .disabled(row.chosenCategoryId == nil)
@@ -483,12 +515,19 @@ struct ReviewView: View {
         }
     }
 
-    /// A row's own picker. Setting one row (on its own or inside a group) doesn't learn a
-    /// rule unless Remember is ticked via Set category… (spec §4).
-    private func categoryPicker(for row: ReviewRow) -> some View {
+    /// A row's own picker. Picking for a single row ticks its Remember (spec §3); a row
+    /// set on its own inside a group doesn't learn a rule unless Remember is ticked via Set
+    /// category….
+    private func categoryPicker(for row: ReviewRow, isSingleRow: Bool) -> some View {
         let binding = Binding<Int64?>(
             get: { row.chosenCategoryId },
-            set: { newValue in viewModel.setCategory(newValue, forRowIds: [row.id], learnRule: false) }
+            set: { newValue in
+                if isSingleRow {
+                    viewModel.setCategory(newValue, forRowIds: [row.id], learnRule: nil, pickedByHand: true)
+                } else {
+                    viewModel.setCategory(newValue, forRowIds: [row.id], learnRule: false)
+                }
+            }
         )
         return CategoryPickerButton(
             selection: binding,
@@ -496,7 +535,8 @@ struct ReviewView: View {
             groups: viewModel.categoryGroups,
             suggestedId: row.staged.suggestedCategoryId,
             recentIds: viewModel.recentCategoryIds,
-            amountMinorUnits: row.staged.parsed.amountMinorUnits
+            amountMinorUnits: row.staged.parsed.amountMinorUnits,
+            createCategory: viewModel.createCategory
         )
     }
 

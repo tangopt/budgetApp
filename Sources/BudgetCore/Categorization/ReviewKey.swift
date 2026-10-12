@@ -8,25 +8,40 @@ public enum ReviewKey {
     /// A key at least this long joins a longer key that starts with it.
     static let minimumMergePrefixLength = 5
 
+    /// The bank's description length limit (Lloyds): a description this long may have been
+    /// cut off mid-word.
+    static let truncationLength = 18
+
     /// One key per description, in the same order. Keys are computed over the whole set:
-    /// a key that is a plain string prefix of a longer key in the set ("OMNICOM" of
-    /// "OMNICOM MANAGEMENT") becomes that longer key, resolving chains to the longest. When
-    /// it prefixes several, it joins the one with the most rows (the first seen on a tie).
-    /// Processor keys never join a longer key: "AMAZON" purchases aren't "AMAZON PRIME".
+    /// a key that is a prefix of a longer key in the set becomes that longer key, resolving
+    /// chains to the longest. A word-boundary prefix ("OMNICOM" of "OMNICOM MANAGEMENT")
+    /// always joins; a mid-word prefix ("AMERICAN EXP" of "AMERICAN EXPRESS") joins only when
+    /// a description behind it is at the truncation length, so "SHELL" stays apart from
+    /// "SHELLEYS CAFE". When it prefixes several, it joins the one with the most rows (the
+    /// first seen on a tie). Processor keys never join a longer key: "AMAZON" purchases
+    /// aren't "AMAZON PRIME".
     public static func groupKeys(descriptions: [String]) -> [String] {
         let baseKeys = descriptions.map(baseKey)
         var rowCounts: [String: Int] = [:]
+        var truncated: Set<String> = []
         var uniqueKeys: [String] = []
-        for key in baseKeys {
+        for (description, key) in zip(descriptions, baseKeys) {
             if rowCounts[key] == nil { uniqueKeys.append(key) }
             rowCounts[key, default: 0] += 1
+            if description.trimmingCharacters(in: .whitespaces).count >= truncationLength { truncated.insert(key) }
         }
-        // Keys no other key extends — where every chain ends.
-        let longest = uniqueKeys.filter { key in !uniqueKeys.contains { $0 != key && $0.hasPrefix(key) } }
+        func canJoin(_ key: String, _ longer: String) -> Bool {
+            guard key.count >= minimumMergePrefixLength, !isProcessorGroup(key),
+                  longer != key, longer.hasPrefix(key) else { return false }
+            return longer.hasPrefix(key + " ") || truncated.contains(key)
+        }
+        // Keys that join nothing — where every chain ends. A key that can join an
+        // intermediate key can also join whatever that one joins, so targets are always ends.
+        let ends = uniqueKeys.filter { key in !uniqueKeys.contains { canJoin(key, $0) } }
         var merged: [String: String] = [:]
-        for key in uniqueKeys where key.count >= minimumMergePrefixLength && !isProcessorGroup(key) {
+        for key in uniqueKeys {
             var target: String?
-            for candidate in longest where candidate != key && candidate.hasPrefix(key) {
+            for candidate in ends where canJoin(key, candidate) {
                 if target == nil || rowCounts[candidate, default: 0] > rowCounts[target!, default: 0] { target = candidate }
             }
             if let target { merged[key] = target }

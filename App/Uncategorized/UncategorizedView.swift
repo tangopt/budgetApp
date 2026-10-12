@@ -14,6 +14,11 @@ struct UncategorizedView: View {
     @State private var expandedGroups: Set<ItemId> = []
     @State private var showSetCategory = false
     @State private var bulkRemember = false
+    /// Set category…'s "New category…": the sheet's draft, opened once the popover has
+    /// closed, and the rows it will be assigned to.
+    @State private var pendingBulkDraft: NewCategoryDraft?
+    @State private var bulkDraft: NewCategoryDraft?
+    @State private var bulkDraftRows: [Transaction] = []
 
     /// `viewModel.transactions` filtered by a case-insensitive substring match against
     /// `rawDescription`. An empty `searchText` (the default) matches everything, so
@@ -82,7 +87,7 @@ struct UncategorizedView: View {
                 groupRow(group).tag(group.id)
             }
         } else if let transaction = group.rows.first {
-            transactionRow(transaction).tag(group.selectionId)
+            transactionRow(transaction, singleRowGroup: group).tag(group.selectionId)
         }
     }
 
@@ -130,7 +135,8 @@ struct UncategorizedView: View {
                 groups: viewModel.categoryGroups,
                 suggestedId: nil,
                 recentIds: viewModel.recentCategoryIds,
-                amountMinorUnits: ReviewGrouping.sharedSign(group.rows.map(\.amountMinorUnits))
+                amountMinorUnits: ReviewGrouping.sharedSign(group.rows.map(\.amountMinorUnits)),
+                createCategory: viewModel.createCategory
             )
             .frame(width: 200)
         }
@@ -144,7 +150,9 @@ struct UncategorizedView: View {
         return start == end ? start : "\(start) – \(end)"
     }
 
-    private func transactionRow(_ transaction: Transaction) -> some View {
+    /// A row on its own (`singleRowGroup` set: it gets its own Remember checkbox, spec §3)
+    /// or inside an expanded group (whose line holds the checkbox).
+    private func transactionRow(_ transaction: Transaction, singleRowGroup: ReviewGroup<Transaction>? = nil) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(transaction.rawDescription)
@@ -154,26 +162,38 @@ struct UncategorizedView: View {
             }
             Spacer()
             MoneyText(minorUnits: transaction.amountMinorUnits)
-            categoryPicker(for: transaction).frame(width: 200)
+            NoteButton(note: transaction.note) { viewModel.setNote($0, for: transaction) }
+            if let group = singleRowGroup {
+                Toggle("Remember", isOn: Binding(
+                    get: { viewModel.remembers(transaction, in: group) },
+                    set: { viewModel.setRemember($0, for: transaction) }
+                ))
+                .toggleStyle(.checkbox)
+                .help("Remember for \(group.key): learn a rule so future \(group.key) transactions get this category")
+            }
+            categoryPicker(for: transaction, singleRowGroup: singleRowGroup).frame(width: 200)
         }
     }
 
-    /// A row's own picker. Setting one row (on its own or inside a group) doesn't learn a
-    /// rule unless Remember is ticked via Set category… (spec §4).
-    private func categoryPicker(for transaction: Transaction) -> some View {
+    /// A row's own picker, which assigns at once. A single row learns a rule when its
+    /// Remember checkbox is ticked (ticked beforehand: the row leaves the list on assign);
+    /// a row set on its own inside a group doesn't — use the group or Set category….
+    private func categoryPicker(for transaction: Transaction, singleRowGroup: ReviewGroup<Transaction>?) -> some View {
         CategoryPickerButton(
             selection: Binding<Int64?>(
                 get: { transaction.categoryId },
                 set: { newValue in
                     guard let newValue else { return }
-                    viewModel.assignCategory([transaction], to: newValue, remember: { _ in false })
+                    let remember = singleRowGroup.map { viewModel.remembers(transaction, in: $0) } ?? false
+                    viewModel.assignCategory([transaction], to: newValue, remember: { _ in remember })
                 }
             ),
             categories: viewModel.categories,
             groups: viewModel.categoryGroups,
             suggestedId: nil,
             recentIds: viewModel.recentCategoryIds,
-            amountMinorUnits: transaction.amountMinorUnits
+            amountMinorUnits: transaction.amountMinorUnits,
+            createCategory: viewModel.createCategory
         )
     }
 
@@ -182,10 +202,25 @@ struct UncategorizedView: View {
     private func setCategoryButton(_ groups: [ReviewGroup<Transaction>]) -> some View {
         let rows = rows(for: selection, in: groups)
         return Button("Set category…") {
-            bulkRemember = ReviewGrouping.rememberDefault(rowCount: rows.count)
+            // One processor group's purchases default off; otherwise on (a single row too —
+            // it is being picked by hand, spec §3).
+            let keys = Set(rows.compactMap { row in groups.first { $0.rows.contains { $0.id == row.id } }?.key })
+            let isProcessorGroup = keys.count == 1 && keys.first.map(ReviewKey.isProcessorGroup) == true
+            bulkRemember = ReviewGrouping.rememberDefault(rowCount: rows.count, isProcessorGroup: isProcessorGroup, pickedByHand: true)
             showSetCategory = true
         }
         .disabled(rows.isEmpty)
+        .onChange(of: showSetCategory) { _, presented in
+            guard !presented, let draft = pendingBulkDraft else { return }
+            pendingBulkDraft = nil
+            // A sheet presented while the popover is still closing can fail to appear.
+            DispatchQueue.main.async { bulkDraft = draft }
+        }
+        .newCategorySheet(draft: $bulkDraft, groups: viewModel.categoryGroups, create: viewModel.createCategory) { category in
+            guard let id = category.id else { return }
+            let remember = bulkRemember
+            viewModel.assignCategory(bulkDraftRows, to: id, remember: { _ in remember })
+        }
         .popover(isPresented: $showSetCategory, arrowEdge: .top) {
             CategoryPickerPopover(
                 selection: nil,
@@ -203,7 +238,12 @@ struct UncategorizedView: View {
                     }
                     showSetCategory = false
                 },
-                onCancel: { showSetCategory = false }
+                onCancel: { showSetCategory = false },
+                onNewCategory: { name in
+                    bulkDraftRows = rows
+                    pendingBulkDraft = NewCategoryDraft(name: name, amountMinorUnits: ReviewGrouping.sharedSign(rows.map(\.amountMinorUnits)))
+                    showSetCategory = false
+                }
             )
         }
     }

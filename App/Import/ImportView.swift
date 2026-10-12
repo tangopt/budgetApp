@@ -7,7 +7,6 @@ struct ImportView: View {
     // Owned by ContentView (as a @StateObject there) and passed in, so observed here.
     @ObservedObject var viewModel: ImportViewModel
     let account: Account
-    let categories: [Category]
     let profileStore: ImportProfileStore
 
     var body: some View {
@@ -31,7 +30,7 @@ struct ImportView: View {
                 }
 
                 if viewModel.isReviewing {
-                    ReviewView(viewModel: viewModel, categories: categories) {}
+                    ReviewView(viewModel: viewModel) {}
                 } else if viewModel.isStaging {
                     stagingProgressView
                 } else {

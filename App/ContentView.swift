@@ -157,7 +157,7 @@ struct ContentView: View {
                             if let account = selectedImportAccount {
                                 ImportView(
                                     viewModel: importViewModel,
-                                    account: account, categories: categories, profileStore: profileStore
+                                    account: account, profileStore: profileStore
                                 )
                             }
                         }

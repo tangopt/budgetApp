@@ -8,10 +8,24 @@ final class ReviewKeyTests: XCTestCase {
 
     // Spec §2, from the user's Lloyds statement (descriptions truncated at 18 characters).
     func testTruncatedVariantsJoinTheLongerKey() {
-        XCTAssertEqual(keys(["SAINSBURYS S/MKTS", "SAINSBURYS S/MKT"]), ["SAINSBURYS S/MKTS", "SAINSBURYS S/MKTS"])
+        XCTAssertEqual(keys(["SAINSBURYS S/MKTS", "SAINSBURYS S/MKT 2"]), ["SAINSBURYS S/MKTS", "SAINSBURYS S/MKTS"])
         XCTAssertEqual(keys(["OMNICOM", "OMNICOM MANAGEMENT"]), ["OMNICOM MANAGEMENT", "OMNICOM MANAGEMENT"])
         XCTAssertEqual(keys(["RINGGO", "RINGGO PARKING"]), ["RINGGO PARKING", "RINGGO PARKING"])
-        XCTAssertEqual(keys(["AMERICAN EXP", "AMERICAN EXPRESS"]), ["AMERICAN EXPRESS", "AMERICAN EXPRESS"])
+        XCTAssertEqual(keys(["AMERICAN EXP 1234X", "AMERICAN EXPRESS"]), ["AMERICAN EXPRESS", "AMERICAN EXPRESS"])
+    }
+
+    func testMidWordPrefixJoinsOnlyWhenTheDescriptionWasTruncated() {
+        // "SHELL UK" (key SHELL) is a whole name, not a cut-off "SHELLEYS CAFE".
+        XCTAssertEqual(keys(["SHELL UK", "SHELLEYS CAFE"]), ["SHELL", "SHELLEYS CAFE"])
+        // 12 characters: not at the bank's truncation length.
+        XCTAssertEqual(keys(["AMERICAN EXP", "AMERICAN EXPRESS"]), ["AMERICAN EXP", "AMERICAN EXPRESS"])
+        // One of the descriptions behind the shorter key is 18 characters: enough.
+        XCTAssertEqual(keys(["AMERICAN EXP", "AMERICAN EXP 1234X", "AMERICAN EXPRESS"]), Array(repeating: "AMERICAN EXPRESS", count: 3))
+    }
+
+    func testWordBoundaryPrefixJoinsWhateverTheLength() {
+        XCTAssertEqual(keys(["OMNICOM", "OMNICOM MANAGEMENT"]), ["OMNICOM MANAGEMENT", "OMNICOM MANAGEMENT"])
+        XCTAssertEqual(keys(["SHELL UK", "SHELL ESSO GARAGE"]), ["SHELL ESSO GARAGE", "SHELL ESSO GARAGE"])
     }
 
     func testTrailingGenericTokensAreDropped() {
@@ -60,7 +74,7 @@ final class ReviewKeyTests: XCTestCase {
     }
 
     func testChainsResolveToTheLongestKey() {
-        XCTAssertEqual(keys(["SAINSBURYS S/M", "SAINSBURYS S/MKT", "SAINSBURYS S/MKTS"]), Array(repeating: "SAINSBURYS S/MKTS", count: 3))
+        XCTAssertEqual(keys(["SAINSBURYS S/M 123", "SAINSBURYS S/MKT 2", "SAINSBURYS S/MKTS"]), Array(repeating: "SAINSBURYS S/MKTS", count: 3))
     }
 
     func testShortPrefixesDoNotMerge() {

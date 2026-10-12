@@ -36,6 +36,7 @@ struct GridDrillDownSheet: View {
     @State private var removing: PlannedRow?
     /// A failed Remove… (an Edit… failure shows in its own sheet).
     @State private var planError: String?
+    @State private var editingTransaction: Transaction?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -70,6 +71,19 @@ struct GridDrillDownSheet: View {
         .frame(width: 560, height: 480)
         .plannedOccurrenceEditing(editing: $editing, removing: $removing, planError: $planError,
                                   categories: viewModel.categories, actions: viewModel.planEditActions)
+        .sheet(item: $editingTransaction) { transaction in
+            EditTransactionSheet(
+                transaction: transaction,
+                categories: viewModel.categories,
+                groups: viewModel.categoryGroups,
+                recentIds: [],
+                createCategory: viewModel.createCategory,
+                onSave: { categoryId, note in
+                    guard let id = transaction.id else { return .failed("This transaction hasn't been saved yet.") }
+                    return viewModel.editTransaction(id: id, categoryId: categoryId, note: note)
+                }
+            )
+        }
     }
 
     private func plannedSection(_ plan: DrillDownPlan) -> some View {
@@ -81,29 +95,27 @@ struct GridDrillDownSheet: View {
         )
     }
 
-    private func transactionRow(_ transaction: Transaction) -> some View {
-        HStack {
+    /// `target` is a snapshot frozen when the cell was tapped, so each row reads the live
+    /// transaction from the view model — otherwise a saved edit would appear to snap back.
+    private func transactionRow(_ snapshot: Transaction) -> some View {
+        let transaction = viewModel.transactions.first(where: { $0.id == snapshot.id }) ?? snapshot
+        let categoryName = transaction.categoryId.flatMap { id in viewModel.categories.first { $0.id == id }?.name } ?? "Uncategorized"
+        return HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(transaction.rawDescription)
                 Text(transaction.date.formatted(date: .abbreviated, time: .omitted))
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if let note = transaction.note {
+                NoteIcon(filled: true).help(note)
+            }
             Spacer()
             MoneyText(minorUnits: transaction.amountMinorUnits)
-            // `target` is a snapshot frozen when the cell was tapped, so the picker reads the
-            // live category from the view model — otherwise a successful recategorize would
-            // appear to snap back to the old category.
-            Picker("", selection: Binding<Int64?>(
-                get: { viewModel.transactions.first(where: { $0.id == transaction.id })?.categoryId ?? transaction.categoryId },
-                set: { newValue in
-                    guard let newValue else { return }
-                    viewModel.recategorize(transaction, to: newValue)
-                }
-            )) {
-                ForEach(viewModel.categories.filter(\.isAssignable)) { category in Text(category.name).tag(Int64?.some(category.id!)) }
-            }
-            .labelsHidden()
-            .frame(width: 180)
+            Text(categoryName)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(width: 140, alignment: .leading)
+            Button("Edit…") { editingTransaction = transaction }
         }
     }
 }

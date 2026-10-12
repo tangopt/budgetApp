@@ -8,6 +8,8 @@ public struct CategoryPickerEntry: Equatable, Identifiable, Sendable {
         case pick(Int64?)
         /// Lift the sign filter.
         case showAll
+        /// Open the New category sheet, its name prefilled ("" for none).
+        case newCategory(String)
     }
     public let id: String
     public let title: String
@@ -16,14 +18,16 @@ public struct CategoryPickerEntry: Equatable, Identifiable, Sendable {
 
 public struct CategoryPickerSection: Equatable, Identifiable, Sendable {
     public let id: String
-    /// `nil` for the untitled Uncategorized and "Show all categories" sections.
+    /// `nil` for the untitled Uncategorized, "Show all categories" and "New category…" sections.
     public let title: String?
     public let entries: [CategoryPickerEntry]
 }
 
 /// What the category picker lists (spec §3): Uncategorized, Suggested, Recent, then every
 /// assignable category under its group (groups alphabetical, ungrouped last, alphabetical
-/// within), filtered by the transaction's sign until "Show all categories" is picked.
+/// within), filtered by the transaction's sign until "Show all categories" is picked. With
+/// `newCategory`, a last "New category…" line (spec §4) — "Create “<query>”…" when no
+/// category has the typed name.
 public enum CategoryPickerSections {
     public static let uncategorizedTitle = "Uncategorized"
 
@@ -35,7 +39,7 @@ public enum CategoryPickerSections {
     }
 
     public static func build(categories: [Category], groups: [CategoryGroup], suggestedId: Int64?, recentIds: [Int64],
-                             amountMinorUnits: Int?, query: String, showAll: Bool) -> [CategoryPickerSection] {
+                             amountMinorUnits: Int?, query: String, showAll: Bool, newCategory: Bool = false) -> [CategoryPickerSection] {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         let groupNames = Dictionary(groups.compactMap { group in group.id.map { ($0, group.name) } }, uniquingKeysWith: { first, _ in first })
         let filterBySign = signFilterActive(amountMinorUnits: amountMinorUnits, showAll: showAll)
@@ -90,17 +94,29 @@ public enum CategoryPickerSections {
         if filterBySign {
             result.append(CategoryPickerSection(id: "show-all", title: nil, entries: [CategoryPickerEntry(id: "show-all", title: "Show all categories", action: .showAll)]))
         }
+        if newCategory {
+            // Any existing name counts, reserves included: creating it again would fail.
+            let taken = categories.contains { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }
+            let entry = trimmed.isEmpty || taken
+                ? CategoryPickerEntry(id: "new", title: "New category…", action: .newCategory(""))
+                : CategoryPickerEntry(id: "new", title: "Create “\(trimmed)”…", action: .newCategory(trimmed))
+            result.append(CategoryPickerSection(id: "new", title: nil, entries: [entry]))
+        }
         return result
     }
 
     /// Where the highlight starts: the current selection when not searching, otherwise the
     /// first real category (never Uncategorized or "Show all", so type + Return picks a
-    /// match); 0 when nothing qualifies.
+    /// match), else "Create “<query>”…" when searching; 0 when nothing qualifies.
     public static func initialHighlight(entries: [CategoryPickerEntry], selection: Int64?, query: String) -> Int {
         if query.trimmingCharacters(in: .whitespaces).isEmpty, let selection,
            let index = entries.firstIndex(where: { $0.action == .pick(selection) }) {
             return index
         }
-        return entries.firstIndex(where: { if case .pick(let id) = $0.action { return id != nil } else { return false } }) ?? 0
+        if let index = entries.firstIndex(where: { if case .pick(let id) = $0.action { return id != nil } else { return false } }) {
+            return index
+        }
+        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return 0 }
+        return entries.firstIndex(where: { if case .newCategory = $0.action { return true } else { return false } }) ?? 0
     }
 }

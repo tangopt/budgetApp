@@ -24,7 +24,7 @@ final class ReviewGroupingTests: XCTestCase {
     // Spec §2: truncated variants and processor purchases group together under the
     // longer key / the processor name.
     func testGroupsByReviewKey() {
-        let rows = [Row(id: 1, description: "SAINSBURYS S/MKT"), Row(id: 2, description: "AMAZON* NQ7KP7EB5"),
+        let rows = [Row(id: 1, description: "SAINSBURYS S/MKT 2"), Row(id: 2, description: "AMAZON* NQ7KP7EB5"),
                     Row(id: 3, description: "SAINSBURYS S/MKTS"), Row(id: 4, description: "AMAZON* 2K4LL0QX1")]
         let result = groups(rows)
         XCTAssertEqual(result.map(\.key), ["SAINSBURYS S/MKTS", "AMAZON"])

@@ -7,7 +7,9 @@ import GRDB
 
 @MainActor
 final class UncategorizedViewModel: ObservableObject {
-    @Published var transactions: [Transaction] = []
+    @Published var transactions: [Transaction] = [] {
+        didSet { refreshReviewKeysIfNeeded() }
+    }
     @Published var categories: [Category] = []
     /// Category groups and recently used categories for the category picker.
     @Published var categoryGroups: [CategoryGroup] = []
@@ -16,6 +18,11 @@ final class UncategorizedViewModel: ObservableObject {
 
     /// Per-row Remember choices made through a group's checkbox (absent = group default).
     @Published private var rememberChoices: [Int64: Bool] = [:]
+
+    /// Every transaction's review key over the whole list, recomputed only when the list's
+    /// rows change (not on every body or when a note is saved).
+    private var reviewKeys: [Int64: String] = [:]
+    private var reviewKeyRowIds: [Int64?] = []
 
     private let dbQueue: DatabaseQueue
 
@@ -44,18 +51,48 @@ final class UncategorizedViewModel: ObservableObject {
     /// first appearance. Review keys come from the whole list, so a filtered truncated
     /// variant keeps its merchant's key.
     func groups(of rows: [Transaction]) -> [ReviewGroup<Transaction>] {
-        let keys = ReviewKey.groupKeys(descriptions: transactions.map(\.rawDescription))
-        var keyById: [Int64: String] = [:]
-        for (transaction, key) in zip(transactions, keys) {
-            if let id = transaction.id { keyById[id] = key }
-        }
+        let keyById = reviewKeys
         return ReviewGrouping.groups(rows, scope: "uncategorized", key: { row in
             row.id.flatMap { keyById[$0] } ?? ReviewKey.groupKeys(descriptions: [row.rawDescription])[0]
         })
     }
 
+    private func refreshReviewKeysIfNeeded() {
+        let ids = transactions.map(\.id)
+        guard ids != reviewKeyRowIds else { return }
+        reviewKeyRowIds = ids
+        var keyById: [Int64: String] = [:]
+        for (transaction, key) in zip(transactions, ReviewKey.groupKeys(descriptions: transactions.map(\.rawDescription))) {
+            if let id = transaction.id { keyById[id] = key }
+        }
+        reviewKeys = keyById
+    }
+
+    /// The picker's "New category…" (spec §4): creates the category and adds it to the list.
+    func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
+        let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
+        categories.append(category)
+        return category
+    }
+
+    /// Saves a row's note on its own: the row stays as it is (still to assign).
+    func setNote(_ note: String?, for transaction: Transaction) {
+        errorMessage = nil
+        guard let index = transactions.firstIndex(where: { $0.id == transaction.id }) else { return }
+        var updated = transactions[index]
+        updated.note = Transaction.normalizedNote(note)
+        do {
+            try dbQueue.write { db in try updated.update(db, columns: ["note"]) }
+        } catch {
+            errorMessage = "Couldn't save the note: \(error.localizedDescription)"
+            return
+        }
+        transactions[index] = updated
+    }
+
     /// Whether this row of a group is ticked in the group's Remember checkbox: its own
-    /// choice, or the group default (on for 2+ rows) until one is made.
+    /// choice, or the group default until one is made (on for 2+ rows unless a processor
+    /// group; off for a single row, whose picker assigns at once — see UncategorizedView).
     func remembers(_ transaction: Transaction, in group: ReviewGroup<Transaction>) -> Bool {
         ReviewGrouping.remembers(choice: transaction.id.flatMap { rememberChoices[$0] }, groupRowCount: group.rows.count, isProcessorGroup: group.isProcessorGroup)
     }

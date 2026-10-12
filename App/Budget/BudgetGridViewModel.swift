@@ -434,27 +434,16 @@ final class BudgetGridViewModel: ObservableObject {
         return reload() ? .saved : .savedButReloadFailed
     }
 
-    /// Re-categorizes a single already-confirmed transaction (from a drill-down sheet).
-    ///
-    /// The write happens against a locally-built copy first; `self.transactions` is only
-    /// mutated once that write has actually succeeded, mirroring
-    /// `UncategorizedViewModel.assignCategory`. Mutating the in-memory array before the
-    /// write (as an earlier version of this method did) would leave the grid cell showing
-    /// the new category even when the DB write failed, silently diverging from the
-    /// persisted row until the next launch reverted it.
-    @discardableResult
-    func recategorize(_ transaction: Transaction, to categoryId: Int64) -> Bool {
-        errorMessage = nil
-        guard let index = transactions.firstIndex(where: { $0.id == transaction.id }) else { return false }
-        var updated = transactions[index]
-        updated.categoryId = categoryId
-        do {
-            try dbQueue.write { db in try updated.update(db) }
-        } catch {
-            errorMessage = "Couldn't recategorize this transaction: \(error.localizedDescription)"
-            return false
-        }
-        transactions[index] = updated
-        return true
+    /// The Edit transaction sheet's save (spec §5): category and note via
+    /// `TransactionEditing.update` (no rule learned), then the grid reloads.
+    func editTransaction(id: Int64, categoryId: Int64?, note: String?) -> SaveOutcome {
+        perform { db in try TransactionEditing.update(db: db, id: id, categoryId: categoryId, note: note) }
+    }
+
+    /// The picker's "New category…" (spec §4): creates the category and adds it to the list.
+    func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
+        let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
+        categories.append(category)
+        return category
     }
 }

@@ -35,7 +35,7 @@ final class ReviewPartitioningTests: XCTestCase {
     func testAGroupWithOneUnsureRowNeedsAttentionAsAWhole() {
         let a = StagedTransaction(parsed: makeParsed("SAINSBURYS S/MKTS"), suggestedCategoryId: 1, source: .rule, confidence: 1.0, fingerprint: "a")
         let b = StagedTransaction(parsed: makeParsed("TFL TRAVEL CH"), suggestedCategoryId: 2, source: .rule, confidence: 1.0, fingerprint: "b")
-        let c = StagedTransaction(parsed: makeParsed("SAINSBURYS S/MKT"), suggestedCategoryId: 1, source: .llm, confidence: 0.9, fingerprint: "c")
+        let c = StagedTransaction(parsed: makeParsed("SAINSBURYS S/MKT 2"), suggestedCategoryId: 1, source: .llm, confidence: 0.9, fingerprint: "c")
         let (ready, needsAttention) = ReviewPartitioning.partition([a, b, c])
         XCTAssertEqual(ready.map(\.id), [b.id])
         XCTAssertEqual(needsAttention.map(\.id), [a.id, c.id])

@@ -83,4 +83,34 @@ final class CategoryPickerSectionsTests: XCTestCase {
         XCTAssertNotEqual(searched[index].action, .pick(nil))
         XCTAssertNotEqual(searched[index].action, .showAll)
     }
+
+    // Spec §4: "New category…" at the bottom; a query no category is named gets "Create “<query>”…".
+    func testNewCategoryEntryOnlyWhenAsked() {
+        XCTAssertFalse(build().flatMap(\.entries).contains { if case .newCategory = $0.action { return true } else { return false } })
+    }
+
+    func testNewCategoryEntryIsLastAndPrefillsAnUnmatchedQuery() {
+        func last(_ query: String) -> CategoryPickerEntry? {
+            CategoryPickerSections.build(categories: categories, groups: groups, suggestedId: nil, recentIds: [],
+                                         amountMinorUnits: -100, query: query, showAll: false, newCategory: true).last?.entries.last
+        }
+        XCTAssertEqual(last("")?.title, "New category…")
+        XCTAssertEqual(last("")?.action, .newCategory(""))
+        XCTAssertEqual(last("  Garden ")?.title, "Create “Garden”…")
+        XCTAssertEqual(last("  Garden ")?.action, .newCategory("Garden"))
+        // A partial match still offers to create the typed name.
+        XCTAssertEqual(last("Gro")?.action, .newCategory("Gro"))
+        // An exact name (any case, reserves included) can't be created again.
+        XCTAssertEqual(last("groceries")?.action, .newCategory(""))
+        XCTAssertEqual(last("holiday reserve")?.action, .newCategory(""))
+    }
+
+    func testInitialHighlightIsCreateWhenNothingMatches() {
+        let entries = CategoryPickerSections.build(categories: categories, groups: groups, suggestedId: nil, recentIds: [],
+                                                   amountMinorUnits: -100, query: "Uncat", showAll: false, newCategory: true).flatMap(\.entries)
+        XCTAssertEqual(entries[CategoryPickerSections.initialHighlight(entries: entries, selection: nil, query: "Uncat")].action, .newCategory("Uncat"))
+        let empty = CategoryPickerSections.build(categories: categories, groups: groups, suggestedId: nil, recentIds: [],
+                                                 amountMinorUnits: -100, query: "", showAll: false, newCategory: true).flatMap(\.entries)
+        XCTAssertNotEqual(empty[CategoryPickerSections.initialHighlight(entries: empty, selection: nil, query: "")].action, .newCategory(""))
+    }
 }

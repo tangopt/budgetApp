@@ -5,7 +5,9 @@ import struct BudgetCore.Category
 
 /// A button showing the chosen category that opens a searchable, keyboard-driven popover
 /// (spec §3): Suggested, Recent, then every assignable category under its group, filtered
-/// by the transaction's sign until "Show all categories" is picked.
+/// by the transaction's sign until "Show all categories" is picked. With `createCategory`,
+/// the popover also offers "New category…", which opens `NewCategorySheet` and selects the
+/// new category (spec §4).
 struct CategoryPickerButton: View {
     @Binding var selection: Int64?
     let categories: [Category]
@@ -17,8 +19,12 @@ struct CategoryPickerButton: View {
     let amountMinorUnits: Int?
     /// Shown when nothing is selected — "Mixed" for a group whose rows differ.
     var placeholder: String = "Choose category"
+    var createCategory: CreateCategory? = nil
 
     @State private var isPresented = false
+    /// Set by "New category…" while the popover closes; the sheet opens once it has.
+    @State private var pendingDraft: NewCategoryDraft?
+    @State private var newCategoryDraft: NewCategoryDraft?
 
     private var selectedName: String? {
         guard let selection else { return nil }
@@ -54,14 +60,29 @@ struct CategoryPickerButton: View {
                     selection = picked
                     isPresented = false
                 },
-                onCancel: { isPresented = false }
+                onCancel: { isPresented = false },
+                onNewCategory: createCategory == nil ? nil : { name in
+                    pendingDraft = NewCategoryDraft(name: name, amountMinorUnits: amountMinorUnits)
+                    isPresented = false
+                }
             )
+        }
+        .onChange(of: isPresented) { _, presented in
+            guard !presented, let draft = pendingDraft else { return }
+            pendingDraft = nil
+            // A sheet presented while the popover is still closing can fail to appear.
+            DispatchQueue.main.async { newCategoryDraft = draft }
+        }
+        .newCategorySheet(draft: $newCategoryDraft, groups: groups, create: createCategory) { category in
+            selection = category.id
         }
     }
 }
 
 /// The picker's popover content, also used directly by bulk "Set category…" buttons,
-/// which add the "Remember for <key>" toggle below the list.
+/// which add the "Remember for <key>" toggle below the list. `onNewCategory` adds the
+/// "New category…" line and gets the name to prefill; the caller closes the popover and
+/// opens the sheet.
 struct CategoryPickerPopover: View {
     let selection: Int64?
     let categories: [Category]
@@ -73,6 +94,7 @@ struct CategoryPickerPopover: View {
     var rememberLabel: String = ""
     let onPick: (Int64?) -> Void
     let onCancel: () -> Void
+    var onNewCategory: ((String) -> Void)? = nil
 
     @State private var query = ""
     @State private var showAll = false
@@ -85,7 +107,8 @@ struct CategoryPickerPopover: View {
 
     private var sections: [CategoryPickerSection] {
         CategoryPickerSections.build(categories: categories, groups: groups, suggestedId: suggestedId, recentIds: recentIds,
-                                     amountMinorUnits: amountMinorUnits, query: query, showAll: showAll)
+                                     amountMinorUnits: amountMinorUnits, query: query, showAll: showAll,
+                                     newCategory: onNewCategory != nil)
     }
 
     private func resetHighlight() {
@@ -127,7 +150,7 @@ struct CategoryPickerPopover: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        if entries.isEmpty {
+                        if !entries.contains(where: { if case .pick = $0.action { return true } else { return false } }) {
                             Text("No matching categories")
                                 .foregroundStyle(.secondary)
                                 .padding(12)
@@ -140,7 +163,7 @@ struct CategoryPickerPopover: View {
                                     .padding(.horizontal, 12)
                                     .padding(.top, 8)
                                     .padding(.bottom, 2)
-                            } else if section.id == "show-all" {
+                            } else if section.id == "show-all" || (section.id == "new" && sections.first?.id != "new") {
                                 Divider().padding(.vertical, 4)
                             }
                             ForEach(section.entries) { entry in
@@ -197,19 +220,25 @@ struct CategoryPickerPopover: View {
         switch entry.action {
         case .pick(let id): onPick(id)
         case .showAll: showAll = true
+        case .newCategory(let name): onNewCategory?(name)
         }
     }
 
     private func row(_ entry: CategoryPickerEntry, index: Int) -> some View {
         let isHighlighted = index == highlighted
         let isSelected = entry.action == .pick(selection)
-        let isShowAll = entry.action == .showAll
+        // "Show all categories" and "New category…" are actions, not categories.
+        let isAction: Bool
+        switch entry.action {
+        case .pick: isAction = false
+        case .showAll, .newCategory: isAction = true
+        }
         return Button {
             activate(entry)
         } label: {
             HStack {
                 Text(entry.title)
-                    .foregroundStyle(isHighlighted ? Color.white : (isShowAll ? Color.accentColor : Color.primary))
+                    .foregroundStyle(isHighlighted ? Color.white : (isAction ? Color.accentColor : Color.primary))
                 Spacer()
                 if isSelected {
                     Image(systemName: "checkmark")

@@ -167,7 +167,7 @@ struct BudgetGridView: View {
             yearPicker
 
             // Close/reopen errors from the header menu (a failed Close month… shows in its
-            // sheet instead; the drill-down sheet shows recategorize errors itself).
+            // sheet instead; the drill-down sheet shows Edit transaction errors itself).
             if let error = viewModel.errorMessage, drillDownTarget == nil, closeTarget == nil, addPlannedTarget == nil, reserveSheet == nil, renamingReserve == nil {
                 HStack(alignment: .top) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
@@ -329,7 +329,7 @@ struct BudgetGridView: View {
             }
         }
         .fileExporter(isPresented: $showExporter, document: exportDocument, contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
-        // onDismiss clears any recategorize error so it can't bleed into the next,
+        // onDismiss clears any Edit transaction error so it can't bleed into the next,
         // unrelated drill-down.
         .sheet(item: $drillDownTarget, onDismiss: { viewModel.errorMessage = nil }) { target in
             GridDrillDownSheet(target: target, viewModel: viewModel)
