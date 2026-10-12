@@ -30,8 +30,15 @@ public struct ImportFinishPlan {
     public var isEmpty: Bool { staged.isEmpty }
 
     /// Keeps the review's row order. `confirmedIds` naming no row in `rows` are ignored.
+    /// Only confirmed rows may learn a rule: an unconfirmed row saved alongside keeps its
+    /// category and note but never learns, so an unchecked guess can't become a rule.
     public static func make(rows: [Row], confirmedIds: Set<UUID>, unconfirmed: UnconfirmedRowsChoice) -> ImportFinishPlan {
         let included = rows.filter { confirmedIds.contains($0.staged.id) || unconfirmed == .saveAsUncategorized }
-        return ImportFinishPlan(staged: included.map(\.staged), decisions: included.map(\.decision))
+        let decisions = included.map { row in
+            if confirmedIds.contains(row.staged.id) { return row.decision }
+            let decision = row.decision
+            return ImportDecision(stagedId: decision.stagedId, finalCategoryId: decision.finalCategoryId, learnRule: false, note: decision.note)
+        }
+        return ImportFinishPlan(staged: included.map(\.staged), decisions: decisions)
     }
 }

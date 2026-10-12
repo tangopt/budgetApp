@@ -37,4 +37,13 @@ final class ImportFinishPlanTests: XCTestCase {
         let plan = ImportFinishPlan.make(rows: rows, confirmedIds: [UUID()], unconfirmed: .leaveOut)
         XCTAssertTrue(plan.isEmpty)
     }
+
+    // Unconfirmed rows were never confirmed, so their pre-filled guesses must not become
+    // rules, whatever their Remember shows; confirmed rows keep theirs.
+    func testUnconfirmedRowsSavedAsUncategorizedNeverLearn() {
+        let rows = [row("A", category: 1, learnRule: true), row("B", category: 2, learnRule: true), row("C", category: 3, learnRule: false)]
+        let plan = ImportFinishPlan.make(rows: rows, confirmedIds: [rows[0].staged.id, rows[2].staged.id], unconfirmed: .saveAsUncategorized)
+        XCTAssertEqual(plan.decisions.map(\.learnRule), [true, false, false])
+        XCTAssertEqual(plan.decisions.map(\.finalCategoryId), [1, 2, 3])
+    }
 }

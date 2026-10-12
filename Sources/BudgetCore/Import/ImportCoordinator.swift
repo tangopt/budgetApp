@@ -49,7 +49,8 @@ public struct StagedImport {
 public struct ImportDecision {
     public let stagedId: UUID
     public let finalCategoryId: Int64?
-    /// Whether an overridden category should also be learned as a rule on commit.
+    /// Whether the final category should also be learned as a rule on commit (when it
+    /// overrides the suggestion or the suggestion wasn't a rule's).
     public let learnRule: Bool
     /// The row's note, saved with the transaction (trimmed; blank means none).
     public let note: String?
