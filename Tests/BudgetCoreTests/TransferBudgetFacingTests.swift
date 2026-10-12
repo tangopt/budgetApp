@@ -88,6 +88,33 @@ final class TransferBudgetFacingTests: XCTestCase {
         XCTAssertEqual(ids(nil), ids([f.classic, f.international, f.euro]))
     }
 
+    /// The Budget grid's filtered actuals (spec §7): pay-month totals over the filter-aware
+    /// budget-facing transactions. The receiving account alone shows the money arriving; the
+    /// sending account alone shows it sent; both together count it once, as sent.
+    func testAccountFilterPayMonthTotals() throws {
+        let f = try TransferFixture()
+        try f.add(f.classic, d(2026, 3, 9), -36_000, category: f.transferCategory)
+        try f.add(f.international, d(2026, 3, 9), 36_000, category: f.transferCategory)
+        try f.add(f.classic, d(2026, 3, 10), -2_000, category: f.groceries, description: "TESCO")
+        try f.add(f.international, d(2026, 3, 12), -700, category: f.groceries, description: "LIDL")
+        try f.match()
+        let (all, links, calendar) = try f.manager.dbQueue.read { db in
+            (try Transaction.fetchAll(db), try TransferLink.fetchAll(db), try PayCalendar.load(db: db, today: d(2026, 10, 12)))
+        }
+        let march = { (accounts: Set<Int64>?, category: Int64) in
+            PayMonthTotals.lookup(transactions: TransferLinks.budgetFacing(all, links: links, accountIds: accounts), calendar: calendar)[category]?[2026]?[3]
+        }
+        XCTAssertEqual(march([f.international], f.transferCategory), 36_000)
+        XCTAssertEqual(march([f.classic], f.transferCategory), -36_000)
+        XCTAssertEqual(march([f.classic, f.international], f.transferCategory), -36_000)
+        XCTAssertEqual(march(nil, f.transferCategory), -36_000)
+        // Other categories keep only the selected accounts' transactions.
+        XCTAssertEqual(march([f.international], f.groceries), -700)
+        XCTAssertEqual(march([f.classic], f.groceries), -2_000)
+        XCTAssertEqual(march(nil, f.groceries), -2_700)
+        XCTAssertNil(march([f.euro], f.groceries))
+    }
+
     // MARK: Dashboard
 
     private typealias F = DashboardFixture

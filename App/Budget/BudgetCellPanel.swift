@@ -49,6 +49,7 @@ struct BudgetCellPanel: View {
             transactions: viewModel.transactions(forCategoryIds: target.categoryIds, from: target.start, to: target.end),
             categoryNameById: viewModel.categoryNameById,
             showCategory: target.showCategory,
+            accountNameById: viewModel.accountNameById,
             transfers: viewModel.transferCounterparts,
             showsTransactions: target.showsTransactions,
             plannedSection: {

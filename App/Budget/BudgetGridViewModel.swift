@@ -16,9 +16,22 @@ final class BudgetGridViewModel: ObservableObject {
     }
     /// Transfer links between the user's accounts (spec §6); loaded before `transactions`.
     private(set) var transferLinks: [TransferLink] = []
-    /// `transactions` counting each linked transfer once, as sent (`TransferLinks.budgetFacing`):
-    /// cells, notes and the side panel. Rebuilt with the pay calendar.
+    /// `transactions` counting each linked transfer once, as sent (`TransferLinks.budgetFacing`),
+    /// limited to `accountFilter`'s accounts when set: cells, notes and the side panel. Rebuilt
+    /// with the pay calendar and whenever the filter changes.
     private(set) var budgetTransactions: [Transaction] = []
+    /// `budgetTransactions` with All accounts (what `monthTotals` sums), so clearing the filter
+    /// needs no recomputation.
+    private var allAccountsBudgetTransactions: [Transaction] = []
+    /// The account panel's selection (spec §7); empty = All accounts. Kept for the app session
+    /// (this view model lives as long as the window). Changing it rebuilds the shown actuals once.
+    @Published private(set) var accountFilter: Set<Int64> = [] {
+        didSet { if accountFilter != oldValue { rebuildShownActuals() } }
+    }
+    /// Whether the account panel is open beside the grid (kept for the session like the filter).
+    @Published var isAccountPanelOpen = true
+    /// Every transaction's count per account id, for the account panel; rebuilt with the pay calendar.
+    @Published private(set) var transactionCountByAccount: [Int64: Int] = [:]
     /// Linked transfers' other legs by transaction id, for the side panel and Edit transaction.
     @Published private(set) var transferCounterparts: [Int64: [TransferCounterpart]] = [:]
     @Published var forecastEntries: [ForecastEntry] = [] {
@@ -31,7 +44,12 @@ final class BudgetGridViewModel: ObservableObject {
         didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:]; yearEndCache = [:] }
     }
     @Published var accounts: [Account] = [] {
-        didSet { clearNetWorthCaches() }
+        didSet {
+            clearNetWorthCaches()
+            // A deleted account leaves the filter (none left = All accounts).
+            let ids = Set(accounts.compactMap(\.id))
+            if !accountFilter.isSubset(of: ids) { accountFilter.formIntersection(ids) }
+        }
     }
     @Published var balanceSnapshots: [BalanceSnapshot] = [] {
         didSet { clearNetWorthCaches() }
@@ -57,10 +75,14 @@ final class BudgetGridViewModel: ObservableObject {
     private let dbQueue: DatabaseQueue
     private var manualCloses: [PayMonthClose] = []
     private var lastHorizon: Date?
-    /// Confirmed totals per category per pay month (`PayMonthTotals.lookup`).
+    /// Confirmed totals per category per pay month (`PayMonthTotals.lookup`) over every account:
+    /// the plan's own figures (reserves' unforecast spend, locked occurrences) and the CSV export.
     private var monthTotals: [Int64: [Int: [Int: Int]]] = [:]
+    /// The cells' actuals: `monthTotals` again with All accounts, else over `budgetTransactions`
+    /// (the selected accounts only).
+    private var shownMonthTotals: [Int64: [Int: [Int: Int]]] = [:]
     /// The pay months each category has a transaction with a note in (`PayMonthTotals.noteMonths`),
-    /// for the cells' note markers; rebuilt with `monthTotals`.
+    /// for the cells' note markers; over `budgetTransactions`, rebuilt with `shownMonthTotals`.
     private var noteMonths: [Int64: Set<PayMonth>] = [:]
     /// Remaining allowance per reserve id, memoised per `MonthRange.index` — the grid asks
     /// for every reserve cell on every render, and each month's answer scans every
@@ -110,16 +132,57 @@ final class BudgetGridViewModel: ObservableObject {
     /// `categories` before `transactions`, so this runs once per load with all inputs fresh.
     private func rebuildPayMonths() {
         payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: manualCloses, today: Date())
-        budgetTransactions = TransferLinks.budgetFacing(transactions, links: transferLinks)
-        monthTotals = PayMonthTotals.lookup(transactions: budgetTransactions, calendar: payCalendar)
-        noteMonths = PayMonthTotals.noteMonths(transactions: budgetTransactions, calendar: payCalendar)
-        reserveRemainingCache = [:]
-        cellCache = [:]
+        allAccountsBudgetTransactions = TransferLinks.budgetFacing(transactions, links: transferLinks)
+        monthTotals = PayMonthTotals.lookup(transactions: allAccountsBudgetTransactions, calendar: payCalendar)
+        transactionCountByAccount = transactions.reduce(into: [:]) { counts, transaction in counts[transaction.accountId, default: 0] += 1 }
         monthClassCache = [:]
+        rebuildShownActuals()
         // The current year is always offered (calendar and pay-month year, which differ late in
         // December), so the plan for it shows even before any transaction lands in it.
         let currentYears = [MonthRange.components(of: Date()).year, payCalendar.current.year]
         availableYears = Array(Set(BudgetGridCalculator.yearsWithData(transactions: transactions, calendar: payCalendar) + currentYears)).sorted()
+    }
+
+    /// What the cells, note markers and side panel read (`budgetTransactions`,
+    /// `shownMonthTotals`, `noteMonths`), for the account filter. Runs once per filter change
+    /// or load, never per render; the transfer rule with a filter is `TransferLinks.budgetFacing`'s.
+    private func rebuildShownActuals() {
+        if accountFilter.isEmpty {
+            budgetTransactions = allAccountsBudgetTransactions
+            shownMonthTotals = monthTotals
+        } else {
+            budgetTransactions = TransferLinks.budgetFacing(transactions, links: transferLinks, accountIds: accountFilter)
+            shownMonthTotals = PayMonthTotals.lookup(transactions: budgetTransactions, calendar: payCalendar)
+        }
+        noteMonths = PayMonthTotals.noteMonths(transactions: budgetTransactions, calendar: payCalendar)
+        reserveRemainingCache = [:]
+        cellCache = [:]
+    }
+
+    // MARK: Account filter
+
+    /// A filter is on: cells show the selected accounts' actuals only (no pending/expected
+    /// amounts, no Add planned item on empty cells).
+    var isAccountFiltered: Bool { !accountFilter.isEmpty }
+
+    /// Ticks or unticks an account in the panel.
+    func toggleAccountFilter(_ accountId: Int64) {
+        if accountFilter.contains(accountId) { accountFilter.remove(accountId) } else { accountFilter.insert(accountId) }
+    }
+
+    /// "All accounts": clears the selection.
+    func showAllAccounts() {
+        accountFilter = []
+    }
+
+    /// The selected accounts' names, in the accounts' order (the caption above the grid).
+    var filteredAccountNames: [String] {
+        accounts.filter { $0.id.map(accountFilter.contains) == true }.map(\.name)
+    }
+
+    /// Account names by id, for the side panel's per-transaction account.
+    var accountNameById: [Int64: String] {
+        Dictionary(accounts.compactMap { account in account.id.map { ($0, account.name) } }, uniquingKeysWith: { a, _ in a })
     }
 
     /// The grid's actuals as CSV: one column per pay month of the grid's years that has
@@ -128,8 +191,9 @@ final class BudgetGridViewModel: ObservableObject {
         BudgetGridExporter.export(categories: categories.filter { !$0.isReserved }, years: availableYears, calendar: payCalendar, monthTotals: monthTotals)
     }
 
+    /// The cell's actual: the selected accounts' (all accounts' without a filter) total.
     func payMonthCategoryTotal(_ category: Category, year: Int, month: Int) -> Int {
-        category.id.flatMap { monthTotals[$0]?[year]?[month] } ?? 0
+        category.id.flatMap { shownMonthTotals[$0]?[year]?[month] } ?? 0
     }
 
     /// The account's balance as of the end of `month`, carried forward from its latest
@@ -342,15 +406,18 @@ final class BudgetGridViewModel: ObservableObject {
     }
 
     /// A category's Budget cell: the pay month's actual plus whatever the calendar month's plan
-    /// still expects (`PlanStatus.cell`); closed months show the actual alone. Memoised.
+    /// still expects (`PlanStatus.cell`); closed months show the actual alone, as does every
+    /// month under an account filter (planned items have no account). Memoised.
     func cell(_ category: Category, year: Int, month: Int) -> PlanCell {
         guard let id = category.id else { return (0, 0, .none) }
         let key = MonthRange.index(year: year, month: month)
         if let cached = cellCache[key]?[id] { return cached }
-        let cell = PlanStatus.cell(actual: payMonthCategoryTotal(category, year: year, month: month),
-                                   planned: plannedTotal(id, year: year, month: month),
-                                   categoryType: category.type,
-                                   monthClass: monthClass(year: year, month: month))
+        let actual = payMonthCategoryTotal(category, year: year, month: month)
+        let cell: PlanCell = isAccountFiltered ? (actual, 0, .none)
+            : PlanStatus.cell(actual: actual,
+                              planned: plannedTotal(id, year: year, month: month),
+                              categoryType: category.type,
+                              monthClass: monthClass(year: year, month: month))
         cellCache[key, default: [:]][id] = cell
         return cell
     }
@@ -372,8 +439,10 @@ final class BudgetGridViewModel: ObservableObject {
     }
 
     /// A reserve's month as a cell: what's left of its allowance counts as expected while the
-    /// month is open (reserves never hold transactions).
+    /// month is open (reserves never hold transactions). Empty under an account filter: a
+    /// reserve is planned money only.
     func reserveCell(_ reserves: [Category], year: Int, month: Int) -> PlanCell {
+        guard !isAccountFiltered else { return (0, 0, .none) }
         let value = reserves.reduce(0) { $0 + reserveTotal($1, year: year, month: month) }
         return (value, value, value == 0 ? .none : .allExpected)
     }

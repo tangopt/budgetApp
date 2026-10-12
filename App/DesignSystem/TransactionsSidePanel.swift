@@ -6,7 +6,8 @@ import struct BudgetCore.Transaction
 /// The right-hand side panel listing a cell's (or a category's) transactions (spec §2, §4):
 /// a title with ✕ (Escape also closes), the count and total, then each transaction — date,
 /// description, its note underneath, its transfer link ("↔ <account> · <date> · <amount>",
-/// spec §6), its category when `showCategory` (group and section rows), the amount and
+/// spec §6), its account when `accountNameById` is given (the Budget grid's, spec §7), its
+/// category when `showCategory` (group and section rows), the amount and
 /// Edit… — newest first; then an optional `plannedSection` (a
 /// `Section` for the panel's `List`).
 struct TransactionsSidePanel<Planned: View>: View {
@@ -14,6 +15,8 @@ struct TransactionsSidePanel<Planned: View>: View {
     let transactions: [Transaction]
     var categoryNameById: [Int64: String] = [:]
     var showCategory = false
+    /// Account names by id: each row names its account when given.
+    var accountNameById: [Int64: String] = [:]
     /// Linked transfers' other legs by transaction id (`TransferLinks.counterparts`).
     var transfers: [Int64: [TransferCounterpart]] = [:]
     /// False for a reserve (planned items only): no transactions list or count.
@@ -25,6 +28,7 @@ struct TransactionsSidePanel<Planned: View>: View {
     let onClose: () -> Void
 
     init(title: String, transactions: [Transaction], categoryNameById: [Int64: String] = [:], showCategory: Bool = false,
+         accountNameById: [Int64: String] = [:],
          transfers: [Int64: [TransferCounterpart]] = [:], showsTransactions: Bool = true, accessory: AnyView? = nil,
          @ViewBuilder plannedSection: @escaping () -> Planned,
          onEdit: @escaping (Transaction) -> Void, onClose: @escaping () -> Void) {
@@ -32,6 +36,7 @@ struct TransactionsSidePanel<Planned: View>: View {
         self.transactions = transactions
         self.categoryNameById = categoryNameById
         self.showCategory = showCategory
+        self.accountNameById = accountNameById
         self.transfers = transfers
         self.showsTransactions = showsTransactions
         self.accessory = accessory
@@ -116,12 +121,13 @@ struct TransactionsSidePanel<Planned: View>: View {
         .padding(.vertical, 2)
     }
 
-    /// "12 Oct 2026", plus " · Groceries" when the category is shown.
+    /// "12 Oct 2026", plus " · Lloyds Classic" when accounts are named and " · Groceries"
+    /// when the category is shown.
     private func caption(_ transaction: Transaction) -> String {
-        let date = transaction.date.formatted(date: .abbreviated, time: .omitted)
-        guard showCategory else { return date }
-        let name = transaction.categoryId.flatMap { categoryNameById[$0] } ?? "Uncategorized"
-        return "\(date) · \(name)"
+        var parts = [transaction.date.formatted(date: .abbreviated, time: .omitted)]
+        if let account = accountNameById[transaction.accountId] { parts.append(account) }
+        if showCategory { parts.append(transaction.categoryId.flatMap { categoryNameById[$0] } ?? "Uncategorized") }
+        return parts.joined(separator: " · ")
     }
 }
 
