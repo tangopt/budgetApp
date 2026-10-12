@@ -53,7 +53,8 @@ struct BudgetCellPanel: View {
             transfers: viewModel.transferCounterparts,
             showsTransactions: target.showsTransactions,
             plannedSection: {
-                if let plan = target.plan { plannedSection(plan) }
+                // Planned items have no account: none under an account filter (spec §7).
+                if let plan = target.plan, !viewModel.isAccountFiltered { plannedSection(plan) }
             },
             onEdit: { transaction in
                 editingRecentIds = viewModel.recentCategoryIds()

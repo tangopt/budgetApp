@@ -356,6 +356,8 @@ struct BudgetGridView: View {
         .fileExporter(isPresented: $showExporter, document: exportDocument, contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
         // A panel's target belongs to the year it was opened in.
         .onChange(of: viewModel.selectedYears) { _, _ in cellSelection.clear() }
+        // ...and to the accounts it was opened under.
+        .onChange(of: viewModel.accountFilter) { _, _ in cellSelection.clear() }
         .sheet(item: $addPlannedTarget) { target in
             AddPlannedItemSheet(type: target.type, scope: .budget, categories: viewModel.categories, plannedEntries: viewModel.plannedEntries,
                                 initialCategoryId: target.categoryId, initialDate: target.date) { category, amount, frequency, interval, start, end in
@@ -930,7 +932,7 @@ struct BudgetGridView: View {
                         .overlay(SelectedCellOutline(selection: cellSelection, key: cellKey(row, month: month)))
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            guard cell.value != 0 || !viewModel.occurrences(category: category, year: year, month: month).isEmpty else {
+                            guard cell.value != 0 || hasShownOccurrences(category, year: year, month: month) else {
                                 // Empty (no actual, nothing planned): an open or future month adds a planned item.
                                 if canAdd(year: year, month: month) {
                                     viewModel.errorMessage = nil
@@ -974,9 +976,15 @@ struct BudgetGridView: View {
     fileprivate func openAggregateMonth(_ row: GridRowKind, name: String, members: [Category], year: Int, month: Int) {
         var target = monthTarget(name: name, categories: members, year: year, month: month)
         let hasTransactions = !viewModel.transactions(forCategoryIds: target.categoryIds, from: target.start, to: target.end).isEmpty
-        guard hasTransactions || members.contains(where: { !viewModel.occurrences(category: $0, year: year, month: month).isEmpty }) else { return }
+        guard hasTransactions || members.contains(where: { hasShownOccurrences($0, year: year, month: month) }) else { return }
         target.showCategory = true
         cellSelection.select(key: cellKey(row, month: month), target: target)
+    }
+
+    /// Whether the cell's panel would list planned occurrences: never under an account filter
+    /// (planned items have no account, spec §7), so a cell that looks empty does nothing.
+    fileprivate func hasShownOccurrences(_ category: Category, year: Int, month: Int) -> Bool {
+        !viewModel.isAccountFiltered && !viewModel.occurrences(category: category, year: year, month: month).isEmpty
     }
 
     /// Opens a Year Total's panel when the year has any of its transactions.
