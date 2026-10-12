@@ -258,45 +258,52 @@ public enum TransferMatcher {
             $0.isTransferLike && $0.accountId != out.accountId && currencies[$0.accountId] == currency
                 && $0.date >= range.start && $0.date <= range.end && $0.amountMinorUnits <= target
         }
-        var best: (size: Int, count: Int, accountId: Int64)?
-        for (accountId, legs) in Dictionary(grouping: candidates, by: \.accountId) {
+        var best: (size: Int, count: Int, legs: [TransferLeg])?
+        for (_, legs) in Dictionary(grouping: candidates, by: \.accountId) {
             guard let found = smallestExactSum(legs.map(\.amountMinorUnits), target: target) else { continue }
             if best == nil || found.size < best!.size {
-                best = (found.size, found.count, accountId)
+                best = (found.size, found.count, found.indices.map { legs[$0] })
             } else if found.size == best!.size {
                 best!.count += found.count
             }
         }
         guard let best, best.count == 1 else { return [] }
-        let legs = candidates.filter { $0.accountId == best.accountId }.sorted { ($0.amountMinorUnits, $0.id) > ($1.amountMinorUnits, $1.id) }
-        return subset(of: legs, size: best.size, target: target) ?? []
+        return best.legs
     }
 
     /// Beyond this many steps (amounts × target) a search is skipped, leaving the row unmatched,
     /// so a launch never stalls on a huge month.
     static let maximumSumWork = 40_000_000
 
-    /// The fewest of `amounts` (all > 0) summing to `target`, and how many distinct subsets
-    /// of that size do (capped at 2). Nil when none does (or the search is too big).
-    static func smallestExactSum(_ amounts: [Int], target: Int) -> (size: Int, count: Int)? {
-        let amounts = amounts.filter { $0 > 0 && $0 <= target }
-        guard target > 0, !amounts.isEmpty, amounts.reduce(0, +) >= target,
-              amounts.count.multipliedReportingOverflow(by: target).partialValue <= maximumSumWork else { return nil }
+    /// The fewest of `amounts` summing to `target` (amounts ≤ 0 or above it never take part),
+    /// how many distinct subsets of that size do (capped at 2), and one of them as indices into
+    /// `amounts` (the only one when `count` is 1). Nil when none does (or the search is too big).
+    static func smallestExactSum(_ amounts: [Int], target: Int) -> (size: Int, count: Int, indices: [Int])? {
+        let items = amounts.indices.filter { amounts[$0] > 0 && amounts[$0] <= target }
+        guard target > 0, !items.isEmpty, items.reduce(0, { $0 + amounts[$1] }) >= target,
+              items.count.multipliedReportingOverflow(by: target + 1).partialValue <= maximumSumWork else { return nil }
         // Per reachable sum: the fewest items (255 = unreachable) and subsets with that many (≤ 2).
         let unreachable: UInt8 = .max
-        var size = [UInt8](repeating: unreachable, count: target + 1)
-        var count = [UInt8](repeating: 0, count: target + 1)
+        let width = target + 1
+        var size = [UInt8](repeating: unreachable, count: width)
+        var count = [UInt8](repeating: 0, count: width)
+        // took[item][sum]: the item is in the best subset for `sum` once it's been considered
+        // (bit set), for rebuilding the subset backwards. Bounded by `maximumSumWork` bits.
+        var took = [UInt64](repeating: 0, count: (items.count * width + 63) / 64)
         size[0] = 0
         count[0] = 1
-        for amount in amounts {
+        for (position, item) in items.enumerated() {
+            let amount = amounts[item]
             var sum = target
             while sum >= amount {
                 let from = size[sum - amount]
-                if from != unreachable && from < unreachable - 1 {
+                if from < unreachable - 1 {
                     let candidate = from + 1
                     if candidate < size[sum] {
                         size[sum] = candidate
                         count[sum] = count[sum - amount]
+                        let bit = position * width + sum
+                        took[bit / 64] |= 1 << UInt64(bit % 64)
                     } else if candidate == size[sum] {
                         count[sum] = min(2, count[sum] + count[sum - amount])
                     }
@@ -304,22 +311,16 @@ public enum TransferMatcher {
                 sum -= 1
             }
         }
-        return size[target] == unreachable ? nil : (Int(size[target]), Int(count[target]))
-    }
-
-    /// One subset of exactly `size` legs summing to `target` (legs sorted by amount, largest first).
-    private static func subset(of legs: [TransferLeg], size: Int, target: Int) -> [TransferLeg]? {
-        var chosen: [TransferLeg] = []
-        func search(_ start: Int, _ remaining: Int) -> Bool {
-            if chosen.count == size { return remaining == 0 }
-            guard start < legs.count else { return false }
-            for index in start..<legs.count where legs[index].amountMinorUnits <= remaining {
-                chosen.append(legs[index])
-                if search(index + 1, remaining - legs[index].amountMinorUnits) { return true }
-                chosen.removeLast()
+        guard size[target] != unreachable else { return nil }
+        var indices: [Int] = []
+        var sum = target
+        for position in items.indices.reversed() where sum > 0 {
+            let bit = position * width + sum
+            if took[bit / 64] & (1 << UInt64(bit % 64)) != 0 {
+                indices.append(items[position])
+                sum -= amounts[items[position]]
             }
-            return false
         }
-        return search(0, target) ? chosen : nil
+        return (Int(size[target]), Int(count[target]), indices.reversed())
     }
 }

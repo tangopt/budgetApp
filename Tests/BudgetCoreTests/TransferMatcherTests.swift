@@ -296,6 +296,9 @@ final class TransferMatcherTests: XCTestCase {
         XCTAssertEqual(TransferMatcher.smallestExactSum([300, 200, 250, 250], target: 500).map { [$0.size, $0.count] }, [2, 2])
         XCTAssertEqual(TransferMatcher.smallestExactSum([100, 100, 100, 200], target: 300).map { [$0.size, $0.count] }, [2, 2])
         XCTAssertNil(TransferMatcher.smallestExactSum([300, 100], target: 500))
+        // The subset is rebuilt from the table, as indices into the input.
+        XCTAssertEqual(TransferMatcher.smallestExactSum([50, 300, 70, 200], target: 500)?.indices.sorted(), [1, 3])
+        XCTAssertEqual(TransferMatcher.smallestExactSum([1, 2, 4, 8, 16, -3, 900], target: 23)?.indices.sorted(), [0, 1, 2, 4])
     }
 
     // MARK: Import
@@ -342,6 +345,53 @@ final class TransferMatcherTests: XCTestCase {
         // A transfer's category comes from its other leg: no rule learned.
         let rules = try await f.manager.dbQueue.read { db in try Rule.fetchAll(db) }
         XCTAssertFalse(rules.contains { $0.matchPattern.contains("P DIMENZA") })
+    }
+
+    /// Stages Classic rows against a saved International receipt filed under `receivedCategory`.
+    private func stageOutgoing(_ f: TransferFixture, receivedCategory: Int64?) async throws -> (StagedTransaction, Int64) {
+        let inLeg = try f.add(f.international, d(2026, 3, 9), 36_000, category: receivedCategory)
+        let profile = ImportProfile(accountId: f.classic, format: .csv, csvDelimiter: ",", csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2, csvDateFormat: "dd/MM/yyyy")
+        let fake = FakeCategorizer()
+        fake.stubbedSuggestion = nil
+        let coordinator = ImportCoordinator(dbQueue: f.manager.dbQueue, categorizationService: CategorizationService(categorizer: fake))
+        let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n09/03/2026,P DIMENZA,-360.00", profile: profile, accountId: f.classic)
+        try coordinator.commit(accountId: f.classic, sourceFileName: "classic.csv", staged: staged.staged,
+                               decisions: staged.staged.map { ImportDecision(stagedId: $0.id, finalCategoryId: $0.suggestedCategoryId) })
+        return (staged.staged[0], inLeg)
+    }
+
+    func testStagedOutgoingRowTakesTheReceivingLegsTransferCategory() async throws {
+        let f = try TransferFixture()
+        let (row, inLeg) = try await stageOutgoing(f, receivedCategory: f.transferCategory)
+        XCTAssertEqual(row.transfer?.otherTransactionId, inLeg)
+        XCTAssertEqual(row.transfer?.isIncoming, false)
+        XCTAssertEqual(row.source, .transfer)
+        XCTAssertEqual(row.suggestedCategoryId, f.transferCategory)
+        XCTAssertEqual(try f.links().map(\.inTransactionId), [inLeg])
+    }
+
+    func testStagedOutgoingRowNeverTakesAnIncomeOrExpenseCategory() async throws {
+        let f = try TransferFixture()
+        // The receipt was filed as Groceries: copying it would make money sent unlinkable, so
+        // the row keeps its own (empty) suggestion — and still links, as the badge says.
+        let (row, inLeg) = try await stageOutgoing(f, receivedCategory: f.groceries)
+        XCTAssertNil(row.suggestedCategoryId)
+        XCTAssertNotEqual(row.source, .transfer)
+        XCTAssertFalse(ReviewPartitioning.isSure(row))
+        XCTAssertEqual(row.transfer?.otherTransactionId, inLeg)
+        XCTAssertEqual(try f.links().map(\.inTransactionId), [inLeg])
+    }
+
+    func testForcedDuplicatesAreMatchedToo() async throws {
+        let f = try TransferFixture()
+        let out = try f.add(f.classic, d(2026, 3, 9), -36_000, category: f.transferCategory)
+        let fake = FakeCategorizer()
+        fake.stubbedSuggestion = nil
+        let coordinator = ImportCoordinator(dbQueue: f.manager.dbQueue, categorizationService: CategorizationService(categorizer: fake))
+        let parsed = ParsedTransaction(date: d(2026, 3, 9), rawDescription: "P DIMENZA", amountMinorUnits: 36_000)
+        let forced = try await coordinator.stageForcedDuplicates([parsed], accountId: f.international, alreadyStaged: [])
+        XCTAssertEqual(forced.first?.transfer?.otherTransactionId, out)
+        XCTAssertEqual(forced.first?.suggestedCategoryId, f.transferCategory)
     }
 
     // MARK: Manual links

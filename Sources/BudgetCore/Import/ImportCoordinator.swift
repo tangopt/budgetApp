@@ -161,17 +161,23 @@ public final class ImportCoordinator {
     }
 
     /// Marks the rows that are the other leg of a saved transfer (`TransferMatcher.stagedMatches`):
-    /// each gets the "↔ Transfer" badge and, when that leg has one, its category (Ready).
+    /// each gets the "↔ Transfer" badge and, when that leg's category keeps the pair linkable,
+    /// that category (source `.transfer`, Ready). Money received may take any of the sending
+    /// leg's categories (always uncategorised or a transfer one); money sent only takes a
+    /// non-external transfer category — otherwise (say the receiving leg is filed as Salary) it
+    /// keeps its own suggestion, which the match already found linkable, so commit still links.
     private func withTransfers(_ staged: [StagedTransaction], accountId: Int64) async throws -> [StagedTransaction] {
         guard !staged.isEmpty else { return staged }
-        let matches = try await dbQueue.read { db in
-            try TransferMatcher.stagedMatches(db: db, accountId: accountId,
-                                              staged: staged.map { ($0.parsed.date, $0.parsed.amountMinorUnits, $0.suggestedCategoryId) })
+        let (matches, linkableSentCategoryIds) = try await dbQueue.read { db in
+            (try TransferMatcher.stagedMatches(db: db, accountId: accountId,
+                                               staged: staged.map { ($0.parsed.date, $0.parsed.amountMinorUnits, $0.suggestedCategoryId) }),
+             Set(try Int64.fetchAll(db, sql: "SELECT id FROM category WHERE type = ? AND isExternalTransfer = 0",
+                                    arguments: [CategoryType.transfer.rawValue])))
         }
         guard !matches.isEmpty else { return staged }
         return staged.enumerated().map { index, row in
             guard let match = matches[index] else { return row }
-            guard let categoryId = match.otherCategoryId else {
+            guard let categoryId = match.otherCategoryId, match.isIncoming || linkableSentCategoryIds.contains(categoryId) else {
                 return StagedTransaction(id: row.id, parsed: row.parsed, suggestedCategoryId: row.suggestedCategoryId, source: row.source,
                                          confidence: row.confidence, fingerprint: row.fingerprint, historyCount: row.historyCount, transfer: match)
             }
@@ -222,7 +228,9 @@ public final class ImportCoordinator {
             categorizedCount += batch.count
             onProgress(categorizedCount, items.count)
         }
-        return result
+        // Matched alongside the rows already staged, so a saved leg isn't offered to both.
+        let annotated = try await withTransfers(alreadyStaged + result, accountId: accountId)
+        return Array(annotated.suffix(result.count))
     }
 
     /// Persists every staged row in one transaction, links transfers between the user's

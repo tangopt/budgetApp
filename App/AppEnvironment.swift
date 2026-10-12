@@ -2,6 +2,7 @@
 import Foundation
 import BudgetCore
 import GRDB
+import OSLog
 
 @MainActor
 final class AppEnvironment: ObservableObject {
@@ -38,8 +39,13 @@ final class AppEnvironment: ObservableObject {
             try manager.migrate()
             try manager.dbQueue.write { db in
                 try CategorySeeder.seedDefaults(db)
-                // Links transfers between accounts already imported (idempotent; spec §6).
-                try TransferMatcher.match(db: db)
+            }
+            // Links transfers between accounts already imported (idempotent; spec §6). A failure
+            // only leaves them unlinked until the next import or launch — never blocks launch.
+            do {
+                _ = try manager.dbQueue.write { db in try TransferMatcher.match(db: db) }
+            } catch {
+                Logger(subsystem: "com.personal.budget", category: "Transfers").error("Transfer matching at launch failed: \(error.localizedDescription, privacy: .public)")
             }
             return manager.dbQueue
         }.value
