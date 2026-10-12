@@ -40,9 +40,10 @@ public enum HistoryCategorizer {
     static let minimumShare = 0.7
     static let minimumCount = 2
 
-    /// Confirmed, categorised transactions of every account, reduced to merchant key + category.
+    /// Confirmed, categorised, budget-facing transactions of every account (a transfer's
+    /// incoming leg is left out — `Transaction.budgetFacing`), reduced to merchant key + category.
     public static func load(db: Database) throws -> [HistoryEntry] {
-        let rows = try Row.fetchAll(db, sql: "SELECT rawDescription, categoryId FROM transaction_ WHERE status = ? AND categoryId IS NOT NULL", arguments: [TransactionStatus.confirmed.rawValue])
+        let rows = try Row.fetchAll(db, sql: "SELECT rawDescription, categoryId FROM transaction_ WHERE status = ? AND categoryId IS NOT NULL AND \(Transaction.budgetFacingCondition())", arguments: [TransactionStatus.confirmed.rawValue])
         return rows.map { HistoryEntry(merchantKey: MerchantKey.make($0["rawDescription"]), categoryId: $0["categoryId"]) }
     }
 

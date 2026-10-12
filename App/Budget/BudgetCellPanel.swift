@@ -49,6 +49,7 @@ struct BudgetCellPanel: View {
             transactions: viewModel.transactions(forCategoryIds: target.categoryIds, from: target.start, to: target.end),
             categoryNameById: viewModel.categoryNameById,
             showCategory: target.showCategory,
+            transfers: viewModel.transferCounterparts,
             showsTransactions: target.showsTransactions,
             plannedSection: {
                 if let plan = target.plan { plannedSection(plan) }
@@ -70,6 +71,7 @@ struct BudgetCellPanel: View {
                 groups: viewModel.categoryGroups,
                 recentIds: editingRecentIds,
                 createCategory: viewModel.createCategory,
+                transfer: viewModel.transferActions,
                 onSave: { categoryId, note in
                     guard let id = transaction.id else { return .failed("This transaction hasn't been saved yet.") }
                     return viewModel.editTransaction(id: id, categoryId: categoryId, note: note)

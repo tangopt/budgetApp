@@ -10,9 +10,17 @@ final class BudgetGridViewModel: ObservableObject {
         didSet { reserveRemainingCache = [:]; cellCache = [:]; yearEndCache = [:] }
     }
     @Published var categoryGroups: [CategoryGroup] = []
+    /// Every transaction: balances and net worth. The plan's actuals use `budgetTransactions`.
     @Published var transactions: [Transaction] = [] {
         didSet { rebuildPayMonths(); clearNetWorthCaches() }
     }
+    /// Transfer links between the user's accounts (spec §6); loaded before `transactions`.
+    private(set) var transferLinks: [TransferLink] = []
+    /// `transactions` counting each linked transfer once, as sent (`TransferLinks.budgetFacing`):
+    /// cells, notes and the side panel. Rebuilt with the pay calendar.
+    private(set) var budgetTransactions: [Transaction] = []
+    /// Linked transfers' other legs by transaction id, for the side panel and Edit transaction.
+    @Published private(set) var transferCounterparts: [Int64: [TransferCounterpart]] = [:]
     @Published var forecastEntries: [ForecastEntry] = [] {
         didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:]; yearEndCache = [:] }
     }
@@ -87,6 +95,7 @@ final class BudgetGridViewModel: ObservableObject {
         manualCloses = try dbQueue.read { db in try PayMonthClose.fetchAll(db) }
         categories = try dbQueue.read { db in try Category.fetchAll(db) }
         categoryGroups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
+        (transferLinks, transferCounterparts) = try dbQueue.read { db in (try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db)) }
         transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
         forecastEntries = try dbQueue.read { db in try ForecastEntry.budget(db) }
         forecastGroups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
@@ -101,8 +110,9 @@ final class BudgetGridViewModel: ObservableObject {
     /// `categories` before `transactions`, so this runs once per load with all inputs fresh.
     private func rebuildPayMonths() {
         payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: manualCloses, today: Date())
-        monthTotals = PayMonthTotals.lookup(transactions: transactions, calendar: payCalendar)
-        noteMonths = PayMonthTotals.noteMonths(transactions: transactions, calendar: payCalendar)
+        budgetTransactions = TransferLinks.budgetFacing(transactions, links: transferLinks)
+        monthTotals = PayMonthTotals.lookup(transactions: budgetTransactions, calendar: payCalendar)
+        noteMonths = PayMonthTotals.noteMonths(transactions: budgetTransactions, calendar: payCalendar)
         reserveRemainingCache = [:]
         cellCache = [:]
         monthClassCache = [:]
@@ -166,7 +176,8 @@ final class BudgetGridViewModel: ObservableObject {
     func yearEndNetWorth(_ year: Int) -> YearEndNetWorth? {
         if let cached = yearEndCache[year] { return cached }
         let input = DashboardInput(today: Date(), accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, categories: categories, categoryGroups: categoryGroups,
-                                   forecastEntries: forecastEntries, forecastGroups: forecastGroups, exceptions: exceptions, importBatches: [], rate: exchangeRate, payCalendar: payCalendar)
+                                   forecastEntries: forecastEntries, forecastGroups: forecastGroups, exceptions: exceptions, importBatches: [], rate: exchangeRate, payCalendar: payCalendar,
+                                   transferLinks: transferLinks)
         let value = DashboardCalculator.yearEndNetWorth(input, year: year)
         yearEndCache[year] = .some(value)
         return value
@@ -206,10 +217,10 @@ final class BudgetGridViewModel: ObservableObject {
         }
     }
 
-    /// The confirmed transactions of any of `categoryIds` in `start...end` (a cell's side panel:
-    /// one category, or a group's or section's members).
+    /// The confirmed, budget-facing transactions of any of `categoryIds` in `start...end` (a
+    /// cell's side panel: one category, or a group's or section's members) — what the cell sums.
     func transactions(forCategoryIds categoryIds: Set<Int64>, from startDate: Date, to endDate: Date) -> [Transaction] {
-        transactions.filter { $0.categoryId.map(categoryIds.contains) == true && $0.status == .confirmed && $0.date >= startDate && $0.date <= endDate }
+        budgetTransactions.filter { $0.categoryId.map(categoryIds.contains) == true && $0.status == .confirmed && $0.date >= startDate && $0.date <= endDate }
     }
 
     /// Whether any of `categories` has a transaction with a note in the pay month (a cell's
@@ -468,6 +479,15 @@ final class BudgetGridViewModel: ObservableObject {
         if case .failed = outcome { return outcome }
         onTransactionEdited?()
         return outcome
+    }
+
+    /// Edit transaction's Unlink / Link to transfer… (spec §6), each followed by a reload.
+    var transferActions: TransferLinkActions {
+        TransferLinkActions.make(dbQueue: dbQueue, counterparts: { [unowned self] in transferCounterparts[$0] ?? [] }) { [unowned self] in
+            let reloaded = reload()
+            onTransactionEdited?()
+            return reloaded
+        }
     }
 
     /// The picker's "New category…" (spec §4): creates the category and adds it to the list.

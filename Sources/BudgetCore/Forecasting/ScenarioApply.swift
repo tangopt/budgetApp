@@ -151,7 +151,7 @@ public enum ScenarioApply {
             let budgetIds = budget.compactMap(\.id)
             let budgetExceptions = try PlannedOccurrenceException.filter(budgetIds.contains(Column("entryId"))).fetchAll(db)
             let payStart = calendar.range(of: current).start
-            let transactions = try Transaction
+            let transactions = try Transaction.budgetFacing
                 .filter(Column("date") >= payStart && Column("status") == TransactionStatus.confirmed.rawValue)
                 .fetchAll(db)
             let monthTotals = PayMonthTotals.lookup(transactions: transactions, calendar: calendar)

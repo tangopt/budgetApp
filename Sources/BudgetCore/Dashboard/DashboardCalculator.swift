@@ -26,7 +26,7 @@ public enum DashboardCalculator {
     // MARK: Needs attention
 
     public static func attentionItems(_ input: DashboardInput) -> AttentionItems {
-        let uncategorized = input.transactions.filter { $0.categoryId == nil || $0.status == .pendingReview }.count
+        let uncategorized = input.budgetTransactions.filter { $0.categoryId == nil || $0.status == .pendingReview }.count
 
         var staleCount = 0
         var oldest: Date?

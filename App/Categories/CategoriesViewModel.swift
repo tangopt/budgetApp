@@ -19,8 +19,11 @@ extension CategorySection {
 final class CategoriesViewModel: ObservableObject {
     @Published private(set) var categories: [Category] = []
     @Published private(set) var groups: [CategoryGroup] = []
-    /// Confirmed, categorised transactions (the side panel and the averages).
+    /// Confirmed, categorised, budget-facing transactions (the side panel and the averages):
+    /// a linked transfer counts once, as sent (`TransferLinks.budgetFacing`).
     @Published private(set) var transactions: [Transaction] = []
+    /// Linked transfers' other legs by transaction id, for the side panel and Edit transaction.
+    @Published private(set) var transferCounterparts: [Int64: [TransferCounterpart]] = [:]
     /// Average monthly actual over the last 12 pay months (`CategoryStats`); absent = "—".
     @Published private(set) var averages: [Int64: Int] = [:]
     @Published private(set) var payCalendar = PayCalendar(salaryDates: [], manualCloses: [], today: Date())
@@ -36,14 +39,16 @@ final class CategoriesViewModel: ObservableObject {
 
     func load() {
         do {
-            let (categories, groups, all, closes) = try dbQueue.read { db in
-                (try Category.fetchAll(db), try CategoryGroup.fetchAll(db), try Transaction.fetchAll(db), try PayMonthClose.fetchAll(db))
+            let (categories, groups, all, closes, links, counterparts) = try dbQueue.read { db in
+                (try Category.fetchAll(db), try CategoryGroup.fetchAll(db), try Transaction.fetchAll(db), try PayMonthClose.fetchAll(db),
+                 try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db))
             }
             self.categories = categories
             self.groups = groups
             payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: all, categories: categories),
                                       manualCloses: closes, today: Date())
-            transactions = all.filter { $0.status == .confirmed && $0.categoryId != nil }
+            transferCounterparts = counterparts
+            transactions = TransferLinks.budgetFacing(all, links: links).filter { $0.status == .confirmed && $0.categoryId != nil }
             averages = CategoryStats.monthlyAverages(transactions: transactions, calendar: payCalendar)
         } catch {
             errorMessage = "Couldn't load categories: \(error.localizedDescription)"
@@ -142,6 +147,14 @@ final class CategoriesViewModel: ObservableObject {
         }
     }
 
+    /// "Money goes to an account you don't import — never match" (spec §6): turning it on
+    /// unlinks the category's automatic transfer links.
+    func setExternalTransfer(id: Int64, external: Bool) {
+        write("Couldn't change the transfer setting") { db in
+            try TransferLinks.setExternalTransfer(db: db, categoryId: id, external)
+        }
+    }
+
     // MARK: Side panel
 
     /// The pay-month year a transaction belongs to (as on the Budget grid).
@@ -171,6 +184,16 @@ final class CategoriesViewModel: ObservableObject {
         load()
         onTransactionEdited?()
         return .saved
+    }
+
+    /// Edit transaction's Unlink / Link to transfer… (spec §6), each followed by a reload.
+    var transferActions: TransferLinkActions {
+        TransferLinkActions.make(dbQueue: dbQueue, counterparts: { [unowned self] in transferCounterparts[$0] ?? [] }) { [unowned self] in
+            errorMessage = nil
+            load()
+            onTransactionEdited?()
+            return errorMessage == nil
+        }
     }
 
     /// The Edit transaction picker's Recent section: the last 90 days' most used

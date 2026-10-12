@@ -21,18 +21,21 @@ public struct ComparisonData: Sendable {
     public let today: Date
     public let accounts: [Account]
     public let snapshots: [BalanceSnapshot]
+    /// Every transaction (net worth); `transferLinks` keeps the actuals budget-facing.
     public let transactions: [Transaction]
+    public let transferLinks: [TransferLink]
     public let categories: [Category]
     public let rate: ExchangeRateSetting
     public let payCalendar: PayCalendar
     public let horizonYear: Int
     public let horizonMonth: Int
 
-    public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], rate: ExchangeRateSetting, payCalendar: PayCalendar, horizonYear: Int, horizonMonth: Int) {
+    public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], transferLinks: [TransferLink] = [], categories: [Category], rate: ExchangeRateSetting, payCalendar: PayCalendar, horizonYear: Int, horizonMonth: Int) {
         self.today = today
         self.accounts = accounts
         self.snapshots = snapshots
         self.transactions = transactions
+        self.transferLinks = transferLinks
         self.categories = categories
         self.rate = rate
         self.payCalendar = payCalendar
@@ -137,7 +140,7 @@ public enum ScenarioComparison {
 
     /// Every category's twelve cells of `year`, by category id then month.
     public static func gridCells(_ data: ComparisonData, scenario: PlanInput, budget: PlanInput, year: Int) -> [Int64: [Int: ScenarioGridCell]] {
-        let monthTotals = PayMonthTotals.lookup(transactions: data.transactions, calendar: data.payCalendar)
+        let monthTotals = PayMonthTotals.lookup(transactions: TransferLinks.budgetFacing(data.transactions, links: data.transferLinks), calendar: data.payCalendar)
         let scenarioPlan = normalized(scenario)
         let budgetPlan = normalized(budget)
         var result: [Int64: [Int: ScenarioGridCell]] = [:]
@@ -172,7 +175,8 @@ public enum ScenarioComparison {
         let plan = normalized(plan)
         return DashboardInput(today: data.today, accounts: data.accounts, snapshots: data.snapshots, transactions: data.transactions,
                               categories: data.categories, categoryGroups: [], forecastEntries: plan.entries, forecastGroups: plan.groups,
-                              exceptions: plan.exceptions, importBatches: [], rate: data.rate, payCalendar: data.payCalendar)
+                              exceptions: plan.exceptions, importBatches: [], rate: data.rate, payCalendar: data.payCalendar,
+                              transferLinks: data.transferLinks)
     }
 
     /// Month index → value, actual months winning where the two lines meet.

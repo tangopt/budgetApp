@@ -55,5 +55,7 @@ public final class DatabaseManager {
         registerScenarioMigration(&migrator)
         registerImportProfileNegateAmountsMigration(&migrator)
         registerTransactionNoteMigration(&migrator)
+        registerTransferLinkMigration(&migrator)
+        registerCategoryExternalTransferMigration(&migrator)
     }
 }

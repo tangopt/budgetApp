@@ -17,14 +17,18 @@ public struct Category: Codable, Equatable, Identifiable, FetchableRecord, Mutab
     /// The auto-forecast never creates, updates or deletes entries for this category
     /// (its spending is covered by a reserve, or its forecast is maintained by hand).
     public var excludeFromAutoForecast: Bool
+    /// A transfer category for money to or from an account that's never imported (spec §6):
+    /// its transactions are never matched as transfers, so both directions count.
+    public var isExternalTransfer: Bool
 
-    public init(id: Int64? = nil, name: String, type: CategoryType, groupId: Int64? = nil, isReserved: Bool = false, excludeFromAutoForecast: Bool = false) {
+    public init(id: Int64? = nil, name: String, type: CategoryType, groupId: Int64? = nil, isReserved: Bool = false, excludeFromAutoForecast: Bool = false, isExternalTransfer: Bool = false) {
         self.id = id
         self.name = name
         self.type = type
         self.groupId = groupId
         self.isReserved = isReserved
         self.excludeFromAutoForecast = excludeFromAutoForecast
+        self.isExternalTransfer = isExternalTransfer
     }
 
     /// Whether transactions and rules may be filed into this category.

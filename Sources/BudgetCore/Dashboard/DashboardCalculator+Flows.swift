@@ -186,7 +186,7 @@ extension DashboardCalculator {
         let unreviewed = unreviewedSummary(input, from: range.start, through: range.end)
         let elapsed = calendar.dateComponents([.day], from: range.start, to: calendar.startOfDay(for: input.effectiveToday)).day ?? 0
         let length = calendar.dateComponents([.day], from: range.start, to: range.end.addingTimeInterval(1)).day ?? 0
-        let hasTransactions = input.transactions.contains { $0.date >= range.start && $0.date <= range.end }
+        let hasTransactions = input.budgetTransactions.contains { $0.date >= range.start && $0.date <= range.end }
 
         return CurrentMonthTracking(
             year: month.year, month: month.month,
@@ -209,7 +209,7 @@ extension DashboardCalculator {
     }
 
     private static func unreviewedSummary(_ input: DashboardInput, from start: Date, through end: Date) -> UnreviewedSummary {
-        let unreviewed = input.transactions.filter { $0.date >= start && $0.date <= end && ($0.categoryId == nil || $0.status == .pendingReview) }
+        let unreviewed = input.budgetTransactions.filter { $0.date >= start && $0.date <= end && ($0.categoryId == nil || $0.status == .pendingReview) }
         let outflow = -unreviewed.map(\.amountMinorUnits).filter { $0 < 0 }.reduce(0, +)
         return UnreviewedSummary(count: unreviewed.count, outflowMinorUnits: outflow)
     }

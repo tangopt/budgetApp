@@ -6,7 +6,11 @@ public struct DashboardInput {
     public let today: Date
     public let accounts: [Account]
     public let snapshots: [BalanceSnapshot]
+    /// Every transaction: balances, net worth and data freshness.
     public let transactions: [Transaction]
+    /// `transactions` without transfers' incoming legs (`TransferLinks.budgetFacing`): flows,
+    /// month totals, unreviewed and uncategorised counts.
+    public let budgetTransactions: [Transaction]
     public let categories: [Category]
     public let categoryGroups: [CategoryGroup]
     public let forecastEntries: [ForecastEntry]
@@ -21,18 +25,20 @@ public struct DashboardInput {
     /// Confirmed pay-month totals per category, built once.
     let monthTotals: [Int64: [Int: [Int: Int]]]
 
-    public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, manualCloses: [PayMonthClose] = []) {
+    public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, manualCloses: [PayMonthClose] = [], transferLinks: [TransferLink] = []) {
         let payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: manualCloses, today: today)
-        self.init(today: today, accounts: accounts, snapshots: snapshots, transactions: transactions, categories: categories, categoryGroups: categoryGroups, forecastEntries: forecastEntries, forecastGroups: forecastGroups, exceptions: exceptions, importBatches: importBatches, rate: rate, payCalendar: payCalendar)
+        self.init(today: today, accounts: accounts, snapshots: snapshots, transactions: transactions, categories: categories, categoryGroups: categoryGroups, forecastEntries: forecastEntries, forecastGroups: forecastGroups, exceptions: exceptions, importBatches: importBatches, rate: rate, payCalendar: payCalendar, transferLinks: transferLinks)
     }
 
     /// With a pay calendar the caller already built (the scenario comparison reuses the
     /// dashboard's calculators with each plan's entries over one shared calendar).
-    public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, payCalendar: PayCalendar) {
+    public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, payCalendar: PayCalendar, transferLinks: [TransferLink] = []) {
         self.today = today
         self.accounts = accounts
         self.snapshots = snapshots
         self.transactions = transactions
+        let budgetTransactions = TransferLinks.budgetFacing(transactions, links: transferLinks)
+        self.budgetTransactions = budgetTransactions
         self.categories = categories
         self.categoryGroups = categoryGroups
         self.forecastEntries = forecastEntries
@@ -42,7 +48,7 @@ public struct DashboardInput {
         self.rate = rate
         self.dataThrough = transactions.map(\.date).max()
         self.payCalendar = payCalendar
-        self.monthTotals = PayMonthTotals.lookup(transactions: transactions, calendar: payCalendar)
+        self.monthTotals = PayMonthTotals.lookup(transactions: budgetTransactions, calendar: payCalendar)
     }
 
     /// `today`, but never earlier than the data (a clock behind the data counts as "today = D").

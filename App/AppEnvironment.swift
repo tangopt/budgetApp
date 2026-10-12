@@ -38,6 +38,8 @@ final class AppEnvironment: ObservableObject {
             try manager.migrate()
             try manager.dbQueue.write { db in
                 try CategorySeeder.seedDefaults(db)
+                // Links transfers between accounts already imported (idempotent; spec §6).
+                try TransferMatcher.match(db: db)
             }
             return manager.dbQueue
         }.value

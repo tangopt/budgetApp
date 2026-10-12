@@ -5,14 +5,17 @@ import struct BudgetCore.Transaction
 
 /// The right-hand side panel listing a cell's (or a category's) transactions (spec §2, §4):
 /// a title with ✕ (Escape also closes), the count and total, then each transaction — date,
-/// description, its note underneath, its category when `showCategory` (group and section
-/// rows), the amount and Edit… — newest first; then an optional `plannedSection` (a
+/// description, its note underneath, its transfer link ("↔ <account> · <date> · <amount>",
+/// spec §6), its category when `showCategory` (group and section rows), the amount and
+/// Edit… — newest first; then an optional `plannedSection` (a
 /// `Section` for the panel's `List`).
 struct TransactionsSidePanel<Planned: View>: View {
     let title: String
     let transactions: [Transaction]
     var categoryNameById: [Int64: String] = [:]
     var showCategory = false
+    /// Linked transfers' other legs by transaction id (`TransferLinks.counterparts`).
+    var transfers: [Int64: [TransferCounterpart]] = [:]
     /// False for a reserve (planned items only): no transactions list or count.
     var showsTransactions = true
     /// Shown above the list (e.g. an error banner or a filter), when given.
@@ -22,13 +25,14 @@ struct TransactionsSidePanel<Planned: View>: View {
     let onClose: () -> Void
 
     init(title: String, transactions: [Transaction], categoryNameById: [Int64: String] = [:], showCategory: Bool = false,
-         showsTransactions: Bool = true, accessory: AnyView? = nil,
+         transfers: [Int64: [TransferCounterpart]] = [:], showsTransactions: Bool = true, accessory: AnyView? = nil,
          @ViewBuilder plannedSection: @escaping () -> Planned,
          onEdit: @escaping (Transaction) -> Void, onClose: @escaping () -> Void) {
         self.title = title
         self.transactions = transactions
         self.categoryNameById = categoryNameById
         self.showCategory = showCategory
+        self.transfers = transfers
         self.showsTransactions = showsTransactions
         self.accessory = accessory
         self.plannedSection = plannedSection
@@ -94,6 +98,12 @@ struct TransactionsSidePanel<Planned: View>: View {
                     .font(.caption)
                     .foregroundStyle(Color.accentColor)
             }
+            ForEach(transaction.id.flatMap { transfers[$0] } ?? []) { counterpart in
+                Text(TransferFormat.line(counterpart))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help("Transfer between your accounts: counted once, as sent")
+            }
             HStack {
                 Text(caption(transaction))
                     .font(.caption).foregroundStyle(.secondary)
@@ -118,8 +128,9 @@ struct TransactionsSidePanel<Planned: View>: View {
 extension TransactionsSidePanel where Planned == EmptyView {
     /// No planned section (e.g. a Year Total, or the Categories screen).
     init(title: String, transactions: [Transaction], categoryNameById: [Int64: String] = [:], showCategory: Bool = false,
-         accessory: AnyView? = nil, onEdit: @escaping (Transaction) -> Void, onClose: @escaping () -> Void) {
+         transfers: [Int64: [TransferCounterpart]] = [:], accessory: AnyView? = nil,
+         onEdit: @escaping (Transaction) -> Void, onClose: @escaping () -> Void) {
         self.init(title: title, transactions: transactions, categoryNameById: categoryNameById, showCategory: showCategory,
-                  accessory: accessory, plannedSection: { EmptyView() }, onEdit: onEdit, onClose: onClose)
+                  transfers: transfers, accessory: accessory, plannedSection: { EmptyView() }, onEdit: onEdit, onClose: onClose)
     }
 }

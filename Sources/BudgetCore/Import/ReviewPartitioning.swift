@@ -2,7 +2,7 @@ import Foundation
 
 /// Splits staged transactions into "ready to confirm" and "needs your attention" — drives
 /// the Review screen's lists and its Confirm all action (spec §1). A row is ready only when
-/// a rule or the user's own history suggested its category; an on-device model suggestion
+/// a rule, the user's own history or a matched transfer's other leg suggested its category; an on-device model suggestion
 /// always gets a second look, however confident. Partitioning is by review group: a group
 /// is ready only when every row in it is, so one merchant never straddles both lists.
 public enum ReviewPartitioning {
@@ -10,11 +10,11 @@ public enum ReviewPartitioning {
     /// longer makes a row ready.
     public static let highConfidenceThreshold: Double = 0.6
 
-    /// Whether this row on its own could be ready: a suggestion from a rule or history
-    /// (which already requires ≥ 2 past transactions agreeing ≥ 70%).
+    /// Whether this row on its own could be ready: a suggestion from a rule, history
+    /// (which already requires ≥ 2 past transactions agreeing ≥ 70%) or a transfer's other leg.
     public static func isSure(_ transaction: StagedTransaction) -> Bool {
         guard transaction.suggestedCategoryId != nil else { return false }
-        return transaction.source == .rule || transaction.source == .history
+        return transaction.source == .rule || transaction.source == .history || transaction.source == .transfer
     }
 
     /// `groupKeys` are the rows' review keys (`ReviewKey.groupKeys`), one per row in the same

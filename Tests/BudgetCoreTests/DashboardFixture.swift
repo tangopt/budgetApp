@@ -48,7 +48,8 @@ enum DashboardFixture {
         reservedId: Int64? = nil,
         excludedId: Int64? = nil,
         salaries: [Date] = [],
-        manualCloses: [PayMonthClose] = []
+        manualCloses: [PayMonthClose] = [],
+        transferLinks: [TransferLink] = []
     ) -> DashboardInput {
         // `salaries` adds an "Income" category (the one `PaydaySource` reads) with a +3,000
         // credit on each date, so pay months close on those dates; without it there are no
@@ -74,7 +75,8 @@ enum DashboardFixture {
             exceptions: exceptions,
             importBatches: importBatches,
             rate: ExchangeRateSetting(eurToGbpRate: 0.5, updatedAt: date(2026, 1, 1)),
-            manualCloses: manualCloses
+            manualCloses: manualCloses,
+            transferLinks: transferLinks
         )
     }
 }

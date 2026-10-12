@@ -30,6 +30,7 @@ struct CategoryTransactionsPanel: View {
         TransactionsSidePanel(
             title: category.name,
             transactions: viewModel.transactions(forCategoryId: id, year: year),
+            transfers: viewModel.transferCounterparts,
             accessory: AnyView(yearPicker(id)),
             onEdit: { transaction in
                 editingRecentIds = viewModel.recentCategoryIds()
@@ -46,6 +47,7 @@ struct CategoryTransactionsPanel: View {
                 groups: viewModel.groups,
                 recentIds: editingRecentIds,
                 createCategory: viewModel.createCategory,
+                transfer: viewModel.transferActions,
                 onSave: { categoryId, note in
                     guard let id = transaction.id else { return .failed("This transaction hasn't been saved yet.") }
                     return viewModel.editTransaction(id: id, categoryId: categoryId, note: note)

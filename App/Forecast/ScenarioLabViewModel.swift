@@ -98,7 +98,9 @@ final class ScenarioLabViewModel: ObservableObject {
     @Published private(set) var categoryGroups: [CategoryGroup] = []
     @Published private(set) var payCalendar = PayCalendar(salaryDates: [], manualCloses: [], today: Date())
     @Published private(set) var today = Date()
+    /// Every transaction (net worth); `transferLinks` keeps the actuals budget-facing.
     private var transactions: [Transaction] = []
+    private var transferLinks: [TransferLink] = []
     private var accounts: [Account] = []
     private var snapshots: [BalanceSnapshot] = []
     private var rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
@@ -191,6 +193,7 @@ final class ScenarioLabViewModel: ObservableObject {
         var categories: [Category]
         var categoryGroups: [CategoryGroup]
         var transactions: [Transaction]
+        var transferLinks: [TransferLink]
         var accounts: [Account]
         var snapshots: [BalanceSnapshot]
         var rate: ExchangeRateSetting
@@ -214,13 +217,14 @@ final class ScenarioLabViewModel: ObservableObject {
             }
             return Loaded(manualCloses: try PayMonthClose.fetchAll(db), categories: try Category.fetchAll(db),
                           categoryGroups: try CategoryGroup.fetchAll(db), transactions: try Transaction.fetchAll(db),
-                          accounts: try Account.fetchAll(db), snapshots: try BalanceSnapshot.fetchAll(db),
+                          transferLinks: try TransferLink.fetchAll(db), accounts: try Account.fetchAll(db), snapshots: try BalanceSnapshot.fetchAll(db),
                           rate: try ExchangeRateSetting.currentOrDefault(db: db), groups: groups, scenarios: scenarios,
                           budgetPlan: plan(try ForecastEntry.budget(db)), scenarioPlans: plans)
         }
         categories = loaded.categories
         categoryGroups = loaded.categoryGroups
         transactions = loaded.transactions
+        transferLinks = loaded.transferLinks
         accounts = loaded.accounts
         snapshots = loaded.snapshots
         rate = loaded.rate
@@ -254,7 +258,7 @@ final class ScenarioLabViewModel: ObservableObject {
 
     private var comparisonData: ComparisonData {
         let end = horizon.endMonth(today: today)
-        return ComparisonData(today: today, accounts: accounts, snapshots: snapshots, transactions: transactions, categories: categories,
+        return ComparisonData(today: today, accounts: accounts, snapshots: snapshots, transactions: transactions, transferLinks: transferLinks, categories: categories,
                               rate: rate, payCalendar: payCalendar, horizonYear: end.year, horizonMonth: end.month)
     }
 

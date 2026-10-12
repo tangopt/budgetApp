@@ -13,8 +13,11 @@ public struct StagedTransaction: Equatable, Identifiable {
     /// For `.history` suggestions, how many past transactions back it (see
     /// `CategorizationResult.historyCount`); `nil` for every other source.
     public let historyCount: Int?
+    /// The saved transaction this row is the other leg of a transfer with (spec §6), when the
+    /// matcher would link them; the suggestion is then that leg's category (source `.transfer`).
+    public let transfer: StagedTransfer?
 
-    public init(id: UUID = UUID(), parsed: ParsedTransaction, suggestedCategoryId: Int64?, source: CategorizedBy, confidence: Double, fingerprint: String, historyCount: Int? = nil) {
+    public init(id: UUID = UUID(), parsed: ParsedTransaction, suggestedCategoryId: Int64?, source: CategorizedBy, confidence: Double, fingerprint: String, historyCount: Int? = nil, transfer: StagedTransfer? = nil) {
         self.id = id
         self.parsed = parsed
         self.suggestedCategoryId = suggestedCategoryId
@@ -22,6 +25,7 @@ public struct StagedTransaction: Equatable, Identifiable {
         self.confidence = confidence
         self.fingerprint = fingerprint
         self.historyCount = historyCount
+        self.transfer = transfer
     }
 }
 
@@ -153,7 +157,27 @@ public final class ImportCoordinator {
             categorizedCount += batch.count
             onProgress(categorizedCount, nonDuplicates.count)
         }
-        return StagedImport(staged: staged, duplicates: duplicates, unparsedLines: unparsedLines)
+        return StagedImport(staged: try await withTransfers(staged, accountId: accountId), duplicates: duplicates, unparsedLines: unparsedLines)
+    }
+
+    /// Marks the rows that are the other leg of a saved transfer (`TransferMatcher.stagedMatches`):
+    /// each gets the "↔ Transfer" badge and, when that leg has one, its category (Ready).
+    private func withTransfers(_ staged: [StagedTransaction], accountId: Int64) async throws -> [StagedTransaction] {
+        guard !staged.isEmpty else { return staged }
+        let matches = try await dbQueue.read { db in
+            try TransferMatcher.stagedMatches(db: db, accountId: accountId,
+                                              staged: staged.map { ($0.parsed.date, $0.parsed.amountMinorUnits, $0.suggestedCategoryId) })
+        }
+        guard !matches.isEmpty else { return staged }
+        return staged.enumerated().map { index, row in
+            guard let match = matches[index] else { return row }
+            guard let categoryId = match.otherCategoryId else {
+                return StagedTransaction(id: row.id, parsed: row.parsed, suggestedCategoryId: row.suggestedCategoryId, source: row.source,
+                                         confidence: row.confidence, fingerprint: row.fingerprint, historyCount: row.historyCount, transfer: match)
+            }
+            return StagedTransaction(id: row.id, parsed: row.parsed, suggestedCategoryId: categoryId, source: .transfer,
+                                     confidence: 1, fingerprint: row.fingerprint, transfer: match)
+        }
     }
 
     /// Force-imports rows that staging flagged as duplicates (a genuine legitimate
@@ -201,8 +225,9 @@ public final class ImportCoordinator {
         return result
     }
 
-    /// Persists every staged row in one transaction, then refreshes the auto-generated
-    /// forecast from the updated actuals. Rows left without a category are saved with
+    /// Persists every staged row in one transaction, links transfers between the user's
+    /// accounts (`TransferMatcher.match`), then refreshes the auto-generated forecast from the
+    /// updated actuals. Rows left without a category are saved with
     /// `categoryId: nil` / `.pendingReview` ("Uncategorized", awaiting manual
     /// assignment) — never dropped, since they still move the account's balance.
     /// `statementBalancePoints` are recorded in the same transaction (see
@@ -235,12 +260,14 @@ public final class ImportCoordinator {
                 try transaction.insert(db)
                 // Learn what the user confirmed with Remember on: a correction, or a model or
                 // history guess they accepted (so the next import needn't guess). A rule's own
-                // unchanged suggestion already has its rule.
+                // unchanged suggestion already has its rule; a transfer's comes from its other leg.
                 if learnById[stagedTransaction.id] ?? true, let finalCategoryId,
-                   wasOverridden || stagedTransaction.source != .rule {
+                   wasOverridden || (stagedTransaction.source != .rule && stagedTransaction.source != .transfer) {
                     try RuleLearner.learn(description: stagedTransaction.parsed.rawDescription, categoryId: finalCategoryId, db: db)
                 }
             }
+            // Link transfers first, so the forecast refresh counts each one once.
+            try TransferMatcher.match(db: db)
             try AutoForecastGenerator.refresh(db: db)
             return try Self.upsertStatementBalances(accountId: accountId, sourceFileName: sourceFileName, points: statementBalancePoints, db: db)
         }

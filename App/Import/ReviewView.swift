@@ -538,6 +538,7 @@ struct ReviewView: View {
                 Text(row.staged.parsed.rawDescription)
                 Text(detailLine(for: row))
                     .font(.caption).foregroundStyle(.secondary)
+                if let transfer = row.staged.transfer { transferBadge(transfer) }
             }
             Spacer()
             MoneyText(minorUnits: row.staged.parsed.amountMinorUnits)
@@ -579,6 +580,19 @@ struct ReviewView: View {
             amountMinorUnits: row.staged.parsed.amountMinorUnits,
             createCategory: viewModel.createCategory
         )
+    }
+
+    /// The badge on a row that is the other leg of a saved transfer (spec §6):
+    /// "↔ Transfer from Lloyds Classic, 9 Mar 2026".
+    private func transferBadge(_ transfer: StagedTransfer) -> some View {
+        let otherDate = transfer.otherDate.formatted(date: .abbreviated, time: .omitted)
+        return Text("↔ Transfer \(transfer.isIncoming ? "from" : "to") \(transfer.otherAccountName), \(otherDate)")
+            .font(.caption)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+            .foregroundStyle(Color.accentColor)
+            .help("Counted once, as sent from \(transfer.isIncoming ? transfer.otherAccountName : "this account")")
     }
 
     /// "1 Oct 2026 · Suggested from 3 past transactions" for history suggestions.

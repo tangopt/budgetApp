@@ -1,7 +1,8 @@
 import GRDB
 
 /// Every transaction that still needs a category — either it has none at all, or it was
-/// saved as `pendingReview`. Shared by the Uncategorized screen's view model (and unit
+/// saved as `pendingReview` — and is budget-facing (a transfer's incoming leg, counted once as
+/// sent, never needs one: `Transaction.budgetFacing`). Shared by the Uncategorized screen's view model (and unit
 /// tested here, independent of any UI).
 public enum UncategorizedTransactions {
     public static func fetch(db: Database) throws -> [Transaction] {
@@ -14,6 +15,6 @@ public enum UncategorizedTransactions {
     }
 
     private static var request: QueryInterfaceRequest<Transaction> {
-        Transaction.filter(Column("categoryId") == nil || Column("status") == TransactionStatus.pendingReview.rawValue)
+        Transaction.budgetFacing.filter(Column("categoryId") == nil || Column("status") == TransactionStatus.pendingReview.rawValue)
     }
 }

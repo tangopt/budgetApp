@@ -235,6 +235,11 @@ struct CategoriesView: View {
                     .foregroundStyle(.secondary)
                     .help("Excluded from auto-forecast")
             }
+            if category.type == .transfer && category.isExternalTransfer {
+                Image(systemName: "arrow.up.forward.square")
+                    .foregroundStyle(.secondary)
+                    .help("Money goes to an account you don't import — never matched as a transfer")
+            }
             Spacer()
             if let average = viewModel.averages[id] {
                 MoneyText(minorUnits: average)
@@ -270,6 +275,12 @@ struct CategoriesView: View {
                     Toggle("Exclude from auto-forecast", isOn: Binding(
                         get: { category.excludeFromAutoForecast },
                         set: { viewModel.setExcludedFromAutoForecast(id: id, excluded: $0) }
+                    ))
+                }
+                if category.type == .transfer {
+                    Toggle("Money goes to an account you don't import — never match", isOn: Binding(
+                        get: { category.isExternalTransfer },
+                        set: { viewModel.setExternalTransfer(id: id, external: $0) }
                     ))
                 }
                 Divider()

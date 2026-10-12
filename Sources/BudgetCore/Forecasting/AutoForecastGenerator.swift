@@ -67,7 +67,7 @@ public enum AutoForecastGenerator {
             for period in sortedPeriods {
                 let sum = try Int.fetchOne(db, sql: """
                     SELECT COALESCE(SUM(amountMinorUnits), 0) FROM transaction_
-                    WHERE categoryId = ? AND status = 'confirmed' AND date >= ? AND date <= ?
+                    WHERE categoryId = ? AND status = 'confirmed' AND date >= ? AND date <= ? AND \(Transaction.budgetFacingCondition())
                     """, arguments: [categoryId, period.startDate, period.endDate]) ?? 0
                 perPeriodSums.append(sum)
             }
@@ -79,7 +79,7 @@ public enum AutoForecastGenerator {
                 startDate = sortedPeriods.last!.startDate
             case .lastTransactionDate:
                 startDate = try Date.fetchOne(db, sql: """
-                    SELECT MAX(date) FROM transaction_ WHERE categoryId = ? AND status = 'confirmed'
+                    SELECT MAX(date) FROM transaction_ WHERE categoryId = ? AND status = 'confirmed' AND \(Transaction.budgetFacingCondition())
                     """, arguments: [categoryId]) ?? sortedPeriods.last!.startDate
             }
             var entry = ForecastEntry(

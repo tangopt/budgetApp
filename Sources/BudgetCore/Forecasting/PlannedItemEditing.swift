@@ -281,7 +281,7 @@ public enum PlannedItemEditing {
             return
         }
         let payRange = calendar.range(of: PayMonth(year: year, month: month))
-        let transactions = try Transaction
+        let transactions = try Transaction.budgetFacing
             .filter(Column("date") >= payRange.start && Column("date") <= payRange.end && Column("status") == TransactionStatus.confirmed.rawValue)
             .fetchAll(db)
         let confirmed = isConfirmed(entry: entry, occurrence: occurrence, calendar: calendar,

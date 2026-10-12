@@ -12,6 +12,9 @@ public enum CategorizedBy: String, Codable, CaseIterable, Sendable {
     case history
     case manual
     case none
+    /// Matched to the other leg of a transfer between the user's accounts (import review):
+    /// the category is that leg's.
+    case transfer
 }
 
 public struct Transaction: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
