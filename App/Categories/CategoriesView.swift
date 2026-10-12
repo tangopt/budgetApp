@@ -19,7 +19,9 @@ struct CategoriesView: View {
 
     @State private var renamingGroupId: Int64?
     @State private var groupNameDraft = ""
-    @FocusState private var groupFieldFocused: Bool
+    /// The group whose inline name field has focus (keyed by id, so moving from one
+    /// group's field to another's never reads as "clicked away" from the new one).
+    @FocusState private var focusedGroupId: Int64?
     @State private var deletingGroup: CategoryGroup?
 
     @State private var newCategoryDraft: NewCategoryDraft?
@@ -73,8 +75,9 @@ struct CategoriesView: View {
             let ids = Set(categories.compactMap(\.id))
             selection = selection.filter(ids.contains)
         }
-        .onChange(of: groupFieldFocused) { _, focused in
-            if !focused, renamingGroupId != nil { commitGroupRename(keepEditingOnFailure: false) }
+        .onChange(of: focusedGroupId) { old, new in
+            // Clicking away from the field being edited saves it.
+            if let old, old != new, renamingGroupId == old { commitGroupRename(keepEditingOnFailure: false) }
         }
         .newCategorySheet(draft: $newCategoryDraft, groups: viewModel.groups, create: viewModel.createCategory) { category in
             if let id = category.id { selection = [id] }
@@ -181,7 +184,7 @@ struct CategoriesView: View {
             if renamingGroupId == group.id {
                 TextField("Group name", text: $groupNameDraft)
                     .textFieldStyle(.roundedBorder)
-                    .focused($groupFieldFocused)
+                    .focused($focusedGroupId, equals: group.id)
                     .onSubmit { commitGroupRename(keepEditingOnFailure: true) }
                     .onExitCommand { renamingGroupId = nil }
                     .frame(maxWidth: 240)
@@ -285,10 +288,13 @@ struct CategoriesView: View {
     }
 
     private func startGroupRename(_ group: CategoryGroup) {
+        // Another group's field is open: save its draft first (as clicking away would).
+        if let current = renamingGroupId, current != group.id { commitGroupRename(keepEditingOnFailure: false) }
         groupNameDraft = group.name
         renamingGroupId = group.id
         // The field appears on the next pass; focus it then.
-        DispatchQueue.main.async { groupFieldFocused = true }
+        let id = group.id
+        DispatchQueue.main.async { focusedGroupId = id }
     }
 
     /// Saves the inline name; an unchanged name just ends editing. A refused one shows the
@@ -302,7 +308,7 @@ struct CategoriesView: View {
         if viewModel.renameGroup(id: id, to: groupNameDraft) || !keepEditingOnFailure {
             renamingGroupId = nil
         } else {
-            DispatchQueue.main.async { groupFieldFocused = true }
+            DispatchQueue.main.async { focusedGroupId = id }
         }
     }
 }

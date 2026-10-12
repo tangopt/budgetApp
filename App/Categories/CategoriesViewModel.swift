@@ -5,28 +5,13 @@ import struct BudgetCore.Category
 import struct BudgetCore.Transaction
 import GRDB
 
-/// One of the Categories screen's type sections (spec §4): its groups, then Ungrouped.
-struct CategorySection: Identifiable {
-    let type: CategoryType
-    let groups: [GroupBlock]
-    let ungrouped: [Category]
-
-    var id: CategoryType { type }
-
+extension CategorySection {
     var title: String {
         switch type {
         case .expense: return "Expenses"
         case .income: return "Income"
         case .transfer: return "Transfers"
         }
-    }
-
-    /// A group's members of this section's type (a group may hold any type, so a mixed
-    /// group shows in each section it has members in).
-    struct GroupBlock: Identifiable {
-        let group: CategoryGroup
-        let categories: [Category]
-        var id: Int64 { group.id ?? -1 }
     }
 }
 
@@ -71,30 +56,9 @@ final class CategoriesViewModel: ObservableObject {
         Dictionary(categories.compactMap { c in c.id.map { ($0, c.name) } }, uniquingKeysWith: { a, _ in a })
     }
 
-    /// The type sections, filtered by `search` (case-insensitive, category or group name; a
-    /// matching group shows all its members). Without a search every section and its
-    /// Ungrouped row show (they're drop targets), and empty groups show under Expenses.
+    /// The type sections, filtered by `search` (`CategorySections.build`).
     func sections(search: String) -> [CategorySection] {
-        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        let searching = !query.isEmpty
-        func matches(_ name: String) -> Bool { name.localizedCaseInsensitiveContains(query) }
-        let sortedGroups = groups.filter { $0.id != nil }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        let groupIds = Set(sortedGroups.compactMap(\.id))
-        let occupied = Set(categories.compactMap(\.groupId))
-        return CategoryType.sectionOrder.compactMap { type in
-            let ofType = categories.filter { !$0.isReserved && $0.type == type }
-                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            let blocks: [CategorySection.GroupBlock] = sortedGroups.compactMap { group in
-                let groupMatches = !searching || matches(group.name)
-                let members = ofType.filter { $0.groupId == group.id && (groupMatches || matches($0.name)) }
-                let isEmptyGroup = !occupied.contains(group.id!)
-                if members.isEmpty && !(type == .expense && isEmptyGroup && groupMatches) { return nil }
-                return CategorySection.GroupBlock(group: group, categories: members)
-            }
-            let ungrouped = ofType.filter { ($0.groupId.map { !groupIds.contains($0) } ?? true) && (!searching || matches($0.name)) }
-            if searching && blocks.isEmpty && ungrouped.isEmpty { return nil }
-            return CategorySection(type: type, groups: blocks, ungrouped: ungrouped)
-        }
+        CategorySections.build(categories: categories, groups: groups, search: search)
     }
 
     /// Reserves, read-only here (managed on the Budget grid).
@@ -232,9 +196,4 @@ final class CategoriesViewModel: ObservableObject {
         load()
         return true
     }
-}
-
-extension CategoryType {
-    /// The Categories screen's section order.
-    static let sectionOrder: [CategoryType] = [.expense, .income, .transfer]
 }

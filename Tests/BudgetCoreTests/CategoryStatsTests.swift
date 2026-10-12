@@ -47,4 +47,25 @@ final class CategoryStatsTests: XCTestCase {
         let transactions = [txn(s(2026, 8, 2), -100, cat: 5), txn(s(2026, 9, 2), -101, cat: 5)]
         XCTAssertEqual(CategoryStats.monthlyAverages(transactions: transactions, calendar: calendar), [5: -101])
     }
+
+    func testTheWindowFollowsSalaryPaydays() {
+        // Paid on the 25th: pay month Oct 2025 runs 26 Sep 2025 – 25 Oct 2025, and today
+        // (12 Oct 2026) is in pay month Oct 2026 (26 Sep 2026 – …), so the window is
+        // 26 Sep 2025 – 25 Sep 2026.
+        var salaries: [Date] = []
+        for index in 0..<15 {
+            let month = (8 + index - 1) % 12 + 1
+            let year = 2025 + (8 + index - 1) / 12
+            salaries.append(cal.date(from: DateComponents(year: year, month: month, day: 25))!)
+        }
+        let paid = PayCalendar(salaryDates: salaries, manualCloses: [], today: s(2026, 10, 12))
+        let transactions = [
+            txn(s(2024, 1, 2), -1, cat: 9),            // older history: full 12-month divisor
+            txn(s(2025, 9, 25), -99_999, cat: 9),      // pay month Sep 2025: before the window
+            txn(s(2025, 9, 26), -600, cat: 9),         // pay month Oct 2025: first in the window
+            txn(s(2026, 9, 25), -600, cat: 9),         // pay month Sep 2026: last in the window
+            txn(s(2026, 9, 26), -99_999, cat: 9)       // pay month Oct 2026: current, left out
+        ]
+        XCTAssertEqual(CategoryStats.monthlyAverages(transactions: transactions, calendar: paid), [9: -100])
+    }
 }

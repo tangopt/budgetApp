@@ -66,15 +66,15 @@ final class CategoriesEditingTests: XCTestCase {
         return m
     }
 
-    private func addTransactions(_ m: DatabaseManager, categoryId: Int64, count: Int) throws {
+    private func addTransactions(_ m: DatabaseManager, categoryId: Int64, count: Int, status: TransactionStatus = .confirmed) throws {
         try m.dbQueue.write { db in
-            var account = Account(name: "Lloyds \(categoryId)", currency: .gbp, kind: .cash, trackingMode: .imported)
+            var account = Account(name: "Lloyds \(categoryId) \(status.rawValue)", currency: .gbp, kind: .cash, trackingMode: .imported)
             try account.insert(db)
             var batch = ImportBatch(accountId: account.id!, sourceFileName: "a.csv", importedAt: Date())
             try batch.insert(db)
             for index in 0..<count {
                 var transaction = Transaction(importBatchId: batch.id!, accountId: account.id!, date: Date(), rawDescription: "T\(index)", amountMinorUnits: -100,
-                                              categoryId: categoryId, status: .confirmed, categorizedBy: .manual, fingerprint: "f\(categoryId)-\(index)")
+                                              categoryId: categoryId, status: status, categorizedBy: .manual, fingerprint: "f\(categoryId)-\(index)")
                 try transaction.insert(db)
             }
         }
@@ -166,19 +166,67 @@ final class CategoriesEditingTests: XCTestCase {
         try addTransactions(m, categoryId: rent.id!, count: 73)
         try addPlanned(m, categoryId: rent.id!, count: 2)
         XCTAssertThrowsError(try m.dbQueue.write { db in try Categories.delete(db: db, id: rent.id!) }) {
-            XCTAssertEqual($0 as? CategoryEditError, .inUse(name: "Rent", transactions: 73, plannedItems: 2))
+            XCTAssertEqual($0 as? CategoryEditError, .inUse(name: "Rent", transactions: 73, pending: 0, plannedItems: 2))
             XCTAssertEqual($0.localizedDescription, "Rent has 73 transactions and 2 planned items — move or recategorise them first.")
         }
         XCTAssertEqual(try m.dbQueue.read { db in try Category.fetchCount(db) }, 1)
     }
 
     func testRefusalMessagesNameOnlyWhatIsThereInTheSingular() {
-        XCTAssertEqual(CategoryEditError.inUse(name: "Gym", transactions: 1, plannedItems: 0).localizedDescription,
+        XCTAssertEqual(CategoryEditError.inUse(name: "Gym", transactions: 1, pending: 0, plannedItems: 0).localizedDescription,
                        "Gym has 1 transaction — move or recategorise it first.")
-        XCTAssertEqual(CategoryEditError.inUse(name: "Gym", transactions: 0, plannedItems: 1).localizedDescription,
+        XCTAssertEqual(CategoryEditError.inUse(name: "Gym", transactions: 0, pending: 0, plannedItems: 1).localizedDescription,
                        "Gym has 1 planned item — move or recategorise it first.")
-        XCTAssertEqual(CategoryEditError.inUse(name: "Gym", transactions: 1, plannedItems: 1).localizedDescription,
+        XCTAssertEqual(CategoryEditError.inUse(name: "Gym", transactions: 1, pending: 0, plannedItems: 1).localizedDescription,
                        "Gym has 1 transaction and 1 planned item — move or recategorise them first.")
+        XCTAssertEqual(CategoryEditError.inUse(name: "Gym", transactions: 1, pending: 1, plannedItems: 0).localizedDescription,
+                       "Gym has 1 transaction (pending review) — move or recategorise it first.")
+    }
+
+    func testRefusalCountsPendingTransactionsWithinTheTotal() throws {
+        let m = try makeDB()
+        let rent = try m.dbQueue.write { db in try Categories.create(db: db, name: "Rent", type: .expense, groupId: nil) }
+        try addTransactions(m, categoryId: rent.id!, count: 71)
+        try addTransactions(m, categoryId: rent.id!, count: 2, status: .pendingReview)
+        try addPlanned(m, categoryId: rent.id!, count: 2)
+        XCTAssertThrowsError(try m.dbQueue.write { db in try Categories.delete(db: db, id: rent.id!) }) {
+            XCTAssertEqual($0 as? CategoryEditError, .inUse(name: "Rent", transactions: 73, pending: 2, plannedItems: 2))
+            XCTAssertEqual($0.localizedDescription, "Rent has 73 transactions (2 pending review) and 2 planned items — move or recategorise them first.")
+        }
+    }
+
+    func testDeleteIsRefusedWhenARecategorisedPlannedOccurrenceUsesIt() throws {
+        let m = try makeDB()
+        let (gym, entry) = try m.dbQueue.write { db -> (Category, ForecastEntry) in
+            let sport = try Categories.create(db: db, name: "Sport", type: .expense, groupId: nil)
+            let gym = try Categories.create(db: db, name: "Gym", type: .expense, groupId: nil)
+            let entry = try PlannedItems.add(db: db, categoryId: sport.id!, amountMinorUnits: -100, frequency: .monthly, interval: 1, startDate: Date(), endDate: nil)
+            return (gym, entry)
+        }
+        try m.dbQueue.write { db in
+            var exception = PlannedOccurrenceException(entryId: entry.id!, originalDate: entry.startDate, categoryId: gym.id)
+            try exception.insert(db)
+            var another = PlannedOccurrenceException(entryId: entry.id!, originalDate: entry.startDate.addingTimeInterval(86_400 * 31), categoryId: gym.id)
+            try another.insert(db)
+        }
+        // Two moved occurrences of one series: one planned item.
+        XCTAssertThrowsError(try m.dbQueue.write { db in try Categories.delete(db: db, id: gym.id!) }) {
+            XCTAssertEqual($0 as? CategoryEditError, .inUse(name: "Gym", transactions: 0, pending: 0, plannedItems: 1))
+        }
+        XCTAssertEqual(try m.dbQueue.read { db in try PlannedOccurrenceException.filter(Column("categoryId") == gym.id).fetchCount(db) }, 2)
+    }
+
+    func testDeleteRefusesAReserve() throws {
+        let m = try makeDB()
+        let id = try m.dbQueue.write { db -> Int64 in
+            var reserve = Category(name: "Unexpected", type: .expense, isReserved: true)
+            try reserve.insert(db)
+            return reserve.id!
+        }
+        XCTAssertThrowsError(try m.dbQueue.write { db in try Categories.delete(db: db, id: id) }) {
+            XCTAssertEqual($0 as? CategoryEditError, .reserve(name: "Unexpected"))
+            XCTAssertEqual($0.localizedDescription, "Unexpected is a reserve — manage it on the Budget grid.")
+        }
     }
 
     func testDeleteRefusesAnUnknownCategory() throws {

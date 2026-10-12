@@ -18,16 +18,26 @@ public enum CategoryCreationError: Error, Equatable, LocalizedError {
 
 public enum CategoryEditError: Error, Equatable, LocalizedError {
     case notFound
-    /// Delete refused: transactions or planned items (forecast entries) still use it.
-    case inUse(name: String, transactions: Int, plannedItems: Int)
+    /// Reserves are managed on the Budget grid, not deleted from the Categories screen.
+    case reserve(name: String)
+    /// Delete refused: transactions (`pending` of them still in review, included in
+    /// `transactions`) or planned items still use it. A planned item is a forecast series
+    /// in this category or with an occurrence moved into it.
+    case inUse(name: String, transactions: Int, pending: Int, plannedItems: Int)
 
     public var errorDescription: String? {
         switch self {
         case .notFound:
             return "That category no longer exists."
-        case let .inUse(name, transactions, plannedItems):
+        case .reserve(let name):
+            return "\(name) is a reserve — manage it on the Budget grid."
+        case let .inUse(name, transactions, pending, plannedItems):
             var parts: [String] = []
-            if transactions > 0 { parts.append(transactions == 1 ? "1 transaction" : "\(transactions) transactions") }
+            if transactions > 0 {
+                var part = transactions == 1 ? "1 transaction" : "\(transactions) transactions"
+                if pending > 0 { part += pending == transactions && transactions == 1 ? " (pending review)" : " (\(pending) pending review)" }
+                parts.append(part)
+            }
             if plannedItems > 0 { parts.append(plannedItems == 1 ? "1 planned item" : "\(plannedItems) planned items") }
             let pronoun = transactions + plannedItems == 1 ? "it" : "them"
             return "\(name) has \(parts.joined(separator: " and ")) — move or recategorise \(pronoun) first."
@@ -77,14 +87,24 @@ public enum Categories {
         try Category.filter(ids.contains(Column("id"))).updateAll(db, Column("groupId").set(to: groupId))
     }
 
-    /// Deletes the category and the rules filing into it. Refused (`inUse`, with counts)
-    /// while any transaction or forecast entry — budget or scenario — refers to it.
+    /// Deletes the category and the rules filing into it. Refused for a reserve, and
+    /// (`inUse`, with counts) while any transaction, forecast entry — budget or scenario — or
+    /// moved planned occurrence refers to it (an occurrence's category would otherwise be
+    /// silently cleared back to its series').
     public static func delete(db: Database, id: Int64) throws {
         guard let category = try Category.fetchOne(db, key: id) else { throw CategoryEditError.notFound }
+        guard !category.isReserved else { throw CategoryEditError.reserve(name: category.name) }
         let transactions = try Transaction.filter(Column("categoryId") == id).fetchCount(db)
-        let planned = try ForecastEntry.filter(Column("categoryId") == id).fetchCount(db)
+        let pending = try Transaction.filter(Column("categoryId") == id && Column("status") == TransactionStatus.pendingReview.rawValue).fetchCount(db)
+        let planned = try Int.fetchOne(db, sql: """
+            SELECT COUNT(*) FROM (
+                SELECT id FROM forecastEntry WHERE categoryId = ?
+                UNION
+                SELECT entryId FROM plannedOccurrenceException WHERE categoryId = ?
+            )
+            """, arguments: [id, id]) ?? 0
         guard transactions == 0, planned == 0 else {
-            throw CategoryEditError.inUse(name: category.name, transactions: transactions, plannedItems: planned)
+            throw CategoryEditError.inUse(name: category.name, transactions: transactions, pending: pending, plannedItems: planned)
         }
         try Rule.filter(Column("categoryId") == id).deleteAll(db)
         _ = try Category.deleteOne(db, key: id)
