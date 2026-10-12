@@ -45,4 +45,10 @@
 
 **Files:** BudgetCore new `Models/TransferLink.swift` (+ migration), `Import/TransferMatcher.swift`, Transaction budget-facing helper; every transaction load site used for budget/plan/dashboard/history/uncategorized/scenarios/auto-forecast; ImportCoordinator (match after commit; review badge data); App launch hook; App panels / EditTransactionSheet (link display, Unlink, Link to transfer…); Review row badge.
 
-- [ ] Spec §6. Tests first for the matcher (same currency, FX tolerance, ±3 days, closest date, ties unmatched, dismissed never relinked, one link per transaction) and for budget-facing exclusion in at least BudgetGridCalculator, DashboardCalculator flows, PayMonthTotals, UncategorizedTransactions, HistoryCategorizer; balances unchanged. Full suite + app build; commit "Transfers between your accounts: auto-match, count once as sent".
+- [ ] Spec §6. Tests first for the matcher (same currency, FX tolerance, ±3 days, closest date, ties unmatched, dismissed never relinked, one link per incoming transaction; historical spreadsheet rows: same pay month, single equal amount, smallest exact-sum set, ambiguous sets unmatched) and for budget-facing exclusion in at least BudgetGridCalculator, DashboardCalculator flows, PayMonthTotals, UncategorizedTransactions, HistoryCategorizer; balances unchanged. Full suite + app build; commit "Transfers between your accounts: auto-match, count once as sent".
+
+### Task 6 (added): Budget account filter
+
+**Files:** `App/Budget/BudgetGridView.swift`, `BudgetGridViewModel.swift`, new `App/Budget/AccountFilterPanel.swift`, BudgetCore helpers for per-account actuals if needed (+ tests), TransactionsSidePanel (account name).
+
+- [ ] Spec §7 (and §6 transfer rule with a filter). Tests for the filtered actuals and transfer counting with filters. Full suite + app build; commit "Budget: account filter panel".
