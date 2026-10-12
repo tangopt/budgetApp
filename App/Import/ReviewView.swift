@@ -10,11 +10,13 @@ struct ReviewView: View {
     @State private var showUnparsed = true
     @State private var showDuplicates = false
     @State private var isForcing = false
-    /// Selected rows and groups (⌘/⇧-click for several); a group means all its rows.
-    @State private var selection: Set<ReviewItemId> = []
+    /// The list on show (spec §7); settled whenever the row counts change.
+    @State private var tab: ReviewTab = .needsAttention
+    /// Each tab's selected rows and groups (⌘/⇧-click for several); a group means all its
+    /// rows. Confirmed lines aren't selectable, so that tab never has one.
+    @State private var selections: [ReviewTab: Set<ReviewItemId>] = [:]
+    /// Group ids carry their tab's scope, so one set serves every tab.
     @State private var expandedGroups: Set<ReviewItemId> = []
-    @State private var showReady = false
-    @State private var showConfirmed = false
     @State private var showSetCategory = false
     @State private var bulkRemember = false
     /// Set category…'s "New category…": the sheet's draft, opened once the popover has
@@ -32,21 +34,28 @@ struct ReviewView: View {
         // Only the transactions list scrolls: the notices, status and actions above it are
         // pinned, and the expanded notice lists scroll inside their own bounded height.
         VStack(alignment: .leading, spacing: 12) {
-            header(sections)
-                // Sized before the list, which then takes whatever height is left.
-                .layoutPriority(1)
+            Group {
+                header
+                tabBar(sections)
+            }
+            // Sized before the list, which then takes whatever height is left.
+            .layoutPriority(1)
             transactionList(sections)
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        // Opens on Needs your attention (or Ready to confirm if that's empty), and leaves
+        // a tab that empties for the next one with rows.
+        .onAppear { tab = .settled(current: tab, rowCounts: sections.rowCounts) }
+        .onChange(of: sections.rowCounts) { _, counts in tab = .settled(current: tab, rowCounts: counts) }
     }
 
     /// The notices, then the caption, error and action buttons.
-    private func header(_ sections: ReviewSections) -> some View {
+    private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Exactly as tall as the notices when they fit; capped and scrollable when
             // they don't, so the transactions list keeps its minimum.
             BoundedScroll(maxHeight: Self.noticesMaxHeight) { notices }
-            actions(sections)
+            actions
         }
     }
 
@@ -121,7 +130,7 @@ struct ReviewView: View {
     }
 
     /// The progress caption, any error and the action buttons.
-    private func actions(_ sections: ReviewSections) -> some View {
+    private var actions: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(progressCaption)
                 .font(.caption)
@@ -132,11 +141,6 @@ struct ReviewView: View {
             }
 
             HStack {
-                setCategoryButton(sections)
-                // Only marks rows confirmed, so the default (Return) shortcut commits nothing.
-                Button("Confirm \(sections.readyCount) ready") { viewModel.confirmReady() }
-                    .disabled(sections.ready.isEmpty)
-                    .keyboardShortcut(.defaultAction)
                 Spacer()
                 Button("Cancel import", role: .cancel) {
                     if viewModel.confirmedCount > 0 { showCancelConfirmation = true } else { viewModel.cancel() }
@@ -189,58 +193,100 @@ struct ReviewView: View {
         return lines.joined(separator: " ")
     }
 
-    private func transactionList(_ sections: ReviewSections) -> some View {
-        List(selection: $selection) {
-            if !sections.needsAttention.isEmpty {
-                Section("Needs your attention (\(sections.needsAttentionCount))") {
-                    ForEach(sections.needsAttention) { group in
-                        groupContent(group, showInlineConfirm: true)
-                    }
+    /// The three lists' tabs with their row counts, then the current tab's actions.
+    private func tabBar(_ sections: ReviewSections) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("List", selection: $tab) {
+                ForEach(ReviewTab.allCases, id: \.self) { tab in
+                    Text("\(Self.title(of: tab)) (\(sections.rowCounts[tab] ?? 0))").tag(tab)
                 }
             }
-            if !sections.ready.isEmpty {
-                DisclosureGroup("Ready to confirm (\(sections.readyCount))", isExpanded: $showReady) {
-                    ForEach(sections.ready) { group in
-                        groupContent(group, showInlineConfirm: false)
-                    }
-                }
-            }
-            if !sections.confirmed.isEmpty {
-                DisclosureGroup("Confirmed (\(sections.confirmedCount))", isExpanded: $showConfirmed) {
-                    ForEach(sections.confirmed) { group in
-                        confirmedGroupContent(group)
-                            // ForEach tags each line with its id; confirmed lines must not
-                            // be selectable (Return would fall through to Confirm N ready).
-                            .selectionDisabled()
-                    }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            HStack {
+                // Always present (disabled on Confirmed) so its popover and New category…
+                // sheet survive a tab switch.
+                setCategoryButton(sections)
+                if tab == .ready {
+                    // Only marks rows confirmed; deliberately no Return shortcut.
+                    Button("Confirm all") { viewModel.confirmReady() }
+                        .disabled(sections.ready.isEmpty)
                 }
             }
         }
+    }
+
+    private static func title(of tab: ReviewTab) -> String {
+        switch tab {
+        case .needsAttention: return "Needs your attention"
+        case .ready: return "Ready to confirm"
+        case .confirmed: return "Confirmed"
+        }
+    }
+
+    private func selection(in tab: ReviewTab) -> Binding<Set<ReviewItemId>> {
+        Binding(get: { selections[tab] ?? [] }, set: { selections[tab] = $0 })
+    }
+
+    /// The current tab's list: its own List (`.id`), so each tab keeps a separate
+    /// selection and scroll position starts fresh on a switch.
+    @ViewBuilder
+    private func transactionList(_ sections: ReviewSections) -> some View {
+        let groups = sections.groups(in: tab)
+        Group {
+            if groups.isEmpty {
+                Text(Self.emptyMessage(for: tab))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if tab == .confirmed {
+                // No selection: confirmed lines only offer Undo.
+                List {
+                    ForEach(groups) { group in confirmedGroupContent(group) }
+                }
+            } else {
+                List(selection: selection(in: tab)) {
+                    ForEach(groups) { group in groupContent(group) }
+                }
+                .onKeyPress(.return) { confirmSelection() }
+            }
+        }
+        .id(tab)
         // Takes the height the pinned header leaves; it scrolls, the page doesn't.
         .frame(minHeight: 160, maxHeight: .infinity)
-        .onKeyPress(.return) {
-            // Return confirms a single selected row or group once every row in it has a
-            // category, then moves to the first line still showing.
-            guard selection.count == 1 else { return .ignored }
-            let rows = rows(for: selection, in: sections)
-            guard !rows.isEmpty, rows.allSatisfy({ $0.chosenCategoryId != nil }) else { return .ignored }
-            viewModel.confirmRows(rows)
-            let after = viewModel.reviewSections
-            let visible = ReviewGrouping.visibleItems(after.needsAttention, expanded: expandedGroups)
-                + (showReady ? ReviewGrouping.visibleItems(after.ready, expanded: expandedGroups) : [])
-            selection = visible.first.map { [$0] } ?? []
-            return .handled
-        }
-        // Confirming (inline, a group, Confirm N ready) moves rows to Confirmed and Undo
-        // moves them back, which can turn a group into a single row, so drop selected
-        // ids that no longer name a line.
+        // Confirming (inline, a group, Return, Confirm all) moves rows to Confirmed and
+        // Undo moves them back, which can turn a group into a single row, so drop
+        // selected ids that no longer name a line in their tab.
         .onChange(of: viewModel.stagedRows.map(\.id)) { _, _ in pruneSelection() }
         .onChange(of: viewModel.confirmedIds) { _, _ in pruneSelection() }
     }
 
+    private static func emptyMessage(for tab: ReviewTab) -> String {
+        switch tab {
+        case .needsAttention: return "Nothing needs your attention."
+        case .ready: return "Nothing is ready to confirm."
+        case .confirmed: return "Nothing confirmed yet."
+        }
+    }
+
+    /// Return confirms the current tab's single selected row or group once every row in
+    /// it has a category, then selects the first line still showing in that tab.
+    private func confirmSelection() -> KeyPress.Result {
+        let selection = selections[tab] ?? []
+        guard selection.count == 1 else { return .ignored }
+        let rows = rows(for: selection, in: viewModel.reviewSections.groups(in: tab))
+        guard !rows.isEmpty, rows.allSatisfy({ $0.chosenCategoryId != nil }) else { return .ignored }
+        viewModel.confirmRows(rows)
+        let visible = ReviewGrouping.visibleItems(viewModel.reviewSections.groups(in: tab), expanded: expandedGroups)
+        selections[tab] = visible.first.map { [$0] } ?? []
+        return .handled
+    }
+
     private func pruneSelection() {
         let sections = viewModel.reviewSections
-        selection.formIntersection(Set(ReviewGrouping.selectableItems(sections.all)))
+        for tab in ReviewTab.allCases {
+            selections[tab]?.formIntersection(Set(ReviewGrouping.selectableItems(sections.groups(in: tab))))
+        }
         expandedGroups.formIntersection(Set(ReviewGrouping.selectableItems(sections.all + sections.confirmed)))
     }
 
@@ -289,9 +335,8 @@ struct ReviewView: View {
         }
     }
 
-    /// Every staged row the given selection covers, in display order.
-    private func rows(for selection: Set<ReviewItemId>, in sections: ReviewSections) -> [ReviewRow] {
-        let groups = sections.all
+    /// Every row of these groups (one tab's) the selection covers, in display order.
+    private func rows(for selection: Set<ReviewItemId>, in groups: [ReviewGroup<ReviewRow>]) -> [ReviewRow] {
         let ids = ReviewGrouping.selectedRowIds(selection, in: groups)
         let rowsById = Dictionary(uniqueKeysWithValues: groups.flatMap(\.rows).map { ($0.id, $0) })
         return ids.compactMap { rowsById[$0] }
@@ -299,18 +344,18 @@ struct ReviewView: View {
 
     /// A merchant group of 2+ rows as one disclosable line; a single row as today's row.
     @ViewBuilder
-    private func groupContent(_ group: ReviewGroup<ReviewRow>, showInlineConfirm: Bool) -> some View {
+    private func groupContent(_ group: ReviewGroup<ReviewRow>) -> some View {
         if group.isMultiRow {
             DisclosureGroup(isExpanded: expansion(of: group.id)) {
                 ForEach(group.rows) { row in
-                    reviewRow(row, showInlineConfirm: showInlineConfirm).tag(ReviewItemId.row(row.id))
+                    reviewRow(row).tag(ReviewItemId.row(row.id))
                 }
             } label: {
                 // Selection tags go on row views: the label is the group's outline row.
-                groupRow(group, showInlineConfirm: showInlineConfirm).tag(group.id)
+                groupRow(group).tag(group.id)
             }
         } else if let row = group.rows.first {
-            reviewRow(row, showInlineConfirm: showInlineConfirm, singleRowGroup: group).tag(group.selectionId)
+            reviewRow(row, singleRowGroup: group).tag(group.selectionId)
         }
     }
 
@@ -323,7 +368,7 @@ struct ReviewView: View {
         )
     }
 
-    private func groupRow(_ group: ReviewGroup<ReviewRow>, showInlineConfirm: Bool) -> some View {
+    private func groupRow(_ group: ReviewGroup<ReviewRow>) -> some View {
         let amounts = group.rows.map(\.staged.parsed.amountMinorUnits)
         return HStack {
             VStack(alignment: .leading, spacing: 2) {
@@ -347,10 +392,8 @@ struct ReviewView: View {
             .toggleStyle(.checkbox)
             .help("Remember for \(group.key): learn a rule so future \(group.key) transactions get this category")
             groupPicker(for: group).frame(width: 200)
-            if showInlineConfirm {
-                Button("Confirm") { viewModel.confirmRows(group.rows) }
-                    .disabled(group.rows.contains { $0.chosenCategoryId == nil })
-            }
+            Button("Confirm") { viewModel.confirmRows(group.rows) }
+                .disabled(group.rows.contains { $0.chosenCategoryId == nil })
         }
     }
 
@@ -388,10 +431,10 @@ struct ReviewView: View {
         return start == end ? start : "\(start) – \(end)"
     }
 
-    /// Applies one category to every selected row (a selected group = all its rows), with
-    /// the "Remember for <key>" toggle in the popover.
+    /// Applies one category to every row selected in the current tab (a selected group =
+    /// all its rows), with the "Remember for <key>" toggle in the popover.
     private func setCategoryButton(_ sections: ReviewSections) -> some View {
-        let rows = rows(for: selection, in: sections)
+        let rows = rows(for: selections[tab] ?? [], in: sections.groups(in: tab))
         return Button("Set category…") {
             bulkRemember = viewModel.setCategoryRememberDefault(for: rows)
             showSetCategory = true
@@ -438,12 +481,12 @@ struct ReviewView: View {
     }
 
     /// A confirmed group or row: dimmed, with its category and an Undo that returns it to
-    /// its unconfirmed section (category kept). Not selectable.
+    /// its unconfirmed tab (category kept). Not selectable (its List has no selection).
     @ViewBuilder
     private func confirmedGroupContent(_ group: ReviewGroup<ReviewRow>) -> some View {
         if group.isMultiRow {
             DisclosureGroup(isExpanded: expansion(of: group.id)) {
-                ForEach(group.rows) { row in confirmedRow(row).selectionDisabled() }
+                ForEach(group.rows) { row in confirmedRow(row) }
             } label: {
                 HStack {
                     Text(group.key)
@@ -488,7 +531,7 @@ struct ReviewView: View {
 
     /// A row on its own (`singleRowGroup` set: it gets its own Remember checkbox, spec §3)
     /// or inside an expanded group (whose line holds the checkbox).
-    private func reviewRow(_ row: ReviewRow, showInlineConfirm: Bool, singleRowGroup: ReviewGroup<ReviewRow>? = nil) -> some View {
+    private func reviewRow(_ row: ReviewRow, singleRowGroup: ReviewGroup<ReviewRow>? = nil) -> some View {
         HStack {
             ConfidenceDot(source: row.staged.source, confidence: row.staged.confidence)
             VStack(alignment: .leading, spacing: 2) {
@@ -508,10 +551,8 @@ struct ReviewView: View {
                 .help("Remember for \(group.key): learn a rule so future \(group.key) transactions get this category")
             }
             categoryPicker(for: row, isSingleRow: singleRowGroup != nil).frame(width: 200)
-            if showInlineConfirm {
-                Button("Confirm") { viewModel.confirmRow(row) }
-                    .disabled(row.chosenCategoryId == nil)
-            }
+            Button("Confirm") { viewModel.confirmRow(row) }
+                .disabled(row.chosenCategoryId == nil)
         }
     }
 

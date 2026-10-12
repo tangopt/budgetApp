@@ -37,6 +37,20 @@ struct ReviewSections {
     var needsAttentionCount: Int { needsAttention.reduce(0) { $0 + $1.rows.count } }
     var readyCount: Int { ready.reduce(0) { $0 + $1.rows.count } }
     var confirmedCount: Int { confirmed.reduce(0) { $0 + $1.rows.count } }
+
+    /// The groups one review tab lists (spec §7).
+    func groups(in tab: ReviewTab) -> [ReviewGroup<ReviewRow>] {
+        switch tab {
+        case .needsAttention: return needsAttention
+        case .ready: return ready
+        case .confirmed: return confirmed
+        }
+    }
+
+    /// Each tab's row count, for its title and `ReviewTab.settled`.
+    var rowCounts: [ReviewTab: Int] {
+        [.needsAttention: needsAttentionCount, .ready: readyCount, .confirmed: confirmedCount]
+    }
 }
 
 @MainActor
@@ -327,7 +341,8 @@ final class ImportViewModel: ObservableObject {
         stagedRows = rows
     }
 
-    /// Marks every "ready" row confirmed (in memory only — see `finish`).
+    /// Confirm all on the Ready tab: marks every "ready" row confirmed (in memory only —
+    /// see `finish`).
     func confirmReady() {
         confirmRows(readyRows)
     }
