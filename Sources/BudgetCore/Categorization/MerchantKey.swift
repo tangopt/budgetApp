@@ -5,7 +5,7 @@ public enum MerchantKey {
 
     /// Payment-processor prefixes: a key made only of these ("PAYPAL") would capture every
     /// merchant behind the processor.
-    static let processorTokens: Set<String> = ["PAYPAL", "SQ", "SUMUP", "ZETTLE", "IZ", "STRIPE", "CRV", "CKO", "AMZN", "MKTP", "AMAZON", "GOOGLE"]
+    static let processorTokens: Set<String> = ["PAYPAL", "SQ", "SUMUP", "ZETTLE", "IZ", "STRIPE", "CRV", "CKO", "AMZN", "AMZNMKTPLACE", "MKTP", "AMAZON", "GOOGLE"]
 
     /// Corporate suffixes and country codes ("POD POINT LTD"); `ReviewKey` drops them from
     /// the end of a key.

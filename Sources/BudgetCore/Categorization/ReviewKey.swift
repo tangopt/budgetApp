@@ -15,9 +15,9 @@ public enum ReviewKey {
     /// One key per description, in the same order. Keys are computed over the whole set:
     /// a key that is a prefix of a longer key in the set becomes that longer key, resolving
     /// chains to the longest. A word-boundary prefix ("OMNICOM" of "OMNICOM MANAGEMENT")
-    /// always joins; a mid-word prefix ("AMERICAN EXP" of "AMERICAN EXPRESS") joins only when
-    /// a description behind it is at the truncation length, so "SHELL" stays apart from
-    /// "SHELLEYS CAFE". When it prefixes several, it joins the one with the most rows (the
+    /// always joins; a mid-word prefix joins when it has two or more words ("AMERICAN EXP" of
+    /// "AMERICAN EXPRESS": real truncations are 15-17 characters) or when a description behind
+    /// it is at the truncation length, so one-word "SHELL" stays apart from "SHELLEYS CAFE". When it prefixes several, it joins the one with the most rows (the
     /// first seen on a tie). Processor keys never join a longer key: "AMAZON" purchases
     /// aren't "AMAZON PRIME".
     public static func groupKeys(descriptions: [String]) -> [String] {
@@ -33,7 +33,7 @@ public enum ReviewKey {
         func canJoin(_ key: String, _ longer: String) -> Bool {
             guard key.count >= minimumMergePrefixLength, !isProcessorGroup(key),
                   longer != key, longer.hasPrefix(key) else { return false }
-            return longer.hasPrefix(key + " ") || truncated.contains(key)
+            return longer.hasPrefix(key + " ") || key.contains(" ") || truncated.contains(key)
         }
         // Keys that join nothing — where every chain ends. A key that can join an
         // intermediate key can also join whatever that one joins, so targets are always ends.

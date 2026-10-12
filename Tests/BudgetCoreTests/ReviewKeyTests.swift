@@ -17,10 +17,18 @@ final class ReviewKeyTests: XCTestCase {
     func testMidWordPrefixJoinsOnlyWhenTheDescriptionWasTruncated() {
         // "SHELL UK" (key SHELL) is a whole name, not a cut-off "SHELLEYS CAFE".
         XCTAssertEqual(keys(["SHELL UK", "SHELLEYS CAFE"]), ["SHELL", "SHELLEYS CAFE"])
-        // 12 characters: not at the bank's truncation length.
-        XCTAssertEqual(keys(["AMERICAN EXP", "AMERICAN EXPRESS"]), ["AMERICAN EXP", "AMERICAN EXPRESS"])
-        // One of the descriptions behind the shorter key is 18 characters: enough.
-        XCTAssertEqual(keys(["AMERICAN EXP", "AMERICAN EXP 1234X", "AMERICAN EXPRESS"]), Array(repeating: "AMERICAN EXPRESS", count: 3))
+        // One-word key shorter than the truncation length: a whole name.
+        XCTAssertEqual(keys(["SHELLEY", "SHELLEYS CAFE"]), ["SHELLEY", "SHELLEYS CAFE"])
+        // One-word key with a description at the truncation length: enough.
+        XCTAssertEqual(keys(["ABCDEFGHIJKLMNOPQR", "ABCDEFGHIJKLMNOPQRSTU"]), Array(repeating: "ABCDEFGHIJKLMNOPQRSTU", count: 2))
+    }
+
+    // The real Lloyds truncations are 15-17 characters; a multi-word key joins mid-word.
+    func testMultiWordMidWordPrefixJoinsAtAnyLength() {
+        XCTAssertEqual(keys(["SAINSBURYS S/MKT", "SAINSBURYS S/MKTS"]), ["SAINSBURYS S/MKTS", "SAINSBURYS S/MKTS"])
+        XCTAssertEqual(keys(["AMERICAN EXP 3773", "AMERICAN EXPRESS"]), ["AMERICAN EXPRESS", "AMERICAN EXPRESS"])
+        XCTAssertEqual(keys(["OMNICOM MAN LTD", "OMNICOM MANAGEMENT"]), ["OMNICOM MANAGEMENT", "OMNICOM MANAGEMENT"])
+        XCTAssertEqual(keys(["AMERICAN EXP", "AMERICAN EXPRESS"]), ["AMERICAN EXPRESS", "AMERICAN EXPRESS"])
     }
 
     func testWordBoundaryPrefixJoinsWhateverTheLength() {
@@ -50,6 +58,11 @@ final class ReviewKeyTests: XCTestCase {
 
     func testProcessorGroupsDoNotJoinALongerKey() {
         XCTAssertEqual(keys(["AMAZON* NQ7KP7EB5", "AMAZON PRIME"]), ["AMAZON", "AMAZON PRIME"])
+    }
+
+    func testAmazonMarketplaceVariantIsAProcessorGroup() {
+        XCTAssertEqual(keys(["AMZNMktplace AB12CD"]), ["AMZNMKTPLACE"])
+        XCTAssertTrue(ReviewKey.isProcessorGroup("AMZNMKTPLACE"))
     }
 
     func testIsProcessorGroup() {

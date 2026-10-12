@@ -275,7 +275,9 @@ struct ContentView: View {
     /// A selection whose row isn't in the sidebar (the import ended, the last uncategorised
     /// transaction was assigned) falls back to the Dashboard.
     private func ensureSelectionInSidebar() {
-        if let selection, !isInSidebar(selection) { self.selection = .dashboard }
+        // SwiftUI's List may nil the selection when the selected row disappears.
+        guard let selection else { self.selection = .dashboard; return }
+        if !isInSidebar(selection) { self.selection = .dashboard }
     }
 
     private var selectedImportAccount: Account? {
