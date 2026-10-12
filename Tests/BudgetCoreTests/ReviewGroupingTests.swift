@@ -21,6 +21,26 @@ final class ReviewGroupingTests: XCTestCase {
         XCTAssertEqual(result.map(\.isMultiRow), [true, true, false])
     }
 
+    // Spec §2: truncated variants and processor purchases group together under the
+    // longer key / the processor name.
+    func testGroupsByReviewKey() {
+        let rows = [Row(id: 1, description: "SAINSBURYS S/MKT"), Row(id: 2, description: "AMAZON* NQ7KP7EB5"),
+                    Row(id: 3, description: "SAINSBURYS S/MKTS"), Row(id: 4, description: "AMAZON* 2K4LL0QX1")]
+        let result = groups(rows)
+        XCTAssertEqual(result.map(\.key), ["SAINSBURYS S/MKTS", "AMAZON"])
+        XCTAssertEqual(result.map { $0.rows.map(\.id) }, [[1, 3], [2, 4]])
+        XCTAssertEqual(result.map(\.isProcessorGroup), [false, true])
+    }
+
+    // Keys come from the whole review, so a section holding only the truncated variant
+    // still names its group after the longer key.
+    func testGroupsByPrecomputedKeys() {
+        let rows = [Row(id: 1, description: "SAINSBURYS S/MKT"), Row(id: 2, description: "TFL TRAVEL CH")]
+        let keyById = [1: "SAINSBURYS S/MKTS", 2: "TFL TRAVEL CH"]
+        let result = ReviewGrouping.groups(rows, scope: "s", key: { keyById[$0.id]! })
+        XCTAssertEqual(result.map(\.key), ["SAINSBURYS S/MKTS", "TFL TRAVEL CH"])
+    }
+
     func testGroupIdIncludesScope() {
         let rows = [Row(id: 1, description: "TESCO 1"), Row(id: 2, description: "TESCO 2")]
         XCTAssertEqual(groups(rows, scope: "ready").first?.id, .group(scope: "ready", key: "TESCO"))
@@ -62,6 +82,24 @@ final class ReviewGroupingTests: XCTestCase {
         XCTAssertFalse(ReviewGrouping.remembers(choice: nil, groupRowCount: 1))
         XCTAssertFalse(ReviewGrouping.remembers(choice: false, groupRowCount: 3))
         XCTAssertTrue(ReviewGrouping.remembers(choice: true, groupRowCount: 1))
+    }
+
+    // Spec §2/§3: a processor group defaults off; a single row defaults on once its
+    // category was picked by hand; an explicit choice always wins.
+    func testRemembersDefaultsForProcessorGroupsAndHandPickedSingleRows() {
+        XCTAssertFalse(ReviewGrouping.remembers(choice: nil, groupRowCount: 3, isProcessorGroup: true, pickedByHand: false))
+        XCTAssertFalse(ReviewGrouping.remembers(choice: nil, groupRowCount: 3, isProcessorGroup: true, pickedByHand: true))
+        XCTAssertTrue(ReviewGrouping.remembers(choice: true, groupRowCount: 3, isProcessorGroup: true, pickedByHand: false))
+        XCTAssertTrue(ReviewGrouping.remembers(choice: nil, groupRowCount: 3, isProcessorGroup: false, pickedByHand: false))
+        XCTAssertFalse(ReviewGrouping.remembers(choice: nil, groupRowCount: 1, isProcessorGroup: false, pickedByHand: false))
+        XCTAssertTrue(ReviewGrouping.remembers(choice: nil, groupRowCount: 1, isProcessorGroup: false, pickedByHand: true))
+        XCTAssertFalse(ReviewGrouping.remembers(choice: false, groupRowCount: 1, isProcessorGroup: false, pickedByHand: true))
+        XCTAssertTrue(ReviewGrouping.remembers(choice: nil, groupRowCount: 1, isProcessorGroup: true, pickedByHand: true))
+    }
+
+    func testRememberDefaultForProcessorGroupsIsOff() {
+        XCTAssertFalse(ReviewGrouping.rememberDefault(rowCount: 4, isProcessorGroup: true))
+        XCTAssertTrue(ReviewGrouping.rememberDefault(rowCount: 1, pickedByHand: true))
     }
 
     func testRememberDefaultsOnForTwoOrMoreRows() {

@@ -51,11 +51,14 @@ public struct ImportDecision {
     public let finalCategoryId: Int64?
     /// Whether an overridden category should also be learned as a rule on commit.
     public let learnRule: Bool
+    /// The row's note, saved with the transaction (trimmed; blank means none).
+    public let note: String?
 
-    public init(stagedId: UUID, finalCategoryId: Int64?, learnRule: Bool = true) {
+    public init(stagedId: UUID, finalCategoryId: Int64?, learnRule: Bool = true, note: String? = nil) {
         self.stagedId = stagedId
         self.finalCategoryId = finalCategoryId
         self.learnRule = learnRule
+        self.note = note
     }
 }
 
@@ -207,6 +210,7 @@ public final class ImportCoordinator {
     public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statementBalancePoints: [StatementBalancePoint] = []) throws -> StatementBalanceRecording {
         let decisionById = Dictionary(decisions.map { ($0.stagedId, $0.finalCategoryId) }, uniquingKeysWith: { _, last in last })
         let learnById = Dictionary(decisions.map { ($0.stagedId, $0.learnRule) }, uniquingKeysWith: { _, last in last })
+        let noteById = Dictionary(decisions.map { ($0.stagedId, $0.note) }, uniquingKeysWith: { _, last in last })
         return try dbQueue.write { db in
             var batch = ImportBatch(accountId: accountId, sourceFileName: sourceFileName, importedAt: Date())
             try batch.insert(db)
@@ -224,7 +228,8 @@ public final class ImportCoordinator {
                     rawDescription: stagedTransaction.parsed.rawDescription, amountMinorUnits: stagedTransaction.parsed.amountMinorUnits,
                     categoryId: finalCategoryId, status: finalCategoryId == nil ? .pendingReview : .confirmed,
                     categorizedBy: categorizedBy,
-                    fingerprint: stagedTransaction.fingerprint
+                    fingerprint: stagedTransaction.fingerprint,
+                    note: Transaction.normalizedNote(noteById[stagedTransaction.id] ?? nil)
                 )
                 try transaction.insert(db)
                 if wasOverridden, learnById[stagedTransaction.id] ?? true, let finalCategoryId {

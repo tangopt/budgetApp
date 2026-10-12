@@ -96,6 +96,23 @@ final class ImportCoordinatorTests: XCTestCase {
         XCTAssertEqual(staged.staged[0].historyCount, 2)
     }
 
+    // Spec §5: a review note is saved with the transaction (trimmed; blank means none),
+    // including on a row whose category was left as suggested or unset.
+    func testCommitStoresTheDecisionNote() async throws {
+        let (manager, account, profile) = try makeSeededManager()
+        let coordinator = makeCoordinator(manager)
+        let csv = "Date,Description,Amount\n01/07/2026,NANDOS CROYDON,-22.50\n02/07/2026,PIZZA PLACE,-12.00\n03/07/2026,TFL TRAVEL CH,-3.00"
+        let staged = try await coordinator.stageCSVImport(csvText: csv, profile: profile, accountId: account.id!)
+        let decisions = [
+            ImportDecision(stagedId: staged.staged[0].id, finalCategoryId: nil, learnRule: false, note: "  Team lunch "),
+            ImportDecision(stagedId: staged.staged[1].id, finalCategoryId: nil, learnRule: false, note: "   "),
+            ImportDecision(stagedId: staged.staged[2].id, finalCategoryId: nil)
+        ]
+        try coordinator.commit(accountId: account.id!, sourceFileName: "july.csv", staged: staged.staged, decisions: decisions)
+        let notes = try await manager.dbQueue.read { db in try Transaction.order(Column("date")).fetchAll(db).map(\.note) }
+        XCTAssertEqual(notes, ["Team lunch", nil, nil])
+    }
+
     func makeCoordinator(_ manager: DatabaseManager) -> ImportCoordinator {
         ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
     }

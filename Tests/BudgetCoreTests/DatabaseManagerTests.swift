@@ -41,4 +41,23 @@ final class DatabaseManagerTests: XCTestCase {
         let profile = try manager.dbQueue.read { try ImportProfile.fetchOne($0)! }
         XCTAssertFalse(profile.csvNegateAmounts)
     }
+
+    func testTransactionNoteMigrationKeepsExistingRowsWithNoNote() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate(upTo: "addCSVNegateAmounts")
+        try manager.dbQueue.write { db in
+            var account = Account(name: "A", currency: .gbp, kind: .cash, trackingMode: .imported)
+            try account.insert(db)
+            var batch = ImportBatch(accountId: account.id!, sourceFileName: "a.csv", importedAt: Date())
+            try batch.insert(db)
+            try db.execute(sql: """
+                INSERT INTO transaction_ (importBatchId, accountId, date, rawDescription, amountMinorUnits, status, categorizedBy, fingerprint)
+                VALUES (?, ?, ?, 'X', -100, 'pendingReview', 'none', 'f')
+                """, arguments: [batch.id, account.id, Date()])
+        }
+        try manager.migrate()
+        let columns = try manager.dbQueue.read { db in try db.columns(in: "transaction_").map(\.name) }
+        XCTAssertTrue(columns.contains("note"))
+        XCTAssertNil(try manager.dbQueue.read { try Transaction.fetchOne($0)!.note })
+    }
 }

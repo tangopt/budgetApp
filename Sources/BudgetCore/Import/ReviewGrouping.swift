@@ -7,7 +7,7 @@ public enum ReviewSelectionId<RowID: Hashable>: Hashable {
     case group(scope: String, key: String)
 }
 
-/// Rows sharing a merchant key (spec §4). A single-row group renders as a plain row.
+/// Rows sharing a review key (`ReviewKey`). A single-row group renders as a plain row.
 public struct ReviewGroup<Row: Identifiable>: Identifiable {
     public let key: String
     public let scope: String
@@ -15,6 +15,8 @@ public struct ReviewGroup<Row: Identifiable>: Identifiable {
 
     public var id: ReviewSelectionId<Row.ID> { .group(scope: scope, key: key) }
     public var isMultiRow: Bool { rows.count > 1 }
+    /// A payment processor's purchases ("AMAZON"): Remember defaults off.
+    public var isProcessorGroup: Bool { ReviewKey.isProcessorGroup(key) }
 
     /// The id the list tags this group's top-level line with: the group for 2+ rows, the
     /// row itself for a single-row group.
@@ -31,16 +33,27 @@ public enum ReviewCategoryState: Equatable {
 }
 
 /// Pure helpers behind the grouped, multi-select review lists (import Review and
-/// Uncategorized): grouping by merchant key, a group's shared category, date range and
+/// Uncategorized): grouping by review key, a group's shared category, date range and
 /// total, the Remember default, and resolving a selection to rows.
 public enum ReviewGrouping {
-    /// Groups rows by `MerchantKey.make` of their description, groups and rows in order of
-    /// first appearance.
+    /// Groups rows by `ReviewKey.groupKeys` computed over these rows, groups and rows in
+    /// order of first appearance. A list split into sections should compute the keys once
+    /// over all its rows and use `groups(_:scope:key:)`, so a section's truncated variant
+    /// still joins its merchant's key.
     public static func groups<Row: Identifiable>(_ rows: [Row], scope: String, description: (Row) -> String) -> [ReviewGroup<Row>] {
+        let keys = ReviewKey.groupKeys(descriptions: rows.map(description))
+        return grouped(Array(zip(rows, keys)), scope: scope)
+    }
+
+    /// Groups rows by a precomputed review key, groups and rows in order of first appearance.
+    public static func groups<Row: Identifiable>(_ rows: [Row], scope: String, key: (Row) -> String) -> [ReviewGroup<Row>] {
+        grouped(rows.map { ($0, key($0)) }, scope: scope)
+    }
+
+    private static func grouped<Row: Identifiable>(_ keyedRows: [(Row, String)], scope: String) -> [ReviewGroup<Row>] {
         var keys: [String] = []
         var rowsByKey: [String: [Row]] = [:]
-        for row in rows {
-            let key = MerchantKey.make(description(row))
+        for (row, key) in keyedRows {
             if rowsByKey[key] == nil { keys.append(key) }
             rowsByKey[key, default: []].append(row)
         }
@@ -71,17 +84,18 @@ public enum ReviewGrouping {
         return nil
     }
 
-    /// "Remember for <key>" starts on when categorising a group or 2+ rows at once, off
-    /// for a single row.
-    public static func rememberDefault(rowCount: Int) -> Bool {
-        rowCount >= 2
+    /// "Remember for <key>" starts on when categorising a group or 2+ rows at once, except
+    /// for a processor group (its purchases differ). A single row starts off and turns on
+    /// once its category is picked by hand (spec §3).
+    public static func rememberDefault(rowCount: Int, isProcessorGroup: Bool = false, pickedByHand: Bool = false) -> Bool {
+        rowCount >= 2 ? !isProcessorGroup : pickedByHand
     }
 
     /// Whether a row learns a rule: its explicit Remember choice, else the default for the
     /// group it's shown in. Used both for the checkbox and for the saved decision, so what
     /// the checkbox shows is what happens.
-    public static func remembers(choice: Bool?, groupRowCount: Int) -> Bool {
-        choice ?? rememberDefault(rowCount: groupRowCount)
+    public static func remembers(choice: Bool?, groupRowCount: Int, isProcessorGroup: Bool = false, pickedByHand: Bool = false) -> Bool {
+        choice ?? rememberDefault(rowCount: groupRowCount, isProcessorGroup: isProcessorGroup, pickedByHand: pickedByHand)
     }
 
     /// Every row the selection covers (a selected group means all its rows), in display

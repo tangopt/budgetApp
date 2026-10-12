@@ -200,10 +200,18 @@ final class ImportViewModel: ObservableObject {
     var confirmedCount: Int { confirmedIds.count }
     var unconfirmedCount: Int { stagedRows.count - confirmedIds.count }
 
-    /// Every section's rows, partitioned once. A confirmed row leaves its section for
-    /// "Confirmed" and returns to it on Undo.
-    private var partitionedRows: (ready: [ReviewRow], needsAttention: [ReviewRow], confirmed: [ReviewRow]) {
-        let readyIds = Set(ReviewPartitioning.partition(stagedRows.map(\.staged)).ready.map(\.id))
+    /// Every row's review key (`ReviewKey.groupKeys`), computed once over the whole review
+    /// so partitioning and every section group alike.
+    private var reviewKeys: [UUID: String] {
+        let keys = ReviewKey.groupKeys(descriptions: stagedRows.map(\.staged.parsed.rawDescription))
+        return Dictionary(zip(stagedRows.map(\.id), keys), uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Every section's rows, partitioned once (by review group). A confirmed row leaves its
+    /// section for "Confirmed" and returns to it on Undo.
+    private func partitionedRows(keys: [UUID: String]) -> (ready: [ReviewRow], needsAttention: [ReviewRow], confirmed: [ReviewRow]) {
+        let staged = stagedRows.map(\.staged)
+        let readyIds = Set(ReviewPartitioning.partition(staged, groupKeys: staged.map { keys[$0.id] ?? "" }).ready.map(\.id))
         var ready: [ReviewRow] = []
         var needsAttention: [ReviewRow] = []
         var confirmed: [ReviewRow] = []
@@ -219,16 +227,18 @@ final class ImportViewModel: ObservableObject {
         return (ready, needsAttention, confirmed)
     }
 
-    var readyRows: [ReviewRow] { partitionedRows.ready }
+    var readyRows: [ReviewRow] { partitionedRows(keys: reviewKeys).ready }
 
     /// Each section's rows grouped by merchant key (spec §4), computed together so a view
     /// can read it once per body.
     var reviewSections: ReviewSections {
-        let (ready, needsAttention, confirmed) = partitionedRows
+        let keys = reviewKeys
+        let (ready, needsAttention, confirmed) = partitionedRows(keys: keys)
+        let key: (ReviewRow) -> String = { keys[$0.id] ?? "" }
         return ReviewSections(
-            needsAttention: ReviewGrouping.groups(needsAttention, scope: "attention", description: \.staged.parsed.rawDescription),
-            ready: ReviewGrouping.groups(ready, scope: "ready", description: \.staged.parsed.rawDescription),
-            confirmed: ReviewGrouping.groups(confirmed, scope: "confirmed", description: \.staged.parsed.rawDescription)
+            needsAttention: ReviewGrouping.groups(needsAttention, scope: "attention", key: key),
+            ready: ReviewGrouping.groups(ready, scope: "ready", key: key),
+            confirmed: ReviewGrouping.groups(confirmed, scope: "confirmed", key: key)
         )
     }
 
@@ -255,7 +265,7 @@ final class ImportViewModel: ObservableObject {
     /// Whether this row of a group is ticked in the group's Remember checkbox: its own
     /// choice, or the group default (on for 2+ rows) until one is made.
     func remembers(_ row: ReviewRow, in group: ReviewGroup<ReviewRow>) -> Bool {
-        ReviewGrouping.remembers(choice: row.learnRule, groupRowCount: group.rows.count)
+        ReviewGrouping.remembers(choice: row.learnRule, groupRowCount: group.rows.count, isProcessorGroup: group.isProcessorGroup)
     }
 
     /// Each unconfirmed row's Remember value as its checkbox currently shows it, keyed by

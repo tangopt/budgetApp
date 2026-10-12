@@ -41,15 +41,23 @@ final class UncategorizedViewModel: ObservableObject {
     }
 
     /// Merchant groups of the given transactions (the search-filtered list), in order of
-    /// first appearance.
+    /// first appearance. Review keys come from the whole list, so a filtered truncated
+    /// variant keeps its merchant's key.
     func groups(of rows: [Transaction]) -> [ReviewGroup<Transaction>] {
-        ReviewGrouping.groups(rows, scope: "uncategorized", description: \.rawDescription)
+        let keys = ReviewKey.groupKeys(descriptions: transactions.map(\.rawDescription))
+        var keyById: [Int64: String] = [:]
+        for (transaction, key) in zip(transactions, keys) {
+            if let id = transaction.id { keyById[id] = key }
+        }
+        return ReviewGrouping.groups(rows, scope: "uncategorized", key: { row in
+            row.id.flatMap { keyById[$0] } ?? ReviewKey.groupKeys(descriptions: [row.rawDescription])[0]
+        })
     }
 
     /// Whether this row of a group is ticked in the group's Remember checkbox: its own
     /// choice, or the group default (on for 2+ rows) until one is made.
     func remembers(_ transaction: Transaction, in group: ReviewGroup<Transaction>) -> Bool {
-        ReviewGrouping.remembers(choice: transaction.id.flatMap { rememberChoices[$0] }, groupRowCount: group.rows.count)
+        ReviewGrouping.remembers(choice: transaction.id.flatMap { rememberChoices[$0] }, groupRowCount: group.rows.count, isProcessorGroup: group.isProcessorGroup)
     }
 
     func setRemember(_ remember: Bool, for transaction: Transaction) {
