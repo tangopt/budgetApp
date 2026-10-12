@@ -37,6 +37,12 @@
 
 - [ ] Spec §4 (sections by type, groups collapsible with counts, Ungrouped, Reserves read-only; search; + Group inline; group ⋯ menu; + Category; multi-select drag to group; right-click Move to / Rename / Exclude / Delete with readable refusal; 12-month average; transactions side panel with year filter, reusing TransactionsSidePanel + EditTransactionSheet). Full suite + app build; commit "Categories screen: organised by type and group, drag to move, transactions panel".
 
-### Task 4: Final review, merge (controller)
+### Task 4: Final review, merge (controller) — runs after Task 5
 
 - [ ] Final review, one fix wave, merge, `xcodegen generate` + build in main, push.
+
+### Task 5 (added): Transfers between own accounts
+
+**Files:** BudgetCore new `Models/TransferLink.swift` (+ migration), `Import/TransferMatcher.swift`, Transaction budget-facing helper; every transaction load site used for budget/plan/dashboard/history/uncategorized/scenarios/auto-forecast; ImportCoordinator (match after commit; review badge data); App launch hook; App panels / EditTransactionSheet (link display, Unlink, Link to transfer…); Review row badge.
+
+- [ ] Spec §6. Tests first for the matcher (same currency, FX tolerance, ±3 days, closest date, ties unmatched, dismissed never relinked, one link per transaction) and for budget-facing exclusion in at least BudgetGridCalculator, DashboardCalculator flows, PayMonthTotals, UncategorizedTransactions, HistoryCategorizer; balances unchanged. Full suite + app build; commit "Transfers between your accounts: auto-match, count once as sent".

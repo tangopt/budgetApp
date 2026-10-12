@@ -36,3 +36,13 @@ The Accounts screen's chart shows a hover readout: a vertical rule at the hovere
 ## Testing
 
 BudgetCore XCTest for the new helpers (year-end net worth per year if added; category group CRUD; rename/delete/move rules; monthly average). App: build; full suite.
+
+## 6. Transfers between your own accounts (added 2026-10-12)
+
+User decisions: a matched pair counts **once, as sent** (the outgoing leg, in its Transfer category); pairs are **auto-matched** and the user can unlink or link manually.
+
+- **Model:** table `transferLink` (migration appended last): `id`, `outTransactionId` (unique, FK cascade), `inTransactionId` (unique, FK cascade), `origin` (`auto`/`manual`), `isDismissed` (bool — an auto pair the user unlinked; kept so auto-matching never re-links it).
+- **Matching** (`TransferMatcher.match(db:)`, BudgetCore, tested): over transactions not in an active or dismissed link — an outgoing transaction (amount < 0) in account A and an incoming one (amount > 0) in account B ≠ A, both among the user's accounts; same currency → equal absolute amounts; different currencies → converted with the stored exchange rate within ±3%; dates within ±3 days. Each transaction joins at most one link; when several candidates qualify, the closest date wins; exact ties are left unmatched. Runs after every committed import (inside the commit's write, after inserting) and once on app launch (idempotent).
+- **Counting once, as sent:** the incoming leg of an active link is hidden from every budget/plan calculation: Budget grid actuals, Dashboard flows/totals, pay-month totals, plan status, history categorisation, recent categories, Uncategorized list and count, scenario comparison actuals, auto-forecast detection. Implement through one helper (`Transaction.budgetFacing` request / filter, mirroring `ForecastEntry.budget`) and use it at every such load site. **Balances and net worth are unaffected** (any balance roll-forward that uses transactions keeps using all of them).
+- **Import review:** a staged incoming row that matches an existing outgoing transaction (or vice versa) shows a "↔ Transfer from <account>, <date>" badge; its category is pre-set to the other leg's category and it is Ready (source `.rule`-equivalent: new `CategorizedBy.transfer`). Staged pairs within the same file can't occur (one account per import).
+- **UI:** in side panels and Edit transaction, a linked transaction shows "↔ <other account> · <date> · <amount>". Edit transaction gets **Unlink** (marks an auto link dismissed / deletes a manual one) and **Link to transfer…** (pick from candidates: opposite sign, other account, ±7 days, ±3% amount).
