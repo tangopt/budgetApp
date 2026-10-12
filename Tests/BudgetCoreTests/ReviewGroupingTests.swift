@@ -76,35 +76,34 @@ final class ReviewGroupingTests: XCTestCase {
     }
 
     // What the Remember checkbox shows is what gets saved: an explicit choice wins,
-    // otherwise rows of a 2+ row group learn and a single row doesn't.
-    func testRemembersResolvesAnUnsetChoiceFromTheGroupSize() {
+    // otherwise rows learn, a single row included.
+    func testRemembersResolvesAnUnsetChoiceToOn() {
         XCTAssertTrue(ReviewGrouping.remembers(choice: nil, groupRowCount: 2))
-        XCTAssertFalse(ReviewGrouping.remembers(choice: nil, groupRowCount: 1))
+        XCTAssertTrue(ReviewGrouping.remembers(choice: nil, groupRowCount: 1))
         XCTAssertFalse(ReviewGrouping.remembers(choice: false, groupRowCount: 3))
+        XCTAssertFalse(ReviewGrouping.remembers(choice: false, groupRowCount: 1))
         XCTAssertTrue(ReviewGrouping.remembers(choice: true, groupRowCount: 1))
     }
 
-    // Spec §2/§3: a processor group defaults off; a single row defaults on once its
-    // category was picked by hand; an explicit choice always wins.
-    func testRemembersDefaultsForProcessorGroupsAndHandPickedSingleRows() {
-        XCTAssertFalse(ReviewGrouping.remembers(choice: nil, groupRowCount: 3, isProcessorGroup: true, pickedByHand: false))
-        XCTAssertFalse(ReviewGrouping.remembers(choice: nil, groupRowCount: 3, isProcessorGroup: true, pickedByHand: true))
-        XCTAssertTrue(ReviewGrouping.remembers(choice: true, groupRowCount: 3, isProcessorGroup: true, pickedByHand: false))
-        XCTAssertTrue(ReviewGrouping.remembers(choice: nil, groupRowCount: 3, isProcessorGroup: false, pickedByHand: false))
-        XCTAssertFalse(ReviewGrouping.remembers(choice: nil, groupRowCount: 1, isProcessorGroup: false, pickedByHand: false))
-        XCTAssertTrue(ReviewGrouping.remembers(choice: nil, groupRowCount: 1, isProcessorGroup: false, pickedByHand: true))
-        XCTAssertFalse(ReviewGrouping.remembers(choice: false, groupRowCount: 1, isProcessorGroup: false, pickedByHand: true))
-        XCTAssertTrue(ReviewGrouping.remembers(choice: nil, groupRowCount: 1, isProcessorGroup: true, pickedByHand: true))
+    // Spec §2/§3: Remember defaults on for single rows and groups alike, except a processor
+    // group (its purchases differ); an explicit choice always wins.
+    func testRemembersDefaultsOnExceptForProcessorGroups() {
+        XCTAssertFalse(ReviewGrouping.remembers(choice: nil, groupRowCount: 3, isProcessorGroup: true))
+        XCTAssertTrue(ReviewGrouping.remembers(choice: true, groupRowCount: 3, isProcessorGroup: true))
+        XCTAssertTrue(ReviewGrouping.remembers(choice: nil, groupRowCount: 3, isProcessorGroup: false))
+        XCTAssertTrue(ReviewGrouping.remembers(choice: nil, groupRowCount: 1, isProcessorGroup: false))
+        XCTAssertFalse(ReviewGrouping.remembers(choice: false, groupRowCount: 1, isProcessorGroup: false))
+        XCTAssertFalse(ReviewGrouping.remembers(choice: nil, groupRowCount: 1, isProcessorGroup: true))
     }
 
     func testRememberDefaultForProcessorGroupsIsOff() {
         XCTAssertFalse(ReviewGrouping.rememberDefault(rowCount: 4, isProcessorGroup: true))
-        XCTAssertTrue(ReviewGrouping.rememberDefault(rowCount: 1, pickedByHand: true))
+        XCTAssertFalse(ReviewGrouping.rememberDefault(rowCount: 1, isProcessorGroup: true))
     }
 
-    func testRememberDefaultsOnForTwoOrMoreRows() {
+    func testRememberDefaultsOnForOneOrMoreRows() {
         XCTAssertFalse(ReviewGrouping.rememberDefault(rowCount: 0))
-        XCTAssertFalse(ReviewGrouping.rememberDefault(rowCount: 1))
+        XCTAssertTrue(ReviewGrouping.rememberDefault(rowCount: 1))
         XCTAssertTrue(ReviewGrouping.rememberDefault(rowCount: 2))
         XCTAssertTrue(ReviewGrouping.rememberDefault(rowCount: 7))
     }

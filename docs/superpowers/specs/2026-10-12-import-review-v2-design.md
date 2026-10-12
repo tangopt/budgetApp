@@ -24,7 +24,9 @@ A new **review key** used for grouping in Review and Uncategorized (learning and
 
 ## 3. Remember on single rows
 
-Every single row in Review shows the Remember checkbox, like groups. It is unticked until the user picks a category for the row by hand (row picker or Set category…), which ticks it; the user can untick it. Groups and multi-row Set category… keep defaulting on (except processor-name groups, §2). The resolved value drives both the checkbox and `ImportDecision.learnRule` (existing `ReviewGrouping.remembers`). Same on the Uncategorized screen.
+Every single row in Review shows the Remember checkbox, like groups, **ticked by default** (the user's choice, 2026-10-12); the user can untick it, and an explicit choice always wins. Groups and multi-row Set category… also default on; processor-name groups (§2) default off, single-row ones included. The resolved value drives both the checkbox and `ImportDecision.learnRule` (existing `ReviewGrouping.remembers`). Same on the Uncategorized screen, where picking a single row's category learns a rule unless its checkbox was unticked first.
+
+Commit learns a rule for a row when Remember is on, it has a final category, and either the user changed the suggestion or the suggestion did not come from a rule — so confirming a correct model or history guess teaches it, and the next import needn't guess again.
 
 ## 4. New category from the picker
 
@@ -34,7 +36,7 @@ Every single row in Review shows the Remember checkbox, like groups. It is untic
 
 - Migration (appended last): `transaction_.note TEXT NULL`. `Transaction.note: String?`. `StagedTransaction`/`ReviewRow` carry an optional note; `ImportDecision` gains `note: String?` (default nil); commit stores it.
 - Review and Uncategorized rows: a note button (`note.text` icon, filled when a note exists) opens a small popover text field; single rows only (not group rows).
-- **Edit transaction** sheet: from the Budget grid drill-down's transaction list (and the Uncategorized list), each transaction has Edit…: category (CategoryPickerButton, incl. New category…), note, and a read-only date/description/amount. Saving updates the transaction (`categorizedBy = .manual`, `status = .confirmed` when a category is set) via BudgetCore `TransactionEditing.update(db:id:categoryId:note:)`; no rule learning from this sheet. Rows with a note show the note icon in lists.
+- **Edit transaction** sheet: from the Budget grid drill-down's transaction list (and the Uncategorized list), each transaction has Edit…: category (CategoryPickerButton, incl. New category…), note, and a read-only date/description/amount. Saving updates the transaction (`categorizedBy = .manual`, `status = .confirmed` when the category is changed to one; a note-only edit keeps both) via BudgetCore `TransactionEditing.update(db:id:categoryId:note:)`; no rule learning from this sheet. Rows with a note show the note icon in lists.
 
 ## 6. Sidebar: Import and Uncategorized only when needed
 
@@ -52,4 +54,4 @@ The review shows a segmented tab bar: **Needs your attention (N)**, **Ready to c
 
 ## Testing
 
-BudgetCore XCTest: partitioning (model suggestions never ready; group partitioning); `ReviewKey.groupKeys` (all examples above, branches separate, processor names, ambiguous prefix → most rows); Remember default for single rows (picked → on); `Categories.create` (type, group, duplicate error, trimmed, not reserved); migration + note round trip through commit; `TransactionEditing.update`. App: build; full suite.
+BudgetCore XCTest: partitioning (model suggestions never ready; group partitioning); `ReviewKey.groupKeys` (all examples above, branches separate, processor names, ambiguous prefix → most rows); Remember default (single rows on, processor groups off); commit learning (accepted model suggestion learns, unchanged rule suggestion does not); `Categories.create` (type, group, duplicate error, trimmed, not reserved); migration + note round trip through commit; `TransactionEditing.update`. App: build; full suite.

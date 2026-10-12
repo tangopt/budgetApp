@@ -404,7 +404,7 @@ struct ReviewView: View {
             DispatchQueue.main.async { bulkDraft = draft }
         }
         .newCategorySheet(draft: $bulkDraft, groups: viewModel.categoryGroups, create: viewModel.createCategory) { category in
-            viewModel.setCategory(category.id, forRowIds: bulkDraftRowIds, learnRule: bulkRemember, pickedByHand: true)
+            viewModel.setCategory(category.id, forRowIds: bulkDraftRowIds, learnRule: bulkRemember)
         }
         .popover(isPresented: $showSetCategory, arrowEdge: .top) {
             let current = ReviewGrouping.categoryState(of: rows.map(\.chosenCategoryId))
@@ -418,7 +418,7 @@ struct ReviewView: View {
                 remember: $bulkRemember,
                 rememberLabel: rememberLabel(for: rows),
                 onPick: { picked in
-                    viewModel.setCategory(picked, forRowIds: rows.map(\.id), learnRule: bulkRemember, pickedByHand: true)
+                    viewModel.setCategory(picked, forRowIds: rows.map(\.id), learnRule: bulkRemember)
                     showSetCategory = false
                 },
                 onCancel: { showSetCategory = false },
@@ -515,15 +515,15 @@ struct ReviewView: View {
         }
     }
 
-    /// A row's own picker. Picking for a single row ticks its Remember (spec §3); a row
-    /// set on its own inside a group doesn't learn a rule unless Remember is ticked via Set
-    /// category….
+    /// A row's own picker. A single row keeps its Remember checkbox's value (spec §3); a
+    /// row set on its own inside a group doesn't learn a rule unless Remember is ticked via
+    /// Set category….
     private func categoryPicker(for row: ReviewRow, isSingleRow: Bool) -> some View {
         let binding = Binding<Int64?>(
             get: { row.chosenCategoryId },
             set: { newValue in
                 if isSingleRow {
-                    viewModel.setCategory(newValue, forRowIds: [row.id], learnRule: nil, pickedByHand: true)
+                    viewModel.setCategory(newValue, forRowIds: [row.id], learnRule: row.learnRule)
                 } else {
                     viewModel.setCategory(newValue, forRowIds: [row.id], learnRule: false)
                 }

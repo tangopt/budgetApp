@@ -232,7 +232,11 @@ public final class ImportCoordinator {
                     note: Transaction.normalizedNote(noteById[stagedTransaction.id] ?? nil)
                 )
                 try transaction.insert(db)
-                if wasOverridden, learnById[stagedTransaction.id] ?? true, let finalCategoryId {
+                // Learn what the user confirmed with Remember on: a correction, or a model or
+                // history guess they accepted (so the next import needn't guess). A rule's own
+                // unchanged suggestion already has its rule.
+                if learnById[stagedTransaction.id] ?? true, let finalCategoryId,
+                   wasOverridden || stagedTransaction.source != .rule {
                     try RuleLearner.learn(description: stagedTransaction.parsed.rawDescription, categoryId: finalCategoryId, db: db)
                 }
             }

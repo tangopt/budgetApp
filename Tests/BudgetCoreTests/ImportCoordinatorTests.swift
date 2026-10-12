@@ -76,6 +76,34 @@ final class ImportCoordinatorTests: XCTestCase {
         XCTAssertEqual(rules.map(\.matchPattern), ["NANDOS CROYDON"])
     }
 
+    // Confirming a correct model suggestion with Remember on teaches a rule, so the next
+    // import doesn't have to guess again; a rule's own suggestion teaches nothing new.
+    func testCommitLearnsFromAConfirmedModelSuggestionButNotFromARule() async throws {
+        let (manager, account, profile) = try makeSeededManager()
+        let groceries = try await manager.dbQueue.read { db in try Category.filter(Column("name") == "Groceries").fetchOne(db)! }
+        try await manager.dbQueue.write { db in
+            var rule = Rule(matchPattern: "SAINSBURYS", matchType: .contains, categoryId: groceries.id!, priority: 10)
+            try rule.insert(db)
+        }
+        let fake = FakeCategorizer()
+        fake.stubbedSuggestion = CategorySuggestion(categoryName: "Groceries", confidence: 0.9)
+        let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: fake))
+
+        let csv = "Date,Description,Amount\n01/07/2026,SAINSBURYS LONDON,-45.64\n02/07/2026,LIDL GB KINGSTON,-10.00\n03/07/2026,ALDI STORES,-12.00"
+        let staged = try await coordinator.stageCSVImport(csvText: csv, profile: profile, accountId: account.id!)
+        XCTAssertEqual(staged.staged.map(\.source), [.rule, .llm, .llm])
+        let decisions = staged.staged.enumerated().map { index, row in
+            ImportDecision(stagedId: row.id, finalCategoryId: row.suggestedCategoryId, learnRule: index != 2)
+        }
+        try coordinator.commit(accountId: account.id!, sourceFileName: "july.csv", staged: staged.staged, decisions: decisions)
+
+        let patterns = try await manager.dbQueue.read { db in try Rule.fetchAll(db) }.map(\.matchPattern)
+        XCTAssertEqual(patterns.count, 2)
+        XCTAssertTrue(patterns.contains("SAINSBURYS"))
+        XCTAssertTrue(patterns.contains { $0.contains("LIDL") })
+        XCTAssertFalse(patterns.contains { $0.contains("ALDI") })
+    }
+
     func testStagingSuggestsFromHistoryOfAllAccounts() async throws {
         let (manager, account, profile) = try makeSeededManager()
         let groceries = try await manager.dbQueue.read { db in try Category.filter(Column("name") == "Groceries").fetchOne(db)! }

@@ -37,6 +37,8 @@ struct GridDrillDownSheet: View {
     /// A failed Remove… (an Edit… failure shows in its own sheet).
     @State private var planError: String?
     @State private var editingTransaction: Transaction?
+    /// Read when Edit… is clicked, for the sheet's picker.
+    @State private var editingRecentIds: [Int64] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -76,7 +78,7 @@ struct GridDrillDownSheet: View {
                 transaction: transaction,
                 categories: viewModel.categories,
                 groups: viewModel.categoryGroups,
-                recentIds: [],
+                recentIds: editingRecentIds,
                 createCategory: viewModel.createCategory,
                 onSave: { categoryId, note in
                     guard let id = transaction.id else { return .failed("This transaction hasn't been saved yet.") }
@@ -115,7 +117,10 @@ struct GridDrillDownSheet: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .frame(width: 140, alignment: .leading)
-            Button("Edit…") { editingTransaction = transaction }
+            Button("Edit…") {
+                editingRecentIds = viewModel.recentCategoryIds()
+                editingTransaction = transaction
+            }
         }
     }
 }

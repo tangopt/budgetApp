@@ -13,9 +13,6 @@ struct ReviewRow: Identifiable {
     /// follows its group's default (`ReviewGrouping.remembers`), resolved for the decision
     /// by `ImportViewModel`.
     var learnRule: Bool?
-    /// Set once the user picks this row's category by hand (its own picker or Set
-    /// category…): a single row's Remember then defaults on (spec §3).
-    var pickedByHand = false
     /// Saved with the transaction on commit (spec §5).
     var note: String?
     var id: UUID { staged.id }
@@ -267,23 +264,24 @@ final class ImportViewModel: ObservableObject {
     }
 
     /// Sets the category of every listed row, recording whether each should learn a rule
-    /// (`nil`: its group default). `pickedByHand` marks a choice the user made for these
-    /// rows themselves, which ticks a single row's Remember (spec §3).
-    func setCategory(_ categoryId: Int64?, forRowIds ids: [UUID], learnRule: Bool?, pickedByHand: Bool = false) {
+    /// (`nil`: its group default). Edits a copy and assigns once, so `stagedRows`' didSet
+    /// (and SwiftUI) see one change however many rows are set.
+    func setCategory(_ categoryId: Int64?, forRowIds ids: [UUID], learnRule: Bool?) {
         let idSet = Set(ids)
-        for index in stagedRows.indices where idSet.contains(stagedRows[index].id) {
-            stagedRows[index].chosenCategoryId = categoryId
-            stagedRows[index].learnRule = learnRule
-            if pickedByHand { stagedRows[index].pickedByHand = true }
+        var rows = stagedRows
+        for index in rows.indices where idSet.contains(rows[index].id) {
+            rows[index].chosenCategoryId = categoryId
+            rows[index].learnRule = learnRule
         }
+        stagedRows = rows
     }
 
     /// Set category…'s Remember default for these rows: off for one processor group's
-    /// purchases, otherwise on (a single row too — it is being picked by hand).
+    /// purchases, otherwise on.
     func setCategoryRememberDefault(for rows: [ReviewRow]) -> Bool {
         let keys = Set(rows.map { reviewKeys[$0.id] ?? "" })
         let isProcessorGroup = keys.count == 1 && keys.first.map(ReviewKey.isProcessorGroup) == true
-        return ReviewGrouping.rememberDefault(rowCount: rows.count, isProcessorGroup: isProcessorGroup, pickedByHand: true)
+        return ReviewGrouping.rememberDefault(rowCount: rows.count, isProcessorGroup: isProcessorGroup)
     }
 
     func setNote(_ note: String?, forRowId id: UUID) {
@@ -295,19 +293,19 @@ final class ImportViewModel: ObservableObject {
     /// group checkbox currently shows for it (so a mixed checkbox stays mixed).
     func setCategory(_ categoryId: Int64?, for group: ReviewGroup<ReviewRow>) {
         let remember = Dictionary(uniqueKeysWithValues: group.rows.map { ($0.id, remembers($0, in: group)) })
-        for index in stagedRows.indices {
-            guard let learnRule = remember[stagedRows[index].id] else { continue }
-            stagedRows[index].chosenCategoryId = categoryId
-            stagedRows[index].learnRule = learnRule
+        var rows = stagedRows
+        for index in rows.indices {
+            guard let learnRule = remember[rows[index].id] else { continue }
+            rows[index].chosenCategoryId = categoryId
+            rows[index].learnRule = learnRule
         }
+        stagedRows = rows
     }
 
     /// Whether this row of a group is ticked in the group's Remember checkbox: its own
-    /// choice, or the group default until one is made (on for 2+ rows unless a processor
-    /// group; a single row once its category was picked by hand).
+    /// choice, or the group default (on, unless a processor group) until one is made.
     func remembers(_ row: ReviewRow, in group: ReviewGroup<ReviewRow>) -> Bool {
-        ReviewGrouping.remembers(choice: row.learnRule, groupRowCount: group.rows.count,
-                                 isProcessorGroup: group.isProcessorGroup, pickedByHand: row.pickedByHand)
+        ReviewGrouping.remembers(choice: row.learnRule, groupRowCount: group.rows.count, isProcessorGroup: group.isProcessorGroup)
     }
 
     /// Each unconfirmed row's Remember value as its checkbox currently shows it, keyed by
@@ -322,9 +320,11 @@ final class ImportViewModel: ObservableObject {
 
     func setRemember(_ remember: Bool, forRowIds ids: [UUID]) {
         let idSet = Set(ids)
-        for index in stagedRows.indices where idSet.contains(stagedRows[index].id) {
-            stagedRows[index].learnRule = remember
+        var rows = stagedRows
+        for index in rows.indices where idSet.contains(rows[index].id) {
+            rows[index].learnRule = remember
         }
+        stagedRows = rows
     }
 
     /// Marks every "ready" row confirmed (in memory only — see `finish`).
@@ -345,10 +345,14 @@ final class ImportViewModel: ObservableObject {
         // Freeze Remember as shown right now: the Confirmed section groups rows
         // differently, so an unset row's group default could otherwise change.
         let remember = displayedRemember
-        for index in stagedRows.indices where ids.contains(stagedRows[index].id) && !confirmedIds.contains(stagedRows[index].id) {
-            if stagedRows[index].learnRule == nil { stagedRows[index].learnRule = remember[stagedRows[index].id] }
-            confirmedIds.insert(stagedRows[index].id)
+        var rows = stagedRows
+        var confirmed = confirmedIds
+        for index in rows.indices where ids.contains(rows[index].id) && !confirmed.contains(rows[index].id) {
+            if rows[index].learnRule == nil { rows[index].learnRule = remember[rows[index].id] }
+            confirmed.insert(rows[index].id)
         }
+        stagedRows = rows
+        confirmedIds = confirmed
     }
 
     /// Undo: returns confirmed rows to their unconfirmed section, categories kept.

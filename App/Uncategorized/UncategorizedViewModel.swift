@@ -91,8 +91,7 @@ final class UncategorizedViewModel: ObservableObject {
     }
 
     /// Whether this row of a group is ticked in the group's Remember checkbox: its own
-    /// choice, or the group default until one is made (on for 2+ rows unless a processor
-    /// group; off for a single row, whose picker assigns at once — see UncategorizedView).
+    /// choice, or the group default (on, unless a processor group) until one is made.
     func remembers(_ transaction: Transaction, in group: ReviewGroup<Transaction>) -> Bool {
         ReviewGrouping.remembers(choice: transaction.id.flatMap { rememberChoices[$0] }, groupRowCount: group.rows.count, isProcessorGroup: group.isProcessorGroup)
     }

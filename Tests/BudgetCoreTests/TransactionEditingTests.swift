@@ -80,4 +80,22 @@ final class TransactionEditingTests: XCTestCase {
             XCTAssertEqual(error as? TransactionEditError, .categoryNotFound)
         }
     }
+
+    // A note-only edit leaves how the transaction was categorised alone.
+    func testANoteOnlyEditKeepsCategorizedByAndStatus() throws {
+        let (m, id) = try makeDB()
+        let eatingOut = try category(m, "Eating Out")
+        try m.dbQueue.write { db in
+            var transaction = try Transaction.fetchOne(db, key: id)!
+            transaction.categoryId = eatingOut
+            transaction.status = .confirmed
+            transaction.categorizedBy = .rule
+            try transaction.update(db)
+            try TransactionEditing.update(db: db, id: id, categoryId: eatingOut, note: "Team lunch")
+        }
+        let saved = try m.dbQueue.read { db in try Transaction.fetchOne(db, key: id)! }
+        XCTAssertEqual(saved.categorizedBy, .rule)
+        XCTAssertEqual(saved.status, .confirmed)
+        XCTAssertEqual(saved.note, "Team lunch")
+    }
 }

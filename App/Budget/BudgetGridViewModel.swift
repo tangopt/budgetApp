@@ -39,7 +39,7 @@ final class BudgetGridViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published private(set) var availableYears: [Int] = []
     /// Pay-month boundaries (salaries + manual closes). Rebuilt with `monthTotals` whenever
-    /// transactions change (a recategorize can add or remove a salary).
+    /// transactions change (an edited category can add or remove a salary).
     @Published private(set) var payCalendar = PayCalendar(salaryDates: [], manualCloses: [], today: Date())
 
     private let dbQueue: DatabaseQueue
@@ -443,7 +443,20 @@ final class BudgetGridViewModel: ObservableObject {
     /// The picker's "New category…" (spec §4): creates the category and adds it to the list.
     func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
         let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
-        categories.append(category)
+        // Re-read rather than append, so the list keeps `load()`'s order; a failed re-read
+        // falls back to appending (the category was created either way).
+        if let reloaded = try? dbQueue.read({ db in try Category.fetchAll(db) }) {
+            categories = reloaded
+        } else {
+            categories.append(category)
+        }
         return category
+    }
+
+    /// The Edit transaction picker's Recent section: the last 90 days' most used
+    /// categories. A failed read only costs the section.
+    func recentCategoryIds() -> [Int64] {
+        let since = Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
+        return (try? dbQueue.read { db in try CategoryShortlist.recent(db: db, since: since, limit: 5) }) ?? []
     }
 }

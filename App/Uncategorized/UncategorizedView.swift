@@ -175,9 +175,9 @@ struct UncategorizedView: View {
         }
     }
 
-    /// A row's own picker, which assigns at once. A single row learns a rule when its
-    /// Remember checkbox is ticked (ticked beforehand: the row leaves the list on assign);
-    /// a row set on its own inside a group doesn't — use the group or Set category….
+    /// A row's own picker, which assigns at once. A single row learns a rule unless its
+    /// Remember checkbox (on by default, spec §3) was unticked first; a row set on its own
+    /// inside a group doesn't — use the group or Set category….
     private func categoryPicker(for transaction: Transaction, singleRowGroup: ReviewGroup<Transaction>?) -> some View {
         CategoryPickerButton(
             selection: Binding<Int64?>(
@@ -202,11 +202,10 @@ struct UncategorizedView: View {
     private func setCategoryButton(_ groups: [ReviewGroup<Transaction>]) -> some View {
         let rows = rows(for: selection, in: groups)
         return Button("Set category…") {
-            // One processor group's purchases default off; otherwise on (a single row too —
-            // it is being picked by hand, spec §3).
+            // One processor group's purchases default off; otherwise on (spec §3).
             let keys = Set(rows.compactMap { row in groups.first { $0.rows.contains { $0.id == row.id } }?.key })
             let isProcessorGroup = keys.count == 1 && keys.first.map(ReviewKey.isProcessorGroup) == true
-            bulkRemember = ReviewGrouping.rememberDefault(rowCount: rows.count, isProcessorGroup: isProcessorGroup, pickedByHand: true)
+            bulkRemember = ReviewGrouping.rememberDefault(rowCount: rows.count, isProcessorGroup: isProcessorGroup)
             showSetCategory = true
         }
         .disabled(rows.isEmpty)

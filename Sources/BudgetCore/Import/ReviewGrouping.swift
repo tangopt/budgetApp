@@ -84,18 +84,17 @@ public enum ReviewGrouping {
         return nil
     }
 
-    /// "Remember for <key>" starts on when categorising a group or 2+ rows at once, except
-    /// for a processor group (its purchases differ). A single row starts off and turns on
-    /// once its category is picked by hand (spec §3).
-    public static func rememberDefault(rowCount: Int, isProcessorGroup: Bool = false, pickedByHand: Bool = false) -> Bool {
-        rowCount >= 2 ? !isProcessorGroup : pickedByHand
+    /// "Remember for <key>" starts on for a single row, a group or several rows at once,
+    /// except for a processor group (its purchases differ) (spec §3).
+    public static func rememberDefault(rowCount: Int, isProcessorGroup: Bool = false) -> Bool {
+        rowCount >= 1 && !isProcessorGroup
     }
 
     /// Whether a row learns a rule: its explicit Remember choice, else the default for the
     /// group it's shown in. Used both for the checkbox and for the saved decision, so what
     /// the checkbox shows is what happens.
-    public static func remembers(choice: Bool?, groupRowCount: Int, isProcessorGroup: Bool = false, pickedByHand: Bool = false) -> Bool {
-        choice ?? rememberDefault(rowCount: groupRowCount, isProcessorGroup: isProcessorGroup, pickedByHand: pickedByHand)
+    public static func remembers(choice: Bool?, groupRowCount: Int, isProcessorGroup: Bool = false) -> Bool {
+        choice ?? rememberDefault(rowCount: groupRowCount, isProcessorGroup: isProcessorGroup)
     }
 
     /// Every row the selection covers (a selected group means all its rows), in display
