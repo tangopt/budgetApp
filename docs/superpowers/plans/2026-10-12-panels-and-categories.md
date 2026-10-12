@@ -45,7 +45,7 @@
 
 **Files:** BudgetCore new `Models/TransferLink.swift` (+ migration), `Import/TransferMatcher.swift`, Transaction budget-facing helper; every transaction load site used for budget/plan/dashboard/history/uncategorized/scenarios/auto-forecast; ImportCoordinator (match after commit; review badge data); App launch hook; App panels / EditTransactionSheet (link display, Unlink, Link to transfer…); Review row badge.
 
-- [ ] Spec §6. Tests first for the matcher (same currency, FX tolerance, ±3 days, closest date, ties unmatched, dismissed never relinked, one link per incoming transaction; historical spreadsheet rows: same pay month, single equal amount, smallest exact-sum set, ambiguous sets unmatched) and for budget-facing exclusion in at least BudgetGridCalculator, DashboardCalculator flows, PayMonthTotals, UncategorizedTransactions, HistoryCategorizer; balances unchanged. Full suite + app build; commit "Transfers between your accounts: auto-match, count once as sent".
+- [ ] Spec §6. Tests first for the matcher (same currency, FX tolerance, ±3 days, closest date, ties unmatched, dismissed never relinked, one link per incoming transaction; historical spreadsheet rows: same pay month, single equal amount, smallest exact-sum set, ambiguous sets unmatched; external-transfer categories never matched — spec §6 'External transfer categories', incl. the Categories screen toggle) and for budget-facing exclusion in at least BudgetGridCalculator, DashboardCalculator flows, PayMonthTotals, UncategorizedTransactions, HistoryCategorizer; balances unchanged. Full suite + app build; commit "Transfers between your accounts: auto-match, count once as sent".
 
 ### Task 6 (added): Budget account filter
 
