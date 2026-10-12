@@ -32,6 +32,13 @@ public struct NetWorthSeries: Equatable {
     public static let empty = NetWorthSeries(actual: [], forecast: [], currentNetWorthMinorUnits: nil, asOf: nil, changeVsPreviousMonthMinorUnits: nil, yearEnds: [], behindBalances: nil)
 }
 
+/// A calendar year's closing net worth: the real 31 Dec value for a completed year, the
+/// forecast to December for this year (and later ones).
+public struct YearEndNetWorth: Equatable {
+    public let valueMinorUnits: Int
+    public let isForecast: Bool
+}
+
 /// The plan-independent part of a net worth series: the actual months, the current net
 /// worth and where the forecast walk starts. Computed once, it is shared by every plan the
 /// scenario comparison projects.
@@ -116,6 +123,20 @@ extension DashboardCalculator {
         let behind = behindDates.min().map { BehindBalances(accountCount: behindDates.count, oldestSnapshotDate: $0) }
 
         return NetWorthSeries(actual: actual, forecast: forecast, currentNetWorthMinorUnits: current, asOf: asOf, changeVsPreviousMonthMinorUnits: changeVsPrevious, yearEnds: yearEnds, behindBalances: behind)
+    }
+
+    /// Net worth at the end of `year`: the real December month-end for years before today's,
+    /// the Dashboard's forecast-to-December (same walk as `netWorthSeries.yearEnds`) for this
+    /// year and later. Nil when there is no data to base it on.
+    public static func yearEndNetWorth(_ input: DashboardInput, year: Int) -> YearEndNetWorth? {
+        let thisYear = MonthRange.components(of: input.today).year
+        if year < thisYear {
+            return monthEndNetWorth(input, year: year, month: 12).map { YearEndNetWorth(valueMinorUnits: $0, isForecast: false) }
+        }
+        guard let actuals = netWorthActuals(input), let startYear = actuals.walkStartYear, let startMonth = actuals.walkStartMonth else { return nil }
+        let value = ForecastProjector.forecastNetWorth(startingNetWorth: actuals.currentNetWorthMinorUnits, latestRealMonth: (startYear, startMonth), atEndOf: year,
+                                                       categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
+        return YearEndNetWorth(valueMinorUnits: value, isForecast: true)
     }
 
     /// The series' plan-independent part (`NetWorthActuals`); nil without snapshots.

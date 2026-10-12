@@ -248,6 +248,7 @@ private struct AccountDetailView: View {
     let onUpdateBalance: (AccountRow) -> Void
     let onEdit: (AccountRow) -> Void
     @State private var showAllHistory = false
+    @State private var selectedDate: Date?
     private let historyLimit = 12
 
     var body: some View {
@@ -303,16 +304,52 @@ private struct AccountDetailView: View {
     @ViewBuilder
     private func chart(_ row: AccountRow) -> some View {
         // Indexed: same-day snapshots share a date, so the date can't be the identity.
-        let points = history.reversed().enumerated().map { (index: $0.offset, date: $0.element.date, value: Double($0.element.balanceMinorUnits) / 100) }
+        let points = history.reversed().enumerated().map { (index: $0.offset, date: $0.element.date, value: Double($0.element.balanceMinorUnits) / 100, minorUnits: $0.element.balanceMinorUnits) }
         if points.count >= 2 {
-            Chart(points, id: \.index) { point in
-                LineMark(x: .value("Date", point.date), y: .value("Balance", point.value))
-                    .interpolationMethod(.monotone)
+            let hovered = selectedDate.flatMap { date in points.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) } }
+            Chart {
+                ForEach(points, id: \.index) { point in
+                    LineMark(x: .value("Date", point.date), y: .value("Balance", point.value))
+                        .interpolationMethod(.monotone)
+                }
+                if let hovered {
+                    RuleMark(x: .value("Selected", hovered.date))
+                        .foregroundStyle(Color.secondary.opacity(0.5))
+                }
             }
             .chartXAxis(.hidden)
             .chartYAxis(.hidden)
-            .frame(height: 60)
+            .chartOverlay { proxy in
+                // Inside the plot's top edge, following the hovered balance but clamped to the plot's width.
+                GeometryReader { geometry in
+                    if let hovered, let frame = proxy.plotFrame.map({ geometry[$0] }), let x = proxy.position(forX: hovered.date) {
+                        let width: CGFloat = 150
+                        let left = max(frame.minX, min(frame.minX + x - width / 2, frame.maxX - width))
+                        readoutBox(row, date: hovered.date, minorUnits: hovered.minorUnits)
+                            .frame(width: width)
+                            .offset(x: left, y: frame.minY)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+            .chartXSelection(value: $selectedDate)
+            .frame(height: 90)
         }
+    }
+
+    private func readoutBox(_ row: AccountRow, date: Date, minorUnits: Int) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(DashboardFormat.day(date)).font(.caption2).foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Circle().fill(Color.accentColor).frame(width: 6, height: 6)
+                Text(row.account.name).font(.caption2).lineLimit(1)
+                Spacer(minLength: 8)
+                AccountsFormat.balanceText(minorUnits, kind: row.account.kind, currency: row.account.currency, font: .caption.bold().monospacedDigit())
+            }
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
     }
 
     @ViewBuilder

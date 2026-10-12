@@ -7,20 +7,20 @@ import GRDB
 @MainActor
 final class BudgetGridViewModel: ObservableObject {
     @Published var categories: [Category] = [] {
-        didSet { reserveRemainingCache = [:]; cellCache = [:] }
+        didSet { reserveRemainingCache = [:]; cellCache = [:]; yearEndCache = [:] }
     }
     @Published var categoryGroups: [CategoryGroup] = []
     @Published var transactions: [Transaction] = [] {
         didSet { rebuildPayMonths(); clearNetWorthCaches() }
     }
     @Published var forecastEntries: [ForecastEntry] = [] {
-        didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:] }
+        didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:]; yearEndCache = [:] }
     }
     @Published var forecastGroups: [ForecastGroup] = [] {
-        didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:] }
+        didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:]; yearEndCache = [:] }
     }
     @Published var exceptions: [PlannedOccurrenceException] = [] {
-        didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:] }
+        didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:]; yearEndCache = [:] }
     }
     @Published var accounts: [Account] = [] {
         didSet { clearNetWorthCaches() }
@@ -71,6 +71,9 @@ final class BudgetGridViewModel: ObservableObject {
     /// Cleared whenever accounts, snapshots, transactions or the exchange rate change.
     private var accountBalanceCache: [Int: [Int64: MonthlyAccountBalance?]] = [:]
     private var netWorthCache: [Int: Int?] = [:]
+    /// Year-end net worth per year for the year cards (`DashboardCalculator.yearEndNetWorth`, nil = none);
+    /// cleared with the net worth caches and whenever categories or forecasts change.
+    private var yearEndCache: [Int: YearEndNetWorth?] = [:]
 
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
@@ -145,6 +148,7 @@ final class BudgetGridViewModel: ObservableObject {
     private func clearNetWorthCaches() {
         accountBalanceCache = [:]
         netWorthCache = [:]
+        yearEndCache = [:]
     }
 
     /// Sum of every account's GBP-converted balance for `month`; accounts with no data yet
@@ -153,28 +157,22 @@ final class BudgetGridViewModel: ObservableObject {
         monthEndNetWorth(year: year, month: month) ?? 0
     }
 
-    /// True when at least one account has data (a snapshot at or before this month) for
-    /// `year`/`month` — distinguishes "no data yet" from "net worth was genuinely zero."
-    private func hasNetWorthData(year: Int, month: Int) -> Bool {
-        monthEndNetWorth(year: year, month: month) != nil
+    /// Net worth at the end of `year` for the year cards: real for past years, the Dashboard's
+    /// forecast to December for this year (`DashboardCalculator.yearEndNetWorth`).
+    func yearEndNetWorth(_ year: Int) -> YearEndNetWorth? {
+        if let cached = yearEndCache[year] { return cached }
+        let input = DashboardInput(today: Date(), accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, categories: categories, categoryGroups: categoryGroups,
+                                   forecastEntries: forecastEntries, forecastGroups: forecastGroups, exceptions: exceptions, importBatches: [], rate: exchangeRate, payCalendar: payCalendar)
+        let value = DashboardCalculator.yearEndNetWorth(input, year: year)
+        yearEndCache[year] = .some(value)
+        return value
     }
 
-    /// Change in total GBP net worth from the end of the previous year to the end of
-    /// `year` (both measured at December). `nil` when the previous year-end has no data
-    /// at all (e.g. before any account's first snapshot) — a change needs a baseline.
-    func netWorthChange(_ year: Int) -> Int? {
-        guard hasNetWorthData(year: year - 1, month: 12) else { return nil }
-        return netWorthTotal(year: year, month: 12) - netWorthTotal(year: year - 1, month: 12)
-    }
-
-    /// `netWorthChange` as a fraction of the previous year-end's net worth. `nil` when
-    /// there's no change to show, or the previous year-end was exactly zero (the
-    /// percentage would be meaningless/infinite).
-    func netWorthChangePercent(_ year: Int) -> Double? {
-        guard let change = netWorthChange(year) else { return nil }
-        let previousYearEnd = netWorthTotal(year: year - 1, month: 12)
-        guard previousYearEnd != 0 else { return nil }
-        return Double(change) / Double(abs(previousYearEnd))
+    /// `year`'s year-end net worth against the previous year's, as a fraction of the previous
+    /// one's magnitude. Nil when either is missing or the previous is zero.
+    func yearEndChangePercent(_ year: Int) -> Double? {
+        guard let value = yearEndNetWorth(year), let previous = yearEndNetWorth(year - 1), previous.valueMinorUnits != 0 else { return nil }
+        return Double(value.valueMinorUnits - previous.valueMinorUnits) / Double(abs(previous.valueMinorUnits))
     }
 
     /// Drops selected years that no longer have data, falling back to the most recent year

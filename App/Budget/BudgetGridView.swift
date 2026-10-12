@@ -430,36 +430,12 @@ struct BudgetGridView: View {
                             viewModel.selectYear(year)
                         }
                     } label: {
-                        VStack(spacing: 2) {
-                            Text(String(year)).font(.subheadline).bold()
-                            // Year-over-year change in total net worth, not income minus
-                            // expenses minus transfers — money moved into the user's own
-                            // ISA/savings accounts doesn't reduce net worth, so this doesn't
-                            // swing hugely negative in a year with a big internal transfer.
-                            if let change = viewModel.netWorthChange(year) {
-                                MoneyText(minorUnits: change)
-                            } else {
-                                Text("—").foregroundStyle(.secondary)
-                            }
-                            if let percent = viewModel.netWorthChangePercent(year) {
-                                Text("\(percent >= 0 ? "↑" : "↓") \(String(format: "%.1f", abs(percent) * 100))%")
-                                    .font(.caption2)
-                                    .foregroundStyle(percent >= 0 ? Color.green : Color.red)
-                            }
-                        }
-                        .padding(8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(viewModel.selectedYears.contains(year) ? Color.accentColor.opacity(0.15) : Color.clear)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(viewModel.selectedYears.contains(year) ? Color.accentColor : Color.clear, lineWidth: 2)
-                        )
+                        yearCard(year)
                     }
                     .buttonStyle(.plain)
                     .help("⌘-click to compare several years")
                 }
+                compareHintCard
             }
             // Vertical padding, not just horizontal: the selected chip's 2pt stroke sits
             // right at the row's own edge, and ScrollView sizes its cross-axis tightly to
@@ -468,6 +444,47 @@ struct BudgetGridView: View {
             .padding(.horizontal)
             .padding(.vertical, 4)
         }
+    }
+
+    /// A year in the selector: the year, its year-end net worth (forecast to December for the
+    /// current year) and the change on the previous year-end.
+    private func yearCard(_ year: Int) -> some View {
+        let selected = viewModel.selectedYears.contains(year)
+        let yearEnd = viewModel.yearEndNetWorth(year)
+        let percent = viewModel.yearEndChangePercent(year)
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(String(year)).font(.subheadline).bold()
+            if let yearEnd {
+                MoneyText(minorUnits: yearEnd.valueMinorUnits)
+                if yearEnd.isForecast {
+                    Text("forecast to Dec").font(.caption2).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("—").foregroundStyle(.secondary)
+            }
+            if let percent {
+                Text("\(percent >= 0 ? "↑" : "↓") \(String(format: "%.1f", abs(percent) * 100))%")
+                    .font(.caption2)
+                    .foregroundStyle(percent >= 0 ? Color.green : Color.red)
+            }
+        }
+        .padding(8)
+        .frame(minWidth: 96, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Color.accentColor.opacity(0.15) : Color.clear))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(selected ? Color.accentColor : Color.secondary.opacity(0.3), lineWidth: selected ? 2 : 1))
+    }
+
+    /// The row's last card: a non-interactive reminder of how to compare years.
+    private var compareHintCard: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Compare…").font(.subheadline).bold()
+            Text("⌘-click years").font(.caption2)
+        }
+        .foregroundStyle(.secondary)
+        .padding(8)
+        .frame(minWidth: 96, alignment: .leading)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+        .allowsHitTesting(false)
     }
 
     @ViewBuilder

@@ -50,6 +50,18 @@ final class DashboardNetWorthTests: XCTestCase {
 
     // Same rule as the Forecast grid: the real December is the baseline only once that pay
     // month is closed. Data reaching past December doesn't close it on its own.
+    func testYearEndNetWorthIsRealForPastYearsAndForecastForThisOne() throws {
+        let input = series2026Input
+        let past = try XCTUnwrap(DashboardCalculator.yearEndNetWorth(input, year: 2025))
+        XCTAssertEqual(past, YearEndNetWorth(valueMinorUnits: 1_000_000, isForecast: false))
+        let series = DashboardCalculator.netWorthSeries(input)
+        let current = try XCTUnwrap(DashboardCalculator.yearEndNetWorth(input, year: 2026))
+        XCTAssertTrue(current.isForecast)
+        XCTAssertEqual(current.valueMinorUnits, series.yearEnds[0].valueMinorUnits)
+        XCTAssertEqual(try XCTUnwrap(DashboardCalculator.yearEndNetWorth(input, year: 2027)).valueMinorUnits, series.yearEnds[1].valueMinorUnits)
+        XCTAssertNil(DashboardCalculator.yearEndNetWorth(input, year: 2020))
+    }
+
     func testYearEndBaselineIsTheForecastWhileLastDecemberIsOpen() throws {
         let input = F.input(
             today: date(2026, 4, 15),
