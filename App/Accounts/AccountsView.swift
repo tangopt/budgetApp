@@ -281,7 +281,7 @@ private struct AccountDetailView: View {
             }
             .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(nsColor: .separatorColor)))
-            .onChange(of: row.id) { _ in showAllHistory = false }
+            .onChange(of: row.id) { showAllHistory = false }
         } else {
             Text("Select an account.")
                 .foregroundStyle(.secondary)

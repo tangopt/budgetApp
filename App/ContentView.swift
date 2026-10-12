@@ -205,19 +205,19 @@ struct ContentView: View {
             categoriesViewModel.onTransactionEdited = { refreshUncategorizedCount() }
             refreshSharedState()
         }
-        .onChange(of: importViewModel.isStaging) { staging in
+        .onChange(of: importViewModel.isStaging) { _, staging in
             // Staging only starts from the Dashboard's import card: follow it to the Import
             // screen, which has just appeared in the sidebar.
             if staging { selection = .importReview } else { importActivityChanged() }
         }
-        .onChange(of: importViewModel.isReviewing) { _ in importActivityChanged() }
-        .onChange(of: uncategorizedViewModel.transactions) { _ in
+        .onChange(of: importViewModel.isReviewing) { importActivityChanged() }
+        .onChange(of: uncategorizedViewModel.transactions) {
             // Assigning on the Uncategorized screen removes rows; the last one hides the
             // screen and returns to the Dashboard.
             refreshUncategorizedCount()
         }
-        .onChange(of: sidebarSelection) { newValue in sidebarSelectionChanged(to: newValue) }
-        .onChange(of: selection) { _ in
+        .onChange(of: sidebarSelection) { _, newValue in sidebarSelectionChanged(to: newValue) }
+        .onChange(of: selection) {
             // Screens can also be changed in code (the Dashboard's links, the alert below).
             if sidebarSelection != selection { sidebarSelection = selection }
             // Re-read accounts/categories on every navigation so a newly-added
@@ -227,13 +227,13 @@ struct ContentView: View {
             // count, then falls back to the Dashboard if the new screen has no row.
             refreshSharedState()
         }
-        .onChange(of: accountsViewModel.accounts) { _ in
+        .onChange(of: accountsViewModel.accounts) {
             refreshSharedState()
         }
-        .onChange(of: selectedImportAccountId) { _ in
+        .onChange(of: selectedImportAccountId) {
             if let id = selectedImportAccountId { lastImportAccountId = Int(id) }
         }
-        .onChange(of: environment.exchangeRateBanner) { _ in
+        .onChange(of: environment.exchangeRateBanner) {
             // The EUR rate refreshes asynchronously after launch; the dashboard's net worth
             // and forecast figures (and the Accounts screen's GBP totals) depend on it, so
             // recompute whichever of them is on screen.
