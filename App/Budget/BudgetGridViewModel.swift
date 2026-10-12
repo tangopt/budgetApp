@@ -42,6 +42,10 @@ final class BudgetGridViewModel: ObservableObject {
     /// transactions change (an edited category can add or remove a salary).
     @Published private(set) var payCalendar = PayCalendar(salaryDates: [], manualCloses: [], today: Date())
 
+    /// Runs after an Edit transaction save, so ContentView can refresh the sidebar's
+    /// uncategorised count (an edit can add or clear one).
+    var onTransactionEdited: (() -> Void)?
+
     private let dbQueue: DatabaseQueue
     private var manualCloses: [PayMonthClose] = []
     private var lastHorizon: Date?
@@ -435,9 +439,13 @@ final class BudgetGridViewModel: ObservableObject {
     }
 
     /// The Edit transaction sheet's save (spec §5): category and note via
-    /// `TransactionEditing.update` (no rule learned), then the grid reloads.
+    /// `TransactionEditing.update` (no rule learned), then the grid reloads and
+    /// `onTransactionEdited` runs.
     func editTransaction(id: Int64, categoryId: Int64?, note: String?) -> SaveOutcome {
-        perform { db in try TransactionEditing.update(db: db, id: id, categoryId: categoryId, note: note) }
+        let outcome = perform { db in try TransactionEditing.update(db: db, id: id, categoryId: categoryId, note: note) }
+        if case .failed = outcome { return outcome }
+        onTransactionEdited?()
+        return outcome
     }
 
     /// The picker's "New category…" (spec §4): creates the category and adds it to the list.

@@ -39,4 +39,25 @@ final class UncategorizedTransactionsTests: XCTestCase {
         let results = try manager.dbQueue.read { db in try UncategorizedTransactions.fetch(db: db) }
         XCTAssertEqual(results.map(\.rawDescription), ["Newer", "Older"])
     }
+
+    func testCountMatchesFetch() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        XCTAssertEqual(try manager.dbQueue.read { db in try UncategorizedTransactions.count(db: db) }, 0)
+        try manager.dbQueue.write { db in
+            try CategorySeeder.seedDefaults(db)
+            let rent = try Category.filter(Column("name") == "Rent").fetchOne(db)!
+            var account = Account(name: "Test", currency: .gbp, kind: .cash, trackingMode: .manual)
+            try account.insert(db)
+            var batch = ImportBatch(accountId: account.id!, sourceFileName: "x", importedAt: Date())
+            try batch.insert(db)
+            var confirmed = Transaction(importBatchId: batch.id!, accountId: account.id!, date: Date(), rawDescription: "A", amountMinorUnits: -100, categoryId: rent.id, status: .confirmed, categorizedBy: .manual, fingerprint: "a")
+            try confirmed.insert(db)
+            var pending = Transaction(importBatchId: batch.id!, accountId: account.id!, date: Date(), rawDescription: "B", amountMinorUnits: -200, categoryId: nil, status: .pendingReview, categorizedBy: .none, fingerprint: "b")
+            try pending.insert(db)
+            var pendingWithSuggestion = Transaction(importBatchId: batch.id!, accountId: account.id!, date: Date(), rawDescription: "C", amountMinorUnits: -300, categoryId: rent.id, status: .pendingReview, categorizedBy: .rule, fingerprint: "c")
+            try pendingWithSuggestion.insert(db)
+        }
+        XCTAssertEqual(try manager.dbQueue.read { db in try UncategorizedTransactions.count(db: db) }, 2)
+    }
 }

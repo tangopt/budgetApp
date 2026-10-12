@@ -20,14 +20,26 @@ struct DashboardView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 // The import host reports picker and wizard failures through
-                // `importViewModel.errorMessage`. ImportView owns the only other banner for it,
-                // and ReviewView shows it itself while reviewing, so skip it then.
+                // `importViewModel.errorMessage`, and a failed staging run lands back here
+                // (the Import screen leaves the sidebar), so this is the only banner for it.
+                // ReviewView shows it itself while reviewing, so skip it then.
                 if let error = importViewModel.errorMessage, !importViewModel.isReviewing {
                     HStack(alignment: .top) {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
                         Text(error).foregroundStyle(.red)
                         Spacer()
                         Button("Dismiss") { importViewModel.errorMessage = nil }
+                            .buttonStyle(.borderless)
+                    }
+                    .font(.callout)
+                }
+                // A finished import returns here too: show what it saved.
+                if let status = importViewModel.statusMessage, !importViewModel.isReviewing, !importViewModel.isStaging {
+                    HStack(alignment: .top) {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        Text(status)
+                        Spacer()
+                        Button("Dismiss") { importViewModel.statusMessage = nil }
                             .buttonStyle(.borderless)
                     }
                     .font(.callout)

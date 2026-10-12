@@ -28,6 +28,11 @@ enum AppScreen: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The sidebar row's text: Uncategorized carries its count ("Uncategorized (12)").
+    func sidebarTitle(uncategorizedCount: Int) -> String {
+        self == .uncategorized ? "\(rawValue) (\(uncategorizedCount))" : rawValue
+    }
+
     /// Sidebar section this screen's row is grouped under — see `ContentView.sidebarSections`,
     /// which groups `AppScreen.allCases` by this value while preserving the order each
     /// distinct value first appears in `allCases` (not alphabetically).
@@ -54,6 +59,9 @@ struct ContentView: View {
     @State private var selectedImportAccountId: Int64?
     @State private var accounts: [Account] = []
     @State private var categories: [Category] = []
+    /// Transactions still needing a category (`UncategorizedTransactions.count`): the
+    /// Uncategorized sidebar row shows only while it's above zero.
+    @State private var uncategorizedCount = 0
     @AppStorage("lastImportAccountId") private var lastImportAccountId = 0
 
     // Each screen's view model is owned once by ContentView and handed down as a
@@ -97,16 +105,28 @@ struct ContentView: View {
         return calendar.date(from: components) ?? Date()
     }
 
-    /// `AppScreen.allCases` grouped by `sidebarSection`, one entry per distinct section
-    /// value in the order that value first appears in `allCases` — not alphabetically, so
-    /// "Workflow" → "Overview" → "Settings" (driven by `.importReview` being first in
-    /// `allCases`, `.dashboard` being the first `.sidebarSection == "Overview"` case, etc.)
-    /// stays stable regardless of where a section's later members (e.g. `.uncategorized`)
-    /// happen to sit in `allCases`' own declaration order.
+    /// Whether the screen has a sidebar row right now (spec §6): Import only while an
+    /// import is staging or in review, Uncategorized only while something needs a category.
+    private func isInSidebar(_ screen: AppScreen) -> Bool {
+        switch screen {
+        case .importReview: return importViewModel.isStaging || importViewModel.isReviewing
+        case .uncategorized: return uncategorizedCount > 0
+        default: return true
+        }
+    }
+
+    /// The visible `AppScreen.allCases` grouped by `sidebarSection`, one entry per distinct
+    /// section value in the order that value first appears in `allCases` — not
+    /// alphabetically, so "Workflow" → "Overview" → "Settings" (driven by `.importReview`
+    /// being first in `allCases`, `.dashboard` being the first `.sidebarSection ==
+    /// "Overview"` case, etc.) stays stable regardless of where a section's later members
+    /// (e.g. `.uncategorized`) happen to sit in `allCases`' own declaration order. A section
+    /// with no visible screens (Workflow, when there's nothing to import or assign) is left
+    /// out, header and all.
     private var sidebarSections: [(name: String, screens: [AppScreen])] {
         var order: [String] = []
         var grouped: [String: [AppScreen]] = [:]
-        for screen in AppScreen.allCases {
+        for screen in AppScreen.allCases where isInSidebar(screen) {
             let section = screen.sidebarSection
             if grouped[section] == nil {
                 order.append(section)
@@ -122,7 +142,7 @@ struct ContentView: View {
                 ForEach(sidebarSections, id: \.name) { section in
                     Section(section.name) {
                         ForEach(section.screens) { screen in
-                            Label(screen.rawValue, systemImage: screen.systemImage).tag(screen)
+                            Label(screen.sidebarTitle(uncategorizedCount: uncategorizedCount), systemImage: screen.systemImage).tag(screen)
                         }
                     }
                 }
@@ -138,30 +158,8 @@ struct ContentView: View {
                     )
                     .onAppear { dashboardViewModel.load() }
                 case .importReview:
-                    if accounts.isEmpty {
-                        Text("Add an account under Accounts, then pick it here to import a statement.")
-                    } else {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Picker("Import into", selection: $selectedImportAccountId) {
-                                ForEach(accounts) { account in
-                                    Text("\(account.name) (\(account.currency.rawValue.uppercased()))").tag(Int64?.some(account.id!))
-                                }
-                            }
-                            .frame(maxWidth: 360)
-                            .padding([.horizontal, .top])
-                            // The staged rows belong to the account they were staged for;
-                            // switching mid-review would be misleading.
-                            .disabled(importViewModel.isReviewing)
-                            NonGBPImportCaption(account: selectedImportAccount)
-                                .padding(.horizontal)
-                            if let account = selectedImportAccount {
-                                ImportView(
-                                    viewModel: importViewModel,
-                                    account: account, profileStore: profileStore
-                                )
-                            }
-                        }
-                    }
+                    // Account and file are picked on the Dashboard's import card (spec §6).
+                    ImportView(viewModel: importViewModel)
                 case .budgetGrid:
                     BudgetGridView(viewModel: budgetGridViewModel)
                         .onAppear { try? budgetGridViewModel.load(horizon: forecastHorizon) }
@@ -202,7 +200,20 @@ struct ContentView: View {
             Text("Nothing from this import has been saved yet. Unconfirmed transactions aren't saved either way.")
         }
         .onAppear {
+            // An Edit transaction save in the Budget grid can add or clear an uncategorised one.
+            budgetGridViewModel.onTransactionEdited = { refreshUncategorizedCount() }
             refreshSharedState()
+        }
+        .onChange(of: importViewModel.isStaging) { staging in
+            // Staging only starts from the Dashboard's import card: follow it to the Import
+            // screen, which has just appeared in the sidebar.
+            if staging { selection = .importReview } else { importActivityChanged() }
+        }
+        .onChange(of: importViewModel.isReviewing) { _ in importActivityChanged() }
+        .onChange(of: uncategorizedViewModel.transactions) { _ in
+            // Assigning on the Uncategorized screen removes rows; the last one hides the
+            // screen and returns to the Dashboard.
+            refreshUncategorizedCount()
         }
         .onChange(of: sidebarSelection) { newValue in sidebarSelectionChanged(to: newValue) }
         .onChange(of: selection) { _ in
@@ -210,8 +221,9 @@ struct ContentView: View {
             if sidebarSelection != selection { sidebarSelection = selection }
             // Re-read accounts/categories on every navigation so a newly-added
             // account (via the Accounts screen) or category shows up immediately
-            // in Import's account picker and the Forecast/Budget category lists,
-            // without requiring an app relaunch.
+            // in the Dashboard's import picker and the Forecast/Budget category lists,
+            // without requiring an app relaunch. This also refreshes the uncategorised
+            // count, then falls back to the Dashboard if the new screen has no row.
             refreshSharedState()
         }
         .onChange(of: accountsViewModel.accounts) { _ in
@@ -244,6 +256,28 @@ struct ContentView: View {
         }
     }
 
+    /// An import finished, was cancelled, or failed to stage: the Import row leaves the
+    /// sidebar (back to the Dashboard if it was showing), and a saved import may have added
+    /// uncategorised transactions.
+    private func importActivityChanged() {
+        refreshUncategorizedCount()
+    }
+
+    private func refreshUncategorizedCount() {
+        // A failed read keeps the last count rather than hiding the row.
+        if let count = try? environment.dbQueue.read({ db in try UncategorizedTransactions.count(db: db) }) {
+            uncategorizedCount = count
+        }
+        // Also covers the import ending (`importActivityChanged`).
+        ensureSelectionInSidebar()
+    }
+
+    /// A selection whose row isn't in the sidebar (the import ended, the last uncategorised
+    /// transaction was assigned) falls back to the Dashboard.
+    private func ensureSelectionInSidebar() {
+        if let selection, !isInSidebar(selection) { self.selection = .dashboard }
+    }
+
     private var selectedImportAccount: Account? {
         accounts.first { $0.id == selectedImportAccountId }
     }
@@ -251,6 +285,7 @@ struct ContentView: View {
     private func refreshSharedState() {
         categories = (try? environment.dbQueue.read { db in try Category.fetchAll(db) }.filter(\.isAssignable)) ?? []
         accounts = (try? environment.dbQueue.read { db in try Account.fetchAll(db) }) ?? []
+        refreshUncategorizedCount()
         // Keep the user's choice across navigation; otherwise default to the last-used
         // account (remembered across launches), then the first account.
         if selectedImportAccount == nil {

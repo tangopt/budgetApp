@@ -5,9 +5,15 @@ import GRDB
 /// tested here, independent of any UI).
 public enum UncategorizedTransactions {
     public static func fetch(db: Database) throws -> [Transaction] {
-        try Transaction
-            .filter(Column("categoryId") == nil || Column("status") == TransactionStatus.pendingReview.rawValue)
-            .order(Column("date").desc)
-            .fetchAll(db)
+        try request.order(Column("date").desc).fetchAll(db)
+    }
+
+    /// How many `fetch` would return, for the sidebar's "Uncategorized (N)" label.
+    public static func count(db: Database) throws -> Int {
+        try request.fetchCount(db)
+    }
+
+    private static var request: QueryInterfaceRequest<Transaction> {
+        Transaction.filter(Column("categoryId") == nil || Column("status") == TransactionStatus.pendingReview.rawValue)
     }
 }

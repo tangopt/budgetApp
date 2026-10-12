@@ -61,7 +61,7 @@ struct FreshnessImportCard: View {
         // card, outside the width-aware layout below: switching between the one-line and the
         // stacked layout on a window resize must not tear down an open picker or wizard.
         if let account = idleImportAccount {
-            ImportFlowHost(viewModel: importViewModel, account: account, profileStore: profileStore, onStarted: { navigate(.importReview) }) { actions in
+            ImportFlowHost(viewModel: importViewModel, account: account, profileStore: profileStore) { actions in
                 card { idleControls(actions: actions) }
             }
         } else {
@@ -117,14 +117,25 @@ struct FreshnessImportCard: View {
     }
 
     /// Account picker plus the two import buttons. `actions` is nil when the selected id
-    /// doesn't match a saved account (the picker alone is shown to correct it).
+    /// doesn't match a saved account (the picker alone is shown to correct it). For an
+    /// account with a saved CSV mapping, Import CSV… is a pull-down whose menu holds
+    /// "Edit column mapping…".
     private func idleControls(actions: ImportFlowActions?) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 accountPicker()
                 if let actions {
                     // Never truncated ("Import CS…"): the layout above gives them room instead.
-                    Button("Import CSV…") { actions.startCSV() }.fixedSize()
+                    if let editCSVMapping = actions.editCSVMapping {
+                        Menu("Import CSV…") {
+                            Button("Edit column mapping…") { editCSVMapping() }
+                        } primaryAction: {
+                            actions.startCSV()
+                        }
+                        .fixedSize()
+                    } else {
+                        Button("Import CSV…") { actions.startCSV() }.fixedSize()
+                    }
                     Button("Import PDF…") { actions.startPDF() }.fixedSize()
                 }
             }

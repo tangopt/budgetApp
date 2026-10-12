@@ -22,15 +22,14 @@ private struct CSVMappingRequest: Identifiable {
 }
 
 /// Owns everything needed to START an import — the two file pickers, the column-mapping and
-/// PDF-layout wizards, and the "which file did the user pick" state — so the Import screen
-/// and the Dashboard's import card start one in exactly the same way. Progress and review
-/// stay on the Import screen (`ImportView`).
+/// PDF-layout wizards, and the "which file did the user pick" state. Hosted by the
+/// Dashboard's import card, the only place an import starts (spec §6); progress and review
+/// are on the Import screen (`ImportView`), which the sidebar shows and selects as soon as
+/// staging begins (`ContentView`).
 struct ImportFlowHost<Content: View>: View {
     @ObservedObject var viewModel: ImportViewModel
     let account: Account
     let profileStore: ImportProfileStore
-    /// Called when staging actually begins (not when the user cancels a picker or wizard).
-    let onStarted: () -> Void
     @ViewBuilder let content: (ImportFlowActions) -> Content
 
     @State private var showFilePicker = false
@@ -98,12 +97,10 @@ struct ImportFlowHost<Content: View>: View {
     }
 
     private func startCSVStaging(_ url: URL) {
-        onStarted()
         Task { await viewModel.stageCSV(fileURL: url, account: account) }
     }
 
     private func startPDFStaging(lines: [String], config: PDFLayoutConfig, fileName: String) {
-        onStarted()
         Task { await viewModel.stagePDF(lines: lines, config: config, account: account, sourceFileName: fileName) }
     }
 
