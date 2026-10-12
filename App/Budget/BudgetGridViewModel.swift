@@ -51,6 +51,9 @@ final class BudgetGridViewModel: ObservableObject {
     private var lastHorizon: Date?
     /// Confirmed totals per category per pay month (`PayMonthTotals.lookup`).
     private var monthTotals: [Int64: [Int: [Int: Int]]] = [:]
+    /// The pay months each category has a transaction with a note in (`PayMonthTotals.noteMonths`),
+    /// for the cells' note markers; rebuilt with `monthTotals`.
+    private var noteMonths: [Int64: Set<PayMonth>] = [:]
     /// Remaining allowance per reserve id, memoised per `MonthRange.index` — the grid asks
     /// for every reserve cell on every render, and each month's answer scans every
     /// category's forecast. Cleared whenever categories, transactions or forecasts change.
@@ -99,6 +102,7 @@ final class BudgetGridViewModel: ObservableObject {
     private func rebuildPayMonths() {
         payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: manualCloses, today: Date())
         monthTotals = PayMonthTotals.lookup(transactions: transactions, calendar: payCalendar)
+        noteMonths = PayMonthTotals.noteMonths(transactions: transactions, calendar: payCalendar)
         reserveRemainingCache = [:]
         cellCache = [:]
         monthClassCache = [:]
@@ -202,8 +206,28 @@ final class BudgetGridViewModel: ObservableObject {
         }
     }
 
-    func transactions(forCategoryId categoryId: Int64, from startDate: Date, to endDate: Date) -> [Transaction] {
-        transactions.filter { $0.categoryId == categoryId && $0.status == .confirmed && $0.date >= startDate && $0.date <= endDate }
+    /// The confirmed transactions of any of `categoryIds` in `start...end` (a cell's side panel:
+    /// one category, or a group's or section's members).
+    func transactions(forCategoryIds categoryIds: Set<Int64>, from startDate: Date, to endDate: Date) -> [Transaction] {
+        transactions.filter { $0.categoryId.map(categoryIds.contains) == true && $0.status == .confirmed && $0.date >= startDate && $0.date <= endDate }
+    }
+
+    /// Whether any of `categories` has a transaction with a note in the pay month (a cell's
+    /// note marker; groups and sections pass their members).
+    func hasNote(_ categories: [Category], year: Int, month: Int) -> Bool {
+        let payMonth = PayMonth(year: year, month: month)
+        return categories.contains { category in category.id.map { noteMonths[$0]?.contains(payMonth) == true } ?? false }
+    }
+
+    /// Whether any of `categories` has a transaction with a note in any of the year's pay
+    /// months (a Year Total cell's marker).
+    func hasNote(_ categories: [Category], year: Int) -> Bool {
+        (1...12).contains { hasNote(categories, year: year, month: $0) }
+    }
+
+    /// Category names by id, for the side panel's per-transaction category.
+    var categoryNameById: [Int64: String] {
+        Dictionary(categories.compactMap { category in category.id.map { ($0, category.name) } }, uniquingKeysWith: { a, _ in a })
     }
 
     var reserves: [Category] { categories.filter(\.isReserved).sorted { $0.name < $1.name } }

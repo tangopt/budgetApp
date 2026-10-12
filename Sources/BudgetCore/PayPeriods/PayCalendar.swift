@@ -167,6 +167,18 @@ public enum PayMonthTotals {
         }
         return result
     }
+
+    /// The pay months, per category, holding at least one confirmed transaction with a
+    /// (non-empty) note — the same transactions `lookup` sums, for the grid's note markers.
+    public static func noteMonths(transactions: [Transaction], calendar: PayCalendar) -> [Int64: Set<PayMonth>] {
+        var result: [Int64: Set<PayMonth>] = [:]
+        for transaction in transactions {
+            guard transaction.status == .confirmed, let categoryId = transaction.categoryId,
+                  let note = transaction.note, !note.isEmpty else { continue }
+            result[categoryId, default: []].insert(calendar.month(containing: transaction.date))
+        }
+        return result
+    }
 }
 
 extension PayCalendar {

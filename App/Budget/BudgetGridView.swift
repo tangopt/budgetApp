@@ -22,7 +22,9 @@ struct BudgetGridView: View {
     /// Built only when "Export CSV…" is pressed: the export scans every
     /// category × pay month, so it must not be computed in `body`.
     @State private var exportDocument: CSVDocument?
-    @State private var drillDownTarget: GridDrillDownTarget?
+    /// The clicked cell whose side panel is open (spec §2). Plain `@State` like `scrollOffset`:
+    /// only the cells' outlines and the panel host observe it, so a click doesn't re-run `body`.
+    @State fileprivate var cellSelection = CellSelection<BudgetCellTarget>()
     /// Held in `@State` (not `@StateObject`/`@ObservedObject`) on purpose: this view must not
     /// observe it, or every horizontal scroll frame would re-run this whole `body`. Only the
     /// header's `HorizontalOffsetFollower` observes it.
@@ -71,7 +73,7 @@ struct BudgetGridView: View {
         viewModel.categories.filter { $0.type == type && !$0.isReserved }
     }
 
-    private enum GridRowKind: Identifiable {
+    fileprivate enum GridRowKind: Identifiable {
         /// `type` is nil for the Accounts header (no planned items, no totals).
         case sectionHeader(String, CategoryType?)
         case category(Category)
@@ -167,8 +169,8 @@ struct BudgetGridView: View {
             yearPicker
 
             // Close/reopen errors from the header menu (a failed Close month… shows in its
-            // sheet instead; the drill-down sheet shows Edit transaction errors itself).
-            if let error = viewModel.errorMessage, drillDownTarget == nil, closeTarget == nil, addPlannedTarget == nil, reserveSheet == nil, renamingReserve == nil {
+            // sheet instead), and "Saved, but…" after a side panel edit.
+            if let error = viewModel.errorMessage, closeTarget == nil, addPlannedTarget == nil, reserveSheet == nil, renamingReserve == nil {
                 HStack(alignment: .top) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
                     Text(error).foregroundStyle(.red)
@@ -180,133 +182,138 @@ struct BudgetGridView: View {
                 .padding(.horizontal)
             }
 
-            // spacing: 0 so the frozen header sits flush on the body, with no gap for
-            // scrolled rows to show through.
-            VStack(alignment: .leading, spacing: 0) {
-                // Frozen month-header row: lives outside the vertical scroll (so it never
-                // moves vertically), and mirrors the body's horizontal scroll offset (so it
-                // stays aligned with whichever columns are currently visible). The Year Total
-                // header is pinned on the right, outside the follower, like its column. The
-                // row takes the body's measured width, so the pinned Year Total header sits
-                // exactly over its column whatever the scroller style.
-                BodyWidthFollower(width: bodyWidth) {
-                    HStack(spacing: 0) {
-                        Text("Category").font(.headline).frame(width: 220, alignment: .leading)
-                            .padding(.horizontal, 8).padding(.vertical, 6)
-                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
-                        if let year = viewModel.selectedYear {
-                            HorizontalOffsetFollower(offset: scrollOffset) {
-                                HStack(spacing: 0) {
-                                    ForEach(1...12, id: \.self) { month in
-                                        let payMonth = PayMonth(year: year, month: month)
-                                        Text(Self.monthYearLabel(year: year, month: month))
-                                            .frame(width: GridMetrics.cellWidth, alignment: .trailing)
-                                            .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
-                                            .contentShape(Rectangle())
-                                            // Columns are pay months: the tooltip shows the real range.
-                                            .help(PayMonthFormat.range(viewModel.payCalendar.range(of: payMonth)))
-                                            .contextMenu { monthMenu(payMonth) }
-                                            .monthSeparator(month)
-                                    }
-                                }
-                            }
-                            // minWidth: 0 makes this frame take exactly the width it's offered
-                            // (what's left of the window after the Category and Year Total cells)
-                            // rather than growing to the 12 columns' full width, which would push
-                            // the whole screen wider than the window; the overflow is then clipped.
-                            // maxWidth matches the body's month scroller, so in a wide window the
-                            // Year Total sits right after December in both.
-                            .frame(minWidth: 0, maxWidth: GridMetrics.monthsWidth, alignment: .leading)
-                            .clipped()
-                        } else if isMultiYear {
-                            // Several years: each year's total, and after every year but the
-                            // first its change from the previous selected year. Clipped and
-                            // capped like the months, at however many columns there are.
-                            let years = viewModel.selectedYears
-                            HorizontalOffsetFollower(offset: scrollOffset) {
-                                HStack(spacing: 0) {
-                                    ForEach(Array(years.enumerated()), id: \.element) { index, year in
-                                        multiYearHeaderCell(String(year)).bold()
-                                            .yearGroupSeparator(index)
-                                        if index > 0 {
-                                            multiYearHeaderCell("Δ vs \(String(years[index - 1]))")
-                                            multiYearHeaderCell("%")
+            // The grid narrows while a cell's side panel is open beside it.
+            SidePanelHost(selection: cellSelection) {
+                // spacing: 0 so the frozen header sits flush on the body, with no gap for
+                // scrolled rows to show through.
+                VStack(alignment: .leading, spacing: 0) {
+                    // Frozen month-header row: lives outside the vertical scroll (so it never
+                    // moves vertically), and mirrors the body's horizontal scroll offset (so it
+                    // stays aligned with whichever columns are currently visible). The Year Total
+                    // header is pinned on the right, outside the follower, like its column. The
+                    // row takes the body's measured width, so the pinned Year Total header sits
+                    // exactly over its column whatever the scroller style.
+                    BodyWidthFollower(width: bodyWidth) {
+                        HStack(spacing: 0) {
+                            Text("Category").font(.headline).frame(width: 220, alignment: .leading)
+                                .padding(.horizontal, 8).padding(.vertical, 6)
+                                .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+                            if let year = viewModel.selectedYear {
+                                HorizontalOffsetFollower(offset: scrollOffset) {
+                                    HStack(spacing: 0) {
+                                        ForEach(1...12, id: \.self) { month in
+                                            let payMonth = PayMonth(year: year, month: month)
+                                            Text(Self.monthYearLabel(year: year, month: month))
+                                                .frame(width: GridMetrics.cellWidth, alignment: .trailing)
+                                                .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
+                                                .contentShape(Rectangle())
+                                                // Columns are pay months: the tooltip shows the real range.
+                                                .help(PayMonthFormat.range(viewModel.payCalendar.range(of: payMonth)))
+                                                .contextMenu { monthMenu(payMonth) }
+                                                .monthSeparator(month)
                                         }
                                     }
                                 }
-                            }
-                            .frame(minWidth: 0, maxWidth: scrollingWidth, alignment: .leading)
-                            .clipped()
-                        }
-                        if showsPinnedYearTotal {
-                            Text("Year Total").bold()
-                                .frame(width: GridMetrics.cellWidth, alignment: .trailing)
-                                .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
-                                .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .font(.headline)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .overlay(Rectangle().frame(height: 1.5).foregroundStyle(Color.primary.opacity(0.18)), alignment: .bottom)
-                // A frozen row that floats above the scrolling body reads better with a
-                // little elevation; kept as a constant subtle shadow rather than toggled by
-                // scroll position, to avoid adding a second scroll-tracked PreferenceKey purely
-                // for a decorative effect.
-                .shadow(color: .black.opacity(0.08), radius: 3, y: 2)
-
-                // Built once per render and shared by the label column and the cells.
-                let rows = allRows
-                ScrollView(.vertical) {
-                    HStack(alignment: .top, spacing: 0) {
-                        // Frozen category column: not inside any horizontal scroll, so it
-                        // never moves left/right; it rides this same vertical ScrollView as
-                        // the body, so it stays aligned with its own row.
-                        VStack(spacing: 0) {
-                            ForEach(rows) { entry in
-                                rowLabel(entry.kind, shaded: entry.shaded)
-                            }
-                        }
-                        // 236 = each label's 220pt frame + 8pt padding either side, matching
-                        // the header's "Category" cell so the month columns line up.
-                        .frame(width: 236, alignment: .leading)
-                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
-
-                        ScrollView(.horizontal) {
-                            VStack(alignment: .leading, spacing: 0) {
-                                ForEach(rows) { entry in
-                                    rowCells(entry.kind, shaded: entry.shaded)
-                                }
-                            }
-                        }
-                        // The header mirrors the content's offset (negated: content moves left).
-                        .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, x in scrollOffset.update(-x) }
-                        // No wider than its columns (the twelve months, or the multi-year
-                        // columns), so the pinned Year Total never floats away from December
-                        // in a wide window.
-                        .frame(maxWidth: scrollingWidth)
-
-                        // Frozen Year Total column, pinned on the right like the category
-                        // column on the left: outside the horizontal scroll, inside this
-                        // vertical one. Every cell has its row's fixed height (24/28pt), the
-                        // same as the label and month cells, so the three columns line up.
-                        if showsPinnedYearTotal {
-                            VStack(spacing: 0) {
-                                ForEach(rows) { entry in
-                                    if let year = viewModel.selectedYear {
-                                        yearTotalCell(entry.kind, year: year, shaded: entry.shaded)
+                                // minWidth: 0 makes this frame take exactly the width it's offered
+                                // (what's left of the window after the Category and Year Total cells)
+                                // rather than growing to the 12 columns' full width, which would push
+                                // the whole screen wider than the window; the overflow is then clipped.
+                                // maxWidth matches the body's month scroller, so in a wide window the
+                                // Year Total sits right after December in both.
+                                .frame(minWidth: 0, maxWidth: GridMetrics.monthsWidth, alignment: .leading)
+                                .clipped()
+                            } else if isMultiYear {
+                                // Several years: each year's total, and after every year but the
+                                // first its change from the previous selected year. Clipped and
+                                // capped like the months, at however many columns there are.
+                                let years = viewModel.selectedYears
+                                HorizontalOffsetFollower(offset: scrollOffset) {
+                                    HStack(spacing: 0) {
+                                        ForEach(Array(years.enumerated()), id: \.element) { index, year in
+                                            multiYearHeaderCell(String(year)).bold()
+                                                .yearGroupSeparator(index)
+                                            if index > 0 {
+                                                multiYearHeaderCell("Δ vs \(String(years[index - 1]))")
+                                                multiYearHeaderCell("%")
+                                            }
+                                        }
                                     }
                                 }
+                                .frame(minWidth: 0, maxWidth: scrollingWidth, alignment: .leading)
+                                .clipped()
                             }
-                            .frame(width: GridMetrics.columnWidth)
-                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
+                            if showsPinnedYearTotal {
+                                Text("Year Total").bold()
+                                    .frame(width: GridMetrics.cellWidth, alignment: .trailing)
+                                    .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
+                                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    // The width the rows get (less a legacy vertical scroller), for the header.
-                    .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { bodyWidth.update($0) }
+                    .font(.headline)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .overlay(Rectangle().frame(height: 1.5).foregroundStyle(Color.primary.opacity(0.18)), alignment: .bottom)
+                    // A frozen row that floats above the scrolling body reads better with a
+                    // little elevation; kept as a constant subtle shadow rather than toggled by
+                    // scroll position, to avoid adding a second scroll-tracked PreferenceKey purely
+                    // for a decorative effect.
+                    .shadow(color: .black.opacity(0.08), radius: 3, y: 2)
+
+                    // Built once per render and shared by the label column and the cells.
+                    let rows = allRows
+                    ScrollView(.vertical) {
+                        HStack(alignment: .top, spacing: 0) {
+                            // Frozen category column: not inside any horizontal scroll, so it
+                            // never moves left/right; it rides this same vertical ScrollView as
+                            // the body, so it stays aligned with its own row.
+                            VStack(spacing: 0) {
+                                ForEach(rows) { entry in
+                                    rowLabel(entry.kind, shaded: entry.shaded)
+                                }
+                            }
+                            // 236 = each label's 220pt frame + 8pt padding either side, matching
+                            // the header's "Category" cell so the month columns line up.
+                            .frame(width: 236, alignment: .leading)
+                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
+
+                            ScrollView(.horizontal) {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    ForEach(rows) { entry in
+                                        rowCells(entry.kind, shaded: entry.shaded)
+                                    }
+                                }
+                            }
+                            // The header mirrors the content's offset (negated: content moves left).
+                            .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, x in scrollOffset.update(-x) }
+                            // No wider than its columns (the twelve months, or the multi-year
+                            // columns), so the pinned Year Total never floats away from December
+                            // in a wide window.
+                            .frame(maxWidth: scrollingWidth)
+
+                            // Frozen Year Total column, pinned on the right like the category
+                            // column on the left: outside the horizontal scroll, inside this
+                            // vertical one. Every cell has its row's fixed height (24/28pt), the
+                            // same as the label and month cells, so the three columns line up.
+                            if showsPinnedYearTotal {
+                                VStack(spacing: 0) {
+                                    ForEach(rows) { entry in
+                                        if let year = viewModel.selectedYear {
+                                            yearTotalCell(entry.kind, year: year, shaded: entry.shaded)
+                                        }
+                                    }
+                                }
+                                .frame(width: GridMetrics.columnWidth)
+                                .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        // The width the rows get (less a legacy vertical scroller), for the header.
+                        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { bodyWidth.update($0) }
+                    }
                 }
+            } panel: { target in
+                BudgetCellPanel(target: target, viewModel: viewModel) { cellSelection.clear() }
             }
 
             if viewModel.selectedYears.contains(where: hasPending) {
@@ -329,11 +336,8 @@ struct BudgetGridView: View {
             }
         }
         .fileExporter(isPresented: $showExporter, document: exportDocument, contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
-        // onDismiss clears any Edit transaction error so it can't bleed into the next,
-        // unrelated drill-down.
-        .sheet(item: $drillDownTarget, onDismiss: { viewModel.errorMessage = nil }) { target in
-            GridDrillDownSheet(target: target, viewModel: viewModel)
-        }
+        // A panel's target belongs to the year it was opened in.
+        .onChange(of: viewModel.selectedYears) { _, _ in cellSelection.clear() }
         .sheet(item: $addPlannedTarget) { target in
             AddPlannedItemSheet(type: target.type, scope: .budget, categories: viewModel.categories, plannedEntries: viewModel.plannedEntries,
                                 initialCategoryId: target.categoryId, initialDate: target.date) { category, amount, frequency, interval, start, end in
@@ -722,6 +726,7 @@ struct BudgetGridView: View {
                         ForEach(1...12, id: \.self) { month in
                             planCell(viewModel.cell(members, year: year, month: month), font: Self.captionMoneyFont).bold()
                                 .frame(height: 24)
+                                .aggregateMonthCell(self, row: row, name: Self.sectionName(type), members: members, year: year, month: month)
                         }
                     } else {
                         ForEach(1...12, id: \.self) { _ in emptyBandCell }
@@ -730,7 +735,7 @@ struct BudgetGridView: View {
                 .background(Color.accentColor.opacity(0.08))
             }
         case .category(let category):
-            categoryCells(category, shaded: shaded)
+            categoryCells(row, category, shaded: shaded)
         case .reservedHeader:
             if viewModel.selectedYear != nil {
                 HStack(spacing: 0) {
@@ -749,6 +754,7 @@ struct BudgetGridView: View {
                             .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .monthSeparator(month)
+                            .overlay(SelectedCellOutline(selection: cellSelection, key: cellKey(row, month: month)))
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 guard !viewModel.occurrences(category: reserve, year: year, month: month).isEmpty else {
@@ -758,8 +764,9 @@ struct BudgetGridView: View {
                                     }
                                     return
                                 }
-                                drillDownTarget = .planned(title: "\(reserve.name) — \(Self.monthYearLabel(year: year, month: month))",
-                                                           plan: DrillDownPlan(category: reserve, year: year, month: month))
+                                var target = monthTarget(name: reserve.name, categories: [reserve], year: year, month: month)
+                                target.showsTransactions = false
+                                cellSelection.select(key: cellKey(row, month: month), target: target)
                             }
                     }
                 }
@@ -776,7 +783,7 @@ struct BudgetGridView: View {
                 }
                 .background(Color.purple.opacity(0.08))
             }
-        case .groupHeader(_, let categories):
+        case .groupHeader(let group, let categories):
             if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in
@@ -784,12 +791,13 @@ struct BudgetGridView: View {
                             .frame(height: 28)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .monthSeparator(month)
+                            .aggregateMonthCell(self, row: row, name: group.name, members: categories, year: year, month: month)
                     }
                 }
                 .background(Color.orange.opacity(0.10))
             }
         case .groupChild(let category):
-            categoryCells(category, shaded: shaded)
+            categoryCells(row, category, shaded: shaded)
         case .account(let account):
             if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
@@ -826,8 +834,10 @@ struct BudgetGridView: View {
         case .sectionHeader(_, let type):
             Group {
                 if let type {
-                    planCell(viewModel.yearCell(categoriesByType(type), year: year), isYearTotal: true, font: Self.captionMoneyFont).bold()
+                    let members = categoriesByType(type)
+                    planCell(viewModel.yearCell(members, year: year), isYearTotal: true, font: Self.captionMoneyFont).bold()
                         .frame(height: 24)
+                        .yearTotalCellPanel(self, row: row, name: Self.sectionName(type), members: members, year: year)
                 } else {
                     emptyBandCell
                 }
@@ -835,19 +845,13 @@ struct BudgetGridView: View {
             .background(Color.accentColor.opacity(0.08))
         case .category(let category), .groupChild(let category):
             // Nothing without an id, as `categoryCells` renders no months then.
-            if let categoryId = category.id {
+            if category.id != nil {
                 let yearCell = viewModel.yearCell([category], year: year)
                 planCell(yearCell, isYearTotal: true).bold()
                     .frame(height: 28)
                     .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                     .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        let range = viewModel.dateRange(forYear: year)
-                        let matching = viewModel.transactions(forCategoryId: categoryId, from: range.start, to: range.end)
-                        guard !matching.isEmpty else { return }
-                        drillDownTarget = .transactions(title: "\(category.name) — \(year)", transactions: matching, plan: nil)
-                    }
+                    .yearTotalCellPanel(self, row: row, name: category.name, members: [category], year: year)
             }
         case .reservedHeader:
             emptyBandCell
@@ -862,11 +866,12 @@ struct BudgetGridView: View {
                 .frame(height: 28)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .background(Color.purple.opacity(0.08))
-        case .groupHeader(_, let categories):
+        case .groupHeader(let group, let categories):
             planCell(viewModel.yearCell(categories, year: year), isYearTotal: true).bold()
                 .frame(height: 28)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .background(Color.orange.opacity(0.10))
+                .yearTotalCellPanel(self, row: row, name: group.name, members: categories, year: year)
         case .account(let account):
             // Year Total shows the year-end (December) balance rather than a sum —
             // summing 12 monthly balances isn't a meaningful figure for a balance row.
@@ -888,10 +893,10 @@ struct BudgetGridView: View {
     }
 
     /// A category's twelve month cells (for `.category` and `.groupChild`). A month cell
-    /// opens the drill-down (transactions plus planned occurrences) when it has a value or
+    /// opens the side panel (transactions plus planned occurrences) when it has a value or
     /// anything planned; an empty one in an open or future month opens Add planned item. Its Year Total (`yearTotalCell`) lists the year's transactions.
     @ViewBuilder
-    private func categoryCells(_ category: Category, shaded: Bool) -> some View {
+    private func categoryCells(_ row: GridRowKind, _ category: Category, shaded: Bool) -> some View {
         if let year = viewModel.selectedYear, let categoryId = category.id {
             HStack(spacing: 0) {
                 ForEach(1...12, id: \.self) { month in
@@ -901,6 +906,8 @@ struct BudgetGridView: View {
                         .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                         .monthSeparator(month)
+                        .noteMarker(viewModel.hasNote([category], year: year, month: month))
+                        .overlay(SelectedCellOutline(selection: cellSelection, key: cellKey(row, month: month)))
                         .contentShape(Rectangle())
                         .onTapGesture {
                             guard cell.value != 0 || !viewModel.occurrences(category: category, year: year, month: month).isEmpty else {
@@ -911,13 +918,63 @@ struct BudgetGridView: View {
                                 }
                                 return
                             }
-                            let range = viewModel.dateRange(forYear: year, month: month)
-                            let matching = viewModel.transactions(forCategoryId: categoryId, from: range.start, to: range.end)
-                            drillDownTarget = .transactions(title: "\(category.name) — \(Self.monthYearLabel(year: year, month: month))", transactions: matching,
-                                                            plan: DrillDownPlan(category: category, year: year, month: month))
+                            cellSelection.select(key: cellKey(row, month: month),
+                                                 target: monthTarget(name: category.name, categories: [category], year: year, month: month))
                         }
                 }
             }
+        }
+    }
+
+    // MARK: Side panel
+
+    /// A cell's selection key: its row and its month (or year) column.
+    fileprivate func cellKey(_ row: GridRowKind, month: Int) -> String { "\(row.id)|m\(month)" }
+    fileprivate func cellKey(_ row: GridRowKind, year: Int) -> String { "\(row.id)|y\(year)" }
+
+    /// A month cell's panel for `categories` (one category, or a group's or section's
+    /// members, which name each transaction's category): the pay month's transactions and the
+    /// calendar month's planned occurrences.
+    fileprivate func monthTarget(name: String, categories: [Category], year: Int, month: Int) -> BudgetCellTarget {
+        let range = viewModel.dateRange(forYear: year, month: month)
+        return BudgetCellTarget(title: "\(name) — \(Self.shortMonthYearLabel(year: year, month: month))", categoryIds: Set(categories.compactMap(\.id)),
+                                start: range.start, end: range.end, showCategory: categories.count > 1,
+                                plan: CellPlan(categories: categories, year: year, month: month))
+    }
+
+    /// A Year Total (or multi-year year column) cell's panel: the year's transactions only.
+    fileprivate func yearTarget(name: String, categories: [Category], year: Int, showCategory: Bool) -> BudgetCellTarget {
+        let range = viewModel.dateRange(forYear: year)
+        return BudgetCellTarget(title: "\(name) — \(year)", categoryIds: Set(categories.compactMap(\.id)),
+                                start: range.start, end: range.end, showCategory: showCategory, plan: nil)
+    }
+
+    /// Opens a group's or section's month panel when its members have any transaction or
+    /// planned occurrence there (an empty aggregate cell does nothing).
+    fileprivate func openAggregateMonth(_ row: GridRowKind, name: String, members: [Category], year: Int, month: Int) {
+        var target = monthTarget(name: name, categories: members, year: year, month: month)
+        let hasTransactions = !viewModel.transactions(forCategoryIds: target.categoryIds, from: target.start, to: target.end).isEmpty
+        guard hasTransactions || members.contains(where: { !viewModel.occurrences(category: $0, year: year, month: month).isEmpty }) else { return }
+        target.showCategory = true
+        cellSelection.select(key: cellKey(row, month: month), target: target)
+    }
+
+    /// Opens a Year Total's panel when the year has any of its transactions.
+    fileprivate func openYear(_ row: GridRowKind, name: String, members: [Category], year: Int) {
+        var showCategory = members.count > 1
+        if case .groupHeader = row { showCategory = true }
+        if case .sectionHeader = row { showCategory = true }
+        let target = yearTarget(name: name, categories: members, year: year, showCategory: showCategory)
+        guard !viewModel.transactions(forCategoryIds: target.categoryIds, from: target.start, to: target.end).isEmpty else { return }
+        cellSelection.select(key: cellKey(row, year: year), target: target)
+    }
+
+    /// A section header's name in a panel title ("Expenses — Oct 2026").
+    fileprivate static func sectionName(_ type: CategoryType) -> String {
+        switch type {
+        case .income: return "Income"
+        case .expense: return "Expenses"
+        case .transfer: return "Transfers"
         }
     }
 
@@ -978,20 +1035,45 @@ struct BudgetGridView: View {
         .padding(.horizontal, GridMetrics.cellPadding)
     }
 
-    private static func monthYearLabel(year: Int, month: Int) -> String {
+    /// "Oct 2026", for side panel titles.
+    private static func shortMonthYearLabel(year: Int, month: Int) -> String {
+        monthYearLabel(year: year, month: month, format: "MMM yyyy")
+    }
+
+    private static func monthYearLabel(year: Int, month: Int, format: String = "MMMM yyyy") -> String {
         var components = DateComponents()
         components.year = year; components.month = month; components.day = 1
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
         guard let date = calendar.date(from: components) else { return "\(month)/\(year)" }
         let formatter = DateFormatter()
-        formatter.dateFormat = "MMMM yyyy"
+        formatter.dateFormat = format
         formatter.timeZone = TimeZone(identifier: "UTC")
         return formatter.string(from: date)
     }
 }
 
 private extension View {
+    /// A group's or section's month cell: its note marker, outline and click-through to the
+    /// aggregate panel.
+    @MainActor
+    func aggregateMonthCell(_ grid: BudgetGridView, row: BudgetGridView.GridRowKind, name: String, members: [Category], year: Int, month: Int) -> some View {
+        noteMarker(grid.viewModel.hasNote(members, year: year, month: month))
+            .overlay(SelectedCellOutline(selection: grid.cellSelection, key: grid.cellKey(row, month: month)))
+            .contentShape(Rectangle())
+            .onTapGesture { grid.openAggregateMonth(row, name: name, members: members, year: year, month: month) }
+    }
+
+    /// A Year Total (or multi-year year) cell: its note marker, outline and click-through to
+    /// the year's transactions.
+    @MainActor
+    func yearTotalCellPanel(_ grid: BudgetGridView, row: BudgetGridView.GridRowKind, name: String, members: [Category], year: Int) -> some View {
+        noteMarker(grid.viewModel.hasNote(members, year: year))
+            .overlay(SelectedCellOutline(selection: grid.cellSelection, key: grid.cellKey(row, year: year)))
+            .contentShape(Rectangle())
+            .onTapGesture { grid.openYear(row, name: name, members: members, year: year) }
+    }
+
     /// A multi-year value cell's footprint, right-aligned like the month cells.
     func multiYearValueCell() -> some View {
         frame(width: GridMetrics.cellWidth, alignment: .trailing)

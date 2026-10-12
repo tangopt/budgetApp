@@ -122,6 +122,23 @@ final class PayCalendarTests: XCTestCase {
         XCTAssertEqual(lookup[7]?[2026]?[11], -50)
     }
 
+    func testPayMonthNotes() {
+        let c = make([d(2026, 9, 15), d(2026, 10, 15)])
+        func txn(_ day: Date, note: String?, cat: Int64?, status: TransactionStatus = .confirmed) -> Transaction {
+            var t = Transaction(importBatchId: 1, accountId: 1, date: day, rawDescription: "t", amountMinorUnits: -1, categoryId: cat, status: status, categorizedBy: .manual, fingerprint: "f")
+            t.note = note
+            return t
+        }
+        let notes = PayMonthTotals.noteMonths(transactions: [
+            txn(s(2026, 10, 15), note: "gift", cat: 7),
+            txn(s(2026, 10, 16), note: nil, cat: 7),
+            txn(s(2026, 10, 17), note: "", cat: 8),
+            txn(s(2026, 10, 10), note: "x", cat: nil),
+            txn(s(2026, 10, 10), note: "x", cat: 9, status: .pendingReview)
+        ], calendar: c)
+        XCTAssertEqual(notes, [7: [pm(2026, 10)]])
+    }
+
     func testNearbySalaryCreditsCollapseToFirst() {
         let c = make([d(2026, 10, 10), d(2026, 10, 15)])
         XCTAssertEqual(c.closeDate(of: pm(2026, 10)), d(2026, 10, 10))

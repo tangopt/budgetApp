@@ -174,15 +174,19 @@ extension View {
     }
 }
 
-/// The drill-down's "Planned" list for one category and calendar month: each occurrence's
-/// date, amount, frequency and whether it's confirmed. Unconfirmed occurrences offer Edit…
-/// and Remove…; the drill-down sheet owns the sheets and dialogs those open
-/// (`plannedOccurrenceEditing`).
+/// The drill-down's "Planned" list for one category (or a group/section's members) and
+/// calendar month: each occurrence's date, amount, frequency and whether it's confirmed.
+/// Unconfirmed occurrences offer Edit… and Remove…; the owner (the Budget side panel, the
+/// scenario lab's drill-down) owns the sheets and dialogs those open
+/// (`plannedOccurrenceEditing`). `compact` stacks each row on two lines for the narrow side
+/// panel; `categoryNameById`, when set, names each occurrence's category (aggregate rows).
 struct PlannedOccurrencesSection: View {
     let rows: [PlannedRow]
     /// A scenario's occurrences are only locked by a closed month: labelled "Open" /
     /// "Closed month" rather than "Unconfirmed" / "Confirmed".
     var inScenario = false
+    var compact = false
+    var categoryNameById: [Int64: String]? = nil
     let errorMessage: String?
     let onEdit: (PlannedRow) -> Void
     let onRemove: (PlannedRow) -> Void
@@ -196,26 +200,63 @@ struct PlannedOccurrencesSection: View {
                 Text("Nothing planned this month.").foregroundStyle(.secondary)
             }
             ForEach(rows) { row in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(PayMonthFormat.longDay(row.occurrence.date))
-                        Text(PlanFormat.frequency(row.entry.frequency, interval: row.entry.interval))
-                            .font(.caption).foregroundStyle(.secondary)
+                if compact {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(PayMonthFormat.longDay(row.occurrence.date))
+                            Spacer()
+                            MoneyText(minorUnits: row.occurrence.amountMinorUnits)
+                        }
+                        HStack {
+                            Text(caption(row))
+                                .font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Spacer()
+                            status(row)
+                        }
+                        if !row.isConfirmed {
+                            HStack {
+                                Spacer()
+                                Button("Edit…") { onEdit(row) }
+                                Button("Remove…") { onRemove(row) }
+                            }
+                            .controlSize(.small)
+                        }
                     }
-                    Spacer()
-                    MoneyText(minorUnits: row.occurrence.amountMinorUnits)
-                    Text(inScenario ? (row.isConfirmed ? "Closed month" : "Open") : (row.isConfirmed ? "Confirmed" : "Unconfirmed"))
-                        .font(.caption)
-                        .italic(!row.isConfirmed)
-                        .foregroundStyle(row.isConfirmed ? Color.secondary : Color.pending)
-                        .frame(width: 90, alignment: .trailing)
-                    if !row.isConfirmed {
-                        Button("Edit…") { onEdit(row) }
-                        Button("Remove…") { onRemove(row) }
+                    .padding(.vertical, 2)
+                } else {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(PayMonthFormat.longDay(row.occurrence.date))
+                            Text(caption(row))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        MoneyText(minorUnits: row.occurrence.amountMinorUnits)
+                        status(row)
+                            .frame(width: 90, alignment: .trailing)
+                        if !row.isConfirmed {
+                            Button("Edit…") { onEdit(row) }
+                            Button("Remove…") { onRemove(row) }
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// The frequency, plus " · <category>" when categories are named.
+    private func caption(_ row: PlannedRow) -> String {
+        let frequency = PlanFormat.frequency(row.entry.frequency, interval: row.entry.interval)
+        guard let categoryNameById else { return frequency }
+        return "\(frequency) · \(categoryNameById[row.occurrence.categoryId] ?? "")"
+    }
+
+    private func status(_ row: PlannedRow) -> some View {
+        Text(inScenario ? (row.isConfirmed ? "Closed month" : "Open") : (row.isConfirmed ? "Confirmed" : "Unconfirmed"))
+            .font(.caption)
+            .italic(!row.isConfirmed)
+            .foregroundStyle(row.isConfirmed ? Color.secondary : Color.pending)
     }
 }
 
