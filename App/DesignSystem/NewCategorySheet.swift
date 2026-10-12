@@ -12,11 +12,19 @@ struct NewCategoryDraft: Identifiable {
     let id = UUID()
     let name: String
     let type: CategoryType
+    /// Preselected group (the Categories screen's "Add category here").
+    var groupId: Int64? = nil
 
     /// The type follows the amount's sign: money in → income, otherwise expense.
     init(name: String, amountMinorUnits: Int?) {
         self.name = name
         self.type = (amountMinorUnits ?? 0) > 0 ? .income : .expense
+    }
+
+    init(name: String = "", type: CategoryType, groupId: Int64?) {
+        self.name = name
+        self.type = type
+        self.groupId = groupId
     }
 }
 
@@ -41,6 +49,7 @@ struct NewCategorySheet: View {
         self.onCreated = onCreated
         _name = State(initialValue: draft.name)
         _type = State(initialValue: draft.type)
+        _groupId = State(initialValue: draft.groupId)
     }
 
     private var sortedGroups: [CategoryGroup] {

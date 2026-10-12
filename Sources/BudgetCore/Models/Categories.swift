@@ -16,7 +16,27 @@ public enum CategoryCreationError: Error, Equatable, LocalizedError {
     }
 }
 
-/// Categories created on the spot from the category picker's "New category…" (spec §4).
+public enum CategoryEditError: Error, Equatable, LocalizedError {
+    case notFound
+    /// Delete refused: transactions or planned items (forecast entries) still use it.
+    case inUse(name: String, transactions: Int, plannedItems: Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notFound:
+            return "That category no longer exists."
+        case let .inUse(name, transactions, plannedItems):
+            var parts: [String] = []
+            if transactions > 0 { parts.append(transactions == 1 ? "1 transaction" : "\(transactions) transactions") }
+            if plannedItems > 0 { parts.append(plannedItems == 1 ? "1 planned item" : "\(plannedItems) planned items") }
+            let pronoun = transactions + plannedItems == 1 ? "it" : "them"
+            return "\(name) has \(parts.joined(separator: " and ")) — move or recategorise \(pronoun) first."
+        }
+    }
+}
+
+/// Categories created on the spot from the category picker's "New category…" (spec §4), and
+/// the Categories screen's rename / move / delete.
 public enum Categories {
     /// Inserts an assignable (never reserved) category named `name`, trimmed, of `type`, in
     /// the optional group. Names are unique ignoring case.
@@ -33,5 +53,40 @@ public enum Categories {
         var category = Category(name: trimmed, type: type, groupId: groupId)
         try category.insert(db)
         return category
+    }
+
+    /// Renames to `name`, trimmed; unique ignoring case (its own name in another case is fine).
+    public static func rename(db: Database, id: Int64, name: String) throws {
+        guard var category = try Category.fetchOne(db, key: id) else { throw CategoryEditError.notFound }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw CategoryCreationError.emptyName }
+        if let existing = try Category.fetchAll(db).first(where: { $0.id != id && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            throw CategoryCreationError.duplicateName(existing.name)
+        }
+        category.name = trimmed
+        try category.update(db, columns: ["name"])
+    }
+
+    /// Puts every category in `ids` into the group (nil = ungrouped). A group may hold
+    /// categories of any type.
+    public static func move(db: Database, ids: [Int64], toGroupId groupId: Int64?) throws {
+        if let groupId, try CategoryGroup.fetchOne(db, key: groupId) == nil {
+            throw CategoryCreationError.groupNotFound
+        }
+        guard !ids.isEmpty else { return }
+        try Category.filter(ids.contains(Column("id"))).updateAll(db, Column("groupId").set(to: groupId))
+    }
+
+    /// Deletes the category and the rules filing into it. Refused (`inUse`, with counts)
+    /// while any transaction or forecast entry — budget or scenario — refers to it.
+    public static func delete(db: Database, id: Int64) throws {
+        guard let category = try Category.fetchOne(db, key: id) else { throw CategoryEditError.notFound }
+        let transactions = try Transaction.filter(Column("categoryId") == id).fetchCount(db)
+        let planned = try ForecastEntry.filter(Column("categoryId") == id).fetchCount(db)
+        guard transactions == 0, planned == 0 else {
+            throw CategoryEditError.inUse(name: category.name, transactions: transactions, plannedItems: planned)
+        }
+        try Rule.filter(Column("categoryId") == id).deleteAll(db)
+        _ = try Category.deleteOne(db, key: id)
     }
 }

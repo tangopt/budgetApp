@@ -200,8 +200,9 @@ struct ContentView: View {
             Text("Nothing from this import has been saved yet. Unconfirmed transactions aren't saved either way.")
         }
         .onAppear {
-            // An Edit transaction save in the Budget grid can add or clear an uncategorised one.
+            // An Edit transaction save (Budget grid, Categories panel) can add or clear an uncategorised one.
             budgetGridViewModel.onTransactionEdited = { refreshUncategorizedCount() }
+            categoriesViewModel.onTransactionEdited = { refreshUncategorizedCount() }
             refreshSharedState()
         }
         .onChange(of: importViewModel.isStaging) { staging in
