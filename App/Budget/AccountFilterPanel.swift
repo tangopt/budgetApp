@@ -1,5 +1,6 @@
 // App/Budget/AccountFilterPanel.swift
 import SwiftUI
+import UniformTypeIdentifiers
 import BudgetCore
 
 /// The Budget grid's account filter (spec §7): a slim, collapsible column to the left of the
@@ -39,7 +40,7 @@ struct AccountFilterPanel: View {
                             viewModel.showAllAccounts()
                         }
                         .overlay { dropIndicator(isDropTargetingAll) }
-                        .dropDestination(for: String.self) { items, _ in
+                        .dropDestination(for: DraggedAccount.self) { items, _ in
                             drop(items, onto: nil)
                         } isTargeted: { isDropTargetingAll = $0 }
                         ForEach(viewModel.accounts) { account in
@@ -47,11 +48,11 @@ struct AccountFilterPanel: View {
                                 row(account.displayName, count: viewModel.transactionCountByAccount[id] ?? 0, ticked: viewModel.accountFilter.contains(id)) {
                                     viewModel.toggleAccountFilter(id)
                                 }
-                                .draggable(Self.dragPayload(id)) {
+                                .draggable(DraggedAccount(id: id)) {
                                     Text(account.displayName).padding(.horizontal, 8).padding(.vertical, 4)
                                 }
                                 .overlay { dropIndicator(dropTargetId == id) }
-                                .dropDestination(for: String.self) { items, _ in
+                                .dropDestination(for: DraggedAccount.self) { items, _ in
                                     drop(items, onto: id)
                                 } isTargeted: { targeted in
                                     if targeted { dropTargetId = id } else if dropTargetId == id { dropTargetId = nil }
@@ -87,22 +88,13 @@ struct AccountFilterPanel: View {
 
     // MARK: Reordering
 
-    private static let dragPrefix = "budget-account:"
-
-    private static func dragPayload(_ id: Int64) -> String { dragPrefix + String(id) }
-
-    private static func draggedId(_ items: [String]) -> Int64? {
-        guard let item = items.first, item.hasPrefix(dragPrefix) else { return nil }
-        return Int64(item.dropFirst(dragPrefix.count))
-    }
-
     /// Dropping on an account puts the dragged one in its place (before it when moving up,
     /// after it when moving down); on "All accounts" (`target` nil), first.
-    private func drop(_ items: [String], onto target: Int64?) -> Bool {
+    private func drop(_ items: [DraggedAccount], onto target: Int64?) -> Bool {
         dropTargetId = nil
         isDropTargetingAll = false
         let ids = viewModel.accounts.compactMap(\.id)
-        guard let dragged = Self.draggedId(items), let from = ids.firstIndex(of: dragged) else { return false }
+        guard let dragged = items.first?.id, let from = ids.firstIndex(of: dragged) else { return false }
         let to: Int
         if let target {
             guard let targetIndex = ids.firstIndex(of: target) else { return false }
@@ -123,23 +115,41 @@ struct AccountFilterPanel: View {
         }
     }
 
-    /// A tickable line: the name, then its transaction count.
+    /// A tickable line: the name, then its transaction count. A plain view with a tap
+    /// gesture rather than a `Button` (a button tracks the mouse, so `.draggable` on it may
+    /// never start a drag); exposed to accessibility as a button.
     private func row(_ name: String, count: Int, ticked: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: ticked ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(ticked ? Color.accentColor : Color.secondary)
-                Text(name).lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: 4)
-                Text(count.formatted())
-                    .font(.caption).monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(RoundedRectangle(cornerRadius: 5).fill(ticked ? Color.accentColor.opacity(0.12) : Color.clear))
-            .contentShape(Rectangle())
+        HStack(spacing: 6) {
+            Image(systemName: ticked ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(ticked ? Color.accentColor : Color.secondary)
+            Text(name).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 4)
+            Text(count.formatted())
+                .font(.caption).monospacedDigit()
+                .foregroundStyle(.secondary)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 5).fill(ticked ? Color.accentColor.opacity(0.12) : Color.clear))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: action)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(ticked ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction(.default, action)
         .help(name)
     }
+}
+
+/// The Budget panel's drag payload: an app-private type, so dropping an account row into a
+/// text field pastes nothing.
+struct DraggedAccount: Codable, Transferable {
+    let id: Int64
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .budgetAccount)
+    }
+}
+
+extension UTType {
+    /// Private to the app (no other app reads it); only used for in-app drags.
+    static let budgetAccount = UTType(exportedAs: "com.personal.budget.account-reference")
 }

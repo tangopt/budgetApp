@@ -23,11 +23,13 @@ public enum AccountOrdering {
     /// are SwiftUI's move offsets into it. The subset is reordered within the positions it
     /// already holds in the full order, so other accounts stay put; then every account is
     /// renumbered 0…n-1 (the first move thereby assigns an order to all of them, in the
-    /// order they were displayed). Unknown ids are ignored.
+    /// order they were displayed). Unknown ids are ignored; repeated ones count once.
     public static func move(db: Database, ids: [Int64], fromOffsets: IndexSet, toOffset: Int) throws {
         let all = sorted(try Account.fetchAll(db))
         let known = Set(all.compactMap(\.id))
-        let moved = moving(ids, fromOffsets: fromOffsets, toOffset: toOffset).filter(known.contains)
+        var seen = Set<Int64>()
+        // Repeated ids keep their first position after the move (one slot per account).
+        let moved = moving(ids, fromOffsets: fromOffsets, toOffset: toOffset).filter { known.contains($0) && seen.insert($0).inserted }
         let subset = Set(moved)
         var replacements = moved.makeIterator()
         let newOrder: [Int64] = all.compactMap(\.id).map { id in

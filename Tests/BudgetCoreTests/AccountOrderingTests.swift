@@ -85,6 +85,16 @@ final class AccountOrderingTests: XCTestCase {
         XCTAssertEqual(try orderedIds(m), [a, b])
     }
 
+    func testMoveDedupesRepeatedIdsKeepingFirstOccurrence() throws {
+        let m = try makeDB()
+        let (a, b, c) = try m.dbQueue.write { db in (try add(db, "A"), try add(db, "B"), try add(db, "C")) }
+        // A repeated: no account may be lost or listed twice.
+        try m.dbQueue.write { db in try AccountOrdering.move(db: db, ids: [a, a, b, c], fromOffsets: IndexSet(integer: 3), toOffset: 1) }
+        XCTAssertEqual(try orderedIds(m), [a, c, b])
+        let orders = try m.dbQueue.read { db in AccountOrdering.sorted(try Account.fetchAll(db)).map(\.sortOrder) }
+        XCTAssertEqual(orders, [0, 1, 2])
+    }
+
     // MARK: new accounts
 
     func testNewAccountHasNoOrderUntilAnyOrderExists() throws {
