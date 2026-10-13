@@ -175,11 +175,6 @@ final class BudgetGridViewModel: ObservableObject {
         accountFilter = []
     }
 
-    /// The selected accounts' names, in the accounts' order (the caption above the grid).
-    var filteredAccountNames: [String] {
-        accounts.filter { $0.id.map(accountFilter.contains) == true }.map(\.name)
-    }
-
     /// Account names by id, for the side panel's per-transaction account.
     var accountNameById: [Int64: String] {
         Dictionary(accounts.compactMap { account in account.id.map { ($0, account.name) } }, uniquingKeysWith: { a, _ in a })
@@ -245,6 +240,13 @@ final class BudgetGridViewModel: ObservableObject {
         let value = DashboardCalculator.yearEndNetWorth(input, year: year)
         yearEndCache[year] = .some(value)
         return value
+    }
+
+    /// `year`'s year-end net worth less the previous year's, in minor units (the year card's
+    /// "↑ £24,953"). Nil when either is missing.
+    func yearEndChange(_ year: Int) -> Int? {
+        guard let value = yearEndNetWorth(year), let previous = yearEndNetWorth(year - 1) else { return nil }
+        return value.valueMinorUnits - previous.valueMinorUnits
     }
 
     /// `year`'s year-end net worth against the previous year's, as a fraction of the previous

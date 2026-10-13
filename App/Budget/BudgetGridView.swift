@@ -183,18 +183,6 @@ struct BudgetGridView: View {
                 .padding(.horizontal)
             }
 
-            if viewModel.isAccountFiltered {
-                HStack(spacing: 6) {
-                    Image(systemName: "line.3.horizontal.decrease.circle.fill").foregroundStyle(Color.accentColor)
-                    Text("Showing actuals for \(viewModel.filteredAccountNames.formatted(.list(type: .and))) only")
-                    Spacer()
-                    Button("Show all accounts") { viewModel.showAllAccounts() }
-                        .buttonStyle(.borderless)
-                }
-                .font(.callout)
-                .padding(.horizontal)
-            }
-
             // The account filter on the left; the grid narrows while it, or a cell's side
             // panel on the right, is open beside it.
             HStack(alignment: .top, spacing: 0) {
@@ -459,7 +447,6 @@ struct BudgetGridView: View {
                     .buttonStyle(.plain)
                     .help("⌘-click to compare several years")
                 }
-                compareHintCard
             }
             // Vertical padding, not just horizontal: the selected chip's 2pt stroke sits
             // right at the row's own edge, and ScrollView sizes its cross-axis tightly to
@@ -470,45 +457,51 @@ struct BudgetGridView: View {
         }
     }
 
-    /// A year in the selector: the year, its year-end net worth (forecast to December for the
-    /// current year) and the change on the previous year-end.
+    /// A year in the selector, all the same size: the year (" forecast" after it while its
+    /// year-end is a forecast), its year-end net worth, and the change on the previous
+    /// year-end as "↑ £24,953 · 16.4%" ("—" without a previous year).
     private func yearCard(_ year: Int) -> some View {
         let selected = viewModel.selectedYears.contains(year)
         let yearEnd = viewModel.yearEndNetWorth(year)
+        let change = viewModel.yearEndChange(year)
         let percent = viewModel.yearEndChangePercent(year)
         return VStack(alignment: .leading, spacing: 2) {
-            Text(String(year)).font(.subheadline).bold()
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text(String(year)).font(.subheadline).bold()
+                if yearEnd?.isForecast == true {
+                    Text(" forecast").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
             if let yearEnd {
                 MoneyText(minorUnits: yearEnd.valueMinorUnits)
-                if yearEnd.isForecast {
-                    Text("forecast to Dec").font(.caption2).foregroundStyle(.secondary)
-                }
             } else {
                 Text("—").foregroundStyle(.secondary)
             }
-            if let percent {
-                Text("\(percent >= 0 ? "↑" : "↓") \(String(format: "%.1f", abs(percent) * 100))%")
-                    .font(.caption2)
-                    .foregroundStyle(percent >= 0 ? Color.green : Color.red)
+            if let change {
+                Text(Self.yearChangeText(change: change, percent: percent))
+                    .font(.caption2).monospacedDigit()
+                    .foregroundStyle(change >= 0 ? Color.green : Color.red)
+            } else {
+                Text("—").font(.caption2).foregroundStyle(.secondary)
             }
         }
+        .lineLimit(1)
         .padding(8)
-        .frame(minWidth: 96, alignment: .leading)
+        .frame(width: Self.yearCardSize.width, height: Self.yearCardSize.height, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Color.accentColor.opacity(0.15) : Color.clear))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(selected ? Color.accentColor : Color.secondary.opacity(0.3), lineWidth: selected ? 2 : 1))
     }
 
-    /// The row's last card: a non-interactive reminder of how to compare years.
-    private var compareHintCard: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Compare…").font(.subheadline).bold()
-            Text("⌘-click years").font(.caption2)
-        }
-        .foregroundStyle(.secondary)
-        .padding(8)
-        .frame(minWidth: 96, alignment: .leading)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
-        .allowsHitTesting(false)
+    /// Every year card's size: fits the largest content (three lines; a seven-figure net worth).
+    private static let yearCardSize = CGSize(width: 160, height: 66)
+
+    /// "↑ £24,953 · 16.4%" (whole pounds); the percent is left out when there is none (a
+    /// previous year-end of zero).
+    static func yearChangeText(change: Int, percent: Double?) -> String {
+        let arrow = change >= 0 ? "↑" : "↓"
+        let amount = DashboardFormat.pounds(abs(change))
+        guard let percent else { return "\(arrow) \(amount)" }
+        return "\(arrow) \(amount) · \(String(format: "%.1f", abs(percent) * 100))%"
     }
 
     @ViewBuilder

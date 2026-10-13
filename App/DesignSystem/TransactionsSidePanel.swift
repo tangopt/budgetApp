@@ -8,7 +8,7 @@ import struct BudgetCore.Transaction
 /// description, its note underneath, its transfer link ("↔ <account> · <date> · <amount>",
 /// spec §6), its account when `accountNameById` is given (the Budget grid's, spec §7), its
 /// category when `showCategory` (group and section rows), the amount and
-/// Edit… — newest first; then an optional `plannedSection` (a
+/// an Edit transaction (pencil) button — newest first; then an optional `plannedSection` (a
 /// `Section` for the panel's `List`).
 struct TransactionsSidePanel<Planned: View>: View {
     let title: String
@@ -114,8 +114,12 @@ struct TransactionsSidePanel<Planned: View>: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer()
-                Button("Edit…") { onEdit(transaction) }
-                    .controlSize(.small)
+                Button { onEdit(transaction) } label: {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.borderless)
+                .help("Edit transaction")
+                .accessibilityLabel("Edit transaction")
             }
         }
         .padding(.vertical, 2)

@@ -60,8 +60,15 @@ struct BodyWidthFollower<Content: View>: View {
         self.content = content()
     }
 
+    /// The measured width is applied inside a flexible `minWidth: 0` frame, so it is never a
+    /// *minimum*: a fixed `frame(width:)` alone made the last measurement the grid's minimum
+    /// width, so whenever the space shrank (the account panel opening, the side panel sliding in)
+    /// the window grew instead, and could never be resized back down.
     var body: some View {
-        content.frame(width: width.width, alignment: .leading)
+        content
+            .frame(width: width.width, alignment: .leading)
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .clipped()
     }
 }
 
