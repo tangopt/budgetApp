@@ -530,7 +530,10 @@ struct BudgetGridView: View {
             .padding(.horizontal, 8)
             .background(Color.accentColor.opacity(0.08))
         case .category(let category):
-            Text(category.name)
+            HStack(spacing: 6) {
+                CategoryBadge(category: category, size: .medium)
+                Text(category.name).lineLimit(1)
+            }
                 .frame(width: 220, height: 28, alignment: .leading)
                 .padding(.horizontal, 8)
                 .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
@@ -545,7 +548,10 @@ struct BudgetGridView: View {
             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
             .overlay(Rectangle().frame(width: 3).foregroundStyle(categories.first.map { rowColor(for: $0.type) } ?? .clear), alignment: .leading)
         case .groupChild(let category):
-            Text(category.name).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                CategoryBadge(category: category, size: .medium)
+                Text(category.name).foregroundStyle(.secondary).lineLimit(1)
+            }
                 .frame(width: 200, height: 28, alignment: .leading)
                 .padding(.leading, 28).padding(.trailing, 8)
                 .background(shaded ? Color.primary.opacity(0.07) : Color.clear)

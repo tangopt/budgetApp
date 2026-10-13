@@ -26,16 +26,21 @@ struct CategoryPickerButton: View {
     @State private var pendingDraft: NewCategoryDraft?
     @State private var newCategoryDraft: NewCategoryDraft?
 
-    private var selectedName: String? {
+    private var selectedCategory: Category? {
         guard let selection else { return nil }
-        return categories.first(where: { $0.id == selection })?.name
+        return categories.first(where: { $0.id == selection })
     }
+
+    private var selectedName: String? { selectedCategory?.name }
 
     var body: some View {
         Button {
             isPresented = true
         } label: {
             HStack(spacing: 4) {
+                if let selectedCategory {
+                    CategoryBadge(category: selectedCategory, size: .small)
+                }
                 Text(selectedName ?? placeholder)
                     .foregroundStyle(selectedName == nil ? .secondary : .primary)
                     .lineLimit(1)
@@ -119,6 +124,7 @@ struct CategoryPickerPopover: View {
         let sections = sections
         let entries = sections.flatMap(\.entries)
         let indexById = Dictionary(uniqueKeysWithValues: entries.enumerated().map { ($1.id, $0) })
+        let categoryById = Dictionary(categories.compactMap { c in c.id.map { ($0, c) } }, uniquingKeysWith: { a, _ in a })
         VStack(spacing: 0) {
             TextField("Search categories", text: $query)
                 .textFieldStyle(.roundedBorder)
@@ -167,7 +173,7 @@ struct CategoryPickerPopover: View {
                                 Divider().padding(.vertical, 4)
                             }
                             ForEach(section.entries) { entry in
-                                row(entry, index: indexById[entry.id] ?? 0)
+                                row(entry, index: indexById[entry.id] ?? 0, categoryById: categoryById)
                                     .id(entry.id)
                             }
                         }
@@ -224,19 +230,27 @@ struct CategoryPickerPopover: View {
         }
     }
 
-    private func row(_ entry: CategoryPickerEntry, index: Int) -> some View {
+    private func row(_ entry: CategoryPickerEntry, index: Int, categoryById: [Int64: Category]) -> some View {
         let isHighlighted = index == highlighted
         let isSelected = entry.action == .pick(selection)
         // "Show all categories" and "New category…" are actions, not categories.
         let isAction: Bool
+        let category: Category?
         switch entry.action {
-        case .pick: isAction = false
-        case .showAll, .newCategory: isAction = true
+        case .pick(let id):
+            isAction = false
+            category = id.flatMap { categoryById[$0] }
+        case .showAll, .newCategory:
+            isAction = true
+            category = nil
         }
         return Button {
             activate(entry)
         } label: {
-            HStack {
+            HStack(spacing: 6) {
+                if let category {
+                    CategoryBadge(category: category, size: .small)
+                }
                 Text(entry.title)
                     .foregroundStyle(isHighlighted ? Color.white : (isAction ? Color.accentColor : Color.primary))
                 Spacer()

@@ -47,7 +47,7 @@ struct BudgetCellPanel: View {
         TransactionsSidePanel(
             title: target.title,
             transactions: viewModel.transactions(forCategoryIds: target.categoryIds, from: target.start, to: target.end),
-            categoryNameById: viewModel.categoryNameById,
+            categoryById: viewModel.categoryById,
             showCategory: target.showCategory,
             accountNameById: viewModel.accountNameById,
             transfers: viewModel.transferCounterparts,

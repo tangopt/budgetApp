@@ -77,6 +77,15 @@ public enum Categories {
         try category.update(db, columns: ["name"])
     }
 
+    /// Sets the category's SF Symbol, trimmed; nil or blank clears it (back to the type's
+    /// generic symbol).
+    public static func setIcon(db: Database, id: Int64, iconName: String?) throws {
+        guard var category = try Category.fetchOne(db, key: id) else { throw CategoryEditError.notFound }
+        let trimmed = iconName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        category.iconName = trimmed.isEmpty ? nil : trimmed
+        try category.update(db, columns: ["iconName"])
+    }
+
     /// Puts every category in `ids` into the group (nil = ungrouped). A group may hold
     /// categories of any type.
     public static func move(db: Database, ids: [Int64], toGroupId groupId: Int64?) throws {

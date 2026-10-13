@@ -320,6 +320,11 @@ final class BudgetGridViewModel: ObservableObject {
         Dictionary(categories.compactMap { category in category.id.map { ($0, category.name) } }, uniquingKeysWith: { a, _ in a })
     }
 
+    /// Categories by id, for the side panel's per-transaction category badge and name.
+    var categoryById: [Int64: Category] {
+        Dictionary(categories.compactMap { category in category.id.map { ($0, category) } }, uniquingKeysWith: { a, _ in a })
+    }
+
     var reserves: [Category] { categories.filter(\.isReserved).sorted { $0.name < $1.name } }
 
     /// Reserves are forecast-only (`ReservedCategories.monthAllowances`): 0 in a closed pay

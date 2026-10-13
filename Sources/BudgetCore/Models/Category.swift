@@ -20,8 +20,11 @@ public struct Category: Codable, Equatable, Identifiable, FetchableRecord, Mutab
     /// A transfer category for money to or from an account that's never imported (spec §6):
     /// its transactions are never matched as transfers, so both directions count.
     public var isExternalTransfer: Bool
+    /// The SF Symbol the user chose for this category (`CategoryIcons`); nil shows the
+    /// type's generic symbol.
+    public var iconName: String?
 
-    public init(id: Int64? = nil, name: String, type: CategoryType, groupId: Int64? = nil, isReserved: Bool = false, excludeFromAutoForecast: Bool = false, isExternalTransfer: Bool = false) {
+    public init(id: Int64? = nil, name: String, type: CategoryType, groupId: Int64? = nil, isReserved: Bool = false, excludeFromAutoForecast: Bool = false, isExternalTransfer: Bool = false, iconName: String? = nil) {
         self.id = id
         self.name = name
         self.type = type
@@ -29,6 +32,7 @@ public struct Category: Codable, Equatable, Identifiable, FetchableRecord, Mutab
         self.isReserved = isReserved
         self.excludeFromAutoForecast = excludeFromAutoForecast
         self.isExternalTransfer = isExternalTransfer
+        self.iconName = iconName
     }
 
     /// Whether transactions and rules may be filed into this category.
@@ -39,4 +43,12 @@ public struct Category: Codable, Equatable, Identifiable, FetchableRecord, Mutab
     }
 
     public static let databaseTableName = "category"
+}
+
+func registerCategoryIconMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addCategoryIconName") { db in
+        try db.alter(table: "category") { t in
+            t.add(column: "iconName", .text)
+        }
+    }
 }

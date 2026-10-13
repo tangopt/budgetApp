@@ -147,6 +147,13 @@ final class CategoriesViewModel: ObservableObject {
         }
     }
 
+    /// The category's own icon; nil goes back to the type's generic one.
+    func setIcon(id: Int64, iconName: String?) {
+        write("Couldn't change the icon") { db in
+            try Categories.setIcon(db: db, id: id, iconName: iconName)
+        }
+    }
+
     /// "Money goes to an account you don't import — never match" (spec §6): turning it on
     /// unlinks the category's automatic transfer links.
     func setExternalTransfer(id: Int64, external: Bool) {

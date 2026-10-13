@@ -5,8 +5,8 @@ import struct BudgetCore.Category
 
 /// The Categories screen (spec §4): Expenses / Income / Transfers sections, each with its
 /// collapsible groups and Ungrouped, then the read-only Reserves. Categories multi-select
-/// and drag onto a group (or Ungrouped) to move; right-click to move, rename, exclude from
-/// the auto-forecast or delete. Selecting one category opens its transactions panel.
+/// and drag onto a group (or Ungrouped) to move; right-click to move, rename, change the
+/// icon (also by clicking its badge), exclude from the auto-forecast or delete. Selecting one category opens its transactions panel.
 struct CategoriesView: View {
     @ObservedObject var viewModel: CategoriesViewModel
 
@@ -27,6 +27,8 @@ struct CategoriesView: View {
     @State private var newCategoryDraft: NewCategoryDraft?
     @State private var renamingCategory: Category?
     @State private var deletingCategory: Category?
+    /// The category whose badge shows the icon picker.
+    @State private var iconPickerCategoryId: Int64?
 
     /// The one selected (non-reserve) category, whose panel is open.
     private var panelCategory: Category? {
@@ -147,7 +149,7 @@ struct CategoriesView: View {
                 Section {
                     ForEach(reserves) { reserve in
                         HStack {
-                            CategoryBadge(type: reserve.type, size: .medium, systemImage: "tray")
+                            CategoryBadge(category: reserve, size: .medium)
                             Text(reserve.name)
                             Spacer()
                         }
@@ -230,16 +232,24 @@ struct CategoriesView: View {
     private func categoryRow(_ category: Category) -> some View {
         let id = category.id ?? -1
         return HStack {
-            CategoryBadge(type: category.type, size: .medium, systemImage: category.type.symbolName)
+            Button { iconPickerCategoryId = id } label: {
+                CategoryBadge(category: category, size: .medium)
+            }
+            .buttonStyle(.plain)
+            .help("Change icon")
+            .popover(isPresented: iconPickerBinding(id), arrowEdge: .trailing) {
+                CategoryIconPicker(type: category.type, current: category.iconName) { iconName in
+                    iconPickerCategoryId = nil
+                    viewModel.setIcon(id: id, iconName: iconName)
+                }
+            }
             Text(category.name).lineLimit(1)
             if category.excludeFromAutoForecast {
-                Image(systemName: "wand.and.sparkles.inverse")
-                    .foregroundStyle(.secondary)
-                    .help("Excluded from auto-forecast")
+                flagLabel("No auto-forecast")
+                    .help("Not detected automatically for the plan")
             }
             if category.type == .transfer && category.isExternalTransfer {
-                Image(systemName: "arrow.up.forward.square")
-                    .foregroundStyle(.secondary)
+                flagLabel("Not matched")
                     .help("Money goes to an account you don't import — never matched as a transfer")
             }
             Spacer()
@@ -259,6 +269,25 @@ struct CategoriesView: View {
         }
     }
 
+    /// A small secondary note after a category's name (e.g. "No auto-forecast").
+    private func flagLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize()
+    }
+
+    /// Whether the icon picker is open on this category's badge.
+    private func iconPickerBinding(_ id: Int64) -> Binding<Bool> {
+        Binding(
+            get: { iconPickerCategoryId == id },
+            set: { isPresented in
+                if isPresented { iconPickerCategoryId = id } else if iconPickerCategoryId == id { iconPickerCategoryId = nil }
+            }
+        )
+    }
+
     /// Right-click on one or several categories (reserves aren't selectable, so never here).
     @ViewBuilder
     private func categoryMenu(_ ids: [Int64]) -> some View {
@@ -273,6 +302,10 @@ struct CategoriesView: View {
             }
             if chosen.count == 1, let category = chosen.first, let id = category.id {
                 Button("Rename…") { renamingCategory = category }
+                Button("Change icon…") {
+                    // Opened once the menu has closed, so the popover can anchor to the badge.
+                    DispatchQueue.main.async { iconPickerCategoryId = id }
+                }
                 if category.type == .expense {
                     Toggle("Exclude from auto-forecast", isOn: Binding(
                         get: { category.excludeFromAutoForecast },
@@ -337,16 +370,5 @@ enum CategoryDrag {
     static func ids(from payload: String) -> [Int64] {
         guard payload.hasPrefix(prefix) else { return [] }
         return payload.dropFirst(prefix.count).split(separator: ",").compactMap { Int64($0) }
-    }
-}
-
-extension CategoryType {
-    /// The Categories screen's row icon.
-    var symbolName: String {
-        switch self {
-        case .expense: return "arrow.up.right"
-        case .income: return "arrow.down.left"
-        case .transfer: return "arrow.left.arrow.right"
-        }
     }
 }

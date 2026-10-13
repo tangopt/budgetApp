@@ -2,18 +2,19 @@
 import SwiftUI
 import BudgetCore
 import struct BudgetCore.Transaction
+import struct BudgetCore.Category
 
 /// The right-hand side panel listing a cell's (or a category's) transactions (spec §2, §4):
 /// a title with ✕ (Escape also closes), the count and total, then each transaction — date,
 /// description, its note underneath, its transfer link ("↔ <account> · <date> · <amount>",
 /// spec §6), its account when `accountNameById` is given (the Budget grid's, spec §7), its
-/// category when `showCategory` (group and section rows), the amount and
+/// category (badge and name) when `showCategory` (group and section rows), the amount and
 /// an Edit transaction (pencil) button — newest first; then an optional `plannedSection` (a
 /// `Section` for the panel's `List`).
 struct TransactionsSidePanel<Planned: View>: View {
     let title: String
     let transactions: [Transaction]
-    var categoryNameById: [Int64: String] = [:]
+    var categoryById: [Int64: Category] = [:]
     var showCategory = false
     /// Account names by id: each row names its account when given.
     var accountNameById: [Int64: String] = [:]
@@ -27,14 +28,14 @@ struct TransactionsSidePanel<Planned: View>: View {
     let onEdit: (Transaction) -> Void
     let onClose: () -> Void
 
-    init(title: String, transactions: [Transaction], categoryNameById: [Int64: String] = [:], showCategory: Bool = false,
+    init(title: String, transactions: [Transaction], categoryById: [Int64: Category] = [:], showCategory: Bool = false,
          accountNameById: [Int64: String] = [:],
          transfers: [Int64: [TransferCounterpart]] = [:], showsTransactions: Bool = true, accessory: AnyView? = nil,
          @ViewBuilder plannedSection: @escaping () -> Planned,
          onEdit: @escaping (Transaction) -> Void, onClose: @escaping () -> Void) {
         self.title = title
         self.transactions = transactions
-        self.categoryNameById = categoryNameById
+        self.categoryById = categoryById
         self.showCategory = showCategory
         self.accountNameById = accountNameById
         self.transfers = transfers
@@ -109,10 +110,24 @@ struct TransactionsSidePanel<Planned: View>: View {
                     .lineLimit(1)
                     .help("Transfer between your accounts: counted once, as sent")
             }
-            HStack {
+            HStack(spacing: 4) {
                 Text(caption(transaction))
                     .font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .layoutPriority(1)
+                if showCategory {
+                    Text("·").font(.caption).foregroundStyle(.secondary)
+                    if let category = transaction.categoryId.flatMap({ categoryById[$0] }) {
+                        CategoryBadge(category: category, size: .small)
+                        Text(category.name)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else {
+                        Text("Uncategorized")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
                 Spacer()
                 Button { onEdit(transaction) } label: {
                     Image(systemName: "pencil")
@@ -125,22 +140,21 @@ struct TransactionsSidePanel<Planned: View>: View {
         .padding(.vertical, 2)
     }
 
-    /// "12 Oct 2026", plus " · Lloyds Classic" when accounts are named and " · Groceries"
-    /// when the category is shown.
+    /// "12 Oct 2026", plus " · Lloyds Classic" when accounts are named (the category, when
+    /// shown, follows with its badge).
     private func caption(_ transaction: Transaction) -> String {
         var parts = [transaction.date.formatted(date: .abbreviated, time: .omitted)]
         if let account = accountNameById[transaction.accountId] { parts.append(account) }
-        if showCategory { parts.append(transaction.categoryId.flatMap { categoryNameById[$0] } ?? "Uncategorized") }
         return parts.joined(separator: " · ")
     }
 }
 
 extension TransactionsSidePanel where Planned == EmptyView {
     /// No planned section (e.g. a Year Total, or the Categories screen).
-    init(title: String, transactions: [Transaction], categoryNameById: [Int64: String] = [:], showCategory: Bool = false,
+    init(title: String, transactions: [Transaction], categoryById: [Int64: Category] = [:], showCategory: Bool = false,
          transfers: [Int64: [TransferCounterpart]] = [:], accessory: AnyView? = nil,
          onEdit: @escaping (Transaction) -> Void, onClose: @escaping () -> Void) {
-        self.init(title: title, transactions: transactions, categoryNameById: categoryNameById, showCategory: showCategory,
+        self.init(title: title, transactions: transactions, categoryById: categoryById, showCategory: showCategory,
                   transfers: transfers, accessory: accessory, plannedSection: { EmptyView() }, onEdit: onEdit, onClose: onClose)
     }
 }
