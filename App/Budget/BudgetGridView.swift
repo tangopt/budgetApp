@@ -479,7 +479,8 @@ struct BudgetGridView: View {
             } else {
                 Text("—").foregroundStyle(.secondary)
             }
-            if let change {
+            // No change (or less than shows in whole pounds) reads "—", not a green "↑ £0".
+            if let change, DashboardFormat.pounds(abs(change)) != DashboardFormat.pounds(0) {
                 Text(Self.yearChangeText(change: change, percent: percent))
                     .font(.caption2).monospacedDigit()
                     .foregroundStyle(change >= 0 ? Color.green : Color.red)

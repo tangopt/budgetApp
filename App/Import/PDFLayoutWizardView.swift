@@ -19,7 +19,7 @@ struct PDFLayoutWizardView: View {
         SheetScaffold(title: "PDF layout — \(account.displayName)",
                       subtitle: "Paste the sample lines below into a regex with 3 capture groups: date, description, amount. Lines ending 'CR' are treated as credits, everything else as a debit.",
                       width: 520, onCancel: { dismiss() },
-                      primary: SheetAction("Save layout") {
+                      primary: SheetAction("Save layout", isDefault: false) {
                           guard let config = try? PDFLayoutConfig(regexPattern: regexPattern, dateFormat: dateFormat).encoded() else { return }
                           let profile = ImportProfile(accountId: account.id!, format: .pdf, pdfLayoutConfig: config)
                           onSave(profile)

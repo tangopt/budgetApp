@@ -17,11 +17,15 @@ enum SheetMetrics {
 struct SheetAction {
     let title: String
     var isEnabled = true
+    /// Whether Return presses it (`.defaultAction`). False where Return belongs to the
+    /// content (the PDF layout's fields refresh the preview).
+    var isDefault = true
     let action: () -> Void
 
-    init(_ title: String, isEnabled: Bool = true, action: @escaping () -> Void) {
+    init(_ title: String, isEnabled: Bool = true, isDefault: Bool = true, action: @escaping () -> Void) {
         self.title = title
         self.isEnabled = isEnabled
+        self.isDefault = isDefault
         self.action = action
     }
 }
@@ -102,15 +106,23 @@ struct SheetFooter: View {
             if let primary {
                 cancelButton
                 Spacer(minLength: 0)
-                Button(primary.title, action: primary.action)
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!primary.isEnabled)
+                if primary.isDefault {
+                    primaryButton(primary)
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    primaryButton(primary)
+                }
             } else {
                 Spacer(minLength: 0)
                 cancelButton
             }
         }
+    }
+
+    private func primaryButton(_ primary: SheetAction) -> some View {
+        Button(primary.title, action: primary.action)
+            .buttonStyle(.borderedProminent)
+            .disabled(!primary.isEnabled)
     }
 
     private var cancelButton: some View {

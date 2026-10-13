@@ -16,6 +16,8 @@ struct AddAccountSheet: View {
     @State private var balanceText = ""
     @State private var asOf = Date()
     @State private var details = AccountDetailsDraft()
+    /// Set when Save is pressed with invalid details: every field shows its error.
+    @State private var revealErrors = false
     @State private var error: String?
 
     private var trimmedBalance: String { balanceText.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -24,10 +26,12 @@ struct AddAccountSheet: View {
     private var canSave: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !balanceInvalid && details.isValid
     }
+    /// Save stays pressable once there's a name, so pressing it can say what's wrong.
+    private var canPressSave: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         SheetScaffold(title: "Add account", error: error, onCancel: { dismiss() },
-                      primary: SheetAction("Add account", isEnabled: canSave, action: save)) {
+                      primary: SheetAction("Add account", isEnabled: canPressSave, action: save)) {
             SheetForm {
                 LabeledContent("Name") { TextField("Name", text: $name) }
                 LabeledContent("Currency") {
@@ -40,6 +44,7 @@ struct AddAccountSheet: View {
                 LabeledContent("Tracking") { TrackingPicker(selection: $trackingMode) }
                 LabeledContent(kind == .credit ? "Amount owed" : "Opening balance") {
                     MoneyField("Optional", text: $balanceText, currency: currency)
+                        .onChange(of: balanceText) { _, _ in error = nil }
                         .sheetFieldNote(kind == .credit ? "Enter what you owe on the card as a positive number." : nil)
                 }
                 if !trimmedBalance.isEmpty {
@@ -48,13 +53,17 @@ struct AddAccountSheet: View {
                             .fixedSize()
                     }
                 }
-                AccountDetailsFields(draft: $details)
+                AccountDetailsFields(draft: $details, revealAll: revealErrors)
             }
         }
     }
 
     private func save() {
-        guard canSave else { return }
+        guard canSave else {
+            revealErrors = true
+            if balanceInvalid { error = MoneyField.invalidAmountMessage(balanceText) }
+            return
+        }
         let balance = trimmedBalance.isEmpty ? nil : openingBalance
         finish(viewModel.addAccount(name: name, currency: currency, kind: kind, trackingMode: trackingMode, openingBalanceEntered: balance, asOf: AccountsFormat.snapshotDay(asOf), details: details.details), error: $error, dismiss: dismiss)
     }
@@ -72,6 +81,8 @@ struct EditAccountSheet: View {
     @State private var trackingMode: AccountTrackingMode
     @State private var details: AccountDetailsDraft
     @State private var hasHistory = true
+    /// Set when Save is pressed with invalid details: every field shows its error.
+    @State private var revealErrors = false
     @State private var error: String?
 
     init(viewModel: AccountsViewModel, account: Account) {
@@ -88,13 +99,15 @@ struct EditAccountSheet: View {
         (account.kind == .credit) != (candidate == .credit)
     }
 
-    private var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(hasHistory && crossesCredit(kind)) && details.isValid
+    private var canSave: Bool { canPressSave && details.isValid }
+    /// Save stays pressable while only the bank details are invalid, so pressing it can say why.
+    private var canPressSave: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(hasHistory && crossesCredit(kind))
     }
 
     var body: some View {
         SheetScaffold(title: "Edit account", error: error, onCancel: { dismiss() },
-                      primary: SheetAction("Save", isEnabled: canSave, action: save)) {
+                      primary: SheetAction("Save", isEnabled: canPressSave, action: save)) {
             SheetForm {
                 LabeledContent("Name") { TextField("Name", text: $name) }
                 LabeledContent("Currency", value: account.currency.rawValue.uppercased())
@@ -103,7 +116,7 @@ struct EditAccountSheet: View {
                         .sheetFieldNote(hasHistory ? "Can't change to or from credit once the account has history." : nil)
                 }
                 LabeledContent("Tracking") { TrackingPicker(selection: $trackingMode) }
-                AccountDetailsFields(draft: $details)
+                AccountDetailsFields(draft: $details, revealAll: revealErrors)
             }
         }
         .onAppear {
@@ -112,7 +125,11 @@ struct EditAccountSheet: View {
     }
 
     private func save() {
-        guard canSave, let id = account.id else { return }
+        guard canSave else {
+            revealErrors = true
+            return
+        }
+        guard let id = account.id else { return }
         finish(viewModel.updateAccount(id: id, name: name, kind: kind, trackingMode: trackingMode, details: details.details), error: $error, dismiss: dismiss)
     }
 }
@@ -152,10 +169,11 @@ struct AccountDetailsDraft: Equatable {
 
 /// Alias, sort code, account number and IBAN rows for a `SheetForm`. A field's validation
 /// error shows once the field has lost focus or Return was pressed in it — not while it is
-/// being typed in (an edit hides it again until then). The sheet keeps Save disabled while
-/// any field is invalid (`AccountDetailsDraft.isValid`).
+/// being typed in (an edit hides it again until then) — or, with `revealAll`, always (Save
+/// was pressed while a field is invalid; the sheet doesn't save then).
 struct AccountDetailsFields: View {
     @Binding var draft: AccountDetailsDraft
+    var revealAll = false
 
     private enum Field: Hashable { case sortCode, accountNumber, iban }
 
@@ -189,7 +207,7 @@ struct AccountDetailsFields: View {
         TextField(prompt, text: text, prompt: Text(prompt))
             .focused($focused, equals: field)
             .onSubmit { revealed.insert(field) }
-            .sheetFieldNote(revealed.contains(field) ? error : nil, isError: true)
+            .sheetFieldNote(revealAll || revealed.contains(field) ? error : nil, isError: true)
     }
 }
 
