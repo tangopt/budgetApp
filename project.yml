@@ -12,6 +12,13 @@ targets:
     sources: [App]
     dependencies:
       - package: BudgetCore
+    info:
+      path: App/Info.plist
+      properties:
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.personal.budget.account-reference
+            UTTypeDescription: Budget account reference
+            UTTypeConformsTo: [public.data]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.personal.budget
