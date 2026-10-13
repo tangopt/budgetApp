@@ -11,9 +11,12 @@ public struct CategorySection: Identifiable, Equatable {
     /// A group's members of this section's type (a group may hold any type, so a mixed
     /// group shows in each section it has members in).
     public struct GroupBlock: Identifiable, Equatable {
+        public let type: CategoryType
         public let group: CategoryGroup
         public let categories: [Category]
-        public var id: Int64 { group.id ?? -1 }
+        /// Unique per section ("<type>-<group id>"): a mixed group appears in several sections
+        /// of one List, so the bare group id would be a duplicate row identity.
+        public var id: String { "\(type.rawValue)-\(group.id ?? -1)" }
     }
 }
 
@@ -47,7 +50,7 @@ public enum CategorySections {
                 let members = ofType.filter { $0.groupId == group.id && (groupMatches || matches($0.name)) }
                 let showsEmpty = type == .expense && !occupied.contains(group.id!) && groupMatches
                 if members.isEmpty && !showsEmpty { return nil }
-                return CategorySection.GroupBlock(group: group, categories: members)
+                return CategorySection.GroupBlock(type: type, group: group, categories: members)
             }
             let ungrouped = ofType.filter { ($0.groupId.map { !groupIds.contains($0) } ?? true) && (!searching || matches($0.name)) }
             if searching && blocks.isEmpty && ungrouped.isEmpty { return nil }

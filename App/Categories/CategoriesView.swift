@@ -123,7 +123,7 @@ struct CategoriesView: View {
             ForEach(viewModel.sections(search: search)) { section in
                 Section(section.title) {
                     ForEach(section.groups) { block in
-                        let key = "\(section.type.rawValue)-\(block.id)"
+                        let key = block.id
                         DisclosureGroup(isExpanded: expanded(key, forced: searching)) {
                             ForEach(block.categories) { categoryRow($0) }
                         } label: {

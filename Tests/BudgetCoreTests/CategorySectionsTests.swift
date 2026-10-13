@@ -27,6 +27,15 @@ final class CategorySectionsTests: XCTestCase {
 
     private func names(_ list: [Category]) -> [String] { list.map(\.name) }
 
+    func testMixedGroupBlocksHaveDistinctIdsAcrossSections() {
+        let sections = build()
+        let ids = sections.flatMap(\.groups).map(\.id)
+        XCTAssertEqual(Set(ids).count, ids.count)
+        let homeIds = sections.flatMap(\.groups).filter { $0.group.id == 1 }.map(\.id)
+        XCTAssertEqual(homeIds.count, 2)
+        XCTAssertEqual(Set(homeIds).count, 2)
+    }
+
     func testSectionsByTypeWithSortedGroupsThenUngrouped() {
         let sections = build()
         XCTAssertEqual(sections.map(\.type), [.expense, .income, .transfer])
