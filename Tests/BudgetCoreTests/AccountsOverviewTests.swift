@@ -81,10 +81,17 @@ final class AccountsOverviewTests: XCTestCase {
         XCTAssertNil(o.changeVsPreviousMonthGBP)
     }
 
-    func testEqualBalancesBreakTiesByDisplayName() {
+    func testRowsAreAlphabeticalByDisplayNameNotBalance() {
         var zed = acct(1, "Zed Bank")
         zed.alias = "Alpha"
-        let o = AccountsOverview.make(accounts: [acct(2, "Beta"), zed], snapshots: [snap(1, day(2026, 10, 1), 100), snap(2, day(2026, 10, 1), 100)], transactions: [], rate: rate, today: today)
+        let o = AccountsOverview.make(accounts: [acct(2, "Beta"), zed], snapshots: [snap(1, day(2026, 10, 1), 100), snap(2, day(2026, 10, 1), 900)], transactions: [], rate: rate, today: today)
         XCTAssertEqual(o.groups.first?.rows.map(\.id), [1, 2])
+    }
+
+    func testRowsFollowStoredOrder() {
+        var alpha = acct(1, "Alpha"); alpha.sortOrder = 1
+        var beta = acct(2, "Beta"); beta.sortOrder = 0
+        let o = AccountsOverview.make(accounts: [alpha, beta, acct(3, "Aardvark")], snapshots: [], transactions: [], rate: rate, today: today)
+        XCTAssertEqual(o.groups.first?.rows.map(\.id), [2, 1, 3])
     }
 }

@@ -17,7 +17,9 @@ struct AccountsView: View {
                 banners(overview)
                 HStack(alignment: .top, spacing: 16) {
                     VStack(alignment: .leading, spacing: 8) {
-                        AccountsListView(groups: overview.groups, selection: $viewModel.selectedAccountId)
+                        AccountsListView(groups: overview.groups, selection: $viewModel.selectedAccountId) { group, from, to in
+                            viewModel.moveAccounts(ids: group.rows.map(\.id), fromOffsets: from, toOffset: to)
+                        }
                         footer
                     }
                     .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -195,6 +197,8 @@ private struct Banner<Content: View>: View {
 private struct AccountsListView: View {
     let groups: [AccountGroup]
     @Binding var selection: Int64?
+    /// A drag within a section (accounts reorder within their kind).
+    let onMove: (AccountGroup, IndexSet, Int) -> Void
 
     var body: some View {
         List(selection: $selection) {
@@ -203,6 +207,7 @@ private struct AccountsListView: View {
                     ForEach(group.rows) { row in
                         AccountListRow(row: row).tag(row.id)
                     }
+                    .onMove { from, to in onMove(group, from, to) }
                 } header: {
                     HStack(spacing: 4) {
                         Text("\(AccountsFormat.kind(group.kind)) ·")

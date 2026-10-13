@@ -44,7 +44,7 @@ final class AccountsViewModel: ObservableObject {
             let (accounts, snapshots, transactions, rate) = try dbQueue.read { db in
                 (try Account.fetchAll(db), try BalanceSnapshot.fetchAll(db), try Transaction.fetchAll(db), try ExchangeRateSetting.currentOrDefault(db: db))
             }
-            self.accounts = accounts
+            self.accounts = accounts.sortedForDisplay()
             self.snapshots = snapshots
             self.rate = rate
             let overview = AccountsOverview.make(accounts: accounts, snapshots: snapshots, transactions: transactions, rate: rate, today: Date())
@@ -78,6 +78,19 @@ final class AccountsViewModel: ObservableObject {
         perform { db in
             try AccountEditing.update(db: db, accountId: id, name: name, kind: kind, trackingMode: trackingMode, details: details)
         }
+    }
+
+    /// Drag and drop within one kind's section: `ids` are that section's accounts in their
+    /// displayed order. Saves the shared order (`AccountOrdering`) and reloads; a failure
+    /// shows in the banner.
+    func moveAccounts(ids: [Int64], fromOffsets: IndexSet, toOffset: Int) {
+        do {
+            try dbQueue.write { db in try AccountOrdering.move(db: db, ids: ids, fromOffsets: fromOffsets, toOffset: toOffset) }
+        } catch {
+            errorMessage = "Couldn't reorder accounts: \(error.localizedDescription)"
+            return
+        }
+        load()
     }
 
     func hasHistory(_ id: Int64) -> Bool {

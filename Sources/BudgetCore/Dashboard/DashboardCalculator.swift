@@ -50,14 +50,13 @@ public enum DashboardCalculator {
 
     // MARK: Accounts
 
-    /// Every account, largest GBP balance first (a credit account owed money sorts last).
+    /// Every account, in `AccountOrdering` order.
     public static func accountSummaries(_ input: DashboardInput) -> [AccountSummary] {
-        NetWorthCalculator.accountBalances(accounts: input.accounts, snapshots: input.snapshots, transactions: input.transactions, rate: input.rate)
+        NetWorthCalculator.accountBalances(accounts: AccountOrdering.sorted(input.accounts), snapshots: input.snapshots, transactions: input.transactions, rate: input.rate)
             .compactMap { balance -> AccountSummary? in
                 guard let id = balance.account.id else { return nil }
                 return AccountSummary(id: id, name: balance.account.displayName, kind: balance.account.kind, currency: balance.account.currency, nativeBalanceMinorUnits: balance.nativeBalanceMinorUnits, gbpBalanceMinorUnits: balance.gbpBalanceMinorUnits)
             }
-            .sorted { $0.gbpBalanceMinorUnits > $1.gbpBalanceMinorUnits }
     }
 
     // MARK: Upcoming bills

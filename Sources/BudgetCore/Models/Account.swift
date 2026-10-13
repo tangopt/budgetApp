@@ -26,9 +26,12 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     public var accountNumber: String?
     /// Uppercase, no spaces (shown in groups of 4).
     public var iban: String?
+    /// The user's drag-and-drop position (`AccountOrdering`); nil until the first reorder.
+    /// Ordered accounts list first, ascending; the rest follow alphabetically.
+    public var sortOrder: Int?
 
     public init(id: Int64? = nil, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode,
-                alias: String? = nil, sortCode: String? = nil, accountNumber: String? = nil, iban: String? = nil) {
+                alias: String? = nil, sortCode: String? = nil, accountNumber: String? = nil, iban: String? = nil, sortOrder: Int? = nil) {
         self.id = id
         self.name = name
         self.currency = currency
@@ -38,6 +41,7 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
         self.sortCode = sortCode
         self.accountNumber = accountNumber
         self.iban = iban
+        self.sortOrder = sortOrder
     }
 
     /// What the UI calls the account: the alias when set, otherwise the full name. `name`
@@ -86,9 +90,22 @@ func registerAccountDetailsMigration(_ migrator: inout DatabaseMigrator) {
     }
 }
 
+func registerAccountSortOrderMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addAccountSortOrder") { db in
+        try db.alter(table: "account") { t in
+            t.add(column: "sortOrder", .integer)
+        }
+    }
+}
+
 extension Sequence where Element == Account {
     /// The accounts in `Account.displayNameOrder`.
     public func sortedByDisplayName() -> [Account] {
         sorted(by: Account.displayNameOrder)
+    }
+
+    /// The accounts in the order the UI lists them (`AccountOrdering`).
+    public func sortedForDisplay() -> [Account] {
+        AccountOrdering.sorted(Array(self))
     }
 }

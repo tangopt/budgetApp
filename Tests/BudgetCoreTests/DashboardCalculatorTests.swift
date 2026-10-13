@@ -99,18 +99,18 @@ final class DashboardCalculatorTests: XCTestCase {
 
     // MARK: accounts
 
-    func testAccountSummariesAreSortedLargestFirstWithGBPConversion() {
+    func testAccountSummariesFollowAccountOrderWithGBPConversion() {
         let accounts = [
             Account(id: 1, name: "Current", currency: .gbp, kind: .cash, trackingMode: .manual),
             Account(id: 2, name: "Card", currency: .gbp, kind: .credit, trackingMode: .manual),
             Account(id: 3, name: "EUR", currency: .eur, kind: .cash, trackingMode: .manual)
         ]
-        // 1_200_000 EUR × 0.5 = 600_000 GBP, strictly above Current's 500_000 so the order is unambiguous.
+        // 1_200_000 EUR × 0.5 = 600_000 GBP. Alphabetical (no stored order), not by balance.
         let snapshots = [F.snapshot(1, date(2026, 1, 1), 500_000), F.snapshot(2, date(2026, 1, 1), -200_000), F.snapshot(3, date(2026, 1, 1), 1_200_000)]
         let summaries = DashboardCalculator.accountSummaries(F.input(today: date(2026, 10, 2), accounts: accounts, snapshots: snapshots))
-        XCTAssertEqual(summaries.map(\.name), ["EUR", "Current", "Card"])
-        XCTAssertEqual(summaries.map(\.gbpBalanceMinorUnits), [600_000, 500_000, -200_000])
-        XCTAssertEqual(summaries[0].nativeBalanceMinorUnits, 1_200_000)
+        XCTAssertEqual(summaries.map(\.name), ["Card", "Current", "EUR"])
+        XCTAssertEqual(summaries.map(\.gbpBalanceMinorUnits), [-200_000, 500_000, 600_000])
+        XCTAssertEqual(summaries[2].nativeBalanceMinorUnits, 1_200_000)
     }
 
     // MARK: upcoming bills

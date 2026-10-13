@@ -15,7 +15,8 @@ public enum AccountEditing {
         let trimmed = try validatedName(db: db, name: name, excluding: nil)
         let details = try details.normalized()
         var account = Account(name: trimmed, currency: currency, kind: kind, trackingMode: trackingMode,
-                              alias: details.alias, sortCode: details.sortCode, accountNumber: details.accountNumber, iban: details.iban)
+                              alias: details.alias, sortCode: details.sortCode, accountNumber: details.accountNumber, iban: details.iban,
+                              sortOrder: try AccountOrdering.orderForNewAccount(db: db))
         try account.insert(db)
         if let openingBalanceEntered {
             try BalanceUpdates.upsertSnapshot(db: db, accountId: account.id!, date: asOf, balanceMinorUnits: NetWorthCalculator.signedSnapshotBalance(enteredMinorUnits: openingBalanceEntered, accountKind: kind), note: nil)

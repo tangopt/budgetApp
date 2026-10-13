@@ -30,7 +30,7 @@ public struct AccountRow: Equatable, Identifiable {
 public struct AccountGroup: Equatable, Identifiable {
     public let kind: AccountKind
     public let subtotalGBP: Int
-    /// By GBP balance descending, then name.
+    /// In `AccountOrdering` order.
     public let rows: [AccountRow]
     public var id: String { kind.rawValue }
 }
@@ -68,9 +68,7 @@ public struct AccountsOverview: Equatable {
         }
         let groups: [AccountGroup] = [AccountKind.cash, .investment, .credit].compactMap { kind in
             guard let rows = rowsByKind[kind], !rows.isEmpty else { return nil }
-            let sorted = rows.sorted {
-                $0.gbpBalanceMinorUnits != $1.gbpBalanceMinorUnits ? $0.gbpBalanceMinorUnits > $1.gbpBalanceMinorUnits : Account.displayNameOrder($0.account, $1.account)
-            }
+            let sorted = rows.sorted { AccountOrdering.areInOrder($0.account, $1.account) }
             return AccountGroup(kind: kind, subtotalGBP: sorted.reduce(0) { $0 + $1.gbpBalanceMinorUnits }, rows: sorted)
         }
         let netWorth = NetWorthCalculator.netWorth(balances: balances)

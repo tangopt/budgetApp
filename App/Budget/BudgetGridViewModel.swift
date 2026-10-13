@@ -122,7 +122,7 @@ final class BudgetGridViewModel: ObservableObject {
         forecastEntries = try dbQueue.read { db in try ForecastEntry.budget(db) }
         forecastGroups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
         exceptions = try dbQueue.read { db in try PlannedOccurrenceException.fetchAll(db) }
-        accounts = try dbQueue.read { db in try Account.fetchAll(db) }.sortedByDisplayName()
+        accounts = try dbQueue.read { db in try Account.fetchAll(db) }.sortedForDisplay()
         balanceSnapshots = try dbQueue.read { db in try BalanceSnapshot.fetchAll(db) }
         exchangeRate = try dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db) }
         selectDefaultYearIfNeeded()
@@ -173,6 +173,19 @@ final class BudgetGridViewModel: ObservableObject {
     /// "All accounts": clears the selection.
     func showAllAccounts() {
         accountFilter = []
+    }
+
+    /// Drag and drop in the account panel: `ids` are the accounts in panel order, moved as
+    /// SwiftUI's `onMove` describes. Saves the shared order (`AccountOrdering`) and re-reads
+    /// the accounts; on failure sets `errorMessage`.
+    func moveAccounts(fromOffsets: IndexSet, toOffset: Int) {
+        let ids = accounts.compactMap(\.id)
+        do {
+            try dbQueue.write { db in try AccountOrdering.move(db: db, ids: ids, fromOffsets: fromOffsets, toOffset: toOffset) }
+            accounts = try dbQueue.read { db in try Account.fetchAll(db) }.sortedForDisplay()
+        } catch {
+            errorMessage = "Couldn't reorder accounts: \(error.localizedDescription)"
+        }
     }
 
     /// Account names by id, for the side panel's per-transaction account.

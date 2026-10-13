@@ -5,9 +5,14 @@ import BudgetCore
 /// The Budget grid's account filter (spec §7): a slim, collapsible column to the left of the
 /// grid — "All accounts" then each account with its transaction count, ticked to show only
 /// those accounts' actuals. The selection and the open/closed state live in the view model,
-/// so they're kept while the app runs.
+/// so they're kept while the app runs. Accounts are dragged to reorder them (the shared
+/// `AccountOrdering`); "All accounts" stays first and isn't draggable — dropping on it moves
+/// the account to the top.
 struct AccountFilterPanel: View {
     @ObservedObject var viewModel: BudgetGridViewModel
+    /// The account row a drag is over; `isDropTargetingAll` for "All accounts".
+    @State private var dropTargetId: Int64?
+    @State private var isDropTargetingAll = false
 
     var body: some View {
         if viewModel.isAccountPanelOpen {
@@ -33,10 +38,23 @@ struct AccountFilterPanel: View {
                         row("All accounts", count: viewModel.transactions.count, ticked: !viewModel.isAccountFiltered) {
                             viewModel.showAllAccounts()
                         }
+                        .overlay { dropIndicator(isDropTargetingAll) }
+                        .dropDestination(for: String.self) { items, _ in
+                            drop(items, onto: nil)
+                        } isTargeted: { isDropTargetingAll = $0 }
                         ForEach(viewModel.accounts) { account in
                             if let id = account.id {
                                 row(account.displayName, count: viewModel.transactionCountByAccount[id] ?? 0, ticked: viewModel.accountFilter.contains(id)) {
                                     viewModel.toggleAccountFilter(id)
+                                }
+                                .draggable(Self.dragPayload(id)) {
+                                    Text(account.displayName).padding(.horizontal, 8).padding(.vertical, 4)
+                                }
+                                .overlay { dropIndicator(dropTargetId == id) }
+                                .dropDestination(for: String.self) { items, _ in
+                                    drop(items, onto: id)
+                                } isTargeted: { targeted in
+                                    if targeted { dropTargetId = id } else if dropTargetId == id { dropTargetId = nil }
                                 }
                             }
                         }
@@ -64,6 +82,44 @@ struct AccountFilterPanel: View {
             .padding(.vertical, 6)
             .frame(width: 28)
             .frame(maxHeight: .infinity, alignment: .top)
+        }
+    }
+
+    // MARK: Reordering
+
+    private static let dragPrefix = "budget-account:"
+
+    private static func dragPayload(_ id: Int64) -> String { dragPrefix + String(id) }
+
+    private static func draggedId(_ items: [String]) -> Int64? {
+        guard let item = items.first, item.hasPrefix(dragPrefix) else { return nil }
+        return Int64(item.dropFirst(dragPrefix.count))
+    }
+
+    /// Dropping on an account puts the dragged one in its place (before it when moving up,
+    /// after it when moving down); on "All accounts" (`target` nil), first.
+    private func drop(_ items: [String], onto target: Int64?) -> Bool {
+        dropTargetId = nil
+        isDropTargetingAll = false
+        let ids = viewModel.accounts.compactMap(\.id)
+        guard let dragged = Self.draggedId(items), let from = ids.firstIndex(of: dragged) else { return false }
+        let to: Int
+        if let target {
+            guard let targetIndex = ids.firstIndex(of: target) else { return false }
+            to = targetIndex > from ? targetIndex + 1 : targetIndex
+        } else {
+            to = 0
+        }
+        guard to != from, to != from + 1 else { return true }
+        viewModel.moveAccounts(fromOffsets: IndexSet(integer: from), toOffset: to)
+        return true
+    }
+
+    /// Outlines the row a drag is over (the dragged account takes its place).
+    @ViewBuilder
+    private func dropIndicator(_ visible: Bool) -> some View {
+        if visible {
+            RoundedRectangle(cornerRadius: 5).strokeBorder(Color.accentColor, lineWidth: 1.5).allowsHitTesting(false)
         }
     }
 
