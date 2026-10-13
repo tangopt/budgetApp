@@ -109,7 +109,7 @@ struct FreshnessImportCard: View {
     private func accountPicker() -> some View {
         Picker("Import into", selection: $selectedAccountId) {
             ForEach(accounts) { account in
-                Text("\(account.name) (\(account.currency.rawValue.uppercased()))").tag(account.id)
+                Text("\(account.displayName) (\(account.currency.rawValue.uppercased()))").tag(account.id)
             }
         }
         .labelsHidden()

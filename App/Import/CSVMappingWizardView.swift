@@ -26,7 +26,7 @@ struct CSVMappingWizardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Map columns — \(account.name)")
+                Text("Map columns — \(account.displayName)")
                     .font(.title2.weight(.semibold))
                 Text("Choose what each column holds. Columns set to Ignore aren't imported.")
                     .foregroundStyle(.secondary)

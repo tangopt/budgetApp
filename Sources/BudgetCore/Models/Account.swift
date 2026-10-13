@@ -17,13 +17,33 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     public var currency: Currency
     public var kind: AccountKind
     public var trackingMode: AccountTrackingMode
+    /// Short name shown instead of `name` across the app (`displayName`). Normalised on save
+    /// (`AccountDetailsFormat`): trimmed, empty → nil.
+    public var alias: String?
+    /// 6 digits, no separators (shown "30-00-00").
+    public var sortCode: String?
+    /// Digits only, 6–8 of them.
+    public var accountNumber: String?
+    /// Uppercase, no spaces (shown in groups of 4).
+    public var iban: String?
 
-    public init(id: Int64? = nil, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode) {
+    public init(id: Int64? = nil, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode,
+                alias: String? = nil, sortCode: String? = nil, accountNumber: String? = nil, iban: String? = nil) {
         self.id = id
         self.name = name
         self.currency = currency
         self.kind = kind
         self.trackingMode = trackingMode
+        self.alias = alias
+        self.sortCode = sortCode
+        self.accountNumber = accountNumber
+        self.iban = iban
+    }
+
+    /// What the UI calls the account: the alias when set, otherwise the full name. `name`
+    /// stays the identity (uniqueness, sorting).
+    public var displayName: String {
+        AccountDetailsFormat.normalizedAlias(alias ?? "") ?? name
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -41,6 +61,17 @@ func registerAccountMigration(_ migrator: inout DatabaseMigrator) {
             t.column("currency", .text).notNull()
             t.column("kind", .text).notNull()
             t.column("trackingMode", .text).notNull()
+        }
+    }
+}
+
+func registerAccountDetailsMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addAccountAliasAndDetails") { db in
+        try db.alter(table: "account") { t in
+            t.add(column: "alias", .text)
+            t.add(column: "sortCode", .text)
+            t.add(column: "accountNumber", .text)
+            t.add(column: "iban", .text)
         }
     }
 }

@@ -177,7 +177,7 @@ final class BudgetGridViewModel: ObservableObject {
 
     /// Account names by id, for the side panel's per-transaction account.
     var accountNameById: [Int64: String] {
-        Dictionary(accounts.compactMap { account in account.id.map { ($0, account.name) } }, uniquingKeysWith: { a, _ in a })
+        Dictionary(accounts.compactMap { account in account.id.map { ($0, account.displayName) } }, uniquingKeysWith: { a, _ in a })
     }
 
     /// The grid's actuals as CSV: one column per pay month of the grid's years that has

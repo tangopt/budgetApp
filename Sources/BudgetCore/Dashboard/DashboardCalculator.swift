@@ -55,7 +55,7 @@ public enum DashboardCalculator {
         NetWorthCalculator.accountBalances(accounts: input.accounts, snapshots: input.snapshots, transactions: input.transactions, rate: input.rate)
             .compactMap { balance -> AccountSummary? in
                 guard let id = balance.account.id else { return nil }
-                return AccountSummary(id: id, name: balance.account.name, kind: balance.account.kind, currency: balance.account.currency, nativeBalanceMinorUnits: balance.nativeBalanceMinorUnits, gbpBalanceMinorUnits: balance.gbpBalanceMinorUnits)
+                return AccountSummary(id: id, name: balance.account.displayName, kind: balance.account.kind, currency: balance.account.currency, nativeBalanceMinorUnits: balance.nativeBalanceMinorUnits, gbpBalanceMinorUnits: balance.gbpBalanceMinorUnits)
             }
             .sorted { $0.gbpBalanceMinorUnits > $1.gbpBalanceMinorUnits }
     }

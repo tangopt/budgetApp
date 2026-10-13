@@ -3,7 +3,8 @@ import SwiftUI
 import BudgetCore
 
 /// "+ Add account": name, currency, kind, tracking and an optional opening balance
-/// (entered as the amount owed for credit) dated by a picked calendar day.
+/// (entered as the amount owed for credit) dated by a picked calendar day, plus the
+/// optional alias and bank details.
 struct AddAccountSheet: View {
     @ObservedObject var viewModel: AccountsViewModel
     @Environment(\.dismiss) private var dismiss
@@ -14,13 +15,14 @@ struct AddAccountSheet: View {
     @State private var trackingMode: AccountTrackingMode = .manual
     @State private var balanceText = ""
     @State private var asOf = Date()
+    @State private var details = AccountDetailsDraft()
     @State private var error: String?
 
     private var trimmedBalance: String { balanceText.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var openingBalance: Int? { Money.parseMinorUnits(trimmedBalance) }
     private var balanceInvalid: Bool { !trimmedBalance.isEmpty && openingBalance == nil }
     private var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !balanceInvalid
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !balanceInvalid && details.isValid
     }
 
     var body: some View {
@@ -38,18 +40,19 @@ struct AddAccountSheet: View {
             if !trimmedBalance.isEmpty {
                 DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
             }
+            AccountDetailsFields(draft: $details)
         }
     }
 
     private func save() {
         guard canSave else { return }
         let balance = trimmedBalance.isEmpty ? nil : openingBalance
-        finish(viewModel.addAccount(name: name, currency: currency, kind: kind, trackingMode: trackingMode, openingBalanceEntered: balance, asOf: AccountsFormat.snapshotDay(asOf)), error: $error, dismiss: dismiss)
+        finish(viewModel.addAccount(name: name, currency: currency, kind: kind, trackingMode: trackingMode, openingBalanceEntered: balance, asOf: AccountsFormat.snapshotDay(asOf), details: details.details), error: $error, dismiss: dismiss)
     }
 }
 
 /// "Edit…": name, kind (credit transitions disabled once the account has history),
-/// tracking; currency is read-only.
+/// tracking, alias and bank details; currency is read-only.
 struct EditAccountSheet: View {
     @ObservedObject var viewModel: AccountsViewModel
     let account: Account
@@ -58,6 +61,7 @@ struct EditAccountSheet: View {
     @State private var name: String
     @State private var kind: AccountKind
     @State private var trackingMode: AccountTrackingMode
+    @State private var details: AccountDetailsDraft
     @State private var hasHistory = true
     @State private var error: String?
 
@@ -67,6 +71,7 @@ struct EditAccountSheet: View {
         _name = State(initialValue: account.name)
         _kind = State(initialValue: account.kind)
         _trackingMode = State(initialValue: account.trackingMode)
+        _details = State(initialValue: AccountDetailsDraft(account))
     }
 
     /// Whether switching to `candidate` would cross the credit boundary.
@@ -75,7 +80,7 @@ struct EditAccountSheet: View {
     }
 
     private var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(hasHistory && crossesCredit(kind))
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(hasHistory && crossesCredit(kind)) && details.isValid
     }
 
     var body: some View {
@@ -87,6 +92,7 @@ struct EditAccountSheet: View {
                 SheetCaption("Can't change to or from credit once the account has history.")
             }
             TrackingPicker(selection: $trackingMode)
+            AccountDetailsFields(draft: $details)
         }
         .onAppear {
             if let id = account.id { hasHistory = viewModel.hasHistory(id) }
@@ -95,11 +101,57 @@ struct EditAccountSheet: View {
 
     private func save() {
         guard canSave, let id = account.id else { return }
-        finish(viewModel.updateAccount(id: id, name: name, kind: kind, trackingMode: trackingMode), error: $error, dismiss: dismiss)
+        finish(viewModel.updateAccount(id: id, name: name, kind: kind, trackingMode: trackingMode, details: details.details), error: $error, dismiss: dismiss)
     }
 }
 
 // MARK: - Shared pieces
+
+/// The alias and bank-detail text fields as typed. Each field validates on its own so the
+/// sheet can show the error under it; blank fields are fine.
+struct AccountDetailsDraft: Equatable {
+    var alias = ""
+    var sortCode = ""
+    var accountNumber = ""
+    var iban = ""
+
+    init() {}
+
+    init(_ account: Account) {
+        alias = account.alias ?? ""
+        sortCode = account.sortCode.map(AccountDetailsFormat.formattedSortCode) ?? ""
+        accountNumber = account.accountNumber ?? ""
+        iban = account.iban.map(AccountDetailsFormat.formattedIBAN) ?? ""
+    }
+
+    var details: AccountDetails {
+        AccountDetails(alias: alias, sortCode: sortCode, accountNumber: accountNumber, iban: iban)
+    }
+
+    var sortCodeError: String? { Self.message { try AccountDetailsFormat.normalizedSortCode(sortCode) } }
+    var accountNumberError: String? { Self.message { try AccountDetailsFormat.normalizedAccountNumber(accountNumber) } }
+    var ibanError: String? { Self.message { try AccountDetailsFormat.normalizedIBAN(iban) } }
+    var isValid: Bool { sortCodeError == nil && accountNumberError == nil && ibanError == nil }
+
+    private static func message(_ check: () throws -> String?) -> String? {
+        do { _ = try check(); return nil } catch { return (error as? AccountDetailsError)?.errorDescription ?? error.localizedDescription }
+    }
+}
+
+/// Alias, sort code, account number and IBAN fields with inline validation errors.
+struct AccountDetailsFields: View {
+    @Binding var draft: AccountDetailsDraft
+
+    var body: some View {
+        TextField("Alias (optional)", text: $draft.alias, prompt: Text("Short name shown in the app"))
+        TextField("Sort code", text: $draft.sortCode, prompt: Text("30-00-00"))
+        if let message = draft.sortCodeError { SheetCaption(message, isError: true) }
+        TextField("Account number", text: $draft.accountNumber, prompt: Text("12345678"))
+        if let message = draft.accountNumberError { SheetCaption(message, isError: true) }
+        TextField("IBAN", text: $draft.iban, prompt: Text("GB29 NWBK 6016 1331 9268 19"))
+        if let message = draft.ibanError { SheetCaption(message, isError: true) }
+    }
+}
 
 /// Closes the sheet once the change is saved (even if the reload then failed — the screen
 /// banner says so); otherwise shows the failure in the sheet's own error.

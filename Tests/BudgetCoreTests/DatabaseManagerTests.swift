@@ -31,9 +31,10 @@ final class DatabaseManagerTests: XCTestCase {
         // Seed a profile row before the new migration exists, as in a real upgrade.
         try manager.migrate(upTo: "createScenarios")
         try manager.dbQueue.write { db in
-            var account = Account(name: "A", currency: .gbp, kind: .cash, trackingMode: .imported)
-            try account.insert(db)
-            try db.execute(sql: "INSERT INTO importProfile (accountId, format) VALUES (?, 'csv')", arguments: [account.id])
+            // Raw SQL: the Account record has columns from later migrations.
+            try db.execute(sql: "INSERT INTO account (name, currency, kind, trackingMode) VALUES ('A', 'gbp', 'cash', 'imported')")
+            let accountId = db.lastInsertedRowID
+            try db.execute(sql: "INSERT INTO importProfile (accountId, format) VALUES (?, 'csv')", arguments: [accountId])
         }
         try manager.migrate()
         let columns = try manager.dbQueue.read { db in try db.columns(in: "importProfile").map(\.name) }
@@ -46,14 +47,15 @@ final class DatabaseManagerTests: XCTestCase {
         let manager = try DatabaseManager(path: nil)
         try manager.migrate(upTo: "addCSVNegateAmounts")
         try manager.dbQueue.write { db in
-            var account = Account(name: "A", currency: .gbp, kind: .cash, trackingMode: .imported)
-            try account.insert(db)
-            var batch = ImportBatch(accountId: account.id!, sourceFileName: "a.csv", importedAt: Date())
+            // Raw SQL: the Account record has columns from later migrations.
+            try db.execute(sql: "INSERT INTO account (name, currency, kind, trackingMode) VALUES ('A', 'gbp', 'cash', 'imported')")
+            let accountId = db.lastInsertedRowID
+            var batch = ImportBatch(accountId: accountId, sourceFileName: "a.csv", importedAt: Date())
             try batch.insert(db)
             try db.execute(sql: """
                 INSERT INTO transaction_ (importBatchId, accountId, date, rawDescription, amountMinorUnits, status, categorizedBy, fingerprint)
                 VALUES (?, ?, ?, 'X', -100, 'pendingReview', 'none', 'f')
-                """, arguments: [batch.id, account.id, Date()])
+                """, arguments: [batch.id, accountId, Date()])
         }
         try manager.migrate()
         let columns = try manager.dbQueue.read { db in try db.columns(in: "transaction_").map(\.name) }

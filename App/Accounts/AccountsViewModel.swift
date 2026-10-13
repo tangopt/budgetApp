@@ -65,18 +65,18 @@ final class AccountsViewModel: ObservableObject {
         overview?.groups.flatMap(\.rows).first { $0.id == selectedAccountId }
     }
 
-    func addAccount(name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode, openingBalanceEntered: Int?, asOf: Date) -> SaveOutcome {
+    func addAccount(name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode, openingBalanceEntered: Int?, asOf: Date, details: AccountDetails) -> SaveOutcome {
         perform { db in
-            let account = try AccountEditing.add(db: db, name: name, currency: currency, kind: kind, trackingMode: trackingMode, openingBalanceEntered: openingBalanceEntered, asOf: asOf)
+            let account = try AccountEditing.add(db: db, name: name, currency: currency, kind: kind, trackingMode: trackingMode, openingBalanceEntered: openingBalanceEntered, asOf: asOf, details: details)
             return account.id
         } onSuccess: { [weak self] id in
             self?.selectedAccountId = id
         }
     }
 
-    func updateAccount(id: Int64, name: String, kind: AccountKind, trackingMode: AccountTrackingMode) -> SaveOutcome {
+    func updateAccount(id: Int64, name: String, kind: AccountKind, trackingMode: AccountTrackingMode, details: AccountDetails) -> SaveOutcome {
         perform { db in
-            try AccountEditing.update(db: db, accountId: id, name: name, kind: kind, trackingMode: trackingMode)
+            try AccountEditing.update(db: db, accountId: id, name: name, kind: kind, trackingMode: trackingMode, details: details)
         }
     }
 
@@ -121,6 +121,7 @@ final class AccountsViewModel: ObservableObject {
     }
 
     static func message(for error: Error) -> String {
+        if let detailsError = error as? AccountDetailsError { return detailsError.errorDescription ?? "Check the account details." }
         switch error as? AccountEditError {
         case .emptyName: return "Enter a name."
         case .duplicateName: return "An account with that name already exists."

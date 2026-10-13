@@ -11,9 +11,11 @@ public struct ReconciliationWarning: Equatable {
 
 public enum AccountEditing {
     @discardableResult
-    public static func add(db: Database, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode, openingBalanceEntered: Int?, asOf: Date) throws -> Account {
+    public static func add(db: Database, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode, openingBalanceEntered: Int?, asOf: Date, details: AccountDetails = AccountDetails()) throws -> Account {
         let trimmed = try validatedName(db: db, name: name, excluding: nil)
-        var account = Account(name: trimmed, currency: currency, kind: kind, trackingMode: trackingMode)
+        let details = try details.normalized()
+        var account = Account(name: trimmed, currency: currency, kind: kind, trackingMode: trackingMode,
+                              alias: details.alias, sortCode: details.sortCode, accountNumber: details.accountNumber, iban: details.iban)
         try account.insert(db)
         if let openingBalanceEntered {
             try BalanceUpdates.upsertSnapshot(db: db, accountId: account.id!, date: asOf, balanceMinorUnits: NetWorthCalculator.signedSnapshotBalance(enteredMinorUnits: openingBalanceEntered, accountKind: kind), note: nil)
@@ -23,7 +25,9 @@ public enum AccountEditing {
 
     /// Currency never changes after creation. A kind change to or from `.credit` is
     /// refused once the account has any snapshot or transaction (signs would flip).
-    public static func update(db: Database, accountId: Int64, name: String, kind: AccountKind, trackingMode: AccountTrackingMode) throws {
+    /// `details` nil leaves the alias and bank details as they are; otherwise they are
+    /// normalised and replace them (blank fields clear).
+    public static func update(db: Database, accountId: Int64, name: String, kind: AccountKind, trackingMode: AccountTrackingMode, details: AccountDetails? = nil) throws {
         guard var account = try Account.fetchOne(db, key: accountId) else { throw AccountEditError.accountNotFound }
         let trimmed = try validatedName(db: db, name: name, excluding: accountId)
         if (account.kind == .credit) != (kind == .credit), try hasHistory(db: db, accountId: accountId) {
@@ -32,6 +36,12 @@ public enum AccountEditing {
         account.name = trimmed
         account.kind = kind
         account.trackingMode = trackingMode
+        if let details = try details?.normalized() {
+            account.alias = details.alias
+            account.sortCode = details.sortCode
+            account.accountNumber = details.accountNumber
+            account.iban = details.iban
+        }
         try account.update(db)
     }
 
@@ -88,7 +98,7 @@ public enum BalanceUpdates {
                 let computed = NetWorthCalculator.runningBalance(account: account, latestSnapshot: previous, transactionsSinceSnapshot: transactionsSince)
                 let drift = NetWorthCalculator.reconciliationDrift(computedNativeBalanceMinorUnits: computed, actualNativeBalanceMinorUnits: balance)
                 if drift != 0 {
-                    warnings.append(ReconciliationWarning(accountName: account.name, driftMinorUnits: drift, currency: account.currency))
+                    warnings.append(ReconciliationWarning(accountName: account.displayName, driftMinorUnits: drift, currency: account.currency))
                 }
             }
             try upsertSnapshot(db: db, accountId: entry.accountId, date: asOf, balanceMinorUnits: balance, note: entry.note)

@@ -221,7 +221,12 @@ private struct AccountListRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(row.account.name)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(row.account.displayName)
+                if row.account.displayName != row.account.name {
+                    Text(row.account.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
             if row.isStale {
                 Image(systemName: "exclamationmark.circle.fill")
                     .foregroundStyle(.orange)
@@ -242,6 +247,43 @@ private struct AccountListRow: View {
 
 // MARK: - Detail
 
+/// Sort code, account number and IBAN (only those set), each with a copy button that puts
+/// the unformatted value on the clipboard. Nothing when none is set.
+private struct AccountBankDetails: View {
+    let account: Account
+
+    private var items: [(label: String, shown: String, copied: String)] {
+        var items: [(label: String, shown: String, copied: String)] = []
+        if let sortCode = account.sortCode { items.append(("Sort code", AccountDetailsFormat.formattedSortCode(sortCode), sortCode)) }
+        if let number = account.accountNumber { items.append(("Account number", number, number)) }
+        if let iban = account.iban { items.append(("IBAN", AccountDetailsFormat.formattedIBAN(iban), iban)) }
+        return items
+    }
+
+    var body: some View {
+        if !items.isEmpty {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 4) {
+                ForEach(items, id: \.label) { item in
+                    GridRow {
+                        Text(item.label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                        Text(item.shown).font(.body.monospacedDigit()).textSelection(.enabled)
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(item.copied, forType: .string)
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Copy \(item.label.lowercased())")
+                        .accessibilityLabel("Copy \(item.label.lowercased())")
+                    }
+                }
+            }
+            .font(.callout)
+        }
+    }
+}
+
 private struct AccountDetailView: View {
     let row: AccountRow?
     let history: [BalanceSnapshot]
@@ -256,7 +298,10 @@ private struct AccountDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(row.account.name).font(.title2.bold())
+                        Text(row.account.displayName).font(.title2.bold())
+                        if row.account.displayName != row.account.name {
+                            Text(row.account.name).font(.callout).foregroundStyle(.secondary)
+                        }
                         Text("\(row.account.currency.rawValue.uppercased()) · \(AccountsFormat.kind(row.account.kind)) · \(row.account.trackingMode == .manual ? "Manual balance" : "Imported")")
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -269,6 +314,7 @@ private struct AccountDetailView: View {
                         }
                     }
                     updatedLine(row)
+                    AccountBankDetails(account: row.account)
                     HStack {
                         Button("Update balance…") { onUpdateBalance(row) }
                         Button("Edit…") { onEdit(row) }
@@ -342,7 +388,7 @@ private struct AccountDetailView: View {
             Text(DashboardFormat.day(date)).font(.caption2).foregroundStyle(.secondary)
             HStack(spacing: 4) {
                 Circle().fill(Color.accentColor).frame(width: 6, height: 6)
-                Text(row.account.name).font(.caption2).lineLimit(1)
+                Text(row.account.displayName).font(.caption2).lineLimit(1)
                 Spacer(minLength: 8)
                 AccountsFormat.balanceText(minorUnits, kind: row.account.kind, currency: row.account.currency, font: .caption.bold().monospacedDigit())
             }

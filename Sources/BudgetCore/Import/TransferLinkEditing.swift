@@ -60,7 +60,7 @@ extension TransferLinks {
             for (this, other) in [(link.outTransactionId, link.inTransactionId), (link.inTransactionId, link.outTransactionId)] {
                 guard let transaction = transactions[other], let account = accounts[transaction.accountId] else { continue }
                 result[this, default: []].append(TransferCounterpart(linkId: linkId, origin: link.origin, transactionId: other,
-                                                                     accountName: account.name, currency: account.currency,
+                                                                     accountName: account.displayName, currency: account.currency,
                                                                      date: transaction.date, amountMinorUnits: transaction.amountMinorUnits))
             }
         }
@@ -127,7 +127,7 @@ extension TransferLinks {
             .sorted { (abs($0.date.timeIntervalSince(transaction.date)), $0.id ?? 0) < (abs($1.date.timeIntervalSince(transaction.date)), $1.id ?? 0) }
             .compactMap { other in
                 guard let id = other.id, let otherAccount = accounts[other.accountId] else { return nil }
-                return TransferCandidate(transactionId: id, accountName: otherAccount.name, currency: otherAccount.currency, date: other.date,
+                return TransferCandidate(transactionId: id, accountName: otherAccount.displayName, currency: otherAccount.currency, date: other.date,
                                          rawDescription: other.rawDescription, amountMinorUnits: other.amountMinorUnits)
             }
     }

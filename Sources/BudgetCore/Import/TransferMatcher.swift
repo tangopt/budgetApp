@@ -103,7 +103,7 @@ public enum TransferMatcher {
                                     isTransferLike: context.isTransferLike(row.categoryId)))
         }
         let byId = Dictionary(saved.compactMap { t in t.id.map { ($0, t) } }, uniquingKeysWith: { a, _ in a })
-        let accountNames = Dictionary(try Account.fetchAll(db).compactMap { a in a.id.map { ($0, a.name) } }, uniquingKeysWith: { a, _ in a })
+        let accountNames = Dictionary(try Account.fetchAll(db).compactMap { a in a.id.map { ($0, a.displayName) } }, uniquingKeysWith: { a, _ in a })
         var result: [Int: StagedTransfer] = [:]
         for pair in pairs(legs: legs, currencies: context.currencies, eurToGbpRate: context.rate, calendar: context.calendar) {
             let stagedId = pair.outId < 0 ? pair.outId : pair.inId

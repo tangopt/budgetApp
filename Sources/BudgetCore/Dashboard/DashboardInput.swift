@@ -80,6 +80,7 @@ public struct AttentionItems: Equatable {
 
 public struct AccountSummary: Equatable, Identifiable {
     public let id: Int64
+    /// The account's `displayName` (alias, else name).
     public let name: String
     public let kind: AccountKind
     public let currency: Currency

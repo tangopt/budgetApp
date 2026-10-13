@@ -549,7 +549,7 @@ struct BudgetGridView: View {
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(rowColor(for: category.type)), alignment: .leading)
         case .account(let account):
-            Text(account.name)
+            Text(account.displayName)
                 .frame(width: 220, height: 28, alignment: .leading)
                 .padding(.horizontal, 8)
                 .background(shaded ? Color.primary.opacity(0.07) : Color.clear)

@@ -22,7 +22,7 @@ struct UpdateBalanceSheet: View {
     private var amount: Int? { Money.parseMinorUnits(amountText) }
 
     var body: some View {
-        SheetScaffold(title: "Update balance — \(row.account.name)", saveTitle: "Save", canSave: amount != nil, error: error, onCancel: { dismiss() }, onSave: save) {
+        SheetScaffold(title: "Update balance — \(row.account.displayName)", saveTitle: "Save", canSave: amount != nil, error: error, onCancel: { dismiss() }, onSave: save) {
             MoneyField(row.account.kind == .credit ? "Amount owed" : "Balance", text: $amountText, currency: row.account.currency)
             if row.account.kind == .credit {
                 SheetCaption("Enter what you owe on the card as a positive number.")
@@ -103,7 +103,7 @@ struct UpdateBalancesSheet: View {
         let isIncluded = included[row.id] ?? false
         return HStack(alignment: .firstTextBaseline) {
             Toggle(isOn: Binding(get: { included[row.id] ?? false }, set: { included[row.id] = $0 })) {
-                Text(row.account.name).lineLimit(1)
+                Text(row.account.displayName).lineLimit(1)
             }
             .toggleStyle(.checkbox)
             Spacer()

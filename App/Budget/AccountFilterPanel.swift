@@ -35,7 +35,7 @@ struct AccountFilterPanel: View {
                         }
                         ForEach(viewModel.accounts) { account in
                             if let id = account.id {
-                                row(account.name, count: viewModel.transactionCountByAccount[id] ?? 0, ticked: viewModel.accountFilter.contains(id)) {
+                                row(account.displayName, count: viewModel.transactionCountByAccount[id] ?? 0, ticked: viewModel.accountFilter.contains(id)) {
                                     viewModel.toggleAccountFilter(id)
                                 }
                             }
