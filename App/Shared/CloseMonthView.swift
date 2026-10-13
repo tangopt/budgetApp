@@ -57,29 +57,20 @@ struct CloseMonthView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Close \(PayMonthFormat.name(month))").font(.title3.bold())
-            Text("Currently \(PayMonthFormat.range(calendar.range(of: month)))")
-                .foregroundStyle(.secondary)
-            DatePicker("Last day", selection: $pickedDay, in: PayCalendar.localDay(sameDayAs: calendar.range(of: month).start, in: .current)..., displayedComponents: .date)
-            Text("Spending after this date counts in \(PayMonthFormat.name(month.next)).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if let errorMessage {
-                Text(errorMessage).font(.callout).foregroundStyle(.red)
-            }
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Close month") {
-                    if onClose(PayCalendar.utcDay(sameDayAs: pickedDay, in: .current)) { dismiss() }
+        SheetScaffold(title: "Close \(PayMonthFormat.name(month))",
+                      subtitle: "Currently \(PayMonthFormat.range(calendar.range(of: month)))",
+                      error: errorMessage, onCancel: { dismiss() },
+                      primary: SheetAction("Close month") {
+                          if onClose(PayCalendar.utcDay(sameDayAs: pickedDay, in: .current)) { dismiss() }
+                      }) {
+            SheetForm {
+                LabeledContent("Last day") {
+                    DatePicker("Last day", selection: $pickedDay, in: PayCalendar.localDay(sameDayAs: calendar.range(of: month).start, in: .current)..., displayedComponents: .date)
+                        .fixedSize()
+                        .sheetFieldNote("Spending after this date counts in \(PayMonthFormat.name(month.next)).")
                 }
-                .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
-        .frame(width: 360)
     }
 }
 

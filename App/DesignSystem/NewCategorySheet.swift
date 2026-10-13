@@ -57,34 +57,30 @@ struct NewCategorySheet: View {
     }
 
     var body: some View {
-        Form {
-            Text("New category").font(.headline)
-            TextField("Name", text: $name)
-            Picker("Type", selection: $type) {
-                Text("Expense").tag(CategoryType.expense)
-                Text("Income").tag(CategoryType.income)
-                Text("Transfer").tag(CategoryType.transfer)
-            }
-            .pickerStyle(.segmented)
-            Picker("Group", selection: $groupId) {
-                Text("None").tag(Int64?.none)
-                ForEach(sortedGroups) { group in Text(group.name).tag(Int64?.some(group.id!)) }
-            }
-            if let errorMessage {
-                Text(errorMessage).font(.callout).foregroundStyle(.red)
-            }
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("Create") { save() }
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .keyboardShortcut(.defaultAction)
+        SheetScaffold(title: "New category", error: errorMessage, onCancel: { dismiss() },
+                      primary: SheetAction("Create", isEnabled: !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, action: save)) {
+            SheetForm {
+                LabeledContent("Name") {
+                    TextField("Name", text: $name)
+                        .onChange(of: name) { _, _ in errorMessage = nil }
+                }
+                LabeledContent("Type") {
+                    Picker("Type", selection: $type) {
+                        Text("Expense").tag(CategoryType.expense)
+                        Text("Income").tag(CategoryType.income)
+                        Text("Transfer").tag(CategoryType.transfer)
+                    }
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                }
+                LabeledContent("Group") {
+                    Picker("Group", selection: $groupId) {
+                        Text("None").tag(Int64?.none)
+                        ForEach(sortedGroups) { group in Text(group.name).tag(Int64?.some(group.id!)) }
+                    }
+                }
             }
         }
-        .onChange(of: name) { _, _ in errorMessage = nil }
-        .padding()
-        .frame(width: 360)
     }
 
     private func save() {

@@ -26,34 +26,41 @@ struct RecurrenceEndFields: View {
         return formatter
     }()
 
+    /// `SheetForm` rows.
     var body: some View {
-        Picker("Ends", selection: $mode) {
-            Text("Never").tag(RecurrenceEndMode.never)
-            Text("On a date").tag(RecurrenceEndMode.onDate)
-            Text("After").tag(RecurrenceEndMode.after)
+        LabeledContent("Ends") {
+            Picker("Ends", selection: $mode) {
+                Text("Never").tag(RecurrenceEndMode.never)
+                Text("On a date").tag(RecurrenceEndMode.onDate)
+                Text("After").tag(RecurrenceEndMode.after)
+            }
+            .pickerStyle(.segmented)
+            .fixedSize()
         }
-        .pickerStyle(.segmented)
         switch mode {
         case .never:
             EmptyView()
         case .onDate:
-            DatePicker("Ends", selection: $endDay, in: startDay..., displayedComponents: .date)
-        case .after:
-            HStack {
-                TextField("", value: $count, format: .number)
-                    .frame(width: 50)
-                    .multilineTextAlignment(.trailing)
-                    .onChange(of: count) { _, new in
-                        let clamped = Self.clamped(new)
-                        if clamped != new { count = clamped }
-                    }
-                Stepper("", value: $count, in: 1...999)
-                    .labelsHidden()
-                Text(count == 1 ? "occurrence" : "occurrences")
-                Spacer()
+            LabeledContent("End date") {
+                DatePicker("End date", selection: $endDay, in: startDay..., displayedComponents: .date)
+                    .fixedSize()
             }
-            Text("Last: \(Self.lastFormatter.string(from: lastDate))")
-                .font(.caption).foregroundStyle(.secondary)
+        case .after:
+            LabeledContent("After") {
+                HStack {
+                    TextField("Occurrences", value: $count, format: .number)
+                        .frame(width: 50)
+                        .multilineTextAlignment(.trailing)
+                        .onChange(of: count) { _, new in
+                            let clamped = Self.clamped(new)
+                            if clamped != new { count = clamped }
+                        }
+                    Stepper("Occurrences", value: $count, in: 1...999)
+                        .labelsHidden()
+                    Text(count == 1 ? "occurrence" : "occurrences")
+                }
+                .sheetFieldNote("Last: \(Self.lastFormatter.string(from: lastDate))")
+            }
         }
     }
 

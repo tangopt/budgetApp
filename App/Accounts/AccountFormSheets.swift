@@ -26,21 +26,30 @@ struct AddAccountSheet: View {
     }
 
     var body: some View {
-        SheetScaffold(title: "Add account", saveTitle: "Add account", canSave: canSave, error: error, onCancel: { dismiss() }, onSave: save) {
-            TextField("Name", text: $name)
-            Picker("Currency", selection: $currency) {
-                ForEach(Currency.allCases, id: \.self) { Text($0.rawValue.uppercased()).tag($0) }
+        SheetScaffold(title: "Add account", error: error, onCancel: { dismiss() },
+                      primary: SheetAction("Add account", isEnabled: canSave, action: save)) {
+            SheetForm {
+                LabeledContent("Name") { TextField("Name", text: $name) }
+                LabeledContent("Currency") {
+                    Picker("Currency", selection: $currency) {
+                        ForEach(Currency.allCases, id: \.self) { Text($0.rawValue.uppercased()).tag($0) }
+                    }
+                    .fixedSize()
+                }
+                LabeledContent("Kind") { KindPicker(selection: $kind) }
+                LabeledContent("Tracking") { TrackingPicker(selection: $trackingMode) }
+                LabeledContent(kind == .credit ? "Amount owed" : "Opening balance") {
+                    MoneyField("Optional", text: $balanceText, currency: currency)
+                        .sheetFieldNote(kind == .credit ? "Enter what you owe on the card as a positive number." : nil)
+                }
+                if !trimmedBalance.isEmpty {
+                    LabeledContent("As of") {
+                        DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
+                            .fixedSize()
+                    }
+                }
+                AccountDetailsFields(draft: $details)
             }
-            KindPicker(selection: $kind)
-            TrackingPicker(selection: $trackingMode)
-            MoneyField(kind == .credit ? "Amount owed (optional)" : "Opening balance (optional)", text: $balanceText, currency: currency)
-            if kind == .credit {
-                SheetCaption("Enter what you owe on the card as a positive number.")
-            }
-            if !trimmedBalance.isEmpty {
-                DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
-            }
-            AccountDetailsFields(draft: $details)
         }
     }
 
@@ -84,15 +93,18 @@ struct EditAccountSheet: View {
     }
 
     var body: some View {
-        SheetScaffold(title: "Edit account", saveTitle: "Save", canSave: canSave, error: error, onCancel: { dismiss() }, onSave: save) {
-            TextField("Name", text: $name)
-            LabeledContent("Currency", value: account.currency.rawValue.uppercased())
-            KindPicker(selection: $kind, isDisabled: { hasHistory && crossesCredit($0) })
-            if hasHistory {
-                SheetCaption("Can't change to or from credit once the account has history.")
+        SheetScaffold(title: "Edit account", error: error, onCancel: { dismiss() },
+                      primary: SheetAction("Save", isEnabled: canSave, action: save)) {
+            SheetForm {
+                LabeledContent("Name") { TextField("Name", text: $name) }
+                LabeledContent("Currency", value: account.currency.rawValue.uppercased())
+                LabeledContent("Kind") {
+                    KindPicker(selection: $kind, isDisabled: { hasHistory && crossesCredit($0) })
+                        .sheetFieldNote(hasHistory ? "Can't change to or from credit once the account has history." : nil)
+                }
+                LabeledContent("Tracking") { TrackingPicker(selection: $trackingMode) }
+                AccountDetailsFields(draft: $details)
             }
-            TrackingPicker(selection: $trackingMode)
-            AccountDetailsFields(draft: $details)
         }
         .onAppear {
             if let id = account.id { hasHistory = viewModel.hasHistory(id) }
@@ -138,18 +150,46 @@ struct AccountDetailsDraft: Equatable {
     }
 }
 
-/// Alias, sort code, account number and IBAN fields with inline validation errors.
+/// Alias, sort code, account number and IBAN rows for a `SheetForm`. A field's validation
+/// error shows once the field has lost focus or Return was pressed in it — not while it is
+/// being typed in (an edit hides it again until then). The sheet keeps Save disabled while
+/// any field is invalid (`AccountDetailsDraft.isValid`).
 struct AccountDetailsFields: View {
     @Binding var draft: AccountDetailsDraft
 
+    private enum Field: Hashable { case sortCode, accountNumber, iban }
+
+    @FocusState private var focused: Field?
+    /// Fields whose error may show: left, or submitted, since their last edit.
+    @State private var revealed: Set<Field> = []
+
     var body: some View {
-        TextField("Alias (optional)", text: $draft.alias, prompt: Text("Short name shown in the app"))
-        TextField("Sort code", text: $draft.sortCode, prompt: Text("30-00-00"))
-        if let message = draft.sortCodeError { SheetCaption(message, isError: true) }
-        TextField("Account number", text: $draft.accountNumber, prompt: Text("12345678"))
-        if let message = draft.accountNumberError { SheetCaption(message, isError: true) }
-        TextField("IBAN", text: $draft.iban, prompt: Text("GB29 NWBK 6016 1331 9268 19"))
-        if let message = draft.ibanError { SheetCaption(message, isError: true) }
+        LabeledContent("Alias") {
+            TextField("Alias", text: $draft.alias, prompt: Text("Optional short name shown in the app"))
+                // Inside the cell: a modifier on a row would stop the grid seeing it as a row.
+                .onChange(of: focused) { old, _ in
+                    if let old { revealed.insert(old) }
+                }
+                .onChange(of: draft.sortCode) { _, _ in revealed.remove(.sortCode) }
+                .onChange(of: draft.accountNumber) { _, _ in revealed.remove(.accountNumber) }
+                .onChange(of: draft.iban) { _, _ in revealed.remove(.iban) }
+        }
+        LabeledContent("Sort code") {
+            field(.sortCode, text: $draft.sortCode, prompt: "30-00-00", error: draft.sortCodeError)
+        }
+        LabeledContent("Account number") {
+            field(.accountNumber, text: $draft.accountNumber, prompt: "12345678", error: draft.accountNumberError)
+        }
+        LabeledContent("IBAN") {
+            field(.iban, text: $draft.iban, prompt: "GB29 NWBK 6016 1331 9268 19", error: draft.ibanError)
+        }
+    }
+
+    private func field(_ field: Field, text: Binding<String>, prompt: String, error: String?) -> some View {
+        TextField(prompt, text: text, prompt: Text(prompt))
+            .focused($focused, equals: field)
+            .onSubmit { revealed.insert(field) }
+            .sheetFieldNote(revealed.contains(field) ? error : nil, isError: true)
     }
 }
 
@@ -173,6 +213,7 @@ private struct KindPicker: View {
                 Text(AccountsFormat.kind(kind)).tag(kind).disabled(isDisabled(kind))
             }
         }
+        .fixedSize()
     }
 }
 
@@ -184,62 +225,6 @@ private struct TrackingPicker: View {
             Text("Manual balance").tag(AccountTrackingMode.manual)
             Text("Imported").tag(AccountTrackingMode.imported)
         }
-    }
-}
-
-/// Form + inline error + Cancel / Save row used by all four account sheets.
-struct SheetScaffold<Content: View>: View {
-    let title: String
-    let saveTitle: String
-    let canSave: Bool
-    let error: String?
-    var width: CGFloat = 380
-    /// False for content that lays itself out (the bulk sheet's scrolling rows).
-    var wrapsInForm = true
-    let onCancel: () -> Void
-    let onSave: () -> Void
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.title3.bold())
-            if wrapsInForm {
-                Form { content }
-            } else {
-                VStack(alignment: .leading, spacing: 10) { content }
-            }
-            if let error {
-                Label(error, systemImage: "xmark.octagon.fill")
-                    .foregroundStyle(.red)
-                    .font(.callout)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            HStack {
-                Spacer()
-                Button("Cancel", action: onCancel).keyboardShortcut(.cancelAction)
-                Button(saveTitle, action: onSave)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canSave)
-            }
-        }
-        .padding()
-        .frame(width: width)
-    }
-}
-
-struct SheetCaption: View {
-    let text: String
-    var isError = false
-
-    init(_ text: String, isError: Bool = false) {
-        self.text = text
-        self.isError = isError
-    }
-
-    var body: some View {
-        Text(text)
-            .font(.caption)
-            .foregroundStyle(isError ? Color.red : Color.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+        .fixedSize()
     }
 }

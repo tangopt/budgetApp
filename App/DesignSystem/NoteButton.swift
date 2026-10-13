@@ -23,16 +23,22 @@ struct NoteButton: View {
         .buttonStyle(.borderless)
         .help(hasNote ? (note ?? "") : "Add a note")
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            VStack(alignment: .trailing, spacing: 8) {
+            VStack(alignment: .leading, spacing: SheetMetrics.spacing) {
+                Text("Note").font(.headline)
                 TextField("Note", text: $text, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
+                    .labelsHidden()
                     .lineLimit(1...4)
                     .onSubmit { isPresented = false }
-                Button("Done") { isPresented = false }
-                    .keyboardShortcut(.defaultAction)
+                HStack {
+                    Spacer()
+                    Button("Done") { isPresented = false }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                }
             }
-            .padding(10)
-            .frame(width: 260)
+            .popoverPadding()
+            .frame(width: 280)
         }
         .onChange(of: isPresented) { _, presented in
             guard !presented else { return }

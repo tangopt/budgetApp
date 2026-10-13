@@ -20,6 +20,16 @@ final class AccountDetailsTests: XCTestCase {
         XCTAssertEqual(account.displayName, "Lloyds Classic Account")
     }
 
+    func testSortedByDisplayNameUsesAliasCaseInsensitiveAndNumeric() {
+        let accounts = [
+            Account(id: 1, name: "Zeta Bank", currency: .gbp, kind: .cash, trackingMode: .manual, alias: "amex"),
+            Account(id: 2, name: "Barclays", currency: .gbp, kind: .cash, trackingMode: .manual),
+            Account(id: 3, name: "Card 10", currency: .gbp, kind: .credit, trackingMode: .manual),
+            Account(id: 4, name: "Card 9", currency: .gbp, kind: .credit, trackingMode: .manual),
+        ]
+        XCTAssertEqual(accounts.sortedByDisplayName().map(\.id), [1, 2, 4, 3])
+    }
+
     func testAliasNormalisation() {
         XCTAssertEqual(AccountDetailsFormat.normalizedAlias("  Joint "), "Joint")
         XCTAssertNil(AccountDetailsFormat.normalizedAlias("   "))

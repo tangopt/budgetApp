@@ -122,7 +122,7 @@ final class BudgetGridViewModel: ObservableObject {
         forecastEntries = try dbQueue.read { db in try ForecastEntry.budget(db) }
         forecastGroups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
         exceptions = try dbQueue.read { db in try PlannedOccurrenceException.fetchAll(db) }
-        accounts = try dbQueue.read { db in try Account.fetchAll(db) }
+        accounts = try dbQueue.read { db in try Account.fetchAll(db) }.sortedByDisplayName()
         balanceSnapshots = try dbQueue.read { db in try BalanceSnapshot.fetchAll(db) }
         exchangeRate = try dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db) }
         selectDefaultYearIfNeeded()

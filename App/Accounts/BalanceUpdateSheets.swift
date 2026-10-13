@@ -22,13 +22,19 @@ struct UpdateBalanceSheet: View {
     private var amount: Int? { Money.parseMinorUnits(amountText) }
 
     var body: some View {
-        SheetScaffold(title: "Update balance — \(row.account.displayName)", saveTitle: "Save", canSave: amount != nil, error: error, onCancel: { dismiss() }, onSave: save) {
-            MoneyField(row.account.kind == .credit ? "Amount owed" : "Balance", text: $amountText, currency: row.account.currency)
-            if row.account.kind == .credit {
-                SheetCaption("Enter what you owe on the card as a positive number.")
+        SheetScaffold(title: "Update balance", subtitle: row.account.displayName, error: error, onCancel: { dismiss() },
+                      primary: SheetAction("Save", isEnabled: amount != nil, action: save)) {
+            SheetForm {
+                LabeledContent(row.account.kind == .credit ? "Amount owed" : "Balance") {
+                    MoneyField(row.account.kind == .credit ? "Amount owed" : "Balance", text: $amountText, currency: row.account.currency)
+                        .sheetFieldNote(row.account.kind == .credit ? "Enter what you owe on the card as a positive number." : nil)
+                }
+                LabeledContent("As of") {
+                    DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
+                        .fixedSize()
+                }
+                LabeledContent("Note") { TextField("Note", text: $note, prompt: Text("Optional")) }
             }
-            DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
-            TextField("Note (optional)", text: $note)
         }
     }
 
@@ -81,7 +87,9 @@ struct UpdateBalancesSheet: View {
     }
 
     var body: some View {
-        SheetScaffold(title: "Update balances", saveTitle: saveTitle, canSave: (entries?.isEmpty == false), error: error, width: 480, wrapsInForm: false, onCancel: { dismiss() }, onSave: save) {
+        SheetScaffold(title: "Update balances", subtitle: "Credit cards: enter the amount owed. Unchanged rows are saved too, confirming the balance as of that day.",
+                      error: error, width: 480, onCancel: { dismiss() },
+                      primary: SheetAction(saveTitle, isEnabled: entries?.isEmpty == false, action: save)) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(groups) { group in
@@ -94,8 +102,12 @@ struct UpdateBalancesSheet: View {
                 .padding(.vertical, 4)
             }
             .frame(maxHeight: 360)
-            DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
-            SheetCaption("Credit cards: enter the amount owed. Unchanged rows are saved too, confirming the balance as of that day.")
+            SheetForm {
+                LabeledContent("As of") {
+                    DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
+                        .fixedSize()
+                }
+            }
         }
     }
 

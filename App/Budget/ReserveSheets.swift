@@ -86,66 +86,82 @@ struct ReserveFormView: View {
     /// Save needs a non-zero amount and a reserve (a non-blank name for a new one).
     private var canSave: Bool { parsedAmount != nil && target != nil }
 
+    private var title: String {
+        switch mode {
+        case .newReserve: return "New reserve"
+        case .addAmount(let reserve): return "Add an amount to \(reserve.name)"
+        case .addAmountInScenario(let reserve, let scenarioName): return "Add an amount to \(reserve.name) in “\(scenarioName)”"
+        case .chooseReserve(_, let scenarioName): return "Add a reserve allowance to “\(scenarioName)”"
+        }
+    }
+
+    private var subtitle: String? {
+        if case .newReserve = mode {
+            return "A forecast-only allowance for spending you expect but don't plan line by line. It never holds transactions."
+        }
+        return nil
+    }
+
     var body: some View {
-        Form {
-            switch mode {
-            case .newReserve:
-                TextField("Reserve name", text: $name)
-                    .onChange(of: name) { _, _ in onEdit() }
-                Text("A forecast-only allowance for spending you expect but don't plan line by line. It never holds transactions.")
-                    .font(.caption).foregroundStyle(.secondary)
-            case .addAmount(let reserve):
-                Text("Add an amount to \(reserve.name)").font(.headline)
-            case .addAmountInScenario(let reserve, let scenarioName):
-                Text("Add an amount to \(reserve.name) in “\(scenarioName)”").font(.headline)
-            case .chooseReserve(let reserves, let scenarioName):
-                Text("Add a reserve allowance to “\(scenarioName)”").font(.headline)
-                Picker("Reserve", selection: $pickedReserveId) {
-                    Text("Select…").tag(Int64?.none)
-                    ForEach(reserves) { reserve in Text(reserve.name).tag(Int64?.some(reserve.id!)) }
-                    Text("+ New reserve…").tag(Int64?.some(Self.newReserveSentinel))
+        SheetScaffold(title: title, subtitle: subtitle, error: errorMessage, onCancel: { dismiss() },
+                      primary: SheetAction("Save", isEnabled: canSave, action: save)) {
+            SheetForm {
+                switch mode {
+                case .newReserve:
+                    LabeledContent("Name") {
+                        TextField("Reserve name", text: $name)
+                            .onChange(of: name) { _, _ in onEdit() }
+                    }
+                case .addAmount, .addAmountInScenario:
+                    EmptyView()
+                case .chooseReserve(let reserves, _):
+                    LabeledContent("Reserve") {
+                        Picker("Reserve", selection: $pickedReserveId) {
+                            Text("Select…").tag(Int64?.none)
+                            ForEach(reserves) { reserve in Text(reserve.name).tag(Int64?.some(reserve.id!)) }
+                            Text("+ New reserve…").tag(Int64?.some(Self.newReserveSentinel))
+                        }
+                        .onChange(of: pickedReserveId) { _, _ in onEdit() }
+                    }
+                    if pickedReserveId == Self.newReserveSentinel {
+                        LabeledContent("New reserve") {
+                            TextField("New reserve name", text: $name)
+                                .onChange(of: name) { _, _ in onEdit() }
+                                .sheetFieldNote("The reserve itself is shared with the budget and every scenario; this allowance stays in the scenario.")
+                        }
+                    }
                 }
-                .onChange(of: pickedReserveId) { _, _ in onEdit() }
-                if pickedReserveId == Self.newReserveSentinel {
-                    TextField("New reserve name", text: $name)
-                        .onChange(of: name) { _, _ in onEdit() }
-                    Text("The reserve itself is shared with the budget and every scenario; this allowance stays in the scenario.")
-                        .font(.caption).foregroundStyle(.secondary)
+                LabeledContent("Amount") {
+                    MoneyField("Amount", text: $amountPounds, currency: .gbp)
+                        .onChange(of: amountPounds) { _, _ in onEdit() }
                 }
-            }
-            MoneyField("Amount", text: $amountPounds, currency: .gbp)
-                .onChange(of: amountPounds) { _, _ in onEdit() }
-            Picker("Frequency", selection: $frequency) {
-                ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(PlanFormat.frequency(freq, interval: 1)).tag(freq) }
-            }
-            if frequency != .once {
-                Stepper("Every \(interval) \(PlanFormat.unit(frequency, interval: interval))", value: $interval, in: 1...12)
-            }
-            DatePicker("Starting", selection: $startDay, displayedComponents: .date)
-            if frequency != .once {
-                RecurrenceEndFields(mode: $endMode, endDay: $endDay, count: $occurrenceCount, startDay: startDay, lastDate: lastDate)
-            }
-            if let errorMessage {
-                Text(errorMessage).font(.caption).foregroundStyle(.red)
-            }
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("Save") {
-                    guard let target, let minorUnits = parsedAmount else { return }
-                    let start = PayCalendar.utcDay(sameDayAs: startDay, in: .current)
-                    let end = frequency == .once ? nil : RecurrenceEndFields.resolve(mode: endMode, endDay: endDay, count: occurrenceCount, lastDate: lastDate)
-                    onSave(target, -abs(minorUnits), frequency, frequency == .once ? 1 : interval, start, end)
+                LabeledContent("Frequency") {
+                    Picker("Frequency", selection: $frequency) {
+                        ForEach(ForecastFrequency.allCases, id: \.self) { freq in Text(PlanFormat.frequency(freq, interval: 1)).tag(freq) }
+                    }
                 }
-                .disabled(!canSave)
-                .keyboardShortcut(.defaultAction)
+                if frequency != .once {
+                    LabeledContent("Every") { IntervalStepper(interval: $interval, frequency: frequency) }
+                }
+                LabeledContent("Starting") {
+                    DatePicker("Starting", selection: $startDay, displayedComponents: .date)
+                        .fixedSize()
+                }
+                if frequency != .once {
+                    RecurrenceEndFields(mode: $endMode, endDay: $endDay, count: $occurrenceCount, startDay: startDay, lastDate: lastDate)
+                }
             }
         }
         .onChange(of: endMode) { _, _ in onEdit() }
         .onChange(of: endDay) { _, _ in onEdit() }
         .onChange(of: occurrenceCount) { _, _ in onEdit() }
-        .padding()
-        .frame(width: 420)
+    }
+
+    private func save() {
+        guard let target, let minorUnits = parsedAmount else { return }
+        let start = PayCalendar.utcDay(sameDayAs: startDay, in: .current)
+        let end = frequency == .once ? nil : RecurrenceEndFields.resolve(mode: endMode, endDay: endDay, count: occurrenceCount, lastDate: lastDate)
+        onSave(target, -abs(minorUnits), frequency, frequency == .once ? 1 : interval, start, end)
     }
 }
 
@@ -171,25 +187,17 @@ struct RenameReserveView: View {
     private var canSave: Bool { !name.trimmingCharacters(in: .whitespaces).isEmpty }
 
     var body: some View {
-        Form {
-            Text("Rename reserve").font(.headline)
-            TextField("Name", text: $name)
-                .onChange(of: name) { _, _ in onEdit() }
-            if let errorMessage {
-                Text(errorMessage).font(.caption).foregroundStyle(.red)
-            }
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("Save") {
-                    guard canSave else { return }
-                    onSave(name)
+        SheetScaffold(title: "Rename reserve", error: errorMessage, onCancel: { dismiss() },
+                      primary: SheetAction("Save", isEnabled: canSave) {
+                          guard canSave else { return }
+                          onSave(name)
+                      }) {
+            SheetForm {
+                LabeledContent("Name") {
+                    TextField("Name", text: $name)
+                        .onChange(of: name) { _, _ in onEdit() }
                 }
-                .disabled(!canSave)
-                .keyboardShortcut(.defaultAction)
             }
         }
-        .padding()
-        .frame(width: 360)
     }
 }

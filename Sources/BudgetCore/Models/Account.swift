@@ -41,9 +41,19 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     }
 
     /// What the UI calls the account: the alias when set, otherwise the full name. `name`
-    /// stays the identity (uniqueness, sorting).
+    /// stays the identity (uniqueness).
     public var displayName: String {
         AccountDetailsFormat.normalizedAlias(alias ?? "") ?? name
+    }
+
+    /// Orders accounts as the UI lists them: by `displayName`, case-insensitively and with
+    /// numbers compared numerically ("Card 9" before "Card 10"); `name` breaks ties.
+    public static func displayNameOrder(_ lhs: Account, _ rhs: Account) -> Bool {
+        switch lhs.displayName.localizedStandardCompare(rhs.displayName) {
+        case .orderedAscending: return true
+        case .orderedDescending: return false
+        case .orderedSame: return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -73,5 +83,12 @@ func registerAccountDetailsMigration(_ migrator: inout DatabaseMigrator) {
             t.add(column: "accountNumber", .text)
             t.add(column: "iban", .text)
         }
+    }
+}
+
+extension Sequence where Element == Account {
+    /// The accounts in `Account.displayNameOrder`.
+    public func sortedByDisplayName() -> [Account] {
+        sorted(by: Account.displayNameOrder)
     }
 }

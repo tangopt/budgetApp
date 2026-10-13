@@ -235,31 +235,19 @@ struct ScenarioNameSheet: View {
     private var canSave: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
-        Form {
-            Text(title).font(.headline)
-            if let message {
-                Text(message).font(.caption).foregroundStyle(.secondary)
-            }
-            TextField("Name", text: $name)
-            if let errorMessage {
-                Text(errorMessage).font(.callout).foregroundStyle(.red)
-            }
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button(actionLabel) {
-                    switch onSave(name) {
-                    case .saved, .savedButReloadFailed: dismiss()
-                    case .failed(let message): errorMessage = message
-                    }
+        SheetScaffold(title: title, subtitle: message, error: errorMessage, onCancel: { dismiss() },
+                      primary: SheetAction(actionLabel, isEnabled: canSave) {
+                          switch onSave(name) {
+                          case .saved, .savedButReloadFailed: dismiss()
+                          case .failed(let message): errorMessage = message
+                          }
+                      }) {
+            SheetForm {
+                LabeledContent("Name") {
+                    TextField("Name", text: $name)
+                        .onChange(of: name) { _, _ in errorMessage = nil }
                 }
-                .disabled(!canSave)
-                .keyboardShortcut(.defaultAction)
             }
         }
-        .onChange(of: name) { _, _ in errorMessage = nil }
-        .padding()
-        .frame(width: 380)
     }
 }

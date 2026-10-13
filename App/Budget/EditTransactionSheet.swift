@@ -47,43 +47,37 @@ struct EditTransactionSheet: View {
     }
 
     var body: some View {
-        Form {
-            Text("Edit transaction").font(.headline)
-            LabeledContent("Date", value: transaction.date.formatted(date: .abbreviated, time: .omitted))
-            LabeledContent("Description", value: transaction.rawDescription)
-            LabeledContent("Amount") { MoneyText(minorUnits: transaction.amountMinorUnits) }
-            LabeledContent("Category") {
-                CategoryPickerButton(
-                    selection: $categoryId,
-                    categories: categories,
-                    groups: groups,
-                    suggestedId: nil,
-                    recentIds: recentIds,
-                    amountMinorUnits: transaction.amountMinorUnits,
-                    createCategory: createCategory
-                )
-                .frame(width: 220)
-            }
-            TextField("Note", text: $note, axis: .vertical)
-                .lineLimit(1...4)
-            if transfer != nil, transaction.id != nil {
-                LabeledContent("Transfer") { transferContent }
-            }
-            if let errorMessage {
-                Text(errorMessage).font(.callout).foregroundStyle(.red)
-            }
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("Save") { save() }
-                    .disabled(!isChanged)
-                    .keyboardShortcut(.defaultAction)
+        SheetScaffold(title: "Edit transaction", error: errorMessage, width: 460, onCancel: { dismiss() },
+                      primary: SheetAction("Save", isEnabled: isChanged, action: save)) {
+            SheetForm {
+                LabeledContent("Date", value: transaction.date.formatted(date: .abbreviated, time: .omitted))
+                LabeledContent("Description") {
+                    Text(transaction.rawDescription)
+                        .textSelection(.enabled)
+                }
+                LabeledContent("Amount") { MoneyText(minorUnits: transaction.amountMinorUnits) }
+                LabeledContent("Category") {
+                    CategoryPickerButton(
+                        selection: $categoryId,
+                        categories: categories,
+                        groups: groups,
+                        suggestedId: nil,
+                        recentIds: recentIds,
+                        amountMinorUnits: transaction.amountMinorUnits,
+                        createCategory: createCategory
+                    )
+                    .frame(maxWidth: 260)
+                    .onChange(of: categoryId) { _, _ in errorMessage = nil }
+                }
+                LabeledContent("Note") {
+                    TextField("Note", text: $note, prompt: Text("Optional"), axis: .vertical)
+                        .lineLimit(1...4)
+                }
+                if transfer != nil, transaction.id != nil {
+                    LabeledContent("Transfer") { transferContent }
+                }
             }
         }
-        .onChange(of: categoryId) { _, _ in errorMessage = nil }
-        .padding()
-        .frame(width: 440)
     }
 
     @ViewBuilder
@@ -135,7 +129,7 @@ struct EditTransactionSheet: View {
                 }
             }
         }
-        .padding()
+        .popoverPadding()
         .frame(width: 420)
     }
 

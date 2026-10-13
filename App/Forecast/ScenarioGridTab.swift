@@ -480,17 +480,9 @@ private struct ScenarioDrillDownSheet: View {
     @State private var planError: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("\(category.name) — \(PayMonthFormat.name(PayMonth(year: year, month: month)))").font(.headline)
-                Spacer()
-                Button("Close") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-            if let scenario = viewModel.gridScenario {
-                Text("In “\(scenario.name)”. Changes stay in the scenario until you apply them.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+        SheetScaffold(title: "\(category.name) — \(PayMonthFormat.name(PayMonth(year: year, month: month)))",
+                      subtitle: viewModel.gridScenario.map { "In “\($0.name)”. Changes stay in the scenario until you apply them." },
+                      width: 560, cancelTitle: "Done", onCancel: { dismiss() }) {
             List {
                 PlannedOccurrencesSection(
                     rows: viewModel.occurrences(category: category, year: year, month: month),
@@ -500,9 +492,8 @@ private struct ScenarioDrillDownSheet: View {
                     onRemove: { row in planError = nil; removing = row }
                 )
             }
+            .frame(height: 300)
         }
-        .padding()
-        .frame(width: 560, height: 420)
         .plannedOccurrenceEditing(editing: $editing, removing: $removing, planError: $planError,
                                   categories: viewModel.categories, actions: viewModel.planEditActions)
     }

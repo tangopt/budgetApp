@@ -69,7 +69,7 @@ public struct AccountsOverview: Equatable {
         let groups: [AccountGroup] = [AccountKind.cash, .investment, .credit].compactMap { kind in
             guard let rows = rowsByKind[kind], !rows.isEmpty else { return nil }
             let sorted = rows.sorted {
-                $0.gbpBalanceMinorUnits != $1.gbpBalanceMinorUnits ? $0.gbpBalanceMinorUnits > $1.gbpBalanceMinorUnits : $0.account.name < $1.account.name
+                $0.gbpBalanceMinorUnits != $1.gbpBalanceMinorUnits ? $0.gbpBalanceMinorUnits > $1.gbpBalanceMinorUnits : Account.displayNameOrder($0.account, $1.account)
             }
             return AccountGroup(kind: kind, subtotalGBP: sorted.reduce(0) { $0 + $1.gbpBalanceMinorUnits }, rows: sorted)
         }

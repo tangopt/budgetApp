@@ -380,7 +380,7 @@ struct BudgetGridView: View {
                 finishReserveSave(viewModel.renameReserve(reserve, to: name)) { renamingReserve = nil }
             }
         }
-        .confirmationDialog("Delete “\(deletingReserve?.name ?? "")”? Its allowances are removed from the plan and from every scenario.", isPresented: Binding(
+        .confirmationDialog("Delete “\(deletingReserve?.name ?? "")”?", isPresented: Binding(
             get: { deletingReserve != nil },
             set: { if !$0 { deletingReserve = nil } }
         ), titleVisibility: .visible) {
@@ -391,6 +391,8 @@ struct BudgetGridView: View {
                 deletingReserve = nil
             }
             Button("Cancel", role: .cancel) { deletingReserve = nil }
+        } message: {
+            Text("Its allowances are removed from the plan and from every scenario.")
         }
         .sheet(item: $closeTarget, onDismiss: { viewModel.errorMessage = nil }) { target in
             CloseMonthView(month: target.month, calendar: viewModel.payCalendar, errorMessage: viewModel.errorMessage) { day in

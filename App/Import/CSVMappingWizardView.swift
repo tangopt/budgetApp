@@ -27,12 +27,13 @@ struct CSVMappingWizardView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Map columns — \(account.displayName)")
-                    .font(.title2.weight(.semibold))
+                    .font(.title3.weight(.semibold))
                 Text("Choose what each column holds. Columns set to Ignore aren't imported.")
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
-            .padding([.horizontal, .top], 20)
-            .padding(.bottom, 12)
+            .padding([.horizontal, .top], SheetMetrics.padding)
+            .padding(.bottom, SheetMetrics.spacing)
 
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 16) {
@@ -41,14 +42,14 @@ struct CSVMappingWizardView: View {
                     Divider()
                     CSVMappingPreview(transactions: previewTransactions, currency: model.currency, showsBalance: showsBalanceInPreview)
                 }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 12)
+                .padding(.horizontal, SheetMetrics.padding)
+                .padding(.bottom, SheetMetrics.spacing)
             }
 
             Divider()
             buttonRow
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
+                .padding(.horizontal, SheetMetrics.padding)
+                .padding(.vertical, SheetMetrics.spacing)
         }
         .frame(minWidth: 900, idealWidth: 1100, minHeight: 600, idealHeight: 720)
         .onChange(of: model.check) { saveAttemptMessage = nil }
@@ -152,24 +153,19 @@ struct CSVMappingWizardView: View {
 
     // MARK: - Buttons
 
+    /// The standard footer; Save mapping stays enabled so pressing it can say what's missing.
     private var buttonRow: some View {
-        HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: SheetMetrics.spacing) {
             if let saveAttemptMessage {
-                Text(saveAttemptMessage)
-                    .font(.callout)
-                    .foregroundStyle(.red)
+                SheetErrorText(saveAttemptMessage)
             }
-            Spacer()
-            Button("Cancel", role: .cancel) { dismiss() }
-                .keyboardShortcut(.cancelAction)
-            Button("Save mapping") {
+            SheetFooter(onCancel: { dismiss() }, primary: SheetAction("Save mapping") {
                 if let profile = model.makeProfile() {
                     onSave(profile)
                 } else {
                     saveAttemptMessage = model.saveBlocker
                 }
-            }
-            .keyboardShortcut(.defaultAction)
+            })
         }
     }
 }

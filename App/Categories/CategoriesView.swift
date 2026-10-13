@@ -91,9 +91,10 @@ struct CategoriesView: View {
         .confirmationDialog(
             "Delete the group “\(deletingGroup?.name ?? "")”?",
             isPresented: Binding(get: { deletingGroup != nil }, set: { if !$0 { deletingGroup = nil } }),
+            titleVisibility: .visible,
             presenting: deletingGroup
         ) { group in
-            Button("Delete Group", role: .destructive) {
+            Button("Delete group", role: .destructive) {
                 if let id = group.id { viewModel.deleteGroup(id: id) }
             }
         } message: { _ in
@@ -102,9 +103,10 @@ struct CategoriesView: View {
         .confirmationDialog(
             "Delete the category “\(deletingCategory?.name ?? "")”?",
             isPresented: Binding(get: { deletingCategory != nil }, set: { if !$0 { deletingCategory = nil } }),
+            titleVisibility: .visible,
             presenting: deletingCategory
         ) { category in
-            Button("Delete Category", role: .destructive) {
+            Button("Delete category", role: .destructive) {
                 if let id = category.id { viewModel.deleteCategory(id: id) }
             }
         } message: { _ in

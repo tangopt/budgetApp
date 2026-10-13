@@ -123,7 +123,7 @@ struct CategoryPickerPopover: View {
             TextField("Search categories", text: $query)
                 .textFieldStyle(.roundedBorder)
                 .focused($searchFocused)
-                .padding(8)
+                .popoverPadding()
                 .onKeyPress(.downArrow) {
                     isKeyboardNavigating = true
                     if !entries.isEmpty { highlighted = min(highlighted + 1, entries.count - 1) }
@@ -193,10 +193,10 @@ struct CategoryPickerPopover: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
+                    .popoverPadding()
             }
         }
-        .frame(width: 280, height: remember == nil ? 360 : 392)
+        .frame(width: 280, height: remember == nil ? 368 : 408)
         .onAppear {
             resetHighlight()
             searchFocused = true

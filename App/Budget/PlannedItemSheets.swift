@@ -154,7 +154,7 @@ struct PlannedOccurrenceEditing: ViewModifier {
             .confirmationDialog("Remove this planned occurrence?", isPresented: Binding(
                 get: { removing != nil },
                 set: { if !$0 { removing = nil } }
-            ), presenting: removing) { row in
+            ), titleVisibility: .visible, presenting: removing) { row in
                 Button("Only this occurrence", role: .destructive) { remove(row, .onlyThis) }
                 Button("This and all following", role: .destructive) { remove(row, .thisAndFollowing) }
                 Button("Cancel", role: .cancel) { removing = nil }
@@ -362,44 +362,38 @@ struct EditOccurrenceSheet: View {
     private var changesFrequency: Bool { frequency != row.entry.frequency || interval != row.entry.interval || endChange != nil }
 
     var body: some View {
-        Form {
-            Text("Edit planned occurrence").font(.headline)
-            MoneyField("Amount", text: $amountText, currency: .gbp)
-            DatePicker("Date", selection: $pickedDay, displayedComponents: .date)
-            Picker("Category", selection: $categoryId) {
-                ForEach(pickerCategories) { category in Text(category.name).tag(category.id!) }
-            }
-            Picker("Frequency", selection: $frequency) {
-                ForEach(ForecastFrequency.allCases, id: \.self) { freq in
-                    Text(freq == .once ? "One-off (ends the series here)" : PlanFormat.frequency(freq, interval: 1)).tag(freq)
+        SheetScaffold(title: "Edit planned occurrence", error: errorMessage, onCancel: { dismiss() },
+                      primary: SheetAction(fixedScope == nil ? "Save…" : "Save", isEnabled: change != nil) {
+                          errorMessage = nil
+                          if let fixedScope { save(fixedScope) } else { choosingScope = true }
+                      }) {
+            SheetForm {
+                LabeledContent("Amount") { MoneyField("Amount", text: $amountText, currency: .gbp) }
+                LabeledContent("Date") {
+                    DatePicker("Date", selection: $pickedDay, displayedComponents: .date)
+                        .fixedSize()
                 }
-            }
-            if frequency != .once {
-                Stepper("Every \(interval) \(PlanFormat.unit(frequency, interval: interval))", value: $interval, in: 1...12)
-            }
-            if frequency != .once {
-                RecurrenceEndFields(mode: $endMode, endDay: $endDay, count: $occurrenceCount, startDay: pickedDay, lastDate: lastDate)
-            }
-            if fixedScope == .thisAndFollowing {
-                Text("Changes this and all following occurrences.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if changesFrequency {
-                Text("A frequency or end change applies to this and all following occurrences.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if let errorMessage {
-                Text(errorMessage).font(.callout).foregroundStyle(.red)
-            }
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button(fixedScope == nil ? "Save…" : "Save") {
-                    errorMessage = nil
-                    if let fixedScope { save(fixedScope) } else { choosingScope = true }
+                LabeledContent("Category") {
+                    Picker("Category", selection: $categoryId) {
+                        ForEach(pickerCategories) { category in Text(category.name).tag(category.id!) }
+                    }
                 }
-                .disabled(change == nil)
-                .keyboardShortcut(.defaultAction)
+                LabeledContent("Frequency") {
+                    Picker("Frequency", selection: $frequency) {
+                        ForEach(ForecastFrequency.allCases, id: \.self) { freq in
+                            Text(freq == .once ? "One-off (ends the series here)" : PlanFormat.frequency(freq, interval: 1)).tag(freq)
+                        }
+                    }
+                }
+                if frequency != .once {
+                    LabeledContent("Every") { IntervalStepper(interval: $interval, frequency: frequency) }
+                    RecurrenceEndFields(mode: $endMode, endDay: $endDay, count: $occurrenceCount, startDay: pickedDay, lastDate: lastDate)
+                }
+                if fixedScope == .thisAndFollowing {
+                    SheetFormNote("Changes this and all following occurrences.")
+                } else if changesFrequency {
+                    SheetFormNote("A frequency or end change applies to this and all following occurrences.")
+                }
             }
         }
         .onChange(of: amountText) { _, _ in errorMessage = nil }
@@ -407,15 +401,13 @@ struct EditOccurrenceSheet: View {
         .onChange(of: endMode) { _, _ in errorMessage = nil }
         .onChange(of: endDay) { _, _ in errorMessage = nil }
         .onChange(of: occurrenceCount) { _, _ in errorMessage = nil }
-        .confirmationDialog("Apply this change to", isPresented: $choosingScope) {
+        .confirmationDialog("Apply this change to", isPresented: $choosingScope, titleVisibility: .visible) {
             if !changesFrequency {
                 Button("Only this occurrence") { save(.onlyThis) }
             }
             Button("This and all following") { save(.thisAndFollowing) }
             Button("Cancel", role: .cancel) {}
         }
-        .padding()
-        .frame(width: 420)
     }
 
     private func save(_ scope: PlanEditScope) {
@@ -530,53 +522,55 @@ struct AddPlannedItemSheet: View {
     }
 
     var body: some View {
-        Form {
-            Text(title).font(.headline)
-            Picker("Category", selection: $categoryId) {
-                Text("Select…").tag(Int64?.none)
-                ForEach(pickerCategories) { category in Text(category.name).tag(Int64?.some(category.id!)) }
-                Text("+ New category…").tag(Int64?.some(Self.newCategorySentinel))
-            }
-            if isCreatingNewCategory {
-                // Created together with the item on Save, in the same write — Cancel or a
-                // failed save leaves no orphaned category behind.
-                TextField("New category name", text: $newCategoryName)
-            }
-            if !alreadyPlanned.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(alreadyPlanned) { entry in
-                        Text("Already planned: \(PlanFormat.series(entry))").font(.callout)
+        SheetScaffold(title: title, error: errorMessage, onCancel: { dismiss() },
+                      primary: SheetAction("Add", isEnabled: canSave, action: save)) {
+            SheetForm {
+                LabeledContent("Category") {
+                    Picker("Category", selection: $categoryId) {
+                        Text("Select…").tag(Int64?.none)
+                        ForEach(pickerCategories) { category in Text(category.name).tag(Int64?.some(category.id!)) }
+                        Text("+ New category…").tag(Int64?.some(Self.newCategorySentinel))
                     }
-                    Text("This adds to what's already planned. To change an existing item, edit it from the grid.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
-            }
-            MoneyField("Amount", text: $amountText, currency: .gbp)
-            Picker("Repeats", selection: $isRecurring) {
-                Text("One-off").tag(false)
-                Text("Recurring").tag(true)
-            }
-            .pickerStyle(.segmented)
-            if isRecurring {
-                Picker("Frequency", selection: $frequency) {
-                    ForEach([ForecastFrequency.weekly, .monthly, .annually], id: \.self) { freq in Text(PlanFormat.frequency(freq, interval: 1)).tag(freq) }
+                if isCreatingNewCategory {
+                    // Created together with the item on Save, in the same write — Cancel or a
+                    // failed save leaves no orphaned category behind.
+                    LabeledContent("New category") { TextField("New category name", text: $newCategoryName) }
                 }
-                Stepper("Every \(interval) \(PlanFormat.unit(frequency, interval: interval))", value: $interval, in: 1...12)
-            }
-            DatePicker(isRecurring ? "Starting" : "Date", selection: $startDay, displayedComponents: .date)
-            if isRecurring {
-                RecurrenceEndFields(mode: $endMode, endDay: $endDay, count: $occurrenceCount, startDay: startDay, lastDate: lastDate)
-            }
-            if let errorMessage {
-                Text(errorMessage).font(.callout).foregroundStyle(.red)
-            }
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("Add") { save() }
-                    .disabled(!canSave)
-                    .keyboardShortcut(.defaultAction)
+                if !alreadyPlanned.isEmpty {
+                    LabeledContent("Already planned") {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(alreadyPlanned) { entry in
+                                Text(PlanFormat.series(entry)).font(.callout)
+                            }
+                            SheetCaption("This adds to what's already planned. To change an existing item, edit it from the grid.")
+                        }
+                    }
+                }
+                LabeledContent("Amount") { MoneyField("Amount", text: $amountText, currency: .gbp) }
+                LabeledContent("Repeats") {
+                    Picker("Repeats", selection: $isRecurring) {
+                        Text("One-off").tag(false)
+                        Text("Recurring").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                }
+                if isRecurring {
+                    LabeledContent("Frequency") {
+                        Picker("Frequency", selection: $frequency) {
+                            ForEach([ForecastFrequency.weekly, .monthly, .annually], id: \.self) { freq in Text(PlanFormat.frequency(freq, interval: 1)).tag(freq) }
+                        }
+                    }
+                    LabeledContent("Every") { IntervalStepper(interval: $interval, frequency: frequency) }
+                }
+                LabeledContent(isRecurring ? "Starting" : "Date") {
+                    DatePicker(isRecurring ? "Starting" : "Date", selection: $startDay, displayedComponents: .date)
+                        .fixedSize()
+                }
+                if isRecurring {
+                    RecurrenceEndFields(mode: $endMode, endDay: $endDay, count: $occurrenceCount, startDay: startDay, lastDate: lastDate)
+                }
             }
         }
         .onChange(of: amountText) { _, _ in errorMessage = nil }
@@ -585,8 +579,6 @@ struct AddPlannedItemSheet: View {
         .onChange(of: endMode) { _, _ in errorMessage = nil }
         .onChange(of: endDay) { _, _ in errorMessage = nil }
         .onChange(of: occurrenceCount) { _, _ in errorMessage = nil }
-        .padding()
-        .frame(width: 420)
     }
 
     private func save() {
@@ -596,6 +588,21 @@ struct AddPlannedItemSheet: View {
         switch onSave(category, amount, isRecurring ? frequency : .once, isRecurring ? interval : 1, start, end) {
         case .saved, .savedButReloadFailed: dismiss()
         case .failed(let message): errorMessage = message
+        }
+    }
+}
+
+/// "2 months" with a stepper (1–12), for a `SheetForm`'s "Every" row.
+struct IntervalStepper: View {
+    @Binding var interval: Int
+    let frequency: ForecastFrequency
+
+    var body: some View {
+        HStack {
+            Text("\(interval) \(PlanFormat.unit(frequency, interval: interval))")
+                .monospacedDigit()
+            Stepper("Every", value: $interval, in: 1...12)
+                .labelsHidden()
         }
     }
 }
