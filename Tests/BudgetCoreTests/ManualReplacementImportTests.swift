@@ -204,4 +204,25 @@ final class ManualReplacementImportTests: XCTestCase {
         let count = try await f.manager.dbQueue.read { db in try Transaction.filter(Column("accountId") == f.isa).fetchCount(db) }
         XCTAssertEqual(count, 1)
     }
+
+    func testARowReplacingAManualEntryDoesntTakeASavedLegFromAnotherRow() async throws {
+        let f = try makeFixture()
+        let out = try await f.manager.dbQueue.write { db -> Transaction in
+            var external = Category(name: "From Mum", type: .transfer, isExternalTransfer: true)
+            try external.insert(db)
+            var batch = ImportBatch(accountId: f.joint, sourceFileName: "joint.csv", importedAt: Date())
+            try batch.insert(db)
+            var out = Transaction(importBatchId: batch.id!, accountId: f.joint, date: self.july1, rawDescription: "TFR TO ISA", amountMinorUnits: -5000,
+                                  categoryId: nil, status: .pendingReview, categorizedBy: .none, fingerprint: "j3")
+            try out.insert(db)
+            // Never a transfer leg itself (external category).
+            try ManualTransactions.add(db: db, accountId: f.isa, date: self.july1.addingTimeInterval(-self.day), description: "Gift",
+                                       amountMinorUnits: 5000, categoryId: external.id!, note: nil)
+            return out
+        }
+        let staged = try await stage(f, "02/07/2026,GIFT,50.00\n03/07/2026,FROM JOINT,50.00")
+        XCTAssertNotNil(staged.staged[0].replacesManual)
+        XCTAssertNil(staged.staged[0].transfer)
+        XCTAssertEqual(staged.staged[1].transfer?.otherTransactionId, out.id)
+    }
 }

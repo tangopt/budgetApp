@@ -126,9 +126,28 @@ final class ManualTransactionsTests: XCTestCase {
 
     func testManualTransactionsCountInBalancesAndBudget() throws {
         let f = try makeFixture()
+        let cash = try f.manager.dbQueue.write { db -> Int64 in
+            var cash = Account(name: "Cash tin", currency: .gbp, kind: .cash, trackingMode: .manual)
+            try cash.insert(db)
+            for (account, amount) in [(f.joint, 10_000), (cash.id!, 3_000)] {
+                var snapshot = BalanceSnapshot(accountId: account, date: july1.addingTimeInterval(-Self.day), balanceMinorUnits: amount, note: nil)
+                try snapshot.insert(db)
+            }
+            return cash.id!
+        }
         try add(f, amount: -1250, category: f.groceries)
+        try add(f, account: cash, amount: -700, category: f.groceries)
         let budget = try f.manager.dbQueue.read { db in try Transaction.budgetFacing.fetchAll(db) }
-        XCTAssertEqual(budget.map(\.amountMinorUnits), [-1250])
+        XCTAssertEqual(budget.map(\.amountMinorUnits).sorted(), [-1250, -700])
+        let balances = try f.manager.dbQueue.read { db in
+            NetWorthCalculator.accountBalances(accounts: try Account.fetchAll(db), snapshots: try BalanceSnapshot.fetchAll(db),
+                                               transactions: try Transaction.fetchAll(db), rate: try ExchangeRateSetting.currentOrDefault(db: db))
+        }
+        let byId = Dictionary(uniqueKeysWithValues: balances.map { ($0.account.id!, $0.nativeBalanceMinorUnits) })
+        // An imported account's computed balance includes the manual entry…
+        XCTAssertEqual(byId[f.joint], 8_750)
+        // …a manually tracked account's balance comes from its snapshots only.
+        XCTAssertEqual(byId[cash], 3_000)
     }
 
     // MARK: Update
@@ -296,6 +315,10 @@ final class ManualTransactionsTests: XCTestCase {
         let external = try importedTransaction(f, account: f.joint, amount: -5000, category: f.external)
         assertThrows(.externalTransferCategory) {
             try f.manager.dbQueue.write { db in _ = try ManualTransactions.addOtherSide(db: db, transactionId: external.id!, accountId: f.isa) }
+        }
+        let groceries = try importedTransaction(f, account: f.joint, amount: -5000, category: f.groceries)
+        assertThrows(.notATransfer) {
+            try f.manager.dbQueue.write { db in _ = try ManualTransactions.addOtherSide(db: db, transactionId: groceries.id!, accountId: f.isa) }
         }
         let out = try importedTransaction(f, account: f.joint, amount: -5000)
         assertThrows(.sameAccount) {

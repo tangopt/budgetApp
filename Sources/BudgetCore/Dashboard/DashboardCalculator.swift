@@ -6,7 +6,8 @@ public enum DashboardCalculator {
     // MARK: Data freshness
 
     public static func dataFreshness(_ input: DashboardInput) -> DataFreshness {
-        let lastBatch = input.importBatches.max { $0.importedAt < $1.importedAt }
+        // Adding a transaction by hand isn't an import (its "Manual entries" batch never counts).
+        let lastBatch = input.importBatches.filter { $0.sourceFileName != ManualTransactions.batchSourceFileName }.max { $0.importedAt < $1.importedAt }
         guard let dataThrough = input.dataThrough else {
             return DataFreshness(status: .noData, lastImportAt: lastBatch?.importedAt, lastImportFileName: lastBatch?.sourceFileName, dataThrough: nil)
         }

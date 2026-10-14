@@ -105,7 +105,7 @@ extension DashboardCalculator {
 
         // "As of": the latest of the last snapshot and the latest transaction of imported accounts.
         let importedIds = Set(input.accounts.filter { $0.trackingMode == .imported }.compactMap(\.id))
-        let importedLatest = input.transactions.filter { importedIds.contains($0.accountId) }.map(\.date).max()
+        let importedLatest = Transaction.importedDataThrough(input.transactions.filter { importedIds.contains($0.accountId) })
         let asOf = [lastSnapshot, importedLatest].compactMap { $0 }.max()
 
         let changeVsPrevious: Int? = actual.count >= 2 ? actual[actual.count - 1].valueMinorUnits - actual[actual.count - 2].valueMinorUnits : nil

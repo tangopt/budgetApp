@@ -68,10 +68,10 @@ public struct PayCalendar: Sendable {
     }
 
     /// The calendar the Dashboard and the scenario lab read: paydays from the loaded
-    /// transactions, and today never earlier than the latest transaction (a clock behind the
-    /// data counts as "today = D").
+    /// transactions, and today never earlier than the latest imported transaction (a clock
+    /// behind the data counts as "today = D"; a manual entry, even future-dated, never moves it).
     public static func forData(transactions: [Transaction], categories: [Category], manualCloses: [PayMonthClose], today: Date) -> PayCalendar {
-        let dataThrough = transactions.map(\.date).max()
+        let dataThrough = Transaction.importedDataThrough(transactions)
         return PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories),
                            manualCloses: manualCloses, today: dataThrough.map { max(today, $0) } ?? today)
     }

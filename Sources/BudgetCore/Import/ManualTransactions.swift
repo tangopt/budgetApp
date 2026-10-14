@@ -13,6 +13,8 @@ public enum ManualTransactionError: Error, Equatable, LocalizedError {
     case notManual
     /// Add the other side…: the transaction is filed under an external-transfer category.
     case externalTransferCategory
+    /// Add the other side…: the transaction is filed under an income or expense category.
+    case notATransfer
     /// Add the other side…: the transaction is already a leg of a transfer.
     case alreadyLinked
     /// Add the other side…: the other side must be in another account.
@@ -28,6 +30,7 @@ public enum ManualTransactionError: Error, Equatable, LocalizedError {
         case .emptyDescription: return "Enter a description."
         case .notManual: return "Only transactions you added by hand can be changed or deleted here."
         case .externalTransferCategory: return "This transaction's category is for an account you don't import, so it has no other side."
+        case .notATransfer: return "Set a transfer category first — only transfers have another side."
         case .alreadyLinked: return "That transaction is already linked to a transfer."
         case .sameAccount: return "The other side of a transfer is in another account."
         }
@@ -107,8 +110,9 @@ public enum ManualTransactions {
         _ = try Transaction.deleteOne(db, key: id)
     }
 
-    /// Add the other side…: for a transaction in no active link, creates the opposite leg by
-    /// hand in `accountId` — same date and category, the amount converted at the stored
+    /// Add the other side…: for a transaction in no active link, uncategorised or in a
+    /// (non-external) transfer category, creates the opposite leg by hand in `accountId` —
+    /// same date and category, the amount converted at the stored
     /// exchange rate across currencies, described "Transfer from/to <account>" — and links
     /// the two (origin `manual`: out = money sent, in = money received).
     @discardableResult
@@ -120,8 +124,9 @@ public enum ManualTransactions {
         guard accountId != source.accountId else { throw ManualTransactionError.sameAccount }
         guard let sourceAccount = try Account.fetchOne(db, key: source.accountId) else { throw ManualTransactionError.accountNotFound }
         guard source.amountMinorUnits != 0 else { throw ManualTransactionError.zeroAmount }
-        if let categoryId = source.categoryId, try Category.fetchOne(db, key: categoryId)?.isExternalTransfer == true {
-            throw ManualTransactionError.externalTransferCategory
+        if let categoryId = source.categoryId, let category = try Category.fetchOne(db, key: categoryId) {
+            guard !category.isExternalTransfer else { throw ManualTransactionError.externalTransferCategory }
+            guard category.type == .transfer else { throw ManualTransactionError.notATransfer }
         }
         let linked = try TransferLink.active
             .filter(Column("outTransactionId") == sourceId || Column("inTransactionId") == sourceId)

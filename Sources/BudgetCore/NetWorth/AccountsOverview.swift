@@ -61,7 +61,7 @@ public struct AccountsOverview: Equatable {
                 if let latestSnapshot { oldestStale = oldestStale.map { min($0, latestSnapshot) } ?? latestSnapshot }
             }
             var lastUpdated = latestSnapshot
-            if account.trackingMode == .imported, let latestTransaction = transactions.filter({ $0.accountId == account.id }).map(\.date).max() {
+            if account.trackingMode == .imported, let latestTransaction = Transaction.importedDataThrough(transactions.filter({ $0.accountId == account.id })) {
                 lastUpdated = lastUpdated.map { max($0, latestTransaction) } ?? latestTransaction
             }
             rowsByKind[account.kind, default: []].append(AccountRow(account: account, nativeBalanceMinorUnits: balance.nativeBalanceMinorUnits, gbpBalanceMinorUnits: balance.gbpBalanceMinorUnits, lastUpdated: lastUpdated, isStale: stale))

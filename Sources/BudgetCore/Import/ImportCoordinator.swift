@@ -192,18 +192,21 @@ public final class ImportCoordinator {
     /// non-external transfer category — otherwise (say the receiving leg is filed as Salary) it
     /// keeps its own suggestion, which the match already found linkable, so commit still links.
     private func withTransfers(_ staged: [StagedTransaction], accountId: Int64) async throws -> [StagedTransaction] {
-        guard !staged.isEmpty else { return staged }
-        let (matches, linkableSentCategoryIds) = try await dbQueue.read { db in
+        // A row replacing a manual entry keeps that entry's category and takes over its links
+        // on commit (the matcher looks at it then if there are none), so it's left out here and
+        // can't claim a saved leg another row would match.
+        let matchable = staged.indices.filter { staged[$0].replacesManual == nil }
+        guard !matchable.isEmpty else { return staged }
+        let (matchesByPosition, linkableSentCategoryIds) = try await dbQueue.read { db in
             (try TransferMatcher.stagedMatches(db: db, accountId: accountId,
-                                               staged: staged.map { ($0.parsed.date, $0.parsed.amountMinorUnits, $0.suggestedCategoryId) }),
+                                               staged: matchable.map { (staged[$0].parsed.date, staged[$0].parsed.amountMinorUnits, staged[$0].suggestedCategoryId) }),
              Set(try Int64.fetchAll(db, sql: "SELECT id FROM category WHERE type = ? AND isExternalTransfer = 0",
                                     arguments: [CategoryType.transfer.rawValue])))
         }
-        guard !matches.isEmpty else { return staged }
+        guard !matchesByPosition.isEmpty else { return staged }
+        let matches = Dictionary(uniqueKeysWithValues: matchesByPosition.map { (matchable[$0.key], $0.value) })
         return staged.enumerated().map { index, row in
-            // A row replacing a manual entry keeps that entry's category; it takes over the
-            // entry's links on commit, and the matcher looks at it then if there are none.
-            guard let match = matches[index], row.replacesManual == nil else { return row }
+            guard let match = matches[index] else { return row }
             guard let categoryId = match.otherCategoryId, match.isIncoming || linkableSentCategoryIds.contains(categoryId) else {
                 return StagedTransaction(id: row.id, parsed: row.parsed, suggestedCategoryId: row.suggestedCategoryId, source: row.source,
                                          confidence: row.confidence, fingerprint: row.fingerprint, historyCount: row.historyCount, transfer: match)

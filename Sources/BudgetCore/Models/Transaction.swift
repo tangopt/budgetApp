@@ -60,6 +60,12 @@ public struct Transaction: Codable, Equatable, Identifiable, FetchableRecord, Mu
     }
 
     public static let databaseTableName = "transaction_"
+
+    /// The latest date among `transactions` that came from a statement: how fresh the data
+    /// is. Manual entries (even future-dated) never count.
+    public static func importedDataThrough(_ transactions: [Transaction]) -> Date? {
+        transactions.lazy.filter { !$0.isManual }.map(\.date).max()
+    }
 }
 
 func registerTransactionMigration(_ migrator: inout DatabaseMigrator) {

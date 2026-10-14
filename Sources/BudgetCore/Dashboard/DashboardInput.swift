@@ -46,7 +46,7 @@ public struct DashboardInput {
         self.exceptions = exceptions
         self.importBatches = importBatches
         self.rate = rate
-        self.dataThrough = transactions.map(\.date).max()
+        self.dataThrough = Transaction.importedDataThrough(transactions)
         self.payCalendar = payCalendar
         self.monthTotals = PayMonthTotals.lookup(transactions: budgetTransactions, calendar: payCalendar)
     }
