@@ -119,10 +119,10 @@ struct AccountsView: View {
                 Text("\(overview.staleCount) balance\(overview.staleCount == 1 ? "" : "s") not updated\(since) — import a statement or update them.")
             }
         }
-        if !viewModel.warnings.isEmpty {
-            Banner(systemImage: "exclamationmark.circle.fill", tint: .orange, onDismiss: { viewModel.warnings = [] }) {
+        if !viewModel.balanceMessages.isEmpty {
+            Banner(systemImage: "checkmark.circle.fill", tint: .green, onDismiss: { viewModel.balanceMessages = [] }) {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(viewModel.warnings, id: \.self) { Text($0) }
+                    ForEach(Array(viewModel.balanceMessages.enumerated()), id: \.offset) { Text($0.element) }
                 }
             }
         }
@@ -333,7 +333,7 @@ private struct AccountDetailView: View {
                         if row.account.displayName != row.account.name {
                             Text(row.account.name).font(.callout).foregroundStyle(.secondary)
                         }
-                        Text("\(row.account.currency.rawValue.uppercased()) · \(AccountsFormat.kind(row.account.kind)) · \(row.account.trackingMode == .manual ? "Manual balance" : "Imported")")
+                        Text("\(row.account.currency.rawValue.uppercased()) · \(AccountsFormat.kind(row.account.kind))")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }

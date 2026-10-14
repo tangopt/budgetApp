@@ -4,9 +4,6 @@ public struct AccountBalance {
     public let account: Account
     public let nativeBalanceMinorUnits: Int
     public let gbpBalanceMinorUnits: Int
-    /// Non-nil only when a manually-entered "actual" balance has been checked
-    /// against the computed running balance for an `.imported` account.
-    public let reconciliationDriftMinorUnits: Int?
 }
 
 public struct MonthlyAccountBalance {
@@ -14,8 +11,8 @@ public struct MonthlyAccountBalance {
     public let nativeBalanceMinorUnits: Int
     public let gbpBalanceMinorUnits: Int
     /// True when nothing dated within the requested month determined this balance — no
-    /// snapshot, and (for `.imported` accounts) no transaction either — so the figure shown
-    /// is carried forward unchanged from an earlier month.
+    /// snapshot and no transaction — so the figure shown is carried forward unchanged from
+    /// an earlier month.
     public let isCarriedForward: Bool
 }
 
@@ -42,14 +39,10 @@ public enum NetWorthCalculator {
         signedSnapshotBalance(enteredMinorUnits: signedMinorUnits, accountKind: accountKind)
     }
 
-    public static func runningBalance(account: Account, latestSnapshot: BalanceSnapshot?, transactionsSinceSnapshot: [Transaction]) -> Int {
-        let base = latestSnapshot?.balanceMinorUnits ?? 0
-        switch account.trackingMode {
-        case .manual:
-            return base
-        case .imported:
-            return base + transactionsSinceSnapshot.reduce(0) { $0 + $1.amountMinorUnits }
-        }
+    /// `snapshot + sum(transactions)`: every account, whatever its (legacy) tracking mode,
+    /// counts the transactions after its latest snapshot.
+    public static func runningBalance(latestSnapshot: BalanceSnapshot?, transactionsSinceSnapshot: [Transaction]) -> Int {
+        (latestSnapshot?.balanceMinorUnits ?? 0) + transactionsSinceSnapshot.reduce(0) { $0 + $1.amountMinorUnits }
     }
 
     /// Newest-first order for picking an account's latest snapshot: by date, then by id
@@ -58,44 +51,50 @@ public enum NetWorthCalculator {
         lhs.date != rhs.date ? lhs.date > rhs.date : (lhs.id ?? 0) > (rhs.id ?? 0)
     }
 
-    public static func accountBalances(accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], rate: ExchangeRateSetting) -> [AccountBalance] {
-        accounts.map { account in
-            let accountSnapshots = snapshots.filter { $0.accountId == account.id }.sorted(by: isNewer)
-            let latestSnapshot = accountSnapshots.first
-            let transactionsSince = transactions.filter { $0.accountId == account.id && (latestSnapshot == nil || $0.date > latestSnapshot!.date) }
-            let native = runningBalance(account: account, latestSnapshot: latestSnapshot, transactionsSinceSnapshot: transactionsSince)
-            let gbp: Int
-            switch account.currency {
-            case .gbp: gbp = native
-            case .eur: gbp = Int((Double(native) * rate.eurToGbpRate).rounded())
-            }
-            return AccountBalance(account: account, nativeBalanceMinorUnits: native, gbpBalanceMinorUnits: gbp, reconciliationDriftMinorUnits: nil)
+    /// An account's signed native balance at `date` (nil = no upper bound) and the date of the
+    /// latest thing that set it (spec 2026-10-14 §1). The balance rule, for every account: the
+    /// latest snapshot at or before `date` (the opening balance; legacy data may hold later
+    /// ones) plus every transaction — imported, manual or adjustment — dated after it up to
+    /// `date`. An account with no snapshot at all starts from zero, so all its transactions
+    /// up to `date` count. Nil when there's nothing to go on: `date` precedes the account's
+    /// first snapshot, or it has no snapshot and no transaction up to `date`.
+    public static func balance(accountId: Int64?, at date: Date?, snapshots: [BalanceSnapshot], transactions: [Transaction]) -> (native: Int, latestActivity: Date)? {
+        let accountSnapshots = snapshots.filter { $0.accountId == accountId }
+        let latestSnapshot = accountSnapshots.filter { date == nil || $0.date <= date! }.sorted(by: isNewer).first
+        if latestSnapshot == nil && !accountSnapshots.isEmpty { return nil }
+        let since = transactions.filter {
+            $0.accountId == accountId && (latestSnapshot == nil || $0.date > latestSnapshot!.date) && (date == nil || $0.date <= date!)
+        }
+        guard let latestActivity = ([latestSnapshot?.date].compactMap { $0 } + since.map(\.date)).max() else { return nil }
+        return (runningBalance(latestSnapshot: latestSnapshot, transactionsSinceSnapshot: since), latestActivity)
+    }
+
+    static func gbp(_ native: Int, currency: Currency, rate: ExchangeRateSetting) -> Int {
+        switch currency {
+        case .gbp: return native
+        case .eur: return Int((Double(native) * rate.eurToGbpRate).rounded())
         }
     }
 
-    /// The account's balance as of `monthEnd`: the latest snapshot at or before it (plus,
-    /// for `.imported` accounts, transactions between that snapshot and `monthEnd`), the same
-    /// carry-forward `runningBalance` already does for "now" — just parameterized to an
-    /// arbitrary month instead of hardcoded to the latest snapshot overall. Returns `nil` when
-    /// there's no snapshot at or before `monthEnd` at all (the account has no data yet).
-    public static func monthlyBalance(account: Account, snapshots: [BalanceSnapshot], transactions: [Transaction], rate: ExchangeRateSetting, monthStart: Date, monthEnd: Date) -> MonthlyAccountBalance? {
-        let accountSnapshots = snapshots.filter { $0.accountId == account.id && $0.date <= monthEnd }.sorted(by: isNewer)
-        guard let latestSnapshot = accountSnapshots.first else { return nil }
-        let transactionsSince = transactions.filter { $0.accountId == account.id && $0.date > latestSnapshot.date && $0.date <= monthEnd }
-        let native = runningBalance(account: account, latestSnapshot: latestSnapshot, transactionsSinceSnapshot: transactionsSince)
-        let gbp: Int
-        switch account.currency {
-        case .gbp: gbp = native
-        case .eur: gbp = Int((Double(native) * rate.eurToGbpRate).rounded())
+    /// Every account's balance now (`balance` with no upper bound; 0 for an account with nothing).
+    public static func accountBalances(accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], rate: ExchangeRateSetting) -> [AccountBalance] {
+        accounts.map { account in
+            let native = balance(accountId: account.id, at: nil, snapshots: snapshots, transactions: transactions)?.native ?? 0
+            return AccountBalance(account: account, nativeBalanceMinorUnits: native, gbpBalanceMinorUnits: gbp(native, currency: account.currency, rate: rate))
         }
-        let latestActivityDate = transactionsSince.map(\.date).max() ?? latestSnapshot.date
-        let isCarriedForward = latestActivityDate < monthStart
-        return MonthlyAccountBalance(account: account, nativeBalanceMinorUnits: native, gbpBalanceMinorUnits: gbp, isCarriedForward: isCarriedForward)
+    }
+
+    /// The account's balance as of `monthEnd` (`balance`), carried forward when nothing in
+    /// the month set it. Nil when the account has no data at or before `monthEnd`.
+    public static func monthlyBalance(account: Account, snapshots: [BalanceSnapshot], transactions: [Transaction], rate: ExchangeRateSetting, monthStart: Date, monthEnd: Date) -> MonthlyAccountBalance? {
+        guard let result = balance(accountId: account.id, at: monthEnd, snapshots: snapshots, transactions: transactions) else { return nil }
+        return MonthlyAccountBalance(account: account, nativeBalanceMinorUnits: result.native, gbpBalanceMinorUnits: gbp(result.native, currency: account.currency, rate: rate),
+                                     isCarriedForward: result.latestActivity < monthStart)
     }
 
     /// Total GBP net worth as of the end of the given calendar month: the sum of every
     /// account's `monthlyBalance` (latest snapshot at or before the month end, plus
-    /// transactions after it for `.imported` accounts). `nil` when no account has any data
+    /// transactions after it). `nil` when no account has any data
     /// at or before that month — distinguishes "no data yet" from "genuinely zero".
     /// `BudgetGridViewModel.netWorthTotal` delegates here.
     public static func monthEndNetWorth(accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], rate: ExchangeRateSetting, year: Int, month: Int) -> Int? {
@@ -116,11 +115,5 @@ public enum NetWorthCalculator {
     /// without any special-casing.
     public static func netWorth(balances: [AccountBalance]) -> Int {
         balances.reduce(0) { $0 + $1.gbpBalanceMinorUnits }
-    }
-
-    /// Compares a manually-entered actual balance against the computed running balance,
-    /// surfacing drift instead of silently trusting either figure.
-    public static func reconciliationDrift(computedNativeBalanceMinorUnits: Int, actualNativeBalanceMinorUnits: Int) -> Int {
-        actualNativeBalanceMinorUnits - computedNativeBalanceMinorUnits
     }
 }

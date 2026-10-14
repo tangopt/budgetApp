@@ -11,6 +11,7 @@ extension CategorySection {
         case .expense: return "Expenses"
         case .income: return "Income"
         case .transfer: return "Transfers"
+        case .adjustment: return "Adjustments"
         }
     }
 }
@@ -123,7 +124,7 @@ final class CategoriesViewModel: ObservableObject {
     }
 
     func move(ids: [Int64], toGroupId groupId: Int64?) {
-        let ids = ids.filter { id in categories.contains { $0.id == id && !$0.isReserved } }
+        let ids = ids.filter { id in categories.contains { $0.id == id && !$0.isReserved && !$0.isBuiltIn } }
         guard !ids.isEmpty else { return }
         write("Couldn't move the categories") { db in try Categories.move(db: db, ids: ids, toGroupId: groupId) }
     }

@@ -21,17 +21,18 @@ public struct CategorySection: Identifiable, Equatable {
 }
 
 public enum CategorySections {
-    /// Expenses, Income, Transfers.
-    public static let order: [CategoryType] = [.expense, .income, .transfer]
+    /// Expenses, Income, Transfers, Adjustments (the built-in categories, read-only).
+    public static let order: [CategoryType] = [.expense, .income, .transfer, .adjustment]
 
     /// The type sections for the Categories screen; reserves are left out (listed apart).
     /// Groups and categories sort by name. A group with no (non-reserve) categories shows,
     /// empty, under Expenses. A category whose group no longer exists counts as ungrouped.
     ///
     /// Without a search every section and its Ungrouped row are kept (they're drop
-    /// targets). `search` matches category and group names case-insensitively: a matching
-    /// group shows all its members, otherwise only matching categories show; groups and
-    /// sections with nothing to show are dropped.
+    /// targets) — except Adjustments, which shows only when it has categories (the built-in
+    /// ones, always ungrouped there). `search` matches category and group names
+    /// case-insensitively: a matching group shows all its members, otherwise only matching
+    /// categories show; groups and sections with nothing to show are dropped.
     public static func build(categories: [Category], groups: [CategoryGroup], search: String) -> [CategorySection] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
         let searching = !query.isEmpty
@@ -45,6 +46,10 @@ public enum CategorySections {
         let occupied = Set(assignable.compactMap(\.groupId))
         return order.compactMap { type in
             let ofType = assignable.filter { $0.type == type }.sorted(by: byName(\.name))
+            if type == .adjustment {
+                let shown = ofType.filter { !searching || matches($0.name) }
+                return shown.isEmpty ? nil : CategorySection(type: type, groups: [], ungrouped: shown)
+            }
             let blocks: [CategorySection.GroupBlock] = sortedGroups.compactMap { group in
                 let groupMatches = !searching || matches(group.name)
                 let members = ofType.filter { $0.groupId == group.id && (groupMatches || matches($0.name)) }

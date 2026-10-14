@@ -49,6 +49,7 @@ public enum CategoryPickerSections {
             case .transfer: return true
             case .expense: return amountMinorUnits < 0
             case .income: return amountMinorUnits > 0
+            case .adjustment: return false
             }
         }
         func matchesQuery(_ category: Category) -> Bool {

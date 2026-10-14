@@ -11,12 +11,12 @@ public enum YearOverYear {
     }
 
     /// Whether the change is good for a line of this type: expenses (negative values) improve when
-    /// less negative, income when higher; transfers/balances return nil (neutral).
+    /// less negative, income when higher; transfers, adjustments and balances return nil (neutral).
     public static func isImprovement(amount: Int, categoryType: CategoryType?) -> Bool? {
         guard amount != 0 else { return nil }
         switch categoryType {
         case .expense?, .income?: return amount > 0
-        case .transfer?, nil: return nil
+        case .transfer?, .adjustment?, nil: return nil
         }
     }
 }

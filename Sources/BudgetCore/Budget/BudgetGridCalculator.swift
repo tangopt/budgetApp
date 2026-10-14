@@ -37,6 +37,7 @@ public enum BudgetGridCalculator {
             case .income: income += total
             case .expense: expenses -= total
             case .transfer: transfers -= total
+            case .adjustment: break // balance corrections: in net worth, never in the flows
             }
         }
         return PeriodSummary(period: period, incomeMinorUnits: income, expensesMinorUnits: expenses, transfersMinorUnits: transfers)

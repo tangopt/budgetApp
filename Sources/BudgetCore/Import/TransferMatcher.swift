@@ -68,7 +68,8 @@ public struct StagedTransfer: Equatable, Sendable {
 ///
 /// Each incoming transaction joins at most one link, a bank outgoing one at most one. Never
 /// considered: transactions already in a link (active or dismissed), any in an
-/// external-transfer category (`Category.isExternalTransfer`) on either leg, and money sent
+/// external-transfer category (`Category.isExternalTransfer`) or a built-in adjustment
+/// category on either leg, and money sent
 /// that's filed under an income or expense category (a transfer is sent from a transfer
 /// category, or not yet categorised — so a spreadsheet Groceries total never matches).
 public enum TransferMatcher {
@@ -132,7 +133,9 @@ public enum TransferMatcher {
             currencies = Dictionary(try Account.fetchAll(db).compactMap { a in a.id.map { ($0, a.currency) } }, uniquingKeysWith: { a, _ in a })
             rate = try ExchangeRateSetting.currentOrDefault(db: db).eurToGbpRate
             calendar = try PayCalendar.load(db: db, today: today)
-            externalCategoryIds = Set(try Int64.fetchAll(db, sql: "SELECT id FROM category WHERE isExternalTransfer = 1"))
+            // External-transfer categories, and the built-in adjustment ones (a balance
+            // correction is never a transfer leg).
+            externalCategoryIds = Set(try Int64.fetchAll(db, sql: "SELECT id FROM category WHERE isExternalTransfer = 1 OR builtInRole IS NOT NULL"))
             transferCategoryIds = Set(try Int64.fetchAll(db, sql: "SELECT id FROM category WHERE type = ?", arguments: [CategoryType.transfer.rawValue]))
             historicalBatchIds = Set(try ImportBatch.fetchAll(db).filter(TransferMatcher.isHistoricalSource).compactMap(\.id))
             let links = try TransferLink.fetchAll(db)

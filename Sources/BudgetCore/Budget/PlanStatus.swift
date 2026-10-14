@@ -28,6 +28,7 @@ public enum PlanStatus {
         case .expense: direction = -1
         case .income: direction = 1
         case .transfer: direction = planned.signum()
+        case .adjustment: direction = 0 // never planned
         }
         let plannedMagnitude = direction * planned
         guard direction != 0, plannedMagnitude > 0 else { return (actual, 0, .none) }

@@ -159,11 +159,15 @@ public enum ManualTransactions {
 
     /// For each row about to be imported into `accountId` (keyed by index), the manual entry it
     /// replaces: same amount and sign, dated within ±3 days; closest dates pair first, each
-    /// manual entry at most once, none of `excluding` (already claimed by other staged rows).
+    /// manual entry at most once, none of `excluding` (already claimed by other staged rows)
+    /// and never an adjustment (a built-in category's entry).
     public static func stagedReplacements(db: Database, accountId: Int64, staged: [(date: Date, amountMinorUnits: Int)],
                                           excluding: Set<Int64> = []) throws -> [Int: StagedManualReplacement] {
+        // Update balance's adjustments (built-in categories) are never a bank row's stand-in.
+        let builtInIds = Set(try Int64.fetchAll(db, sql: "SELECT id FROM category WHERE builtInRole IS NOT NULL"))
         let manual = try Transaction.filter(Column("accountId") == accountId && Column("isManual") == true).fetchAll(db)
             .filter { $0.id.map { !excluding.contains($0) } ?? false }
+            .filter { $0.categoryId.map { !builtInIds.contains($0) } ?? true }
         guard !manual.isEmpty, !staged.isEmpty else { return [:] }
         let linkedIds = Set(try TransferLink.active.fetchAll(db).flatMap { [$0.outTransactionId, $0.inTransactionId] })
         var candidates: [(distance: TimeInterval, row: Int, manual: Int)] = []
@@ -220,7 +224,8 @@ public enum ManualTransactions {
         guard amountMinorUnits != 0 else { throw ManualTransactionError.zeroAmount }
         if let categoryId {
             guard let category = try Category.fetchOne(db, key: categoryId) else { throw ManualTransactionError.categoryNotFound }
-            guard category.isAssignable else { throw ManualTransactionError.reservedCategory }
+            // Built-in adjustment categories are allowed here (Update balance files into them).
+            guard category.isAssignable || category.isBuiltIn else { throw ManualTransactionError.reservedCategory }
         }
         return trimmed
     }

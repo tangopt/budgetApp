@@ -60,8 +60,9 @@ public enum AutoForecastGenerator {
 
         for category in categories {
             guard let categoryId = category.id else { continue }
-            // Reserves and categories maintained by hand keep whatever entries the user has.
-            if category.isReserved || category.excludeFromAutoForecast { continue }
+            // Reserves and categories maintained by hand keep whatever entries the user has;
+            // built-in adjustment categories are never planned.
+            if category.isReserved || category.excludeFromAutoForecast || category.isBuiltIn { continue }
             if plannedCategoryIds.contains(categoryId) { continue }
             var perPeriodSums: [Int] = []
             for period in sortedPeriods {

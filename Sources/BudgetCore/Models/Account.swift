@@ -16,6 +16,8 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     public var name: String
     public var currency: Currency
     public var kind: AccountKind
+    /// Legacy (spec 2026-10-14 §1): stored for compatibility, ignored by every calculation —
+    /// every account's balance is its opening balance plus its transactions.
     public var trackingMode: AccountTrackingMode
     /// Short name shown instead of `name` across the app (`displayName`). Normalised on save
     /// (`AccountDetailsFormat`): trimmed, empty → nil.

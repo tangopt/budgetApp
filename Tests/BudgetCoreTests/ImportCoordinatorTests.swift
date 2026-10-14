@@ -396,7 +396,8 @@ final class ImportCoordinatorTests: XCTestCase {
         let (manager, account, _) = try makeSeededManager()
         let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
         try manager.dbQueue.write { db in
-            _ = try BalanceUpdates.save(db: db, entries: [.init(accountId: account.id!, enteredMinorUnits: 50_000, note: "typed")], asOf: utcDate(2026, 3, 1))
+            // A typed balance from before Update balance made adjustments (legacy data).
+            try BalanceUpdates.upsertSnapshot(db: db, accountId: account.id!, date: utcDate(2026, 3, 1), balanceMinorUnits: 50_000, note: "typed")
         }
         let result = try coordinator.recordStatementBalances(
             accountId: account.id!, sourceFileName: "a.csv",

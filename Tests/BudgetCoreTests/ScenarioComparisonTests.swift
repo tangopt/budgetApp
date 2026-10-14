@@ -45,11 +45,12 @@ final class ScenarioComparisonTests: XCTestCase {
     }
 
     /// January and February closed (actuals: salary +3,000, rent -1,000 each); March open and
-    /// started; a manual account worth 10,000 since 1 Jan. Horizon: June 2027.
+    /// started; an account worth 10,000 since 1 Jan (the transactions are in an account
+    /// outside the chart, so they don't move it). Horizon: June 2027.
     private var data: ComparisonData {
         let account = Account(id: 1, name: "Current", currency: .gbp, kind: .cash, trackingMode: .manual)
         func txn(_ id: Int64, _ date: Date, _ amount: Int, _ category: Int64) -> Transaction {
-            Transaction(id: id, importBatchId: 1, accountId: 1, date: date, rawDescription: "T\(id)", amountMinorUnits: amount, categoryId: category, status: .confirmed, categorizedBy: .manual, fingerprint: "fp\(id)")
+            Transaction(id: id, importBatchId: 1, accountId: 9, date: date, rawDescription: "T\(id)", amountMinorUnits: amount, categoryId: category, status: .confirmed, categorizedBy: .manual, fingerprint: "fp\(id)")
         }
         let calendar = PayCalendar(salaryDates: [], manualCloses: [PayMonthClose(year: 2026, month: 1, closeDate: utc(2026, 1, 31)),
                                                                   PayMonthClose(year: 2026, month: 2, closeDate: utc(2026, 2, 28))],

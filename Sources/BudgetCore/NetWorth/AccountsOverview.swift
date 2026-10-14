@@ -1,19 +1,36 @@
 import Foundation
 
 /// The one stale-balance rule, shared by the Accounts screen and the Dashboard's
-/// "needs attention" list. `.imported` accounts are never stale (transactions keep them
-/// current); others are stale with no snapshot, or when the latest is more than
-/// `thresholdDays` before the start of `today` (UTC).
+/// "needs attention" list. Balances come from transactions (spec 2026-10-14 §1), so an
+/// account fed by statement imports stays current through them (the import freshness card
+/// covers it) — except an investment account, whose value moves without transactions.
+/// Investment accounts and accounts never imported into are stale with no activity at all,
+/// or when their last activity (latest snapshot or transaction, adjustments included) is more
+/// than `thresholdDays` before the start of `today` (UTC).
 public enum BalanceStaleness {
     public static let thresholdDays = 45
 
-    public static func isStale(account: Account, latestSnapshot: Date?, today: Date) -> Bool {
-        guard account.trackingMode != .imported else { return false }
-        guard let latestSnapshot else { return true }
+    /// Whether the rule applies to the account: investments, and accounts with no imported
+    /// (non-manual) transaction.
+    public static func needsUpdates(account: Account, transactions: [Transaction]) -> Bool {
+        account.kind == .investment || !transactions.contains { $0.accountId == account.id && !$0.isManual }
+    }
+
+    /// The account's last activity: its latest snapshot or transaction dated up to `today`'s day.
+    public static func lastActivity(accountId: Int64?, snapshots: [BalanceSnapshot], transactions: [Transaction], today: Date) -> Date? {
         let calendar = MonthRange.calendar
-        let startOfToday = calendar.startOfDay(for: today)
-        let threshold = calendar.date(byAdding: .day, value: -thresholdDays, to: startOfToday)!
-        return latestSnapshot < threshold
+        let endOfToday = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: today))!
+        let snapshot = snapshots.lazy.filter { $0.accountId == accountId }.map(\.date).max()
+        let transaction = transactions.lazy.filter { $0.accountId == accountId && $0.date < endOfToday }.map(\.date).max()
+        return [snapshot, transaction].compactMap { $0 }.max()
+    }
+
+    public static func isStale(account: Account, snapshots: [BalanceSnapshot], transactions: [Transaction], today: Date) -> Bool {
+        guard needsUpdates(account: account, transactions: transactions) else { return false }
+        guard let last = lastActivity(accountId: account.id, snapshots: snapshots, transactions: transactions, today: today) else { return true }
+        let calendar = MonthRange.calendar
+        let threshold = calendar.date(byAdding: .day, value: -thresholdDays, to: calendar.startOfDay(for: today))!
+        return last < threshold
     }
 }
 
@@ -21,7 +38,7 @@ public struct AccountRow: Equatable, Identifiable {
     public let account: Account
     public let nativeBalanceMinorUnits: Int
     public let gbpBalanceMinorUnits: Int
-    /// Latest snapshot; for `.imported` accounts, max(latest snapshot, latest transaction).
+    /// The account's last activity (`BalanceStaleness.lastActivity`): latest snapshot or transaction.
     public let lastUpdated: Date?
     public let isStale: Bool
     public var id: Int64 { account.id! }
@@ -43,7 +60,7 @@ public struct AccountsOverview: Equatable {
     /// Cash, investment, credit; empty groups omitted.
     public let groups: [AccountGroup]
     public let staleCount: Int
-    /// Oldest latest-snapshot among stale accounts that have one.
+    /// Oldest last activity among stale accounts that have one.
     public let oldestStaleDate: Date?
 
     public static func make(accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], rate: ExchangeRateSetting, today: Date) -> AccountsOverview {
@@ -54,15 +71,11 @@ public struct AccountsOverview: Equatable {
         for balance in balances {
             let account = balance.account
             guard account.id != nil else { continue }
-            let latestSnapshot = snapshots.filter { $0.accountId == account.id }.map(\.date).max()
-            let stale = BalanceStaleness.isStale(account: account, latestSnapshot: latestSnapshot, today: today)
+            let lastUpdated = BalanceStaleness.lastActivity(accountId: account.id, snapshots: snapshots, transactions: transactions, today: today)
+            let stale = BalanceStaleness.isStale(account: account, snapshots: snapshots, transactions: transactions, today: today)
             if stale {
                 staleCount += 1
-                if let latestSnapshot { oldestStale = oldestStale.map { min($0, latestSnapshot) } ?? latestSnapshot }
-            }
-            var lastUpdated = latestSnapshot
-            if account.trackingMode == .imported, let latestTransaction = Transaction.importedDataThrough(transactions.filter({ $0.accountId == account.id })) {
-                lastUpdated = lastUpdated.map { max($0, latestTransaction) } ?? latestTransaction
+                if let lastUpdated { oldestStale = oldestStale.map { min($0, lastUpdated) } ?? lastUpdated }
             }
             rowsByKind[account.kind, default: []].append(AccountRow(account: account, nativeBalanceMinorUnits: balance.nativeBalanceMinorUnits, gbpBalanceMinorUnits: balance.gbpBalanceMinorUnits, lastUpdated: lastUpdated, isStale: stale))
         }
@@ -79,7 +92,7 @@ public struct AccountsOverview: Equatable {
 
         return AccountsOverview(
             netWorthGBP: netWorth,
-            asOf: snapshots.map(\.date).max(),
+            asOf: groups.flatMap(\.rows).compactMap(\.lastUpdated).max(),
             changeVsPreviousMonthGBP: previousNetWorth.map { netWorth - $0 },
             groups: groups,
             staleCount: staleCount,

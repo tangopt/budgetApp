@@ -61,5 +61,6 @@ public final class DatabaseManager {
         registerAccountSortOrderMigration(&migrator)
         registerCategoryIconMigration(&migrator)
         registerTransactionIsManualMigration(&migrator)
+        registerCategoryBuiltInRoleMigration(&migrator)
     }
 }

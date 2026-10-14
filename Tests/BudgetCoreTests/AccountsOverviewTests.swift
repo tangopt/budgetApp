@@ -17,13 +17,20 @@ final class AccountsOverviewTests: XCTestCase {
 
     // MARK: staleness
 
-    func testImportedIsNeverStale() {
-        XCTAssertFalse(BalanceStaleness.isStale(account: acct(1, "A", .gbp, .cash, .imported), latestSnapshot: nil, today: today))
-        XCTAssertFalse(BalanceStaleness.isStale(account: acct(1, "A", .gbp, .cash, .imported), latestSnapshot: day(2020, 1, 1), today: today))
+    private func txn(_ account: Int64, _ date: Date, _ amount: Int, manual: Bool = false) -> Transaction {
+        Transaction(importBatchId: 1, accountId: account, date: date, rawDescription: "x", amountMinorUnits: amount, categoryId: nil, status: .confirmed, categorizedBy: .none, fingerprint: UUID().uuidString, isManual: manual)
     }
 
-    func testManualWithNoSnapshotIsStale() {
-        XCTAssertTrue(BalanceStaleness.isStale(account: acct(1, "A"), latestSnapshot: nil, today: today))
+    func testAnAccountFedByImportsIsNeverStaleWhateverItsTrackingMode() {
+        let imported = [txn(1, day(2020, 1, 1), -1)]
+        XCTAssertFalse(BalanceStaleness.isStale(account: acct(1, "A", .gbp, .cash, .manual), snapshots: [], transactions: imported, today: today))
+        XCTAssertFalse(BalanceStaleness.isStale(account: acct(1, "A", .gbp, .credit, .imported), snapshots: [], transactions: imported, today: today))
+        // An investment's value moves without transactions: imports don't keep it current.
+        XCTAssertTrue(BalanceStaleness.isStale(account: acct(1, "A", .gbp, .investment, .imported), snapshots: [], transactions: imported, today: today))
+    }
+
+    func testAnAccountWithNothingIsStale() {
+        XCTAssertTrue(BalanceStaleness.isStale(account: acct(1, "A", .gbp, .cash, .imported), snapshots: [], transactions: [], today: today))
     }
 
     func testFortyFiveDaysNotStaleFortySixStale() {
@@ -31,8 +38,10 @@ final class AccountsOverviewTests: XCTestCase {
         let start = MonthRange.calendar.startOfDay(for: today)
         let d45 = MonthRange.calendar.date(byAdding: .day, value: -45, to: start)!.addingTimeInterval(12 * 3600)
         let d46 = MonthRange.calendar.date(byAdding: .day, value: -46, to: start)!.addingTimeInterval(12 * 3600)
-        XCTAssertFalse(BalanceStaleness.isStale(account: a, latestSnapshot: d45, today: today))
-        XCTAssertTrue(BalanceStaleness.isStale(account: a, latestSnapshot: d46, today: today))
+        XCTAssertFalse(BalanceStaleness.isStale(account: a, snapshots: [snap(1, d45, 1)], transactions: [], today: today))
+        XCTAssertTrue(BalanceStaleness.isStale(account: a, snapshots: [snap(1, d46, 1)], transactions: [], today: today))
+        // A manual transaction (an adjustment) is activity too.
+        XCTAssertFalse(BalanceStaleness.isStale(account: a, snapshots: [snap(1, d46, 1)], transactions: [txn(1, d45, 5, manual: true)], today: today))
     }
 
     // MARK: overview
@@ -62,7 +71,7 @@ final class AccountsOverviewTests: XCTestCase {
     }
 
     func testStaleCountOldestAndImportedExemption() {
-        let accounts = [acct(1, "Old"), acct(2, "Older"), acct(3, "Never"), acct(4, "Imp", .gbp, .cash, .imported), acct(5, "Fresh")]
+        let accounts = [acct(1, "Old"), acct(2, "Older"), acct(3, "Never"), acct(4, "Imp", .gbp, .cash, .manual), acct(5, "Fresh")]
         let snapshots = [
             snap(1, day(2026, 6, 1), 100), snap(2, day(2026, 5, 1), 100), snap(4, day(2026, 1, 1), 100), snap(5, day(2026, 10, 1), 100),
         ]

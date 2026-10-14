@@ -153,9 +153,9 @@ final class AccountDetailsTests: XCTestCase {
         }
     }
 
-    func testReconciliationWarningUsesDisplayName() throws {
+    func testBalanceUpdateOutcomeUsesDisplayName() throws {
         let m = try makeDB()
-        let warnings = try m.dbQueue.write { db -> [ReconciliationWarning] in
+        let outcomes = try m.dbQueue.write { db -> [BalanceUpdates.Outcome] in
             let a = try AccountEditing.add(db: db, name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported, openingBalanceEntered: nil, asOf: Date(), details: AccountDetails(alias: "Lloyds"))
             var batch = ImportBatch(accountId: a.id!, sourceFileName: "f", importedAt: Date())
             try batch.insert(db)
@@ -163,6 +163,6 @@ final class AccountDetailsTests: XCTestCase {
             try t.insert(db)
             return try BalanceUpdates.save(db: db, entries: [.init(accountId: a.id!, enteredMinorUnits: 500)], asOf: Date())
         }
-        XCTAssertEqual(warnings.map(\.accountName), ["Lloyds"])
+        XCTAssertEqual(outcomes.map(\.accountName), ["Lloyds"])
     }
 }

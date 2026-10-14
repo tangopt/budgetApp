@@ -492,6 +492,7 @@ struct AddPlannedItemSheet: View {
         case .income: base = "Add planned income"
         case .expense: base = "Add planned expense"
         case .transfer: base = "Add planned transfer"
+        case .adjustment: base = "Add planned item" // never offered: adjustments aren't planned
         }
         if case .scenario(_, let name) = scope { return "\(base) to “\(name)”" }
         return base

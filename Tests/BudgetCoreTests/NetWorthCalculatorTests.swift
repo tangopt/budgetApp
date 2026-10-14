@@ -8,16 +8,8 @@ final class NetWorthCalculatorTests: XCTestCase {
             Transaction(id: 1, importBatchId: 1, accountId: 1, date: Date(timeIntervalSince1970: 1000), rawDescription: "A", amountMinorUnits: -5000, categoryId: nil, status: .confirmed, categorizedBy: .manual, fingerprint: "a"),
             Transaction(id: 2, importBatchId: 1, accountId: 1, date: Date(timeIntervalSince1970: 2000), rawDescription: "B", amountMinorUnits: 2000, categoryId: nil, status: .confirmed, categorizedBy: .manual, fingerprint: "b")
         ]
-        let account = Account(id: 1, name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
-        let balance = NetWorthCalculator.runningBalance(account: account, latestSnapshot: snapshot, transactionsSinceSnapshot: transactions)
+        let balance = NetWorthCalculator.runningBalance(latestSnapshot: snapshot, transactionsSinceSnapshot: transactions)
         XCTAssertEqual(balance, 97000)
-    }
-
-    func testManualAccountUsesLatestSnapshotOnly() {
-        let snapshot = BalanceSnapshot(id: 1, accountId: 2, date: Date(), balanceMinorUnits: 500000, note: nil)
-        let account = Account(id: 2, name: "Lloyds Investment ISA", currency: .gbp, kind: .investment, trackingMode: .manual)
-        let balance = NetWorthCalculator.runningBalance(account: account, latestSnapshot: snapshot, transactionsSinceSnapshot: [])
-        XCTAssertEqual(balance, 500000)
     }
 
     func testEURAccountConvertsToGBPUsingRate() {
@@ -55,8 +47,8 @@ final class NetWorthCalculatorTests: XCTestCase {
         let charge = Transaction(id: 1, importBatchId: 1, accountId: 4, date: Date(timeIntervalSince1970: 1000), rawDescription: "RESTAURANT", amountMinorUnits: -5000, categoryId: nil, status: .confirmed, categorizedBy: .manual, fingerprint: "a")
         let repayment = Transaction(id: 2, importBatchId: 1, accountId: 4, date: Date(timeIntervalSince1970: 2000), rawDescription: "PAYMENT RECEIVED", amountMinorUnits: 10000, categoryId: nil, status: .confirmed, categorizedBy: .manual, fingerprint: "b")
 
-        XCTAssertEqual(NetWorthCalculator.runningBalance(account: amex, latestSnapshot: amexSnapshot, transactionsSinceSnapshot: [charge]), -35000)
-        XCTAssertEqual(NetWorthCalculator.runningBalance(account: amex, latestSnapshot: amexSnapshot, transactionsSinceSnapshot: [charge, repayment]), -25000)
+        XCTAssertEqual(NetWorthCalculator.runningBalance(latestSnapshot: amexSnapshot, transactionsSinceSnapshot: [charge]), -35000)
+        XCTAssertEqual(NetWorthCalculator.runningBalance(latestSnapshot: amexSnapshot, transactionsSinceSnapshot: [charge, repayment]), -25000)
 
         let rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
         let balances = NetWorthCalculator.accountBalances(accounts: [cash, amex], snapshots: [cashSnapshot, amexSnapshot], transactions: [charge], rate: rate)
@@ -70,24 +62,6 @@ final class NetWorthCalculatorTests: XCTestCase {
         XCTAssertEqual(NetWorthCalculator.signedSnapshotBalance(enteredMinorUnits: -1000, accountKind: .credit), 1000)
         XCTAssertEqual(NetWorthCalculator.signedSnapshotBalance(enteredMinorUnits: 30000, accountKind: .cash), 30000)
         XCTAssertEqual(NetWorthCalculator.signedSnapshotBalance(enteredMinorUnits: 30000, accountKind: .investment), 30000)
-    }
-
-    func testReconciliationOnCreditAccountUsesSignedBalances() {
-        let amex = Account(id: 4, name: "AMEX", currency: .gbp, kind: .credit, trackingMode: .imported)
-        let snapshot = BalanceSnapshot(id: 1, accountId: 4, date: Date(timeIntervalSince1970: 0), balanceMinorUnits: -30000, note: nil)
-        let charge = Transaction(id: 1, importBatchId: 1, accountId: 4, date: Date(timeIntervalSince1970: 1000), rawDescription: "X", amountMinorUnits: -5000, categoryId: nil, status: .confirmed, categorizedBy: .manual, fingerprint: "a")
-        let computed = NetWorthCalculator.runningBalance(account: amex, latestSnapshot: snapshot, transactionsSinceSnapshot: [charge])
-        // User checks the AMEX app and enters "£350 owed": no drift.
-        let entered = NetWorthCalculator.signedSnapshotBalance(enteredMinorUnits: 35000, accountKind: .credit)
-        XCTAssertEqual(NetWorthCalculator.reconciliationDrift(computedNativeBalanceMinorUnits: computed, actualNativeBalanceMinorUnits: entered), 0)
-    }
-
-    func testReconciliationDriftIsNilWhenNoActualBalanceProvided() {
-        let account = Account(id: 1, name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
-        let snapshot = BalanceSnapshot(id: 1, accountId: 1, date: Date(), balanceMinorUnits: 100000, note: nil)
-        let rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
-        let balances = NetWorthCalculator.accountBalances(accounts: [account], snapshots: [snapshot], transactions: [], rate: rate)
-        XCTAssertNil(balances[0].reconciliationDriftMinorUnits)
     }
 
     // MARK: - monthlyBalance
