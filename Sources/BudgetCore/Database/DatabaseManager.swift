@@ -60,5 +60,6 @@ public final class DatabaseManager {
         registerAccountDetailsMigration(&migrator)
         registerAccountSortOrderMigration(&migrator)
         registerCategoryIconMigration(&migrator)
+        registerTransactionIsManualMigration(&migrator)
     }
 }

@@ -16,8 +16,11 @@ public struct StagedTransaction: Equatable, Identifiable {
     /// The saved transaction this row is the other leg of a transfer with (spec §6), when the
     /// matcher would link them; the suggestion is then that leg's category (source `.transfer`).
     public let transfer: StagedTransfer?
+    /// The manual entry this row replaces on Finish import (spec §3) — "Replaces your manual
+    /// entry (<date>)"; the suggestion is then that entry's category (source `.manual`).
+    public let replacesManual: StagedManualReplacement?
 
-    public init(id: UUID = UUID(), parsed: ParsedTransaction, suggestedCategoryId: Int64?, source: CategorizedBy, confidence: Double, fingerprint: String, historyCount: Int? = nil, transfer: StagedTransfer? = nil) {
+    public init(id: UUID = UUID(), parsed: ParsedTransaction, suggestedCategoryId: Int64?, source: CategorizedBy, confidence: Double, fingerprint: String, historyCount: Int? = nil, transfer: StagedTransfer? = nil, replacesManual: StagedManualReplacement? = nil) {
         self.id = id
         self.parsed = parsed
         self.suggestedCategoryId = suggestedCategoryId
@@ -26,6 +29,7 @@ public struct StagedTransaction: Equatable, Identifiable {
         self.fingerprint = fingerprint
         self.historyCount = historyCount
         self.transfer = transfer
+        self.replacesManual = replacesManual
     }
 }
 
@@ -157,7 +161,28 @@ public final class ImportCoordinator {
             categorizedCount += batch.count
             onProgress(categorizedCount, nonDuplicates.count)
         }
-        return StagedImport(staged: try await withTransfers(staged, accountId: accountId), duplicates: duplicates, unparsedLines: unparsedLines)
+        let withReplacements = try await withManualReplacements(staged, accountId: accountId)
+        return StagedImport(staged: try await withTransfers(withReplacements, accountId: accountId), duplicates: duplicates, unparsedLines: unparsedLines)
+    }
+
+    /// Marks the rows that replace a manual entry of the account
+    /// (`ManualTransactions.stagedReplacements`): each takes that entry's category (source
+    /// `.manual`, Ready when categorised) and carries its note for the review to pre-fill.
+    /// `alreadyStaged` rows keep the entries they claimed.
+    private func withManualReplacements(_ rows: [StagedTransaction], accountId: Int64, alreadyStaged: [StagedTransaction] = []) async throws -> [StagedTransaction] {
+        guard !rows.isEmpty else { return rows }
+        let claimed = Set(alreadyStaged.compactMap(\.replacesManual?.transactionId))
+        let replacements = try await dbQueue.read { db in
+            try ManualTransactions.stagedReplacements(db: db, accountId: accountId,
+                                                      staged: rows.map { ($0.parsed.date, $0.parsed.amountMinorUnits) }, excluding: claimed)
+        }
+        guard !replacements.isEmpty else { return rows }
+        return rows.enumerated().map { index, row in
+            guard let replacement = replacements[index] else { return row }
+            return StagedTransaction(id: row.id, parsed: row.parsed, suggestedCategoryId: replacement.categoryId,
+                                     source: replacement.categoryId == nil ? .none : .manual, confidence: 1,
+                                     fingerprint: row.fingerprint, replacesManual: replacement)
+        }
     }
 
     /// Marks the rows that are the other leg of a saved transfer (`TransferMatcher.stagedMatches`):
@@ -176,7 +201,9 @@ public final class ImportCoordinator {
         }
         guard !matches.isEmpty else { return staged }
         return staged.enumerated().map { index, row in
-            guard let match = matches[index] else { return row }
+            // A row replacing a manual entry keeps that entry's category; it takes over the
+            // entry's links on commit, and the matcher looks at it then if there are none.
+            guard let match = matches[index], row.replacesManual == nil else { return row }
             guard let categoryId = match.otherCategoryId, match.isIncoming || linkableSentCategoryIds.contains(categoryId) else {
                 return StagedTransaction(id: row.id, parsed: row.parsed, suggestedCategoryId: row.suggestedCategoryId, source: row.source,
                                          confidence: row.confidence, fingerprint: row.fingerprint, historyCount: row.historyCount, transfer: match)
@@ -228,12 +255,14 @@ public final class ImportCoordinator {
             categorizedCount += batch.count
             onProgress(categorizedCount, items.count)
         }
+        let replacing = try await withManualReplacements(result, accountId: accountId, alreadyStaged: alreadyStaged)
         // Matched alongside the rows already staged, so a saved leg isn't offered to both.
-        let annotated = try await withTransfers(alreadyStaged + result, accountId: accountId)
+        let annotated = try await withTransfers(alreadyStaged + replacing, accountId: accountId)
         return Array(annotated.suffix(result.count))
     }
 
-    /// Persists every staged row in one transaction, links transfers between the user's
+    /// Persists every staged row in one transaction (a row replacing a manual entry takes over
+    /// its transfer links, and the entry is deleted — `ManualTransactions.replace`), links transfers between the user's
     /// accounts (`TransferMatcher.match`), then refreshes the auto-generated forecast from the
     /// updated actuals. Rows left without a category are saved with
     /// `categoryId: nil` / `.pendingReview` ("Uncategorized", awaiting manual
@@ -263,14 +292,17 @@ public final class ImportCoordinator {
                     categoryId: finalCategoryId, status: finalCategoryId == nil ? .pendingReview : .confirmed,
                     categorizedBy: categorizedBy,
                     fingerprint: stagedTransaction.fingerprint,
-                    note: Transaction.normalizedNote(noteById[stagedTransaction.id] ?? nil)
+                    note: Transaction.normalizedNote(noteById[stagedTransaction.id] ?? stagedTransaction.replacesManual?.note)
                 )
                 try transaction.insert(db)
+                if let replacement = stagedTransaction.replacesManual {
+                    try ManualTransactions.replace(db: db, manualId: replacement.transactionId, with: transaction.id!)
+                }
                 // Learn what the user confirmed with Remember on: a correction, or a model or
                 // history guess they accepted (so the next import needn't guess). A rule's own
                 // unchanged suggestion already has its rule; a transfer's comes from its other leg.
                 if learnById[stagedTransaction.id] ?? true, let finalCategoryId,
-                   wasOverridden || (stagedTransaction.source != .rule && stagedTransaction.source != .transfer) {
+                   wasOverridden || (stagedTransaction.source != .rule && stagedTransaction.source != .transfer && stagedTransaction.replacesManual == nil) {
                     try RuleLearner.learn(description: stagedTransaction.parsed.rawDescription, categoryId: finalCategoryId, db: db)
                 }
             }

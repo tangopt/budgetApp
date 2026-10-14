@@ -30,8 +30,11 @@ public struct Transaction: Codable, Equatable, Identifiable, FetchableRecord, Mu
     public var fingerprint: String
     /// The user's own note, from Review or Edit transaction (spec §5); never blank.
     public var note: String?
+    /// Added by hand (`ManualTransactions`), in its account's "Manual entries" batch; an
+    /// imported row matching it later replaces it (spec §3).
+    public var isManual: Bool
 
-    public init(id: Int64? = nil, importBatchId: Int64, accountId: Int64, date: Date, rawDescription: String, amountMinorUnits: Int, categoryId: Int64?, status: TransactionStatus, categorizedBy: CategorizedBy, fingerprint: String, note: String? = nil) {
+    public init(id: Int64? = nil, importBatchId: Int64, accountId: Int64, date: Date, rawDescription: String, amountMinorUnits: Int, categoryId: Int64?, status: TransactionStatus, categorizedBy: CategorizedBy, fingerprint: String, note: String? = nil, isManual: Bool = false) {
         self.id = id
         self.importBatchId = importBatchId
         self.accountId = accountId
@@ -43,6 +46,7 @@ public struct Transaction: Codable, Equatable, Identifiable, FetchableRecord, Mu
         self.categorizedBy = categorizedBy
         self.fingerprint = fingerprint
         self.note = note
+        self.isManual = isManual
     }
 
     /// A note as saved: trimmed, and `nil` when blank.
@@ -80,6 +84,14 @@ func registerTransactionNoteMigration(_ migrator: inout DatabaseMigrator) {
     migrator.registerMigration("addTransactionNote") { db in
         try db.alter(table: "transaction_") { t in
             t.add(column: "note", .text)
+        }
+    }
+}
+
+func registerTransactionIsManualMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addTransactionIsManual") { db in
+        try db.alter(table: "transaction_") { t in
+            t.add(column: "isManual", .boolean).notNull().defaults(to: false)
         }
     }
 }
