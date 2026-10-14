@@ -11,10 +11,11 @@ public enum ReviewPartitioning {
     public static let highConfidenceThreshold: Double = 0.6
 
     /// Whether this row on its own could be ready: a suggestion from a rule, history
-    /// (which already requires ≥ 2 past transactions agreeing ≥ 70%) or a transfer's other leg.
+    /// (which already requires ≥ 2 past transactions agreeing ≥ 70%), a transfer's other leg,
+    /// or the manual entry the row replaces (spec §3).
     public static func isSure(_ transaction: StagedTransaction) -> Bool {
         guard transaction.suggestedCategoryId != nil else { return false }
-        return transaction.source == .rule || transaction.source == .history || transaction.source == .transfer
+        return transaction.replacesManual != nil || transaction.source == .rule || transaction.source == .history || transaction.source == .transfer
     }
 
     /// `groupKeys` are the rows' review keys (`ReviewKey.groupKeys`), one per row in the same

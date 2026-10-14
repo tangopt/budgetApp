@@ -225,4 +225,20 @@ final class ManualReplacementImportTests: XCTestCase {
         XCTAssertNil(staged.staged[0].transfer)
         XCTAssertEqual(staged.staged[1].transfer?.otherTransactionId, out.id)
     }
+
+    func testARowReplacingACategorisedManualEntryIsReady() async throws {
+        let f = try makeFixture()
+        _ = try makeLinkedManualEntry(f)
+        try await f.manager.dbQueue.write { db in
+            try ManualTransactions.add(db: db, accountId: f.isa, date: self.july1.addingTimeInterval(10 * self.day), description: "Cash in",
+                                       amountMinorUnits: 700, categoryId: nil, note: nil)
+        }
+        let staged = try await stage(f, "02/07/2026,FROM JOINT,50.00\n11/07/2026,CASH DEPOSIT,7.00")
+        XCTAssertNotNil(staged.staged[0].replacesManual)
+        XCTAssertNotNil(staged.staged[1].replacesManual)
+        XCTAssertNil(staged.staged[1].suggestedCategoryId)
+        let (ready, needsAttention) = ReviewPartitioning.partition(staged.staged)
+        XCTAssertEqual(ready.map(\.id), [staged.staged[0].id])
+        XCTAssertEqual(needsAttention.map(\.id), [staged.staged[1].id])
+    }
 }
