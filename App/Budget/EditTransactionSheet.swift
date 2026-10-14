@@ -41,6 +41,9 @@ struct EditTransactionSheet: View {
     /// A manual transaction's account, date, description and amount.
     @State private var draft: ManualTransactionDraft
     @State private var confirmingDelete = false
+    /// The stored EUR→GBP rate, read once when the sheet appears; nil = unknown (a
+    /// cross-currency preview then leaves out the amount).
+    @State private var eurToGbpRate: Double?
 
     /// A transfer change held until Save, with what the Transfer row previews.
     private enum PendingTransfer: Equatable {
@@ -87,7 +90,16 @@ struct EditTransactionSheet: View {
     }
 
     private var canSave: Bool {
-        isChanged && (!editsManually || draft.isValid)
+        isChanged && (!editsManually || draft.isValid) && pendingProblem == nil
+    }
+
+    /// Why the pending Add the other side… no longer applies to what's entered (Save is off
+    /// until it's undone or fixed).
+    private var pendingProblem: String? {
+        guard case .addOtherSide(let account) = pendingTransfer else { return nil }
+        if account.id == source.accountId { return "Pick a different account" }
+        if !canAddOtherSide { return "Only transfers have another side — choose a transfer category" }
+        return nil
     }
 
     /// The sign the category picker filters by: the entered direction for a manual transaction.
@@ -135,6 +147,7 @@ struct EditTransactionSheet: View {
         }
         .onChange(of: draft) { _, _ in errorMessage = nil }
         .onChange(of: pendingTransfer) { _, _ in errorMessage = nil }
+        .onAppear { eurToGbpRate = transfer?.eurToGbpRate() }
         .alert("Delete this transaction?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive, action: delete)
             Button("Cancel", role: .cancel) {}
@@ -153,8 +166,8 @@ struct EditTransactionSheet: View {
 
     /// The account, day and signed amount Save will see: the entered ones for a manual transaction.
     private var source: (accountId: Int64, date: Date, amountMinorUnits: Int) {
-        if editsManually, let accountId = draft.accountId, let amount = draft.signedAmountMinorUnits {
-            return (accountId, draft.day, amount)
+        if editsManually {
+            return (draft.accountId ?? transaction.accountId, draft.day, draft.signedAmountMinorUnits ?? transaction.amountMinorUnits)
         }
         return (transaction.accountId, transaction.date, transaction.amountMinorUnits)
     }
@@ -183,9 +196,14 @@ struct EditTransactionSheet: View {
             }
             if let pendingTransfer {
                 HStack {
-                    Text(preview(pendingTransfer))
-                        .foregroundStyle(.secondary)
-                        .italic()
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(preview(pendingTransfer))
+                            .foregroundStyle(.secondary)
+                            .italic()
+                        if let pendingProblem {
+                            Text(pendingProblem).font(.callout).foregroundStyle(.red)
+                        }
+                    }
                     Spacer()
                     Button("Undo") { self.pendingTransfer = nil }
                         .controlSize(.small)
@@ -226,9 +244,12 @@ struct EditTransactionSheet: View {
         switch pending {
         case .addOtherSide(let account):
             let source = source
-            let sourceCurrency = transfer?.accounts.first { $0.id == source.accountId }?.currency ?? account.currency
-            let amount = ManualTransactions.otherSideAmount(source.amountMinorUnits, from: sourceCurrency, to: account.currency,
-                                                            rate: transfer?.eurToGbpRate ?? 0.87)
+            let sourceCurrency = transfer?.accounts.first { $0.id == source.accountId }?.currency
+            // Across currencies without a known rate, the amount is left out rather than guessed.
+            guard let sourceCurrency, let rate = sourceCurrency == account.currency ? 1 : eurToGbpRate else {
+                return "↔ will add to \(account.displayName) · \(source.date.formatted(date: .abbreviated, time: .omitted))"
+            }
+            let amount = ManualTransactions.otherSideAmount(source.amountMinorUnits, from: sourceCurrency, to: account.currency, rate: rate)
             return "↔ will add to " + TransferFormat.details(account: account.displayName, date: source.date,
                                                              amountMinorUnits: amount, currency: account.currency)
         case .unlink(let counterpart):

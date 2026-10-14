@@ -13,19 +13,18 @@ struct TransferLinkActions {
     /// Every account, in the order the app lists them (Add the other side… leaves out the
     /// transaction's own).
     let accounts: [Account]
-    /// The stored EUR→GBP rate, for previewing the other side's converted amount.
-    let eurToGbpRate: Double
+    /// Reads the stored EUR→GBP rate, for previewing the other side's converted amount;
+    /// nil when the read fails.
+    let eurToGbpRate: () -> Double?
 
     /// Reads through `dbQueue`.
     @MainActor
     static func make(dbQueue: DatabaseQueue, accounts: [Account], counterparts: @escaping (Int64) -> [TransferCounterpart]) -> TransferLinkActions {
-        // A failed read only costs the preview's precision (Save converts at the stored rate).
-        let rate = (try? dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db).eurToGbpRate }) ?? 0.87
         return TransferLinkActions(
             counterparts: counterparts,
             candidates: { id in try dbQueue.read { db in try TransferLinks.candidates(db: db, for: id) } },
             accounts: accounts,
-            eurToGbpRate: rate
+            eurToGbpRate: { try? dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db).eurToGbpRate } }
         )
     }
 }
