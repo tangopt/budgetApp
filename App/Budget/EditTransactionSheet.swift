@@ -7,17 +7,22 @@ import struct BudgetCore.Transaction
 /// Edit transaction (spec §5): category (with "New category…") and note; date,
 /// description and amount are shown read-only. Saving never learns a rule. With `transfer`,
 /// also the transaction's transfer link (spec §6): each linked leg with Unlink, or Link to
-/// transfer… when it has none, plus Add the other side… when it's uncategorised or in a
+/// transfer… when it has none, plus Add the other side… when the chosen category is none or a
 /// (non-external) transfer category (spec 2026-10-14 §2). With `manual`, a transaction
 /// added by hand also has its account, date, description and amount editable, and Delete….
+///
+/// Nothing is written until Save: a transfer change is held (one at a time, previewed with
+/// Undo) and Save writes it with the fields in one transaction (`TransactionEditing.save`).
+/// Cancel discards everything. Delete… is its own confirmed, immediate action.
 struct EditTransactionSheet: View {
     let transaction: Transaction
     let categories: [Category]
     let groups: [CategoryGroup]
     let recentIds: [Int64]
     let createCategory: CreateCategory
-    /// Saves and reloads; `.failed` keeps the sheet open with the message.
-    let onSave: (_ categoryId: Int64?, _ note: String?) -> SaveOutcome
+    /// Saves everything in one write and reloads; `.failed` keeps the sheet open with the
+    /// message (nothing was saved).
+    let onSave: (TransactionEditChanges) -> SaveOutcome
     let transfer: TransferLinkActions?
     /// Edit and Delete… for a transaction added by hand; nil (or an imported transaction)
     /// keeps those fields read-only.
@@ -27,18 +32,35 @@ struct EditTransactionSheet: View {
     @State private var categoryId: Int64?
     @State private var note: String
     @State private var errorMessage: String?
-    /// The transaction's linked legs, refreshed after Unlink / Link.
-    @State private var counterparts: [TransferCounterpart]
+    /// The transaction's linked legs when the sheet opened.
+    private let counterparts: [TransferCounterpart]
     @State private var transferError: String?
     @State private var candidates: [TransferCandidate]?
+    /// The transfer change Save will write, if any.
+    @State private var pendingTransfer: PendingTransfer?
     /// A manual transaction's account, date, description and amount.
     @State private var draft: ManualTransactionDraft
     @State private var confirmingDelete = false
 
+    /// A transfer change held until Save, with what the Transfer row previews.
+    private enum PendingTransfer: Equatable {
+        case addOtherSide(Account)
+        case unlink(TransferCounterpart)
+        case link(TransferCandidate)
+
+        var change: PendingTransferChange? {
+            switch self {
+            case .addOtherSide(let account): return account.id.map { .addOtherSide(accountId: $0) }
+            case .unlink(let counterpart): return .unlink(linkIds: [counterpart.linkId])
+            case .link(let candidate): return .link(transactionId: candidate.transactionId)
+            }
+        }
+    }
+
     init(transaction: Transaction, categories: [Category], groups: [CategoryGroup], recentIds: [Int64],
          createCategory: @escaping CreateCategory, transfer: TransferLinkActions? = nil,
          manual: ManualTransactionActions? = nil,
-         onSave: @escaping (Int64?, String?) -> SaveOutcome) {
+         onSave: @escaping (TransactionEditChanges) -> SaveOutcome) {
         self.transaction = transaction
         self.categories = categories
         self.groups = groups
@@ -47,10 +69,10 @@ struct EditTransactionSheet: View {
         self.transfer = transfer
         self.manual = manual
         self.onSave = onSave
+        counterparts = transaction.id.flatMap { id in transfer?.counterparts(id) } ?? []
         _draft = State(initialValue: ManualTransactionDraft(transaction))
         _categoryId = State(initialValue: transaction.categoryId)
         _note = State(initialValue: transaction.note ?? "")
-        _counterparts = State(initialValue: transaction.id.flatMap { id in transfer?.counterparts(id) } ?? [])
     }
 
     /// A transaction added by hand, with the actions to edit it.
@@ -61,6 +83,7 @@ struct EditTransactionSheet: View {
     private var isChanged: Bool {
         categoryId != transaction.categoryId || Transaction.normalizedNote(note) != transaction.note
             || (editsManually && draft != ManualTransactionDraft(transaction))
+            || pendingTransfer != nil
     }
 
     private var canSave: Bool {
@@ -111,6 +134,7 @@ struct EditTransactionSheet: View {
             }
         }
         .onChange(of: draft) { _, _ in errorMessage = nil }
+        .onChange(of: pendingTransfer) { _, _ in errorMessage = nil }
         .alert("Delete this transaction?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive, action: delete)
             Button("Cancel", role: .cancel) {}
@@ -119,36 +143,60 @@ struct EditTransactionSheet: View {
         }
     }
 
-    /// Add the other side… applies to a transaction that's uncategorised or in a transfer
-    /// category that isn't for an account you don't import (`ManualTransactions.addOtherSide`).
+    /// Add the other side… applies while the chosen (possibly unsaved) category is none or a
+    /// transfer category that isn't for an account you don't import (`ManualTransactions.addOtherSide`).
     private var canAddOtherSide: Bool {
-        guard let id = transaction.categoryId else { return true }
+        guard let id = categoryId else { return true }
         guard let category = categories.first(where: { $0.id == id }) else { return false }
         return category.type == .transfer && !category.isExternalTransfer
     }
 
+    /// The account, day and signed amount Save will see: the entered ones for a manual transaction.
+    private var source: (accountId: Int64, date: Date, amountMinorUnits: Int) {
+        if editsManually, let accountId = draft.accountId, let amount = draft.signedAmountMinorUnits {
+            return (accountId, draft.day, amount)
+        }
+        return (transaction.accountId, transaction.date, transaction.amountMinorUnits)
+    }
+
     /// The accounts the other side can be in: every account but this transaction's.
     private var otherSideAccounts: [Account] {
-        (transfer?.accounts ?? []).filter { $0.id != transaction.accountId }
+        let accountId = source.accountId
+        return (transfer?.accounts ?? []).filter { $0.id != accountId }
     }
 
     @ViewBuilder
     private var transferContent: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(counterparts) { counterpart in
+                if pendingTransfer != .unlink(counterpart) {
+                    HStack {
+                        Text(TransferFormat.line(counterpart))
+                            .help(counterpart.origin == .auto ? "Matched automatically" : "Linked by you")
+                        Spacer()
+                        Button("Unlink") { pendingTransfer = .unlink(counterpart) }
+                            .controlSize(.small)
+                            .disabled(pendingTransfer != nil)
+                            .help("Count both transactions in the budget again (on Save)")
+                    }
+                }
+            }
+            if let pendingTransfer {
                 HStack {
-                    Text(TransferFormat.line(counterpart))
-                        .help(counterpart.origin == .auto ? "Matched automatically" : "Linked by you")
+                    Text(preview(pendingTransfer))
+                        .foregroundStyle(.secondary)
+                        .italic()
                     Spacer()
-                    Button("Unlink") { unlink(counterpart) }
+                    Button("Undo") { self.pendingTransfer = nil }
                         .controlSize(.small)
-                        .help("Count both transactions in the budget again")
+                        .help("Keep the transfer as it is")
                 }
             }
             if counterparts.isEmpty {
                 HStack(spacing: 8) {
                     Button("Link to transfer…") { loadCandidates() }
                         .controlSize(.small)
+                        .disabled(pendingTransfer != nil)
                         .popover(isPresented: Binding(get: { candidates != nil }, set: { if !$0 { candidates = nil } })) {
                             candidateList
                         }
@@ -156,19 +204,39 @@ struct EditTransactionSheet: View {
                         Menu("Add the other side…") {
                             Section("Add the other side in") {
                                 ForEach(otherSideAccounts) { account in
-                                    Button(account.displayName) { addOtherSide(in: account) }
+                                    Button(account.displayName) { pendingTransfer = .addOtherSide(account) }
                                 }
                             }
                         }
                         .controlSize(.small)
                         .fixedSize()
-                        .help("Add this transfer's other leg by hand in another account, linked to this one")
+                        .disabled(pendingTransfer != nil)
+                        .help("Add this transfer's other leg by hand in another account, linked to this one (on Save)")
                     }
                 }
             }
             if let transferError {
                 Text(transferError).font(.callout).foregroundStyle(.red)
             }
+        }
+    }
+
+    /// "↔ will add to <account> · <date> · <amount>", "Will unlink from …", "Will link to …".
+    private func preview(_ pending: PendingTransfer) -> String {
+        switch pending {
+        case .addOtherSide(let account):
+            let source = source
+            let sourceCurrency = transfer?.accounts.first { $0.id == source.accountId }?.currency ?? account.currency
+            let amount = ManualTransactions.otherSideAmount(source.amountMinorUnits, from: sourceCurrency, to: account.currency,
+                                                            rate: transfer?.eurToGbpRate ?? 0.87)
+            return "↔ will add to " + TransferFormat.details(account: account.displayName, date: source.date,
+                                                             amountMinorUnits: amount, currency: account.currency)
+        case .unlink(let counterpart):
+            return "Will unlink from " + TransferFormat.details(account: counterpart.accountName, date: counterpart.date,
+                                                                amountMinorUnits: counterpart.amountMinorUnits, currency: counterpart.currency)
+        case .link(let candidate):
+            return "Will link to " + TransferFormat.details(account: candidate.accountName, date: candidate.date,
+                                                            amountMinorUnits: candidate.amountMinorUnits, currency: candidate.currency)
         }
     }
 
@@ -190,8 +258,11 @@ struct EditTransactionSheet: View {
                     }
                     Spacer()
                     MoneyText(minorUnits: candidate.amountMinorUnits, currency: candidate.currency)
-                    Button("Link") { link(candidate) }
-                        .controlSize(.small)
+                    Button("Link") {
+                        candidates = nil
+                        pendingTransfer = .link(candidate)
+                    }
+                    .controlSize(.small)
                 }
             }
         }
@@ -209,43 +280,16 @@ struct EditTransactionSheet: View {
         }
     }
 
-    private func addOtherSide(in account: Account) {
-        guard let transfer, let id = transaction.id, let accountId = account.id else { return }
-        candidates = nil
-        apply(transfer.addOtherSide(id, accountId))
-    }
-
-    private func unlink(_ counterpart: TransferCounterpart) {
-        guard let transfer else { return }
-        apply(transfer.unlink(counterpart.linkId))
-    }
-
-    private func link(_ candidate: TransferCandidate) {
-        guard let transfer, let id = transaction.id else { return }
-        candidates = nil
-        apply(transfer.link(id, candidate.transactionId))
-    }
-
-    private func apply(_ outcome: SaveOutcome) {
-        guard let transfer, let id = transaction.id else { return }
-        switch outcome {
-        case .saved, .savedButReloadFailed:
-            transferError = nil
-            counterparts = transfer.counterparts(id)
-        case .failed(let message):
-            transferError = message
-        }
-    }
-
+    /// Writes the fields and the pending transfer change in one go; a refusal saves nothing.
     private func save() {
-        let outcome: SaveOutcome
-        if editsManually, let manual, let id = transaction.id {
-            guard let input = draft.input(categoryId: categoryId, note: note) else { return }
-            outcome = manual.update(id, input)
-        } else {
-            outcome = onSave(categoryId, note)
+        var manualFields: TransactionEditChanges.ManualFields?
+        if editsManually {
+            guard let fields = draft.fields else { return }
+            manualFields = fields
         }
-        switch outcome {
+        let changes = TransactionEditChanges(categoryId: categoryId, note: note, manual: manualFields,
+                                             transfer: pendingTransfer?.change)
+        switch onSave(changes) {
         case .saved, .savedButReloadFailed: dismiss()
         case .failed(let message): errorMessage = message
         }

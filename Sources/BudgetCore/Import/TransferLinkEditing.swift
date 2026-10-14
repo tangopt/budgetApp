@@ -29,6 +29,8 @@ public enum TransferLinkError: LocalizedError, Equatable {
     case notOppositeAmounts
     case sameAccount
     case alreadyLinked
+    /// Unlink: the link is gone or isn't this transaction's.
+    case linkNotFound
 
     public var errorDescription: String? {
         switch self {
@@ -36,6 +38,7 @@ public enum TransferLinkError: LocalizedError, Equatable {
         case .notOppositeAmounts: return "A transfer links money sent with money received."
         case .sameAccount: return "A transfer links two different accounts."
         case .alreadyLinked: return "That transaction is already linked to a transfer."
+        case .linkNotFound: return "That transfer link no longer exists."
         }
     }
 }

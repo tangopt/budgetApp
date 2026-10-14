@@ -185,30 +185,17 @@ final class CategoriesViewModel: ObservableObject {
         return years.sorted(by: >)
     }
 
-    /// The Edit transaction sheet's save: category and note (no rule learned), then reload.
-    func editTransaction(id: Int64, categoryId: Int64?, note: String?) -> SaveOutcome {
-        do {
-            try dbQueue.write { db in try TransactionEditing.update(db: db, id: id, categoryId: categoryId, note: note) }
-        } catch {
-            return .failed(error.localizedDescription)
-        }
-        load()
-        onTransactionEdited?()
-        return .saved
+    /// The Edit transaction sheet's Save: category and note (or a manual transaction's
+    /// fields) and the pending transfer change, in one write via `TransactionEditing.save`
+    /// (no rule learned), then reload. A refusal writes nothing.
+    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges) -> SaveOutcome {
+        manualWrite { db in try TransactionEditing.save(db: db, id: id, changes: changes) }
     }
 
-    /// Edit transaction's account, date, description and amount, and Delete…, for a
-    /// transaction added by hand (`ManualTransactions.update` / `.delete`), then reload.
+    /// Edit transaction's Delete… for a transaction added by hand (`ManualTransactions.delete`), then reload.
     var manualActions: ManualTransactionActions {
         ManualTransactionActions(
             accounts: accounts,
-            update: { [unowned self] id, input in
-                manualWrite { db in
-                    try ManualTransactions.update(db: db, id: id, date: input.date, description: input.description,
-                                                  amountMinorUnits: input.amountMinorUnits, accountId: input.accountId,
-                                                  categoryId: input.categoryId, note: input.note)
-                }
-            },
             delete: { [unowned self] id in manualWrite { db in try ManualTransactions.delete(db: db, id: id) } }
         )
     }
@@ -225,15 +212,10 @@ final class CategoriesViewModel: ObservableObject {
         return errorMessage == nil ? .saved : .savedButReloadFailed
     }
 
-    /// Edit transaction's Unlink / Link to transfer… (spec §6) and Add the other side…, each
-    /// followed by a reload.
+    /// Edit transaction's transfer row: linked legs, Link to transfer…'s candidates and Add
+    /// the other side…'s accounts (the changes are written by Save).
     var transferActions: TransferLinkActions {
-        TransferLinkActions.make(dbQueue: dbQueue, accounts: accounts, counterparts: { [unowned self] in transferCounterparts[$0] ?? [] }) { [unowned self] in
-            errorMessage = nil
-            load()
-            onTransactionEdited?()
-            return errorMessage == nil
-        }
+        TransferLinkActions.make(dbQueue: dbQueue, accounts: accounts, counterparts: { [unowned self] in transferCounterparts[$0] ?? [] })
     }
 
     /// The Edit transaction picker's Recent section: the last 90 days' most used

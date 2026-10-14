@@ -15,12 +15,12 @@ struct ManualTransactionInput {
     let note: String?
 }
 
-/// The writes behind Add transaction… and Edit transaction for a manual transaction
-/// (spec 2026-10-14 §2), each followed by the screen's reload.
+/// What Edit transaction needs for a manual transaction (spec 2026-10-14 §2): the accounts it
+/// can move to, and Delete… (followed by the screen's reload). Its edits are written by Save
+/// (`TransactionEditing.save`).
 struct ManualTransactionActions {
     /// The accounts a manual transaction can be in, in the order the app lists them.
     let accounts: [Account]
-    let update: (_ id: Int64, _ input: ManualTransactionInput) -> SaveOutcome
     let delete: (_ id: Int64) -> SaveOutcome
 }
 
@@ -72,6 +72,13 @@ struct ManualTransactionDraft: Equatable {
         guard !text.isEmpty else { return nil }
         guard let value = Money.parseMinorUnits(text) else { return MoneyField.invalidAmountMessage(text) }
         return value == 0 ? "Enter an amount other than zero." : nil
+    }
+
+    /// What Edit transaction's Save writes for the account, date, description and amount.
+    var fields: TransactionEditChanges.ManualFields? {
+        guard let accountId, let amount = signedAmountMinorUnits, !trimmedDescription.isEmpty else { return nil }
+        return TransactionEditChanges.ManualFields(accountId: accountId, date: PayCalendar.utcDay(sameDayAs: day, in: .current),
+                                                   description: trimmedDescription, amountMinorUnits: amount)
     }
 
     func input(categoryId: Int64?, note: String) -> ManualTransactionInput? {
@@ -145,9 +152,17 @@ enum ManualFormat {
         return utcDate.formatted(style)
     }
 
-    /// A refused manual write's readable reason (`ManualTransactionError`), else "Couldn't save: …".
+    /// A refused transaction write's readable reason (`ManualTransactionError`,
+    /// `TransactionEditError`, `TransferLinkError`), else "Couldn't save: …".
     static func errorMessage(for error: Error) -> String {
-        if let error = error as? ManualTransactionError, let description = error.errorDescription { return description }
+        let refusal: String?
+        switch error {
+        case let error as ManualTransactionError: refusal = error.errorDescription
+        case let error as TransactionEditError: refusal = error.errorDescription
+        case let error as TransferLinkError: refusal = error.errorDescription
+        default: refusal = nil
+        }
+        if let refusal { return refusal }
         return "Couldn't save: \(error.localizedDescription)"
     }
 }

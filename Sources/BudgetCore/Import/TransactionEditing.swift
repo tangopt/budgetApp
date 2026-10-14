@@ -39,3 +39,73 @@ public enum TransactionEditing {
         try transaction.update(db)
     }
 }
+
+/// A transfer change Edit transaction holds until Save (at most one at a time).
+public enum PendingTransferChange: Equatable, Sendable {
+    /// Add the other side… in `accountId` (`ManualTransactions.addOtherSide`).
+    case addOtherSide(accountId: Int64)
+    /// Unlink (`TransferLinks.unlink`) — each link must involve the transaction.
+    case unlink(linkIds: [Int64])
+    /// Link to transfer… with `transactionId` (`TransferLinks.link`).
+    case link(transactionId: Int64)
+}
+
+/// Everything Edit transaction's Save writes.
+public struct TransactionEditChanges: Equatable, Sendable {
+    /// A manual transaction's account, date (the stored UTC day), description and signed amount.
+    public struct ManualFields: Equatable, Sendable {
+        public var accountId: Int64
+        public var date: Date
+        public var description: String
+        public var amountMinorUnits: Int
+
+        public init(accountId: Int64, date: Date, description: String, amountMinorUnits: Int) {
+            self.accountId = accountId
+            self.date = date
+            self.description = description
+            self.amountMinorUnits = amountMinorUnits
+        }
+    }
+
+    public var categoryId: Int64?
+    public var note: String?
+    /// Only for a transaction added by hand (`ManualTransactions.update`); nil = category and note only.
+    public var manual: ManualFields?
+    public var transfer: PendingTransferChange?
+
+    public init(categoryId: Int64?, note: String?, manual: ManualFields? = nil, transfer: PendingTransferChange? = nil) {
+        self.categoryId = categoryId
+        self.note = note
+        self.manual = manual
+        self.transfer = transfer
+    }
+}
+
+extension TransactionEditing {
+    /// Edit transaction's Save: the fields first (`ManualTransactions.update` for manual
+    /// fields, else `update`), then the pending transfer change — so Add the other side… sees
+    /// the saved category. Call inside one write: any refusal throws and rolls everything back.
+    public static func save(db: Database, id: Int64, changes: TransactionEditChanges) throws {
+        if let manual = changes.manual {
+            try ManualTransactions.update(db: db, id: id, date: manual.date, description: manual.description,
+                                          amountMinorUnits: manual.amountMinorUnits, accountId: manual.accountId,
+                                          categoryId: changes.categoryId, note: changes.note)
+        } else {
+            try update(db: db, id: id, categoryId: changes.categoryId, note: changes.note)
+        }
+        switch changes.transfer {
+        case nil:
+            break
+        case .addOtherSide(let accountId):
+            _ = try ManualTransactions.addOtherSide(db: db, transactionId: id, accountId: accountId)
+        case .unlink(let linkIds):
+            for linkId in linkIds {
+                guard let link = try TransferLink.fetchOne(db, key: linkId),
+                      link.outTransactionId == id || link.inTransactionId == id else { throw TransferLinkError.linkNotFound }
+                try TransferLinks.unlink(db: db, linkId: linkId)
+            }
+        case .link(let otherId):
+            _ = try TransferLinks.link(db: db, transactionId: id, with: otherId)
+        }
+    }
+}

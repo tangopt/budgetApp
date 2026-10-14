@@ -560,14 +560,12 @@ final class BudgetGridViewModel: ObservableObject {
         return reload() ? .saved : .savedButReloadFailed
     }
 
-    /// The Edit transaction sheet's save (spec §5): category and note via
-    /// `TransactionEditing.update` (no rule learned), then the grid reloads and
-    /// `onTransactionEdited` runs.
-    func editTransaction(id: Int64, categoryId: Int64?, note: String?) -> SaveOutcome {
-        let outcome = perform { db in try TransactionEditing.update(db: db, id: id, categoryId: categoryId, note: note) }
-        if case .failed = outcome { return outcome }
-        onTransactionEdited?()
-        return outcome
+    /// The Edit transaction sheet's Save (spec §5): category and note (or a manual
+    /// transaction's fields) and the pending transfer change, in one write via
+    /// `TransactionEditing.save` (no rule learned); then the grid reloads and
+    /// `onTransactionEdited` runs. A refusal writes nothing.
+    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges) -> SaveOutcome {
+        manualWrite { db in try TransactionEditing.save(db: db, id: id, changes: changes) }
     }
 
     /// Add transaction… (spec 2026-10-14 §2, `ManualTransactions.add`): the grid reloads and
@@ -579,23 +577,15 @@ final class BudgetGridViewModel: ObservableObject {
         }
     }
 
-    /// Edit transaction's account, date, description and amount, and Delete…, for a
-    /// transaction added by hand (`ManualTransactions.update` / `.delete`).
+    /// Edit transaction's Delete… for a transaction added by hand (`ManualTransactions.delete`).
     var manualActions: ManualTransactionActions {
         ManualTransactionActions(
             accounts: accounts,
-            update: { [unowned self] id, input in
-                manualWrite { db in
-                    try ManualTransactions.update(db: db, id: id, date: input.date, description: input.description,
-                                                  amountMinorUnits: input.amountMinorUnits, accountId: input.accountId,
-                                                  categoryId: input.categoryId, note: input.note)
-                }
-            },
             delete: { [unowned self] id in manualWrite { db in try ManualTransactions.delete(db: db, id: id) } }
         )
     }
 
-    /// A manual transaction's write: readable refusals, then the reload and `onTransactionEdited`.
+    /// A transaction write: readable refusals, then the reload and `onTransactionEdited`.
     private func manualWrite(_ write: (Database) throws -> Void) -> SaveOutcome {
         do {
             try dbQueue.write { db in try write(db) }
@@ -607,14 +597,10 @@ final class BudgetGridViewModel: ObservableObject {
         return reloaded ? .saved : .savedButReloadFailed
     }
 
-    /// Edit transaction's Unlink / Link to transfer… (spec §6) and Add the other side…, each
-    /// followed by a reload.
+    /// Edit transaction's transfer row: linked legs, Link to transfer…'s candidates and Add
+    /// the other side…'s accounts (the changes are written by Save).
     var transferActions: TransferLinkActions {
-        TransferLinkActions.make(dbQueue: dbQueue, accounts: accounts, counterparts: { [unowned self] in transferCounterparts[$0] ?? [] }) { [unowned self] in
-            let reloaded = reload()
-            onTransactionEdited?()
-            return reloaded
-        }
+        TransferLinkActions.make(dbQueue: dbQueue, accounts: accounts, counterparts: { [unowned self] in transferCounterparts[$0] ?? [] })
     }
 
     /// The picker's "New category…" (spec §4): creates the category and adds it to the list.

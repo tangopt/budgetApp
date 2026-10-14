@@ -134,11 +134,11 @@ public enum ManualTransactions {
         guard linked == 0 else { throw ManualTransactionError.alreadyLinked }
 
         let rate = try ExchangeRateSetting.currentOrDefault(db: db).eurToGbpRate
-        let converted = Int(TransferMatcher.convert(Double(abs(source.amountMinorUnits)), from: sourceAccount.currency, to: target.currency, rate: rate).rounded())
         let isIncoming = source.amountMinorUnits < 0
         let description = isIncoming ? "Transfer from \(sourceAccount.displayName)" : "Transfer to \(sourceAccount.displayName)"
         var other = Transaction(importBatchId: try batchId(db: db, accountId: accountId), accountId: accountId, date: source.date,
-                                rawDescription: description, amountMinorUnits: isIncoming ? max(converted, 1) : -max(converted, 1),
+                                rawDescription: description,
+                                amountMinorUnits: otherSideAmount(source.amountMinorUnits, from: sourceAccount.currency, to: target.currency, rate: rate),
                                 categoryId: source.categoryId, status: source.categoryId == nil ? .pendingReview : .confirmed,
                                 categorizedBy: source.categoryId == nil ? .none : .manual,
                                 fingerprint: "manual-\(UUID().uuidString)", isManual: true)
@@ -146,6 +146,13 @@ public enum ManualTransactions {
         var link = TransferLink(outTransactionId: isIncoming ? sourceId : other.id!, inTransactionId: isIncoming ? other.id! : sourceId, origin: .manual)
         try link.insert(db)
         return other
+    }
+
+    /// The other side's signed amount: the opposite sign, converted at `rate` (EUR→GBP) across
+    /// currencies, at least one minor unit.
+    public static func otherSideAmount(_ amountMinorUnits: Int, from: Currency, to: Currency, rate: Double) -> Int {
+        let converted = max(Int(TransferMatcher.convert(Double(abs(amountMinorUnits)), from: from, to: to, rate: rate).rounded()), 1)
+        return amountMinorUnits < 0 ? converted : -converted
     }
 
     // MARK: Imports replacing manual entries (spec §3)
