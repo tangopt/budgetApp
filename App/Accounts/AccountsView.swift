@@ -17,7 +17,8 @@ struct AccountsView: View {
                 banners(overview)
                 HStack(alignment: .top, spacing: 16) {
                     VStack(alignment: .leading, spacing: 8) {
-                        AccountsListView(groups: overview.groups, selection: $viewModel.selectedAccountId) { group, from, to in
+                        AccountsListView(groups: overview.groups, selection: $viewModel.selectedAccountId,
+                                         onAddTransaction: addTransaction(in:)) { group, from, to in
                             viewModel.moveAccounts(ids: group.rows.map(\.id), fromOffsets: from, toOffset: to)
                         }
                         footer
@@ -27,7 +28,8 @@ struct AccountsView: View {
                         row: viewModel.selectedRow,
                         history: viewModel.selectedHistory,
                         onUpdateBalance: { activeSheet = .updateOne($0) },
-                        onEdit: { activeSheet = .edit($0.account) }
+                        onEdit: { activeSheet = .edit($0.account) },
+                        onAddTransaction: { addTransaction(in: $0.id) }
                     )
                         .frame(width: 320)
                         .frame(maxHeight: .infinity, alignment: .top)
@@ -53,8 +55,24 @@ struct AccountsView: View {
                 UpdateBalanceSheet(viewModel: viewModel, row: row)
             case .updateAll(let groups):
                 UpdateBalancesSheet(viewModel: viewModel, groups: groups)
+            case .addTransaction(let accountId):
+                AddTransactionSheet(
+                    accounts: viewModel.accounts,
+                    accountId: accountId,
+                    categories: viewModel.categories,
+                    groups: viewModel.categoryGroups,
+                    recentIds: viewModel.recentCategoryIds,
+                    createCategory: viewModel.createCategory,
+                    onSave: viewModel.addTransaction
+                )
             }
         }
+    }
+
+    /// Add transaction… for an account (its row's menu, or the detail's button).
+    private func addTransaction(in accountId: Int64) {
+        viewModel.prepareAddTransaction()
+        activeSheet = .addTransaction(accountId)
     }
 
     // MARK: Header
@@ -159,6 +177,7 @@ private enum AccountsSheet: Identifiable {
     case edit(Account)
     case updateOne(AccountRow)
     case updateAll([AccountGroup])
+    case addTransaction(Int64)
 
     var id: String {
         switch self {
@@ -166,6 +185,7 @@ private enum AccountsSheet: Identifiable {
         case .edit(let account): return "edit-\(account.id ?? 0)"
         case .updateOne(let row): return "update-\(row.id)"
         case .updateAll: return "update-all"
+        case .addTransaction(let accountId): return "add-transaction-\(accountId)"
         }
     }
 }
@@ -197,6 +217,8 @@ private struct Banner<Content: View>: View {
 private struct AccountsListView: View {
     let groups: [AccountGroup]
     @Binding var selection: Int64?
+    /// Add transaction… from a row's context menu.
+    let onAddTransaction: (Int64) -> Void
     /// A drag within a section (accounts reorder within their kind).
     let onMove: (AccountGroup, IndexSet, Int) -> Void
 
@@ -206,6 +228,9 @@ private struct AccountsListView: View {
                 Section {
                     ForEach(group.rows) { row in
                         AccountListRow(row: row).tag(row.id)
+                            .contextMenu {
+                                Button("Add transaction…") { onAddTransaction(row.id) }
+                            }
                     }
                     .onMove { from, to in onMove(group, from, to) }
                 } header: {
@@ -294,6 +319,7 @@ private struct AccountDetailView: View {
     let history: [BalanceSnapshot]
     let onUpdateBalance: (AccountRow) -> Void
     let onEdit: (AccountRow) -> Void
+    let onAddTransaction: (AccountRow) -> Void
     @State private var showAllHistory = false
     @State private var selectedDate: Date?
     private let historyLimit = 12
@@ -323,6 +349,7 @@ private struct AccountDetailView: View {
                     HStack {
                         Button("Update balance…") { onUpdateBalance(row) }
                         Button("Edit…") { onEdit(row) }
+                        Button("Add transaction…") { onAddTransaction(row) }
                     }
                     chart(row)
                     historyList(row)

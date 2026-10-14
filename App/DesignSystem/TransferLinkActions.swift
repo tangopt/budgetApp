@@ -13,10 +13,16 @@ struct TransferLinkActions {
     let unlink: (_ linkId: Int64) -> SaveOutcome
     /// Link to transfer… (`TransferLinks.link`).
     let link: (_ transactionId: Int64, _ otherId: Int64) -> SaveOutcome
+    /// The accounts Add the other side… offers (the transaction's own is left out), in the
+    /// order the app lists them.
+    let accounts: [Account]
+    /// Add the other side… (`ManualTransactions.addOtherSide`, spec 2026-10-14 §2).
+    let addOtherSide: (_ transactionId: Int64, _ accountId: Int64) -> SaveOutcome
 
     /// Writes through `dbQueue`, then `reload` (false = the re-read failed).
     @MainActor
-    static func make(dbQueue: DatabaseQueue, counterparts: @escaping (Int64) -> [TransferCounterpart], reload: @escaping () -> Bool) -> TransferLinkActions {
+    static func make(dbQueue: DatabaseQueue, accounts: [Account], counterparts: @escaping (Int64) -> [TransferCounterpart],
+                     reload: @escaping () -> Bool) -> TransferLinkActions {
         func perform(_ write: (Database) throws -> Void) -> SaveOutcome {
             do {
                 try dbQueue.write { db in try write(db) }
@@ -29,7 +35,9 @@ struct TransferLinkActions {
             counterparts: counterparts,
             candidates: { id in try dbQueue.read { db in try TransferLinks.candidates(db: db, for: id) } },
             unlink: { linkId in perform { db in try TransferLinks.unlink(db: db, linkId: linkId) } },
-            link: { id, otherId in perform { db in _ = try TransferLinks.link(db: db, transactionId: id, with: otherId) } }
+            link: { id, otherId in perform { db in _ = try TransferLinks.link(db: db, transactionId: id, with: otherId) } },
+            accounts: accounts,
+            addOtherSide: { id, accountId in perform { db in _ = try ManualTransactions.addOtherSide(db: db, transactionId: id, accountId: accountId) } }
         )
     }
 }

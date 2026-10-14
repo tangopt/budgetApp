@@ -570,9 +570,47 @@ final class BudgetGridViewModel: ObservableObject {
         return outcome
     }
 
-    /// Edit transaction's Unlink / Link to transfer… (spec §6), each followed by a reload.
+    /// Add transaction… (spec 2026-10-14 §2, `ManualTransactions.add`): the grid reloads and
+    /// `onTransactionEdited` runs.
+    func addTransaction(_ input: ManualTransactionInput) -> SaveOutcome {
+        manualWrite { db in
+            _ = try ManualTransactions.add(db: db, accountId: input.accountId, date: input.date, description: input.description,
+                                           amountMinorUnits: input.amountMinorUnits, categoryId: input.categoryId, note: input.note)
+        }
+    }
+
+    /// Edit transaction's account, date, description and amount, and Delete…, for a
+    /// transaction added by hand (`ManualTransactions.update` / `.delete`).
+    var manualActions: ManualTransactionActions {
+        ManualTransactionActions(
+            accounts: accounts,
+            update: { [unowned self] id, input in
+                manualWrite { db in
+                    try ManualTransactions.update(db: db, id: id, date: input.date, description: input.description,
+                                                  amountMinorUnits: input.amountMinorUnits, accountId: input.accountId,
+                                                  categoryId: input.categoryId, note: input.note)
+                }
+            },
+            delete: { [unowned self] id in manualWrite { db in try ManualTransactions.delete(db: db, id: id) } }
+        )
+    }
+
+    /// A manual transaction's write: readable refusals, then the reload and `onTransactionEdited`.
+    private func manualWrite(_ write: (Database) throws -> Void) -> SaveOutcome {
+        do {
+            try dbQueue.write { db in try write(db) }
+        } catch {
+            return .failed(ManualFormat.errorMessage(for: error))
+        }
+        let reloaded = reload()
+        onTransactionEdited?()
+        return reloaded ? .saved : .savedButReloadFailed
+    }
+
+    /// Edit transaction's Unlink / Link to transfer… (spec §6) and Add the other side…, each
+    /// followed by a reload.
     var transferActions: TransferLinkActions {
-        TransferLinkActions.make(dbQueue: dbQueue, counterparts: { [unowned self] in transferCounterparts[$0] ?? [] }) { [unowned self] in
+        TransferLinkActions.make(dbQueue: dbQueue, accounts: accounts, counterparts: { [unowned self] in transferCounterparts[$0] ?? [] }) { [unowned self] in
             let reloaded = reload()
             onTransactionEdited?()
             return reloaded

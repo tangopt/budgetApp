@@ -9,8 +9,9 @@ import struct BudgetCore.Category
 /// description, its note underneath, its transfer link ("↔ <account> · <date> · <amount>",
 /// spec §6), its account when `accountNameById` is given (the Budget grid's, spec §7), its
 /// category (badge and name) when `showCategory` (group and section rows), the amount and
-/// an Edit transaction (pencil) button — newest first; then an optional `plannedSection` (a
-/// `Section` for the panel's `List`).
+/// an Edit transaction (pencil) button — newest first, a transaction added by hand tagged
+/// "Manual"; then an optional `plannedSection` (a `Section` for the panel's `List`). With
+/// `onAdd`, the header also has Add transaction… (+).
 struct TransactionsSidePanel<Planned: View>: View {
     let title: String
     let transactions: [Transaction]
@@ -24,6 +25,8 @@ struct TransactionsSidePanel<Planned: View>: View {
     var showsTransactions = true
     /// Shown above the list (e.g. an error banner or a filter), when given.
     var accessory: AnyView? = nil
+    /// Add transaction… in the header, when given.
+    var onAdd: (() -> Void)? = nil
     let plannedSection: () -> Planned
     let onEdit: (Transaction) -> Void
     let onClose: () -> Void
@@ -31,6 +34,7 @@ struct TransactionsSidePanel<Planned: View>: View {
     init(title: String, transactions: [Transaction], categoryById: [Int64: Category] = [:], showCategory: Bool = false,
          accountNameById: [Int64: String] = [:],
          transfers: [Int64: [TransferCounterpart]] = [:], showsTransactions: Bool = true, accessory: AnyView? = nil,
+         onAdd: (() -> Void)? = nil,
          @ViewBuilder plannedSection: @escaping () -> Planned,
          onEdit: @escaping (Transaction) -> Void, onClose: @escaping () -> Void) {
         self.title = title
@@ -41,6 +45,7 @@ struct TransactionsSidePanel<Planned: View>: View {
         self.transfers = transfers
         self.showsTransactions = showsTransactions
         self.accessory = accessory
+        self.onAdd = onAdd
         self.plannedSection = plannedSection
         self.onEdit = onEdit
         self.onClose = onClose
@@ -55,6 +60,14 @@ struct TransactionsSidePanel<Planned: View>: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(title).font(.headline).lineLimit(2)
                 Spacer()
+                if let onAdd {
+                    Button(action: onAdd) {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Add transaction…")
+                    .accessibilityLabel("Add transaction")
+                }
                 Button(action: onClose) {
                     Image(systemName: "xmark")
                 }
@@ -115,6 +128,7 @@ struct TransactionsSidePanel<Planned: View>: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1)
                     .layoutPriority(1)
+                if transaction.isManual { ManualTag() }
                 if showCategory {
                     Text("·").font(.caption).foregroundStyle(.secondary)
                     if let category = transaction.categoryId.flatMap({ categoryById[$0] }) {

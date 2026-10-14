@@ -156,9 +156,12 @@ struct UncategorizedView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(transaction.rawDescription)
-                Text(transaction.date.formatted(date: .abbreviated, time: .omitted))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text(transaction.date.formatted(date: .abbreviated, time: .omitted))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if transaction.isManual { ManualTag() }
+                }
             }
             Spacer()
             MoneyText(minorUnits: transaction.amountMinorUnits)

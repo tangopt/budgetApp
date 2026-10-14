@@ -26,6 +26,9 @@ final class CategoriesViewModel: ObservableObject {
     @Published private(set) var transferCounterparts: [Int64: [TransferCounterpart]] = [:]
     /// Average monthly actual over the last 12 pay months (`CategoryStats`); absent = "—".
     @Published private(set) var averages: [Int64: Int] = [:]
+    /// Every account in the order the app lists them (Edit transaction's account picker and
+    /// Add the other side…).
+    @Published private(set) var accounts: [Account] = []
     @Published private(set) var payCalendar = PayCalendar(salaryDates: [], manualCloses: [], today: Date())
     /// The screen's banner error (load failures, a failed move or rename, a refused delete).
     @Published var errorMessage: String?
@@ -39,11 +42,12 @@ final class CategoriesViewModel: ObservableObject {
 
     func load() {
         do {
-            let (categories, groups, all, closes, links, counterparts) = try dbQueue.read { db in
+            let (categories, groups, all, closes, links, counterparts, accounts) = try dbQueue.read { db in
                 (try Category.fetchAll(db), try CategoryGroup.fetchAll(db), try Transaction.fetchAll(db), try PayMonthClose.fetchAll(db),
-                 try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db))
+                 try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db), try Account.fetchAll(db))
             }
             self.categories = categories
+            self.accounts = accounts.sortedForDisplay()
             self.groups = groups
             payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: all, categories: categories),
                                       manualCloses: closes, today: Date())
@@ -193,9 +197,38 @@ final class CategoriesViewModel: ObservableObject {
         return .saved
     }
 
-    /// Edit transaction's Unlink / Link to transfer… (spec §6), each followed by a reload.
+    /// Edit transaction's account, date, description and amount, and Delete…, for a
+    /// transaction added by hand (`ManualTransactions.update` / `.delete`), then reload.
+    var manualActions: ManualTransactionActions {
+        ManualTransactionActions(
+            accounts: accounts,
+            update: { [unowned self] id, input in
+                manualWrite { db in
+                    try ManualTransactions.update(db: db, id: id, date: input.date, description: input.description,
+                                                  amountMinorUnits: input.amountMinorUnits, accountId: input.accountId,
+                                                  categoryId: input.categoryId, note: input.note)
+                }
+            },
+            delete: { [unowned self] id in manualWrite { db in try ManualTransactions.delete(db: db, id: id) } }
+        )
+    }
+
+    private func manualWrite(_ write: (Database) throws -> Void) -> SaveOutcome {
+        do {
+            try dbQueue.write { db in try write(db) }
+        } catch {
+            return .failed(ManualFormat.errorMessage(for: error))
+        }
+        errorMessage = nil
+        load()
+        onTransactionEdited?()
+        return errorMessage == nil ? .saved : .savedButReloadFailed
+    }
+
+    /// Edit transaction's Unlink / Link to transfer… (spec §6) and Add the other side…, each
+    /// followed by a reload.
     var transferActions: TransferLinkActions {
-        TransferLinkActions.make(dbQueue: dbQueue, counterparts: { [unowned self] in transferCounterparts[$0] ?? [] }) { [unowned self] in
+        TransferLinkActions.make(dbQueue: dbQueue, accounts: accounts, counterparts: { [unowned self] in transferCounterparts[$0] ?? [] }) { [unowned self] in
             errorMessage = nil
             load()
             onTransactionEdited?()

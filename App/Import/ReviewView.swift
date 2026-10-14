@@ -539,6 +539,7 @@ struct ReviewView: View {
                 Text(detailLine(for: row))
                     .font(.caption).foregroundStyle(.secondary)
                 if let transfer = row.staged.transfer { transferBadge(transfer) }
+                if let replacement = row.staged.replacesManual { manualReplacementBadge(replacement) }
             }
             Spacer()
             MoneyText(minorUnits: row.staged.parsed.amountMinorUnits)
@@ -593,6 +594,20 @@ struct ReviewView: View {
             .background(Capsule().fill(Color.accentColor.opacity(0.15)))
             .foregroundStyle(Color.accentColor)
             .help("Counted once, as sent from \(transfer.isIncoming ? transfer.otherAccountName : "this account")")
+    }
+
+    /// The badge on a row that replaces a transaction added by hand (spec §3):
+    /// "Replaces your manual entry (9 Mar)". Finish import saves this row in its place.
+    private func manualReplacementBadge(_ replacement: StagedManualReplacement) -> some View {
+        Text("Replaces your manual entry (\(ManualFormat.shortDay(replacement.date)))")
+            .font(.caption)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+            .foregroundStyle(Color.accentColor)
+            .help(replacement.isLinked
+                  ? "Finish import saves this transaction in place of the one you added by hand, keeping its transfer link"
+                  : "Finish import saves this transaction in place of the one you added by hand")
     }
 
     /// "1 Oct 2026 · Suggested from 3 past transactions" for history suggestions.

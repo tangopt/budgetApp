@@ -203,6 +203,7 @@ struct ContentView: View {
             // An Edit transaction save (Budget grid, Categories panel) can add or clear an uncategorised one.
             budgetGridViewModel.onTransactionEdited = { refreshUncategorizedCount() }
             categoriesViewModel.onTransactionEdited = { refreshUncategorizedCount() }
+            accountsViewModel.onTransactionAdded = { refreshUncategorizedCount() }
             refreshSharedState()
         }
         .onChange(of: importViewModel.isStaging) { _, staging in

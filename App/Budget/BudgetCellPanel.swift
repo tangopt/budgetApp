@@ -42,6 +42,19 @@ struct BudgetCellPanel: View {
     @State private var editingTransaction: Transaction?
     /// Read when Edit… is clicked, for the sheet's picker.
     @State private var editingRecentIds: [Int64] = []
+    /// Add transaction… is open.
+    @State private var isAdding = false
+
+    /// Add transaction…'s account: the one ticked in the account filter when exactly one is,
+    /// else the first account.
+    private var addAccountId: Int64? {
+        viewModel.accountFilter.count == 1 ? viewModel.accountFilter.first : viewModel.accounts.first?.id
+    }
+
+    /// Add transaction…'s category: the cell's, when it's a single category's.
+    private var addCategoryId: Int64? {
+        target.categoryIds.count == 1 ? target.categoryIds.first : nil
+    }
 
     var body: some View {
         TransactionsSidePanel(
@@ -52,6 +65,10 @@ struct BudgetCellPanel: View {
             accountNameById: viewModel.accountNameById,
             transfers: viewModel.transferCounterparts,
             showsTransactions: target.showsTransactions,
+            onAdd: target.showsTransactions && !viewModel.accounts.isEmpty ? {
+                editingRecentIds = viewModel.recentCategoryIds()
+                isAdding = true
+            } : nil,
             plannedSection: {
                 // Planned items have no account: none under an account filter (spec §7).
                 if let plan = target.plan, !viewModel.isAccountFiltered { plannedSection(plan) }
@@ -74,10 +91,23 @@ struct BudgetCellPanel: View {
                 recentIds: editingRecentIds,
                 createCategory: viewModel.createCategory,
                 transfer: viewModel.transferActions,
+                manual: viewModel.manualActions,
                 onSave: { categoryId, note in
                     guard let id = transaction.id else { return .failed("This transaction hasn't been saved yet.") }
                     return viewModel.editTransaction(id: id, categoryId: categoryId, note: note)
                 }
+            )
+        }
+        .sheet(isPresented: $isAdding) {
+            AddTransactionSheet(
+                accounts: viewModel.accounts,
+                accountId: addAccountId,
+                categoryId: addCategoryId,
+                categories: viewModel.categories,
+                groups: viewModel.categoryGroups,
+                recentIds: editingRecentIds,
+                createCategory: viewModel.createCategory,
+                onSave: viewModel.addTransaction
             )
         }
     }

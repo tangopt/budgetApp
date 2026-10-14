@@ -1,6 +1,7 @@
 // App/Accounts/AccountsViewModel.swift
 import Foundation
 import BudgetCore
+import struct BudgetCore.Category
 import GRDB
 
 /// What a sheet's save did. Sheets dismiss on both saved outcomes; `.failed` carries the
@@ -27,6 +28,14 @@ final class AccountsViewModel: ObservableObject {
     @Published var errorMessage: String?
     /// Reconciliation warnings from the last balance save.
     @Published var warnings: [String] = []
+
+    /// Add transaction…'s category picker: read when the sheet opens (`prepareAddTransaction`);
+    /// "New category…" adds to it.
+    @Published private(set) var categories: [Category] = []
+    @Published private(set) var categoryGroups: [CategoryGroup] = []
+    @Published private(set) var recentCategoryIds: [Int64] = []
+    /// Runs after Add transaction… saves (ContentView refreshes the uncategorised count).
+    var onTransactionAdded: (() -> Void)?
 
     private var snapshots: [BalanceSnapshot] = []
     private let dbQueue: DatabaseQueue
@@ -120,6 +129,50 @@ final class AccountsViewModel: ObservableObject {
         }
         let reloaded = load()
         onSuccess?(result)
+        guard reloaded else {
+            errorMessage = "Saved, but " + (errorMessage.map { $0.prefix(1).lowercased() + $0.dropFirst() } ?? "couldn't reload accounts.")
+            return .savedButReloadFailed
+        }
+        return .saved
+    }
+
+    // MARK: Add transaction… (spec 2026-10-14 §2)
+
+    /// Reads the categories, groups and recent categories for Add transaction…'s picker;
+    /// a failed read leaves the picker with what it had.
+    func prepareAddTransaction() {
+        let since = Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
+        if let (categories, groups) = try? dbQueue.read({ db in (try Category.fetchAll(db), try CategoryGroup.fetchAll(db)) }) {
+            self.categories = categories
+            categoryGroups = groups
+        }
+        recentCategoryIds = (try? dbQueue.read { db in try CategoryShortlist.recent(db: db, since: since, limit: 5) }) ?? []
+    }
+
+    /// The picker's "New category…": creates the category and re-reads the list.
+    func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
+        let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
+        if let reloaded = try? dbQueue.read({ db in try Category.fetchAll(db) }) {
+            categories = reloaded
+        } else {
+            categories.append(category)
+        }
+        return category
+    }
+
+    /// Add transaction…'s save (`ManualTransactions.add`), then the screen reloads (an
+    /// imported account's balance includes it) and `onTransactionAdded` runs.
+    func addTransaction(_ input: ManualTransactionInput) -> SaveOutcome {
+        do {
+            try dbQueue.write { db in
+                _ = try ManualTransactions.add(db: db, accountId: input.accountId, date: input.date, description: input.description,
+                                               amountMinorUnits: input.amountMinorUnits, categoryId: input.categoryId, note: input.note)
+            }
+        } catch {
+            return .failed(ManualFormat.errorMessage(for: error))
+        }
+        let reloaded = load()
+        onTransactionAdded?()
         guard reloaded else {
             errorMessage = "Saved, but " + (errorMessage.map { $0.prefix(1).lowercased() + $0.dropFirst() } ?? "couldn't reload accounts.")
             return .savedButReloadFailed

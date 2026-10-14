@@ -179,7 +179,7 @@ final class ImportViewModel: ObservableObject {
         statementBalances = account.kind == .credit ? .notProvided : result.statementBalances
         recordStatementBalancesOnConfirm = true
         confirmedIds = []
-        stagedRows = result.staged.map { ReviewRow(staged: $0, chosenCategoryId: $0.suggestedCategoryId) }
+        stagedRows = result.staged.map { ReviewRow(staged: $0, chosenCategoryId: $0.suggestedCategoryId, note: $0.replacesManual?.note) }
         loadPickerContext()
         duplicates = result.duplicates
         unparsedLines = result.unparsedLines
@@ -196,7 +196,7 @@ final class ImportViewModel: ObservableObject {
         guard !duplicates.isEmpty else { return }
         do {
             let forced = try await coordinator.stageForcedDuplicates(duplicates, accountId: lastAccountId, alreadyStaged: stagedRows.map(\.staged))
-            stagedRows += forced.map { ReviewRow(staged: $0, chosenCategoryId: $0.suggestedCategoryId) }
+            stagedRows += forced.map { ReviewRow(staged: $0, chosenCategoryId: $0.suggestedCategoryId, note: $0.replacesManual?.note) }
             duplicates = []
         } catch {
             fail("Couldn't stage the duplicates: \(error.localizedDescription)")
