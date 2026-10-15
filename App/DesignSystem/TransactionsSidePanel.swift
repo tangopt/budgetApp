@@ -28,7 +28,9 @@ struct TransactionsSidePanel<Planned: View>: View {
     /// Add transaction… in the header, when given.
     var onAdd: (() -> Void)? = nil
     let plannedSection: () -> Planned
-    let onEdit: (Transaction) -> Void
+    /// Each transaction's Edit transaction (pencil) button, when given (the Forecast grid's
+    /// panel lists actuals read-only).
+    let onEdit: ((Transaction) -> Void)?
     let onClose: () -> Void
 
     init(title: String, transactions: [Transaction], categoryById: [Int64: Category] = [:], showCategory: Bool = false,
@@ -36,7 +38,7 @@ struct TransactionsSidePanel<Planned: View>: View {
          transfers: [Int64: [TransferCounterpart]] = [:], showsTransactions: Bool = true, accessory: AnyView? = nil,
          onAdd: (() -> Void)? = nil,
          @ViewBuilder plannedSection: @escaping () -> Planned,
-         onEdit: @escaping (Transaction) -> Void, onClose: @escaping () -> Void) {
+         onEdit: ((Transaction) -> Void)?, onClose: @escaping () -> Void) {
         self.title = title
         self.transactions = transactions
         self.categoryById = categoryById
@@ -143,12 +145,14 @@ struct TransactionsSidePanel<Planned: View>: View {
                     }
                 }
                 Spacer()
-                Button { onEdit(transaction) } label: {
-                    Image(systemName: "pencil")
+                if let onEdit {
+                    Button { onEdit(transaction) } label: {
+                        Image(systemName: "pencil")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Edit transaction")
+                    .accessibilityLabel("Edit transaction")
                 }
-                .buttonStyle(.borderless)
-                .help("Edit transaction")
-                .accessibilityLabel("Edit transaction")
             }
         }
         .padding(.vertical, 2)

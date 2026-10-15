@@ -18,7 +18,7 @@ import GRDB
 /// (chart lines and summary) is computed off the main actor from value-type inputs; a newer
 /// computation cancels the one in flight.
 @MainActor
-final class ScenarioLabViewModel: ObservableObject {
+final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     /// One net worth forecast line of the Compare chart.
     struct PlanLine: Identifiable, Equatable, Sendable {
         /// "budget", or "scenario-<id>".
@@ -139,8 +139,19 @@ final class ScenarioLabViewModel: ObservableObject {
     /// By scenario id: the budget entries it holds an unchanged copy of (a row's cell shows
     /// the budget's version there; "—" when the scenario doesn't have the item).
     @Published private(set) var unchangedCopies: [Int64: Set<Int64>] = [:]
+    /// The Grid tab's plan for `gridYear` (`ScenarioComparison.grid`): its cells by category id
+    /// then month, and its Totals block.
+    @Published private(set) var grid: ScenarioGrid = .empty
     /// The Grid tab's plan's cells for `gridYear`, by category id then month.
-    @Published private(set) var gridCells: [Int64: [Int: ScenarioGridCell]] = [:]
+    var gridCells: [Int64: [Int: ScenarioGridCell]] { grid.cells }
+    /// Each plan's grid by plan (0 = the Budget) and year, so switching the Grid tab's plan or
+    /// year back is instant; emptied by every load.
+    private var gridCache: [String: ScenarioGrid] = [:]
+    /// The actuals every plan's grid shares (`ScenarioComparison.gridActuals`), rebuilt on load:
+    /// the side panel's transactions and the Totals block's counted transfers.
+    private var gridActuals = ScenarioGridActuals.empty
+    /// Linked transfers' other legs by transaction id, for the side panel.
+    @Published private(set) var transferCounterparts: [Int64: [TransferCounterpart]] = [:]
 
     private let dbQueue: DatabaseQueue
 
@@ -196,6 +207,7 @@ final class ScenarioLabViewModel: ObservableObject {
         var categoryGroups: [CategoryGroup]
         var transactions: [Transaction]
         var transferLinks: [TransferLink]
+        var transferCounterparts: [Int64: [TransferCounterpart]]
         var accounts: [Account]
         var snapshots: [BalanceSnapshot]
         var rate: ExchangeRateSetting
@@ -219,7 +231,7 @@ final class ScenarioLabViewModel: ObservableObject {
             }
             return Loaded(manualCloses: try PayMonthClose.fetchAll(db), categories: try Category.fetchAll(db),
                           categoryGroups: try CategoryGroup.fetchAll(db), transactions: try Transaction.fetchAll(db),
-                          transferLinks: try TransferLink.fetchAll(db), accounts: try Account.fetchAll(db), snapshots: try BalanceSnapshot.fetchAll(db),
+                          transferLinks: try TransferLink.fetchAll(db), transferCounterparts: try TransferLinks.counterparts(db: db), accounts: try Account.fetchAll(db), snapshots: try BalanceSnapshot.fetchAll(db),
                           rate: try ExchangeRateSetting.currentOrDefault(db: db), groups: groups, scenarios: scenarios,
                           budgetPlan: plan(try ForecastEntry.budget(db)), scenarioPlans: plans)
         }
@@ -227,6 +239,7 @@ final class ScenarioLabViewModel: ObservableObject {
         categoryGroups = loaded.categoryGroups
         transactions = loaded.transactions
         transferLinks = loaded.transferLinks
+        transferCounterparts = loaded.transferCounterparts
         accounts = loaded.accounts
         snapshots = loaded.snapshots
         rate = loaded.rate
@@ -237,6 +250,8 @@ final class ScenarioLabViewModel: ObservableObject {
         today = Date()
         // As the Dashboard builds it: today never earlier than the latest transaction.
         payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: loaded.manualCloses, today: today)
+        gridActuals = ScenarioComparison.gridActuals(comparisonData)
+        gridCache = [:]
         // Planned items' accounts for the Account picker (spec 2026-10-15 §2), as the Budget infers them.
         accountOptions = PlanAccountOptions(accounts: accounts.sortedForDisplay(),
                                             itemAccounts: PlannedItemAccounts(categories: categories, budgetTransactions: TransferLinks.budgetFacing(transactions, links: transferLinks), calendar: payCalendar,
@@ -389,7 +404,14 @@ final class ScenarioLabViewModel: ObservableObject {
     }
 
     private func recomputeGrid() {
-        gridCells = ScenarioComparison.gridCells(comparisonData, scenario: gridPlan, budget: budgetPlan, year: gridYear)
+        let key = "\(gridSelection ?? 0)-\(gridYear)"
+        if let cached = gridCache[key] {
+            grid = cached
+            return
+        }
+        let computed = ScenarioComparison.grid(comparisonData, actuals: gridActuals, scenario: gridPlan, budget: budgetPlan, year: gridYear)
+        gridCache[key] = computed
+        grid = computed
     }
 
     // MARK: Scenario operations
@@ -547,16 +569,74 @@ final class ScenarioLabViewModel: ObservableObject {
         return ForecastCalculator.planEntries(entries: plan.entries, groups: plan.groups)
     }
 
-    /// The Grid tab's scenario's occurrences under `category` in the calendar month (empty for
-    /// the Budget, which the lab doesn't edit). Only closed months lock a scenario occurrence.
+    /// The Grid tab's plan's occurrences under `category` in the calendar month: the scenario's
+    /// (only closed months lock a scenario occurrence), or the Budget's, shown read-only
+    /// (locked as the Budget grid locks them).
     func occurrences(category: Category, year: Int, month: Int) -> [PlannedRow] {
-        guard let categoryId = category.id, let id = gridSelection, let plan = scenarioPlans[id] else { return [] }
-        return PlannedRow.rows(categoryId: categoryId, year: year, month: month, plan: scenarioPlanEntries, exceptions: plan.exceptions,
-                               accounts: accounts.isEmpty ? nil : accountOptions) { entry, occurrence in
-            PlannedItemEditing.isLocked(entry: entry, occurrence: occurrence, calendar: payCalendar, monthTotals: [:],
+        guard let categoryId = category.id else { return [] }
+        let plan = gridPlan
+        let monthTotals = gridSelection == nil ? gridActuals.monthTotals : [:]
+        return PlannedRow.rows(categoryId: categoryId, year: year, month: month, plan: ForecastCalculator.planEntries(entries: plan.entries, groups: plan.groups),
+                               exceptions: plan.exceptions, accounts: accounts.isEmpty ? nil : accountOptions) { entry, occurrence in
+            PlannedItemEditing.isLocked(entry: entry, occurrence: occurrence, calendar: payCalendar, monthTotals: monthTotals,
                                         entries: budgetPlan.entries, groups: groups, exceptions: budgetPlan.exceptions, categories: categories)
         }
     }
+
+    // MARK: The Grid tab's side panel (`GridCellPanelModel`)
+
+    /// The confirmed, budget-facing transactions of any of `categoryIds` in `start...end`
+    /// (every account): what a cell's actual sums, whichever plan is shown.
+    func transactions(forCategoryIds categoryIds: Set<Int64>, from startDate: Date, to endDate: Date) -> [Transaction] {
+        gridActuals.budgetFacing.filter { $0.categoryId.map(categoryIds.contains) == true && $0.status == .confirmed && $0.date >= startDate && $0.date <= endDate }
+    }
+
+    /// The transactions in `start...end` a Totals row sums (`BudgetTotals.Row.includes`).
+    func totalsTransactions(_ row: BudgetTotals.Row, from startDate: Date, to endDate: Date) -> [Transaction] {
+        let byId = categoryById
+        return gridActuals.budgetFacing.filter { transaction in
+            guard transaction.status == .confirmed, transaction.date >= startDate, transaction.date <= endDate,
+                  let category = transaction.categoryId.flatMap({ byId[$0] }) else { return false }
+            return row.includes(category, amount: transaction.amountMinorUnits, countedTransfer: transaction.id.map(gridActuals.countedTransferIds.contains) ?? false)
+        }
+    }
+
+    /// The plan's occurrences in the calendar month a Totals row includes, by date (reserves
+    /// left out: `totalsReserved` shows them as one line).
+    func totalsOccurrences(_ row: BudgetTotals.Row, year: Int, month: Int) -> [PlannedRow] {
+        categories.filter { $0.type != .adjustment && !$0.isReserved }
+            .flatMap { category in
+                let counted = BudgetTotals.countsPlannedTransfer(category, accountIds: nil)
+                return occurrences(category: category, year: year, month: month).filter {
+                    row.includes(category, amount: $0.occurrence.amountMinorUnits, countedTransfer: counted || $0.source != nil)
+                }
+            }
+            .sorted { $0.occurrence.date < $1.occurrence.date }
+    }
+
+    /// The Total reserved cell's month (what's left of the allowances; 0 for Total in, and
+    /// outside the shown year).
+    func totalsReserved(_ row: BudgetTotals.Row, year: Int, month: Int) -> Int {
+        guard row != .totalIn, year == gridYear else { return 0 }
+        return reserves.compactMap(\.id).reduce(0) { $0 + (gridCells[$1]?[month]?.value ?? 0) }
+    }
+
+    var categoryById: [Int64: Category] {
+        Dictionary(categories.compactMap { category in category.id.map { ($0, category) } }, uniquingKeysWith: { a, _ in a })
+    }
+
+    var categoryNameById: [Int64: String] {
+        Dictionary(categories.compactMap { category in category.id.map { ($0, category.name) } }, uniquingKeysWith: { a, _ in a })
+    }
+
+    var accountNameById: [Int64: String] {
+        Dictionary(accounts.compactMap { account in account.id.map { ($0, account.displayName) } }, uniquingKeysWith: { a, _ in a })
+    }
+
+    var planAccountOptions: PlanAccountOptions { accountOptions }
+    var panelShowsPlan: Bool { true }
+    var panelPlanIsScenario: Bool { gridSelection != nil }
+    var panelAllowsPlanEditing: Bool { editScope != nil }
 
     var planEditActions: PlanEditActions {
         PlanEditActions(
