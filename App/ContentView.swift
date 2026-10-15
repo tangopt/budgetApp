@@ -147,6 +147,9 @@ struct ContentView: View {
                     }
                 }
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                AppearanceToggle()
+            }
         } detail: {
             Group {
                 switch selection {
