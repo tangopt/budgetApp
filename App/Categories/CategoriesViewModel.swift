@@ -135,11 +135,6 @@ final class CategoriesViewModel: ObservableObject {
         write("Couldn't move the categories") { db in try Categories.move(db: db, ids: ids, toGroupId: groupId) }
     }
 
-    /// A refused delete ("Rent has 73 transactions …") shows as the banner message.
-    func deleteCategory(id: Int64) {
-        deleteCategories(ids: [id])
-    }
-
     /// Deletes each category in turn under `Categories.delete`'s rules; the refusals ("Rent
     /// has 73 transactions …") are listed in the banner, one per line.
     func deleteCategories(ids: [Int64]) {

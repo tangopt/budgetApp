@@ -41,8 +41,12 @@ struct CategoriesView: View {
     @State private var dropTarget: String?
     /// The group row under the pointer (same keys), whose ⋯ menu shows.
     @State private var hoveredGroupKey: String?
-    /// A row to scroll to once the list has updated (a new group).
-    @State private var pendingScroll: CategoryRowID?
+    /// A new group's row to scroll to; cleared once it has appeared (or after the retry).
+    @State private var scrollTarget: CategoryRowID?
+    /// Whether the scroll to `scrollTarget` has been retried after the groups changed.
+    @State private var scrollRetried = false
+    /// Bumped to scroll to `scrollTarget` (the list's ScrollViewReader watches it).
+    @State private var scrollRequest = 0
 
     @State private var newGroupDraft: NewGroupDraft?
     @State private var newCategoryDraft: NewCategoryDraft?
@@ -123,15 +127,14 @@ struct CategoriesView: View {
             }
         }
         .onAppear { viewModel.load() }
-        .onChange(of: viewModel.categories) { _, categories in
-            // A deleted category leaves the selection.
-            let ids = Set(categories.compactMap(\.id))
-            selection = selection.filter { $0.categoryId.map(ids.contains) ?? true }
-        }
-        .onChange(of: viewModel.groups) { _, groups in
-            // So does a deleted group.
-            let ids = Set(groups.compactMap(\.id))
-            selection = selection.filter { $0.groupId.map(ids.contains) ?? true }
+        .onChange(of: viewModel.categories) { _, _ in reconcileSelection() }
+        .onChange(of: viewModel.groups) { _, _ in
+            reconcileSelection()
+            // The new group's row may not have been listed yet: scroll to it once more.
+            if scrollTarget != nil && !scrollRetried {
+                scrollRetried = true
+                scrollRequest += 1
+            }
         }
         .onChange(of: selection) { old, new in
             // A group selects on its own: picking one clears the categories, and vice versa.
@@ -215,24 +218,29 @@ struct CategoriesView: View {
                     } else {
                     Section(section.title) {
                         ForEach(section.groups) { block in
+                            // A plain row with its own chevron button (not a DisclosureGroup), so
+                            // clicking the row selects the group and only the chevron expands it.
                             let key = block.id
-                            DisclosureGroup(isExpanded: expanded(key, forced: searching)) {
-                                ForEach(block.categories) { categoryRow($0) }
-                            } label: {
-                                groupLabel(block.group, count: block.categories.count, type: section.type, key: key)
-                                    .tag(CategoryRowID.group(block.group.id ?? -1, section.type))
-                                    .id(CategoryRowID.group(block.group.id ?? -1, section.type))
+                            let row = CategoryRowID.group(block.group.id ?? -1, section.type)
+                            groupLabel(block.group, count: block.categories.count, type: section.type, key: key,
+                                       isExpanded: isExpanded(key, forced: searching))
+                                .tag(row)
+                                .id(row)
+                                .onAppear { if scrollTarget == row { scrollTarget = nil } }
+                            if isExpanded(key, forced: searching) {
+                                ForEach(block.categories) { memberRow($0) }
                             }
                         }
                         if !searching || !section.ungrouped.isEmpty {
+                            // Not selectable (no tag): a drop target and its chevron.
                             let key = "\(section.type.rawValue)-ungrouped"
-                            DisclosureGroup(isExpanded: expanded(key, forced: searching)) {
-                                ForEach(section.ungrouped) { categoryRow($0) }
-                            } label: {
-                                dropRow(key: key, groupId: nil) {
-                                    countedName("Ungrouped", count: section.ungrouped.count)
-                                    Spacer()
-                                }
+                            dropRow(key: key, groupId: nil) {
+                                chevron(key, isExpanded: isExpanded(key, forced: searching), disabled: searching)
+                                countedName("Ungrouped", count: section.ungrouped.count)
+                                Spacer()
+                            }
+                            if isExpanded(key, forced: searching) {
+                                ForEach(section.ungrouped) { memberRow($0) }
                             }
                         }
                     }
@@ -264,12 +272,12 @@ struct CategoriesView: View {
             .onKeyPress(keys: [.delete, .deleteForward]) { _ in
                 deleteSelection() ? .handled : .ignored
             }
-            .onChange(of: pendingScroll) { _, row in
-                guard let row else { return }
+            .onChange(of: scrollRequest) { _, _ in
                 // After the list has laid out the new row.
                 DispatchQueue.main.async {
+                    guard let row = scrollTarget else { return }
                     withAnimation { proxy.scrollTo(row, anchor: .center) }
-                    pendingScroll = nil
+                    if scrollRetried { scrollTarget = nil }
                 }
             }
         }
@@ -314,13 +322,34 @@ struct CategoriesView: View {
         return ids.filter { !fixed.contains($0) }
     }
 
-    private func expanded(_ key: String, forced: Bool) -> Binding<Bool> {
-        Binding(
-            get: { forced || !collapsed.contains(key) },
-            set: { isExpanded in
-                if isExpanded { collapsed.remove(key) } else { collapsed.insert(key) }
-            }
-        )
+    /// Whether a group (or Ungrouped) row's categories show; always while searching.
+    private func isExpanded(_ key: String, forced: Bool) -> Bool {
+        forced || !collapsed.contains(key)
+    }
+
+    /// A group or Ungrouped row's expand/collapse button (the row itself selects).
+    private func chevron(_ key: String, isExpanded: Bool, disabled: Bool) -> some View {
+        Button {
+            if collapsed.contains(key) { collapsed.remove(key) } else { collapsed.insert(key) }
+        } label: {
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                .animation(.easeOut(duration: 0.15), value: isExpanded)
+                .frame(width: 14, height: 14)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help(isExpanded ? "Collapse" : "Expand")
+        .accessibilityLabel(isExpanded ? "Collapse" : "Expand")
+    }
+
+    /// A category under its group (or Ungrouped) row, indented past the chevron.
+    private func memberRow(_ category: Category) -> some View {
+        categoryRow(category)
+            .padding(.leading, 22)
     }
 
     private func countedName(_ name: String, count: Int) -> some View {
@@ -330,9 +359,11 @@ struct CategoriesView: View {
     }
 
     /// A group row: name · count and its ⋯ menu (shown on hover or selection); a drop target.
-    private func groupLabel(_ group: CategoryGroup, count: Int, type: CategoryType, key: String) -> some View {
+    private func groupLabel(_ group: CategoryGroup, count: Int, type: CategoryType, key: String, isExpanded: Bool) -> some View {
         let showsMenu = hoveredGroupKey == key || selection.contains(.group(group.id ?? -1, type))
+        let searching = !search.trimmingCharacters(in: .whitespaces).isEmpty
         return dropRow(key: key, groupId: group.id) {
+            chevron(key, isExpanded: isExpanded, disabled: searching)
             countedName(group.name, count: count)
             Spacer()
             Menu {
@@ -351,6 +382,9 @@ struct CategoriesView: View {
         .onHover { hovering in
             if hovering { hoveredGroupKey = key } else if hoveredGroupKey == key { hoveredGroupKey = nil }
         }
+        .accessibilityAction(named: "Rename") { renaming = .group(group) }
+        .accessibilityAction(named: "Delete") { confirmDelete(group) }
+        .accessibilityAction(named: "Add category here") { newCategoryDraft = NewCategoryDraft(type: type, groupId: group.id) }
     }
 
     /// A group's actions, in its ⋯ menu and on right-click.
@@ -554,6 +588,28 @@ struct CategoriesView: View {
         deleting = .group(group, memberCount: group.id.map { viewModel.members(ofGroupId: $0).count } ?? 0)
     }
 
+    /// Drops deleted categories and groups from the selection, and moves a selected group row
+    /// whose section no longer lists it (its last member of that type moved away) to a
+    /// section that still does — or drops it when none does.
+    private func reconcileSelection() {
+        let categoryIds = Set(viewModel.categories.compactMap(\.id))
+        let sections = viewModel.sections(search: search)
+        func types(listing groupId: Int64) -> [CategoryType] {
+            sections.filter { $0.groups.contains { $0.group.id == groupId } }.map(\.type)
+        }
+        let reconciled = Set(selection.compactMap { row -> CategoryRowID? in
+            switch row {
+            case .category(let id):
+                return categoryIds.contains(id) ? row : nil
+            case .group(let id, let type):
+                let listed = types(listing: id)
+                if listed.contains(type) { return row }
+                return listed.first.map { .group(id, $0) }
+            }
+        })
+        if reconciled != selection { selection = reconciled }
+    }
+
     /// A new group: selected, expanded and scrolled into view.
     private func reveal(_ group: CategoryGroup) {
         guard let id = group.id else { return }
@@ -562,7 +618,9 @@ struct CategoriesView: View {
         collapsed.remove("\(type.rawValue)-\(id)")
         let row = CategoryRowID.group(id, type)
         selection = [row]
-        pendingScroll = row
+        scrollTarget = row
+        scrollRetried = false
+        scrollRequest += 1
     }
 }
 
