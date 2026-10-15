@@ -100,7 +100,11 @@ public enum TransactionSearch {
         public let accountName: String
         public let currency: Currency
         public let isLinkedTransfer: Bool
+        /// The outgoing leg's id when this is the incoming leg of an active transfer link:
+        /// hidden from budget figures (`TransferLinks.budgetFacing`), the money counted as sent.
+        public let outgoingTransactionId: Int64?
 
+        public var isIncomingTransferLeg: Bool { outgoingTransactionId != nil }
         public var id: Int64 { transaction.id ?? -1 }
         public var date: Date { transaction.date }
         public var description: String { transaction.rawDescription }
@@ -119,29 +123,70 @@ public enum TransactionSearch {
         /// Money out (≤ 0).
         public let outMinorUnits: Int
         public var netMinorUnits: Int { inMinorUnits + outMinorUnits }
+        /// Incoming legs of linked transfers left out of In and Out (counted once, as sent).
+        public let excludedTransferLegCount: Int
 
-        public init(count: Int, inMinorUnits: Int, outMinorUnits: Int) {
+        public init(count: Int, inMinorUnits: Int, outMinorUnits: Int, excludedTransferLegCount: Int = 0) {
             self.count = count
             self.inMinorUnits = inMinorUnits
             self.outMinorUnits = outMinorUnits
+            self.excludedTransferLegCount = excludedTransferLegCount
         }
     }
 
     // MARK: Search
 
-    /// The transactions matching `criteria`, as rows, newest first. `now` anchors the
-    /// relative date filters.
-    public static func rows(_ input: Input, criteria: Criteria, now: Date = Date()) -> [Row] {
-        let categoryById = Dictionary(input.categories.compactMap { c in c.id.map { ($0, c) } }, uniquingKeysWith: { a, _ in a })
-        let accountById = Dictionary(input.accounts.compactMap { a in a.id.map { ($0, a) } }, uniquingKeysWith: { a, _ in a })
-        let linked = Set(input.links.filter { !$0.isDismissed }.flatMap { [$0.outTransactionId, $0.inTransactionId] })
-        let range = dateRange(criteria.date, now: now)
-        let words = criteria.text.split(whereSeparator: \.isWhitespace).map(String.init)
-        let amountWords = words.map(amountToken)
+    /// `Input` prepared once per load: each transaction's row and its folded search text, so
+    /// typing only filters.
+    public struct Index: Sendable {
+        fileprivate struct Entry: Sendable {
+            let row: Row
+            /// Description, note and category name, case- and diacritic-folded, separated so
+            /// a word never spans two of them.
+            let haystack: String
+        }
 
-        let rows: [Row] = input.transactions.compactMap { transaction in
-            let isLinked = transaction.id.map(linked.contains) ?? false
-            let category = transaction.categoryId.flatMap { categoryById[$0] }
+        fileprivate let entries: [Entry]
+
+        public init(_ input: Input) {
+            let categoryById = Dictionary(input.categories.compactMap { c in c.id.map { ($0, c) } }, uniquingKeysWith: { a, _ in a })
+            let accountById = Dictionary(input.accounts.compactMap { a in a.id.map { ($0, a) } }, uniquingKeysWith: { a, _ in a })
+            let active = input.links.filter { !$0.isDismissed }
+            let linked = Set(active.flatMap { [$0.outTransactionId, $0.inTransactionId] })
+            let outByIn = Dictionary(active.map { ($0.inTransactionId, $0.outTransactionId) }, uniquingKeysWith: { first, _ in first })
+            entries = input.transactions.map { transaction in
+                let category = transaction.categoryId.flatMap { categoryById[$0] }
+                let account = accountById[transaction.accountId]
+                let row = Row(transaction: transaction, category: category, categoryName: category?.name ?? "",
+                              accountName: account?.displayName ?? "", currency: account?.currency ?? .gbp,
+                              isLinkedTransfer: transaction.id.map(linked.contains) ?? false,
+                              outgoingTransactionId: transaction.id.flatMap { outByIn[$0] })
+                let haystack = [transaction.rawDescription, transaction.note ?? "", category?.name ?? ""]
+                    .map(TransactionSearch.fold).joined(separator: "\u{1}")
+                return Entry(row: row, haystack: haystack)
+            }
+        }
+    }
+
+    /// Case- and diacritic-insensitive form of `text`, for matching.
+    static func fold(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+    }
+
+    /// The transactions matching `criteria`, as rows, newest first. `now` and `timeZone`
+    /// (the user's "today") anchor the relative date filters.
+    public static func rows(_ input: Input, criteria: Criteria, now: Date = Date(), timeZone: TimeZone = .current) -> [Row] {
+        rows(Index(input), criteria: criteria, now: now, timeZone: timeZone)
+    }
+
+    public static func rows(_ index: Index, criteria: Criteria, now: Date = Date(), timeZone: TimeZone = .current) -> [Row] {
+        let range = dateRange(criteria.date, now: now, timeZone: timeZone)
+        let words = criteria.text.split(whereSeparator: \.isWhitespace).map(String.init)
+        let terms = words.map { (folded: fold($0), amount: amountToken($0)) }
+
+        let rows: [Row] = index.entries.compactMap { entry in
+            let row = entry.row
+            let transaction = row.transaction
             if let range, !range.contains(transaction.date) { return nil }
             let magnitude = transaction.amountMinorUnits.magnitude
             if let min = criteria.minAmountMinorUnits, magnitude < min.magnitude { return nil }
@@ -163,20 +208,15 @@ public enum TransactionSearch {
                 switch flag {
                 case .unreviewed: if transaction.status != .pendingReview { return nil }
                 case .manual: if !transaction.isManual { return nil }
-                case .linkedTransfer: if !isLinked { return nil }
+                case .linkedTransfer: if !row.isLinkedTransfer { return nil }
                 case .hasNote: if (transaction.note ?? "").isEmpty { return nil }
                 }
             }
-            for (word, amount) in zip(words, amountWords) {
-                let matchesText = transaction.rawDescription.localizedCaseInsensitiveContains(word)
-                    || (transaction.note?.localizedCaseInsensitiveContains(word) ?? false)
-                    || (category?.name.localizedCaseInsensitiveContains(word) ?? false)
-                let matchesAmount = amount.map { $0 == Int(magnitude) } ?? false
-                if !matchesText && !matchesAmount { return nil }
+            for term in terms {
+                let matchesAmount = term.amount.map { $0 == Int(magnitude) } ?? false
+                if !matchesAmount && !entry.haystack.contains(term.folded) { return nil }
             }
-            let account = accountById[transaction.accountId]
-            return Row(transaction: transaction, category: category, categoryName: category?.name ?? "",
-                       accountName: account?.displayName ?? "", currency: account?.currency ?? .gbp, isLinkedTransfer: isLinked)
+            return row
         }
         return sorted(rows, by: .date, ascending: false)
     }
@@ -190,21 +230,23 @@ public enum TransactionSearch {
         return abs(value)
     }
 
-    /// The instants a date filter keeps; nil = all time.
-    public static func dateRange(_ filter: DateFilter, now: Date) -> ClosedRange<Date>? {
+    /// The instants a date filter keeps; nil = all time. "This" month or year and the last
+    /// 12 months follow today's date in `timeZone` (the user's); transactions are stored as
+    /// UTC days, so the ranges are UTC.
+    public static func dateRange(_ filter: DateFilter, now: Date, timeZone: TimeZone = .current) -> ClosedRange<Date>? {
         let calendar = MonthRange.calendar
+        let today = PayCalendar.utcDay(sameDayAs: now, in: timeZone)
         switch filter {
         case .allTime:
             return nil
         case .thisMonth:
-            let (year, month) = MonthRange.components(of: now)
+            let (year, month) = MonthRange.components(of: today)
             let range = MonthRange.of(year: year, month: month)
             return range.start...range.end
         case .thisYear:
-            let year = MonthRange.components(of: now).year
+            let year = MonthRange.components(of: today).year
             return MonthRange.of(year: year, month: 1).start...MonthRange.of(year: year, month: 12).end
         case .last12Months:
-            let today = calendar.startOfDay(for: now)
             let start = calendar.date(byAdding: .year, value: -1, to: today)!
             return start...endOfDay(today)
         case .custom(let from, let to):
@@ -225,7 +267,8 @@ public enum TransactionSearch {
 
     // MARK: Sorting
 
-    /// Rows ordered by a column; ties (and the date column) newest first, then by id.
+    /// Rows ordered by a column. Ties are newest first (then the later id), except on the
+    /// date column ascending, where they go oldest first (then the earlier id).
     public static func sorted(_ rows: [Row], by key: SortKey, ascending: Bool) -> [Row] {
         rows.sorted { lhs, rhs in
             let order: ComparisonResult
@@ -237,6 +280,7 @@ public enum TransactionSearch {
             case .amount: order = compare(lhs.amountMinorUnits, rhs.amountMinorUnits)
             }
             if order != .orderedSame { return ascending ? order == .orderedAscending : order == .orderedDescending }
+            if key == .date && ascending { return lhs.id < rhs.id }
             if lhs.date != rhs.date { return lhs.date > rhs.date }
             return lhs.id > rhs.id
         }
@@ -248,15 +292,22 @@ public enum TransactionSearch {
 
     // MARK: Totals
 
-    /// Count, money in, money out and net of `rows`, in sterling.
-    public static func totals(_ rows: [Row], eurToGbpRate: Double) -> Totals {
+    /// Count, money in, money out and net of `rows`, in sterling. With `countsTransfersOnce`
+    /// (no account filter, as the Budget grid without one) an active link's incoming leg is
+    /// left out of In and Out — the transfer counts once, as sent; it still counts as a row.
+    public static func totals(_ rows: [Row], eurToGbpRate: Double, countsTransfersOnce: Bool = false) -> Totals {
         let rate = ExchangeRateSetting(eurToGbpRate: eurToGbpRate, updatedAt: Date(timeIntervalSince1970: 0))
         var inTotal = 0
         var outTotal = 0
+        var excluded = 0
         for row in rows {
+            if countsTransfersOnce && row.isIncomingTransferLeg {
+                excluded += 1
+                continue
+            }
             let gbp = NetWorthCalculator.gbp(row.amountMinorUnits, currency: row.currency, rate: rate)
             if gbp > 0 { inTotal += gbp } else { outTotal += gbp }
         }
-        return Totals(count: rows.count, inMinorUnits: inTotal, outMinorUnits: outTotal)
+        return Totals(count: rows.count, inMinorUnits: inTotal, outMinorUnits: outTotal, excludedTransferLegCount: excluded)
     }
 }

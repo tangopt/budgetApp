@@ -13,11 +13,13 @@ final class SearchViewModel: ObservableObject {
     @Published var criteria = TransactionSearch.Criteria() {
         didSet { if criteria != oldValue { refreshResults() } }
     }
-    @Published var sortKey: TransactionSearch.SortKey = .date {
-        didSet { if sortKey != oldValue { refreshResults() } }
+    /// What the search field holds; reaches `criteria.text` after a short pause in typing.
+    @Published var queryText = "" {
+        didSet { if queryText != oldValue { scheduleQuery() } }
     }
-    @Published var sortAscending = false {
-        didSet { if sortAscending != oldValue { refreshResults() } }
+    /// The table's sort (its column and direction), kept for the session like the filters.
+    @Published var sortOrder: [KeyPathComparator<TransactionSearch.Row>] = [KeyPathComparator(\TransactionSearch.Row.date, order: .reverse)] {
+        didSet { if sortOrder != oldValue { refreshResults() } }
     }
     /// The matches, sorted, and their totals: rebuilt when the data, criteria or sort change.
     @Published private(set) var rows: [TransactionSearch.Row] = []
@@ -34,7 +36,10 @@ final class SearchViewModel: ObservableObject {
     /// Runs after a save here (the uncategorised count may change).
     var onTransactionEdited: (() -> Void)?
 
-    private var input = TransactionSearch.Input(transactions: [], categories: [], accounts: [], links: [], eurToGbpRate: 1)
+    private var index = TransactionSearch.Index(TransactionSearch.Input(transactions: [], categories: [], accounts: [], links: [], eurToGbpRate: 1))
+    private var eurToGbpRate = 1.0
+    private var transactionsById: [Int64: Transaction] = [:]
+    private var queryTask: Task<Void, Never>?
     private let dbQueue: DatabaseQueue
 
     init(dbQueue: DatabaseQueue) {
@@ -58,17 +63,51 @@ final class SearchViewModel: ObservableObject {
             self.accounts = accounts.sortedForDisplay()
             transferCounterparts = counterparts
             recentCategoryIds = recent
-            input = TransactionSearch.Input(transactions: transactions, categories: categories, accounts: accounts, links: links, eurToGbpRate: rate)
+            eurToGbpRate = rate
+            transactionsById = Dictionary(transactions.compactMap { t in t.id.map { ($0, t) } }, uniquingKeysWith: { a, _ in a })
+            index = TransactionSearch.Index(TransactionSearch.Input(transactions: transactions, categories: categories, accounts: accounts,
+                                                                    links: links, eurToGbpRate: rate))
             refreshResults()
         } catch {
             errorMessage = "Couldn't load transactions: \(error.localizedDescription)"
         }
     }
 
+    /// Typing waits ~150 ms for a pause before searching; clearing applies at once.
+    private func scheduleQuery() {
+        queryTask?.cancel()
+        let text = queryText
+        guard !text.isEmpty else {
+            criteria.text = ""
+            return
+        }
+        queryTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            self?.criteria.text = text
+        }
+    }
+
     private func refreshResults() {
-        let matches = TransactionSearch.rows(input, criteria: criteria)
-        rows = sortKey == .date && !sortAscending ? matches : TransactionSearch.sorted(matches, by: sortKey, ascending: sortAscending)
-        totals = TransactionSearch.totals(rows, eurToGbpRate: input.eurToGbpRate)
+        let matches = TransactionSearch.rows(index, criteria: criteria)
+        let (key, ascending) = Self.sort(sortOrder)
+        rows = key == .date && !ascending ? matches : TransactionSearch.sorted(matches, by: key, ascending: ascending)
+        // Without an account filter a linked transfer counts once, as on the Budget grid.
+        totals = TransactionSearch.totals(rows, eurToGbpRate: eurToGbpRate, countsTransfersOnce: criteria.accountIds.isEmpty)
+    }
+
+    /// The table's first sort comparator as a `TransactionSearch` column and direction.
+    private static func sort(_ order: [KeyPathComparator<TransactionSearch.Row>]) -> (TransactionSearch.SortKey, Bool) {
+        guard let first = order.first else { return (.date, false) }
+        let key: TransactionSearch.SortKey
+        switch first.keyPath {
+        case \TransactionSearch.Row.description: key = .description
+        case \TransactionSearch.Row.categoryName: key = .category
+        case \TransactionSearch.Row.accountName: key = .account
+        case \TransactionSearch.Row.amountMinorUnits: key = .amount
+        default: key = .date
+        }
+        return (key, first.order == .forward)
     }
 
     // MARK: Filters
@@ -91,8 +130,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     func resetFilters() {
-        let text = criteria.text
-        criteria = TransactionSearch.Criteria(text: text)
+        criteria = TransactionSearch.Criteria(text: criteria.text)
     }
 
     // MARK: Actions
@@ -101,23 +139,43 @@ final class SearchViewModel: ObservableObject {
         rows.first { $0.id == id }?.transaction
     }
 
+    /// The transaction whose Budget cell Show in Budget opens: the outgoing leg for an active
+    /// link's incoming leg (hidden from the budget; the transfer counts as sent). Nil when
+    /// that one has no category with a cell (uncategorised, a reserve).
+    func budgetTransaction(forRowId id: Int64) -> Transaction? {
+        guard let row = rows.first(where: { $0.id == id }) else { return nil }
+        let target = row.outgoingTransactionId.flatMap { transactionsById[$0] } ?? row.transaction
+        guard let categoryId = target.categoryId, categories.contains(where: { $0.id == categoryId && !$0.isReserved }) else { return nil }
+        return target
+    }
+
     func createCategory(name: String, type: CategoryType, groupId: Int64?) throws -> Category {
         let category = try dbQueue.write { db in try Categories.create(db: db, name: name, type: type, groupId: groupId) }
         load()
         return category
     }
 
-    /// Set category… for the selected rows; with `remember`, learns a rule per description.
+    /// Set category… for the selected rows; with `remember`, learns a rule per description
+    /// (`TransactionEditing.setCategory`: balance adjustments and market movements are left
+    /// alone, and transfer legs never teach a rule).
     func setCategory(ids: [Int64], categoryId: Int64, remember: Bool) {
         guard !ids.isEmpty else { return }
         errorMessage = nil
+        let result: SetCategoryResult
         do {
-            try dbQueue.write { db in try TransactionEditing.setCategory(db: db, ids: ids, categoryId: categoryId, remember: remember) }
+            result = try dbQueue.write { db in try TransactionEditing.setCategory(db: db, ids: ids, categoryId: categoryId, remember: remember) }
+        } catch let error as LocalizedError where error.errorDescription != nil {
+            errorMessage = error.errorDescription
+            return
         } catch {
             errorMessage = "Couldn't set the category: \(error.localizedDescription)"
             return
         }
         load()
+        if result.skippedBuiltInCount > 0 {
+            let count = result.skippedBuiltInCount
+            errorMessage = "\(count) balance adjustment\(count == 1 ? " was" : "s were") left as \(count == 1 ? "it was" : "they were"): their category is set by the Accounts screen."
+        }
         onTransactionEdited?()
     }
 

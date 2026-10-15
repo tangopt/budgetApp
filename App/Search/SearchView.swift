@@ -17,7 +17,6 @@ struct SearchView: View {
 
     @FocusState private var searchFocused: Bool
     @State private var selection: Set<Int64> = []
-    @State private var sortOrder: [KeyPathComparator<Row>] = [KeyPathComparator(\Row.date, order: .reverse)]
     @State private var editingTransaction: Transaction?
     @State private var showSetCategory = false
     @State private var remember = false
@@ -54,7 +53,6 @@ struct SearchView: View {
             searchFocused = true
         }
         .onChange(of: viewModel.focusRequest) { _, _ in searchFocused = true }
-        .onChange(of: sortOrder) { _, order in applySort(order) }
         .onChange(of: viewModel.rows.map(\.id)) { _, ids in
             // A save or a narrower search can drop selected rows.
             selection.formIntersection(ids)
@@ -81,11 +79,11 @@ struct SearchView: View {
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search descriptions, notes, categories or an amount", text: $viewModel.criteria.text)
+            TextField("Search descriptions, notes, categories or an amount", text: $viewModel.queryText)
                 .textFieldStyle(.plain)
                 .focused($searchFocused)
-            if !viewModel.criteria.text.isEmpty {
-                Button { viewModel.criteria.text = "" } label: {
+            if !viewModel.queryText.isEmpty {
+                Button { viewModel.queryText = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.borderless)
@@ -102,7 +100,7 @@ struct SearchView: View {
     // MARK: Table
 
     private var table: some View {
-        Table(viewModel.rows, selection: $selection, sortOrder: $sortOrder) {
+        Table(viewModel.rows, selection: $selection, sortOrder: $viewModel.sortOrder) {
             TableColumn("Date", value: \Row.date) { row in
                 Text(SearchFormat.day(row.date)).monospacedDigit()
             }
@@ -123,7 +121,7 @@ struct SearchView: View {
                 MoneyText(minorUnits: row.amountMinorUnits, currency: row.currency, alignment: .trailing)
             }
             .width(min: 90, ideal: 110, max: 140)
-            TableColumn("") { row in
+            TableColumn(Text("").accessibilityLabel("Edit")) { row in
                 Button { edit(row.id) } label: { Image(systemName: "pencil") }
                     .buttonStyle(.borderless)
                     .help("Edit transaction…")
@@ -158,12 +156,14 @@ struct SearchView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .help(transferHelp(row))
+                    .accessibilityLabel(row.isIncomingTransferLeg ? "Linked transfer, incoming leg" : "Linked transfer")
             }
             if row.transaction.status == .pendingReview {
                 Image(systemName: "circle.dashed")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .help("Not reviewed yet")
+                    .accessibilityLabel("Not reviewed yet")
             }
             if row.transaction.isManual { ManualTag() }
         }
@@ -188,10 +188,12 @@ struct SearchView: View {
 
     @ViewBuilder
     private func contextMenu(_ ids: Set<Int64>) -> some View {
-        if ids.count == 1, let id = ids.first, let transaction = viewModel.transaction(id: id) {
+        if ids.count == 1, let id = ids.first, viewModel.transaction(id: id) != nil {
             Button("Edit Transaction…") { edit(id) }
-            Button("Show in Budget") { showInBudget(transaction) }
-                .disabled(!canShowInBudget(transaction))
+            // An incoming transfer leg shows its outgoing leg's cell (the money counts as sent).
+            let target = viewModel.budgetTransaction(forRowId: id)
+            Button("Show in Budget") { if let target { showInBudget(target) } }
+                .disabled(target == nil)
         }
         if !ids.isEmpty {
             Button(ids.count == 1 ? "Set Category…" : "Set Category for \(ids.count) Transactions…") {
@@ -201,29 +203,9 @@ struct SearchView: View {
         }
     }
 
-    /// Only a categorised transaction has a Budget cell (reserves never hold transactions).
-    private func canShowInBudget(_ transaction: Transaction) -> Bool {
-        guard let id = transaction.categoryId else { return false }
-        return viewModel.categories.contains { $0.id == id && !$0.isReserved }
-    }
-
     private func edit(_ id: Int64) {
         guard let transaction = viewModel.transaction(id: id) else { return }
         editingTransaction = transaction
-    }
-
-    private func applySort(_ order: [KeyPathComparator<Row>]) {
-        guard let first = order.first else { return }
-        let key: TransactionSearch.SortKey
-        switch first.keyPath {
-        case \Row.description: key = .description
-        case \Row.categoryName: key = .category
-        case \Row.accountName: key = .account
-        case \Row.amountMinorUnits: key = .amount
-        default: key = .date
-        }
-        viewModel.sortKey = key
-        viewModel.sortAscending = first.order == .forward
     }
 
     // MARK: Summary bar
@@ -235,6 +217,12 @@ struct SearchView: View {
             summaryFigure("In", totals.inMinorUnits)
             summaryFigure("Out", totals.outMinorUnits)
             summaryFigure("Net", totals.netMinorUnits)
+            if totals.excludedTransferLegCount > 0 {
+                Text("Transfers between your accounts counted once")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help("A linked transfer's incoming leg is listed but left out of In and Out, as on the Budget grid. Pick accounts to total their rows as they are.")
+            }
             if !selection.isEmpty {
                 Text("\(selection.count) selected").foregroundStyle(.secondary)
             }
@@ -254,10 +242,9 @@ struct SearchView: View {
     // MARK: Set category…
 
     private func openSetCategory() {
-        let rows = selectedRows
-        let keys = Set(rows.map { MerchantKey.make($0.description) })
-        let isProcessorGroup = keys.count == 1 && keys.first.map(ReviewKey.isProcessorGroup) == true
-        remember = ReviewGrouping.rememberDefault(rowCount: rows.count, isProcessorGroup: isProcessorGroup)
+        // On only for one merchant (and not a payment processor's mixed purchases).
+        let keys = Set(selectedRows.map { MerchantKey.make($0.description) })
+        remember = keys.count == 1 && keys.first.map(ReviewKey.isProcessorGroup) == false
         showSetCategory = true
     }
 

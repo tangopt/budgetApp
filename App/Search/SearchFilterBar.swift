@@ -108,9 +108,13 @@ private struct FilterButton<Content: View>: View {
             HStack(spacing: 4) {
                 Text(title).lineLimit(1)
                 Image(systemName: "chevron.down").font(.caption2)
+                    .accessibilityHidden(true)
             }
             .foregroundStyle(isActive ? Color.accentColor : Color.primary)
         }
+        .accessibilityLabel(title)
+        .accessibilityValue(isActive ? "On" : "Off")
+        .accessibilityHint("Opens the filter")
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             content
                 .padding(SheetMetrics.popoverPadding)
