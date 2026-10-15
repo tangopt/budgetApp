@@ -15,6 +15,8 @@ What it emits (JSON on stdout; evidence and warnings on stderr):
 - deleteTransactions: the partial month's spreadsheet Income (a duplicate of the real salary
   later that month) and the bank rows proven to be inside the partial month's figures.
 - unproven: bank rows that could not be proven to be included (never deleted).
+- column2019: per account, the hand-typed column D "Value" (the 2019 balances, before the first
+  month column; EUR from the EUR row), for RedateSpreadsheetBalances' 31 Dec 2019 openings.
 """
 import datetime
 import json
@@ -38,6 +40,7 @@ NOW_ROW = (11, "NOW")
 GROCERIES_ROW = (42, "Groceries")
 LABEL_COL = 2
 HEADER_ROW = 2
+VALUE_COL = (3, "Value")
 
 CANDIDATE_BANK_ROWS = [
     # (description, amount in pence, the spreadsheet row and term that should hold it)
@@ -85,6 +88,15 @@ def main():
     for row, expected in [EUR_ROW, NOW_ROW, GROCERIES_ROW] + INCOME_ROWS:
         if label(row) != expected:
             fail(f"row {row} is {label(row)!r}, expected {expected!r}")
+
+    if table.cell(HEADER_ROW, VALUE_COL[0]).value != VALUE_COL[1]:
+        fail(f"column {VALUE_COL[0]} header is {table.cell(HEADER_ROW, VALUE_COL[0]).value!r}, expected {VALUE_COL[1]!r}")
+    column2019 = []
+    for name, row in ROWS.items():
+        if name == "Lloyds International Account (EUR)":
+            column2019.append({"account": name, "valueMinorUnits": pence(table.cell(EUR_ROW[0], VALUE_COL[0]).value), "currency": "eur"})
+        else:
+            column2019.append({"account": name, "valueMinorUnits": pence(table.cell(row, VALUE_COL[0]).value), "currency": "gbp"})
 
     info_rows = {info.cell(r, 0).value: (info.cell(r, 1).value, info.cell(r, 2).value) for r in range(info.num_rows)}
     updated = info_rows.get("Date updated", (None, None))[1]
@@ -175,12 +187,15 @@ def main():
         "snapshots": snapshots,
         "deleteTransactions": delete,
         "unproven": unproven,
+        "column2019": column2019,
     }
     json.dump(out, sys.stdout, indent=1)
     sys.stdout.write("\n")
     sys.stderr.write(f"{len(snapshots)} snapshots (columns before {out['partialColumn']}).\n")
     for d in delete:
         sys.stderr.write(f"DELETE {d['date']} {d['description']} {d['amountMinorUnits'] / 100:.2f}: {d['evidence']}\n")
+    for c in column2019:
+        sys.stderr.write(f"COLUMN D (2019) {c['account']}: {c['valueMinorUnits'] / 100:.2f} {c['currency'].upper()}\n")
     for u in unproven:
         sys.stderr.write(f"UNPROVEN (kept) {u['date']} {u['description']} {u['amountMinorUnits'] / 100:.2f}\n")
 
