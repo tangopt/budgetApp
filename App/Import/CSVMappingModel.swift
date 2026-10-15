@@ -41,6 +41,8 @@ final class CSVMappingModel: ObservableObject {
     @Published var customDateFormat: String { didSet { if selectedDateFormat == nil, customDateFormat != oldValue { scheduleRecompute() } } }
     @Published var negateAmounts: Bool { didSet { if negateAmounts != oldValue { recompute() } } }
     @Published private(set) var check: Check = .missing([])
+    /// Rows the draft mapping's Status column leaves out (pending, reverted…).
+    @Published private(set) var skippedRowCount = 0
 
     private let csvText: String
     private let accountId: Int64
@@ -66,7 +68,8 @@ final class CSVMappingModel: ObservableObject {
         let profileColumns = [
             existingProfile?.csvDateColumnIndex, existingProfile?.csvDescriptionColumnIndex,
             existingProfile?.csvAmountColumnIndex, existingProfile?.csvCreditAmountColumnIndex,
-            existingProfile?.csvBalanceColumnIndex
+            existingProfile?.csvBalanceColumnIndex, existingProfile?.csvFeeColumnIndex,
+            existingProfile?.csvStatusColumnIndex
         ].compactMap { $0 }
         let columnCount = max(header.count, sampleRows.map(\.count).max() ?? 0, (profileColumns.max() ?? -1) + 1)
         self.header = header
@@ -194,9 +197,11 @@ final class CSVMappingModel: ObservableObject {
         pendingRecompute = nil
         guard let profile = draftProfile() else {
             check = .missing(mapping.missingRoles)
+            skippedRowCount = 0
             return
         }
         let result = CSVStatementParser.parse(csvText: csvText, profile: profile)
+        skippedRowCount = result.skippedRows
         check = .parsed(
             rowCount: result.transactions.count,
             unreadableLines: result.unparsedLines,
@@ -224,6 +229,8 @@ extension CSVColumnRole {
         case .moneyOut: "Money out"
         case .moneyIn: "Money in"
         case .balance: "Balance"
+        case .fee: "Fee"
+        case .status: "Status"
         case .ignore: "Ignore"
         }
     }

@@ -62,7 +62,7 @@ struct ReviewView: View {
         }
     }
 
-    /// The statement check, unparsed lines and duplicates.
+    /// The statement check, unparsed lines, skipped (pending/reverted) rows and duplicates.
     private var notices: some View {
         VStack(alignment: .leading, spacing: 12) {
             statementBalancesPanel
@@ -87,6 +87,18 @@ struct ReviewView: View {
                     } label: {
                         Label("\(viewModel.unparsedLines.count) line(s) couldn't be auto-parsed", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
+                    }
+                }
+            }
+
+            if viewModel.skippedRowCount > 0 {
+                GroupBox {
+                    HStack {
+                        Text("\(viewModel.skippedRowCount) pending or reverted \(viewModel.skippedRowCount == 1 ? "row" : "rows") skipped")
+                            .foregroundStyle(.secondary)
+                            .help("The statement's status column says these haven't completed, so they weren't imported. Import the statement again once they have.")
+                        Spacer()
+                        Button("Dismiss") { viewModel.dismissSkippedRows() }
                     }
                 }
             }

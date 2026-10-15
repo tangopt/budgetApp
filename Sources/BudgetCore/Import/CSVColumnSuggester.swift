@@ -10,13 +10,20 @@ public struct CSVColumnSuggestion: Equatable {
     public var amountColumn: Int?
     public var creditColumn: Int?
     public var balanceColumn: Int?
+    /// A fee charged on top of the amount (e.g. Revolut's "Fee").
+    public var feeColumn: Int?
+    /// Each row's state (e.g. Revolut's "State": COMPLETED, PENDING, REVERTED).
+    public var statusColumn: Int?
 
-    public init(dateColumn: Int? = nil, descriptionColumn: Int? = nil, amountColumn: Int? = nil, creditColumn: Int? = nil, balanceColumn: Int? = nil) {
+    public init(dateColumn: Int? = nil, descriptionColumn: Int? = nil, amountColumn: Int? = nil, creditColumn: Int? = nil, balanceColumn: Int? = nil,
+                feeColumn: Int? = nil, statusColumn: Int? = nil) {
         self.dateColumn = dateColumn
         self.descriptionColumn = descriptionColumn
         self.amountColumn = amountColumn
         self.creditColumn = creditColumn
         self.balanceColumn = balanceColumn
+        self.feeColumn = feeColumn
+        self.statusColumn = statusColumn
     }
 
     public var hasSeparateDebitCredit: Bool { creditColumn != nil }
@@ -25,7 +32,10 @@ public struct CSVColumnSuggestion: Equatable {
 public enum CSVColumnSuggester {
     /// Matches header names case-insensitively. Amount-like headers are classified in a
     /// fixed order (balance, credit, debit, amount) so overlapping words resolve
-    /// correctly — e.g. "Debit Amount" is a debit column, not an amount column.
+    /// correctly — e.g. "Debit Amount" is a debit column, not an amount column. Fee and status
+    /// columns match whole words only ("Fee"/"Fees", "State"/"Status"), so "Coffee" or
+    /// "Statement" don't. With several date columns ("Started Date", "Completed Date") the
+    /// first is chosen unless one says "transaction".
     public static func suggest(header: [String]) -> CSVColumnSuggestion {
         let lowered = header.map { $0.lowercased() }
         var suggestion = CSVColumnSuggestion()
@@ -40,6 +50,8 @@ public enum CSVColumnSuggester {
                 if creditColumn == nil { creditColumn = index }
             } else if ["debit", "paid out", "money out", "withdrawal"].contains(where: { name.contains($0) }) {
                 if debitColumn == nil { debitColumn = index }
+            } else if words(name).contains(where: { $0 == "fee" || $0 == "fees" }) {
+                if suggestion.feeColumn == nil { suggestion.feeColumn = index }
             } else if name.contains("amount") {
                 if amountOnlyColumn == nil { amountOnlyColumn = index }
             }
@@ -55,6 +67,8 @@ public enum CSVColumnSuggester {
         let dateIndices = lowered.indices.filter { lowered[$0].contains("date") }
         suggestion.dateColumn = dateIndices.first { lowered[$0].contains("transaction") } ?? dateIndices.first
 
+        suggestion.statusColumn = lowered.firstIndex { words($0).contains(where: { $0 == "state" || $0 == "status" }) }
+
         for keyword in ["description", "details", "narrative", "payee", "reference"] {
             if let index = lowered.firstIndex(where: { $0.contains(keyword) }) {
                 suggestion.descriptionColumn = index
@@ -62,5 +76,9 @@ public enum CSVColumnSuggester {
             }
         }
         return suggestion
+    }
+
+    private static func words(_ name: String) -> [Substring] {
+        name.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
     }
 }

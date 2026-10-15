@@ -66,6 +66,8 @@ final class ImportViewModel: ObservableObject {
     @Published var duplicates: [ParsedTransaction] = []
     /// Statement lines that couldn't be parsed — shown as "couldn't auto-parse".
     @Published var unparsedLines: [String] = []
+    /// CSV rows left out because their status says they aren't completed (pending, reverted…).
+    @Published var skippedRowCount = 0
     /// Rows the user confirmed on the Review screen. Confirming only marks a row here;
     /// nothing is written until Finish import commits the whole review at once.
     @Published private(set) var confirmedIds: Set<UUID> = []
@@ -198,6 +200,7 @@ final class ImportViewModel: ObservableObject {
         loadPickerContext()
         duplicates = result.duplicates
         unparsedLines = result.unparsedLines
+        skippedRowCount = result.skippedRowCount
         isReviewing = true
         if result.staged.isEmpty && result.duplicates.isEmpty && result.unparsedLines.isEmpty {
             isReviewing = false
@@ -245,6 +248,7 @@ final class ImportViewModel: ObservableObject {
 
     func dismissDuplicates() { duplicates = [] }
     func dismissUnparsedLines() { unparsedLines = [] }
+    func dismissSkippedRows() { skippedRowCount = 0 }
 
     var confirmedCount: Int { confirmedIds.count }
     var unconfirmedCount: Int { stagedRows.count - confirmedIds.count }
@@ -507,6 +511,7 @@ final class ImportViewModel: ObservableObject {
         confirmedIds = []
         duplicates = []
         unparsedLines = []
+        skippedRowCount = 0
         isReviewing = false
         statementBalances = .notProvided
         statementCheck = nil

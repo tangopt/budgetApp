@@ -108,4 +108,22 @@ final class StatementBalanceExtractorTests: XCTestCase {
         XCTAssertEqual(StatementBalanceExtractor.extract(from: rows), .notProvided)
         XCTAssertEqual(StatementBalanceExtractor.extract(from: []), .notProvided)
     }
+
+    /// Rows dated by when they started but listed (and balanced) in the order they completed:
+    /// no date ordering adds up, the file order does, and the closing balance is the last row's.
+    func testFileOrderIsUsedWhenNoDateOrderAddsUp() {
+        let rows = [row(2026, 1, 10, -1000, 99_000), row(2026, 1, 8, -500, 98_500), row(2026, 2, 3, -200, 98_300), row(2026, 2, 2, -100, 98_200)]
+        XCTAssertEqual(points(StatementBalanceExtractor.extract(from: rows)), [
+            StatementBalancePoint(date: utc(2026, 2, 1), balanceMinorUnits: 98_500, isClosing: false),
+            StatementBalancePoint(date: utc(2026, 2, 3), balanceMinorUnits: 98_200, isClosing: true)
+        ])
+    }
+
+    func testReversedFileOrderIsUsedWhenNoDateOrderAddsUp() {
+        let rows = [row(2026, 1, 10, -1000, 99_000), row(2026, 1, 8, -500, 98_500), row(2026, 2, 3, -200, 98_300), row(2026, 2, 2, -100, 98_200)]
+        XCTAssertEqual(points(StatementBalanceExtractor.extract(from: Array(rows.reversed()))), [
+            StatementBalancePoint(date: utc(2026, 2, 1), balanceMinorUnits: 98_500, isClosing: false),
+            StatementBalancePoint(date: utc(2026, 2, 3), balanceMinorUnits: 98_200, isClosing: true)
+        ])
+    }
 }

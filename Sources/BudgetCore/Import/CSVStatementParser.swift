@@ -3,9 +3,34 @@ import Foundation
 public struct CSVParseResult {
     public let transactions: [ParsedTransaction]
     public let unparsedLines: [String]
+    /// Rows left out on purpose because their status column says they aren't completed
+    /// (pending, reverted, declined…) — neither imported nor counted as unparsed.
+    public let skippedRows: Int
+
+    public init(transactions: [ParsedTransaction], unparsedLines: [String], skippedRows: Int = 0) {
+        self.transactions = transactions
+        self.unparsedLines = unparsedLines
+        self.skippedRows = skippedRows
+    }
 }
 
 public enum CSVStatementParser {
+    /// Status values (case-insensitive) that mean a row has gone through. A row with any
+    /// other non-blank status is skipped; a blank status is imported.
+    public static let completedStatuses: Set<String> = ["completed", "complete", "settled", "booked", "posted"]
+
+    private static let utcCalendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }()
+
+    /// Transactions keep only the calendar day: a date-time ("2026-01-05 14:20:05") is cut back
+    /// to UTC midnight of that day, the same instant a date-only format gives (see
+    /// `StatementDateFormatter`), so fingerprints and balance rules behave the same.
+    ///
+    /// With a fee column, the fee is charged on top of the amount: the stored amount is
+    /// `amount − |fee|` (a blank fee is zero; an unreadable one makes the row unparsed).
     public static func parse(csvText: String, profile: ImportProfile) -> CSVParseResult {
         let delimiter = Character(profile.csvDelimiter ?? ",")
         let dateFormat = profile.csvDateFormat ?? "dd/MM/yyyy"
@@ -14,6 +39,8 @@ public enum CSVStatementParser {
         let amountIndex = profile.csvAmountColumnIndex ?? 2
         let creditIndex = profile.csvCreditAmountColumnIndex
         let balanceIndex = profile.csvBalanceColumnIndex
+        let feeIndex = profile.csvFeeColumnIndex
+        let statusIndex = profile.csvStatusColumnIndex
         let negate = profile.csvNegateAmounts && profile.csvCreditAmountColumnIndex == nil
 
         let formatter = StatementDateFormatter.make(format: dateFormat)
@@ -27,15 +54,23 @@ public enum CSVStatementParser {
 
         var transactions: [ParsedTransaction] = []
         var unparsedLines: [String] = []
+        var skippedRows = 0
 
         for line in lines {
             let fields = CSVRowSplitter.split(line: line, delimiter: delimiter)
+            if let statusIndex, statusIndex < fields.count {
+                let status = fields[statusIndex].trimmingCharacters(in: .whitespaces).lowercased()
+                if !status.isEmpty, !completedStatuses.contains(status) {
+                    skippedRows += 1
+                    continue
+                }
+            }
             let requiredIndices = [dateIndex, descriptionIndex, amountIndex, creditIndex].compactMap { $0 }
             guard fields.count > requiredIndices.max()! else {
                 unparsedLines.append(line)
                 continue
             }
-            guard let date = formatter.date(from: fields[dateIndex]) else {
+            guard let parsedDate = formatter.date(from: fields[dateIndex]) else {
                 unparsedLines.append(line)
                 continue
             }
@@ -44,11 +79,19 @@ public enum CSVStatementParser {
                 continue
             }
             if negate { minorUnits = -minorUnits }
+            if let feeIndex, feeIndex < fields.count, !fields[feeIndex].trimmingCharacters(in: .whitespaces).isEmpty {
+                guard let fee = Money.parseMinorUnits(fields[feeIndex]) else {
+                    unparsedLines.append(line)
+                    continue
+                }
+                minorUnits -= abs(fee)
+            }
+            let date = utcCalendar.startOfDay(for: parsedDate)
             let balance: Int? = balanceIndex.flatMap { $0 < fields.count ? Money.parseMinorUnits(fields[$0]) : nil }
             transactions.append(ParsedTransaction(date: date, rawDescription: fields[descriptionIndex], amountMinorUnits: minorUnits, balanceAfterMinorUnits: balance))
         }
 
-        return CSVParseResult(transactions: transactions, unparsedLines: unparsedLines)
+        return CSVParseResult(transactions: transactions, unparsedLines: unparsedLines, skippedRows: skippedRows)
     }
 
     /// Single-column statements (`creditIndex == nil`): the amount column already carries

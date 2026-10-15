@@ -43,14 +43,19 @@ public struct StagedImport {
     /// Verified Balance-column result for the whole file (including rows later skipped as
     /// duplicates). `.notProvided` for PDFs and for CSV profiles without a balance column.
     public let statementBalances: StatementBalanceResult
+    /// CSV rows left out because their status column says they aren't completed (pending,
+    /// reverted…). 0 for PDFs and profiles without a status column.
+    public let skippedRowCount: Int
 
     public var duplicateCount: Int { duplicates.count }
 
-    public init(staged: [StagedTransaction], duplicates: [ParsedTransaction], unparsedLines: [String], statementBalances: StatementBalanceResult = .notProvided) {
+    public init(staged: [StagedTransaction], duplicates: [ParsedTransaction], unparsedLines: [String], statementBalances: StatementBalanceResult = .notProvided,
+                skippedRowCount: Int = 0) {
         self.staged = staged
         self.duplicates = duplicates
         self.unparsedLines = unparsedLines
         self.statementBalances = statementBalances
+        self.skippedRowCount = skippedRowCount
     }
 }
 
@@ -90,7 +95,8 @@ public final class ImportCoordinator {
         let staged = try await stage(parsed: parseResult.transactions, unparsedLines: parseResult.unparsedLines, accountId: accountId, onProgress: onProgress)
         return StagedImport(
             staged: staged.staged, duplicates: staged.duplicates, unparsedLines: staged.unparsedLines,
-            statementBalances: StatementBalanceExtractor.extract(from: parseResult.transactions)
+            statementBalances: StatementBalanceExtractor.extract(from: parseResult.transactions),
+            skippedRowCount: parseResult.skippedRows
         )
     }
 
