@@ -80,12 +80,13 @@ extension DashboardCalculator {
         let dataMonth = input.dataThrough.map { MonthRange.components(of: $0) }
         let thisYear = MonthRange.components(of: input.today).year
         let forecast = netWorthForecast(actuals, throughYear: forecastThroughYear ?? thisYear + 1, categories: input.categories, entries: input.forecastEntries,
-                                        groups: input.forecastGroups, exceptions: input.exceptions)
+                                        groups: input.forecastGroups, exceptions: input.exceptions, filter: input.accountFilter)
         var yearEnds: [YearEndForecast] = []
         if let year = actuals.walkStartYear, let month = actuals.walkStartMonth {
             let walkStart = (year: year, month: month)
             func forecastValue(atEndOf year: Int) -> Int {
-                ForecastProjector.forecastNetWorth(startingNetWorth: current, latestRealMonth: walkStart, atEndOf: year, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
+                ForecastProjector.forecastNetWorth(startingNetWorth: current, latestRealMonth: walkStart, atEndOf: year, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions,
+                                                   filter: input.accountFilter)
             }
             for year in [thisYear, thisYear + 1] {
                 let value = forecastValue(atEndOf: year)
@@ -103,7 +104,7 @@ extension DashboardCalculator {
         }
 
         // "As of": the latest activity (snapshot, transaction up to today or balance confirmation) of any account.
-        let asOf = input.accounts.compactMap { BalanceStaleness.lastActivity(account: $0, snapshots: input.snapshots, transactions: input.transactions, today: input.today) }.max()
+        let asOf = input.netWorthAccounts.compactMap { BalanceStaleness.lastActivity(account: $0, snapshots: input.snapshots, transactions: input.transactions, today: input.today) }.max()
 
         let changeVsPrevious: Int? = actual.count >= 2 ? actual[actual.count - 1].valueMinorUnits - actual[actual.count - 2].valueMinorUnits : nil
 
@@ -112,7 +113,7 @@ extension DashboardCalculator {
         var behindDates: [Date] = []
         if let dataMonth {
             let dataIndex = MonthRange.index(year: dataMonth.year, month: dataMonth.month)
-            for account in input.accounts where BalanceStaleness.needsUpdates(account: account, transactions: input.transactions) {
+            for account in input.netWorthAccounts where BalanceStaleness.needsUpdates(account: account, transactions: input.transactions) {
                 guard let latest = BalanceStaleness.lastActivity(account: account, snapshots: input.snapshots, transactions: input.transactions, today: input.today) else { continue }
                 let parts = MonthRange.components(of: latest)
                 if MonthRange.index(year: parts.year, month: parts.month) < dataIndex { behindDates.append(latest) }
@@ -126,15 +127,45 @@ extension DashboardCalculator {
     /// Net worth at the end of `year`: the real December month-end for years before today's,
     /// the Dashboard's forecast-to-December (same walk as `netWorthSeries.yearEnds`) for this
     /// year and later. Nil when there is no data to base it on.
-    public static func yearEndNetWorth(_ input: DashboardInput, year: Int) -> YearEndNetWorth? {
+    ///
+    /// With `includeForecast` false (the Budget's Show forecast off, spec 2026-10-15 §1) this
+    /// year is the actual net worth today (`isForecast` false) and later years are nil; past
+    /// years are unchanged.
+    public static func yearEndNetWorth(_ input: DashboardInput, year: Int, includeForecast: Bool = true) -> YearEndNetWorth? {
         let thisYear = MonthRange.components(of: input.today).year
         if year < thisYear {
             return monthEndNetWorth(input, year: year, month: 12).map { YearEndNetWorth(valueMinorUnits: $0, isForecast: false) }
         }
+        if !includeForecast {
+            guard year == thisYear, let actuals = netWorthActuals(input) else { return nil }
+            return YearEndNetWorth(valueMinorUnits: actuals.currentNetWorthMinorUnits, isForecast: false)
+        }
         guard let actuals = netWorthActuals(input), let startYear = actuals.walkStartYear, let startMonth = actuals.walkStartMonth else { return nil }
         let value = ForecastProjector.forecastNetWorth(startingNetWorth: actuals.currentNetWorthMinorUnits, latestRealMonth: (startYear, startMonth), atEndOf: year,
-                                                       categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
+                                                       categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions,
+                                                       filter: input.accountFilter)
         return YearEndNetWorth(valueMinorUnits: value, isForecast: true)
+    }
+
+    /// The Budget's Net Worth row for `year` (spec 2026-10-15 §1, §4), January first: the
+    /// actual month-end net worth (balances carried forward) through the month of
+    /// `effectiveToday`; after it, with `includeForecast`, the forecast walk's value
+    /// (`netWorthSeries.forecast`), else nil ("—"). Nil also where there's no data yet.
+    /// Covers `input.accountFilter`'s accounts when set.
+    public static func budgetNetWorthMonths(_ input: DashboardInput, year: Int, includeForecast: Bool) -> [Int?] {
+        let today = MonthRange.components(of: input.effectiveToday)
+        let todayIndex = MonthRange.index(year: today.year, month: today.month)
+        var forecast: [Int: Int] = [:]
+        if includeForecast, MonthRange.index(year: year, month: 12) > todayIndex, let actuals = netWorthActuals(input) {
+            for point in netWorthForecast(actuals, throughYear: year, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups,
+                                          exceptions: input.exceptions, filter: input.accountFilter) {
+                forecast[point.id] = point.valueMinorUnits
+            }
+        }
+        return (1...12).map { month in
+            let index = MonthRange.index(year: year, month: month)
+            return index <= todayIndex ? monthEndNetWorth(input, year: year, month: month) : forecast[index]
+        }
     }
 
     /// The series' plan-independent part (`NetWorthActuals`); nil when no account has a
@@ -142,13 +173,13 @@ extension DashboardCalculator {
     public static func netWorthActuals(_ input: DashboardInput) -> NetWorthActuals? {
         // Where each account's balance starts: its first snapshot (the opening balance), or
         // its first transaction when it has no snapshot (`NetWorthCalculator.balance`).
-        let starts: [Date] = input.accounts.compactMap { account in
+        let starts: [Date] = input.netWorthAccounts.compactMap { account in
             input.snapshots.lazy.filter { $0.accountId == account.id }.map(\.date).min()
                 ?? input.transactions.lazy.filter { $0.accountId == account.id }.map(\.date).min()
         }
-        let latestActivity = input.accounts.compactMap { BalanceStaleness.lastActivity(account: $0, snapshots: input.snapshots, transactions: input.transactions, today: input.today) }.max()
+        let latestActivity = input.netWorthAccounts.compactMap { BalanceStaleness.lastActivity(account: $0, snapshots: input.snapshots, transactions: input.transactions, today: input.today) }.max()
         guard let firstData = starts.min(), let lastData = latestActivity ?? starts.max() else { return nil }
-        let balances = NetWorthCalculator.accountBalances(accounts: input.accounts, snapshots: input.snapshots, transactions: input.transactions, rate: input.rate)
+        let balances = NetWorthCalculator.accountBalances(accounts: input.netWorthAccounts, snapshots: input.snapshots, transactions: input.transactions, rate: input.rate)
         let current = NetWorthCalculator.netWorth(balances: balances)
 
         let dataMonth = input.dataThrough.map { MonthRange.components(of: $0) }
@@ -183,10 +214,10 @@ extension DashboardCalculator {
     /// A plan's forecast line from shared `actuals`: the anchors, then
     /// `ForecastProjector.monthlyProjection` with the plan's entries through `throughYear`.
     /// Empty without transactions.
-    public static func netWorthForecast(_ actuals: NetWorthActuals, throughYear: Int, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException]) -> [NetWorthPoint] {
+    public static func netWorthForecast(_ actuals: NetWorthActuals, throughYear: Int, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException], filter: PlanAccountFilter? = nil) -> [NetWorthPoint] {
         guard let year = actuals.walkStartYear, let month = actuals.walkStartMonth else { return [] }
         return actuals.forecastAnchors + ForecastProjector.monthlyProjection(startingNetWorth: actuals.currentNetWorthMinorUnits, latestRealMonth: (year, month), throughYear: throughYear,
-                                                                             categories: categories, entries: entries, groups: groups, exceptions: exceptions)
+                                                                             categories: categories, entries: entries, groups: groups, exceptions: exceptions, filter: filter)
     }
 
     /// One entry per year from the first data year to next year. See `YearChange`.
@@ -228,6 +259,6 @@ extension DashboardCalculator {
     }
 
     private static func monthEndNetWorth(_ input: DashboardInput, year: Int, month: Int) -> Int? {
-        NetWorthCalculator.monthEndNetWorth(accounts: input.accounts, snapshots: input.snapshots, transactions: input.transactions, rate: input.rate, year: year, month: month)
+        NetWorthCalculator.monthEndNetWorth(accounts: input.netWorthAccounts, snapshots: input.snapshots, transactions: input.transactions, rate: input.rate, year: year, month: month)
     }
 }

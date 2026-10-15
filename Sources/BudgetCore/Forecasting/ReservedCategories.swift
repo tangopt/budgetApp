@@ -106,6 +106,19 @@ public enum ReservedCategories {
         return max(0, -net)
     }
 
+    /// `unforecastSpend` with the plan's totals already worked out (`plannedTotals`, per
+    /// category for the calendar month): the Budget account filter passes the selected
+    /// accounts' actuals and planned totals (`ForecastCalculator.confirmedTotalsByCategory(…filter:)`).
+    public static func unforecastSpend(year: Int, month: Int, categories: [Category], monthTotals: [Int64: [Int: [Int: Int]]], plannedTotals: [Int64: Int]) -> Int {
+        var net = 0
+        for category in categories where category.type == .expense && !category.isReserved {
+            guard let categoryId = category.id, let actual = monthTotals[categoryId]?[year]?[month], actual != 0 else { continue }
+            guard (plannedTotals[categoryId] ?? 0) == 0 else { continue }
+            net += actual
+        }
+        return max(0, -net)
+    }
+
     /// Each reserve's allowance (signed, negative) reduced by `unforecastSpend` (positive),
     /// absorbed in name order: the first reserve takes the spend until it reaches 0, then
     /// the next. Every result lies in `allowance...0`.

@@ -45,8 +45,11 @@ public struct ForecastEntry: Codable, Equatable, Identifiable, FetchableRecord, 
     public var sourceEntryId: Int64?
     /// nil = unchanged copy of its source (or a budget entry).
     public var scenarioChange: ScenarioChange?
+    /// The account the item is paid from or into (spec 2026-10-15 §2); nil = Automatic, the
+    /// account inferred from its category's history (`PlannedItemAccounts`).
+    public var accountId: Int64?
 
-    public init(id: Int64? = nil, groupId: Int64, categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, isEnabled: Bool, status: ForecastEntryStatus, note: String?, anchorDay: Int? = nil, scenarioId: Int64? = nil, sourceEntryId: Int64? = nil, scenarioChange: ScenarioChange? = nil) {
+    public init(id: Int64? = nil, groupId: Int64, categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, isEnabled: Bool, status: ForecastEntryStatus, note: String?, anchorDay: Int? = nil, scenarioId: Int64? = nil, sourceEntryId: Int64? = nil, scenarioChange: ScenarioChange? = nil, accountId: Int64? = nil) {
         self.id = id
         self.groupId = groupId
         self.categoryId = categoryId
@@ -62,6 +65,7 @@ public struct ForecastEntry: Codable, Equatable, Identifiable, FetchableRecord, 
         self.scenarioId = scenarioId
         self.sourceEntryId = sourceEntryId
         self.scenarioChange = scenarioChange
+        self.accountId = accountId
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -109,6 +113,14 @@ func registerForecastEntryAnchorDayMigration(_ migrator: inout DatabaseMigrator)
     migrator.registerMigration("addForecastEntryAnchorDay") { db in
         try db.alter(table: "forecastEntry") { t in
             t.add(column: "anchorDay", .integer)
+        }
+    }
+}
+
+func registerForecastEntryAccountMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addForecastEntryAccountId") { db in
+        try db.alter(table: "forecastEntry") { t in
+            t.add(column: "accountId", .integer).references("account", onDelete: .setNull)
         }
     }
 }

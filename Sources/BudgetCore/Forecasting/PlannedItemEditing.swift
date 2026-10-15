@@ -14,8 +14,11 @@ public struct OccurrenceChange: Equatable {
     public var endDate: Date??
     /// Skip this occurrence (`editOccurrence`) or end the series here (`editFollowing`).
     public var remove: Bool = false
+    /// Series-level, `editFollowing` only (spec 2026-10-15 §2): nil leaves the account as it
+    /// is, `.some(nil)` sets Automatic, `.some(id)` sets that account.
+    public var accountId: Int64??
 
-    public init(amountMinorUnits: Int? = nil, date: Date? = nil, categoryId: Int64? = nil, frequency: ForecastFrequency? = nil, interval: Int? = nil, endDate: Date?? = nil, remove: Bool = false) {
+    public init(amountMinorUnits: Int? = nil, date: Date? = nil, categoryId: Int64? = nil, frequency: ForecastFrequency? = nil, interval: Int? = nil, endDate: Date?? = nil, remove: Bool = false, accountId: Int64?? = nil) {
         self.amountMinorUnits = amountMinorUnits
         self.date = date
         self.categoryId = categoryId
@@ -23,6 +26,7 @@ public struct OccurrenceChange: Equatable {
         self.interval = interval
         self.endDate = endDate
         self.remove = remove
+        self.accountId = accountId
     }
 }
 
@@ -37,6 +41,8 @@ public enum PlannedItemEditError: Error, Equatable {
     case invalidInterval
     /// A frequency/interval/end-date change applies to the series: use `editFollowing`.
     case frequencyNeedsFollowing
+    /// An account change was asked of only this occurrence: an item's account is series-level.
+    case accountNeedsFollowing
     /// No such planned item (an enabled, non-hypothetical entry in an enabled group, as
     /// `ForecastCalculator.planEntries` — budget or scenario, not a `removed` tombstone), or
     /// `originalDate` isn't one of its occurrences.
@@ -69,6 +75,7 @@ public enum PlannedItemEditing {
             if let frequency = change.frequency, frequency != entry.frequency { throw PlannedItemEditError.frequencyNeedsFollowing }
             if let interval = change.interval, interval != entry.interval { throw PlannedItemEditError.frequencyNeedsFollowing }
             if change.endDate != nil { throw PlannedItemEditError.frequencyNeedsFollowing }
+            if let accountId = change.accountId, accountId != entry.accountId { throw PlannedItemEditError.accountNeedsFollowing }
             let existing = try exception(db: db, entryId: entryId, originalDate: originalDate)
             try requireUnconfirmed(db: db, entry: entry, originalDate: originalDate, existing: existing, calendar: calendar)
             if !change.remove, let date = change.date {
@@ -139,7 +146,7 @@ public enum PlannedItemEditing {
                                              amountMinorUnits: change.amountMinorUnits ?? entry.amountMinorUnits,
                                              frequency: frequency, interval: interval, startDate: newStart, endDate: endDate,
                                              isEnabled: entry.isEnabled, status: .manual, note: entry.note,
-                                             scenarioId: entry.scenarioId)
+                                             scenarioId: entry.scenarioId, accountId: change.accountId ?? entry.accountId)
                 if entry.scenarioId != nil {
                     // From a copy's first occurrence the new entry replaces the copy, so it
                     // inherits its source; otherwise it's a new series of the scenario.

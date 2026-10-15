@@ -24,6 +24,16 @@ public struct DashboardInput {
     public let payCalendar: PayCalendar
     /// Confirmed pay-month totals per category, built once.
     let monthTotals: [Int64: [Int: [Int: Int]]]
+    /// The Budget account filter (spec 2026-10-15 §4): when set, the net-worth figures
+    /// (`netWorthSeries`, `netWorthActuals`, `yearEndNetWorth`, `budgetNetWorthMonths`) cover
+    /// only its accounts, projected with only their planned items. Flows are unaffected.
+    public var accountFilter: PlanAccountFilter?
+
+    /// The accounts the net-worth figures cover: `accountFilter`'s, else every account.
+    var netWorthAccounts: [Account] {
+        guard let filter = accountFilter else { return accounts }
+        return accounts.filter { $0.id.map(filter.accountIds.contains) ?? false }
+    }
 
     public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, manualCloses: [PayMonthClose] = [], transferLinks: [TransferLink] = []) {
         let payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: manualCloses, today: today)
