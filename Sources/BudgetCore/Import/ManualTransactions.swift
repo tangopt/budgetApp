@@ -127,7 +127,9 @@ public enum ManualTransactions {
     /// (non-external) transfer category, creates the opposite leg by hand in `accountId` —
     /// same date and category, the amount converted at the stored
     /// exchange rate across currencies, described "Transfer from/to <account>" — and links
-    /// the two (origin `manual`: out = money sent, in = money received).
+    /// the two (origin `manual`: out = money sent, in = money received). Then each leg is
+    /// filed under the other account's transfer category (`TransferCategories.applyOnLink`):
+    /// the new leg under the original's account's, the original under `accountId`'s.
     @discardableResult
     public static func addOtherSide(db: Database, transactionId: Int64, accountId: Int64) throws -> Transaction {
         guard let source = try Transaction.fetchOne(db, key: transactionId), let sourceId = source.id else {
@@ -158,7 +160,8 @@ public enum ManualTransactions {
         try other.insert(db)
         var link = TransferLink(outTransactionId: isIncoming ? sourceId : other.id!, inTransactionId: isIncoming ? other.id! : sourceId, origin: .manual)
         try link.insert(db)
-        return other
+        try TransferCategories.applyOnLink(db: db, outTransactionId: link.outTransactionId, inTransactionId: link.inTransactionId)
+        return try Transaction.fetchOne(db, key: other.id!) ?? other
     }
 
     /// The other side's signed amount: the opposite sign, converted at `rate` (EUR→GBP) across

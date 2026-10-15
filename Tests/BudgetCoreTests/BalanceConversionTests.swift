@@ -70,8 +70,8 @@ final class BalanceConversionTests: XCTestCase {
             XCTAssertEqual(accountReport.adjustmentSumMinorUnits, 0)
             XCTAssertEqual(accountReport.archivedCount, 3)
             XCTAssertEqual(accountReport.latestSnapshotDate, day(2025, 4, 1))
-            XCTAssertEqual(accountReport.lastConfirmedBefore, day(2025, 4, 15))
-            XCTAssertEqual(accountReport.lastConfirmedAfter, day(2025, 4, 15))
+            XCTAssertEqual(accountReport.lastActivityBefore, day(2025, 4, 15))
+            XCTAssertEqual(accountReport.lastActivityAfter, day(2025, 4, 15))
 
             let remaining = try BalanceSnapshot.filter(Column("accountId") == id).fetchAll(db)
             XCTAssertEqual(remaining.map(\.date), [day(2025, 1, 1)])
@@ -255,9 +255,9 @@ final class BalanceConversionTests: XCTestCase {
             XCTAssertEqual(try adjustments(db, id).count, 0)
             let accountReport = try XCTUnwrap(report.accounts.first)
             XCTAssertEqual(accountReport.latestSnapshotDate, day(2026, 9, 1))
-            XCTAssertEqual(accountReport.lastConfirmedBefore, day(2026, 9, 1))
-            XCTAssertEqual(accountReport.lastConfirmedAfter, day(2026, 9, 1))
-            XCTAssertTrue(report.text.contains("last confirmed 1 Sep 2026 → 1 Sep 2026"), report.text)
+            XCTAssertEqual(accountReport.lastActivityBefore, day(2026, 9, 1))
+            XCTAssertEqual(accountReport.lastActivityAfter, day(2026, 9, 1))
+            XCTAssertTrue(report.text.contains("last activity 1 Sep 2026 → 1 Sep 2026"), report.text)
 
             let converted = try XCTUnwrap(Account.fetchOne(db, key: id))
             XCTAssertEqual(converted.balanceConfirmedAt, day(2026, 9, 1))

@@ -26,7 +26,11 @@ public enum CategorySeeder {
 
     public static let incomeNames: [String] = ["Income", "Bonus", "Other income/refunds"]
 
+    /// Seeds the defaults into a fresh database only (no category besides the built-in ones):
+    /// once the user has categories, a renamed or deleted default — say a transfer category
+    /// renamed after its account (`TransferCategories.ensure`) — must not come back.
     public static func seedDefaults(_ db: Database) throws {
+        guard try Category.filter(Column("builtInRole") == nil).fetchCount(db) == 0 else { return }
         for name in expenseNames {
             var category = Category(name: name, type: .expense)
             if try Category.filter(Column("name") == name).fetchCount(db) == 0 {

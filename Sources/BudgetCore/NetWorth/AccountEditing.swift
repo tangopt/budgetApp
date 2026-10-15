@@ -37,6 +37,8 @@ public enum AccountEditing {
         if let openingBalanceEntered {
             try BalanceUpdates.upsertSnapshot(db: db, accountId: account.id!, date: asOf, balanceMinorUnits: NetWorthCalculator.signedSnapshotBalance(enteredMinorUnits: openingBalanceEntered, accountKind: kind), note: nil)
         }
+        // Its transfer category (spec 2026-10-14 §4).
+        try TransferCategories.ensure(db: db)
         return account
     }
 
@@ -61,6 +63,8 @@ public enum AccountEditing {
             account.iban = details.iban
         }
         try account.update(db)
+        // A new name or alias renames its transfer category.
+        try TransferCategories.ensure(db: db)
     }
 
     public static func hasHistory(db: Database, accountId: Int64) throws -> Bool {

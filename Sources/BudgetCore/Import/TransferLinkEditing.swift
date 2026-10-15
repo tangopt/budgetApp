@@ -141,7 +141,8 @@ extension TransferLinks {
         return abs(Double(abs(inAmount)) - converted) <= converted * TransferMatcher.fxTolerance
     }
 
-    /// Link to transfer…: links the two by hand (origin `manual`), whichever was sent.
+    /// Link to transfer…: links the two by hand (origin `manual`), whichever was sent, and
+    /// files each leg under the other account's transfer category (`TransferCategories.applyOnLink`).
     @discardableResult
     public static func link(db: Database, transactionId: Int64, with otherId: Int64) throws -> TransferLink {
         guard let first = try Transaction.fetchOne(db, key: transactionId), let second = try Transaction.fetchOne(db, key: otherId) else {
@@ -158,13 +159,18 @@ extension TransferLinks {
            try TransferLink.active.filter(Column("outTransactionId") == out.id!).fetchCount(db) > 0 { throw TransferLinkError.alreadyLinked }
         var link = TransferLink(outTransactionId: out.id!, inTransactionId: inLeg.id!, origin: .manual)
         try link.insert(db)
+        try TransferCategories.applyOnLink(db: db, outTransactionId: out.id!, inTransactionId: inLeg.id!)
         return link
     }
 
     /// The Categories screen's "Money goes to an account you don't import — never match".
     /// Turning it on removes the auto links involving the category (either leg); turning it
-    /// off lets the matcher look at its transactions again (and runs it).
+    /// off lets the matcher look at its transactions again (and runs it). Refused for a
+    /// category linked to one of the user's accounts (`TransferCategoryError.linkedCategory`).
     public static func setExternalTransfer(db: Database, categoryId: Int64, _ isExternal: Bool, today: Date = Date()) throws {
+        if isExternal, try Category.fetchOne(db, key: categoryId)?.transferAccountId != nil {
+            throw TransferCategoryError.linkedCategory
+        }
         try db.execute(sql: "UPDATE category SET isExternalTransfer = ? WHERE id = ?", arguments: [isExternal, categoryId])
         if isExternal {
             try db.execute(sql: """

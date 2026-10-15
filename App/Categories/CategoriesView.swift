@@ -7,7 +7,8 @@ import struct BudgetCore.Category
 /// collapsible groups and Ungrouped, the read-only built-in Adjustments, then the read-only
 /// Reserves. Categories multi-select
 /// and drag onto a group (or Ungrouped) to move; right-click to move, rename, change the
-/// icon (also by clicking its badge), exclude from the auto-forecast or delete. Selecting one category opens its transactions panel.
+/// icon (also by clicking its badge), exclude from the auto-forecast, set a transfer
+/// category's linked account (shown "↔ <account>" on its row) or delete. Selecting one category opens its transactions panel.
 struct CategoriesView: View {
     @ObservedObject var viewModel: CategoriesViewModel
 
@@ -292,6 +293,10 @@ struct CategoriesView: View {
                 flagLabel("Not matched")
                     .help("Money goes to an account you don't import — never matched as a transfer")
             }
+            if let account = viewModel.linkedAccount(of: category) {
+                flagLabel("↔ \(account.displayName)")
+                    .help("Linked account: a transfer with \(account.displayName) is filed here")
+            }
             Spacer()
             if let average = viewModel.averages[id] {
                 MoneyText(minorUnits: average)
@@ -354,13 +359,36 @@ struct CategoriesView: View {
                     ))
                 }
                 if category.type == .transfer {
+                    linkedAccountMenu(category, id: id)
+                        .disabled(category.isExternalTransfer)
                     Toggle("Money goes to an account you don't import — never match", isOn: Binding(
                         get: { category.isExternalTransfer },
                         set: { viewModel.setExternalTransfer(id: id, external: $0) }
                     ))
+                    .disabled(category.transferAccountId != nil)
                 }
                 Divider()
                 Button("Delete…", role: .destructive) { deletingCategory = category }
+            }
+        }
+    }
+
+    /// Linked account (spec 2026-10-14 §4): None or one of the accounts; an account already
+    /// linked to another category shows that category and can't be picked.
+    private func linkedAccountMenu(_ category: Category, id: Int64) -> some View {
+        Menu("Linked account") {
+            Toggle("None", isOn: Binding(
+                get: { category.transferAccountId == nil },
+                set: { if $0 { viewModel.setLinkedAccount(id: id, accountId: nil) } }
+            ))
+            Divider()
+            ForEach(viewModel.accounts.sortedByDisplayName(), id: \.id) { account in
+                let owner = viewModel.linkedCategory(forAccountId: account.id).flatMap { $0.id == id ? nil : $0 }
+                Toggle(owner.map { "\(account.displayName) — \($0.name)" } ?? account.displayName, isOn: Binding(
+                    get: { category.transferAccountId != nil && category.transferAccountId == account.id },
+                    set: { if $0, let accountId = account.id { viewModel.setLinkedAccount(id: id, accountId: accountId) } }
+                ))
+                .disabled(owner != nil)
             }
         }
     }

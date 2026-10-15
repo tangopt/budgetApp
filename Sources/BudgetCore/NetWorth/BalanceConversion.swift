@@ -81,8 +81,8 @@ public enum BalanceConversion {
         public let latestSnapshotDate: Date?
         /// The account's last activity (`BalanceStaleness.lastActivity`, balance confirmation
         /// included) before and after the conversion: must match.
-        public let lastConfirmedBefore: Date?
-        public let lastConfirmedAfter: Date?
+        public let lastActivityBefore: Date?
+        public let lastActivityAfter: Date?
     }
 
     public struct Report: Equatable, Sendable {
@@ -104,7 +104,7 @@ public enum BalanceConversion {
                 line += "; \(account.adjustmentCount) adjustment\(account.adjustmentCount == 1 ? "" : "s") totalling \(Money.format(account.adjustmentSumMinorUnits, currency: account.currency))"
                 line += "; \(account.archivedCount) archived"
                 if account.supersededCount > 0 { line += " (\(account.supersededCount) superseded)" }
-                line += "; last confirmed \(account.lastConfirmedBefore.map(dayString) ?? "never") → \(account.lastConfirmedAfter.map(dayString) ?? "never")"
+                line += "; last activity \(account.lastActivityBefore.map(dayString) ?? "never") → \(account.lastActivityAfter.map(dayString) ?? "never")"
                 lines.append(line + ".")
             }
             if violations.isEmpty {
@@ -150,7 +150,7 @@ public enum BalanceConversion {
                 let last = BalanceStaleness.lastActivity(account: account, snapshots: [], transactions: transactions, today: now)
                 reports.append(AccountReport(accountId: accountId, accountName: account.displayName, currency: account.currency, opening: nil,
                                              adjustmentCount: 0, adjustmentSumMinorUnits: 0, archivedCount: 0, supersededCount: 0,
-                                             latestSnapshotDate: nil, lastConfirmedBefore: last, lastConfirmedAfter: last))
+                                             latestSnapshotDate: nil, lastActivityBefore: last, lastActivityAfter: last))
                 continue
             }
             let later = Array(winners.dropFirst())
@@ -185,7 +185,7 @@ public enum BalanceConversion {
             try BalanceUpdates.confirmBalance(db: db, accountId: accountId, on: latestSnapshot.date)
             reports.append(AccountReport(accountId: accountId, accountName: account.displayName, currency: account.currency, opening: opening,
                                          adjustmentCount: count, adjustmentSumMinorUnits: sum, archivedCount: toArchive.count, supersededCount: superseded.count,
-                                         latestSnapshotDate: latestSnapshot.date, lastConfirmedBefore: lastBefore, lastConfirmedAfter: nil))
+                                         latestSnapshotDate: latestSnapshot.date, lastActivityBefore: lastBefore, lastActivityAfter: nil))
             checks.append((account, before, later))
         }
 
@@ -204,9 +204,9 @@ public enum BalanceConversion {
             }
             let last = BalanceStaleness.lastActivity(account: account, snapshots: snapshots, transactions: transactions, today: now)
             lastAfter[accountId] = last
-            let lastBefore = reports.first { $0.accountId == accountId }?.lastConfirmedBefore
+            let lastBefore = reports.first { $0.accountId == accountId }?.lastActivityBefore
             if last != lastBefore {
-                violations.append("\(name): last confirmed \(lastBefore.map(dayString) ?? "never") before, \(last.map(dayString) ?? "never") after.")
+                violations.append("\(name): last activity \(lastBefore.map(dayString) ?? "never") before, \(last.map(dayString) ?? "never") after.")
             }
             for snapshot in check.archived {
                 let computed = balance(at: BalanceUpdates.endOfDay(snapshot.date))
@@ -226,7 +226,7 @@ public enum BalanceConversion {
             return AccountReport(accountId: report.accountId, accountName: report.accountName, currency: report.currency, opening: report.opening,
                                  adjustmentCount: report.adjustmentCount, adjustmentSumMinorUnits: report.adjustmentSumMinorUnits,
                                  archivedCount: report.archivedCount, supersededCount: report.supersededCount, latestSnapshotDate: report.latestSnapshotDate,
-                                 lastConfirmedBefore: report.lastConfirmedBefore, lastConfirmedAfter: lastAfter[report.accountId])
+                                 lastActivityBefore: report.lastActivityBefore, lastActivityAfter: lastAfter[report.accountId])
         }
         let report = Report(accounts: reports, violations: violations)
         guard violations.isEmpty else { throw BalanceConversionError.invariantViolated(report) }

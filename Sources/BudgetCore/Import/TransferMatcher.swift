@@ -39,6 +39,7 @@ public struct TransferPair: Hashable, Sendable {
 /// "↔ Transfer from <account>, <date>" badge).
 public struct StagedTransfer: Equatable, Sendable {
     public let otherTransactionId: Int64
+    public let otherAccountId: Int64
     public let otherAccountName: String
     public let otherDate: Date
     public let otherAmountMinorUnits: Int
@@ -46,8 +47,9 @@ public struct StagedTransfer: Equatable, Sendable {
     /// The staged row receives the money ("from"); false when it sends it ("to").
     public let isIncoming: Bool
 
-    public init(otherTransactionId: Int64, otherAccountName: String, otherDate: Date, otherAmountMinorUnits: Int, otherCategoryId: Int64?, isIncoming: Bool) {
+    public init(otherTransactionId: Int64, otherAccountId: Int64, otherAccountName: String, otherDate: Date, otherAmountMinorUnits: Int, otherCategoryId: Int64?, isIncoming: Bool) {
         self.otherTransactionId = otherTransactionId
+        self.otherAccountId = otherAccountId
         self.otherAccountName = otherAccountName
         self.otherDate = otherDate
         self.otherAmountMinorUnits = otherAmountMinorUnits
@@ -78,8 +80,10 @@ public enum TransferMatcher {
 
     // MARK: Database
 
-    /// Links every new match (origin `auto`); returns how many. Idempotent: linked legs are
-    /// never considered again. Runs inside an import's commit and once at launch.
+    /// Links every new match (origin `auto`) and files each pair's legs under the other
+    /// account's transfer category (`TransferCategories.applyOnLink`); returns how many.
+    /// Idempotent: linked legs are never considered again. Runs inside an import's commit and
+    /// once at launch.
     @discardableResult
     public static func match(db: Database, today: Date = Date()) throws -> Int {
         let context = try Context(db: db, today: today)
@@ -88,6 +92,10 @@ public enum TransferMatcher {
         for pair in found {
             var link = TransferLink(outTransactionId: pair.outId, inTransactionId: pair.inId, origin: .auto)
             try link.insert(db)
+        }
+        // Once every link is in, so a historical total's legs are all seen together.
+        for pair in found {
+            try TransferCategories.applyOnLink(db: db, outTransactionId: pair.outId, inTransactionId: pair.inId)
         }
         return found.count
     }
@@ -112,7 +120,7 @@ public enum TransferMatcher {
             guard stagedId < 0, otherId > 0, let other = byId[otherId] else { continue }
             let index = Int(-stagedId - 1)
             guard result[index] == nil else { continue }
-            result[index] = StagedTransfer(otherTransactionId: otherId, otherAccountName: accountNames[other.accountId] ?? "another account",
+            result[index] = StagedTransfer(otherTransactionId: otherId, otherAccountId: other.accountId, otherAccountName: accountNames[other.accountId] ?? "another account",
                                            otherDate: other.date, otherAmountMinorUnits: other.amountMinorUnits,
                                            otherCategoryId: other.categoryId, isIncoming: pair.inId == stagedId)
         }

@@ -167,6 +167,26 @@ final class CategoriesViewModel: ObservableObject {
         }
     }
 
+    /// The account a transfer category is linked to (spec 2026-10-14 §4), if any.
+    func linkedAccount(of category: Category) -> Account? {
+        guard let accountId = category.transferAccountId else { return nil }
+        return accounts.first { $0.id == accountId }
+    }
+
+    /// The category linked to `accountId`, if any.
+    func linkedCategory(forAccountId accountId: Int64?) -> Category? {
+        guard let accountId else { return nil }
+        return categories.first { $0.transferAccountId == accountId }
+    }
+
+    /// Linked account: ties the transfer category to the account (renamed "Transfer:
+    /// <account>" when that name is free), or unties it (nil).
+    func setLinkedAccount(id: Int64, accountId: Int64?) {
+        write("Couldn't change the linked account") { db in
+            try TransferCategories.setLinkedAccount(db: db, categoryId: id, accountId: accountId)
+        }
+    }
+
     // MARK: Side panel
 
     /// The pay-month year a transaction belongs to (as on the Budget grid).

@@ -55,8 +55,12 @@ public struct Category: Codable, Equatable, Identifiable, FetchableRecord, Mutab
     public var iconName: String?
     /// Set on the built-in adjustment categories only (type `.adjustment`).
     public var builtInRole: CategoryBuiltInRole?
+    /// The account this transfer category is for (spec 2026-10-14 §4, `TransferCategories`):
+    /// a linked transfer's leg is filed under the other account's category. At most one
+    /// category per account; never on an external-transfer or built-in category.
+    public var transferAccountId: Int64?
 
-    public init(id: Int64? = nil, name: String, type: CategoryType, groupId: Int64? = nil, isReserved: Bool = false, excludeFromAutoForecast: Bool = false, isExternalTransfer: Bool = false, iconName: String? = nil, builtInRole: CategoryBuiltInRole? = nil) {
+    public init(id: Int64? = nil, name: String, type: CategoryType, groupId: Int64? = nil, isReserved: Bool = false, excludeFromAutoForecast: Bool = false, isExternalTransfer: Bool = false, iconName: String? = nil, builtInRole: CategoryBuiltInRole? = nil, transferAccountId: Int64? = nil) {
         self.id = id
         self.name = name
         self.type = type
@@ -66,6 +70,7 @@ public struct Category: Codable, Equatable, Identifiable, FetchableRecord, Mutab
         self.isExternalTransfer = isExternalTransfer
         self.iconName = iconName
         self.builtInRole = builtInRole
+        self.transferAccountId = transferAccountId
     }
 
     /// Whether transactions and rules may be filed into this category by hand (pickers,

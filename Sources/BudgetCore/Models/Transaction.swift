@@ -12,8 +12,9 @@ public enum CategorizedBy: String, Codable, CaseIterable, Sendable {
     case history
     case manual
     case none
-    /// Matched to the other leg of a transfer between the user's accounts (import review):
-    /// the category is that leg's.
+    /// A leg of a transfer between the user's accounts: filed under the other account's
+    /// transfer category when linked (`TransferCategories.applyOnLink`), or matched in import
+    /// review (that account's transfer category, else the other leg's own).
     case transfer
 }
 

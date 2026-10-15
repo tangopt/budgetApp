@@ -176,8 +176,10 @@ public final class ImportCoordinator {
     }
 
     /// Marks the rows that are the other leg of a saved transfer (`TransferMatcher.stagedMatches`):
-    /// each gets the "↔ Transfer" badge and, when that leg's category keeps the pair linkable,
-    /// that category (source `.transfer`, Ready). Money received may take any of the sending
+    /// each gets the "↔ Transfer" badge and the other leg's account's transfer category
+    /// (`TransferCategories`; source `.transfer`, Ready) — commit links them and files the saved
+    /// leg under this account's. When that account has none, the other leg's own category is
+    /// taken instead if it keeps the pair linkable: money received may take any of the sending
     /// leg's categories (always uncategorised or a transfer one); money sent only takes a
     /// non-external transfer category — otherwise (say the receiving leg is filed as Salary) it
     /// keeps its own suggestion, which the match already found linkable, so commit still links.
@@ -187,17 +189,18 @@ public final class ImportCoordinator {
         // can't claim a saved leg another row would match.
         let matchable = staged.indices.filter { staged[$0].replacesManual == nil }
         guard !matchable.isEmpty else { return staged }
-        let (matchesByPosition, linkableSentCategoryIds) = try await dbQueue.read { db in
+        let (matchesByPosition, linkableSentCategoryIds, accountCategoryIds) = try await dbQueue.read { db in
             (try TransferMatcher.stagedMatches(db: db, accountId: accountId,
                                                staged: matchable.map { (staged[$0].parsed.date, staged[$0].parsed.amountMinorUnits, staged[$0].suggestedCategoryId) }),
              Set(try Int64.fetchAll(db, sql: "SELECT id FROM category WHERE type = ? AND isExternalTransfer = 0",
-                                    arguments: [CategoryType.transfer.rawValue])))
+                                    arguments: [CategoryType.transfer.rawValue])),
+             try TransferCategories.categoryIdsByAccount(db: db))
         }
         guard !matchesByPosition.isEmpty else { return staged }
         let matches = Dictionary(uniqueKeysWithValues: matchesByPosition.map { (matchable[$0.key], $0.value) })
         return staged.enumerated().map { index, row in
             guard let match = matches[index] else { return row }
-            guard let categoryId = match.otherCategoryId, match.isIncoming || linkableSentCategoryIds.contains(categoryId) else {
+            guard let categoryId = accountCategoryIds[match.otherAccountId] ?? match.otherCategoryId, match.isIncoming || linkableSentCategoryIds.contains(categoryId) else {
                 return StagedTransaction(id: row.id, parsed: row.parsed, suggestedCategoryId: row.suggestedCategoryId, source: row.source,
                                          confidence: row.confidence, fingerprint: row.fingerprint, historyCount: row.historyCount, transfer: match)
             }

@@ -36,4 +36,15 @@ final class CategoryTests: XCTestCase {
         }
         XCTAssertEqual(income?.type, .income)
     }
+
+    func testSeedDefaultsNeverBringsBackARenamedDefault() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        try manager.dbQueue.write { db in
+            try CategorySeeder.seedDefaults(db)
+            try db.execute(sql: "UPDATE category SET name = 'Transfer: Joint' WHERE name = 'Transfer: Lloyds Joint'")
+            try CategorySeeder.seedDefaults(db)
+            XCTAssertEqual(try Category.filter(Column("name") == "Transfer: Lloyds Joint").fetchCount(db), 0)
+        }
+    }
 }
