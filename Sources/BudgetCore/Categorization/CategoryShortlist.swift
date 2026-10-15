@@ -8,7 +8,7 @@ public enum CategoryShortlist {
         try Int64.fetchAll(db, sql: """
             SELECT t.categoryId FROM transaction_ t
             JOIN category c ON c.id = t.categoryId
-            WHERE t.status = 'confirmed' AND c.isReserved = 0 AND t.date >= ? AND \(Transaction.budgetFacingCondition(alias: "t"))
+            WHERE t.status = 'confirmed' AND c.isReserved = 0 AND c.builtInRole IS NULL AND t.date >= ? AND \(Transaction.budgetFacingCondition(alias: "t"))
             GROUP BY t.categoryId
             ORDER BY COUNT(*) DESC, MAX(t.date) DESC
             LIMIT ?

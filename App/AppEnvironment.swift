@@ -40,10 +40,15 @@ final class AppEnvironment: ObservableObject {
             try manager.dbQueue.write { db in
                 try CategorySeeder.seedDefaults(db)
             }
-            // Links transfers between accounts already imported (idempotent; spec §6). A failure
-            // only leaves them unlinked until the next import or launch — never blocks launch.
+            // Gives every account its transfer category (spec 2026-10-14 §4), then links
+            // transfers between accounts already imported, filing their legs under those
+            // (idempotent; spec §6). A failure only leaves them as they were until the next
+            // import or launch — never blocks launch.
             do {
-                _ = try manager.dbQueue.write { db in try TransferMatcher.match(db: db) }
+                _ = try manager.dbQueue.write { db in
+                    try TransferCategories.ensure(db: db)
+                    return try TransferMatcher.match(db: db)
+                }
             } catch {
                 Logger(subsystem: "com.personal.budget", category: "Transfers").error("Transfer matching at launch failed: \(error.localizedDescription, privacy: .public)")
             }

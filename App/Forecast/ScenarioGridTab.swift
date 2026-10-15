@@ -262,6 +262,7 @@ struct ScenarioGridTab: View {
         case .income: return .green
         case .expense: return .red
         case .transfer: return .blue
+        case .adjustment: return .gray
         }
     }
 

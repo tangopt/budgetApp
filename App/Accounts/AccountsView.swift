@@ -119,10 +119,10 @@ struct AccountsView: View {
                 Text("\(overview.staleCount) balance\(overview.staleCount == 1 ? "" : "s") not updated\(since) — import a statement or update them.")
             }
         }
-        if !viewModel.warnings.isEmpty {
-            Banner(systemImage: "exclamationmark.circle.fill", tint: .orange, onDismiss: { viewModel.warnings = [] }) {
+        if !viewModel.balanceMessages.isEmpty {
+            Banner(systemImage: "checkmark.circle.fill", tint: .green, onDismiss: { viewModel.balanceMessages = [] }) {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(viewModel.warnings, id: \.self) { Text($0) }
+                    ForEach(Array(viewModel.balanceMessages.enumerated()), id: \.offset) { Text($0.element) }
                 }
             }
         }
@@ -263,6 +263,13 @@ private struct AccountListRow: View {
                     .font(.caption)
                     .help("Not updated in over \(BalanceStaleness.thresholdDays) days")
             }
+            if let mismatch = AccountsFormat.statementMismatch(row.account) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .font(.caption)
+                    .help(mismatch)
+                    .accessibilityLabel(mismatch)
+            }
             Spacer()
             if row.account.currency != .gbp {
                 AccountsFormat.balanceText(row.nativeBalanceMinorUnits, kind: row.account.kind, currency: row.account.currency)
@@ -316,7 +323,7 @@ private struct AccountBankDetails: View {
 
 private struct AccountDetailView: View {
     let row: AccountRow?
-    let history: [BalanceSnapshot]
+    let history: AccountHistory
     let onUpdateBalance: (AccountRow) -> Void
     let onEdit: (AccountRow) -> Void
     let onAddTransaction: (AccountRow) -> Void
@@ -333,7 +340,7 @@ private struct AccountDetailView: View {
                         if row.account.displayName != row.account.name {
                             Text(row.account.name).font(.callout).foregroundStyle(.secondary)
                         }
-                        Text("\(row.account.currency.rawValue.uppercased()) · \(AccountsFormat.kind(row.account.kind)) · \(row.account.trackingMode == .manual ? "Manual balance" : "Imported")")
+                        Text("\(row.account.currency.rawValue.uppercased()) · \(AccountsFormat.kind(row.account.kind))")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
@@ -345,6 +352,12 @@ private struct AccountDetailView: View {
                         }
                     }
                     updatedLine(row)
+                    if let mismatch = AccountsFormat.statementMismatch(row.account) {
+                        Label(mismatch, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                            .help("A statement import's closing balance didn't match. Check for missing or duplicate transactions, or use Update balance… to settle it.")
+                    }
                     AccountBankDetails(account: row.account)
                     HStack {
                         Button("Update balance…") { onUpdateBalance(row) }
@@ -381,8 +394,8 @@ private struct AccountDetailView: View {
 
     @ViewBuilder
     private func chart(_ row: AccountRow) -> some View {
-        // Indexed: same-day snapshots share a date, so the date can't be the identity.
-        let points = history.reversed().enumerated().map { (index: $0.offset, date: $0.element.date, value: Double($0.element.balanceMinorUnits) / 100, minorUnits: $0.element.balanceMinorUnits) }
+        // Computed balances: the opening day, each month end, then today.
+        let points = history.points.enumerated().map { (index: $0.offset, date: $0.element.date, value: Double($0.element.balanceMinorUnits) / 100, minorUnits: $0.element.balanceMinorUnits) }
         if points.count >= 2 {
             let hovered = selectedDate.flatMap { date in points.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) } }
             Chart {
@@ -432,29 +445,46 @@ private struct AccountDetailView: View {
 
     @ViewBuilder
     private func historyList(_ row: AccountRow) -> some View {
+        let entries = history.entries
         VStack(alignment: .leading, spacing: 6) {
             Text("Balance history").font(.headline)
-            if history.isEmpty {
-                Text("No balances recorded.").font(.callout).foregroundStyle(.secondary)
+            if entries.isEmpty {
+                Text("No opening balance or adjustments.").font(.callout).foregroundStyle(.secondary)
             }
-            let visible = showAllHistory ? history : Array(history.prefix(historyLimit))
-            ForEach(visible, id: \.id) { snapshot in
+            let visible = showAllHistory ? entries : Array(entries.prefix(historyLimit))
+            ForEach(visible) { entry in
                 HStack(alignment: .firstTextBaseline) {
-                    Text(DashboardFormat.day(snapshot.date))
-                    if let note = snapshot.note, !note.isEmpty {
-                        Text(note).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(DashboardFormat.day(entry.date))
+                        Text(Self.label(entry)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                     }
                     Spacer()
-                    AccountsFormat.balanceText(snapshot.balanceMinorUnits, kind: row.account.kind, currency: row.account.currency)
+                    switch entry.kind {
+                    case .opening, .recordedBalance:
+                        AccountsFormat.balanceText(entry.amountMinorUnits, kind: row.account.kind, currency: row.account.currency)
+                    case .adjustment:
+                        Text(AccountsFormat.signedMoney(entry.amountMinorUnits, currency: row.account.currency))
+                            .foregroundStyle(entry.amountMinorUnits < 0 ? Color.red : Color.primary)
+                    }
                 }
                 .font(.callout.monospacedDigit())
+                .help(entry.note ?? "")
                 Divider()
             }
-            if history.count > historyLimit {
-                Button(showAllHistory ? "Show fewer" : "Show all \(history.count)") { showAllHistory.toggle() }
+            if entries.count > historyLimit {
+                Button(showAllHistory ? "Show fewer" : "Show all \(entries.count)") { showAllHistory.toggle() }
                     .buttonStyle(.link)
                     .font(.caption)
             }
+        }
+    }
+
+    /// "Opening balance", "Recorded balance · Statement", "Market movement".
+    private static func label(_ entry: AccountHistory.Entry) -> String {
+        switch entry.kind {
+        case .opening: return "Opening balance"
+        case .recordedBalance: return ["Recorded balance", entry.note].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+        case .adjustment(let categoryName): return categoryName
         }
     }
 }
@@ -482,6 +512,18 @@ enum AccountsFormat {
         } else {
             MoneyText(minorUnits: signedMinorUnits, currency: currency, font: font, tint: signedMinorUnits < 0 ? .red : .primary)
         }
+    }
+
+    /// "Statement mismatch on 29 Sep 2026: +£12.00" (statement − computed) — nil when the
+    /// account has none (spec 2026-10-14 §2).
+    static func statementMismatch(_ account: Account) -> String? {
+        guard let difference = account.statementMismatchMinorUnits, let date = account.statementMismatchDate else { return nil }
+        return "Statement mismatch on \(DashboardFormat.day(date)): \(signedMoney(difference, currency: account.currency))"
+    }
+
+    /// "+£12.00" / "-£12.00" / "£0.00".
+    static func signedMoney(_ minorUnits: Int, currency: Currency) -> String {
+        (minorUnits > 0 ? "+" : "") + Money.format(minorUnits, currency: currency)
     }
 
     /// A picked local calendar day as the stored snapshot date (that day, 00:00 UTC).

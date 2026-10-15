@@ -11,6 +11,7 @@ extension CategorySection {
         case .expense: return "Expenses"
         case .income: return "Income"
         case .transfer: return "Transfers"
+        case .adjustment: return "Adjustments"
         }
     }
 }
@@ -123,7 +124,7 @@ final class CategoriesViewModel: ObservableObject {
     }
 
     func move(ids: [Int64], toGroupId groupId: Int64?) {
-        let ids = ids.filter { id in categories.contains { $0.id == id && !$0.isReserved } }
+        let ids = ids.filter { id in categories.contains { $0.id == id && !$0.isReserved && !$0.isBuiltIn } }
         guard !ids.isEmpty else { return }
         write("Couldn't move the categories") { db in try Categories.move(db: db, ids: ids, toGroupId: groupId) }
     }
@@ -163,6 +164,26 @@ final class CategoriesViewModel: ObservableObject {
     func setExternalTransfer(id: Int64, external: Bool) {
         write("Couldn't change the transfer setting") { db in
             try TransferLinks.setExternalTransfer(db: db, categoryId: id, external)
+        }
+    }
+
+    /// The account a transfer category is linked to (spec 2026-10-14 §4), if any.
+    func linkedAccount(of category: Category) -> Account? {
+        guard let accountId = category.transferAccountId else { return nil }
+        return accounts.first { $0.id == accountId }
+    }
+
+    /// The category linked to `accountId`, if any.
+    func linkedCategory(forAccountId accountId: Int64?) -> Category? {
+        guard let accountId else { return nil }
+        return categories.first { $0.transferAccountId == accountId }
+    }
+
+    /// Linked account: ties the transfer category to the account (renamed "Transfer:
+    /// <account>" when that name is free).
+    func setLinkedAccount(id: Int64, accountId: Int64) {
+        write("Couldn't change the linked account") { db in
+            try TransferCategories.setLinkedAccount(db: db, categoryId: id, accountId: accountId)
         }
     }
 

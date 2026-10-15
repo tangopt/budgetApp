@@ -71,16 +71,6 @@ public struct ImportDecision {
     }
 }
 
-public struct StatementBalanceRecording: Equatable {
-    public let added: Int
-    public let updated: Int
-
-    public init(added: Int, updated: Int) {
-        self.added = added
-        self.updated = updated
-    }
-}
-
 public final class ImportCoordinator {
     private let dbQueue: DatabaseQueue
     private let categorizationService: CategorizationService
@@ -186,8 +176,10 @@ public final class ImportCoordinator {
     }
 
     /// Marks the rows that are the other leg of a saved transfer (`TransferMatcher.stagedMatches`):
-    /// each gets the "↔ Transfer" badge and, when that leg's category keeps the pair linkable,
-    /// that category (source `.transfer`, Ready). Money received may take any of the sending
+    /// each gets the "↔ Transfer" badge and the other leg's account's transfer category
+    /// (`TransferCategories`; source `.transfer`, Ready) — commit links them and files the saved
+    /// leg under this account's. When that account has none, the other leg's own category is
+    /// taken instead if it keeps the pair linkable: money received may take any of the sending
     /// leg's categories (always uncategorised or a transfer one); money sent only takes a
     /// non-external transfer category — otherwise (say the receiving leg is filed as Salary) it
     /// keeps its own suggestion, which the match already found linkable, so commit still links.
@@ -197,17 +189,18 @@ public final class ImportCoordinator {
         // can't claim a saved leg another row would match.
         let matchable = staged.indices.filter { staged[$0].replacesManual == nil }
         guard !matchable.isEmpty else { return staged }
-        let (matchesByPosition, linkableSentCategoryIds) = try await dbQueue.read { db in
+        let (matchesByPosition, linkableSentCategoryIds, accountCategoryIds) = try await dbQueue.read { db in
             (try TransferMatcher.stagedMatches(db: db, accountId: accountId,
                                                staged: matchable.map { (staged[$0].parsed.date, staged[$0].parsed.amountMinorUnits, staged[$0].suggestedCategoryId) }),
              Set(try Int64.fetchAll(db, sql: "SELECT id FROM category WHERE type = ? AND isExternalTransfer = 0",
-                                    arguments: [CategoryType.transfer.rawValue])))
+                                    arguments: [CategoryType.transfer.rawValue])),
+             try TransferCategories.categoryIdsByAccount(db: db))
         }
         guard !matchesByPosition.isEmpty else { return staged }
         let matches = Dictionary(uniqueKeysWithValues: matchesByPosition.map { (matchable[$0.key], $0.value) })
         return staged.enumerated().map { index, row in
             guard let match = matches[index] else { return row }
-            guard let categoryId = match.otherCategoryId, match.isIncoming || linkableSentCategoryIds.contains(categoryId) else {
+            guard let categoryId = accountCategoryIds[match.otherAccountId] ?? match.otherCategoryId, match.isIncoming || linkableSentCategoryIds.contains(categoryId) else {
                 return StagedTransaction(id: row.id, parsed: row.parsed, suggestedCategoryId: row.suggestedCategoryId, source: row.source,
                                          confidence: row.confidence, fingerprint: row.fingerprint, historyCount: row.historyCount, transfer: match)
             }
@@ -270,10 +263,13 @@ public final class ImportCoordinator {
     /// updated actuals. Rows left without a category are saved with
     /// `categoryId: nil` / `.pendingReview` ("Uncategorized", awaiting manual
     /// assignment) — never dropped, since they still move the account's balance.
-    /// `statementBalancePoints` are recorded in the same transaction (see
-    /// `recordStatementBalances`), so a failed commit leaves no balances behind either.
+    /// With a `statement`, its closing balance is checked against what's then saved — and the
+    /// adjustment added when ticked — in the same transaction (`StatementCheck.finish`), so a
+    /// failed commit leaves neither an adjustment nor a recorded mismatch behind. Returns that
+    /// check's outcome (nil without a statement). Either way the account's flagged mismatch is
+    /// re-checked (`StatementCheck.recheckStoredMismatch`).
     @discardableResult
-    public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statementBalancePoints: [StatementBalancePoint] = []) throws -> StatementBalanceRecording {
+    public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statement: StatementFinish? = nil) throws -> StatementFinishOutcome? {
         let decisionById = Dictionary(decisions.map { ($0.stagedId, $0.finalCategoryId) }, uniquingKeysWith: { _, last in last })
         let learnById = Dictionary(decisions.map { ($0.stagedId, $0.learnRule) }, uniquingKeysWith: { _, last in last })
         let noteById = Dictionary(decisions.map { ($0.stagedId, $0.note) }, uniquingKeysWith: { _, last in last })
@@ -311,42 +307,21 @@ public final class ImportCoordinator {
             }
             // Link transfers first, so the forecast refresh counts each one once.
             try TransferMatcher.match(db: db)
+            let outcome = try statement.map { try StatementCheck.finish(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: $0) }
+            if statement == nil { try StatementCheck.recheckStoredMismatch(db: db, accountId: accountId) }
             try AutoForecastGenerator.refresh(db: db)
-            return try Self.upsertStatementBalances(accountId: accountId, sourceFileName: sourceFileName, points: statementBalancePoints, db: db)
+            return outcome
         }
     }
 
-    /// Records statement-derived balances as `BalanceSnapshot`s, upserting by exact
-    /// `(accountId, date)`: a snapshot already on that date is updated, otherwise one is
-    /// inserted. Re-recording the same points is therefore idempotent. Balances typed on the
-    /// Accounts screen are dated 00:00 UTC on the picked day too, so a statement balance for
-    /// that same day deliberately replaces the typed one (the bank's figure wins). Legacy
-    /// typed snapshots that carry a time of day never match a statement date and are left alone.
-    public func recordStatementBalances(accountId: Int64, sourceFileName: String, points: [StatementBalancePoint]) throws -> StatementBalanceRecording {
+    /// Finish import with no rows to save: the statement's closing balance is still checked
+    /// (and adjusted when ticked) on its own — never an empty batch.
+    @discardableResult
+    public func finishStatement(accountId: Int64, sourceFileName: String, statement: StatementFinish) throws -> StatementFinishOutcome {
         try dbQueue.write { db in
-            try Self.upsertStatementBalances(accountId: accountId, sourceFileName: sourceFileName, points: points, db: db)
+            let outcome = try StatementCheck.finish(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: statement)
+            if outcome.adjustmentTransactionId != nil { try AutoForecastGenerator.refresh(db: db) }
+            return outcome
         }
-    }
-
-    private static func upsertStatementBalances(accountId: Int64, sourceFileName: String, points: [StatementBalancePoint], db: Database) throws -> StatementBalanceRecording {
-        let note = "Statement balance — \(sourceFileName)"
-        var added = 0
-        var updated = 0
-        for point in points {
-            if var existing = try BalanceSnapshot
-                .filter(Column("accountId") == accountId && Column("date") == point.date)
-                .order(Column("id").desc)
-                .fetchOne(db) {
-                existing.balanceMinorUnits = point.balanceMinorUnits
-                existing.note = note
-                try existing.update(db)
-                updated += 1
-            } else {
-                var snapshot = BalanceSnapshot(accountId: accountId, date: point.date, balanceMinorUnits: point.balanceMinorUnits, note: note)
-                try snapshot.insert(db)
-                added += 1
-            }
-        }
-        return StatementBalanceRecording(added: added, updated: updated)
     }
 }

@@ -18,7 +18,7 @@ public enum StatementBalanceResult: Equatable {
     /// No row carries a balance (no Balance column mapped, or all cells blank).
     case notProvided
     /// Some rows lack a balance, or no row ordering makes the balances add up. Nothing is
-    /// recorded; the string explains why.
+    /// checked; the string explains why.
     case unverified(String)
     case available([StatementBalancePoint])
 }
@@ -30,7 +30,7 @@ public enum StatementBalanceExtractor {
         return calendar
     }()
 
-    /// Verifies a statement's Balance column and turns it into snapshot points: one for
+    /// Verifies a statement's Balance column and turns it into balance points: one for
     /// each 1st of a month between the first and last transaction date (inclusive), plus a
     /// closing point at the last transaction date.
     ///
@@ -38,7 +38,7 @@ public enum StatementBalanceExtractor {
     /// (newest-first exports list a day's rows newest-first). Two candidate chronological
     /// orders are tried — rows stably date-sorted as given, and reversed-then-stably-sorted
     /// — and a candidate is accepted only if `balance[i-1] + amount[i] == balance[i]`
-    /// holds for every consecutive pair. If neither does, nothing is recorded.
+    /// holds for every consecutive pair. If neither does, nothing is checked.
     public static func extract(from rows: [ParsedTransaction]) -> StatementBalanceResult {
         guard rows.contains(where: { $0.balanceAfterMinorUnits != nil }) else { return .notProvided }
         guard rows.allSatisfy({ $0.balanceAfterMinorUnits != nil }) else {

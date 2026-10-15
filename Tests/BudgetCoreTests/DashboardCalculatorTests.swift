@@ -62,7 +62,9 @@ final class DashboardCalculatorTests: XCTestCase {
             F.snapshot(1, date(2026, 1, 1), 100), F.snapshot(2, date(2025, 1, 1), 100), F.snapshot(3, date(2026, 9, 20), 100),
             F.snapshot(5, date(2026, 8, 17), 100) // 46 days old → stale
         ]
-        let items = DashboardCalculator.attentionItems(F.input(today: today, accounts: accounts, snapshots: snapshots))
+        // An account fed by imports is never stale, whatever its (legacy) tracking mode.
+        let imported = F.txn(1, date(2024, 1, 1), -1, category: nil, account: 2)
+        let items = DashboardCalculator.attentionItems(F.input(today: today, accounts: accounts, snapshots: snapshots, transactions: [imported]))
         XCTAssertEqual(items.staleBalanceCount, 3) // Old, Never, Edge
         XCTAssertEqual(items.oldestStaleSnapshotDate, date(2026, 1, 1))
 

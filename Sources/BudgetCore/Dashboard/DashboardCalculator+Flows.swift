@@ -118,7 +118,7 @@ extension DashboardCalculator {
         var reservedProjected = 0
     }
 
-    /// Per non-transfer category: actual (confirmed transactions in the pay month), expected
+    /// Per income and expense category (transfers and adjustments are left out): actual (confirmed transactions in the pay month), expected
     /// (confirmed forecast for the whole calendar month of that name — independent of whether
     /// the month "is actual"), and the projected value under `MonthBlend`. Expected is skipped
     /// for actual (closed) months unless `includeExpected` (the current-month card always
@@ -133,7 +133,7 @@ extension DashboardCalculator {
             : [:]
         let reserveRemaining = monthClass == .actual ? [:] : remainingReserves(input, year: year, month: month, planned: planned, monthClass: monthClass)
         for category in input.categories {
-            guard let categoryId = category.id, category.type != .transfer else { continue }
+            guard let categoryId = category.id, category.type.isFlow else { continue }
             let actual = monthClass == .forecast ? 0 : (input.monthTotals[categoryId]?[year]?[month] ?? 0)
             let expected = wantsExpected ? (planned[categoryId] ?? 0) : 0
             // A reserve projects only what's left of its allowance after unforecast spending
@@ -168,7 +168,7 @@ extension DashboardCalculator {
                 // Signed outflows → positive magnitudes.
                 totals.expenses.actual -= actual; totals.expenses.expected -= expected; totals.expenses.projected -= projected
                 if category.isReserved { totals.reservedProjected -= projected }
-            case .transfer:
+            case .transfer, .adjustment:
                 break
             }
         }

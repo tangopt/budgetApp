@@ -5,11 +5,13 @@ final class DashboardNetWorthTests: XCTestCase {
     private typealias F = DashboardFixture
     private func date(_ y: Int, _ m: Int, _ d: Int) -> Date { F.date(y, m, d) }
 
+    // The transactions in these fixtures are in an account outside the chart (9): they set
+    // the data-through date without moving account 1's balance.
     private var series2026Input: DashboardInput {
         F.input(
             today: date(2026, 4, 15),
             snapshots: [F.snapshot(1, date(2025, 12, 1), 1_000_000), F.snapshot(1, date(2026, 1, 1), 1_100_000), F.snapshot(1, date(2026, 2, 1), 1_200_000)],
-            transactions: [F.txn(1, date(2026, 2, 10), -1_000, category: F.rentId)],
+            transactions: [F.txn(1, date(2026, 2, 10), -1_000, category: F.rentId, account: 9)],
             entries: F.salaryAndRent,
             // December 2025 closed (on its last day, so pay months still equal calendar months).
             manualCloses: [PayMonthClose(year: 2025, month: 12, closeDate: date(2025, 12, 31))]
@@ -66,7 +68,7 @@ final class DashboardNetWorthTests: XCTestCase {
         let input = F.input(
             today: date(2026, 4, 15),
             snapshots: [F.snapshot(1, date(2025, 12, 1), 1_000_000), F.snapshot(1, date(2026, 1, 1), 1_100_000), F.snapshot(1, date(2026, 2, 1), 1_200_000)],
-            transactions: [F.txn(1, date(2026, 2, 10), -1_000, category: F.rentId)],
+            transactions: [F.txn(1, date(2026, 2, 10), -1_000, category: F.rentId, account: 9)],
             entries: F.salaryAndRent
         )
         XCTAssertFalse(input.payCalendar.isClosed(PayMonth(year: 2025, month: 12)))
@@ -84,7 +86,7 @@ final class DashboardNetWorthTests: XCTestCase {
         let entries = F.salaryAndRent
         let input = F.input(
             today: date(2026, 10, 5), snapshots: snapshots,
-            transactions: [F.txn(1, date(2026, 9, 20), -1_000, category: F.rentId)],
+            transactions: [F.txn(1, date(2026, 9, 20), -1_000, category: F.rentId, account: 9)],
             entries: entries, salaries: [date(2026, 8, 15), date(2026, 9, 15)]
         )
         XCTAssertEqual(input.payCalendar.month(containing: date(2026, 9, 20)), PayMonth(year: 2026, month: 10))
@@ -105,7 +107,7 @@ final class DashboardNetWorthTests: XCTestCase {
         let input = F.input(
             today: date(2026, 4, 15),
             snapshots: [F.snapshot(1, date(2026, 2, 1), 1_200_000)],
-            transactions: [F.txn(1, date(2026, 4, 10), -1_000, category: F.rentId)],
+            transactions: [F.txn(1, date(2026, 4, 10), -1_000, category: F.rentId, account: 9)],
             entries: F.salaryAndRent
         )
         let series = DashboardCalculator.netWorthSeries(input)
@@ -139,7 +141,7 @@ final class DashboardNetWorthTests: XCTestCase {
                 F.snapshot(1, date(2024, 1, 1), 1_000_000), F.snapshot(1, date(2024, 12, 1), 2_200_000),
                 F.snapshot(1, date(2025, 12, 1), 3_000_000), F.snapshot(1, date(2026, 2, 1), 3_300_000)
             ],
-            transactions: [F.txn(1, date(2026, 2, 14), -1_000, category: F.rentId)],
+            transactions: [F.txn(1, date(2026, 2, 14), -1_000, category: F.rentId, account: 9)],
             entries: F.salaryAndRent,
             manualCloses: [PayMonthClose(year: 2025, month: 12, closeDate: date(2025, 12, 31))]
         )
@@ -184,7 +186,7 @@ final class DashboardNetWorthTests: XCTestCase {
         let input = F.input(
             today: date(2025, 12, 20),
             snapshots: [F.snapshot(1, date(2024, 1, 1), 1_000_000), F.snapshot(1, date(2024, 12, 1), 800_000), F.snapshot(1, date(2025, 12, 1), 700_000)],
-            transactions: [F.txn(1, date(2025, 12, 15), -1_000, category: F.rentId)],
+            transactions: [F.txn(1, date(2025, 12, 15), -1_000, category: F.rentId, account: 9)],
             entries: F.salaryAndRent
         )
         let changes = DashboardCalculator.yearOverYear(input, series: DashboardCalculator.netWorthSeries(input))

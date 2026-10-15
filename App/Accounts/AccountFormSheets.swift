@@ -2,9 +2,10 @@
 import SwiftUI
 import BudgetCore
 
-/// "+ Add account": name, currency, kind, tracking and an optional opening balance
-/// (entered as the amount owed for credit) dated by a picked calendar day, plus the
-/// optional alias and bank details.
+/// "+ Add account": name, currency, kind and an optional opening balance (entered as the
+/// amount owed for credit) dated by a picked calendar day, plus the optional alias and bank
+/// details. The balance is then the opening balance plus the account's transactions after
+/// that day; without one it starts from zero (spec 2026-10-14 §1).
 struct AddAccountSheet: View {
     @ObservedObject var viewModel: AccountsViewModel
     @Environment(\.dismiss) private var dismiss
@@ -12,7 +13,6 @@ struct AddAccountSheet: View {
     @State private var name = ""
     @State private var currency: Currency = .gbp
     @State private var kind: AccountKind = .cash
-    @State private var trackingMode: AccountTrackingMode = .manual
     @State private var balanceText = ""
     @State private var asOf = Date()
     @State private var details = AccountDetailsDraft()
@@ -41,11 +41,12 @@ struct AddAccountSheet: View {
                     .fixedSize()
                 }
                 LabeledContent("Kind") { KindPicker(selection: $kind) }
-                LabeledContent("Tracking") { TrackingPicker(selection: $trackingMode) }
                 LabeledContent(kind == .credit ? "Amount owed" : "Opening balance") {
                     MoneyField("Optional", text: $balanceText, currency: currency)
                         .onChange(of: balanceText) { _, _ in error = nil }
-                        .sheetFieldNote(kind == .credit ? "Enter what you owe on the card as a positive number." : nil)
+                        .sheetFieldNote(kind == .credit
+                                        ? "Enter what you owe on the card as a positive number. Transactions after that day are added to it."
+                                        : "Transactions after that day are added to it. Leave empty to start from zero.")
                 }
                 if !trimmedBalance.isEmpty {
                     LabeledContent("As of") {
@@ -65,12 +66,12 @@ struct AddAccountSheet: View {
             return
         }
         let balance = trimmedBalance.isEmpty ? nil : openingBalance
-        finish(viewModel.addAccount(name: name, currency: currency, kind: kind, trackingMode: trackingMode, openingBalanceEntered: balance, asOf: AccountsFormat.snapshotDay(asOf), details: details.details), error: $error, dismiss: dismiss)
+        finish(viewModel.addAccount(name: name, currency: currency, kind: kind, openingBalanceEntered: balance, asOf: AccountsFormat.snapshotDay(asOf), details: details.details), error: $error, dismiss: dismiss)
     }
 }
 
-/// "Edit…": name, kind (credit transitions disabled once the account has history),
-/// tracking, alias and bank details; currency is read-only.
+/// "Edit…": name, kind (credit transitions disabled once the account has history), alias
+/// and bank details; currency is read-only.
 struct EditAccountSheet: View {
     @ObservedObject var viewModel: AccountsViewModel
     let account: Account
@@ -78,7 +79,6 @@ struct EditAccountSheet: View {
 
     @State private var name: String
     @State private var kind: AccountKind
-    @State private var trackingMode: AccountTrackingMode
     @State private var details: AccountDetailsDraft
     @State private var hasHistory = true
     /// Set when Save is pressed with invalid details: every field shows its error.
@@ -90,7 +90,6 @@ struct EditAccountSheet: View {
         self.account = account
         _name = State(initialValue: account.name)
         _kind = State(initialValue: account.kind)
-        _trackingMode = State(initialValue: account.trackingMode)
         _details = State(initialValue: AccountDetailsDraft(account))
     }
 
@@ -115,7 +114,6 @@ struct EditAccountSheet: View {
                     KindPicker(selection: $kind, isDisabled: { hasHistory && crossesCredit($0) })
                         .sheetFieldNote(hasHistory ? "Can't change to or from credit once the account has history." : nil)
                 }
-                LabeledContent("Tracking") { TrackingPicker(selection: $trackingMode) }
                 AccountDetailsFields(draft: $details, revealAll: revealErrors)
             }
         }
@@ -130,7 +128,7 @@ struct EditAccountSheet: View {
             return
         }
         guard let id = account.id else { return }
-        finish(viewModel.updateAccount(id: id, name: name, kind: kind, trackingMode: trackingMode, details: details.details), error: $error, dismiss: dismiss)
+        finish(viewModel.updateAccount(id: id, name: name, kind: kind, details: details.details), error: $error, dismiss: dismiss)
     }
 }
 
@@ -230,18 +228,6 @@ private struct KindPicker: View {
             ForEach([AccountKind.cash, .investment, .credit], id: \.self) { kind in
                 Text(AccountsFormat.kind(kind)).tag(kind).disabled(isDisabled(kind))
             }
-        }
-        .fixedSize()
-    }
-}
-
-private struct TrackingPicker: View {
-    @Binding var selection: AccountTrackingMode
-
-    var body: some View {
-        Picker("Tracking", selection: $selection) {
-            Text("Manual balance").tag(AccountTrackingMode.manual)
-            Text("Imported").tag(AccountTrackingMode.imported)
         }
         .fixedSize()
     }

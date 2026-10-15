@@ -25,6 +25,9 @@ struct ReviewView: View {
     @State private var bulkDraft: NewCategoryDraft?
     @State private var bulkDraftRowIds: [UUID] = []
     @State private var showFinishChoice = false
+    @State private var showMismatchDetails = false
+    /// The statement check for each Finish choice, computed when the dialog opens.
+    @State private var finishChecks: [UnconfirmedRowsChoice: StatementCheckResult] = [:]
     @State private var showCancelConfirmation = false
 
     private var categories: [Category] { viewModel.categories }
@@ -59,7 +62,7 @@ struct ReviewView: View {
         }
     }
 
-    /// Statement balances, unparsed lines and duplicates.
+    /// The statement check, unparsed lines and duplicates.
     private var notices: some View {
         VStack(alignment: .leading, spacing: 12) {
             statementBalancesPanel
@@ -155,6 +158,11 @@ struct ReviewView: View {
                 // ⌘Return, not Return, which stays with Return-to-confirm on a selected line.
                 Button("Finish import") {
                     if viewModel.unconfirmedCount > 0 {
+                        var checks: [UnconfirmedRowsChoice: StatementCheckResult] = [:]
+                        for choice in [UnconfirmedRowsChoice.saveAsUncategorized, .leaveOut] {
+                            checks[choice] = viewModel.finishStatementCheck(unconfirmed: choice)
+                        }
+                        finishChecks = checks
                         showFinishChoice = true
                     } else if viewModel.finish(unconfirmed: .leaveOut) {
                         onCommitted()
@@ -186,11 +194,33 @@ struct ReviewView: View {
         var lines = ["Unconfirmed transactions keep a category if you chose one; the rest go to Uncategorized to assign later."]
         if viewModel.confirmedCount > 0 {
             lines.append("Left-out transactions are imported again next time.")
-            if viewModel.recordStatementBalancesOnConfirm, case .available = viewModel.statementBalances {
-                lines.append("The statement balances are recorded either way.")
-            }
         }
-        return lines.joined(separator: " ")
+        var statementLines: [String] = []
+        if let saved = finishChecks[.saveAsUncategorized] {
+            let line = finishCheckLine(saved)
+            statementLines.append(viewModel.confirmedCount > 0 ? "Saving them: \(line)" : line)
+        }
+        if viewModel.confirmedCount > 0, let leftOut = finishChecks[.leaveOut] {
+            statementLines.append("Leaving them out: \(finishCheckLine(leftOut))")
+        }
+        return ([lines.joined(separator: " ")] + statementLines).joined(separator: "\n\n")
+    }
+
+    /// One Finish choice's statement check, as the dialog repeats it.
+    private func finishCheckLine(_ check: StatementCheckResult) -> String {
+        let currency = viewModel.currency
+        switch check {
+        case .matches(let closing):
+            return "matches the statement closing balance \(Money.format(closing.balanceMinorUnits, currency: currency)) on \(ImportViewModel.day(closing.date))."
+        case .mismatch(let mismatch):
+            let difference = AccountsFormat.signedMoney(mismatch.differenceMinorUnits, currency: currency)
+            let base = "doesn't match the statement on \(ImportViewModel.day(mismatch.date)): statement \(Money.format(mismatch.statementMinorUnits, currency: currency)), computed \(Money.format(mismatch.computedMinorUnits, currency: currency)), difference \(difference)."
+            return viewModel.addStatementAdjustment && viewModel.statementAdjustmentBlockedBy == nil
+                ? base + " A balance adjustment of \(difference) will be added."
+                : base
+        case .cannotCheck:
+            return "the closing balance can't be checked — it's before the account's opening balance."
+        }
     }
 
     /// The three lists' tabs with their row counts, then the current tab's actions.
@@ -304,6 +334,9 @@ struct ReviewView: View {
         return "\(confirmed) confirmed, \(unconfirmed) still to review. Nothing is saved until you finish the import."
     }
 
+    /// The statement's closing balance against the computed one (spec 2026-10-14 §2): a red
+    /// error when they differ, a quiet green line when they match; the extractor's reason
+    /// when the statement's balances couldn't be verified.
     @ViewBuilder
     private var statementBalancesPanel: some View {
         switch viewModel.statementBalances {
@@ -316,23 +349,71 @@ struct ReviewView: View {
                     .font(.callout)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } label: {
-                Text("Statement balances")
+                Text("Statement balance")
             }
         case .available:
-            GroupBox {
-                VStack(alignment: .leading, spacing: 6) {
-                    if let summary = viewModel.statementBalanceSummary { Text(summary) }
-                    // Recorded by Finish import, with the transactions — never before.
-                    Toggle("Record them when I finish the import", isOn: $viewModel.recordStatementBalancesOnConfirm)
-                    Text("Snapshots on the same dates are replaced.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } label: {
-                Label("Statement balances", systemImage: "banknote")
+            switch viewModel.statementCheck {
+            case .matches(let closing):
+                Label("Matches the statement closing balance \(Money.format(closing.balanceMinorUnits, currency: viewModel.currency)) on \(ImportViewModel.day(closing.date))",
+                      systemImage: "checkmark.circle")
+                    .font(.callout)
+                    .foregroundStyle(.green)
+            case .mismatch(let mismatch):
+                statementMismatchBanner(mismatch)
+            case .cannotCheck:
+                Label("Can't check this statement's closing balance — it's before the account's opening balance.", systemImage: "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            case nil:
+                EmptyView()
             }
         }
+    }
+
+    /// Compact: a one-line summary, the details and suggestions behind a disclosure, and the
+    /// adjustment checkbox always in view.
+    private func statementMismatchBanner(_ mismatch: StatementMismatch) -> some View {
+        let currency = viewModel.currency
+        let difference = AccountsFormat.signedMoney(mismatch.differenceMinorUnits, currency: currency)
+        return VStack(alignment: .leading, spacing: 6) {
+            DisclosureGroup(isExpanded: $showMismatchDetails) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 2) {
+                        GridRow {
+                            Text("Statement closing balance").foregroundStyle(.secondary)
+                            Text(Money.format(mismatch.statementMinorUnits, currency: currency))
+                        }
+                        GridRow {
+                            Text("Computed with this import").foregroundStyle(.secondary)
+                            Text(Money.format(mismatch.computedMinorUnits, currency: currency))
+                        }
+                    }
+                    .font(.callout.monospacedDigit())
+                    Text("Check for missing or duplicate transactions, or import the statement for the missing period. You can finish anyway — the account shows the mismatch until an import resolves it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 4)
+            } label: {
+                Label("Doesn't match the statement on \(ImportViewModel.day(mismatch.date)): difference \(difference)", systemImage: "xmark.octagon.fill")
+                    .font(.callout.bold())
+                    .foregroundStyle(.red)
+            }
+            if let blocked = viewModel.statementAdjustmentBlockedBy {
+                Text("An adjustment can't be added: there's a recorded balance on \(ImportViewModel.day(blocked)).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Toggle("Add a balance adjustment of \(difference) so the balance matches the statement (best avoided)", isOn: $viewModel.addStatementAdjustment)
+                    .toggleStyle(.checkbox)
+                    .font(.callout)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.red.opacity(0.6)))
     }
 
     /// Every row of these groups (one tab's) the selection covers, in display order.

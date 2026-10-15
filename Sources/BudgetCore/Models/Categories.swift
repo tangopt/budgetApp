@@ -20,6 +20,11 @@ public enum CategoryEditError: Error, Equatable, LocalizedError {
     case notFound
     /// Reserves are managed on the Budget grid, not deleted from the Categories screen.
     case reserve(name: String)
+    /// Built-in categories (Balance adjustment, Market movement) can't be renamed, moved or deleted.
+    case builtIn(name: String)
+    /// Rename refused: a transfer category linked to an account is named after it
+    /// (`TransferCategories`).
+    case linkedToAccount
     /// Delete refused: transactions (`pending` of them still in review, included in
     /// `transactions`) or planned items still use it. A planned item is a forecast series
     /// in this category or with an occurrence moved into it.
@@ -31,6 +36,10 @@ public enum CategoryEditError: Error, Equatable, LocalizedError {
             return "That category no longer exists."
         case .reserve(let name):
             return "\(name) is a reserve — manage it on the Budget grid."
+        case .builtIn(let name):
+            return "\(name) is built in — it can't be renamed, moved or deleted."
+        case .linkedToAccount:
+            return "Named after its linked account — rename the account instead."
         case let .inUse(name, transactions, pending, plannedItems):
             var parts: [String] = []
             if transactions > 0 {
@@ -66,8 +75,12 @@ public enum Categories {
     }
 
     /// Renames to `name`, trimmed; unique ignoring case (its own name in another case is fine).
+    /// Refused for built-in categories and for a transfer category linked to an account (named
+    /// after it — `TransferCategories.ensure` follows the account's name).
     public static func rename(db: Database, id: Int64, name: String) throws {
         guard var category = try Category.fetchOne(db, key: id) else { throw CategoryEditError.notFound }
+        guard !category.isBuiltIn else { throw CategoryEditError.builtIn(name: category.name) }
+        guard category.transferAccountId == nil else { throw CategoryEditError.linkedToAccount }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw CategoryCreationError.emptyName }
         if let existing = try Category.fetchAll(db).first(where: { $0.id != id && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
@@ -87,12 +100,15 @@ public enum Categories {
     }
 
     /// Puts every category in `ids` into the group (nil = ungrouped). A group may hold
-    /// categories of any type.
+    /// categories of any type. Refused when any of them is built in.
     public static func move(db: Database, ids: [Int64], toGroupId groupId: Int64?) throws {
         if let groupId, try CategoryGroup.fetchOne(db, key: groupId) == nil {
             throw CategoryCreationError.groupNotFound
         }
         guard !ids.isEmpty else { return }
+        if let builtIn = try Category.filter(ids.contains(Column("id")) && Column("builtInRole") != nil).fetchOne(db) {
+            throw CategoryEditError.builtIn(name: builtIn.name)
+        }
         try Category.filter(ids.contains(Column("id"))).updateAll(db, Column("groupId").set(to: groupId))
     }
 
@@ -103,6 +119,7 @@ public enum Categories {
     public static func delete(db: Database, id: Int64) throws {
         guard let category = try Category.fetchOne(db, key: id) else { throw CategoryEditError.notFound }
         guard !category.isReserved else { throw CategoryEditError.reserve(name: category.name) }
+        guard !category.isBuiltIn else { throw CategoryEditError.builtIn(name: category.name) }
         let transactions = try Transaction.filter(Column("categoryId") == id).fetchCount(db)
         let pending = try Transaction.filter(Column("categoryId") == id && Column("status") == TransactionStatus.pendingReview.rawValue).fetchCount(db)
         let planned = try Int.fetchOne(db, sql: """

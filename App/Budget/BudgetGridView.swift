@@ -141,6 +141,7 @@ struct BudgetGridView: View {
         case .income: return .green
         case .expense: return .red
         case .transfer: return .blue
+        case .adjustment: return .gray
         }
     }
 
@@ -162,7 +163,10 @@ struct BudgetGridView: View {
             reservedRows.append(GridRow(kind: .reserve(reserve), shaded: index % 2 == 1))
         }
         if !viewModel.reserves.isEmpty { reservedRows.append(GridRow(kind: .reservedTotal, shaded: false)) }
-        return section("Income", .income) + section("Expenses", .expense) + reservedRows + section("Transfers", .transfer) + accountRows
+        // Adjustments (Balance adjustment, Market movement): their actuals only — never in
+        // the income/expense/transfer totals or the plan; they reach net worth via balances.
+        let adjustments = categoriesByType(.adjustment).isEmpty ? [] : section("Adjustments", .adjustment)
+        return section("Income", .income) + section("Expenses", .expense) + reservedRows + section("Transfers", .transfer) + adjustments + accountRows
     }
 
     var body: some View {
@@ -517,7 +521,7 @@ struct BudgetGridView: View {
                     .tracking(0.6)
                     .foregroundStyle(.secondary)
                 Spacer()
-                if let type {
+                if let type, type != .adjustment {
                     Button("+ Add planned item") {
                         viewModel.errorMessage = nil
                         addPlannedTarget = AddPlannedTarget(type: type)
@@ -936,7 +940,7 @@ struct BudgetGridView: View {
                         .onTapGesture {
                             guard cell.value != 0 || hasShownOccurrences(category, year: year, month: month) else {
                                 // Empty (no actual, nothing planned): an open or future month adds a planned item.
-                                if canAdd(year: year, month: month) {
+                                if canAdd(year: year, month: month), category.type != .adjustment {
                                     viewModel.errorMessage = nil
                                     addPlannedTarget = AddPlannedTarget(type: category.type, categoryId: categoryId, date: CellAddDate.date(year: year, month: month))
                                 }
@@ -1005,6 +1009,7 @@ struct BudgetGridView: View {
         case .income: return "Income"
         case .expense: return "Expenses"
         case .transfer: return "Transfers"
+        case .adjustment: return "Adjustments"
         }
     }
 

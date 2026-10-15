@@ -30,6 +30,8 @@ public enum MonthBlend {
                 if expected < 0 { return min(actual, expected) }
                 if expected > 0 { return max(actual, expected) }
                 return actual
+            case .adjustment:
+                return actual
             }
         }
     }

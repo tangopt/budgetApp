@@ -29,6 +29,7 @@ struct CategoryBadge: View {
         case .expense: return .red
         case .income: return .green
         case .transfer: return .blue
+        case .adjustment: return .gray
         }
     }
 
@@ -60,6 +61,7 @@ extension CategoryType {
         case .expense: return "arrow.up.right"
         case .income: return "arrow.down.left"
         case .transfer: return "arrow.left.arrow.right"
+        case .adjustment: return "plusminus"
         }
     }
 }

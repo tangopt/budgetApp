@@ -65,10 +65,20 @@ public enum ManualTransactions {
 
     /// Adds a transaction by hand: confirmed (`.manual`) when categorised, otherwise pending
     /// review. The description and note are trimmed.
+    /// Never into a built-in adjustment category (only Update balance files there).
     @discardableResult
     public static func add(db: Database, accountId: Int64, date: Date, description: String, amountMinorUnits: Int,
                            categoryId: Int64?, note: String?) throws -> Transaction {
-        let trimmed = try validate(db: db, accountId: accountId, description: description, amountMinorUnits: amountMinorUnits, categoryId: categoryId)
+        try add(db: db, accountId: accountId, date: date, description: description, amountMinorUnits: amountMinorUnits,
+                categoryId: categoryId, note: note, allowBuiltIn: false)
+    }
+
+    /// `add`; `allowBuiltIn` lets Update balance (`BalanceUpdates.save`) file into a built-in
+    /// adjustment category.
+    @discardableResult
+    static func add(db: Database, accountId: Int64, date: Date, description: String, amountMinorUnits: Int,
+                    categoryId: Int64?, note: String?, allowBuiltIn: Bool) throws -> Transaction {
+        let trimmed = try validate(db: db, accountId: accountId, description: description, amountMinorUnits: amountMinorUnits, categoryId: categoryId, allowBuiltIn: allowBuiltIn)
         var transaction = Transaction(importBatchId: try batchId(db: db, accountId: accountId), accountId: accountId, date: date,
                                       rawDescription: trimmed, amountMinorUnits: amountMinorUnits, categoryId: categoryId,
                                       status: categoryId == nil ? .pendingReview : .confirmed,
@@ -78,14 +88,17 @@ public enum ManualTransactions {
         return transaction
     }
 
-    /// Edits a manual transaction. Moving it to another account moves it into that account's
+    /// Edits a manual transaction (never into a built-in adjustment category, though an
+    /// adjustment keeps its own). Moving it to another account moves it into that account's
     /// Manual entries batch. Its transfer links stay unless the change breaks one (the out leg
     /// must be money sent, the in leg money received, in different accounts): that link is removed.
     public static func update(db: Database, id: Int64, date: Date, description: String, amountMinorUnits: Int,
                               accountId: Int64, categoryId: Int64?, note: String?) throws {
         guard var transaction = try Transaction.fetchOne(db, key: id) else { throw ManualTransactionError.transactionNotFound }
         guard transaction.isManual else { throw ManualTransactionError.notManual }
-        let trimmed = try validate(db: db, accountId: accountId, description: description, amountMinorUnits: amountMinorUnits, categoryId: categoryId)
+        // An adjustment may keep its built-in category; nothing else may move into one.
+        let trimmed = try validate(db: db, accountId: accountId, description: description, amountMinorUnits: amountMinorUnits, categoryId: categoryId,
+                                   allowBuiltIn: categoryId != nil && categoryId == transaction.categoryId)
         if accountId != transaction.accountId {
             transaction.importBatchId = try batchId(db: db, accountId: accountId)
             transaction.accountId = accountId
@@ -114,7 +127,9 @@ public enum ManualTransactions {
     /// (non-external) transfer category, creates the opposite leg by hand in `accountId` —
     /// same date and category, the amount converted at the stored
     /// exchange rate across currencies, described "Transfer from/to <account>" — and links
-    /// the two (origin `manual`: out = money sent, in = money received).
+    /// the two (origin `manual`: out = money sent, in = money received). Then each leg is
+    /// filed under the other account's transfer category (`TransferCategories.applyOnLink`):
+    /// the new leg under the original's account's, the original under `accountId`'s.
     @discardableResult
     public static func addOtherSide(db: Database, transactionId: Int64, accountId: Int64) throws -> Transaction {
         guard let source = try Transaction.fetchOne(db, key: transactionId), let sourceId = source.id else {
@@ -145,7 +160,8 @@ public enum ManualTransactions {
         try other.insert(db)
         var link = TransferLink(outTransactionId: isIncoming ? sourceId : other.id!, inTransactionId: isIncoming ? other.id! : sourceId, origin: .manual)
         try link.insert(db)
-        return other
+        try TransferCategories.applyOnLink(db: db, outTransactionId: link.outTransactionId, inTransactionId: link.inTransactionId)
+        return try Transaction.fetchOne(db, key: other.id!) ?? other
     }
 
     /// The other side's signed amount: the opposite sign, converted at `rate` (EUR→GBP) across
@@ -159,11 +175,15 @@ public enum ManualTransactions {
 
     /// For each row about to be imported into `accountId` (keyed by index), the manual entry it
     /// replaces: same amount and sign, dated within ±3 days; closest dates pair first, each
-    /// manual entry at most once, none of `excluding` (already claimed by other staged rows).
+    /// manual entry at most once, none of `excluding` (already claimed by other staged rows)
+    /// and never an adjustment (a built-in category's entry).
     public static func stagedReplacements(db: Database, accountId: Int64, staged: [(date: Date, amountMinorUnits: Int)],
                                           excluding: Set<Int64> = []) throws -> [Int: StagedManualReplacement] {
+        // Update balance's adjustments (built-in categories) are never a bank row's stand-in.
+        let builtInIds = Set(try Int64.fetchAll(db, sql: "SELECT id FROM category WHERE builtInRole IS NOT NULL"))
         let manual = try Transaction.filter(Column("accountId") == accountId && Column("isManual") == true).fetchAll(db)
             .filter { $0.id.map { !excluding.contains($0) } ?? false }
+            .filter { $0.categoryId.map { !builtInIds.contains($0) } ?? true }
         guard !manual.isEmpty, !staged.isEmpty else { return [:] }
         let linkedIds = Set(try TransferLink.active.fetchAll(db).flatMap { [$0.outTransactionId, $0.inTransactionId] })
         var candidates: [(distance: TimeInterval, row: Int, manual: Int)] = []
@@ -213,14 +233,14 @@ public enum ManualTransactions {
     }
 
     /// The trimmed description, once the account, amount and category check out.
-    private static func validate(db: Database, accountId: Int64, description: String, amountMinorUnits: Int, categoryId: Int64?) throws -> String {
+    private static func validate(db: Database, accountId: Int64, description: String, amountMinorUnits: Int, categoryId: Int64?, allowBuiltIn: Bool) throws -> String {
         guard try Account.fetchOne(db, key: accountId) != nil else { throw ManualTransactionError.accountNotFound }
         let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw ManualTransactionError.emptyDescription }
         guard amountMinorUnits != 0 else { throw ManualTransactionError.zeroAmount }
         if let categoryId {
             guard let category = try Category.fetchOne(db, key: categoryId) else { throw ManualTransactionError.categoryNotFound }
-            guard category.isAssignable else { throw ManualTransactionError.reservedCategory }
+            guard category.isAssignable || (allowBuiltIn && category.isBuiltIn) else { throw ManualTransactionError.reservedCategory }
         }
         return trimmed
     }

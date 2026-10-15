@@ -4,9 +4,11 @@ import BudgetCore
 import struct BudgetCore.Category
 
 /// The Categories screen (spec §4): Expenses / Income / Transfers sections, each with its
-/// collapsible groups and Ungrouped, then the read-only Reserves. Categories multi-select
+/// collapsible groups and Ungrouped, the read-only built-in Adjustments, then the read-only
+/// Reserves. Categories multi-select
 /// and drag onto a group (or Ungrouped) to move; right-click to move, rename, change the
-/// icon (also by clicking its badge), exclude from the auto-forecast or delete. Selecting one category opens its transactions panel.
+/// icon (also by clicking its badge), exclude from the auto-forecast, set a transfer
+/// category's linked account (shown "↔ <account>" on its row) or delete. Selecting one category opens its transactions panel.
 struct CategoriesView: View {
     @ObservedObject var viewModel: CategoriesViewModel
 
@@ -123,6 +125,9 @@ struct CategoriesView: View {
         let reserves = viewModel.reserves(search: search)
         return List(selection: $selection) {
             ForEach(viewModel.sections(search: search)) { section in
+                if section.type == .adjustment {
+                    adjustmentsSection(section)
+                } else {
                 Section(section.title) {
                     ForEach(section.groups) { block in
                         let key = block.id
@@ -143,6 +148,7 @@ struct CategoriesView: View {
                             }
                         }
                     }
+                }
                 }
             }
             if !reserves.isEmpty {
@@ -165,6 +171,41 @@ struct CategoriesView: View {
         .contextMenu(forSelectionType: Int64.self) { ids in
             categoryMenu(Array(ids))
         }
+    }
+
+    /// The built-in Balance adjustment and Market movement (spec 2026-10-14 §1): selectable
+    /// (their transactions panel opens) but never renamed, moved, re-iconed or deleted.
+    private func adjustmentsSection(_ section: CategorySection) -> some View {
+        Section {
+            ForEach(section.ungrouped) { category in
+                HStack {
+                    CategoryBadge(category: category, size: .medium)
+                    Text(category.name).lineLimit(1)
+                    Spacer()
+                    if let id = category.id, let average = viewModel.averages[id] {
+                        MoneyText(minorUnits: average)
+                            .help("Average per month over the last 12 pay months")
+                    } else {
+                        Text("—").foregroundStyle(.secondary)
+                            .help("No transactions in the last 12 pay months")
+                    }
+                }
+                .tag(category.id ?? -1)
+            }
+        } header: {
+            Text(section.title)
+        } footer: {
+            Text("Built in: Update balance files the difference here. They can't be renamed, moved or deleted, and never count as income or spending.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// The ids a drag from `id` carries: the selection when it includes `id`, built-in
+    /// categories left out (they can't be moved).
+    private func dragIds(_ id: Int64) -> [Int64] {
+        let ids = selection.contains(id) ? Array(selection) : [id]
+        let builtIn = Set(viewModel.categories.filter(\.isBuiltIn).compactMap(\.id))
+        return ids.filter { !builtIn.contains($0) }
     }
 
     private func expanded(_ key: String, forced: Bool) -> Binding<Bool> {
@@ -252,6 +293,10 @@ struct CategoriesView: View {
                 flagLabel("Not matched")
                     .help("Money goes to an account you don't import — never matched as a transfer")
             }
+            if let account = viewModel.linkedAccount(of: category) {
+                flagLabel("↔ \(account.displayName)")
+                    .help("Linked account: a transfer with \(account.displayName) is filed here")
+            }
             Spacer()
             if let average = viewModel.averages[id] {
                 MoneyText(minorUnits: average)
@@ -262,8 +307,8 @@ struct CategoriesView: View {
             }
         }
         .tag(id)
-        .draggable(CategoryDrag.payload(selection.contains(id) ? Array(selection) : [id])) {
-            let count = selection.contains(id) ? selection.count : 1
+        .draggable(CategoryDrag.payload(dragIds(id))) {
+            let count = dragIds(id).count
             Label(count == 1 ? category.name : "\(count) categories", systemImage: "tag")
                 .padding(6)
         }
@@ -288,10 +333,11 @@ struct CategoriesView: View {
         )
     }
 
-    /// Right-click on one or several categories (reserves aren't selectable, so never here).
+    /// Right-click on one or several categories (reserves aren't selectable, so never here;
+    /// built-in ones are left out).
     @ViewBuilder
     private func categoryMenu(_ ids: [Int64]) -> some View {
-        let chosen = viewModel.categories.filter { c in c.id.map(ids.contains) == true && !c.isReserved }
+        let chosen = viewModel.categories.filter { c in c.id.map(ids.contains) == true && !c.isReserved && !c.isBuiltIn }
         if !chosen.isEmpty {
             Menu("Move to group") {
                 Button("Ungrouped") { viewModel.move(ids: chosen.compactMap(\.id), toGroupId: nil) }
@@ -313,15 +359,35 @@ struct CategoriesView: View {
                     ))
                 }
                 if category.type == .transfer {
+                    linkedAccountMenu(category, id: id)
+                        .disabled(category.isExternalTransfer)
                     Toggle("Money goes to an account you don't import — never match", isOn: Binding(
                         get: { category.isExternalTransfer },
                         set: { viewModel.setExternalTransfer(id: id, external: $0) }
                     ))
+                    .disabled(category.transferAccountId != nil)
                 }
                 Divider()
                 Button("Delete…", role: .destructive) { deletingCategory = category }
             }
         }
+    }
+
+    /// Linked account (spec 2026-10-14 §4): one of the accounts — never none, since every
+    /// account keeps a transfer category; an account already linked to another category shows
+    /// that category and can't be picked (a tie moves by picking another account here).
+    private func linkedAccountMenu(_ category: Category, id: Int64) -> some View {
+        Menu("Linked account") {
+            ForEach(viewModel.accounts.sortedByDisplayName(), id: \.id) { account in
+                let owner = viewModel.linkedCategory(forAccountId: account.id).flatMap { $0.id == id ? nil : $0 }
+                Toggle(owner.map { "\(account.displayName) — \($0.name)" } ?? account.displayName, isOn: Binding(
+                    get: { category.transferAccountId != nil && category.transferAccountId == account.id },
+                    set: { if $0, let accountId = account.id { viewModel.setLinkedAccount(id: id, accountId: accountId) } }
+                ))
+                .disabled(owner != nil)
+            }
+        }
+        .help("Transfers with this account are filed here. Every account keeps a transfer category, so a link can't be removed — pick another account to move it.")
     }
 
     // MARK: Groups

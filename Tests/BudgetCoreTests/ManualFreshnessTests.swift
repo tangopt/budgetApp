@@ -2,7 +2,7 @@ import XCTest
 @testable import BudgetCore
 import struct BudgetCore.Transaction
 
-/// Manual entries never make the data look fresh or move the pay calendar's "today".
+/// Manual entries never make the imported data look fresh or move the pay calendar's "today".
 final class ManualFreshnessTests: XCTestCase {
     private typealias F = DashboardFixture
     private func date(_ y: Int, _ m: Int, _ d: Int) -> Date { F.date(y, m, d) }
@@ -46,13 +46,15 @@ final class ManualFreshnessTests: XCTestCase {
         XCTAssertEqual(imported.today, date(2026, 11, 1))
     }
 
-    func testAccountsOverviewLastUpdatedIgnoresManualEntries() {
+    // An account's last update counts manual entries (an Update balance adjustment is one)
+    // up to today, never a future-dated one; the import freshness above still ignores them.
+    func testAccountsOverviewLastUpdatedCountsManualEntriesUpToToday() {
         let account = Account(id: 1, name: "Joint", currency: .gbp, kind: .cash, trackingMode: .imported)
         let overview = AccountsOverview.make(accounts: [account], snapshots: [],
-                                             transactions: [F.txn(1, date(2026, 9, 1), -100, category: nil), manual(2, date(2026, 9, 20), -50)],
+                                             transactions: [F.txn(1, date(2026, 9, 1), -100, category: nil), manual(2, date(2026, 9, 20), -50), manual(3, date(2026, 12, 25), -25)],
                                              rate: ExchangeRateSetting(eurToGbpRate: 0.85, updatedAt: date(2026, 1, 1)), today: date(2026, 10, 2))
         let row = overview.groups.flatMap(\.rows).first
-        XCTAssertEqual(row?.lastUpdated, date(2026, 9, 1))
-        XCTAssertEqual(row?.nativeBalanceMinorUnits, -150)
+        XCTAssertEqual(row?.lastUpdated, date(2026, 9, 20))
+        XCTAssertEqual(row?.nativeBalanceMinorUnits, -175)
     }
 }

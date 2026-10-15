@@ -8,13 +8,14 @@ public struct YearEndForecast: Equatable {
 }
 
 public struct BehindBalances: Equatable {
-    /// Non-imported accounts whose latest snapshot is older than the data-through month.
+    /// Accounts needing updates (`BalanceStaleness.needsUpdates`) whose last activity is
+    /// older than the data-through month.
     public let accountCount: Int
     public let oldestSnapshotDate: Date
 }
 
 public struct NetWorthSeries: Equatable {
-    /// Month values from the first snapshot month through the data-through month.
+    /// Month values from the first month with a balance through the data-through month.
     public let actual: [NetWorthPoint]
     /// Starts at the actual series' last month (the calendar month of the data-through date,
     /// anchored at the current net worth) so the two lines meet, then runs the Forecast
@@ -73,9 +74,7 @@ extension DashboardCalculator {
     /// `forecastThroughYear` (default: next year) is how far the forecast line runs; the
     /// scenario comparison passes its horizon's year. `yearEnds` are always this and next year.
     public static func netWorthSeries(_ input: DashboardInput, forecastThroughYear: Int? = nil) -> NetWorthSeries {
-        guard let actuals = netWorthActuals(input), let lastSnapshot = input.snapshots.map(\.date).max() else {
-            return .empty
-        }
+        guard let actuals = netWorthActuals(input) else { return .empty }
         let current = actuals.currentNetWorthMinorUnits
         let actual = actuals.actual
         let dataMonth = input.dataThrough.map { MonthRange.components(of: $0) }
@@ -103,19 +102,18 @@ extension DashboardCalculator {
             }
         }
 
-        // "As of": the latest of the last snapshot and the latest transaction of imported accounts.
-        let importedIds = Set(input.accounts.filter { $0.trackingMode == .imported }.compactMap(\.id))
-        let importedLatest = Transaction.importedDataThrough(input.transactions.filter { importedIds.contains($0.accountId) })
-        let asOf = [lastSnapshot, importedLatest].compactMap { $0 }.max()
+        // "As of": the latest activity (snapshot, transaction up to today or balance confirmation) of any account.
+        let asOf = input.accounts.compactMap { BalanceStaleness.lastActivity(account: $0, snapshots: input.snapshots, transactions: input.transactions, today: input.today) }.max()
 
         let changeVsPrevious: Int? = actual.count >= 2 ? actual[actual.count - 1].valueMinorUnits - actual[actual.count - 2].valueMinorUnits : nil
 
-        // Behind: a non-imported account whose latest snapshot predates the data month.
+        // Behind: an account that needs updates (`BalanceStaleness.needsUpdates`: investments
+        // and accounts never imported into) whose last activity predates the data month.
         var behindDates: [Date] = []
         if let dataMonth {
             let dataIndex = MonthRange.index(year: dataMonth.year, month: dataMonth.month)
-            for account in input.accounts where account.trackingMode != .imported {
-                guard let latest = input.snapshots.filter({ $0.accountId == account.id }).map(\.date).max() else { continue }
+            for account in input.accounts where BalanceStaleness.needsUpdates(account: account, transactions: input.transactions) {
+                guard let latest = BalanceStaleness.lastActivity(account: account, snapshots: input.snapshots, transactions: input.transactions, today: input.today) else { continue }
                 let parts = MonthRange.components(of: latest)
                 if MonthRange.index(year: parts.year, month: parts.month) < dataIndex { behindDates.append(latest) }
             }
@@ -139,20 +137,26 @@ extension DashboardCalculator {
         return YearEndNetWorth(valueMinorUnits: value, isForecast: true)
     }
 
-    /// The series' plan-independent part (`NetWorthActuals`); nil without snapshots.
+    /// The series' plan-independent part (`NetWorthActuals`); nil when no account has a
+    /// balance yet (no snapshot and no transaction).
     public static func netWorthActuals(_ input: DashboardInput) -> NetWorthActuals? {
-        guard let firstSnapshot = input.snapshots.map(\.date).min(), let lastSnapshot = input.snapshots.map(\.date).max() else {
-            return nil
+        // Where each account's balance starts: its first snapshot (the opening balance), or
+        // its first transaction when it has no snapshot (`NetWorthCalculator.balance`).
+        let starts: [Date] = input.accounts.compactMap { account in
+            input.snapshots.lazy.filter { $0.accountId == account.id }.map(\.date).min()
+                ?? input.transactions.lazy.filter { $0.accountId == account.id }.map(\.date).min()
         }
+        let latestActivity = input.accounts.compactMap { BalanceStaleness.lastActivity(account: $0, snapshots: input.snapshots, transactions: input.transactions, today: input.today) }.max()
+        guard let firstData = starts.min(), let lastData = latestActivity ?? starts.max() else { return nil }
         let balances = NetWorthCalculator.accountBalances(accounts: input.accounts, snapshots: input.snapshots, transactions: input.transactions, rate: input.rate)
         let current = NetWorthCalculator.netWorth(balances: balances)
 
         let dataMonth = input.dataThrough.map { MonthRange.components(of: $0) }
-        let lastActualMonth = dataMonth ?? MonthRange.components(of: lastSnapshot)
+        let lastActualMonth = dataMonth ?? MonthRange.components(of: lastData)
 
-        // Actual: one point per month, snapshots carried forward (the same formula as the Budget grid).
+        // Actual: one point per month, balances carried forward (the same formula as the Budget grid).
         var actual: [NetWorthPoint] = []
-        var cursor = MonthRange.components(of: firstSnapshot)
+        var cursor = MonthRange.components(of: firstData)
         let lastActualIndex = MonthRange.index(year: lastActualMonth.year, month: lastActualMonth.month)
         while MonthRange.index(year: cursor.year, month: cursor.month) <= lastActualIndex {
             if let value = monthEndNetWorth(input, year: cursor.year, month: cursor.month) {

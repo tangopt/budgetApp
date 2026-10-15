@@ -56,7 +56,10 @@ struct ReviewSections {
 @MainActor
 final class ImportViewModel: ObservableObject {
     @Published var stagedRows: [ReviewRow] = [] {
-        didSet { refreshReviewKeysIfNeeded() }
+        didSet {
+            refreshReviewKeysIfNeeded()
+            refreshStatementCheckIfNeeded()
+        }
     }
     /// Rows skipped as already imported — shown in a dismissible, expandable list and
     /// force-importable (spec: Error handling).
@@ -82,8 +85,15 @@ final class ImportViewModel: ObservableObject {
     /// Verified Balance-column result for the file under review. `.notProvided` for PDFs,
     /// credit-card accounts, and files without a mapped Balance column.
     @Published private(set) var statementBalances: StatementBalanceResult = .notProvided
-    /// When on, Finish import records the statement balances with the transactions.
-    @Published var recordStatementBalancesOnConfirm = true
+    /// The statement's closing balance against the account's computed balance with every
+    /// staged row saved (spec 2026-10-14 §2) — nil without a verified closing balance or
+    /// when the check couldn't be read. Recomputed when the rows change (`stagedRowIdsChecked`).
+    @Published private(set) var statementCheck: StatementCheckResult?
+    /// "Add a balance adjustment of £X…": unticked by default and best avoided; when ticked,
+    /// Finish import adds the difference on the closing date in the same write.
+    @Published var addStatementAdjustment = false
+    /// A recorded balance on or after the closing day, which rules the adjustment out.
+    @Published private(set) var statementAdjustmentBlockedBy: Date?
     /// Categories, category groups and recently used categories for the review rows'
     /// category picker. "New category…" adds to `categories`.
     @Published private(set) var categories: [Category] = []
@@ -101,6 +111,7 @@ final class ImportViewModel: ObservableObject {
     /// change (`reviewKeyRowIds`), not when a category or note is set.
     private var reviewKeys: [UUID: String] = [:]
     private var reviewKeyRowIds: [UUID] = []
+    private var statementCheckRowIds: [UUID]?
 
     private static let utcDayFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -177,7 +188,11 @@ final class ImportViewModel: ObservableObject {
         // Credit-card statements show balances with bank-specific sign conventions, so the
         // feature is off for them (see the spec's non-goals).
         statementBalances = account.kind == .credit ? .notProvided : result.statementBalances
-        recordStatementBalancesOnConfirm = true
+        addStatementAdjustment = false
+        statementCheckRowIds = nil
+        statementAdjustmentBlockedBy = statementClosing.flatMap { closing in
+            try? dbQueue.read { db in try StatementCheck.adjustmentBlockedBy(db: db, accountId: lastAccountId, closingDate: closing.date) }
+        }
         confirmedIds = []
         stagedRows = result.staged.map { ReviewRow(staged: $0, chosenCategoryId: $0.suggestedCategoryId, note: $0.replacesManual?.note) }
         loadPickerContext()
@@ -240,6 +255,43 @@ final class ImportViewModel: ObservableObject {
         reviewKeyRowIds = ids
         let keys = ReviewKey.groupKeys(descriptions: stagedRows.map(\.staged.parsed.rawDescription))
         reviewKeys = Dictionary(zip(ids, keys), uniquingKeysWith: { first, _ in first })
+    }
+
+    /// The statement's closing balance (`StatementBalancePoint.isClosing`), when verified.
+    var statementClosing: StatementClosing? {
+        guard case .available(let points) = statementBalances, let closing = points.last(where: \.isClosing) ?? points.last else { return nil }
+        return StatementClosing(date: closing.date, balanceMinorUnits: closing.balanceMinorUnits)
+    }
+
+    private func refreshStatementCheckIfNeeded() {
+        let ids = stagedRows.map(\.id)
+        guard ids != statementCheckRowIds else { return }
+        statementCheckRowIds = ids
+        statementCheck = computeStatementCheck(for: stagedRows)
+    }
+
+    /// The check for the rows Finish import would save with `unconfirmed` — what the finish
+    /// dialog repeats (leaving rows out changes the computed balance).
+    func finishStatementCheck(unconfirmed: UnconfirmedRowsChoice) -> StatementCheckResult? {
+        computeStatementCheck(for: stagedRows.filter { unconfirmed == .saveAsUncategorized || confirmedIds.contains($0.id) })
+    }
+
+    /// Saved transactions plus `rows` (the manual entries they replace left out) against the
+    /// closing balance; nil without one, or when the read fails (logged — the review then
+    /// just doesn't show the check).
+    private func computeStatementCheck(for rows: [ReviewRow]) -> StatementCheckResult? {
+        guard let closing = statementClosing else { return nil }
+        let accountId = lastAccountId
+        do {
+            return try dbQueue.read { db in
+                try StatementCheck.compare(db: db, accountId: accountId, closing: closing,
+                                           stagedRows: rows.map { ($0.staged.parsed.date, $0.staged.parsed.amountMinorUnits) },
+                                           excludingTransactionIds: Set(rows.compactMap(\.staged.replacesManual?.transactionId)))
+            }
+        } catch {
+            Self.logger.error("Couldn't check the statement balance: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
     }
 
     /// Every section's rows, partitioned once (by review group). A confirmed row leaves its
@@ -377,8 +429,9 @@ final class ImportViewModel: ObservableObject {
 
     /// Finish import: saves the confirmed rows — plus, by `unconfirmed`, the rest as
     /// Uncategorized (or with the category chosen for them) — in ONE commit, so one
-    /// `ImportBatch`. Statement balances, when wanted, are recorded in the same write;
-    /// with no rows to save they're recorded on their own (never an empty batch). Rules
+    /// `ImportBatch`. A verified closing balance is checked in the same write (the account
+    /// keeps any mismatch; the adjustment is added only when ticked); with no rows to save
+    /// it's checked on its own (never an empty batch). Rules
     /// are learned only by this commit, per each row's `learnRule`. Ends the review on
     /// success; on failure keeps it unchanged with the error shown.
     @discardableResult
@@ -394,17 +447,17 @@ final class ImportViewModel: ObservableObject {
             },
             confirmedIds: confirmedIds, unconfirmed: unconfirmed
         )
-        var points: [StatementBalancePoint] = []
-        if recordStatementBalancesOnConfirm, case .available(let available) = statementBalances { points = available }
-        let recorded: StatementBalanceRecording
+        let statement = statementClosing.map {
+            StatementFinish(closing: $0, addAdjustment: addStatementAdjustment && statementAdjustmentBlockedBy == nil)
+        }
+        let outcome: StatementFinishOutcome?
         do {
             if plan.isEmpty {
-                recorded = points.isEmpty ? StatementBalanceRecording(added: 0, updated: 0)
-                    : try coordinator.recordStatementBalances(accountId: lastAccountId, sourceFileName: lastSourceFileName, points: points)
+                outcome = try statement.map { try coordinator.finishStatement(accountId: lastAccountId, sourceFileName: lastSourceFileName, statement: $0) }
             } else {
-                recorded = try coordinator.commit(
+                outcome = try coordinator.commit(
                     accountId: lastAccountId, sourceFileName: lastSourceFileName,
-                    staged: plan.staged, decisions: plan.decisions, statementBalancePoints: points
+                    staged: plan.staged, decisions: plan.decisions, statement: statement
                 )
             }
         } catch {
@@ -415,21 +468,31 @@ final class ImportViewModel: ObservableObject {
         var parts = [plan.isEmpty ? "No new transactions to save from \(lastSourceFileName)."
                                   : "Saved \(plan.staged.count) transaction(s) from \(lastSourceFileName)."]
         if pendingCount > 0 { parts.append("\(pendingCount) to assign from Uncategorized.") }
-        let snapshotCount = recorded.added + recorded.updated
-        if snapshotCount > 0 { parts.append("Recorded \(snapshotCount) balance snapshot(s).") }
+        if let outcome { parts.append(Self.summary(of: outcome, currency: lastAccountCurrency)) }
         reset()
         statusMessage = parts.joined(separator: " ")
         return true
     }
 
-    /// "8 balances from the statement, closing £27,596.28 on 29 Sep 2026" — `nil` unless
-    /// there is a verified result.
-    var statementBalanceSummary: String? {
-        guard case .available(let points) = statementBalances, let closing = points.last else { return nil }
-        let day = Self.utcDayFormatter.string(from: closing.date)
-        let count = points.count == 1 ? "1 balance" : "\(points.count) balances"
-        return "\(count) from the statement, closing \(Money.format(closing.balanceMinorUnits, currency: lastAccountCurrency)) on \(day)"
+    /// Finish import's statement line for the status message.
+    static func summary(of outcome: StatementFinishOutcome, currency: Currency) -> String {
+        switch outcome.check {
+        case .matches(let closing):
+            return "Matches the statement closing balance \(Money.format(closing.balanceMinorUnits, currency: currency)) on \(day(closing.date))."
+        case .mismatch(let mismatch):
+            let difference = AccountsFormat.signedMoney(mismatch.differenceMinorUnits, currency: currency)
+            if outcome.adjustmentTransactionId != nil {
+                return "Added a balance adjustment of \(difference) on \(day(mismatch.date)) to match the statement."
+            }
+            return "The balance doesn't match the statement on \(day(mismatch.date)) (difference \(difference)) — flagged on the Accounts screen."
+        case .cannotCheck(let closing):
+            return "The statement's closing balance on \(day(closing.date)) couldn't be checked — it's before the account's opening balance."
+        }
     }
+
+    static func day(_ date: Date) -> String { utcDayFormatter.string(from: date) }
+
+    var currency: Currency { lastAccountCurrency }
 
     /// Discards the whole review, confirmed rows included. Nothing was written before
     /// Finish import, so this leaves no batch, transactions, balances or rules behind.
@@ -446,6 +509,10 @@ final class ImportViewModel: ObservableObject {
         unparsedLines = []
         isReviewing = false
         statementBalances = .notProvided
+        statementCheck = nil
+        statementCheckRowIds = nil
+        addStatementAdjustment = false
+        statementAdjustmentBlockedBy = nil
     }
 
     /// Reads a user-picked file, honouring security-scoped access if the app is ever

@@ -22,12 +22,13 @@ final class AccountsViewModel: ObservableObject {
     @Published var selectedAccountId: Int64? {
         didSet { if selectedAccountId != oldValue { updateSelectedHistory() } }
     }
-    /// The selected account's snapshots, newest first.
-    @Published private(set) var selectedHistory: [BalanceSnapshot] = []
+    /// The selected account's computed month-end balances, opening balance and adjustments.
+    @Published private(set) var selectedHistory: AccountHistory = .empty
     /// The screen's banner error (load failures, "Saved, but …"). Sheets keep their own.
     @Published var errorMessage: String?
-    /// Reconciliation warnings from the last balance save.
-    @Published var warnings: [String] = []
+    /// What the last Update balance did, one line per account ("added a Market movement of
+    /// £120.00", "balance already matches").
+    @Published var balanceMessages: [String] = []
 
     /// Add transaction…'s category picker: read when the sheet opens (`prepareAddTransaction`);
     /// "New category…" adds to it.
@@ -38,6 +39,9 @@ final class AccountsViewModel: ObservableObject {
     var onTransactionAdded: (() -> Void)?
 
     private var snapshots: [BalanceSnapshot] = []
+    private var transactions: [Transaction] = []
+    /// The built-in adjustment categories' names by id (`AccountHistory`).
+    private var adjustmentCategoryNames: [Int64: String] = [:]
     private let dbQueue: DatabaseQueue
 
     init(dbQueue: DatabaseQueue) {
@@ -50,17 +54,20 @@ final class AccountsViewModel: ObservableObject {
     @discardableResult
     func load() -> Bool {
         do {
-            let (accounts, snapshots, transactions, rate) = try dbQueue.read { db in
-                (try Account.fetchAll(db), try BalanceSnapshot.fetchAll(db), try Transaction.fetchAll(db), try ExchangeRateSetting.currentOrDefault(db: db))
+            let (accounts, snapshots, transactions, rate, builtIns) = try dbQueue.read { db in
+                (try Account.fetchAll(db), try BalanceSnapshot.fetchAll(db), try Transaction.fetchAll(db), try ExchangeRateSetting.currentOrDefault(db: db),
+                 try Category.filter(Column("builtInRole") != nil).fetchAll(db))
             }
             self.accounts = accounts.sortedForDisplay()
             self.snapshots = snapshots
+            self.transactions = transactions
+            adjustmentCategoryNames = Dictionary(builtIns.compactMap { category in category.id.map { ($0, category.name) } }, uniquingKeysWith: { first, _ in first })
             self.rate = rate
             let overview = AccountsOverview.make(accounts: accounts, snapshots: snapshots, transactions: transactions, rate: rate, today: Date())
             self.overview = overview
             let rowIds = overview.groups.flatMap(\.rows).map(\.id)
             if selectedAccountId.map(rowIds.contains) != true { selectedAccountId = rowIds.first }
-            // Snapshots may have changed even when the selection didn't.
+            // Balances may have changed even when the selection didn't.
             updateSelectedHistory()
             errorMessage = nil
             return true
@@ -74,18 +81,18 @@ final class AccountsViewModel: ObservableObject {
         overview?.groups.flatMap(\.rows).first { $0.id == selectedAccountId }
     }
 
-    func addAccount(name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode, openingBalanceEntered: Int?, asOf: Date, details: AccountDetails) -> SaveOutcome {
+    func addAccount(name: String, currency: Currency, kind: AccountKind, openingBalanceEntered: Int?, asOf: Date, details: AccountDetails) -> SaveOutcome {
         perform { db in
-            let account = try AccountEditing.add(db: db, name: name, currency: currency, kind: kind, trackingMode: trackingMode, openingBalanceEntered: openingBalanceEntered, asOf: asOf, details: details)
+            let account = try AccountEditing.add(db: db, name: name, currency: currency, kind: kind, openingBalanceEntered: openingBalanceEntered, asOf: asOf, details: details)
             return account.id
         } onSuccess: { [weak self] id in
             self?.selectedAccountId = id
         }
     }
 
-    func updateAccount(id: Int64, name: String, kind: AccountKind, trackingMode: AccountTrackingMode, details: AccountDetails) -> SaveOutcome {
+    func updateAccount(id: Int64, name: String, kind: AccountKind, details: AccountDetails) -> SaveOutcome {
         perform { db in
-            try AccountEditing.update(db: db, accountId: id, name: name, kind: kind, trackingMode: trackingMode, details: details)
+            try AccountEditing.update(db: db, accountId: id, name: name, kind: kind, details: details)
         }
     }
 
@@ -106,14 +113,41 @@ final class AccountsViewModel: ObservableObject {
         (try? dbQueue.read { db in try AccountEditing.hasHistory(db: db, accountId: id) }) ?? true
     }
 
+    /// What Update balance as of `asOf` compares against for each account: its computed
+    /// signed balance at the end of that day, or the message for a recorded balance on or
+    /// after it (which blocks the update). One read for all of them; absent when it fails.
+    func balanceBaselines(accountIds: [Int64], asOf: Date) -> [Int64: BalanceBaseline] {
+        let result = try? dbQueue.read { db -> [Int64: BalanceBaseline] in
+            var baselines: [Int64: BalanceBaseline] = [:]
+            for id in accountIds {
+                guard let account = try Account.fetchOne(db, key: id) else { continue }
+                if let blocking = try BalanceUpdates.blockingBalanceDate(db: db, accountId: id, asOf: asOf) {
+                    baselines[id] = .blocked(BalanceUpdateError.recordedBalance(accountName: account.displayName, date: blocking).errorDescription ?? "Pick a later date.")
+                } else {
+                    baselines[id] = .computed(try BalanceUpdates.computedBalance(db: db, accountId: id, asOf: asOf))
+                }
+            }
+            return baselines
+        }
+        return result ?? [:]
+    }
+
+    /// Update balance… (single or bulk): each difference becomes an adjustment transaction
+    /// (`BalanceUpdates.save`); `balanceMessages` says what happened per account.
     func saveBalances(_ entries: [BalanceUpdates.Entry], asOf: Date) -> SaveOutcome {
         perform { db in
             try BalanceUpdates.save(db: db, entries: entries, asOf: asOf)
-        } onSuccess: { [weak self] result in
-            self?.warnings = result.map {
-                "\($0.accountName): entered balance differs from the computed running balance by \(Money.format($0.driftMinorUnits, currency: $0.currency)) — check for a missing or duplicate transaction."
-            }
+        } onSuccess: { [weak self] outcomes in
+            self?.balanceMessages = outcomes.map(Self.message(for:))
         }
+    }
+
+    static func message(for outcome: BalanceUpdates.Outcome) -> String {
+        guard let role = outcome.role, outcome.differenceMinorUnits != 0 else {
+            return "\(outcome.accountName): balance already matches — nothing added."
+        }
+        let amount = Money.format(outcome.differenceMinorUnits, currency: outcome.currency)
+        return "\(outcome.accountName): added a \(role.defaultName.lowercased()) of \(outcome.differenceMinorUnits > 0 ? "+" : "")\(amount)."
     }
 
     /// Write first, then reload. A failed write returns `.failed` with a message for the
@@ -181,13 +215,17 @@ final class AccountsViewModel: ObservableObject {
     }
 
     private func updateSelectedHistory() {
-        selectedHistory = snapshots
-            .filter { $0.accountId == selectedAccountId }
-            .sorted { $0.date != $1.date ? $0.date > $1.date : ($0.id ?? 0) > ($1.id ?? 0) }
+        guard let selectedAccountId else {
+            selectedHistory = .empty
+            return
+        }
+        selectedHistory = AccountHistory.make(accountId: selectedAccountId, snapshots: snapshots, transactions: transactions,
+                                              adjustmentCategoryNames: adjustmentCategoryNames, today: Date())
     }
 
     static func message(for error: Error) -> String {
         if let detailsError = error as? AccountDetailsError { return detailsError.errorDescription ?? "Check the account details." }
+        if let balanceError = error as? BalanceUpdateError { return balanceError.errorDescription ?? "Pick a later day." }
         switch error as? AccountEditError {
         case .emptyName: return "Enter a name."
         case .duplicateName: return "An account with that name already exists."

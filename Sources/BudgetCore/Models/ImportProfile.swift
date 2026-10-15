@@ -23,7 +23,8 @@ public struct ImportProfile: Codable, Equatable, Identifiable, FetchableRecord, 
     public var csvCreditAmountColumnIndex: Int?
     /// Optional column holding the statement's running balance *after* each row. When set,
     /// `CSVStatementParser` fills `ParsedTransaction.balanceAfterMinorUnits` and the importer
-    /// can record the account's balance from the statement (see `StatementBalanceExtractor`).
+    /// checks the statement's closing balance against the account (see `StatementBalanceExtractor`,
+    /// `StatementCheck`).
     /// `nil` (the default) means no balance column — unchanged for every existing profile.
     public var csvBalanceColumnIndex: Int?
     public var csvDateFormat: String?

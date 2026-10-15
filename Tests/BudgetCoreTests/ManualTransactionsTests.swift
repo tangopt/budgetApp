@@ -144,10 +144,9 @@ final class ManualTransactionsTests: XCTestCase {
                                                transactions: try Transaction.fetchAll(db), rate: try ExchangeRateSetting.currentOrDefault(db: db))
         }
         let byId = Dictionary(uniqueKeysWithValues: balances.map { ($0.account.id!, $0.nativeBalanceMinorUnits) })
-        // An imported account's computed balance includes the manual entry…
+        // Every account's balance includes its manual entries, whatever its (legacy) tracking mode.
         XCTAssertEqual(byId[f.joint], 8_750)
-        // …a manually tracked account's balance comes from its snapshots only.
-        XCTAssertEqual(byId[cash], 3_000)
+        XCTAssertEqual(byId[cash], 2_300)
     }
 
     // MARK: Update

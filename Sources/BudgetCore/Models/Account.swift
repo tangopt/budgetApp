@@ -1,3 +1,4 @@
+import Foundation
 import GRDB
 
 public enum AccountKind: String, Codable, CaseIterable, Sendable {
@@ -16,6 +17,8 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     public var name: String
     public var currency: Currency
     public var kind: AccountKind
+    /// Legacy (spec 2026-10-14 §1): stored for compatibility, ignored by every calculation —
+    /// every account's balance is its opening balance plus its transactions.
     public var trackingMode: AccountTrackingMode
     /// Short name shown instead of `name` across the app (`displayName`). Normalised on save
     /// (`AccountDetailsFormat`): trimmed, empty → nil.
@@ -29,9 +32,27 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     /// The user's drag-and-drop position (`AccountOrdering`); nil until the first reorder.
     /// Ordered accounts list first, ascending; the rest follow alphabetically.
     public var sortOrder: Int?
+    /// The last statement import's unresolved closing-balance difference (spec 2026-10-14 §2):
+    /// statement − computed, signed like a transaction amount; nil when there's none.
+    /// Set and cleared by `StatementCheck` (Finish import) and cleared by Update balance.
+    public var statementMismatchMinorUnits: Int?
+    /// The statement's closing date for `statementMismatchMinorUnits`.
+    public var statementMismatchDate: Date?
+    /// The statement's closing balance for that mismatch, so every later Finish import can
+    /// re-check it (an import filling a gap before it clears it).
+    public var statementMismatchClosingMinorUnits: Int?
+    /// The closing date of the latest-dated statement checked: an earlier statement never
+    /// overrides what a later one recorded.
+    public var statementLastCheckedDate: Date?
+    /// The latest day the user (Update balance, even with nothing to adjust) or the balance
+    /// conversion confirmed the computed balance — counts as activity for staleness and "as of"
+    /// (`BalanceStaleness.lastActivity`) though nothing else records it. Nil when never.
+    public var balanceConfirmedAt: Date?
 
     public init(id: Int64? = nil, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode,
-                alias: String? = nil, sortCode: String? = nil, accountNumber: String? = nil, iban: String? = nil, sortOrder: Int? = nil) {
+                alias: String? = nil, sortCode: String? = nil, accountNumber: String? = nil, iban: String? = nil, sortOrder: Int? = nil,
+                statementMismatchMinorUnits: Int? = nil, statementMismatchDate: Date? = nil,
+                statementMismatchClosingMinorUnits: Int? = nil, statementLastCheckedDate: Date? = nil, balanceConfirmedAt: Date? = nil) {
         self.id = id
         self.name = name
         self.currency = currency
@@ -42,6 +63,11 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
         self.accountNumber = accountNumber
         self.iban = iban
         self.sortOrder = sortOrder
+        self.statementMismatchMinorUnits = statementMismatchMinorUnits
+        self.statementMismatchDate = statementMismatchDate
+        self.statementMismatchClosingMinorUnits = statementMismatchClosingMinorUnits
+        self.statementLastCheckedDate = statementLastCheckedDate
+        self.balanceConfirmedAt = balanceConfirmedAt
     }
 
     /// What the UI calls the account: the alias when set, otherwise the full name. `name`
@@ -94,6 +120,25 @@ func registerAccountSortOrderMigration(_ migrator: inout DatabaseMigrator) {
     migrator.registerMigration("addAccountSortOrder") { db in
         try db.alter(table: "account") { t in
             t.add(column: "sortOrder", .integer)
+        }
+    }
+}
+
+func registerAccountStatementMismatchMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addAccountStatementMismatch") { db in
+        try db.alter(table: "account") { t in
+            t.add(column: "statementMismatchMinorUnits", .integer)
+            t.add(column: "statementMismatchDate", .datetime)
+            t.add(column: "statementMismatchClosingMinorUnits", .integer)
+            t.add(column: "statementLastCheckedDate", .datetime)
+        }
+    }
+}
+
+func registerAccountBalanceConfirmedAtMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addAccountBalanceConfirmedAt") { db in
+        try db.alter(table: "account") { t in
+            t.add(column: "balanceConfirmedAt", .datetime)
         }
     }
 }

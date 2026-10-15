@@ -155,7 +155,7 @@ final class CategoriesEditingTests: XCTestCase {
             return (garden, fuel)
         }
         try m.dbQueue.write { db in try Categories.delete(db: db, id: garden.id!) }
-        let (categories, rules) = try m.dbQueue.read { db in (try Category.fetchAll(db), try Rule.fetchAll(db)) }
+        let (categories, rules) = try m.dbQueue.read { db in (try Category.fetchAll(db).filter { !$0.isBuiltIn }, try Rule.fetchAll(db)) }
         XCTAssertEqual(categories.map(\.id), [fuel.id])
         XCTAssertEqual(rules.map(\.matchPattern), ["SHELL"])
     }
@@ -169,7 +169,7 @@ final class CategoriesEditingTests: XCTestCase {
             XCTAssertEqual($0 as? CategoryEditError, .inUse(name: "Rent", transactions: 73, pending: 0, plannedItems: 2))
             XCTAssertEqual($0.localizedDescription, "Rent has 73 transactions and 2 planned items — move or recategorise them first.")
         }
-        XCTAssertEqual(try m.dbQueue.read { db in try Category.fetchCount(db) }, 1)
+        XCTAssertEqual(try m.dbQueue.read { db in try Category.filter(Column("builtInRole") == nil).fetchCount(db) }, 1)
     }
 
     func testRefusalMessagesNameOnlyWhatIsThereInTheSingular() {
