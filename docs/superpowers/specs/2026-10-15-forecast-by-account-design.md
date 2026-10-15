@@ -3,7 +3,7 @@
 Requested 2026-10-15; option A chosen in chat ("A").
 
 ## 1. Show forecast toggle
-- Budget toolbar toggle **Show forecast** (on by default; remembered across launches). Off: cells show actuals only (no pending/expected amounts, no pending icons, no forecast-derived Year Total parts, current/future months show actuals only); Add planned item on empty cells stays available. Net-worth rows / year cards keep using the forecast (they are projections of net worth) — unchanged.
+- Budget toolbar toggle **Show forecast** (on by default; remembered across launches). Off: cells show actuals only (no pending/expected amounts, no pending icons, no forecast-derived Year Total parts, current/future months show actuals only); Add planned item on empty cells stays available. The forecast also drives net worth: with the toggle **on**, net-worth rows and the year cards project future months/year-ends with the forecast (as today); with it **off**, net-worth rows show actual balances up to today only (future months blank, "—") and the current year's card shows the actual net worth today instead of the year-end forecast (caption "today" instead of " forecast"); past years are unchanged.
 
 ## 2. Planned items have an account
 - Migration (appended last): `forecastEntry.accountId INTEGER NULL REFERENCES account(id) ON DELETE SET NULL`. Applies to base planned items and scenario entries alike (scenario copies keep it).
