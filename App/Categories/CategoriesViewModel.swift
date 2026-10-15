@@ -80,23 +80,29 @@ final class CategoriesViewModel: ObservableObject {
 
     // MARK: Groups
 
-    /// "+ Group": an untitled group, returned so the screen can put it in inline edit.
-    func createGroup() -> CategoryGroup? {
+    /// The New group sheet's save: the group, with `categoryIds` moved into it, in one write
+    /// (a refused name or a built-in member creates nothing).
+    func createGroup(name: String, moving categoryIds: [Int64]) throws -> CategoryGroup {
+        let group = try dbQueue.write { db in try CategoryGroups.create(db: db, name: name, moving: categoryIds) }
         errorMessage = nil
-        do {
-            let group = try dbQueue.write { db in try CategoryGroups.createUntitled(db: db) }
-            load()
-            return group
-        } catch {
-            errorMessage = "Couldn't create the group: \(error.localizedDescription)"
-            return nil
-        }
+        load()
+        return group
     }
 
-    /// Inline rename; returns false (with `errorMessage` set) to keep the field editing.
-    @discardableResult
-    func renameGroup(id: Int64, to name: String) -> Bool {
-        write("Couldn't rename the group") { db in try CategoryGroups.rename(db: db, id: id, name: name) }
+    /// The Rename… sheet's save: a blank or taken name keeps the sheet open with the message.
+    func renameGroup(id: Int64, to name: String) -> SaveOutcome {
+        do {
+            try dbQueue.write { db in try CategoryGroups.rename(db: db, id: id, name: name) }
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+        load()
+        return .saved
+    }
+
+    /// The group's (non-reserve) categories, of every type.
+    func members(ofGroupId id: Int64) -> [Category] {
+        categories.filter { $0.groupId == id && !$0.isReserved }
     }
 
     func deleteGroup(id: Int64) {
@@ -129,19 +135,24 @@ final class CategoriesViewModel: ObservableObject {
         write("Couldn't move the categories") { db in try Categories.move(db: db, ids: ids, toGroupId: groupId) }
     }
 
-    /// A refused delete ("Rent has 73 transactions …") shows as the banner message.
-    func deleteCategory(id: Int64) {
+    /// Deletes each category in turn under `Categories.delete`'s rules; the refusals ("Rent
+    /// has 73 transactions …") are listed in the banner, one per line.
+    func deleteCategories(ids: [Int64]) {
         errorMessage = nil
-        do {
-            try dbQueue.write { db in try Categories.delete(db: db, id: id) }
-        } catch let error as CategoryEditError {
-            errorMessage = error.localizedDescription
-            return
-        } catch {
-            errorMessage = "Couldn't delete the category: \(error.localizedDescription)"
-            return
+        var refusals: [String] = []
+        for id in ids {
+            do {
+                try dbQueue.write { db in try Categories.delete(db: db, id: id) }
+            } catch let error as CategoryEditError {
+                refusals.append(error.localizedDescription)
+            } catch {
+                refusals.append("Couldn't delete the category: \(error.localizedDescription)")
+            }
         }
         load()
+        if !refusals.isEmpty {
+            errorMessage = ([errorMessage].compactMap { $0 } + refusals).joined(separator: "\n")
+        }
     }
 
     /// "Covered by a reserve": the auto-forecast leaves this category alone (and its
@@ -194,14 +205,15 @@ final class CategoriesViewModel: ObservableObject {
         payCalendar.month(containing: transaction.date).year
     }
 
-    /// The category's confirmed transactions in the pay-month `year` (nil = all years).
-    func transactions(forCategoryId id: Int64, year: Int?) -> [Transaction] {
-        transactions.filter { $0.categoryId == id && (year == nil || payYear(of: $0) == year) }
+    /// The confirmed transactions of the categories in `ids` (one category, or a group's
+    /// members) in the pay-month `year` (nil = all years).
+    func transactions(forCategoryIds ids: Set<Int64>, year: Int?) -> [Transaction] {
+        transactions.filter { $0.categoryId.map(ids.contains) == true && (year == nil || payYear(of: $0) == year) }
     }
 
     /// The years the panel's filter offers: the current one, then any with transactions, newest first.
-    func years(forCategoryId id: Int64) -> [Int] {
-        var years = Set(transactions.filter { $0.categoryId == id }.map(payYear(of:)))
+    func years(forCategoryIds ids: Set<Int64>) -> [Int] {
+        var years = Set(transactions.filter { $0.categoryId.map(ids.contains) == true }.map(payYear(of:)))
         years.insert(payCalendar.current.year)
         return years.sorted(by: >)
     }

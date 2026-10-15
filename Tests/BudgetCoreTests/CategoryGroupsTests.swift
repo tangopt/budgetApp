@@ -29,12 +29,29 @@ final class CategoryGroupsTests: XCTestCase {
         }
     }
 
-    func testCreateUntitledPicksTheNextFreeName() throws {
+    func testCreateMovesTheChosenCategoriesIntoTheNewGroup() throws {
         let m = try makeDB()
-        let first = try m.dbQueue.write { db in try CategoryGroups.createUntitled(db: db) }
-        let second = try m.dbQueue.write { db in try CategoryGroups.createUntitled(db: db) }
-        let third = try m.dbQueue.write { db in try CategoryGroups.createUntitled(db: db) }
-        XCTAssertEqual([first.name, second.name, third.name], ["New group", "New group 2", "New group 3"])
+        let (rent, fuel, food) = try m.dbQueue.write { db -> (Category, Category, Category) in
+            let car = try CategoryGroups.create(db: db, name: "Car")
+            return (try Categories.create(db: db, name: "Rent", type: .expense, groupId: nil),
+                    try Categories.create(db: db, name: "Fuel", type: .expense, groupId: car.id),
+                    try Categories.create(db: db, name: "Food", type: .expense, groupId: nil))
+        }
+        let home = try m.dbQueue.write { db in try CategoryGroups.create(db: db, name: "Home", moving: [rent.id!, fuel.id!]) }
+        let categories = try m.dbQueue.read { db in try Category.fetchAll(db) }
+        XCTAssertEqual(categories.first { $0.id == rent.id }?.groupId, home.id)
+        XCTAssertEqual(categories.first { $0.id == fuel.id }?.groupId, home.id)
+        XCTAssertNil(categories.first { $0.id == food.id }?.groupId)
+    }
+
+    func testCreateWithABuiltInMemberIsRefusedAndCreatesNothing() throws {
+        let m = try makeDB()
+        let builtIn = try m.dbQueue.read { db in try Category.filter(Column("builtInRole") != nil).fetchOne(db) }
+        let id = try XCTUnwrap(builtIn?.id)
+        XCTAssertThrowsError(try m.dbQueue.write { db in try CategoryGroups.create(db: db, name: "Home", moving: [id]) }) {
+            XCTAssertEqual($0 as? CategoryEditError, .builtIn(name: builtIn!.name))
+        }
+        XCTAssertEqual(try m.dbQueue.read { db in try CategoryGroup.fetchCount(db) }, 0)
     }
 
     func testRenames() throws {
