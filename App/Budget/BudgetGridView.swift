@@ -1171,7 +1171,7 @@ struct BudgetGridView: View {
     /// teal tint that sets the block apart from the category rows' grey banding in light and
     /// dark mode (the system teal adapts to both); Net a shade stronger.
     fileprivate static func totalsBackground(_ row: BudgetTotals.Row) -> Color {
-        Color.teal.opacity(row == .net ? 0.20 : 0.11)
+        Color.teal.opacity(row == .net ? 0.28 : 0.17)
     }
 
     fileprivate static func totalsHelp(_ row: BudgetTotals.Row) -> String {
