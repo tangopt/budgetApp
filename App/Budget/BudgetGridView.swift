@@ -66,10 +66,11 @@ struct BudgetGridView: View {
         var id: String { "\(type.rawValue)-\(categoryId ?? -1)-\(date?.timeIntervalSince1970 ?? 0)" }
     }
 
-    /// Whether an empty cell of this pay month may be clicked to add (open or future month,
-    /// and no account filter: planned items have no account, spec §7).
+    /// Whether an empty cell of this pay month may be clicked to add: an open or future month,
+    /// with All accounts or exactly one account ticked (the item gets that account, spec
+    /// 2026-10-15 §3).
     private func canAdd(year: Int, month: Int) -> Bool {
-        !viewModel.isAccountFiltered && !viewModel.payCalendar.isClosed(PayMonth(year: year, month: month))
+        viewModel.accountFilter.count <= 1 && !viewModel.payCalendar.isClosed(PayMonth(year: year, month: month))
     }
 
     private func categoriesByType(_ type: CategoryType) -> [Category] {
@@ -168,7 +169,8 @@ struct BudgetGridView: View {
         }
         var accountRows: [GridRow] = [GridRow(kind: .sectionHeader("Accounts", nil), shaded: false)]
         if !outline.isCollapsed(GridOutline.accountsSection) {
-            for (index, account) in viewModel.accounts.enumerated() {
+            // Under an account filter, only the selected accounts (spec 2026-10-15 §4).
+            for (index, account) in viewModel.shownAccounts.enumerated() {
                 accountRows.append(GridRow(kind: .account(account), shaded: index % 2 == 1))
             }
         }
@@ -358,6 +360,11 @@ struct BudgetGridView: View {
         .padding()
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                // Off: actuals only, and net worth stops at today (spec 2026-10-15 §1).
+                Toggle("Show forecast", isOn: $viewModel.showForecast)
+                    .help("Show planned and expected amounts, and the net worth forecast")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button("Export CSV…") {
                     exportDocument = CSVDocument(text: viewModel.exportCSV())
                     showExporter = true
@@ -371,12 +378,13 @@ struct BudgetGridView: View {
         .onChange(of: viewModel.accountFilter) { _, _ in cellSelection.clear() }
         .sheet(item: $addPlannedTarget) { target in
             AddPlannedItemSheet(type: target.type, scope: .budget, categories: viewModel.categories, plannedEntries: viewModel.plannedEntries,
-                                initialCategoryId: target.categoryId, initialDate: target.date) { category, amount, frequency, interval, start, end in
+                                accountOptions: viewModel.planAccountOptions, initialCategoryId: target.categoryId, initialDate: target.date,
+                                initialAccountId: viewModel.singleFilteredAccountId) { category, amount, frequency, interval, start, end, accountId in
                 switch category {
                 case .existing(let id):
-                    return viewModel.addPlannedItem(categoryId: id, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)
+                    return viewModel.addPlannedItem(categoryId: id, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end, accountId: accountId)
                 case .new(let name):
-                    return viewModel.addPlannedItem(newCategoryName: name, type: target.type, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)
+                    return viewModel.addPlannedItem(newCategoryName: name, type: target.type, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end, accountId: accountId)
                 }
             }
         }
@@ -483,8 +491,9 @@ struct BudgetGridView: View {
     }
 
     /// A year in the selector, all the same size: the year (" forecast" after it while its
-    /// year-end is a forecast), its year-end net worth, and the change on the previous
-    /// year-end as "↑ £24,953 · 16.4%" ("—" without a previous year).
+    /// year-end is a forecast, " today" for this year with Show forecast off), its year-end
+    /// net worth, and the change on the previous year-end as "↑ £24,953 · 16.4%" ("—"
+    /// without a previous year).
     private func yearCard(_ year: Int) -> some View {
         let selected = viewModel.selectedYears.contains(year)
         let yearEnd = viewModel.yearEndNetWorth(year)
@@ -495,6 +504,8 @@ struct BudgetGridView: View {
                 Text(String(year)).font(.subheadline).bold()
                 if yearEnd?.isForecast == true {
                     Text(" forecast").font(.caption2).foregroundStyle(.secondary)
+                } else if yearEnd != nil, !viewModel.showForecast, year == MonthRange.components(of: Date()).year {
+                    Text(" today").font(.caption2).foregroundStyle(.secondary)
                 }
             }
             if let yearEnd {
@@ -712,7 +723,8 @@ struct BudgetGridView: View {
         case .account(let account):
             return viewModel.accountBalance(account, year: year, month: 12).map { ($0.nativeBalanceMinorUnits, $0.account.currency) }
         case .netWorthTotal:
-            return viewModel.monthEndNetWorth(year: year, month: 12).map { ($0, .gbp) }
+            // The year card's figure (today's net worth this year with Show forecast off).
+            return viewModel.yearEndNetWorth(year).map { ($0.valueMinorUnits, .gbp) }
         }
     }
 
@@ -791,10 +803,11 @@ struct BudgetGridView: View {
                             .overlay(SelectedCellOutline(selection: cellSelection, key: cellKey(row, month: month)))
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                // Under an account filter a reserve (planned money only) shows nothing.
-                                guard !viewModel.isAccountFiltered else { return }
-                                guard !viewModel.occurrences(category: reserve, year: year, month: month).isEmpty else {
-                                    if canAdd(year: year, month: month) {
+                                // Reserves are planned money only: with Show forecast off, or
+                                // nothing for the filter's accounts, the cell is empty. Allowances
+                                // have no account, so adding one needs All accounts.
+                                guard viewModel.showForecast, !viewModel.occurrences(category: reserve, year: year, month: month).isEmpty else {
+                                    if canAdd(year: year, month: month), !viewModel.isAccountFiltered {
                                         viewModel.errorMessage = nil
                                         reserveSheet = .addAmountOn(reserve, date: CellAddDate.date(year: year, month: month))
                                     }
@@ -916,7 +929,8 @@ struct BudgetGridView: View {
                 .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
         case .netWorthTotal:
-            calendarCell(viewModel.netWorthTotal(year: year, month: 12)).bold()
+            // The year card's figure (today's net worth this year with Show forecast off).
+            calendarCell(viewModel.yearEndNetWorth(year)?.valueMinorUnits).bold()
                 .frame(height: 28)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .background(Color.purple.opacity(0.10))
@@ -946,7 +960,7 @@ struct BudgetGridView: View {
                         .overlay(SelectedCellOutline(selection: cellSelection, key: cellKey(row, month: month)))
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            guard cell.value != 0 || hasShownOccurrences(category, year: year, month: month) else {
+                            guard cell.value != 0 || (viewModel.showForecast && hasShownOccurrences(category, year: year, month: month)) else {
                                 // Empty (no actual, nothing planned): an open or future month adds a planned item.
                                 if canAdd(year: year, month: month), category.type != .adjustment {
                                     viewModel.errorMessage = nil
@@ -985,20 +999,19 @@ struct BudgetGridView: View {
                                 start: range.start, end: range.end, showCategory: showCategory, plan: nil)
     }
 
-    /// Opens a group's or section's month panel when its members have any transaction or
-    /// planned occurrence there (an empty aggregate cell does nothing).
+    /// Opens a group's or section's month panel when its members have any transaction or, with
+    /// Show forecast on, planned occurrence there (an empty aggregate cell does nothing).
     fileprivate func openAggregateMonth(_ row: GridRowKind, name: String, members: [Category], year: Int, month: Int) {
         var target = monthTarget(name: name, categories: members, year: year, month: month)
         let hasTransactions = !viewModel.transactions(forCategoryIds: target.categoryIds, from: target.start, to: target.end).isEmpty
-        guard hasTransactions || members.contains(where: { hasShownOccurrences($0, year: year, month: month) }) else { return }
+        guard hasTransactions || (viewModel.showForecast && members.contains(where: { hasShownOccurrences($0, year: year, month: month) })) else { return }
         target.showCategory = true
         cellSelection.select(key: cellKey(row, month: month), target: target)
     }
 
-    /// Whether the cell's panel would list planned occurrences: never under an account filter
-    /// (planned items have no account, spec §7), so a cell that looks empty does nothing.
+    /// Whether the cell's panel would list planned occurrences (the filter's accounts' only).
     fileprivate func hasShownOccurrences(_ category: Category, year: Int, month: Int) -> Bool {
-        !viewModel.isAccountFiltered && !viewModel.occurrences(category: category, year: year, month: month).isEmpty
+        !viewModel.occurrences(category: category, year: year, month: month).isEmpty
     }
 
     /// Opens a Year Total's panel when the year has any of its transactions.
@@ -1066,12 +1079,13 @@ struct BudgetGridView: View {
         .padding(.horizontal, GridMetrics.cellPadding)
     }
 
-    private func calendarCell(_ total: Int) -> some View {
+    /// A Net Worth cell; nil or 0 (no data, or a month past today with Show forecast off) reads "—".
+    private func calendarCell(_ total: Int?) -> some View {
         Group {
-            if total == 0 {
-                Text("—").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
-            } else {
+            if let total, total != 0 {
                 MoneyText(minorUnits: total, alignment: .trailing)
+            } else {
+                Text("—").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
         .frame(width: GridMetrics.cellWidth)

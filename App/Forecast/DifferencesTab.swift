@@ -64,7 +64,7 @@ struct DifferencesTab: View {
                 + (target.difference.kind == .changed ? " If this item was split with “This and all following”, revert its continuation too, or it will be counted twice." : ""))
         }
         .sheet(item: $editing) { row in
-            EditOccurrenceSheet(row: row, categories: viewModel.categories, fixedScope: .thisAndFollowing) { change, scope in
+            EditOccurrenceSheet(row: row, categories: viewModel.categories, fixedScope: .thisAndFollowing, accountOptions: viewModel.accountOptions) { change, scope in
                 viewModel.planEditActions.save(row, change, scope)
             }
         }

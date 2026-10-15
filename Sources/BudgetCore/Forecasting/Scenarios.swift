@@ -212,6 +212,7 @@ public enum Scenarios {
     /// The scenario's `added`, `changed` and `removed` entries, by entry id.
     public static func differences(db: Database, scenarioId: Int64) throws -> [ScenarioDifference] {
         let names = try categoryNames(db)
+        let accountNames = Dictionary(try Account.fetchAll(db).compactMap { account in account.id.map { ($0, account.displayName) } }, uniquingKeysWith: { a, _ in a })
         let entries = try ForecastEntry.inScenario(db, id: scenarioId).filter { $0.scenarioChange != nil }
         let sourceIds = entries.compactMap(\.sourceEntryId)
         let sources = Dictionary(uniqueKeysWithValues: try ForecastEntry.budgetEntries.filter(keys: sourceIds).fetchAll(db).map { ($0.id!, $0) })
@@ -225,7 +226,7 @@ public enum Scenarios {
             if kind == .changed, source == nil {
                 fieldChanges = ["Source no longer in the budget"]
             } else if kind == .changed, let source {
-                fieldChanges = changes(from: source, to: entry, names: names)
+                fieldChanges = changes(from: source, to: entry, names: names, accountNames: accountNames)
                 let edited = editedOccurrences(entry: entry, own: exceptions[entry.id!] ?? [], source: exceptions[source.id!] ?? [])
                 if edited > 0 { fieldChanges.append("\(edited) occurrence\(edited == 1 ? "" : "s") edited") }
             }
@@ -297,7 +298,7 @@ public enum Scenarios {
         Dictionary(uniqueKeysWithValues: try Category.fetchAll(db).map { ($0.id!, $0.name) })
     }
 
-    private static func changes(from source: ForecastEntry, to entry: ForecastEntry, names: [Int64: String]) -> [String] {
+    private static func changes(from source: ForecastEntry, to entry: ForecastEntry, names: [Int64: String], accountNames: [Int64: String]) -> [String] {
         var result: [String] = []
         if source.amountMinorUnits != entry.amountMinorUnits {
             result.append("Amount: \(money(source.amountMinorUnits)) → \(money(entry.amountMinorUnits))")
@@ -313,6 +314,10 @@ public enum Scenarios {
         }
         if source.categoryId != entry.categoryId {
             result.append("Category: \(names[source.categoryId] ?? "?") → \(names[entry.categoryId] ?? "?")")
+        }
+        if source.accountId != entry.accountId {
+            func account(_ id: Int64?) -> String { id.map { accountNames[$0] ?? "?" } ?? "Automatic" }
+            result.append("Account: \(account(source.accountId)) → \(account(entry.accountId))")
         }
         return result
     }

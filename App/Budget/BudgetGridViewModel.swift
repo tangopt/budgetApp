@@ -7,7 +7,7 @@ import GRDB
 @MainActor
 final class BudgetGridViewModel: ObservableObject {
     @Published var categories: [Category] = [] {
-        didSet { reserveRemainingCache = [:]; cellCache = [:]; yearEndCache = [:] }
+        didSet { itemAccountsCache = nil; clearPlanCaches(); clearNetWorthCaches() }
     }
     @Published var categoryGroups: [CategoryGroup] = []
     /// Every transaction: balances and net worth. The plan's actuals use `budgetTransactions`.
@@ -26,8 +26,19 @@ final class BudgetGridViewModel: ObservableObject {
     /// The account panel's selection (spec §7); empty = All accounts. Kept for the app session
     /// (this view model lives as long as the window). Changing it rebuilds the shown actuals once.
     @Published private(set) var accountFilter: Set<Int64> = [] {
-        didSet { if accountFilter != oldValue { rebuildShownActuals() } }
+        didSet { if accountFilter != oldValue { rebuildShownActuals(); clearPlanCaches(); clearNetWorthCaches() } }
     }
+    /// The toolbar's Show forecast (spec 2026-10-15 §1), remembered across launches: off, cells
+    /// show actuals only and net worth stops at today.
+    @Published var showForecast: Bool = UserDefaults.standard.object(forKey: BudgetGridViewModel.showForecastKey) as? Bool ?? true {
+        didSet {
+            guard showForecast != oldValue else { return }
+            UserDefaults.standard.set(showForecast, forKey: Self.showForecastKey)
+            clearPlanCaches()
+            clearNetWorthCaches()
+        }
+    }
+    private static let showForecastKey = "budgetGrid.showForecast"
     /// Whether the account panel is open beside the grid (kept for the session like the filter).
     @Published var isAccountPanelOpen = true
     /// Every transaction's count per account id, for the account panel; rebuilt with the pay calendar.
@@ -35,13 +46,13 @@ final class BudgetGridViewModel: ObservableObject {
     /// Linked transfers' other legs by transaction id, for the side panel and Edit transaction.
     @Published private(set) var transferCounterparts: [Int64: [TransferCounterpart]] = [:]
     @Published var forecastEntries: [ForecastEntry] = [] {
-        didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:]; yearEndCache = [:] }
+        didSet { clearPlanCaches(); clearNetWorthCaches() }
     }
     @Published var forecastGroups: [ForecastGroup] = [] {
-        didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:]; yearEndCache = [:] }
+        didSet { clearPlanCaches(); clearNetWorthCaches() }
     }
     @Published var exceptions: [PlannedOccurrenceException] = [] {
-        didSet { reserveRemainingCache = [:]; plannedCache = [:]; cellCache = [:]; yearEndCache = [:] }
+        didSet { clearPlanCaches(); clearNetWorthCaches() }
     }
     @Published var accounts: [Account] = [] {
         didSet {
@@ -98,15 +109,20 @@ final class BudgetGridViewModel: ObservableObject {
     private var cellCache: [Int: [Int64: PlanCell]] = [:]
     /// `payCalendar.monthClass` per `MonthRange.index`; reset when the calendar is rebuilt.
     private var monthClassCache: [Int: MonthClass] = [:]
-    /// Account balance cells per `MonthRange.index` then account id (`nil` = no data yet), and
-    /// the Net Worth row / year-picker totals per `MonthRange.index` (`nil` = no data). Each
+    /// Account balance cells per `MonthRange.index` then account id (`nil` = no data yet). Each
     /// look-up scans every snapshot and transaction, so they're memoised like the plan cells.
     /// Cleared whenever accounts, snapshots, transactions or the exchange rate change.
     private var accountBalanceCache: [Int: [Int64: MonthlyAccountBalance?]] = [:]
-    private var netWorthCache: [Int: Int?] = [:]
     /// Year-end net worth per year for the year cards (`DashboardCalculator.yearEndNetWorth`, nil = none);
-    /// cleared with the net worth caches and whenever categories or forecasts change.
+    /// cleared with the net worth caches and whenever categories, forecasts, the filter or Show forecast change.
     private var yearEndCache: [Int: YearEndNetWorth?] = [:]
+    /// The Net Worth row per year (`DashboardCalculator.budgetNetWorthMonths`), cleared like `yearEndCache`.
+    private var netWorthRowCache: [Int: [Int?]] = [:]
+    /// The net-worth figures' input (filter and plan included), built once per change.
+    private var netWorthInputCache: DashboardInput?
+    /// Planned items' accounts (`PlannedItemAccounts`), rebuilt lazily when categories or
+    /// transactions change.
+    private var itemAccountsCache: PlannedItemAccounts?
 
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
@@ -133,6 +149,7 @@ final class BudgetGridViewModel: ObservableObject {
     private func rebuildPayMonths() {
         payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: manualCloses, today: Date())
         allAccountsBudgetTransactions = TransferLinks.budgetFacing(transactions, links: transferLinks)
+        itemAccountsCache = nil
         monthTotals = PayMonthTotals.lookup(transactions: allAccountsBudgetTransactions, calendar: payCalendar)
         transactionCountByAccount = transactions.reduce(into: [:]) { counts, transaction in counts[transaction.accountId, default: 0] += 1 }
         monthClassCache = [:]
@@ -161,9 +178,36 @@ final class BudgetGridViewModel: ObservableObject {
 
     // MARK: Account filter
 
-    /// A filter is on: cells show the selected accounts' actuals only (no pending/expected
-    /// amounts, no Add planned item on empty cells).
+    /// A filter is on: cells show the selected accounts' actuals and the planned items whose
+    /// effective account is selected (spec 2026-10-15 §3).
     var isAccountFiltered: Bool { !accountFilter.isEmpty }
+
+    /// Which account each planned item belongs to (explicit, else inferred from its
+    /// category's history over every account).
+    var itemAccounts: PlannedItemAccounts {
+        if let cached = itemAccountsCache { return cached }
+        let built = PlannedItemAccounts(categories: categories, budgetTransactions: allAccountsBudgetTransactions, calendar: payCalendar)
+        itemAccountsCache = built
+        return built
+    }
+
+    /// The account filter applied to the plan; nil = All accounts.
+    var planFilter: PlanAccountFilter? {
+        accountFilter.isEmpty ? nil : PlanAccountFilter(accountIds: accountFilter, itemAccounts: itemAccounts)
+    }
+
+    /// The planned item sheets' Account picker.
+    var planAccountOptions: PlanAccountOptions {
+        PlanAccountOptions(accounts: accounts, itemAccounts: itemAccounts)
+    }
+
+    /// The accounts the Accounts rows show: the filter's, else every account.
+    var shownAccounts: [Account] {
+        accountFilter.isEmpty ? accounts : accounts.filter { $0.id.map(accountFilter.contains) ?? false }
+    }
+
+    /// Add planned item's prefilled account: the filter's account when exactly one is ticked.
+    var singleFilteredAccountId: Int64? { accountFilter.count == 1 ? accountFilter.first : nil }
 
     /// Ticks or unticks an account in the panel.
     func toggleAccountFilter(_ accountId: Int64) {
@@ -222,35 +266,48 @@ final class BudgetGridViewModel: ObservableObject {
         return balance
     }
 
-    /// `NetWorthCalculator.monthEndNetWorth`, memoised (`nil` = no account has data yet).
-    func monthEndNetWorth(year: Int, month: Int) -> Int? {
-        let key = MonthRange.index(year: year, month: month)
-        if let cached = netWorthCache[key] { return cached }
-        let total = NetWorthCalculator.monthEndNetWorth(accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, rate: exchangeRate, year: year, month: month)
-        netWorthCache[key] = .some(total)
-        return total
-    }
-
     private func clearNetWorthCaches() {
         accountBalanceCache = [:]
-        netWorthCache = [:]
         yearEndCache = [:]
+        netWorthRowCache = [:]
+        netWorthInputCache = nil
     }
 
-    /// Sum of every account's GBP-converted balance for `month`; accounts with no data yet
-    /// that month contribute 0, matching how a not-yet-open account has no effect on net worth.
-    func netWorthTotal(year: Int, month: Int) -> Int {
-        monthEndNetWorth(year: year, month: month) ?? 0
+    /// The plan's caches: planned totals, cells and reserves.
+    private func clearPlanCaches() {
+        reserveRemainingCache = [:]
+        plannedCache = [:]
+        cellCache = [:]
+    }
+
+    /// The net-worth figures' input: every account and transaction, the budget's plan, and
+    /// the account filter (spec 2026-10-15 §4).
+    private var netWorthInput: DashboardInput {
+        if let cached = netWorthInputCache { return cached }
+        var input = DashboardInput(today: Date(), accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, categories: categories, categoryGroups: categoryGroups,
+                                   forecastEntries: forecastEntries, forecastGroups: forecastGroups, exceptions: exceptions, importBatches: [], rate: exchangeRate, payCalendar: payCalendar,
+                                   transferLinks: transferLinks)
+        input.accountFilter = planFilter
+        netWorthInputCache = input
+        return input
+    }
+
+    /// The Net Worth row's month (`DashboardCalculator.budgetNetWorthMonths`, net-worth-forecast-fix
+    /// §3): the actual month-end net worth to today, then with Show forecast this month's
+    /// remaining plan and the projection, else nil ("—"). The filter's accounts only. Memoised per year.
+    func netWorthTotal(year: Int, month: Int) -> Int? {
+        if netWorthRowCache[year] == nil {
+            netWorthRowCache[year] = DashboardCalculator.budgetNetWorthMonths(netWorthInput, year: year, includeForecast: showForecast)
+        }
+        return netWorthRowCache[year]?[month - 1] ?? nil
     }
 
     /// Net worth at the end of `year` for the year cards: real for past years, the Dashboard's
-    /// forecast to December for this year (`DashboardCalculator.yearEndNetWorth`).
+    /// forecast to December for this year — or, with Show forecast off, today's actual net
+    /// worth (`DashboardCalculator.yearEndNetWorth`). The filter's accounts only.
     func yearEndNetWorth(_ year: Int) -> YearEndNetWorth? {
         if let cached = yearEndCache[year] { return cached }
-        let input = DashboardInput(today: Date(), accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, categories: categories, categoryGroups: categoryGroups,
-                                   forecastEntries: forecastEntries, forecastGroups: forecastGroups, exceptions: exceptions, importBatches: [], rate: exchangeRate, payCalendar: payCalendar,
-                                   transferLinks: transferLinks)
-        let value = DashboardCalculator.yearEndNetWorth(input, year: year)
+        let value = DashboardCalculator.yearEndNetWorth(netWorthInput, year: year, includeForecast: showForecast)
         yearEndCache[year] = .some(value)
         return value
     }
@@ -335,13 +392,13 @@ final class BudgetGridViewModel: ObservableObject {
         guard let id = reserve.id else { return 0 }
         let key = MonthRange.index(year: year, month: month)
         if let cached = reserveRemainingCache[key] { return cached[id] ?? 0 }
-        let range = MonthRange.of(year: year, month: month)
-        let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
+        // The filter's planned totals and actuals (all accounts' without one).
+        let planned = plannedTotals(year: year, month: month)
         let allowances: [(id: Int64, name: String, allowance: Int)] = reserves.compactMap { reserve in
-            reserve.id.map { ($0, reserve.name, ForecastCalculator.confirmedTotal(categoryId: $0, period: period, entries: forecastEntries, groups: forecastGroups, exceptions: exceptions)) }
+            reserve.id.map { ($0, reserve.name, planned[$0] ?? 0) }
         }
         let remaining = ReservedCategories.monthAllowances(allowances, monthClass: monthClass(year: year, month: month)) {
-            ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, monthTotals: monthTotals, entries: forecastEntries, groups: forecastGroups, exceptions: exceptions)
+            ReservedCategories.unforecastSpend(year: year, month: month, categories: categories, monthTotals: shownMonthTotals, plannedTotals: planned)
         }
         reserveRemainingCache[key] = remaining
         return remaining[id] ?? 0
@@ -405,15 +462,16 @@ final class BudgetGridViewModel: ObservableObject {
 
     typealias PlanCell = (value: Int, pending: Int, state: PendingState)
 
-    /// The planned total for `category` in the calendar month named `year`/`month`.
-    private func plannedTotal(_ categoryId: Int64, year: Int, month: Int) -> Int {
+    /// The planned totals per category in the calendar month named `year`/`month`, for the
+    /// filter's accounts (`ForecastCalculator.confirmedTotalsByCategory(…filter:)`). Memoised.
+    private func plannedTotals(year: Int, month: Int) -> [Int64: Int] {
         let key = MonthRange.index(year: year, month: month)
-        if let cached = plannedCache[key] { return cached[categoryId] ?? 0 }
+        if let cached = plannedCache[key] { return cached }
         let range = MonthRange.of(year: year, month: month)
         let totals = ForecastCalculator.confirmedTotalsByCategory(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected),
-                                                                  entries: forecastEntries, groups: forecastGroups, exceptions: exceptions)
+                                                                  entries: forecastEntries, groups: forecastGroups, exceptions: exceptions, filter: planFilter)
         plannedCache[key] = totals
-        return totals[categoryId] ?? 0
+        return totals
     }
 
     /// The pay month's class (`payCalendar.monthClass`), cached until the calendar is rebuilt.
@@ -426,16 +484,16 @@ final class BudgetGridViewModel: ObservableObject {
     }
 
     /// A category's Budget cell: the pay month's actual plus whatever the calendar month's plan
-    /// still expects (`PlanStatus.cell`); closed months show the actual alone, as does every
-    /// month under an account filter (planned items have no account). Memoised.
+    /// still expects (`PlanStatus.cell`), both for the filter's accounts; closed months show the
+    /// actual alone, as does every month with Show forecast off. Memoised.
     func cell(_ category: Category, year: Int, month: Int) -> PlanCell {
         guard let id = category.id else { return (0, 0, .none) }
         let key = MonthRange.index(year: year, month: month)
         if let cached = cellCache[key]?[id] { return cached }
         let actual = payMonthCategoryTotal(category, year: year, month: month)
-        let cell: PlanCell = isAccountFiltered ? (actual, 0, .none)
+        let cell: PlanCell = !showForecast ? (actual, 0, .none)
             : PlanStatus.cell(actual: actual,
-                              planned: plannedTotal(id, year: year, month: month),
+                              planned: plannedTotals(year: year, month: month)[id] ?? 0,
                               categoryType: category.type,
                               monthClass: monthClass(year: year, month: month))
         cellCache[key, default: [:]][id] = cell
@@ -459,10 +517,10 @@ final class BudgetGridViewModel: ObservableObject {
     }
 
     /// A reserve's month as a cell: what's left of its allowance counts as expected while the
-    /// month is open (reserves never hold transactions). Empty under an account filter: a
+    /// month is open (reserves never hold transactions). Empty with Show forecast off: a
     /// reserve is planned money only.
     func reserveCell(_ reserves: [Category], year: Int, month: Int) -> PlanCell {
-        guard !isAccountFiltered else { return (0, 0, .none) }
+        guard showForecast else { return (0, 0, .none) }
         let value = reserves.reduce(0) { $0 + reserveTotal($1, year: year, month: month) }
         return (value, value, value == 0 ? .none : .allExpected)
     }
@@ -474,10 +532,12 @@ final class BudgetGridViewModel: ObservableObject {
     }
 
     /// The planned occurrences filed under `category` (after any re-file) whose date falls in
-    /// the calendar month `year`/`month`, each with whether it's confirmed and its series.
+    /// the calendar month `year`/`month` as the filter's accounts see them, each with whether
+    /// it's confirmed, its series and its account.
     func occurrences(category: Category, year: Int, month: Int) -> [PlannedRow] {
         guard let id = category.id else { return [] }
-        return PlannedRow.rows(categoryId: id, year: year, month: month, plan: plannedEntries, exceptions: exceptions) { entry, occurrence in
+        return PlannedRow.rows(categoryId: id, year: year, month: month, plan: plannedEntries, exceptions: exceptions,
+                               filter: planFilter, accounts: accounts.isEmpty ? nil : planAccountOptions) { entry, occurrence in
             PlannedItemEditing.isLocked(entry: entry, occurrence: occurrence, calendar: payCalendar, monthTotals: monthTotals,
                                         entries: forecastEntries, groups: forecastGroups, exceptions: exceptions, categories: categories)
         }
@@ -506,17 +566,17 @@ final class BudgetGridViewModel: ObservableObject {
     }
 
     /// A new planned item from a section header (`PlannedItems.add`).
-    func addPlannedItem(categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> SaveOutcome {
+    func addPlannedItem(categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, accountId: Int64?) -> SaveOutcome {
         perform { db in
-            _ = try PlannedItems.add(db: db, categoryId: categoryId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
+            _ = try PlannedItems.add(db: db, categoryId: categoryId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, accountId: accountId)
         }
     }
 
     /// A new planned item for a category created with it ("+ New category…"), in one write so
     /// a failed save leaves no orphaned category (`PlannedItems.add(db:newCategoryName:…)`).
-    func addPlannedItem(newCategoryName: String, type: CategoryType, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> SaveOutcome {
+    func addPlannedItem(newCategoryName: String, type: CategoryType, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, accountId: Int64?) -> SaveOutcome {
         perform { db in
-            _ = try PlannedItems.add(db: db, newCategoryName: newCategoryName, type: type, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate)
+            _ = try PlannedItems.add(db: db, newCategoryName: newCategoryName, type: type, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, accountId: accountId)
         }
     }
 

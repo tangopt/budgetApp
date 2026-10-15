@@ -24,6 +24,19 @@ public struct DashboardInput {
     public let payCalendar: PayCalendar
     /// Confirmed pay-month totals per category, built once.
     let monthTotals: [Int64: [Int: [Int: Int]]]
+    /// The transfer links `budgetTransactions` was built with (an account filter's actuals
+    /// rebuild it for the selected accounts).
+    let transferLinks: [TransferLink]
+    /// The Budget account filter (spec 2026-10-15 §4): when set, the net-worth figures
+    /// (`netWorthSeries`, `netWorthActuals`, `yearEndNetWorth`, `budgetNetWorthMonths`) cover
+    /// only its accounts, projected with only their planned items. Flows are unaffected.
+    public var accountFilter: PlanAccountFilter?
+
+    /// The accounts the net-worth figures cover: `accountFilter`'s, else every account.
+    var netWorthAccounts: [Account] {
+        guard let filter = accountFilter else { return accounts }
+        return accounts.filter { $0.id.map(filter.accountIds.contains) ?? false }
+    }
 
     public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, manualCloses: [PayMonthClose] = [], transferLinks: [TransferLink] = []) {
         let payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: manualCloses, today: today)
@@ -49,6 +62,7 @@ public struct DashboardInput {
         self.dataThrough = Transaction.importedDataThrough(transactions)
         self.payCalendar = payCalendar
         self.monthTotals = PayMonthTotals.lookup(transactions: budgetTransactions, calendar: payCalendar)
+        self.transferLinks = transferLinks
     }
 
     /// `today`, but never earlier than the data (a clock behind the data counts as "today = D").

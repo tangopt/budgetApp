@@ -30,12 +30,13 @@ public enum PlannedItems {
     /// budget and the category's flags are left alone: the "Planned" group is created if
     /// missing but never switched on (a disabled one throws `plannedGroupDisabled`).
     @discardableResult
-    public static func add(db: Database, categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, scenarioId: Int64? = nil) throws -> ForecastEntry {
+    /// `accountId` nil = Automatic (`PlannedItemAccounts`).
+    public static func add(db: Database, categoryId: Int64, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, scenarioId: Int64? = nil, accountId: Int64? = nil) throws -> ForecastEntry {
         guard let category = try Category.fetchOne(db, key: categoryId) else { throw PlannedItemsError.categoryNotFound }
         guard !category.isReserved else { throw PlannedItemsError.reservedCategory }
         let group = scenarioId == nil ? try ensureGroup(db: db) : try existingOrNewGroup(db: db)
         var entry = ForecastEntry(groupId: group.id!, categoryId: categoryId, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, isEnabled: true, status: .confirmed, note: nil,
-                                  scenarioId: scenarioId, scenarioChange: scenarioId == nil ? nil : .added)
+                                  scenarioId: scenarioId, scenarioChange: scenarioId == nil ? nil : .added, accountId: accountId)
         try entry.insert(db)
         if frequency != .once && scenarioId == nil {
             try ReservedCategories.setExcludedFromAutoForecast(db: db, categoryId: categoryId, true)
@@ -47,13 +48,13 @@ public enum PlannedItems {
     /// of `type` named `categoryName` (trimmed), then the item. Call it inside one write, so
     /// a failed add leaves no orphaned category behind.
     @discardableResult
-    public static func add(db: Database, newCategoryName categoryName: String, type: CategoryType, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, scenarioId: Int64? = nil) throws -> (category: Category, entry: ForecastEntry) {
+    public static func add(db: Database, newCategoryName categoryName: String, type: CategoryType, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, scenarioId: Int64? = nil, accountId: Int64? = nil) throws -> (category: Category, entry: ForecastEntry) {
         let trimmed = categoryName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw PlannedItemsError.emptyCategoryName }
         guard try Category.filter(Column("name") == trimmed).fetchCount(db) == 0 else { throw PlannedItemsError.duplicateCategoryName }
         var category = Category(name: trimmed, type: type)
         try category.insert(db)
-        let entry = try add(db: db, categoryId: category.id!, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, scenarioId: scenarioId)
+        let entry = try add(db: db, categoryId: category.id!, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, scenarioId: scenarioId, accountId: accountId)
         return (category, entry)
     }
 

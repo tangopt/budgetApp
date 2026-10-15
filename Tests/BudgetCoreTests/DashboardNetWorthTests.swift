@@ -35,19 +35,21 @@ final class DashboardNetWorthTests: XCTestCase {
         let series = DashboardCalculator.netWorthSeries(series2026Input)
         XCTAssertEqual(series.forecast.first, NetWorthPoint(year: 2026, month: 2, valueMinorUnits: 1_200_000))
         XCTAssertEqual(series.forecast.count, 23) // Feb 2026 anchor + Mar 2026 ... Dec 2027
-        XCTAssertEqual(series.forecast.last, NetWorthPoint(year: 2027, month: 12, valueMinorUnits: 5_600_000))
+        // February's remaining plan (+3,000 salary, −990 rent beyond the −10 paid) joins the walk.
+        XCTAssertEqual(series.forecast.last, NetWorthPoint(year: 2027, month: 12, valueMinorUnits: 5_801_000))
     }
 
     func testYearEndForecastsCompareAgainstTheRightBaseline() throws {
         let yearEnds = DashboardCalculator.netWorthSeries(series2026Input).yearEnds
         XCTAssertEqual(yearEnds.map(\.year), [2026, 2027])
-        // Dec 2026 vs the REAL Dec 2025 (1_000_000); Dec 2027 vs the FORECAST Dec 2026.
-        XCTAssertEqual(yearEnds[0].valueMinorUnits, 3_200_000)
-        XCTAssertEqual(yearEnds[0].changeMinorUnits, 2_200_000)
-        XCTAssertEqual(try XCTUnwrap(yearEnds[0].percent), 2.2, accuracy: 0.0001)
-        XCTAssertEqual(yearEnds[1].valueMinorUnits, 5_600_000)
+        // Dec 2026 vs the REAL Dec 2025 (1_000_000); Dec 2027 vs the FORECAST Dec 2026. Both
+        // include February's remaining plan (+201_000).
+        XCTAssertEqual(yearEnds[0].valueMinorUnits, 3_401_000)
+        XCTAssertEqual(yearEnds[0].changeMinorUnits, 2_401_000)
+        XCTAssertEqual(try XCTUnwrap(yearEnds[0].percent), 2.401, accuracy: 0.0001)
+        XCTAssertEqual(yearEnds[1].valueMinorUnits, 5_801_000)
         XCTAssertEqual(yearEnds[1].changeMinorUnits, 2_400_000)
-        XCTAssertEqual(try XCTUnwrap(yearEnds[1].percent), 0.75, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(yearEnds[1].percent), 2_400_000.0 / 3_401_000.0, accuracy: 0.0001)
     }
 
     // Same rule as the Forecast grid: the real December is the baseline only once that pay
@@ -64,6 +66,22 @@ final class DashboardNetWorthTests: XCTestCase {
         XCTAssertNil(DashboardCalculator.yearEndNetWorth(input, year: 2020))
     }
 
+    // Data past December's payday starts the walk in next January: this year's card and the
+    // Dashboard both show today's net worth, without January's plan.
+    func testYearEndAgreesWithTheDashboardWhenDataRunsPastDecembersPayday() throws {
+        let input = F.input(
+            today: date(2026, 12, 30), snapshots: [F.snapshot(1, date(2026, 7, 1), 1_000_000)],
+            transactions: [F.txn(1, date(2026, 12, 28), -1_000, category: F.rentId, account: 9)],
+            entries: F.salaryAndRent, salaries: [date(2026, 11, 24), date(2026, 12, 24)]
+        )
+        XCTAssertEqual(input.payCalendar.month(containing: date(2026, 12, 28)), PayMonth(year: 2027, month: 1))
+        let series = DashboardCalculator.netWorthSeries(input)
+        let current = try XCTUnwrap(series.currentNetWorthMinorUnits)
+        XCTAssertEqual(series.yearEnds.first?.valueMinorUnits, current)
+        XCTAssertEqual(DashboardCalculator.yearEndNetWorth(input, year: 2026), YearEndNetWorth(valueMinorUnits: current, isForecast: true))
+        XCTAssertEqual(DashboardCalculator.yearEndNetWorth(input, year: 2027)?.valueMinorUnits, series.yearEnds.last?.valueMinorUnits)
+    }
+
     func testYearEndBaselineIsTheForecastWhileLastDecemberIsOpen() throws {
         let input = F.input(
             today: date(2026, 4, 15),
@@ -74,8 +92,8 @@ final class DashboardNetWorthTests: XCTestCase {
         XCTAssertFalse(input.payCalendar.isClosed(PayMonth(year: 2025, month: 12)))
         let yearEnd = try XCTUnwrap(DashboardCalculator.netWorthSeries(input).yearEnds.first)
         let forecastDec2025 = ForecastProjector.forecastNetWorth(startingNetWorth: 1_200_000, latestRealMonth: (2026, 2), atEndOf: 2025, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
-        XCTAssertEqual(yearEnd.valueMinorUnits, 3_200_000)
-        XCTAssertEqual(yearEnd.changeMinorUnits, 3_200_000 - forecastDec2025)
+        XCTAssertEqual(yearEnd.valueMinorUnits, 3_401_000)
+        XCTAssertEqual(yearEnd.changeMinorUnits, 3_401_000 - forecastDec2025)
         XCTAssertNotEqual(yearEnd.changeMinorUnits, 2_200_000) // not the real Dec 2025 (1_000_000)
     }
 
@@ -96,9 +114,12 @@ final class DashboardNetWorthTests: XCTestCase {
         XCTAssertEqual(lastActual.year, 2026); XCTAssertEqual(lastActual.month, 9)
         XCTAssertEqual(series.forecast.first, NetWorthPoint(year: 2026, month: 9, valueMinorUnits: current))
 
-        // The rest is unchanged: the October anchor, then the projector's walk from November.
-        let projection = ForecastProjector.monthlyProjection(startingNetWorth: current, latestRealMonth: (2026, 10), throughYear: 2027, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
-        XCTAssertEqual(Array(series.forecast.dropFirst()), [NetWorthPoint(year: 2026, month: 10, valueMinorUnits: current)] + projection)
+        // Then the October pay month's end (current + its remaining plan: +3,000 salary, −990
+        // rent beyond the −10 paid), then the projector's walk from November.
+        let remaining = ForecastProjector.remainingPlanned(year: 2026, month: 10, actuals: [F.rentId: -1_000], categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
+        XCTAssertEqual(remaining, 201_000)
+        let projection = ForecastProjector.monthlyProjection(startingNetWorth: current + remaining, latestRealMonth: (2026, 10), throughYear: 2027, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions)
+        XCTAssertEqual(Array(series.forecast.dropFirst()), [NetWorthPoint(year: 2026, month: 10, valueMinorUnits: current + remaining)] + projection)
     }
 
     // Importing through April while the balance was last recorded in February: the line runs
@@ -165,10 +186,10 @@ final class DashboardNetWorthTests: XCTestCase {
 
         // Current year: realised = latest actual (Feb 2026: 3_300_000) - Dec 2025 (3_000_000); the rest is forecast.
         XCTAssertEqual(changes[2].realisedMinorUnits, 300_000)
-        XCTAssertEqual(changes[2].forecastMinorUnits, 2_000_000)
-        XCTAssertEqual(changes[2].totalMinorUnits, 2_300_000)
+        XCTAssertEqual(changes[2].forecastMinorUnits, 2_201_000) // February's remaining plan included
+        XCTAssertEqual(changes[2].totalMinorUnits, 2_501_000)
 
-        // Next year: entirely forecast (Dec 2027 7_700_000 - Dec 2026 5_300_000).
+        // Next year: entirely forecast (Dec 2027 7_901_000 - Dec 2026 5_501_000).
         XCTAssertEqual(changes[3].realisedMinorUnits, 0)
         XCTAssertEqual(changes[3].forecastMinorUnits, 2_400_000)
     }

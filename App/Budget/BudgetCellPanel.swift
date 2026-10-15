@@ -70,8 +70,9 @@ struct BudgetCellPanel: View {
                 isAdding = true
             } : nil,
             plannedSection: {
-                // Planned items have no account: none under an account filter (spec §7).
-                if let plan = target.plan, !viewModel.isAccountFiltered { plannedSection(plan) }
+                // The filter's accounts' items only, each naming its account (spec 2026-10-15 §3);
+                // none with Show forecast off (actuals only).
+                if let plan = target.plan, viewModel.showForecast { plannedSection(plan) }
             },
             onEdit: { transaction in
                 editingRecentIds = viewModel.recentCategoryIds()
@@ -82,7 +83,7 @@ struct BudgetCellPanel: View {
         // Another cell's panel: a stale Remove… error doesn't carry over.
         .onChange(of: target.title) { _, _ in planError = nil }
         .plannedOccurrenceEditing(editing: $editing, removing: $removing, planError: $planError,
-                                  categories: viewModel.categories, actions: viewModel.planEditActions)
+                                  categories: viewModel.categories, actions: viewModel.planEditActions, accountOptions: viewModel.planAccountOptions)
         .sheet(item: $editingTransaction) { transaction in
             EditTransactionSheet(
                 transaction: transaction,

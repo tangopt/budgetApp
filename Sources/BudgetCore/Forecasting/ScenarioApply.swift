@@ -439,6 +439,8 @@ public enum ScenarioApply {
         func d(_ date: Date?) -> String { date.map { "\($0.timeIntervalSince1970)" } ?? "-" }
         var parts = ["\(e.groupId)", "\(e.categoryId)", "\(e.amountMinorUnits)", e.frequency.rawValue, "\(e.interval)", d(e.startDate), d(e.endDate),
                      "\(e.isEnabled)", e.status.rawValue, e.note ?? "-", e.anchorDay.map(String.init) ?? "-"]
+        // Appended only when set, so fingerprints journaled before entries had an account still match.
+        if let accountId = e.accountId { parts.append("account:\(accountId)") }
         for x in try PlannedOccurrenceException.filter(Column("entryId") == entryId).order(Column("originalDate")).fetchAll(db) {
             parts.append("[\(d(x.originalDate))|\(x.isSkipped)|\(x.amountMinorUnits.map(String.init) ?? "-")|\(d(x.date))|\(x.categoryId.map(String.init) ?? "-")]")
         }
