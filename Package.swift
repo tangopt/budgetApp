@@ -20,6 +20,7 @@ let package = Package(
         .executableTarget(name: "ConvertBalances", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
         .executableTarget(name: "SeedCategoryGroups", dependencies: ["BudgetCore"]),
         .executableTarget(name: "SeedForecastPlan", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "FillSpreadsheetPlanGaps", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")])
+        .executableTarget(name: "FillSpreadsheetPlanGaps", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
+        .executableTarget(name: "CorrectSpreadsheetBalances", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")])
     ]
 )
