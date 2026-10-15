@@ -15,7 +15,7 @@ public struct PayMonth: Hashable, Comparable, Codable, Sendable {
     public static func < (a: PayMonth, b: PayMonth) -> Bool { a.index < b.index }
 }
 
-public enum PayCloseSource: Equatable { case manual, salary, projected }
+public enum PayCloseSource: Equatable, Sendable { case manual, salary, projected }
 public enum PayCalendarError: Error, Equatable { case invalidCloseDate }
 
 public struct PayCalendar: Sendable {
