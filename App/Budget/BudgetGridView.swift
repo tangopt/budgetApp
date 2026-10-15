@@ -347,23 +347,9 @@ struct BudgetGridView: View {
                 }
                 }
 
-            if viewModel.selectedYears.contains(where: hasPending) {
-                HStack(spacing: 4) {
-                    Image(systemName: "circle.fill")
-                    Image(systemName: "circle.lefthalf.filled")
-                    Text("Italic amounts include planned money not yet confirmed. Hover a cell (or a Year Total) for how much.")
-                }
-                .font(.caption)
-                .foregroundStyle(Color.pending)
-            }
         }
         .padding()
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                // Off: actuals only, and net worth stops at today (spec 2026-10-15 §1).
-                Toggle("Show forecast", isOn: $viewModel.showForecast)
-                    .help("Show planned and expected amounts, and the net worth forecast")
-            }
             ToolbarItem(placement: .primaryAction) {
                 Button("Export CSV…") {
                     exportDocument = CSVDocument(text: viewModel.exportCSV())
@@ -1053,15 +1039,6 @@ struct BudgetGridView: View {
     /// A cell with its unconfirmed part shown (`PlanCellView`).
     private func planCell(_ cell: BudgetGridViewModel.PlanCell, isYearTotal: Bool = false, font: Font = bodyMoneyFont) -> some View {
         PlanCellView(value: cell.value, pending: cell.pending, state: cell.state, isYearTotal: isYearTotal, font: font)
-    }
-
-    /// Whether any row of `year` still carries unconfirmed money (for the footnote).
-    private func hasPending(year: Int) -> Bool {
-        let planned = viewModel.categories.filter { !$0.isReserved }
-        return (1...12).contains { month in
-            viewModel.cell(planned, year: year, month: month).state != .none
-                || viewModel.reserveCell(viewModel.reserves, year: year, month: month).state != .none
-        }
     }
 
     private func accountBalanceCell(_ balance: MonthlyAccountBalance?) -> some View {

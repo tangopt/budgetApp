@@ -61,6 +61,8 @@ struct AccountFilterPanel: View {
                         }
                     }
                 }
+                Divider().padding(.vertical, 4)
+                forecastRow
             }
             .padding(.vertical, 6)
             .frame(width: 190, alignment: .topLeading)
@@ -79,11 +81,42 @@ struct AccountFilterPanel: View {
                         .foregroundStyle(Color.accentColor)
                         .help("Filtered to some accounts")
                 }
+                Spacer()
+                Button {
+                    viewModel.showForecast.toggle()
+                } label: {
+                    Image(systemName: "chart.line.uptrend.xyaxis")
+                        .foregroundStyle(viewModel.showForecast ? Color.pending : Color.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help(viewModel.showForecast ? "Hide forecast" : "Show forecast")
+                .accessibilityLabel("Show forecast")
+                .accessibilityValue(viewModel.showForecast ? "On" : "Off")
             }
             .padding(.vertical, 6)
             .frame(width: 28)
             .frame(maxHeight: .infinity, alignment: .top)
         }
+    }
+
+    /// Show forecast (spec 2026-10-15 §1), pinned under the accounts list. Off: actuals
+    /// only, and net worth stops at today.
+    private var forecastRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "chart.line.uptrend.xyaxis")
+                .foregroundStyle(viewModel.showForecast ? Color.pending : Color.secondary)
+                .frame(width: 16)
+            Text("Show forecast").lineLimit(1)
+            Spacer(minLength: 4)
+            Toggle("Show forecast", isOn: $viewModel.showForecast)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture { viewModel.showForecast.toggle() }
+        .help("Show planned and expected amounts, and the net worth forecast")
     }
 
     // MARK: Reordering
