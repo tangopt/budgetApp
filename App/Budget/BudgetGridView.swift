@@ -16,6 +16,25 @@ struct CSVDocument: FileDocument {
     }
 }
 
+/// The Budget's CSV as a file to share, named e.g. "Budget 2026.csv". The CSV is built only
+/// when a share actually asks for it (the export scans every category × pay month), then
+/// written to a temporary file whose URL is shared.
+struct CSVShareFile: Transferable {
+    let name: String
+    let makeText: @MainActor () -> String
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .commaSeparatedText) { file in
+            let text = await MainActor.run { file.makeText() }
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent("\(file.name).csv")
+            try Data(text.utf8).write(to: url)
+            return SentTransferredFile(url)
+        }
+    }
+}
+
 struct BudgetGridView: View {
     @ObservedObject var viewModel: BudgetGridViewModel
     @State private var showExporter = false
@@ -367,10 +386,19 @@ struct BudgetGridView: View {
         .padding()
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button("Export CSV…") {
-                    exportDocument = CSVDocument(text: viewModel.exportCSV())
-                    showExporter = true
+                Menu {
+                    Button("Export CSV…") {
+                        exportDocument = CSVDocument(text: viewModel.exportCSV())
+                        showExporter = true
+                    }
+                    ShareLink(item: CSVShareFile(name: csvFileName, makeText: { [viewModel] in viewModel.exportCSV() }),
+                              preview: SharePreview(csvFileName)) {
+                        Label("Share CSV…", systemImage: "square.and.arrow.up")
+                    }
+                } label: {
+                    Label("Share or export", systemImage: "square.and.arrow.up")
                 }
+                .help("Share or export")
             }
         }
         .fileExporter(isPresented: $showExporter, document: exportDocument, contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
@@ -468,86 +496,41 @@ struct BudgetGridView: View {
         }
     }
 
+    /// The shared CSV's file name (without extension): "Budget 2026", or "Budget 2025–2026"
+    /// when comparing years.
+    private var csvFileName: String {
+        let years = viewModel.selectedYears.sorted()
+        guard let first = years.first, let last = years.last else { return "Budget" }
+        return first == last ? "Budget \(first)" : "Budget \(first)–\(last)"
+    }
+
     private var yearPicker: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 10) {
-                ForEach(viewModel.availableYears, id: \.self) { year in
-                    Button {
-                        // ⌘-click adds or removes a year (to compare several); a plain click
-                        // shows just that year.
-                        if NSEvent.modifierFlags.contains(.command) {
-                            viewModel.toggleYear(year)
-                        } else {
-                            viewModel.selectYear(year)
-                        }
-                    } label: {
-                        yearCard(year)
-                    }
-                    .buttonStyle(.plain)
-                    .help("⌘-click to compare several years")
-                }
+        YearCardRow(years: viewModel.availableYears, onSelect: { year in
+            // ⌘-click adds or removes a year (to compare several); a plain click shows just
+            // that year.
+            if NSEvent.modifierFlags.contains(.command) {
+                viewModel.toggleYear(year)
+            } else {
+                viewModel.selectYear(year)
             }
-            // Vertical padding, not just horizontal: the selected chip's 2pt stroke sits
-            // right at the row's own edge, and ScrollView sizes its cross-axis tightly to
-            // content — with no vertical breathing room the stroke's top/bottom pixel was
-            // clipped by the scroll view's own bounds.
-            .padding(.horizontal)
-            .padding(.vertical, 4)
+        }, help: "⌘-click to compare several years") { year in
+            yearCard(year)
         }
     }
 
-    /// A year in the selector, all the same size: the year (" forecast" after it while its
-    /// year-end is a forecast, " today" for this year with Show forecast off), its year-end
-    /// net worth, and the change on the previous year-end as "↑ £24,953 · 16.4%" ("—"
-    /// without a previous year).
+    /// A year's card (`YearCard`): " forecast" after the year while its year-end is a
+    /// forecast, " today" for this year with Show forecast off.
     private func yearCard(_ year: Int) -> some View {
-        let selected = viewModel.selectedYears.contains(year)
         let yearEnd = viewModel.yearEndNetWorth(year)
-        let change = viewModel.yearEndChange(year)
-        let percent = viewModel.yearEndChangePercent(year)
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                Text(String(year)).font(.subheadline).bold()
-                if yearEnd?.isForecast == true {
-                    Text(" forecast").font(.caption2).foregroundStyle(.secondary)
-                } else if yearEnd != nil, !viewModel.showForecast, year == MonthRange.components(of: Date()).year {
-                    Text(" today").font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            if let yearEnd {
-                MoneyText(minorUnits: yearEnd.valueMinorUnits)
-            } else {
-                Text("—").foregroundStyle(.secondary)
-            }
-            // No change (or less than shows in whole pounds) reads "—", not a green "↑ £0".
-            if let change, DashboardFormat.pounds(abs(change)) != DashboardFormat.pounds(0) {
-                Text(Self.yearChangeText(change: change, percent: percent))
-                    .font(.caption2).monospacedDigit()
-                    .foregroundStyle(change >= 0 ? Color.green : Color.red)
-            } else {
-                Text("—").font(.caption2).foregroundStyle(.secondary)
-            }
+        let caption: String? = if yearEnd?.isForecast == true {
+            " forecast"
+        } else if yearEnd != nil, !viewModel.showForecast, year == MonthRange.components(of: Date()).year {
+            " today"
+        } else {
+            nil
         }
-        .lineLimit(1)
-        .padding(8)
-        .frame(width: Self.yearCardSize.width, height: Self.yearCardSize.height, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Color.accentColor.opacity(0.15) : Color.clear))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(selected ? Color.accentColor : Color.secondary.opacity(0.3), lineWidth: selected ? 2 : 1))
-        // The whole tile is the button: an unselected card's background is clear, which a plain
-        // button otherwise doesn't hit-test (only its text was clickable).
-        .contentShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    /// Every year card's size: fits the largest content (three lines; a seven-figure net worth).
-    private static let yearCardSize = CGSize(width: 160, height: 66)
-
-    /// "↑ £24,953 · 16.4%" (whole pounds); the percent is left out when there is none (a
-    /// previous year-end of zero).
-    static func yearChangeText(change: Int, percent: Double?) -> String {
-        let arrow = change >= 0 ? "↑" : "↓"
-        let amount = DashboardFormat.pounds(abs(change))
-        guard let percent else { return "\(arrow) \(amount)" }
-        return "\(arrow) \(amount) · \(String(format: "%.1f", abs(percent) * 100))%"
+        return YearCard(year: year, caption: caption, yearEnd: yearEnd?.valueMinorUnits, change: viewModel.yearEndChange(year),
+                        percent: viewModel.yearEndChangePercent(year), isSelected: viewModel.selectedYears.contains(year))
     }
 
     @ViewBuilder

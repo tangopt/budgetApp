@@ -49,9 +49,16 @@ struct ScenarioLabView: View {
                 .frame(width: 280)
             }
             ToolbarItem(placement: .primaryAction) {
-                Picker("Horizon", selection: $viewModel.horizon) {
-                    ForEach(ComparisonHorizon.allCases) { horizon in Text(horizon.label).tag(horizon) }
+                Menu {
+                    Picker("Horizon", selection: $viewModel.horizon) {
+                        ForEach(ComparisonHorizon.allCases) { horizon in Text(horizon.label).tag(horizon) }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("Horizon: \(viewModel.horizon.label)", systemImage: "calendar.badge.clock")
+                        .labelStyle(.titleAndIcon)
                 }
+                .help("How far ahead to forecast")
             }
         }
         .scenarioChipPrompts($chipPrompts, viewModel: viewModel)

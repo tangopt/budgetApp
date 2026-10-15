@@ -95,12 +95,11 @@ struct ScenarioGridTab: View {
             ScenarioChips(viewModel: viewModel, mode: .single(selected: $viewModel.gridSelection), prompts: $chipPrompts)
             headerBar
                 .padding(.bottom, 12)  // the chips' own 16pt bottom padding sits above the bar
-            Picker("Year", selection: $viewModel.gridYear) {
-                ForEach(viewModel.gridYears, id: \.self) { year in Text(String(year)).tag(year) }
+            YearCardRow(years: viewModel.gridYears, onSelect: { viewModel.gridYear = $0 }) { year in
+                YearCard(year: year, caption: year == MonthRange.components(of: viewModel.today).year ? " forecast" : nil,
+                         yearEnd: viewModel.gridYearEnds[year], change: viewModel.gridYearEndChange(year),
+                         percent: viewModel.gridYearEndChangePercent(year), isSelected: viewModel.gridYear == year)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
             .padding(.bottom, 8)
             SidePanelHost(selection: cellSelection) {
                 grid
