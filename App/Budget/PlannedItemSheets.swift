@@ -65,6 +65,7 @@ enum PlanFormat {
         case PlannedItemEditError.occurrenceConfirmed: return "This occurrence has already happened."
         case PlannedItemEditError.invalidDate: return "Pick a date in an open month."
         case PlannedItemEditError.frequencyNeedsFollowing: return "A frequency change applies to this and all following occurrences."
+        case PlannedItemEditError.accountNeedsFollowing: return "An account change applies to this and all following occurrences."
         case PlannedItemEditError.invalidInterval: return "Repeat every 1 or more."
         case PlannedItemEditError.notFound: return "This planned item no longer exists."
         case PlannedItemsError.reservedCategory: return "Reserves get allowances from the Reserved section, not planned items."
@@ -102,23 +103,93 @@ enum PlanEditScope {
 /// (`PlannedItemEditing.isLocked`: confirmed in the budget, a closed month in a scenario)
 /// and its series.
 struct PlannedRow: Identifiable {
+    /// The occurrence as shown: for an incoming planned transfer, flipped and filed under the
+    /// paying account's transfer category.
     let occurrence: PlannedOccurrence
     let isConfirmed: Bool
     let entry: ForecastEntry
-    var id: String { occurrence.id }
+    /// The item's account as shown in the side panel ("Current", "Joint ← Current"); nil = none shown.
+    var accountLabel: String?
+    /// For an incoming planned transfer into a selected account (spec 2026-10-15 §2): the
+    /// series' own occurrence, which Edit… and Remove… change.
+    var source: PlannedOccurrence?
+    var id: String { occurrence.id + (source == nil ? "" : "-in") }
+
+    /// The row Edit… and Remove… work on: the series' own occurrence.
+    var editable: PlannedRow { source.map { PlannedRow(occurrence: $0, isConfirmed: isConfirmed, entry: entry, accountLabel: accountLabel) } ?? self }
 
     /// The occurrences of `plan` (a plan's effective entries, `ForecastCalculator.planEntries`)
     /// filed under `categoryId` (after any re-file) whose date falls in the calendar month
-    /// `year`/`month`, each with `isLocked`.
-    static func rows(categoryId: Int64, year: Int, month: Int, plan: [ForecastEntry], exceptions: [PlannedOccurrenceException], isLocked: (ForecastEntry, PlannedOccurrence) -> Bool) -> [PlannedRow] {
+    /// `year`/`month`, each with `isLocked`. With `filter`, only what its accounts see
+    /// (`PlannedItemAccounts.legs`: incoming planned transfers included); with `accountName`,
+    /// each row names its account.
+    static func rows(categoryId: Int64, year: Int, month: Int, plan: [ForecastEntry], exceptions: [PlannedOccurrenceException],
+                     filter: PlanAccountFilter? = nil, accounts: PlanAccountOptions? = nil,
+                     isLocked: (ForecastEntry, PlannedOccurrence) -> Bool) -> [PlannedRow] {
         let range = MonthRange.of(year: year, month: month)
         let byId = Dictionary(plan.compactMap { e in e.id.map { ($0, e) } }, uniquingKeysWith: { a, _ in a })
-        return PlannedOccurrences.occurrences(entries: plan, exceptions: exceptions, in: PayPeriod(startDate: range.start, endDate: range.end, type: .projected))
-            .filter { $0.categoryId == categoryId }
-            .compactMap { occurrence in
-                guard let entry = byId[occurrence.entryId] else { return nil }
-                return PlannedRow(occurrence: occurrence, isConfirmed: isLocked(entry, occurrence), entry: entry)
+        let occurrences = PlannedOccurrences.occurrences(entries: plan, exceptions: exceptions, in: PayPeriod(startDate: range.start, endDate: range.end, type: .projected))
+        let legs: [(occurrence: PlannedOccurrence, source: PlannedOccurrence?)]
+        if let filter {
+            let all = Dictionary(occurrences.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            legs = filter.itemAccounts.legs(occurrences, entries: plan, accountIds: filter.accountIds).map { leg in
+                (leg.occurrence, leg.isIncomingTransfer ? all[leg.occurrence.id] : nil)
             }
+        } else {
+            legs = occurrences.map { ($0, nil) }
+        }
+        return legs
+            .filter { $0.occurrence.categoryId == categoryId }
+            .compactMap { leg in
+                guard let entry = byId[leg.occurrence.entryId] else { return nil }
+                let label = accounts.flatMap { leg.source == nil ? $0.accountLabel(of: entry) : $0.incomingLabel(of: entry, occurrence: leg.source!) }
+                return PlannedRow(occurrence: leg.occurrence, isConfirmed: isLocked(entry, leg.source ?? leg.occurrence), entry: entry, accountLabel: label, source: leg.source)
+            }
+    }
+}
+
+/// The Account picker's choices for planned items (spec 2026-10-15 §2): the accounts by
+/// display name, and the account an item without one is inferred to (`PlannedItemAccounts`).
+struct PlanAccountOptions {
+    let accounts: [Account]
+    let itemAccounts: PlannedItemAccounts?
+
+    static let none = PlanAccountOptions(accounts: [], itemAccounts: nil)
+
+    func name(_ accountId: Int64?) -> String? {
+        accountId.flatMap { id in accounts.first { $0.id == id }?.displayName }
+    }
+
+    /// "Automatic (Current)", or "Automatic (none)" when the category has no history.
+    func automaticLabel(categoryId: Int64?) -> String {
+        "Automatic (\(name(categoryId.flatMap { itemAccounts?.inferredAccount(categoryId: $0) }) ?? "none"))"
+    }
+
+    /// The item's effective account's name (nil = none).
+    func accountLabel(of entry: ForecastEntry) -> String? {
+        name(itemAccounts?.effectiveAccount(of: entry) ?? entry.accountId)
+    }
+
+    /// An incoming planned transfer: "Joint ← Current" (the tied account, then the payer).
+    func incomingLabel(of entry: ForecastEntry, occurrence: PlannedOccurrence) -> String? {
+        guard let tied = itemAccounts?.tiedAccountByCategory[occurrence.categoryId], let into = name(tied) else { return nil }
+        return "\(into) ← \(accountLabel(of: entry) ?? "?")"
+    }
+}
+
+/// A `SheetForm` row picking a planned item's account: Automatic (nil) or one account.
+struct PlanAccountPicker: View {
+    @Binding var accountId: Int64?
+    let options: PlanAccountOptions
+    let categoryId: Int64?
+
+    var body: some View {
+        LabeledContent("Account") {
+            Picker("Account", selection: $accountId) {
+                Text(options.automaticLabel(categoryId: categoryId)).tag(Int64?.none)
+                ForEach(options.accounts) { account in Text(account.displayName).tag(account.id) }
+            }
+        }
     }
 }
 
@@ -145,11 +216,12 @@ struct PlannedOccurrenceEditing: ViewModifier {
     @Binding var planError: String?
     let categories: [Category]
     let actions: PlanEditActions
+    var accountOptions: PlanAccountOptions = .none
 
     func body(content: Content) -> some View {
         content
             .sheet(item: $editing) { row in
-                EditOccurrenceSheet(row: row, categories: categories) { change, scope in actions.save(row, change, scope) }
+                EditOccurrenceSheet(row: row, categories: categories, accountOptions: accountOptions) { change, scope in actions.save(row, change, scope) }
             }
             .confirmationDialog("Remove this planned occurrence?", isPresented: Binding(
                 get: { removing != nil },
@@ -169,8 +241,9 @@ struct PlannedOccurrenceEditing: ViewModifier {
 }
 
 extension View {
-    func plannedOccurrenceEditing(editing: Binding<PlannedRow?>, removing: Binding<PlannedRow?>, planError: Binding<String?>, categories: [Category], actions: PlanEditActions) -> some View {
-        modifier(PlannedOccurrenceEditing(editing: editing, removing: removing, planError: planError, categories: categories, actions: actions))
+    func plannedOccurrenceEditing(editing: Binding<PlannedRow?>, removing: Binding<PlannedRow?>, planError: Binding<String?>, categories: [Category], actions: PlanEditActions,
+                                  accountOptions: PlanAccountOptions = .none) -> some View {
+        modifier(PlannedOccurrenceEditing(editing: editing, removing: removing, planError: planError, categories: categories, actions: actions, accountOptions: accountOptions))
     }
 }
 
@@ -217,8 +290,8 @@ struct PlannedOccurrencesSection: View {
                         if !row.isConfirmed {
                             HStack {
                                 Spacer()
-                                Button("Edit…") { onEdit(row) }
-                                Button("Remove…") { onRemove(row) }
+                                Button("Edit…") { onEdit(row.editable) }
+                                Button("Remove…") { onRemove(row.editable) }
                             }
                             .controlSize(.small)
                         }
@@ -236,8 +309,8 @@ struct PlannedOccurrencesSection: View {
                         status(row)
                             .frame(width: 90, alignment: .trailing)
                         if !row.isConfirmed {
-                            Button("Edit…") { onEdit(row) }
-                            Button("Remove…") { onRemove(row) }
+                            Button("Edit…") { onEdit(row.editable) }
+                            Button("Remove…") { onRemove(row.editable) }
                         }
                     }
                 }
@@ -245,11 +318,13 @@ struct PlannedOccurrencesSection: View {
         }
     }
 
-    /// The frequency, plus " · <category>" when categories are named.
+    /// The frequency, plus " · <category>" when categories are named and " · <account>"
+    /// when the row names its account.
     private func caption(_ row: PlannedRow) -> String {
-        let frequency = PlanFormat.frequency(row.entry.frequency, interval: row.entry.interval)
-        guard let categoryNameById else { return frequency }
-        return "\(frequency) · \(categoryNameById[row.occurrence.categoryId] ?? "")"
+        var parts = [PlanFormat.frequency(row.entry.frequency, interval: row.entry.interval)]
+        if let categoryNameById { parts.append(categoryNameById[row.occurrence.categoryId] ?? "") }
+        if let account = row.accountLabel { parts.append(account) }
+        return parts.joined(separator: " · ")
     }
 
     private func status(_ row: PlannedRow) -> some View {
@@ -271,6 +346,8 @@ struct EditOccurrenceSheet: View {
     let row: PlannedRow
     let categories: [Category]
     let fixedScope: PlanEditScope?
+    /// The Account picker's choices; no accounts = no picker.
+    let accountOptions: PlanAccountOptions
     let onSave: (OccurrenceChange, PlanEditScope) -> SaveOutcome
     @Environment(\.dismiss) private var dismiss
 
@@ -284,14 +361,18 @@ struct EditOccurrenceSheet: View {
     @State private var occurrenceCount = 12
     /// Local midnight of the picked end day.
     @State private var endDay: Date
+    /// nil = Automatic.
+    @State private var accountId: Int64?
     @State private var choosingScope = false
     @State private var errorMessage: String?
 
-    init(row: PlannedRow, categories: [Category], fixedScope: PlanEditScope? = nil, onSave: @escaping (OccurrenceChange, PlanEditScope) -> SaveOutcome) {
+    init(row: PlannedRow, categories: [Category], fixedScope: PlanEditScope? = nil, accountOptions: PlanAccountOptions = .none, onSave: @escaping (OccurrenceChange, PlanEditScope) -> SaveOutcome) {
         self.row = row
         self.categories = categories
         self.fixedScope = fixedScope
+        self.accountOptions = accountOptions
         self.onSave = onSave
+        _accountId = State(initialValue: row.entry.accountId)
         _amountText = State(initialValue: Money.formatInput(abs(row.occurrence.amountMinorUnits)))
         _pickedDay = State(initialValue: PayCalendar.localDay(sameDayAs: row.occurrence.date, in: .current))
         _categoryId = State(initialValue: row.occurrence.categoryId)
@@ -355,11 +436,12 @@ struct EditOccurrenceSheet: View {
         if frequency != row.entry.frequency { change.frequency = frequency }
         if interval != row.entry.interval { change.interval = interval }
         if let endChange { change.endDate = endChange }
+        if accountId != row.entry.accountId { change.accountId = .some(accountId) }
         return change == OccurrenceChange() ? nil : change
     }
 
-    /// A frequency, interval or end change applies to the series, so only "This and all following".
-    private var changesFrequency: Bool { frequency != row.entry.frequency || interval != row.entry.interval || endChange != nil }
+    /// A frequency, interval, end or account change applies to the series, so only "This and all following".
+    private var changesFrequency: Bool { frequency != row.entry.frequency || interval != row.entry.interval || endChange != nil || accountId != row.entry.accountId }
 
     var body: some View {
         SheetScaffold(title: "Edit planned occurrence", error: errorMessage, onCancel: { dismiss() },
@@ -389,10 +471,13 @@ struct EditOccurrenceSheet: View {
                     LabeledContent("Every") { IntervalStepper(interval: $interval, frequency: frequency) }
                     RecurrenceEndFields(mode: $endMode, endDay: $endDay, count: $occurrenceCount, startDay: pickedDay, lastDate: lastDate)
                 }
+                if !accountOptions.accounts.isEmpty {
+                    PlanAccountPicker(accountId: $accountId, options: accountOptions, categoryId: categoryId)
+                }
                 if fixedScope == .thisAndFollowing {
                     SheetFormNote("Changes this and all following occurrences.")
                 } else if changesFrequency {
-                    SheetFormNote("A frequency or end change applies to this and all following occurrences.")
+                    SheetFormNote("A frequency, end or account change applies to this and all following occurrences.")
                 }
             }
         }
@@ -401,6 +486,7 @@ struct EditOccurrenceSheet: View {
         .onChange(of: endMode) { _, _ in errorMessage = nil }
         .onChange(of: endDay) { _, _ in errorMessage = nil }
         .onChange(of: occurrenceCount) { _, _ in errorMessage = nil }
+        .onChange(of: accountId) { _, _ in errorMessage = nil }
         .confirmationDialog("Apply this change to", isPresented: $choosingScope, titleVisibility: .visible) {
             if !changesFrequency {
                 Button("Only this occurrence") { save(.onlyThis) }
@@ -440,20 +526,25 @@ struct AddPlannedItemSheet: View {
     let categories: [Category]
     /// The scope's planned items (`ForecastCalculator.planEntries`), for the "Already planned" lines.
     let plannedEntries: [ForecastEntry]
-    let onSave: (PlannedItemCategory, _ amountMinorUnits: Int, ForecastFrequency, _ interval: Int, _ start: Date, _ end: Date?) -> SaveOutcome
+    /// The Account picker's choices; no accounts = no picker.
+    let accountOptions: PlanAccountOptions
+    let onSave: (PlannedItemCategory, _ amountMinorUnits: Int, ForecastFrequency, _ interval: Int, _ start: Date, _ end: Date?, _ accountId: Int64?) -> SaveOutcome
     @Environment(\.dismiss) private var dismiss
 
     /// Opened from an empty grid cell: `initialCategoryId` is preselected (still editable) and
     /// `initialDate` (a UTC day) makes it a one-off on that date (`CellAddDate`).
+    /// `initialAccountId` prefills the account (the Budget's single filtered account).
     init(type: CategoryType, scope: PlanScope, categories: [Category], plannedEntries: [ForecastEntry],
-         initialCategoryId: Int64? = nil, initialDate: Date? = nil,
-         onSave: @escaping (PlannedItemCategory, _ amountMinorUnits: Int, ForecastFrequency, _ interval: Int, _ start: Date, _ end: Date?) -> SaveOutcome) {
+         accountOptions: PlanAccountOptions = .none, initialCategoryId: Int64? = nil, initialDate: Date? = nil, initialAccountId: Int64? = nil,
+         onSave: @escaping (PlannedItemCategory, _ amountMinorUnits: Int, ForecastFrequency, _ interval: Int, _ start: Date, _ end: Date?, _ accountId: Int64?) -> SaveOutcome) {
         self.type = type
         self.scope = scope
         self.categories = categories
         self.plannedEntries = plannedEntries
+        self.accountOptions = accountOptions
         self.onSave = onSave
         _categoryId = State(initialValue: initialCategoryId)
+        _accountId = State(initialValue: initialAccountId)
         if let initialDate {
             let day = PayCalendar.localDay(sameDayAs: initialDate, in: .current)
             _isRecurring = State(initialValue: false)
@@ -466,6 +557,8 @@ struct AddPlannedItemSheet: View {
     private static let newCategorySentinel: Int64 = -1
 
     @State private var categoryId: Int64?
+    /// nil = Automatic.
+    @State private var accountId: Int64?
     @State private var newCategoryName = ""
     @State private var amountText = ""
     @State private var isRecurring = true
@@ -572,6 +665,9 @@ struct AddPlannedItemSheet: View {
                 if isRecurring {
                     RecurrenceEndFields(mode: $endMode, endDay: $endDay, count: $occurrenceCount, startDay: startDay, lastDate: lastDate)
                 }
+                if !accountOptions.accounts.isEmpty {
+                    PlanAccountPicker(accountId: $accountId, options: accountOptions, categoryId: isCreatingNewCategory ? nil : categoryId)
+                }
             }
         }
         .onChange(of: amountText) { _, _ in errorMessage = nil }
@@ -586,7 +682,7 @@ struct AddPlannedItemSheet: View {
         guard let category, let amount = signedAmount else { return }
         let start = PayCalendar.utcDay(sameDayAs: startDay, in: .current)
         let end = isRecurring ? RecurrenceEndFields.resolve(mode: endMode, endDay: endDay, count: occurrenceCount, lastDate: lastDate) : nil
-        switch onSave(category, amount, isRecurring ? frequency : .once, isRecurring ? interval : 1, start, end) {
+        switch onSave(category, amount, isRecurring ? frequency : .once, isRecurring ? interval : 1, start, end, accountId) {
         case .saved, .savedButReloadFailed: dismiss()
         case .failed(let message): errorMessage = message
         }

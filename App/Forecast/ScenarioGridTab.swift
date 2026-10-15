@@ -124,8 +124,8 @@ struct ScenarioGridTab: View {
         }
         .sheet(item: $addTarget) { target in
             AddPlannedItemSheet(type: target.type, scope: target.scope, categories: viewModel.categories, plannedEntries: viewModel.scenarioPlanEntries,
-                                initialCategoryId: target.categoryId, initialDate: target.date) { category, amount, frequency, interval, start, end in
-                viewModel.addPlannedItem(category, type: target.type, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end)
+                                accountOptions: viewModel.accountOptions, initialCategoryId: target.categoryId, initialDate: target.date) { category, amount, frequency, interval, start, end, accountId in
+                viewModel.addPlannedItem(category, type: target.type, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: start, endDate: end, accountId: accountId)
             }
         }
     }
@@ -509,6 +509,6 @@ private struct ScenarioDrillDownSheet: View {
             .frame(height: 300)
         }
         .plannedOccurrenceEditing(editing: $editing, removing: $removing, planError: $planError,
-                                  categories: viewModel.categories, actions: viewModel.planEditActions)
+                                  categories: viewModel.categories, actions: viewModel.planEditActions, accountOptions: viewModel.accountOptions)
     }
 }

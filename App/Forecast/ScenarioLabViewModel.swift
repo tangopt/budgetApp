@@ -102,6 +102,8 @@ final class ScenarioLabViewModel: ObservableObject {
     private var transactions: [Transaction] = []
     private var transferLinks: [TransferLink] = []
     private var accounts: [Account] = []
+    /// The planned item sheets' Account picker; rebuilt on load.
+    private(set) var accountOptions: PlanAccountOptions = .none
     private var snapshots: [BalanceSnapshot] = []
     private var rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
     private var groups: [ForecastGroup] = []
@@ -235,6 +237,9 @@ final class ScenarioLabViewModel: ObservableObject {
         today = Date()
         // As the Dashboard builds it: today never earlier than the latest transaction.
         payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: loaded.manualCloses, today: today)
+        // Planned items' accounts for the Account picker (spec 2026-10-15 §2), as the Budget infers them.
+        accountOptions = PlanAccountOptions(accounts: accounts.sortedForDisplay(),
+                                            itemAccounts: PlannedItemAccounts(categories: categories, budgetTransactions: TransferLinks.budgetFacing(transactions, links: transferLinks), calendar: payCalendar))
         // A deleted scenario leaves every tab's selection; the callers recompute after.
         let ids = Set(scenarios.compactMap(\.id))
         isReading = true
@@ -566,14 +571,14 @@ final class ScenarioLabViewModel: ObservableObject {
     }
 
     /// A new item in the Grid tab's scenario (`PlannedItems.add(…, scenarioId:)`).
-    func addPlannedItem(_ category: PlannedItemCategory, type: CategoryType, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?) -> SaveOutcome {
+    func addPlannedItem(_ category: PlannedItemCategory, type: CategoryType, amountMinorUnits: Int, frequency: ForecastFrequency, interval: Int, startDate: Date, endDate: Date?, accountId: Int64?) -> SaveOutcome {
         guard let scenarioId = gridSelection else { return .failed("Select a scenario to add items to it.") }
         return perform { db in
             switch category {
             case .existing(let id):
-                _ = try PlannedItems.add(db: db, categoryId: id, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, scenarioId: scenarioId)
+                _ = try PlannedItems.add(db: db, categoryId: id, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, scenarioId: scenarioId, accountId: accountId)
             case .new(let name):
-                _ = try PlannedItems.add(db: db, newCategoryName: name, type: type, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, scenarioId: scenarioId)
+                _ = try PlannedItems.add(db: db, newCategoryName: name, type: type, amountMinorUnits: amountMinorUnits, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, scenarioId: scenarioId, accountId: accountId)
             }
         }
     }
