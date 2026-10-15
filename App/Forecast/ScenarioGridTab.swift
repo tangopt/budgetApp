@@ -540,6 +540,8 @@ struct ScenarioGridTab: View {
             cellSelection.select(key: cellKey(row, month: month), target: target)
             return
         }
+        // A reserve with a value but no allowance occurrences isn't empty: nothing to add.
+        guard !hasValue else { return }
         guard !viewModel.payCalendar.isClosed(PayMonth(year: year, month: month)), let scope = viewModel.editScope else { return }
         let date = CellAddDate.date(year: year, month: month)
         if category.isReserved {

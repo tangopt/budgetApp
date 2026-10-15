@@ -147,6 +147,10 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     /// Each plan's grid by plan (0 = the Budget) and year, so switching the Grid tab's plan or
     /// year back is instant; emptied by every load.
     private var gridCache: [String: ScenarioGrid] = [:]
+    /// Each plan's effective entries (`ForecastCalculator.planEntries`) by plan (0 = the
+    /// Budget): the occurrences' plan, asked for every category by a Totals panel; emptied by
+    /// every load.
+    private var planEntriesCache: [Int64: [ForecastEntry]] = [:]
     /// The actuals every plan's grid shares (`ScenarioComparison.gridActuals`), rebuilt on load:
     /// the side panel's transactions and the Totals block's counted transfers.
     private var gridActuals = ScenarioGridActuals.empty
@@ -252,6 +256,10 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: loaded.manualCloses, today: today)
         gridActuals = ScenarioComparison.gridActuals(comparisonData)
         gridCache = [:]
+        planEntriesCache = [:]
+        categoryById = Dictionary(categories.compactMap { category in category.id.map { ($0, category) } }, uniquingKeysWith: { a, _ in a })
+        categoryNameById = categoryById.mapValues(\.name)
+        accountNameById = Dictionary(accounts.compactMap { account in account.id.map { ($0, account.displayName) } }, uniquingKeysWith: { a, _ in a })
         // Planned items' accounts for the Account picker (spec 2026-10-15 §2), as the Budget infers them.
         accountOptions = PlanAccountOptions(accounts: accounts.sortedForDisplay(),
                                             itemAccounts: PlannedItemAccounts(categories: categories, budgetTransactions: TransferLinks.budgetFacing(transactions, links: transferLinks), calendar: payCalendar,
@@ -569,6 +577,16 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         return ForecastCalculator.planEntries(entries: plan.entries, groups: plan.groups)
     }
 
+    /// The Grid tab's plan's effective entries, memoised per plan.
+    private var gridPlanEntries: [ForecastEntry] {
+        let key = gridSelection ?? 0
+        if let cached = planEntriesCache[key] { return cached }
+        let plan = gridPlan
+        let entries = ForecastCalculator.planEntries(entries: plan.entries, groups: plan.groups)
+        planEntriesCache[key] = entries
+        return entries
+    }
+
     /// The Grid tab's plan's occurrences under `category` in the calendar month: the scenario's
     /// (only closed months lock a scenario occurrence), or the Budget's, shown read-only
     /// (locked as the Budget grid locks them).
@@ -576,7 +594,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         guard let categoryId = category.id else { return [] }
         let plan = gridPlan
         let monthTotals = gridSelection == nil ? gridActuals.monthTotals : [:]
-        return PlannedRow.rows(categoryId: categoryId, year: year, month: month, plan: ForecastCalculator.planEntries(entries: plan.entries, groups: plan.groups),
+        return PlannedRow.rows(categoryId: categoryId, year: year, month: month, plan: gridPlanEntries,
                                exceptions: plan.exceptions, accounts: accounts.isEmpty ? nil : accountOptions) { entry, occurrence in
             PlannedItemEditing.isLocked(entry: entry, occurrence: occurrence, calendar: payCalendar, monthTotals: monthTotals,
                                         entries: budgetPlan.entries, groups: groups, exceptions: budgetPlan.exceptions, categories: categories)
@@ -621,17 +639,10 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         return reserves.compactMap(\.id).reduce(0) { $0 + (gridCells[$1]?[month]?.value ?? 0) }
     }
 
-    var categoryById: [Int64: Category] {
-        Dictionary(categories.compactMap { category in category.id.map { ($0, category) } }, uniquingKeysWith: { a, _ in a })
-    }
-
-    var categoryNameById: [Int64: String] {
-        Dictionary(categories.compactMap { category in category.id.map { ($0, category.name) } }, uniquingKeysWith: { a, _ in a })
-    }
-
-    var accountNameById: [Int64: String] {
-        Dictionary(accounts.compactMap { account in account.id.map { ($0, account.displayName) } }, uniquingKeysWith: { a, _ in a })
-    }
+    /// Categories and account names by id, for the side panel; rebuilt on load.
+    private(set) var categoryById: [Int64: Category] = [:]
+    private(set) var categoryNameById: [Int64: String] = [:]
+    private(set) var accountNameById: [Int64: String] = [:]
 
     var planAccountOptions: PlanAccountOptions { accountOptions }
     var panelShowsPlan: Bool { true }
