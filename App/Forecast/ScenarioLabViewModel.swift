@@ -82,13 +82,11 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
             recomputeYearEnds()
         }
     }
-    /// The Grid tab's year, one of `gridYears`.
-    @Published var gridYear: Int {
-        didSet {
-            guard oldValue != gridYear else { return }
-            recomputeGrid()
-        }
-    }
+    /// The Grid tab's selected years (`YearSelection`: sorted, never empty), all among
+    /// `gridYears`: one shows its months, several their year totals side by side.
+    @Published private(set) var gridSelectedYears: [Int]
+    /// The Grid tab's first selected year: the one whose months show while only one is selected.
+    var gridYear: Int { gridSelectedYears[0] }
     /// The Differences tab's ticked cells (scenario entry ids, unique across scenarios); at
     /// most one per row (`setTicked`).
     @Published var tickedDifferenceIds: Set<Int64> = []
@@ -142,9 +140,11 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     /// By scenario id: the budget entries it holds an unchanged copy of (a row's cell shows
     /// the budget's version there; "—" when the scenario doesn't have the item).
     @Published private(set) var unchangedCopies: [Int64: Set<Int64>] = [:]
-    /// The Grid tab's plan for `gridYear` (`ScenarioComparison.grid`): its cells by category id
-    /// then month, and its Totals block.
-    @Published private(set) var grid: ScenarioGrid = .empty
+    /// The Grid tab's plan for each selected year (`ScenarioComparison.grid`): its cells by
+    /// category id then month, and its Totals block.
+    @Published private(set) var yearGrids: [Int: ScenarioGrid] = [:]
+    /// The Grid tab's plan for `gridYear`.
+    var grid: ScenarioGrid { yearGrids[gridYear] ?? .empty }
     /// The Grid tab's plan's cells for `gridYear`, by category id then month.
     var gridCells: [Int64: [Int: ScenarioGridCell]] { grid.cells }
     /// Each plan's grid by plan (0 = the Budget) and year, so switching the Grid tab's plan or
@@ -170,7 +170,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
 
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
-        _gridYear = Published(initialValue: MonthRange.components(of: Date()).year)
+        _gridSelectedYears = Published(initialValue: [MonthRange.components(of: Date()).year])
     }
 
     /// A comparison still computing when the lab goes away is cancelled.
@@ -293,8 +293,23 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     }
 
     private func clampGridYear() {
-        let years = gridYears
-        if !years.contains(gridYear) { gridYear = years.contains(MonthRange.components(of: today).year) ? MonthRange.components(of: today).year : (years.first ?? gridYear) }
+        let clamped = YearSelection.clamped(gridSelectedYears, to: gridYears, preferred: MonthRange.components(of: today).year)
+        if clamped != gridSelectedYears { gridSelectedYears = clamped }
+    }
+
+    /// A plain click on a Grid year card: shows just that year.
+    func selectGridYear(_ year: Int) {
+        guard gridSelectedYears != [year] else { return }
+        gridSelectedYears = [year]
+        recomputeGrid()
+    }
+
+    /// A ⌘-click on a Grid year card: adds or removes the year (the last one stays).
+    func toggleGridYear(_ year: Int) {
+        let toggled = YearSelection.toggled(gridSelectedYears, year)
+        guard toggled != gridSelectedYears else { return }
+        gridSelectedYears = toggled
+        recomputeGrid()
     }
 
     private var comparisonData: ComparisonData {
@@ -424,14 +439,18 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     }
 
     private func recomputeGrid() {
-        let key = "\(gridSelection ?? 0)-\(gridYear)"
-        if let cached = gridCache[key] {
-            grid = cached
-            return
+        var grids: [Int: ScenarioGrid] = [:]
+        for year in gridSelectedYears {
+            let key = "\(gridSelection ?? 0)-\(year)"
+            if let cached = gridCache[key] {
+                grids[year] = cached
+            } else {
+                let computed = ScenarioComparison.grid(comparisonData, actuals: gridActuals, scenario: gridPlan, budget: budgetPlan, year: year)
+                gridCache[key] = computed
+                grids[year] = computed
+            }
         }
-        let computed = ScenarioComparison.grid(comparisonData, actuals: gridActuals, scenario: gridPlan, budget: budgetPlan, year: gridYear)
-        gridCache[key] = computed
-        grid = computed
+        yearGrids = grids
     }
 
     /// Works out the Grid tab's plan's year-end net worths off the main actor (cached per plan),
@@ -682,10 +701,10 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     }
 
     /// The Total reserved cell's month (what's left of the allowances; 0 for Total in, and
-    /// outside the shown year).
+    /// outside the shown years).
     func totalsReserved(_ row: BudgetTotals.Row, year: Int, month: Int) -> Int {
-        guard row != .totalIn, year == gridYear else { return 0 }
-        return reserves.compactMap(\.id).reduce(0) { $0 + (gridCells[$1]?[month]?.value ?? 0) }
+        guard row != .totalIn, let cells = yearGrids[year]?.cells else { return 0 }
+        return reserves.compactMap(\.id).reduce(0) { $0 + (cells[$1]?[month]?.value ?? 0) }
     }
 
     /// Categories and account names by id, for the side panel; rebuilt on load.
