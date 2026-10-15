@@ -29,13 +29,14 @@ final class BudgetGridViewModel: ObservableObject {
         didSet { if accountFilter != oldValue { rebuildShownActuals(); clearPlanCaches(); clearNetWorthCaches() } }
     }
     /// The toolbar's Show forecast (spec 2026-10-15 §1), remembered across launches: off, cells
-    /// show actuals only and net worth stops at today.
+    /// show actuals only and net worth stops at today. The caches that depend on it (cells,
+    /// the Net Worth row, the year cards) are kept per setting, so toggling clears nothing:
+    /// toggling back is a cache hit, and the first switch reuses the planned totals, reserves,
+    /// balances and `NetWorthActuals` (none of which depend on it).
     @Published var showForecast: Bool = UserDefaults.standard.object(forKey: BudgetGridViewModel.showForecastKey) as? Bool ?? true {
         didSet {
             guard showForecast != oldValue else { return }
             UserDefaults.standard.set(showForecast, forKey: Self.showForecastKey)
-            clearPlanCaches()
-            clearNetWorthCaches()
         }
     }
     private static let showForecastKey = "budgetGrid.showForecast"
@@ -102,22 +103,28 @@ final class BudgetGridViewModel: ObservableObject {
     /// Planned (confirmed-forecast) total per category per calendar month, memoised per
     /// `MonthRange.index` for the same reason. Cleared whenever forecasts or exceptions change.
     private var plannedCache: [Int: [Int64: Int]] = [:]
-    /// Each category's Budget cell, memoised per `MonthRange.index` then category id: group,
-    /// section and Year Total rows (and the pending footnote) combine member cells on every
-    /// render. Cleared with `plannedCache`, when
-    /// categories change, and when the pay calendar is rebuilt.
-    private var cellCache: [Int: [Int64: PlanCell]] = [:]
+    /// Each category's Budget cell, memoised per Show forecast, then `MonthRange.index`, then
+    /// category id: group, section and Year Total rows (and the pending footnote) combine member
+    /// cells on every render. Cleared with `plannedCache`, when categories change, and when the
+    /// pay calendar is rebuilt.
+    private var cellCache: [Bool: [Int: [Int64: PlanCell]]] = [:]
     /// `payCalendar.monthClass` per `MonthRange.index`; reset when the calendar is rebuilt.
     private var monthClassCache: [Int: MonthClass] = [:]
     /// Account balance cells per `MonthRange.index` then account id (`nil` = no data yet). Each
     /// look-up scans every snapshot and transaction, so they're memoised like the plan cells.
     /// Cleared whenever accounts, snapshots, transactions or the exchange rate change.
     private var accountBalanceCache: [Int: [Int64: MonthlyAccountBalance?]] = [:]
-    /// Year-end net worth per year for the year cards (`DashboardCalculator.yearEndNetWorth`, nil = none);
-    /// cleared with the net worth caches and whenever categories, forecasts, the filter or Show forecast change.
-    private var yearEndCache: [Int: YearEndNetWorth?] = [:]
-    /// The Net Worth row per year (`DashboardCalculator.budgetNetWorthMonths`), cleared like `yearEndCache`.
-    private var netWorthRowCache: [Int: [Int?]] = [:]
+    /// Year-end net worth per Show forecast, then year, for the year cards
+    /// (`DashboardCalculator.yearEndNetWorth`, nil = none); cleared with the net worth caches,
+    /// whenever categories, forecasts or the filter change.
+    private var yearEndCache: [Bool: [Int: YearEndNetWorth?]] = [:]
+    /// The Net Worth row per Show forecast, then year (`DashboardCalculator.budgetNetWorthMonths`),
+    /// cleared like `yearEndCache`.
+    private var netWorthRowCache: [Bool: [Int: [Int?]]] = [:]
+    /// `DashboardCalculator.netWorthActuals(netWorthInput)` (every month-end since the first
+    /// data: the costly part of the net-worth figures), worked out once per input and shared by
+    /// every year's row and card in both Show forecast states. Cleared like `yearEndCache`.
+    private var netWorthActualsCache: NetWorthActuals??
     /// The net-worth figures' input (filter and plan included), built once per change.
     private var netWorthInputCache: DashboardInput?
     /// Planned items' accounts (`PlannedItemAccounts`), rebuilt lazily when categories or
@@ -271,6 +278,7 @@ final class BudgetGridViewModel: ObservableObject {
         yearEndCache = [:]
         netWorthRowCache = [:]
         netWorthInputCache = nil
+        netWorthActualsCache = nil
     }
 
     /// The plan's caches: planned totals, cells and reserves.
@@ -292,23 +300,31 @@ final class BudgetGridViewModel: ObservableObject {
         return input
     }
 
+    /// `netWorthInput`'s `NetWorthActuals` (nil = no balance data yet), memoised.
+    private var netWorthActuals: NetWorthActuals? {
+        if let cached = netWorthActualsCache { return cached }
+        let actuals = DashboardCalculator.netWorthActuals(netWorthInput)
+        netWorthActualsCache = .some(actuals)
+        return actuals
+    }
+
     /// The Net Worth row's month (`DashboardCalculator.budgetNetWorthMonths`, net-worth-forecast-fix
     /// §3): the actual month-end net worth to today, then with Show forecast this month's
     /// remaining plan and the projection, else nil ("—"). The filter's accounts only. Memoised per year.
     func netWorthTotal(year: Int, month: Int) -> Int? {
-        if netWorthRowCache[year] == nil {
-            netWorthRowCache[year] = DashboardCalculator.budgetNetWorthMonths(netWorthInput, year: year, includeForecast: showForecast)
+        if netWorthRowCache[showForecast]?[year] == nil {
+            netWorthRowCache[showForecast, default: [:]][year] = DashboardCalculator.budgetNetWorthMonths(netWorthInput, actuals: netWorthActuals, year: year, includeForecast: showForecast)
         }
-        return netWorthRowCache[year]?[month - 1] ?? nil
+        return netWorthRowCache[showForecast]?[year]?[month - 1] ?? nil
     }
 
     /// Net worth at the end of `year` for the year cards: real for past years, the Dashboard's
     /// forecast to December for this year — or, with Show forecast off, today's actual net
     /// worth (`DashboardCalculator.yearEndNetWorth`). The filter's accounts only.
     func yearEndNetWorth(_ year: Int) -> YearEndNetWorth? {
-        if let cached = yearEndCache[year] { return cached }
-        let value = DashboardCalculator.yearEndNetWorth(netWorthInput, year: year, includeForecast: showForecast)
-        yearEndCache[year] = .some(value)
+        if let cached = yearEndCache[showForecast]?[year] { return cached }
+        let value = DashboardCalculator.yearEndNetWorth(netWorthInput, actuals: netWorthActuals, year: year, includeForecast: showForecast)
+        yearEndCache[showForecast, default: [:]][year] = .some(value)
         return value
     }
 
@@ -489,14 +505,14 @@ final class BudgetGridViewModel: ObservableObject {
     func cell(_ category: Category, year: Int, month: Int) -> PlanCell {
         guard let id = category.id else { return (0, 0, .none) }
         let key = MonthRange.index(year: year, month: month)
-        if let cached = cellCache[key]?[id] { return cached }
+        if let cached = cellCache[showForecast]?[key]?[id] { return cached }
         let actual = payMonthCategoryTotal(category, year: year, month: month)
         let cell: PlanCell = !showForecast ? (actual, 0, .none)
             : PlanStatus.cell(actual: actual,
                               planned: plannedTotals(year: year, month: month)[id] ?? 0,
                               categoryType: category.type,
                               monthClass: monthClass(year: year, month: month))
-        cellCache[key, default: [:]][id] = cell
+        cellCache[showForecast, default: [:]][key, default: [:]][id] = cell
         return cell
     }
 
