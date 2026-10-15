@@ -31,8 +31,8 @@ public enum AccountEditing {
         let trimmed = try validatedName(db: db, name: name, excluding: nil)
         let details = try details.normalized()
         var account = Account(name: trimmed, currency: currency, kind: kind, trackingMode: trackingMode,
-                              alias: details.alias, sortCode: details.sortCode, accountNumber: details.accountNumber, iban: details.iban,
                               sortOrder: try AccountOrdering.orderForNewAccount(db: db))
+        account.apply(details)
         try account.insert(db)
         if let openingBalanceEntered {
             try BalanceUpdates.upsertSnapshot(db: db, accountId: account.id!, date: asOf, balanceMinorUnits: NetWorthCalculator.signedSnapshotBalance(enteredMinorUnits: openingBalanceEntered, accountKind: kind), note: nil)
@@ -45,7 +45,8 @@ public enum AccountEditing {
     /// Currency never changes after creation. A kind change to or from `.credit` is
     /// refused once the account has any snapshot or transaction (signs would flip).
     /// `details` nil leaves the alias and bank details as they are; otherwise they are
-    /// normalised and replace them (blank fields clear). `trackingMode` nil keeps the stored
+    /// normalised and replace them (blank fields clear) — with a region, only that region's
+    /// fields plus bank name and BIC; stored values that predate a rule pass unchanged. `trackingMode` nil keeps the stored
     /// (legacy, ignored) value.
     public static func update(db: Database, accountId: Int64, name: String, kind: AccountKind, trackingMode: AccountTrackingMode? = nil, details: AccountDetails? = nil) throws {
         guard var account = try Account.fetchOne(db, key: accountId) else { throw AccountEditError.accountNotFound }
@@ -56,11 +57,8 @@ public enum AccountEditing {
         account.name = trimmed
         account.kind = kind
         if let trackingMode { account.trackingMode = trackingMode }
-        if let details = try details?.normalized() {
-            account.alias = details.alias
-            account.sortCode = details.sortCode
-            account.accountNumber = details.accountNumber
-            account.iban = details.iban
+        if let details = try details?.normalized(existing: account) {
+            account.apply(details)
         }
         try account.update(db)
         // A new name or alias renames its transfer category.

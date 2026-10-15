@@ -25,6 +25,15 @@ struct ReviewRow: Identifiable {
 
 typealias ReviewItemId = ReviewSelectionId<UUID>
 
+/// A CSV whose sort code / account number don't match the account it's being imported into
+/// (spec 2026-10-15 §5): staging waits for Cancel or Import anyway.
+struct AccountMismatchPrompt: Identifiable {
+    let id = UUID()
+    let message: String
+    let fileURL: URL
+    let account: Account
+}
+
 /// The review list's sections, grouped by merchant key. Confirmed rows sit in their own
 /// section until Finish import saves them.
 struct ReviewSections {
@@ -101,6 +110,9 @@ final class ImportViewModel: ObservableObject {
     @Published private(set) var categories: [Category] = []
     @Published private(set) var categoryGroups: [CategoryGroup] = []
     @Published private(set) var recentCategoryIds: [Int64] = []
+    /// Set when a CSV's account columns contradict the account; the alert's Import anyway
+    /// stages it regardless (`importAnyway`).
+    @Published var accountMismatch: AccountMismatchPrompt?
 
     private let dbQueue: DatabaseQueue
     private let coordinator: ImportCoordinator
@@ -108,6 +120,10 @@ final class ImportViewModel: ObservableObject {
     private var lastSourceFileName: String = ""
     private var lastAccountId: Int64 = 0
     private var lastAccountCurrency: Currency = .gbp
+    private var lastAccountName = ""
+    /// The account's empty sort code / account number the file under review fills on Finish
+    /// import (spec 2026-10-15 §5); never written on Cancel.
+    private var accountFill: StatementAccountFill?
     /// Every row's review key (`ReviewKey.groupKeys`), computed over the whole review so
     /// partitioning and every section group alike. Recomputed only when the rows themselves
     /// change (`reviewKeyRowIds`), not when a category or note is set.
@@ -135,26 +151,64 @@ final class ImportViewModel: ObservableObject {
         errorMessage = message
     }
 
-    func stageCSV(fileURL: URL, account: Account) async {
+    /// Reads the file and profile, then checks the file's sort code / account number columns
+    /// against the account before staging (`StatementAccountCheck`): a mismatch asks first
+    /// (`accountMismatch`) unless `checkAccount` is false (Import anyway). All of that runs
+    /// before `isStaging` is set, so a blocked file never shows the Import screen.
+    func stageCSV(fileURL: URL, account: Account, checkAccount: Bool = true) async {
         // Check-and-set happens synchronously on the main actor before any `await`, so
         // two calls can't both get past this guard.
         guard !isStaging else { return }
+        errorMessage = nil
+        statusMessage = nil
+        guard let accountId = account.id else { return fail("This account hasn't been saved yet.") }
+        let csvText: String
+        let profile: ImportProfile
+        do {
+            csvText = try Self.readText(at: fileURL)
+            guard let saved = try profileStore.find(accountId: accountId, format: .csv) else {
+                return fail("No column mapping saved for this account yet. Run the mapping wizard first.")
+            }
+            profile = saved
+        } catch {
+            return fail("Couldn't read \(fileURL.lastPathComponent): \(error.localizedDescription)")
+        }
+        // The stored details, not the possibly stale `account` the screen holds.
+        let current = storedAccount(accountId) ?? account
+        var fill: StatementAccountFill?
+        switch StatementAccountCheck.evaluate(file: StatementAccountCheck.fileValues(csvText: csvText, profile: profile), account: current) {
+        case .ok(let planned):
+            fill = planned
+        case .mismatch(let file, let stored):
+            if checkAccount {
+                accountMismatch = AccountMismatchPrompt(
+                    message: StatementAccountCheck.mismatchMessage(file: file, account: stored, accountName: current.displayName),
+                    fileURL: fileURL, account: account)
+                return
+            }
+        }
         isStaging = true
         stagingProgress = nil
         defer { isStaging = false; stagingProgress = nil }
-        errorMessage = nil
-        statusMessage = nil
         do {
-            guard let accountId = account.id else { return fail("This account hasn't been saved yet.") }
-            let csvText = try Self.readText(at: fileURL)
-            guard let profile = try profileStore.find(accountId: accountId, format: .csv) else {
-                return fail("No column mapping saved for this account yet. Run the mapping wizard first.")
-            }
             let result = try await coordinator.stageCSVImport(csvText: csvText, profile: profile, accountId: accountId, onProgress: makeProgressHandler())
-            apply(result, sourceFileName: fileURL.lastPathComponent, account: account)
+            apply(result, sourceFileName: fileURL.lastPathComponent, account: current)
+            if isReviewing { accountFill = fill }
         } catch {
             fail("Couldn't read \(fileURL.lastPathComponent): \(error.localizedDescription)")
         }
+    }
+
+    /// Synchronous on purpose: `stageCSV` must not suspend before it sets `isStaging`.
+    private func storedAccount(_ id: Int64) -> Account? {
+        try? dbQueue.read { db in try Account.fetchOne(db, key: id) }
+    }
+
+    /// The mismatch alert's Import anyway: stages the file without the account check (and
+    /// so without filling anything).
+    func importAnyway(_ prompt: AccountMismatchPrompt) async {
+        accountMismatch = nil
+        await stageCSV(fileURL: prompt.fileURL, account: prompt.account, checkAccount: false)
     }
 
     /// Progress callbacks arrive from `ImportCoordinator`, which isn't main-actor-isolated,
@@ -187,6 +241,8 @@ final class ImportViewModel: ObservableObject {
         lastSourceFileName = sourceFileName
         lastAccountId = account.id ?? 0
         lastAccountCurrency = account.currency
+        lastAccountName = account.displayName
+        accountFill = nil
         // Credit-card statements show balances with bank-specific sign conventions, so the
         // feature is off for them (see the spec's non-goals).
         statementBalances = account.kind == .credit ? .notProvided : result.statementBalances
@@ -458,16 +514,12 @@ final class ImportViewModel: ObservableObject {
         let statement = statementClosing.map {
             StatementFinish(closing: $0, addAdjustment: addStatementAdjustment && statementAdjustmentBlockedBy == nil)
         }
-        let outcome: StatementFinishOutcome?
+        let result: ImportFinishResult
         do {
-            if plan.isEmpty {
-                outcome = try statement.map { try coordinator.finishStatement(accountId: lastAccountId, sourceFileName: lastSourceFileName, statement: $0) }
-            } else {
-                outcome = try coordinator.commit(
-                    accountId: lastAccountId, sourceFileName: lastSourceFileName,
-                    staged: plan.staged, decisions: plan.decisions, statement: statement
-                )
-            }
+            result = try coordinator.finish(
+                accountId: lastAccountId, sourceFileName: lastSourceFileName,
+                staged: plan.staged, decisions: plan.decisions, statement: statement, accountFill: accountFill
+            )
         } catch {
             fail("Couldn't finish the import: \(error.localizedDescription)")
             return false
@@ -476,7 +528,8 @@ final class ImportViewModel: ObservableObject {
         var parts = [plan.isEmpty ? "No new transactions to save from \(lastSourceFileName)."
                                   : "Saved \(plan.staged.count) transaction(s) from \(lastSourceFileName)."]
         if pendingCount > 0 { parts.append("\(pendingCount) to assign from Uncategorized.") }
-        if let outcome { parts.append(Self.summary(of: outcome, currency: lastAccountCurrency)) }
+        if let outcome = result.statementOutcome { parts.append(Self.summary(of: outcome, currency: lastAccountCurrency)) }
+        if let filled = result.filled { parts.append(StatementAccountCheck.savedMessage(filled, accountName: lastAccountName)) }
         reset()
         statusMessage = parts.joined(separator: " ")
         return true
@@ -522,6 +575,7 @@ final class ImportViewModel: ObservableObject {
         statementCheckRowIds = nil
         addStatementAdjustment = false
         statementAdjustmentBlockedBy = nil
+        accountFill = nil
     }
 
     /// Reads a user-picked file, honouring security-scoped access if the app is ever

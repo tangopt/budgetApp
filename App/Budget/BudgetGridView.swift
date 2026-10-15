@@ -32,7 +32,9 @@ struct BudgetGridView: View {
     /// The body rows' width, adopted by the frozen header (`GridBodyWidth`); plain `@State`
     /// for the same reason as `scrollOffset`.
     @State private var bodyWidth = GridBodyWidth()
-    @State private var expandedGroupIds: Set<Int64> = []
+    /// Collapsed sections and expanded groups (`GridOutline`), remembered across launches.
+    @AppStorage("budgetGrid.collapsedSections") private var collapsedSectionsStore = ""
+    @AppStorage("budgetGrid.expandedGroups") private var expandedGroupsStore = ""
     @State private var closeTarget: CloseMonthTarget?
     @State private var addPlannedTarget: AddPlannedTarget?
     @State private var reserveSheet: ReserveSheet?
@@ -101,29 +103,38 @@ struct BudgetGridView: View {
         }
     }
 
-    /// Categories sharing a `groupId` collapse into one `.groupHeader` row (first-seen
-    /// order wins for where the group appears), expanding to a `.groupChild` row per
-    /// member only when its id is in `expandedGroupIds`. Ungrouped categories render
-    /// exactly as `.category`, interleaved in the section's existing order.
-    private func rowKinds(for type: CategoryType) -> [GridRowKind] {
-        let cats = categoriesByType(type)
-        var rows: [GridRowKind] = []
-        var seenGroupIds: Set<Int64> = []
-        for category in cats {
-            if let groupId = category.groupId {
-                guard !seenGroupIds.contains(groupId) else { continue }
-                seenGroupIds.insert(groupId)
-                guard let group = viewModel.categoryGroups.first(where: { $0.id == groupId }) else { continue }
-                let members = cats.filter { $0.groupId == groupId }
-                rows.append(.groupHeader(group, categories: members))
-                if expandedGroupIds.contains(groupId) {
-                    rows += members.map { .groupChild($0) }
-                }
-            } else {
-                rows.append(.category(category))
+    /// The collapsed sections and expanded groups, from their stored strings.
+    private var outline: GridOutline {
+        GridOutline(sectionsString: collapsedSectionsStore, groupsString: expandedGroupsStore)
+    }
+
+    /// Changes the outline and stores it; a selected cell whose row it hides loses its panel.
+    private func updateOutline(_ change: (inout GridOutline) -> Void) {
+        var updated = outline
+        change(&updated)
+        collapsedSectionsStore = updated.sectionsString
+        expandedGroupsStore = updated.groupsString
+        if let key = cellSelection.key, let rowId = key.split(separator: "|").first,
+           !allRows(updated).contains(where: { $0.id == rowId }) {
+            cellSelection.clear()
+        }
+    }
+
+    /// A section's body rows (`GridOutline.rows`): a category group shows as one
+    /// `.groupHeader` row, expanding to a `.groupChild` row per member; none while collapsed.
+    private func rowKinds(for type: CategoryType, _ outline: GridOutline) -> [GridRowKind] {
+        outline.rows(section: GridOutline.sectionKey(type), categories: categoriesByType(type), groups: viewModel.categoryGroups).map {
+            switch $0 {
+            case .category(let category): return .category(category)
+            case .groupHeader(let group, let members): return .groupHeader(group, categories: members)
+            case .groupChild(let category): return .groupChild(category)
             }
         }
-        return rows
+    }
+
+    /// The ids of a section's groups, for Expand all / Collapse all and ⌥-click.
+    private func groupIds(_ type: CategoryType) -> [Int64] {
+        GridOutline.groupIds(categories: categoriesByType(type), groups: viewModel.categoryGroups)
     }
 
     /// One grid row plus whether it should render with the alternating-shade
@@ -145,23 +156,31 @@ struct BudgetGridView: View {
         }
     }
 
-    private var allRows: [GridRow] {
+    /// Every row shown for `outline`: a collapsed section keeps only its header row (Accounts
+    /// and Reserved also keep their total row, as their headers show no totals).
+    private func allRows(_ outline: GridOutline) -> [GridRow] {
         func section(_ title: String, _ type: CategoryType) -> [GridRow] {
             var rows: [GridRow] = [GridRow(kind: .sectionHeader(title, type), shaded: false)]
-            for (index, kind) in rowKinds(for: type).enumerated() {
+            for (index, kind) in rowKinds(for: type, outline).enumerated() {
                 rows.append(GridRow(kind: kind, shaded: index % 2 == 1))
             }
             return rows
         }
         var accountRows: [GridRow] = [GridRow(kind: .sectionHeader("Accounts", nil), shaded: false)]
-        for (index, account) in viewModel.accounts.enumerated() {
-            accountRows.append(GridRow(kind: .account(account), shaded: index % 2 == 1))
+        if !outline.isCollapsed(GridOutline.accountsSection) {
+            for (index, account) in viewModel.accounts.enumerated() {
+                accountRows.append(GridRow(kind: .account(account), shaded: index % 2 == 1))
+            }
         }
+        // Kept when collapsed: the Accounts header shows no totals.
         accountRows.append(GridRow(kind: .netWorthTotal, shaded: false))
         var reservedRows: [GridRow] = [GridRow(kind: .reservedHeader, shaded: false)]
-        for (index, reserve) in viewModel.reserves.enumerated() {
-            reservedRows.append(GridRow(kind: .reserve(reserve), shaded: index % 2 == 1))
+        if !outline.isCollapsed(GridOutline.reservedSection) {
+            for (index, reserve) in viewModel.reserves.enumerated() {
+                reservedRows.append(GridRow(kind: .reserve(reserve), shaded: index % 2 == 1))
+            }
         }
+        // Kept when collapsed: the Reserved header shows no totals.
         if !viewModel.reserves.isEmpty { reservedRows.append(GridRow(kind: .reservedTotal, shaded: false)) }
         // Adjustments (Balance adjustment, Market movement): their actuals only — never in
         // the income/expense/transfer totals or the plan; they reach net worth via balances.
@@ -270,7 +289,7 @@ struct BudgetGridView: View {
                         .shadow(color: .black.opacity(0.08), radius: 3, y: 2)
 
                         // Built once per render and shared by the label column and the cells.
-                        let rows = allRows
+                        let rows = allRows(outline)
                         ScrollView(.vertical) {
                             HStack(alignment: .top, spacing: 0) {
                                 // Frozen category column: not inside any horizontal scroll, so it
@@ -515,12 +534,11 @@ struct BudgetGridView: View {
     private func rowLabel(_ row: GridRowKind, shaded: Bool) -> some View {
         switch row {
         case .sectionHeader(let title, let type):
-            HStack {
-                Text(title)
-                    .font(.caption).bold()
-                    .tracking(0.6)
-                    .foregroundStyle(.secondary)
-                Spacer()
+            let key = type.map(GridOutline.sectionKey) ?? GridOutline.accountsSection
+            let sectionGroups = type.map(groupIds) ?? []
+            SectionHeaderCell(title: title, isCollapsed: outline.isCollapsed(key),
+                              toggle: { updateOutline { $0.toggleSection(key) } },
+                              setAllGroups: sectionGroups.isEmpty ? nil : { expand in updateOutline { $0.setGroups(sectionGroups, expanded: expand) } }) {
                 if let type, type != .adjustment {
                     Button("+ Add planned item") {
                         viewModel.errorMessage = nil
@@ -530,9 +548,6 @@ struct BudgetGridView: View {
                     .font(.caption)
                 }
             }
-            .frame(width: 220, height: 24, alignment: .leading)
-            .padding(.horizontal, 8)
-            .background(Color.accentColor.opacity(0.08))
         case .category(let category):
             HStack(spacing: 6) {
                 CategoryBadge(category: category, size: .medium)
@@ -544,9 +559,10 @@ struct BudgetGridView: View {
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(rowColor(for: category.type)), alignment: .leading)
         case .groupHeader(let group, let categories):
-            GroupNameCell(name: group.name, isExpanded: group.id.map { expandedGroupIds.contains($0) } ?? false) {
+            GroupNameCell(name: group.name, isExpanded: group.id.map(outline.isExpanded) ?? false) { allInSection in
                 if let id = group.id {
-                    if expandedGroupIds.contains(id) { expandedGroupIds.remove(id) } else { expandedGroupIds.insert(id) }
+                    let section = categories.first.map { groupIds($0.type) }
+                    updateOutline { $0.toggleGroup(id, allIn: allInSection ? section : nil) }
                 }
             }
             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
@@ -569,13 +585,8 @@ struct BudgetGridView: View {
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(Color.purple), alignment: .leading)
         case .reservedHeader:
-            HStack {
-                Text("RESERVED")
-                    .font(.caption).bold()
-                    .tracking(0.6)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
+            SectionHeaderCell(title: "RESERVED", isCollapsed: outline.isCollapsed(GridOutline.reservedSection),
+                              toggle: { updateOutline { $0.toggleSection(GridOutline.reservedSection) } }, setAllGroups: nil) {
                 Button("+ Add reserve…") {
                     viewModel.errorMessage = nil
                     reserveSheet = .newReserve
@@ -583,9 +594,6 @@ struct BudgetGridView: View {
                 .buttonStyle(.borderless)
                 .font(.caption)
             }
-            .frame(width: 220, height: 24, alignment: .leading)
-                .padding(.horizontal, 8)
-                .background(Color.accentColor.opacity(0.08))
         case .reserve(let reserve):
             Text(reserve.name)
                 .frame(width: 220, height: 28, alignment: .leading)

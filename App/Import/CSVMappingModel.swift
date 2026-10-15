@@ -69,7 +69,8 @@ final class CSVMappingModel: ObservableObject {
             existingProfile?.csvDateColumnIndex, existingProfile?.csvDescriptionColumnIndex,
             existingProfile?.csvAmountColumnIndex, existingProfile?.csvCreditAmountColumnIndex,
             existingProfile?.csvBalanceColumnIndex, existingProfile?.csvFeeColumnIndex,
-            existingProfile?.csvStatusColumnIndex
+            existingProfile?.csvStatusColumnIndex, existingProfile?.csvSortCodeColumnIndex,
+            existingProfile?.csvAccountNumberColumnIndex
         ].compactMap { $0 }
         let columnCount = max(header.count, sampleRows.map(\.count).max() ?? 0, (profileColumns.max() ?? -1) + 1)
         self.header = header
@@ -231,6 +232,8 @@ extension CSVColumnRole {
         case .balance: "Balance"
         case .fee: "Fee"
         case .status: "Status"
+        case .sortCode: "Sort code"
+        case .accountNumber: "Account number"
         case .ignore: "Ignore"
         }
     }

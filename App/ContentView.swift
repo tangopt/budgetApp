@@ -175,7 +175,9 @@ struct ContentView: View {
                     UncategorizedView(viewModel: uncategorizedViewModel)
                         .onAppear { try? uncategorizedViewModel.load() }
                 case .accounts:
-                    AccountsView(viewModel: accountsViewModel, environment: environment)
+                    AccountsView(viewModel: accountsViewModel, environment: environment,
+                                 importViewModel: importViewModel, profileStore: profileStore,
+                                 navigate: { selection = $0 })
                         .onAppear { accountsViewModel.load() }
                 case .none:
                     Text("Select a screen from the sidebar.")
@@ -199,6 +201,18 @@ struct ContentView: View {
         } message: {
             Text("Nothing from this import has been saved yet. Unconfirmed transactions aren't saved either way.")
         }
+        // A CSV for another account (spec 2026-10-15 §5), from the Dashboard or Accounts screen.
+        .alert(
+            "This statement looks like it's for a different account",
+            isPresented: Binding(get: { importViewModel.accountMismatch != nil }, set: { if !$0 { importViewModel.accountMismatch = nil } }),
+            presenting: importViewModel.accountMismatch
+        ) { prompt in
+            Button("Cancel", role: .cancel) { importViewModel.accountMismatch = nil }
+                .keyboardShortcut(.defaultAction)
+            Button("Import anyway") { Task { await importViewModel.importAnyway(prompt) } }
+        } message: { prompt in
+            Text(prompt.message)
+        }
         .onAppear {
             // An Edit transaction save (Budget grid, Categories panel) can add or clear an uncategorised one.
             budgetGridViewModel.onTransactionEdited = { refreshUncategorizedCount() }
@@ -207,8 +221,8 @@ struct ContentView: View {
             refreshSharedState()
         }
         .onChange(of: importViewModel.isStaging) { _, staging in
-            // Staging only starts from the Dashboard's import card: follow it to the Import
-            // screen, which has just appeared in the sidebar.
+            // Staging starts from the Dashboard's import card or the Accounts screen: follow
+            // it to the Import screen, which has just appeared in the sidebar.
             if staging { selection = .importReview } else { importActivityChanged() }
         }
         .onChange(of: importViewModel.isReviewing) { importActivityChanged() }
