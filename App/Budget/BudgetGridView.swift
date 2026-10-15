@@ -539,6 +539,9 @@ struct BudgetGridView: View {
         .frame(width: Self.yearCardSize.width, height: Self.yearCardSize.height, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Color.accentColor.opacity(0.15) : Color.clear))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(selected ? Color.accentColor : Color.secondary.opacity(0.3), lineWidth: selected ? 2 : 1))
+        // The whole tile is the button: an unselected card's background is clear, which a plain
+        // button otherwise doesn't hit-test (only its text was clickable).
+        .contentShape(RoundedRectangle(cornerRadius: 8))
     }
 
     /// Every year card's size: fits the largest content (three lines; a seven-figure net worth).
@@ -1164,9 +1167,11 @@ struct BudgetGridView: View {
         cellSelection.select(key: month.map { cellKey(row, month: $0) } ?? cellKey(row, year: year), target: target)
     }
 
-    /// A Totals row's background: Net a shade stronger.
+    /// A Totals row's background, across the label, month, Year Total and multi-year cells: a
+    /// teal tint that sets the block apart from the category rows' grey banding in light and
+    /// dark mode (the system teal adapts to both); Net a shade stronger.
     fileprivate static func totalsBackground(_ row: BudgetTotals.Row) -> Color {
-        Color.teal.opacity(row == .net ? 0.14 : 0.07)
+        Color.teal.opacity(row == .net ? 0.20 : 0.11)
     }
 
     fileprivate static func totalsHelp(_ row: BudgetTotals.Row) -> String {
