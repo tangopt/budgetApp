@@ -252,6 +252,9 @@ struct BudgetGridView: View {
                                     // Year Total sits right after December in both.
                                     .frame(minWidth: 0, maxWidth: GridMetrics.monthsWidth, alignment: .leading)
                                     .clipped()
+                                    // Clipping hides the scrolled-off columns but not from clicks: without this they
+                                    // catch clicks meant for whatever sits beside the grid (the account panel).
+                                    .contentShape(Rectangle())
                                 } else if isMultiYear {
                                     // Several years: each year's total, and after every year but the
                                     // first its change from the previous selected year. Clipped and
@@ -271,6 +274,9 @@ struct BudgetGridView: View {
                                     }
                                     .frame(minWidth: 0, maxWidth: scrollingWidth, alignment: .leading)
                                     .clipped()
+                                    // Clipping hides the scrolled-off columns but not from clicks: without this they
+                                    // catch clicks meant for whatever sits beside the grid (the account panel).
+                                    .contentShape(Rectangle())
                                 }
                                 if showsPinnedYearTotal {
                                     Text("Year Total").bold()

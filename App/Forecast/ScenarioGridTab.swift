@@ -180,6 +180,9 @@ struct ScenarioGridTab: View {
                     // pinned Year Total sits right after December in a wide window.
                     .frame(minWidth: 0, maxWidth: GridMetrics.monthsWidth, alignment: .leading)
                     .clipped()
+                    // Clipping hides the scrolled-off columns but not from clicks: without this they
+                    // catch clicks meant for whatever sits beside the grid (the account panel).
+                    .contentShape(Rectangle())
                     Text("Year Total").bold()
                         .frame(width: GridMetrics.cellWidth, alignment: .trailing)
                         .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)

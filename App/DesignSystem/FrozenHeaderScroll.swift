@@ -69,6 +69,9 @@ struct BodyWidthFollower<Content: View>: View {
             .frame(width: width.width, alignment: .leading)
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .clipped()
+            // Clipping hides the scrolled-off columns but not from clicks: without this they
+            // catch clicks meant for whatever sits beside the grid (the account panel).
+            .contentShape(Rectangle())
     }
 }
 
