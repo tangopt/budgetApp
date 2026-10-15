@@ -284,40 +284,55 @@ private struct AccountListRow: View {
 
 // MARK: - Detail
 
-/// Sort code, account number and IBAN (only those set), each with a copy button that puts
-/// the unformatted value on the clipboard. Nothing when none is set.
+/// The "Bank details" section (spec 2026-10-15 §3): bank name, the region's fields and BIC
+/// (only those set), each with a copy button that puts the unformatted value on the
+/// clipboard, and Copy all. Without any, an "Add bank details…" link opens Edit.
 private struct AccountBankDetails: View {
     let account: Account
-
-    private var items: [(label: String, shown: String, copied: String)] {
-        var items: [(label: String, shown: String, copied: String)] = []
-        if let sortCode = account.sortCode { items.append(("Sort code", AccountDetailsFormat.formattedSortCode(sortCode), sortCode)) }
-        if let number = account.accountNumber { items.append(("Account number", number, number)) }
-        if let iban = account.iban { items.append(("IBAN", AccountDetailsFormat.formattedIBAN(iban), iban)) }
-        return items
-    }
+    let onAdd: () -> Void
 
     var body: some View {
-        if !items.isEmpty {
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 4) {
-                ForEach(items, id: \.label) { item in
-                    GridRow {
-                        Text(item.label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                        Text(item.shown).font(.body.monospacedDigit()).textSelection(.enabled)
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(item.copied, forType: .string)
-                        } label: {
-                            Image(systemName: "doc.on.doc")
-                        }
+        let lines = BankDetailsFormat.lines(for: account)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Bank details").font(.headline)
+                Spacer()
+                if let all = BankDetailsFormat.copyAllText(for: account) {
+                    Button("Copy all") { Self.copy(all) }
                         .buttonStyle(.borderless)
-                        .help("Copy \(item.label.lowercased())")
-                        .accessibilityLabel("Copy \(item.label.lowercased())")
-                    }
+                        .font(.callout)
+                        .help("Copy all bank details as text")
                 }
             }
-            .font(.callout)
+            if lines.isEmpty {
+                Button("Add bank details…", action: onAdd)
+                    .buttonStyle(.link)
+                    .font(.callout)
+            } else {
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 4) {
+                    ForEach(lines, id: \.label) { line in
+                        GridRow {
+                            Text(line.label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                            Text(line.shown).font(.body.monospacedDigit()).textSelection(.enabled)
+                            Button {
+                                Self.copy(line.copied)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Copy \(line.label.lowercased())")
+                            .accessibilityLabel("Copy \(line.label.lowercased())")
+                        }
+                    }
+                }
+                .font(.callout)
+            }
         }
+    }
+
+    private static func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }
 
@@ -358,12 +373,12 @@ private struct AccountDetailView: View {
                             .foregroundStyle(.red)
                             .help("A statement import's closing balance didn't match. Check for missing or duplicate transactions, or use Update balance… to settle it.")
                     }
-                    AccountBankDetails(account: row.account)
                     HStack {
                         Button("Update balance…") { onUpdateBalance(row) }
                         Button("Edit…") { onEdit(row) }
                         Button("Add transaction…") { onAddTransaction(row) }
                     }
+                    AccountBankDetails(account: row.account, onAdd: { onEdit(row) })
                     chart(row)
                     historyList(row)
                 }

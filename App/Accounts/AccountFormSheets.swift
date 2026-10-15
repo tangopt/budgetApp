@@ -39,6 +39,9 @@ struct AddAccountSheet: View {
                         ForEach(Currency.allCases, id: \.self) { Text($0.rawValue.uppercased()).tag($0) }
                     }
                     .fixedSize()
+                    .onChange(of: currency) { _, new in
+                        if !details.regionChosen { details.region = .forCurrency(new) }
+                    }
                 }
                 LabeledContent("Kind") { KindPicker(selection: $kind) }
                 LabeledContent(kind == .credit ? "Amount owed" : "Opening balance") {
@@ -134,50 +137,91 @@ struct EditAccountSheet: View {
 
 // MARK: - Shared pieces
 
-/// The alias and bank-detail text fields as typed. Each field validates on its own so the
-/// sheet can show the error under it; blank fields are fine.
+/// The alias and bank-detail text fields as typed, with the bank region (spec 2026-10-15 §2).
+/// Each field validates on its own so the sheet can show the error under it; blank fields are
+/// fine, only the region's fields (plus bank name and BIC) count, and a stored value that
+/// predates a rule only errs once edited.
 struct AccountDetailsDraft: Equatable {
     var alias = ""
+    var region: BankRegion = .uk
+    /// Whether the region was picked (or loaded from an account); until then the Add sheet
+    /// follows the currency.
+    var regionChosen = false
+    var bankName = ""
     var sortCode = ""
     var accountNumber = ""
     var iban = ""
+    var routingNumber = ""
+    var bic = ""
+    /// The account being edited: its stored values pass validation unchanged.
+    private var original: Account?
 
-    init() {}
+    init(currency: Currency = .gbp) {
+        region = .forCurrency(currency)
+    }
 
     init(_ account: Account) {
         alias = account.alias ?? ""
+        region = account.effectiveBankRegion
+        regionChosen = true
+        bankName = account.bankName ?? ""
         sortCode = account.sortCode.map(AccountDetailsFormat.formattedSortCode) ?? ""
         accountNumber = account.accountNumber ?? ""
         iban = account.iban.map(AccountDetailsFormat.formattedIBAN) ?? ""
+        routingNumber = account.routingNumber ?? ""
+        bic = account.bic ?? ""
+        original = account
+    }
+
+    subscript(field: BankDetailField) -> String {
+        get {
+            switch field {
+            case .bankName: return bankName
+            case .sortCode: return sortCode
+            case .routingNumber: return routingNumber
+            case .accountNumber: return accountNumber
+            case .iban: return iban
+            case .bic: return bic
+            }
+        }
+        set {
+            switch field {
+            case .bankName: bankName = newValue
+            case .sortCode: sortCode = newValue
+            case .routingNumber: routingNumber = newValue
+            case .accountNumber: accountNumber = newValue
+            case .iban: iban = newValue
+            case .bic: bic = newValue
+            }
+        }
     }
 
     var details: AccountDetails {
-        AccountDetails(alias: alias, sortCode: sortCode, accountNumber: accountNumber, iban: iban)
+        AccountDetails(alias: alias, sortCode: sortCode, accountNumber: accountNumber, iban: iban,
+                       region: region, bankName: bankName, routingNumber: routingNumber, bic: bic)
     }
 
-    var sortCodeError: String? { Self.message { try AccountDetailsFormat.normalizedSortCode(sortCode) } }
-    var accountNumberError: String? { Self.message { try AccountDetailsFormat.normalizedAccountNumber(accountNumber) } }
-    var ibanError: String? { Self.message { try AccountDetailsFormat.normalizedIBAN(iban) } }
-    var isValid: Bool { sortCodeError == nil && accountNumberError == nil && ibanError == nil }
-
-    private static func message(_ check: () throws -> String?) -> String? {
-        do { _ = try check(); return nil } catch { return (error as? AccountDetailsError)?.errorDescription ?? error.localizedDescription }
-    }
+    var errors: [BankDetailField: AccountDetailsError] { details.errors(existing: original) }
+    func error(_ field: BankDetailField) -> String? { errors[field]?.errorDescription }
+    var isValid: Bool { errors.isEmpty }
 }
 
-/// Alias, sort code, account number and IBAN rows for a `SheetForm`. A field's validation
-/// error shows once the field has lost focus or Return was pressed in it — not while it is
-/// being typed in (an edit hides it again until then) — or, with `revealAll`, always (Save
-/// was pressed while a field is invalid; the sheet doesn't save then).
+/// Alias, then a "Bank details" part: the region picker, bank name, the region's fields and
+/// BIC, as rows for a `SheetForm`. A field's validation error shows once the field has lost
+/// focus or Return was pressed in it — not while it is being typed in (an edit hides it again
+/// until then) — or, with `revealAll`, always (Save was pressed while a field is invalid; the
+/// sheet doesn't save then).
 struct AccountDetailsFields: View {
     @Binding var draft: AccountDetailsDraft
     var revealAll = false
 
-    private enum Field: Hashable { case sortCode, accountNumber, iban }
-
-    @FocusState private var focused: Field?
+    @FocusState private var focused: BankDetailField?
     /// Fields whose error may show: left, or submitted, since their last edit.
-    @State private var revealed: Set<Field> = []
+    @State private var revealed: Set<BankDetailField> = []
+
+    private var region: Binding<BankRegion> {
+        Binding(get: { draft.region }, set: { draft.region = $0; draft.regionChosen = true })
+    }
 
     var body: some View {
         LabeledContent("Alias") {
@@ -186,26 +230,49 @@ struct AccountDetailsFields: View {
                 .onChange(of: focused) { old, _ in
                     if let old { revealed.insert(old) }
                 }
-                .onChange(of: draft.sortCode) { _, _ in revealed.remove(.sortCode) }
-                .onChange(of: draft.accountNumber) { _, _ in revealed.remove(.accountNumber) }
-                .onChange(of: draft.iban) { _, _ in revealed.remove(.iban) }
+                .onChange(of: draft) { old, new in
+                    for field in BankDetailField.allCases where old[field] != new[field] { revealed.remove(field) }
+                }
         }
-        LabeledContent("Sort code") {
-            field(.sortCode, text: $draft.sortCode, prompt: "30-00-00", error: draft.sortCodeError)
+        Text("Bank details")
+            .font(.headline)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+        LabeledContent("Region") {
+            Picker("Region", selection: region) {
+                ForEach(BankRegion.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .fixedSize()
         }
-        LabeledContent("Account number") {
-            field(.accountNumber, text: $draft.accountNumber, prompt: "12345678", error: draft.accountNumberError)
+        LabeledContent("Bank name") { field(.bankName) }
+        ForEach(draft.region.fields, id: \.self) { field in
+            LabeledContent(BankDetailsFormat.label(field)) { self.field(field) }
         }
-        LabeledContent("IBAN") {
-            field(.iban, text: $draft.iban, prompt: "GB29 NWBK 6016 1331 9268 19", error: draft.ibanError)
+        LabeledContent("BIC/SWIFT") { field(.bic) }
+    }
+
+    private func prompt(_ field: BankDetailField) -> String {
+        switch field {
+        case .bankName: return "Optional, e.g. Lloyds Bank"
+        case .sortCode: return "30-00-00"
+        case .routingNumber: return "021000021"
+        case .accountNumber:
+            switch draft.region {
+            case .uk: return "12345678"
+            case .us: return "4 to 17 digits"
+            case .europe, .other: return "Account number"
+            }
+        case .iban: return draft.region == .uk ? "GB29 NWBK 6016 1331 9268 19" : "DE89 3704 0044 0532 0130 00"
+        case .bic: return "Optional, e.g. LOYDGB2L"
         }
     }
 
-    private func field(_ field: Field, text: Binding<String>, prompt: String, error: String?) -> some View {
-        TextField(prompt, text: text, prompt: Text(prompt))
+    private func field(_ field: BankDetailField) -> some View {
+        TextField(BankDetailsFormat.label(field), text: $draft[field], prompt: Text(prompt(field)))
             .focused($focused, equals: field)
             .onSubmit { revealed.insert(field) }
-            .sheetFieldNote(revealAll || revealed.contains(field) ? error : nil, isError: true)
+            .sheetFieldNote(revealAll || revealed.contains(field) ? draft.error(field) : nil, isError: true)
     }
 }
 
