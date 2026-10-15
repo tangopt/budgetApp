@@ -25,6 +25,7 @@ struct ReviewView: View {
     @State private var bulkDraft: NewCategoryDraft?
     @State private var bulkDraftRowIds: [UUID] = []
     @State private var showFinishChoice = false
+    @State private var showMismatchDetails = false
     /// The statement check for each Finish choice, computed when the dialog opens.
     @State private var finishChecks: [UnconfirmedRowsChoice: StatementCheckResult] = [:]
     @State private var showCancelConfirmation = false
@@ -217,6 +218,8 @@ struct ReviewView: View {
             return viewModel.addStatementAdjustment && viewModel.statementAdjustmentBlockedBy == nil
                 ? base + " A balance adjustment of \(difference) will be added."
                 : base
+        case .cannotCheck:
+            return "the closing balance can't be checked — it's before the account's opening balance."
         }
     }
 
@@ -357,53 +360,58 @@ struct ReviewView: View {
                     .foregroundStyle(.green)
             case .mismatch(let mismatch):
                 statementMismatchBanner(mismatch)
+            case .cannotCheck:
+                Label("Can't check this statement's closing balance — it's before the account's opening balance.", systemImage: "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             case nil:
                 EmptyView()
             }
         }
     }
 
+    /// Compact: a one-line summary, the details and suggestions behind a disclosure, and the
+    /// adjustment checkbox always in view.
     private func statementMismatchBanner(_ mismatch: StatementMismatch) -> some View {
         let currency = viewModel.currency
         let difference = AccountsFormat.signedMoney(mismatch.differenceMinorUnits, currency: currency)
         return VStack(alignment: .leading, spacing: 6) {
-            Label("The balance doesn't match the statement", systemImage: "xmark.octagon.fill")
-                .font(.headline)
-                .foregroundStyle(.red)
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 2) {
-                GridRow {
-                    Text("Statement closing balance on \(ImportViewModel.day(mismatch.date))").foregroundStyle(.secondary)
-                    Text(Money.format(mismatch.statementMinorUnits, currency: currency))
+            DisclosureGroup(isExpanded: $showMismatchDetails) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 2) {
+                        GridRow {
+                            Text("Statement closing balance").foregroundStyle(.secondary)
+                            Text(Money.format(mismatch.statementMinorUnits, currency: currency))
+                        }
+                        GridRow {
+                            Text("Computed with this import").foregroundStyle(.secondary)
+                            Text(Money.format(mismatch.computedMinorUnits, currency: currency))
+                        }
+                    }
+                    .font(.callout.monospacedDigit())
+                    Text("Check for missing or duplicate transactions, or import the statement for the missing period. You can finish anyway — the account shows the mismatch until an import resolves it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                GridRow {
-                    Text("Computed with this import").foregroundStyle(.secondary)
-                    Text(Money.format(mismatch.computedMinorUnits, currency: currency))
-                }
-                GridRow {
-                    Text("Difference").foregroundStyle(.secondary)
-                    Text(difference).bold()
-                }
+                .padding(.top, 4)
+            } label: {
+                Label("Doesn't match the statement on \(ImportViewModel.day(mismatch.date)): difference \(difference)", systemImage: "xmark.octagon.fill")
+                    .font(.callout.bold())
+                    .foregroundStyle(.red)
             }
-            .font(.callout.monospacedDigit())
-            Text("Check for missing or duplicate transactions, or import the statement for the missing period. You can finish anyway — the account will show the mismatch until a later import matches.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
             if let blocked = viewModel.statementAdjustmentBlockedBy {
                 Text("An adjustment can't be added: there's a recorded balance on \(ImportViewModel.day(blocked)).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Toggle("Add a balance adjustment of \(difference) so the balance matches the statement", isOn: $viewModel.addStatementAdjustment)
+                Toggle("Add a balance adjustment of \(difference) so the balance matches the statement (best avoided)", isOn: $viewModel.addStatementAdjustment)
                     .toggleStyle(.checkbox)
                     .font(.callout)
-                Text("Best avoided: an adjustment hides the gap instead of finding what's missing.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
+        .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.08)))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.red.opacity(0.6)))
     }

@@ -485,6 +485,8 @@ final class ImportViewModel: ObservableObject {
                 return "Added a balance adjustment of \(difference) on \(day(mismatch.date)) to match the statement."
             }
             return "The balance doesn't match the statement on \(day(mismatch.date)) (difference \(difference)) — flagged on the Accounts screen."
+        case .cannotCheck(let closing):
+            return "The statement's closing balance on \(day(closing.date)) couldn't be checked — it's before the account's opening balance."
         }
     }
 

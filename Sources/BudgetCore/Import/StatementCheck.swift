@@ -33,6 +33,9 @@ public struct StatementMismatch: Equatable, Sendable {
 public enum StatementCheckResult: Equatable, Sendable {
     case matches(StatementClosing)
     case mismatch(StatementMismatch)
+    /// The balance at the closing date isn't known (it's before the account's first recorded
+    /// balance), so nothing is compared or recorded.
+    case cannotCheck(StatementClosing)
 
     public var mismatch: StatementMismatch? {
         if case .mismatch(let mismatch) = self { return mismatch }
@@ -66,7 +69,8 @@ public enum StatementCheck {
     /// (less `excludingTransactionIds`, the manual entries the import replaces) plus the
     /// `stagedRows` that will be saved — against the statement's closing balance. Uses the
     /// balance rule (`NetWorthCalculator.balance`), so rows dated on or before a recorded
-    /// balance in force don't count; 0 when the account has nothing yet.
+    /// balance in force don't count; 0 when the account has nothing yet. `.cannotCheck` when
+    /// the closing date is before the account's first recorded balance.
     public static func compare(db: Database, accountId: Int64, closing: StatementClosing,
                                stagedRows: [(date: Date, amountMinorUnits: Int)],
                                excludingTransactionIds: Set<Int64> = []) throws -> StatementCheckResult {
@@ -77,8 +81,10 @@ public enum StatementCheck {
             Transaction(importBatchId: 0, accountId: accountId, date: $0.date, rawDescription: "", amountMinorUnits: $0.amountMinorUnits,
                         categoryId: nil, status: .pendingReview, categorizedBy: .none, fingerprint: "")
         }
-        let computed = NetWorthCalculator.balance(accountId: accountId, at: BalanceUpdates.endOfDay(closing.date),
-                                                  snapshots: snapshots, transactions: saved + pending)?.native ?? 0
+        let balance = NetWorthCalculator.balance(accountId: accountId, at: BalanceUpdates.endOfDay(closing.date),
+                                                 snapshots: snapshots, transactions: saved + pending)
+        if balance == nil && !snapshots.isEmpty { return .cannotCheck(closing) }
+        let computed = balance?.native ?? 0
         guard computed != closing.balanceMinorUnits else { return .matches(closing) }
         return .mismatch(StatementMismatch(date: closing.date, statementMinorUnits: closing.balanceMinorUnits, computedMinorUnits: computed))
     }
@@ -93,7 +99,8 @@ public enum StatementCheck {
     /// Finish import's statement step, in the commit's write after the rows are saved: checks
     /// the closing balance against what's now saved; when mismatched and `addAdjustment`, adds
     /// the difference dated on the closing date (Balance adjustment, or Market movement for an
-    /// investment account); then records the outcome on the account (`record`).
+    /// investment account); then records the outcome on the account (`record`) and re-checks
+    /// the account's flagged mismatch, which this import may have resolved (`recheckStoredMismatch`).
     static func finish(db: Database, accountId: Int64, sourceFileName: String, statement: StatementFinish) throws -> StatementFinishOutcome {
         let check = try compare(db: db, accountId: accountId, closing: statement.closing, stagedRows: [])
         var adjustmentId: Int64?
@@ -105,19 +112,44 @@ public enum StatementCheck {
                                                       amountMinorUnits: mismatch.differenceMinorUnits, categoryId: category.id,
                                                       note: "To match the statement closing balance (\(sourceFileName))", allowBuiltIn: true).id
         }
-        try record(db: db, accountId: accountId, date: statement.closing.date,
-                   mismatchMinorUnits: adjustmentId == nil ? check.mismatch?.differenceMinorUnits : nil)
+        if case .cannotCheck = check {} else {
+            try record(db: db, accountId: accountId, closing: statement.closing,
+                       mismatch: adjustmentId == nil ? check.mismatch : nil)
+        }
+        try recheckStoredMismatch(db: db, accountId: accountId)
         return StatementFinishOutcome(check: check, adjustmentTransactionId: adjustmentId)
     }
 
-    /// Records a statement check's outcome on the account (`nil`: it matched or was adjusted),
-    /// unless the account already holds a mismatch dated after `date` — the latest statement's
-    /// outcome is the one shown.
-    static func record(db: Database, accountId: Int64, date: Date, mismatchMinorUnits: Int?) throws {
+    /// Records a checked statement's outcome on the account (`mismatch` nil: it matched or was
+    /// adjusted) — unless a later-dated statement was already checked (`statementLastCheckedDate`):
+    /// an earlier statement never overrides what a later one recorded.
+    static func record(db: Database, accountId: Int64, closing: StatementClosing, mismatch: StatementMismatch?) throws {
         guard var account = try Account.fetchOne(db, key: accountId) else { return }
-        if let stored = account.statementMismatchDate, stored > date { return }
-        account.statementMismatchMinorUnits = mismatchMinorUnits
-        account.statementMismatchDate = mismatchMinorUnits == nil ? nil : date
+        if let last = account.statementLastCheckedDate, last > closing.date { return }
+        account.statementLastCheckedDate = closing.date
+        account.statementMismatchMinorUnits = mismatch?.differenceMinorUnits
+        account.statementMismatchDate = mismatch?.date
+        account.statementMismatchClosingMinorUnits = mismatch?.statementMinorUnits
+        try account.update(db)
+    }
+
+    /// Re-compares the account's flagged mismatch with its stored statement closing balance
+    /// against what's saved now: cleared when it matches, its difference updated otherwise
+    /// (left alone when it can't be checked).
+    static func recheckStoredMismatch(db: Database, accountId: Int64) throws {
+        guard var account = try Account.fetchOne(db, key: accountId), let date = account.statementMismatchDate,
+              let closing = account.statementMismatchClosingMinorUnits else { return }
+        switch try compare(db: db, accountId: accountId, closing: StatementClosing(date: date, balanceMinorUnits: closing), stagedRows: []) {
+        case .matches:
+            account.statementMismatchMinorUnits = nil
+            account.statementMismatchDate = nil
+            account.statementMismatchClosingMinorUnits = nil
+        case .mismatch(let mismatch):
+            guard mismatch.differenceMinorUnits != account.statementMismatchMinorUnits else { return }
+            account.statementMismatchMinorUnits = mismatch.differenceMinorUnits
+        case .cannotCheck:
+            return
+        }
         try account.update(db)
     }
 
@@ -128,6 +160,7 @@ public enum StatementCheck {
               stored <= BalanceUpdates.endOfDay(asOf) else { return }
         account.statementMismatchMinorUnits = nil
         account.statementMismatchDate = nil
+        account.statementMismatchClosingMinorUnits = nil
         try account.update(db)
     }
 }

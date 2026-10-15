@@ -38,10 +38,17 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     public var statementMismatchMinorUnits: Int?
     /// The statement's closing date for `statementMismatchMinorUnits`.
     public var statementMismatchDate: Date?
+    /// The statement's closing balance for that mismatch, so every later Finish import can
+    /// re-check it (an import filling a gap before it clears it).
+    public var statementMismatchClosingMinorUnits: Int?
+    /// The closing date of the latest-dated statement checked: an earlier statement never
+    /// overrides what a later one recorded.
+    public var statementLastCheckedDate: Date?
 
     public init(id: Int64? = nil, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode,
                 alias: String? = nil, sortCode: String? = nil, accountNumber: String? = nil, iban: String? = nil, sortOrder: Int? = nil,
-                statementMismatchMinorUnits: Int? = nil, statementMismatchDate: Date? = nil) {
+                statementMismatchMinorUnits: Int? = nil, statementMismatchDate: Date? = nil,
+                statementMismatchClosingMinorUnits: Int? = nil, statementLastCheckedDate: Date? = nil) {
         self.id = id
         self.name = name
         self.currency = currency
@@ -54,6 +61,8 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
         self.sortOrder = sortOrder
         self.statementMismatchMinorUnits = statementMismatchMinorUnits
         self.statementMismatchDate = statementMismatchDate
+        self.statementMismatchClosingMinorUnits = statementMismatchClosingMinorUnits
+        self.statementLastCheckedDate = statementLastCheckedDate
     }
 
     /// What the UI calls the account: the alias when set, otherwise the full name. `name`
@@ -115,6 +124,8 @@ func registerAccountStatementMismatchMigration(_ migrator: inout DatabaseMigrato
         try db.alter(table: "account") { t in
             t.add(column: "statementMismatchMinorUnits", .integer)
             t.add(column: "statementMismatchDate", .datetime)
+            t.add(column: "statementMismatchClosingMinorUnits", .integer)
+            t.add(column: "statementLastCheckedDate", .datetime)
         }
     }
 }

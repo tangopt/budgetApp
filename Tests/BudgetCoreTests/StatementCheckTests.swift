@@ -196,4 +196,65 @@ final class StatementCheckTests: XCTestCase {
         }
         XCTAssertNil(try self.account(manager, account.id!).statementMismatchMinorUnits)
     }
+
+    func testAClosingDateBeforeTheOpeningBalanceCantBeCheckedAndRecordsNothing() throws {
+        let (manager, account, coordinator) = try makeFixture()
+        let closing = StatementClosing(date: day(2025, 12, 31), balanceMinorUnits: 5_000)
+        try manager.dbQueue.read { db in
+            XCTAssertEqual(try StatementCheck.compare(db: db, accountId: account.id!, closing: closing, stagedRows: [(date: day(2025, 12, 20), amountMinorUnits: -10)]),
+                           .cannotCheck(closing))
+        }
+        let outcome = try coordinator.finishStatement(accountId: account.id!, sourceFileName: "dec.csv", statement: StatementFinish(closing: closing, addAdjustment: true))
+        XCTAssertEqual(outcome.check, .cannotCheck(closing))
+        XCTAssertNil(outcome.adjustmentTransactionId)
+        let saved = try self.account(manager, account.id!)
+        XCTAssertNil(saved.statementMismatchMinorUnits)
+        XCTAssertNil(saved.statementLastCheckedDate)
+        XCTAssertEqual(try manager.dbQueue.read { db in try Transaction.fetchCount(db) }, 1)
+    }
+
+    func testImportingTheMissingEarlierPeriodClearsALaterMismatch() throws {
+        let (manager, account, coordinator) = try makeFixture()
+        // February's statement: the bank also had a -£1.00 on 20 Jan the app hasn't seen.
+        let feb = [staged(day(2026, 2, 10), -100)]
+        try coordinator.commit(accountId: account.id!, sourceFileName: "feb.csv", staged: feb, decisions: decisions(feb),
+                               statement: StatementFinish(closing: StatementClosing(date: day(2026, 2, 15), balanceMinorUnits: 700), addAdjustment: false))
+        let flagged = try self.account(manager, account.id!)
+        XCTAssertEqual(flagged.statementMismatchMinorUnits, -100)
+        XCTAssertEqual(flagged.statementMismatchClosingMinorUnits, 700)
+
+        let jan = [staged(day(2026, 1, 20), -100)]
+        let outcome = try coordinator.commit(accountId: account.id!, sourceFileName: "jan.csv", staged: jan, decisions: decisions(jan),
+                                             statement: StatementFinish(closing: StatementClosing(date: day(2026, 1, 31), balanceMinorUnits: 800), addAdjustment: false))
+        XCTAssertEqual(outcome?.check, .matches(StatementClosing(date: day(2026, 1, 31), balanceMinorUnits: 800)))
+        let cleared = try self.account(manager, account.id!)
+        XCTAssertNil(cleared.statementMismatchMinorUnits)
+        XCTAssertNil(cleared.statementMismatchDate)
+        XCTAssertNil(cleared.statementMismatchClosingMinorUnits)
+        XCTAssertEqual(cleared.statementLastCheckedDate, day(2026, 2, 15))
+    }
+
+    func testAPartialFixUpdatesTheStoredDifference() throws {
+        let (manager, account, coordinator) = try makeFixture()
+        try coordinator.finishStatement(accountId: account.id!, sourceFileName: "feb.csv",
+                                        statement: StatementFinish(closing: StatementClosing(date: day(2026, 2, 15), balanceMinorUnits: 600), addAdjustment: false))
+        XCTAssertEqual(try self.account(manager, account.id!).statementMismatchMinorUnits, -300)
+        let jan = [staged(day(2026, 1, 20), -100)]
+        // Every Finish import re-checks it, even one without a statement balance.
+        try coordinator.commit(accountId: account.id!, sourceFileName: "jan.csv", staged: jan, decisions: decisions(jan))
+        XCTAssertEqual(try self.account(manager, account.id!).statementMismatchMinorUnits, -200)
+    }
+
+    func testAnEarlierStatementNeverOverridesALaterCheckedOne() throws {
+        let (manager, account, coordinator) = try makeFixture()
+        try coordinator.finishStatement(accountId: account.id!, sourceFileName: "feb.csv",
+                                        statement: StatementFinish(closing: StatementClosing(date: day(2026, 2, 15), balanceMinorUnits: 900), addAdjustment: false))
+        XCTAssertEqual(try self.account(manager, account.id!).statementLastCheckedDate, day(2026, 2, 15))
+        let outcome = try coordinator.finishStatement(accountId: account.id!, sourceFileName: "jan.csv",
+                                                      statement: StatementFinish(closing: StatementClosing(date: day(2026, 1, 15), balanceMinorUnits: 1), addAdjustment: false))
+        XCTAssertNotNil(outcome.check.mismatch)
+        let saved = try self.account(manager, account.id!)
+        XCTAssertNil(saved.statementMismatchMinorUnits)
+        XCTAssertEqual(saved.statementLastCheckedDate, day(2026, 2, 15))
+    }
 }

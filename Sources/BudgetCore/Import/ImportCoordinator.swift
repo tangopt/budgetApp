@@ -263,7 +263,8 @@ public final class ImportCoordinator {
     /// With a `statement`, its closing balance is checked against what's then saved — and the
     /// adjustment added when ticked — in the same transaction (`StatementCheck.finish`), so a
     /// failed commit leaves neither an adjustment nor a recorded mismatch behind. Returns that
-    /// check's outcome (nil without a statement).
+    /// check's outcome (nil without a statement). Either way the account's flagged mismatch is
+    /// re-checked (`StatementCheck.recheckStoredMismatch`).
     @discardableResult
     public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statement: StatementFinish? = nil) throws -> StatementFinishOutcome? {
         let decisionById = Dictionary(decisions.map { ($0.stagedId, $0.finalCategoryId) }, uniquingKeysWith: { _, last in last })
@@ -304,6 +305,7 @@ public final class ImportCoordinator {
             // Link transfers first, so the forecast refresh counts each one once.
             try TransferMatcher.match(db: db)
             let outcome = try statement.map { try StatementCheck.finish(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: $0) }
+            if statement == nil { try StatementCheck.recheckStoredMismatch(db: db, accountId: accountId) }
             try AutoForecastGenerator.refresh(db: db)
             return outcome
         }
