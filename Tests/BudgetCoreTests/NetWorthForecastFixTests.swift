@@ -133,4 +133,17 @@ final class NetWorthForecastFixTests: XCTestCase {
         let plan = PlanInput(entries: entries, exceptions: [], groups: groups)
         XCTAssertEqual(ScenarioComparison.netWorthSeries(data, plan: plan, actuals: ScenarioComparison.actuals(data)).forecast.last?.valueMinorUnits, expected)
     }
+
+    // Review fix: an imported-but-unreviewed salary is already in the balance, so it counts as paid.
+    func testAnUnreviewedTransactionInTheWalkStartMonthCountsAsPaid() throws {
+        var unreviewed = txn(3, utc(2026, 10, 12), 810_431, pay)
+        unreviewed.status = .pendingReview
+        let input = DashboardInput(today: utc(2026, 10, 15), accounts: accounts,
+                                   snapshots: [BalanceSnapshot(accountId: current, date: utc(2026, 1, 1), balanceMinorUnits: 1_000_000, note: nil)],
+                                   transactions: transactions + [unreviewed], categories: categories, categoryGroups: [], forecastEntries: entries, forecastGroups: groups,
+                                   exceptions: [], importBatches: [], rate: ExchangeRateSetting(eurToGbpRate: 0.5, updatedAt: utc(2026, 1, 1)))
+        // Today's net worth gains the pay; October's remaining loses it: the same year-end.
+        XCTAssertEqual(DashboardCalculator.netWorthSeries(input).currentNetWorthMinorUnits, 885_000 + 810_431)
+        XCTAssertEqual(try XCTUnwrap(DashboardCalculator.yearEndNetWorth(input, year: 2026)).valueMinorUnits, 885_000 + octoberRemaining + 2 * fullMonth)
+    }
 }

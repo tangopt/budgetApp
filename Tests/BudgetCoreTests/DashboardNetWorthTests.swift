@@ -66,6 +66,22 @@ final class DashboardNetWorthTests: XCTestCase {
         XCTAssertNil(DashboardCalculator.yearEndNetWorth(input, year: 2020))
     }
 
+    // Data past December's payday starts the walk in next January: this year's card and the
+    // Dashboard both show today's net worth, without January's plan.
+    func testYearEndAgreesWithTheDashboardWhenDataRunsPastDecembersPayday() throws {
+        let input = F.input(
+            today: date(2026, 12, 30), snapshots: [F.snapshot(1, date(2026, 7, 1), 1_000_000)],
+            transactions: [F.txn(1, date(2026, 12, 28), -1_000, category: F.rentId, account: 9)],
+            entries: F.salaryAndRent, salaries: [date(2026, 11, 24), date(2026, 12, 24)]
+        )
+        XCTAssertEqual(input.payCalendar.month(containing: date(2026, 12, 28)), PayMonth(year: 2027, month: 1))
+        let series = DashboardCalculator.netWorthSeries(input)
+        let current = try XCTUnwrap(series.currentNetWorthMinorUnits)
+        XCTAssertEqual(series.yearEnds.first?.valueMinorUnits, current)
+        XCTAssertEqual(DashboardCalculator.yearEndNetWorth(input, year: 2026), YearEndNetWorth(valueMinorUnits: current, isForecast: true))
+        XCTAssertEqual(DashboardCalculator.yearEndNetWorth(input, year: 2027)?.valueMinorUnits, series.yearEnds.last?.valueMinorUnits)
+    }
+
     func testYearEndBaselineIsTheForecastWhileLastDecemberIsOpen() throws {
         let input = F.input(
             today: date(2026, 4, 15),

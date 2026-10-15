@@ -38,13 +38,6 @@ public struct DashboardInput {
         return accounts.filter { $0.id.map(filter.accountIds.contains) ?? false }
     }
 
-    /// `monthTotals` for the net-worth figures: the filter's accounts' budget-facing actuals
-    /// (`TransferLinks.budgetFacing` with the filter) when set.
-    var netWorthMonthTotals: [Int64: [Int: [Int: Int]]] {
-        guard let filter = accountFilter else { return monthTotals }
-        return PayMonthTotals.lookup(transactions: TransferLinks.budgetFacing(transactions, links: transferLinks, accountIds: filter.accountIds), calendar: payCalendar)
-    }
-
     public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, manualCloses: [PayMonthClose] = [], transferLinks: [TransferLink] = []) {
         let payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: manualCloses, today: today)
         self.init(today: today, accounts: accounts, snapshots: snapshots, transactions: transactions, categories: categories, categoryGroups: categoryGroups, forecastEntries: forecastEntries, forecastGroups: forecastGroups, exceptions: exceptions, importBatches: importBatches, rate: rate, payCalendar: payCalendar, transferLinks: transferLinks)

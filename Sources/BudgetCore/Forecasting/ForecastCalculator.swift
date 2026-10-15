@@ -77,11 +77,40 @@ public enum ForecastCalculator {
             .reduce(into: [:]) { $0[$1.categoryId, default: 0] += $1.amountMinorUnits }
     }
 
-    /// `confirmedNetWorthImpact` for the filter's accounts (spec 2026-10-15 §4): the filtered
-    /// totals over the categories that count for them (`countsInNetWorth`). Nil filter = All accounts.
+    /// `confirmedNetWorthImpact` for the filter's accounts (spec 2026-10-15 §4): the
+    /// `netWorthTotals` summed. Nil filter = All accounts.
     public static func confirmedNetWorthImpact(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException], filter: PlanAccountFilter?) -> Int {
-        netWorthImpact(totals: confirmedTotalsByCategory(period: period, entries: entries, groups: groups, exceptions: exceptions, filter: filter),
-                       categories: categories, accountIds: filter?.accountIds)
+        guard filter != nil else { return confirmedNetWorthImpact(period: period, categories: categories, entries: entries, groups: groups, exceptions: exceptions) }
+        let totals = netWorthTotals(period: period, categories: categories, entries: entries, groups: groups, exceptions: exceptions, filter: filter)
+        return totals.byCategory.values.reduce(0, +) + totals.incomingElsewhere
+    }
+
+    /// The plan's amounts in `period` that change the net worth of the filter's accounts, by
+    /// leg (`PlannedItemAccounts.legs`): `byCategory` holds every leg filed under a category that
+    /// counts (`countsInNetWorth`) — income, expenses, external transfers, and tied transfers
+    /// crossing the selection's boundary (an incoming leg filed under its payer's own transfer
+    /// category included); `incomingElsewhere` the incoming legs into a selected account filed
+    /// anywhere else (no payer, or a payer without its own transfer category), which always
+    /// count: money arriving from outside the selection. Nil filter: every category that
+    /// counts for All accounts, nothing elsewhere.
+    public static func netWorthTotals(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException], filter: PlanAccountFilter?) -> (byCategory: [Int64: Int], incomingElsewhere: Int) {
+        let counting = Set(categories.filter { countsInNetWorth($0, accountIds: filter?.accountIds) }.compactMap(\.id))
+        guard let filter else {
+            return (confirmedTotalsByCategory(period: period, entries: entries, groups: groups, exceptions: exceptions).filter { counting.contains($0.key) }, 0)
+        }
+        let plan = confirmedEntries(entries: entries, groups: groups)
+        let occurrences = PlannedOccurrences.occurrences(entries: plan, exceptions: exceptions, in: period)
+        var byCategory: [Int64: Int] = [:]
+        var elsewhere = 0
+        for leg in filter.itemAccounts.legs(occurrences, entries: plan, accountIds: filter.accountIds) {
+            let occurrence = leg.occurrence
+            if counting.contains(occurrence.categoryId) {
+                byCategory[occurrence.categoryId, default: 0] += occurrence.amountMinorUnits
+            } else if leg.isIncomingTransfer {
+                elsewhere += occurrence.amountMinorUnits
+            }
+        }
+        return (byCategory, elsewhere)
     }
 
     private static func total(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException]) -> Int {

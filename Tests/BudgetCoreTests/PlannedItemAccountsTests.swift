@@ -168,6 +168,39 @@ final class PlannedItemAccountsTests: XCTestCase {
         XCTAssertEqual(impact([current, joint]), 200_000)   // the transfer stays inside
     }
 
+    // Review fix: an incoming planned transfer into a selected tied account counts even when
+    // it can't be filed under its payer's own transfer category.
+    func testIncomingTransferWithNoPayerOrAPayerWithoutTransferCategoryCounts() {
+        let savingsAccount: Int64 = 3
+        let unknownPayer = PlanAccountFilter(accountIds: [joint], itemAccounts: PlannedItemAccounts(inferredByCategory: [:], categories: categories))
+        let plan = [entry(3, toJoint, -50_000, day: 5)]
+        XCTAssertEqual(ForecastCalculator.confirmedNetWorthImpact(period: april, categories: categories, entries: plan, groups: groups, exceptions: [], filter: unknownPayer), 50_000)
+        XCTAssertEqual(ForecastProjector.remainingPlanned(year: 2026, month: 4, actuals: [:], categories: categories, entries: plan, groups: groups, exceptions: [], filter: unknownPayer), 50_000)
+
+        let fromSavings = [entry(3, toJoint, -50_000, day: 5, account: savingsAccount)]
+        XCTAssertEqual(ForecastCalculator.confirmedNetWorthImpact(period: april, categories: categories, entries: fromSavings, groups: groups, exceptions: [], filter: filter([joint])), 50_000)
+        XCTAssertEqual(ForecastCalculator.confirmedNetWorthImpact(period: april, categories: categories, entries: fromSavings, groups: groups, exceptions: [], filter: filter([savingsAccount])), -50_000)
+        XCTAssertEqual(ForecastCalculator.confirmedNetWorthImpact(period: april, categories: categories, entries: fromSavings, groups: groups, exceptions: [], filter: filter([joint, savingsAccount])), 0)
+    }
+
+    func testScenarioDifferencesDescribeAnAccountChange() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        try manager.dbQueue.write { db in
+            var account = Account(name: "Joint", currency: .gbp, kind: .cash, trackingMode: .imported)
+            try account.insert(db)
+            var gym = Category(name: "Gym", type: .expense)
+            try gym.insert(db)
+            try PlannedItems.add(db: db, categoryId: gym.id!, amountMinorUnits: -4_500, frequency: .monthly, interval: 1, startDate: utc(2026, 11, 1), endDate: nil)
+            let scenario = try Scenarios.create(db: db, name: "Plan B")
+            var copy = try XCTUnwrap(ForecastEntry.inScenario(db, id: scenario.id!).first)
+            copy.accountId = account.id
+            copy.scenarioChange = .changed
+            try copy.update(db)
+            XCTAssertEqual(try Scenarios.differences(db: db, scenarioId: scenario.id!).first?.fieldChanges, ["Account: Automatic → Joint"])
+        }
+    }
+
     func testReserveUnforecastSpendWithPlannedTotalsMatchesTheEntriesVersion() {
         let monthTotals: [Int64: [Int: [Int: Int]]] = [gym: [2026: [4: -3_000]], rent: [2026: [4: -100_000]]]
         let fromEntries = ReservedCategories.unforecastSpend(year: 2026, month: 4, categories: categories, monthTotals: monthTotals, entries: entries, groups: groups, exceptions: [])
