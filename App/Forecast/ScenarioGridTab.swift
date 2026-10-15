@@ -4,8 +4,10 @@ import BudgetCore
 import struct BudgetCore.Category
 
 /// The Grid chips (one plan: the Budget or a scenario), a header bar in that plan's colour,
-/// then the plan month by month (categories × the twelve months of a year within the
-/// horizon), valued as the Budget grid values it (`ScenarioComparison.grid`), with the Budget
+/// the year cards (`YearCard`: each horizon year captioned " forecast", with the plan's
+/// year-end net worth and its change on the previous year-end; ⌘-click compares several
+/// years, shown as the Budget grid's multi-year columns), then the plan month by month
+/// (categories × the twelve months of a year within the horizon), valued as the Budget grid values it (`ScenarioComparison.grid`), with the Budget
 /// grid's look and behaviour (spec 2026-10-15-forecast-grid-parity-design.md): category
 /// icons, collapsible sections and groups, the Totals block, and cell selection with the
 /// shared side panel (`GridCellPanel`: the cell's actual transactions and the plan's
@@ -95,12 +97,20 @@ struct ScenarioGridTab: View {
             ScenarioChips(viewModel: viewModel, mode: .single(selected: $viewModel.gridSelection), prompts: $chipPrompts)
             headerBar
                 .padding(.bottom, 12)  // the chips' own 16pt bottom padding sits above the bar
-            Picker("Year", selection: $viewModel.gridYear) {
-                ForEach(viewModel.gridYears, id: \.self) { year in Text(String(year)).tag(year) }
+            YearCardRow(years: viewModel.gridYears, onSelect: { year in
+                // ⌘-click adds or removes a year (to compare several); a plain click shows
+                // just that year.
+                if NSEvent.modifierFlags.contains(.command) {
+                    viewModel.toggleGridYear(year)
+                } else {
+                    viewModel.selectGridYear(year)
+                }
+            }, help: "⌘-click to compare several years") { year in
+                // Every year-end on the Forecast screen is a forecast (today's year included).
+                YearCard(year: year, caption: " forecast",
+                         yearEnd: viewModel.gridYearEnds[year], change: viewModel.gridYearEndChange(year),
+                         percent: viewModel.gridYearEndChangePercent(year), isSelected: viewModel.gridSelectedYears.contains(year))
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
             .padding(.bottom, 8)
             SidePanelHost(selection: cellSelection) {
                 grid
@@ -108,9 +118,9 @@ struct ScenarioGridTab: View {
                 GridCellPanel(target: target, model: viewModel) { cellSelection.clear() }
             }
         }
-        // A panel belongs to the plan and the year it was opened in.
+        // A panel belongs to the plan and the years it was opened in.
         .onChange(of: viewModel.gridSelection) { _, _ in cellSelection.clear() }
-        .onChange(of: viewModel.gridYear) { _, _ in cellSelection.clear() }
+        .onChange(of: viewModel.gridSelectedYears) { _, _ in cellSelection.clear() }
         .sheet(isPresented: $addingAllowance, onDismiss: { allowanceError = nil }) {
             ReserveFormView(mode: .chooseReserve(reserves: viewModel.reserves, scenarioName: viewModel.gridScenario?.name ?? ""),
                             errorMessage: allowanceError, onEdit: { if allowanceError != nil { allowanceError = nil } }) { target, amount, frequency, interval, start, end in
@@ -163,6 +173,9 @@ struct ScenarioGridTab: View {
 
     private var grid: some View {
         let year = viewModel.gridYear
+        let years = viewModel.gridSelectedYears
+        let isMultiYear = years.count > 1
+        let scrollingWidth = isMultiYear ? MultiYearColumns.width(yearCount: years.count) : GridMetrics.monthsWidth
         let rows = allRows(outline)
         return VStack(alignment: .leading, spacing: 0) {
             // The header row takes the body's measured width (`GridBodyWidth`), so the pinned
@@ -173,27 +186,27 @@ struct ScenarioGridTab: View {
                         .padding(.horizontal, 8).padding(.vertical, 6)
                         .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .trailing)
                     HorizontalOffsetFollower(offset: scrollOffset) {
-                        HStack(spacing: 0) {
-                            ForEach(1...12, id: \.self) { month in
-                                Text(PayMonthFormat.name(PayMonth(year: year, month: month)))
-                                    .frame(width: GridMetrics.cellWidth, alignment: .trailing)
-                                    .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
-                                    .help(PayMonthFormat.range(viewModel.payCalendar.range(of: PayMonth(year: year, month: month))))
-                                    .monthSeparator(month)
-                            }
+                        if isMultiYear {
+                            // Several years: each year's total, and after every year but the
+                            // first its change from the previous selected year.
+                            MultiYearHeaderRow(years: years)
+                        } else {
+                            monthHeaders(year)
                         }
                     }
-                    // As in `BudgetGridView`: no wider than the body's month scroller, so the
-                    // pinned Year Total sits right after December in a wide window.
-                    .frame(minWidth: 0, maxWidth: GridMetrics.monthsWidth, alignment: .leading)
+                    // As in `BudgetGridView`: no wider than the body's scroller, so the pinned
+                    // Year Total sits right after December in a wide window.
+                    .frame(minWidth: 0, maxWidth: scrollingWidth, alignment: .leading)
                     .clipped()
                     // Clipping hides the scrolled-off columns but not from clicks: without this they
                     // catch clicks meant for whatever sits beside the grid (the account panel).
                     .contentShape(Rectangle())
-                    Text("Year Total").bold()
-                        .frame(width: GridMetrics.cellWidth, alignment: .trailing)
-                        .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
-                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
+                    if !isMultiYear {
+                        Text("Year Total").bold()
+                            .frame(width: GridMetrics.cellWidth, alignment: .trailing)
+                            .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
+                            .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -212,22 +225,41 @@ struct ScenarioGridTab: View {
 
                     ScrollView(.horizontal) {
                         VStack(alignment: .leading, spacing: 0) {
-                            ForEach(rows) { row in rowCells(row.kind, shaded: row.shaded, year: year) }
+                            if isMultiYear {
+                                ForEach(rows) { row in multiYearCells(row.kind, shaded: row.shaded, years: years) }
+                            } else {
+                                ForEach(rows) { row in rowCells(row.kind, shaded: row.shaded, year: year) }
+                            }
                         }
                     }
                     .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, x in scrollOffset.update(-x) }
-                    .frame(maxWidth: GridMetrics.monthsWidth)
+                    .frame(maxWidth: scrollingWidth)
 
-                    // Frozen Year Total column, pinned on the right (fixed row heights, as
-                    // the label and month cells, so the three columns line up).
-                    VStack(spacing: 0) {
-                        ForEach(rows) { row in yearTotalCell(row.kind, shaded: row.shaded) }
+                    if !isMultiYear {
+                        // Frozen Year Total column, pinned on the right (fixed row heights, as
+                        // the label and month cells, so the three columns line up).
+                        VStack(spacing: 0) {
+                            ForEach(rows) { row in yearTotalCell(row.kind, shaded: row.shaded, year: year) }
+                        }
+                        .frame(width: GridMetrics.columnWidth)
+                        .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
                     }
-                    .frame(width: GridMetrics.columnWidth)
-                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.separator), alignment: .leading)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { bodyWidth.update($0) }
+            }
+        }
+    }
+
+    /// The single year's twelve pay-month headers.
+    private func monthHeaders(_ year: Int) -> some View {
+        HStack(spacing: 0) {
+            ForEach(1...12, id: \.self) { month in
+                Text(PayMonthFormat.name(PayMonth(year: year, month: month)))
+                    .frame(width: GridMetrics.cellWidth, alignment: .trailing)
+                    .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
+                    .help(PayMonthFormat.range(viewModel.payCalendar.range(of: PayMonth(year: year, month: month))))
+                    .monthSeparator(month)
             }
         }
     }
@@ -418,36 +450,107 @@ struct ScenarioGridTab: View {
     /// A row's Year Total, for the pinned right-hand column: the row's height and background,
     /// and the differs fill (from `cellView`) when it differs from the budget.
     @ViewBuilder
-    private func yearTotalCell(_ row: RowKind, shaded: Bool) -> some View {
-        let year = viewModel.gridYear
+    private func yearTotalCell(_ row: RowKind, shaded: Bool, year: Int) -> some View {
         switch row {
         case .sectionHeader(let title, let type):
             let members = categoriesByType(type)
-            cellView(yearCell(members), isYearTotal: true, font: PlanCellView.captionFont, height: 24).bold()
+            cellView(yearCell(members, year: year), isYearTotal: true, font: PlanCellView.captionFont, height: 24).bold()
                 .background(Color.accentColor.opacity(0.08))
                 .selectable(cellSelection, key: cellKey(row, year: year)) { openYear(row, name: title, members: members, year: year) }
         case .category(let category), .groupChild(let category):
-            cellView(yearCell([category]), isYearTotal: true).bold()
+            cellView(yearCell([category], year: year), isYearTotal: true).bold()
                 .frame(height: 28)
                 .background(GridRowShade.background(shaded))
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .selectable(cellSelection, key: cellKey(row, year: year)) { openYear(row, name: category.name, members: [category], year: year) }
         case .reserve(let reserve):
-            cellView(yearCell([reserve]), isYearTotal: true).bold()
+            cellView(yearCell([reserve], year: year), isYearTotal: true).bold()
                 .frame(height: 28)
                 .background(GridRowShade.background(shaded))
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
         case .groupHeader(let group, let categories):
-            combinedYearTotal(yearCell(categories), background: Color.orange.opacity(0.10))
+            combinedYearTotal(yearCell(categories, year: year), background: Color.orange.opacity(0.10))
                 .selectable(cellSelection, key: cellKey(row, year: year)) { openYear(row, name: group.name, members: categories, year: year) }
         case .reservedHeader, .totalsHeader:
             Color.clear.frame(width: GridMetrics.columnWidth, height: 24)
                 .background(Color.accentColor.opacity(0.08))
         case .reservedTotal:
-            combinedYearTotal(yearCell(viewModel.reserves), background: Color.purple.opacity(0.08))
+            combinedYearTotal(yearCell(viewModel.reserves, year: year), background: Color.purple.opacity(0.08))
         case .totals(let totalsRow):
-            combinedYearTotal(totalsYearCell(totalsRow), background: totalsRow.gridBackground)
+            combinedYearTotal(totalsYearCell(totalsRow, year: year), background: totalsRow.gridBackground)
                 .selectable(cellSelection, key: cellKey(row, year: year)) { openTotalsYear(row, totalsRow, year: year) }
+        }
+    }
+
+    /// Several years: per selected year the row's year total (`yearTotalCell`, so the panel
+    /// click-through matches the Year Total column), then for every year after the first its
+    /// change from the previous selected year (`deltaCells`).
+    private func multiYearCells(_ row: RowKind, shaded: Bool, years: [Int]) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(years.enumerated()), id: \.element) { index, year in
+                HStack(spacing: 0) {
+                    yearTotalCell(row, shaded: shaded, year: year)
+                    if index > 0 {
+                        deltaCells(row, year: year, previous: years[index - 1], shaded: shaded)
+                    }
+                }
+                .yearGroupBand(index)
+                .yearGroupSeparator(index)
+            }
+        }
+    }
+
+    /// The Δ £ and Δ % cells (`YearDeltaCells`); empty bands on the Reserved and Totals headers.
+    @ViewBuilder
+    private func deltaCells(_ row: RowKind, year: Int, previous: Int, shaded: Bool) -> some View {
+        switch row {
+        case .reservedHeader, .totalsHeader:
+            HStack(spacing: 0) {
+                Color.clear.frame(width: GridMetrics.columnWidth, height: 24)
+                Color.clear.frame(width: GridMetrics.columnWidth, height: 24)
+            }
+            .background(Color.accentColor.opacity(0.08))
+        default:
+            let isSectionHeader: Bool = { if case .sectionHeader = row { return true } else { return false } }()
+            YearDeltaCells(current: yearValue(row, year: year), previous: yearValue(row, year: previous),
+                           categoryType: yearOverYearType(row), isSectionHeader: isSectionHeader, background: rowBackground(row, shaded: shaded))
+        }
+    }
+
+    /// The figure a row's year total shows, for the Δ columns; nil for header bands.
+    private func yearValue(_ row: RowKind, year: Int) -> Int? {
+        switch row {
+        case .sectionHeader(_, let type): return yearCell(categoriesByType(type), year: year).value
+        case .category(let category), .groupChild(let category), .reserve(let category): return yearCell([category], year: year).value
+        case .groupHeader(_, let categories): return yearCell(categories, year: year).value
+        case .reservedTotal: return yearCell(viewModel.reserves, year: year).value
+        case .totals(let totalsRow): return totalsYearCell(totalsRow, year: year).value
+        case .reservedHeader, .totalsHeader: return nil
+        }
+    }
+
+    /// The line type that decides whether a change is good (`YearOverYear.isImprovement`), as
+    /// the Budget grid decides it.
+    private func yearOverYearType(_ row: RowKind) -> CategoryType? {
+        switch row {
+        case .sectionHeader(_, let type): return type
+        case .category(let category), .groupChild(let category), .reserve(let category): return category.type
+        case .groupHeader(_, let categories): return categories.first?.type
+        case .reservedTotal: return .expense
+        // More in, and a higher net, are better; more out (a larger negative) is worse.
+        case .totals(let totalsRow): return totalsRow == .totalOut ? .expense : .income
+        case .reservedHeader, .totalsHeader: return nil
+        }
+    }
+
+    /// The row's background, as its month and Year Total cells draw it.
+    private func rowBackground(_ row: RowKind, shaded: Bool) -> Color {
+        switch row {
+        case .sectionHeader, .reservedHeader, .totalsHeader: return Color.accentColor.opacity(0.08)
+        case .totals(let totalsRow): return totalsRow.gridBackground
+        case .groupHeader: return Color.orange.opacity(0.10)
+        case .reservedTotal: return Color.purple.opacity(0.08)
+        case .category, .groupChild, .reserve: return GridRowShade.background(shaded)
         }
     }
 
@@ -467,24 +570,26 @@ struct ScenarioGridTab: View {
     private var differsFill: Color { planColor.opacity(0.22) }
 
     /// Members' cells combined (`PlanStatus.combine`), with the Budget's values summed.
-    private func cell(_ categories: [Category], month: Int) -> Cell {
-        let cells = categories.compactMap { $0.id.flatMap { viewModel.gridCells[$0]?[month] } }
+    private func cell(_ categories: [Category], month: Int, year: Int? = nil) -> Cell {
+        let gridCells = year.flatMap { viewModel.yearGrids[$0]?.cells } ?? viewModel.gridCells
+        let cells = categories.compactMap { $0.id.flatMap { gridCells[$0]?[month] } }
         let combined = PlanStatus.combine(cells.map { ($0.value, $0.pending, $0.state) })
         return (combined.value, combined.pending, combined.state, cells.reduce(0) { $0 + $1.budgetValue })
     }
 
-    private func yearCell(_ categories: [Category]) -> Cell {
-        combinedYear((1...12).map { cell(categories, month: $0) })
+    private func yearCell(_ categories: [Category], year: Int) -> Cell {
+        combinedYear((1...12).map { cell(categories, month: $0, year: year) })
     }
 
     /// A Totals row's month (`ScenarioComparison.grid`'s Totals block), with the Budget's.
-    private func totalsCell(_ row: BudgetTotals.Row, month: Int) -> Cell {
-        guard let cell = viewModel.grid.totals[row]?[month] else { return (0, 0, .none, 0) }
+    private func totalsCell(_ row: BudgetTotals.Row, month: Int, year: Int? = nil) -> Cell {
+        let grid = year.flatMap { viewModel.yearGrids[$0] } ?? viewModel.grid
+        guard let cell = grid.totals[row]?[month] else { return (0, 0, .none, 0) }
         return (cell.value, cell.pending, cell.state, cell.budgetValue)
     }
 
-    private func totalsYearCell(_ row: BudgetTotals.Row) -> Cell {
-        combinedYear((1...12).map { totalsCell(row, month: $0) })
+    private func totalsYearCell(_ row: BudgetTotals.Row, year: Int) -> Cell {
+        combinedYear((1...12).map { totalsCell(row, month: $0, year: year) })
     }
 
     private func combinedYear(_ months: [Cell]) -> Cell {

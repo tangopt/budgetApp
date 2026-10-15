@@ -49,9 +49,22 @@ struct ScenarioLabView: View {
                 .frame(width: 280)
             }
             ToolbarItem(placement: .primaryAction) {
-                Picker("Horizon", selection: $viewModel.horizon) {
-                    ForEach(ComparisonHorizon.allCases) { horizon in Text(horizon.label).tag(horizon) }
+                Menu {
+                    Picker("Horizon", selection: $viewModel.horizon) {
+                        ForEach(ComparisonHorizon.allCases) { horizon in Text(horizon.label).tag(horizon) }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    // An HStack, not a Label: a toolbar shows a Label's icon only, whatever its
+                    // label style; the title must show the current horizon.
+                    HStack(spacing: 4) {
+                        Image(systemName: "calendar.badge.clock")
+                        Text("Horizon: \(viewModel.horizon.label)")
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Horizon: \(viewModel.horizon.label)")
                 }
+                .help("How far ahead to forecast")
             }
         }
         .scenarioChipPrompts($chipPrompts, viewModel: viewModel)

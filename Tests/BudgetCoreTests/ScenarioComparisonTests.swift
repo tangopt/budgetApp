@@ -157,6 +157,17 @@ final class ScenarioComparisonTests: XCTestCase {
         ])
     }
 
+    func testYearEndNetWorthsMatchTheSummariesFromTheYearBeforeTodaysToTheHorizon() {
+        for plan in [budget, scenario] {
+            let series = ScenarioComparison.netWorthSeries(data, plan: plan)
+            let yearEnds = ScenarioComparison.yearEndNetWorths(data, series: series)
+            var expected: [Int: Int] = [:]
+            for row in summaries(plan) { expected[row.year] = row.yearEndNetWorth }
+            // December 2025 has no point (the first snapshot is 1 Jan 2026), so it's left out.
+            XCTAssertEqual(yearEnds, expected)
+        }
+    }
+
     func testClosedMonthsUseActualsWhateverThePlanSays() {
         // A scenario that plans a different January still reports January's actuals.
         let flowsBudget = summaries(budget)[0]

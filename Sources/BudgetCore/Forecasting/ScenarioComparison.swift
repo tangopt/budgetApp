@@ -162,6 +162,22 @@ public enum ScenarioComparison {
         }
     }
 
+    /// The plan's net worth at each year's end (December, or the horizon's month in its last
+    /// year), by year, from the year before today's (so today's year has a change on it) to
+    /// the horizon's; years without a point for that month are left out. `series` is the
+    /// plan's `netWorthSeries`. The Forecast grid's year cards.
+    public static func yearEndNetWorths(_ data: ComparisonData, series: PlanNetWorthSeries) -> [Int: Int] {
+        let firstYear = MonthRange.components(of: data.today).year - 1
+        guard firstYear <= data.horizonYear else { return [:] }
+        let planValues = values(series)
+        var result: [Int: Int] = [:]
+        for year in firstYear...data.horizonYear {
+            let lastMonth = year == data.horizonYear ? data.horizonMonth : 12
+            if let value = planValues[MonthRange.index(year: year, month: lastMonth)] { result[year] = value }
+        }
+        return result
+    }
+
     /// Every category's twelve cells of `year`, by category id then month.
     public static func gridCells(_ data: ComparisonData, scenario: PlanInput, budget: PlanInput, year: Int) -> [Int64: [Int: ScenarioGridCell]] {
         grid(data, actuals: gridActuals(data), scenario: scenario, budget: budget, year: year).cells

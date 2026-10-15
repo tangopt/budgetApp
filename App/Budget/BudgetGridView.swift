@@ -16,6 +16,27 @@ struct CSVDocument: FileDocument {
     }
 }
 
+/// The Budget's CSV as a file to share, named e.g. "Budget 2026.csv". The CSV is built only
+/// when a share actually asks for it (the export scans every category × pay month), then
+/// written to the one fixed temporary folder `BudgetShare` (emptied first, so shares never
+/// pile up) and that file's URL is shared.
+struct CSVShareFile: Transferable {
+    let name: String
+    let makeText: @MainActor () -> String
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .commaSeparatedText) { file in
+            let text = await MainActor.run { file.makeText() }
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("BudgetShare", isDirectory: true)
+            try? FileManager.default.removeItem(at: directory)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent("\(file.name).csv")
+            try Data(text.utf8).write(to: url)
+            return SentTransferredFile(url)
+        }
+    }
+}
+
 struct BudgetGridView: View {
     @ObservedObject var viewModel: BudgetGridViewModel
     @State private var showExporter = false
@@ -268,19 +289,7 @@ struct BudgetGridView: View {
                                     // capped like the months, at however many columns there are.
                                     let years = viewModel.selectedYears
                                     HorizontalOffsetFollower(offset: scrollOffset) {
-                                        HStack(spacing: 0) {
-                                            ForEach(Array(years.enumerated()), id: \.element) { index, year in
-                                                HStack(spacing: 0) {
-                                                    multiYearHeaderCell(String(year)).bold()
-                                                    if index > 0 {
-                                                        multiYearHeaderCell("Δ vs \(String(years[index - 1]))")
-                                                        multiYearHeaderCell("%")
-                                                    }
-                                                }
-                                                .yearGroupBand(index)
-                                                .yearGroupSeparator(index)
-                                            }
-                                        }
+                                        MultiYearHeaderRow(years: years)
                                     }
                                     .frame(minWidth: 0, maxWidth: scrollingWidth, alignment: .leading)
                                     .clipped()
@@ -367,13 +376,22 @@ struct BudgetGridView: View {
         .padding()
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button("Export CSV…") {
-                    exportDocument = CSVDocument(text: viewModel.exportCSV())
-                    showExporter = true
+                Menu {
+                    Button("Export CSV…") {
+                        exportDocument = CSVDocument(text: viewModel.exportCSV())
+                        showExporter = true
+                    }
+                    ShareLink(item: CSVShareFile(name: csvFileName, makeText: { [viewModel] in viewModel.exportCSV() }),
+                              preview: SharePreview(csvFileName)) {
+                        Label("Share CSV…", systemImage: "square.and.arrow.up")
+                    }
+                } label: {
+                    Label("Share or export", systemImage: "square.and.arrow.up")
                 }
+                .help("Share or export")
             }
         }
-        .fileExporter(isPresented: $showExporter, document: exportDocument, contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
+        .fileExporter(isPresented: $showExporter, document: exportDocument, contentType: .commaSeparatedText, defaultFilename: csvFileName) { _ in }
         // A panel's target belongs to the year it was opened in.
         .onChange(of: viewModel.selectedYears) { _, _ in
             cellSelection.clear()
@@ -474,86 +492,41 @@ struct BudgetGridView: View {
         }
     }
 
+    /// The shared CSV's file name (without extension): "Budget 2026", or "Budget 2025–2026"
+    /// when comparing years.
+    private var csvFileName: String {
+        let years = viewModel.selectedYears.sorted()
+        guard let first = years.first, let last = years.last else { return "Budget" }
+        return first == last ? "Budget \(first)" : "Budget \(first)–\(last)"
+    }
+
     private var yearPicker: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 10) {
-                ForEach(viewModel.availableYears, id: \.self) { year in
-                    Button {
-                        // ⌘-click adds or removes a year (to compare several); a plain click
-                        // shows just that year.
-                        if NSEvent.modifierFlags.contains(.command) {
-                            viewModel.toggleYear(year)
-                        } else {
-                            viewModel.selectYear(year)
-                        }
-                    } label: {
-                        yearCard(year)
-                    }
-                    .buttonStyle(.plain)
-                    .help("⌘-click to compare several years")
-                }
+        YearCardRow(years: viewModel.availableYears, onSelect: { year in
+            // ⌘-click adds or removes a year (to compare several); a plain click shows just
+            // that year.
+            if NSEvent.modifierFlags.contains(.command) {
+                viewModel.toggleYear(year)
+            } else {
+                viewModel.selectYear(year)
             }
-            // Vertical padding, not just horizontal: the selected chip's 2pt stroke sits
-            // right at the row's own edge, and ScrollView sizes its cross-axis tightly to
-            // content — with no vertical breathing room the stroke's top/bottom pixel was
-            // clipped by the scroll view's own bounds.
-            .padding(.horizontal)
-            .padding(.vertical, 4)
+        }, help: "⌘-click to compare several years") { year in
+            yearCard(year)
         }
     }
 
-    /// A year in the selector, all the same size: the year (" forecast" after it while its
-    /// year-end is a forecast, " today" for this year with Show forecast off), its year-end
-    /// net worth, and the change on the previous year-end as "↑ £24,953 · 16.4%" ("—"
-    /// without a previous year).
+    /// A year's card (`YearCard`): " forecast" after the year while its year-end is a
+    /// forecast, " today" for this year with Show forecast off.
     private func yearCard(_ year: Int) -> some View {
-        let selected = viewModel.selectedYears.contains(year)
         let yearEnd = viewModel.yearEndNetWorth(year)
-        let change = viewModel.yearEndChange(year)
-        let percent = viewModel.yearEndChangePercent(year)
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                Text(String(year)).font(.subheadline).bold()
-                if yearEnd?.isForecast == true {
-                    Text(" forecast").font(.caption2).foregroundStyle(.secondary)
-                } else if yearEnd != nil, !viewModel.showForecast, year == MonthRange.components(of: Date()).year {
-                    Text(" today").font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            if let yearEnd {
-                MoneyText(minorUnits: yearEnd.valueMinorUnits)
-            } else {
-                Text("—").foregroundStyle(.secondary)
-            }
-            // No change (or less than shows in whole pounds) reads "—", not a green "↑ £0".
-            if let change, DashboardFormat.pounds(abs(change)) != DashboardFormat.pounds(0) {
-                Text(Self.yearChangeText(change: change, percent: percent))
-                    .font(.caption2).monospacedDigit()
-                    .foregroundStyle(change >= 0 ? Color.green : Color.red)
-            } else {
-                Text("—").font(.caption2).foregroundStyle(.secondary)
-            }
+        let caption: String? = if yearEnd?.isForecast == true {
+            " forecast"
+        } else if yearEnd != nil, !viewModel.showForecast, year == MonthRange.components(of: Date()).year {
+            " today"
+        } else {
+            nil
         }
-        .lineLimit(1)
-        .padding(8)
-        .frame(width: Self.yearCardSize.width, height: Self.yearCardSize.height, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Color.accentColor.opacity(0.15) : Color.clear))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(selected ? Color.accentColor : Color.secondary.opacity(0.3), lineWidth: selected ? 2 : 1))
-        // The whole tile is the button: an unselected card's background is clear, which a plain
-        // button otherwise doesn't hit-test (only its text was clickable).
-        .contentShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    /// Every year card's size: fits the largest content (three lines; a seven-figure net worth).
-    private static let yearCardSize = CGSize(width: 160, height: 66)
-
-    /// "↑ £24,953 · 16.4%" (whole pounds); the percent is left out when there is none (a
-    /// previous year-end of zero).
-    static func yearChangeText(change: Int, percent: Double?) -> String {
-        let arrow = change >= 0 ? "↑" : "↓"
-        let amount = DashboardFormat.pounds(abs(change))
-        guard let percent else { return "\(arrow) \(amount)" }
-        return "\(arrow) \(amount) · \(String(format: "%.1f", abs(percent) * 100))%"
+        return YearCard(year: year, caption: caption, yearEnd: yearEnd?.valueMinorUnits, change: viewModel.yearEndChange(year),
+                        percent: viewModel.yearEndChangePercent(year), isSelected: viewModel.selectedYears.contains(year))
     }
 
     @ViewBuilder
@@ -686,28 +659,9 @@ struct BudgetGridView: View {
             EmptyView()
         default:
             let current = yearValue(row, year: year)
-            let prior = yearValue(row, year: previous)
-            let delta = current.flatMap { current in prior.map { YearOverYear.delta(current: current.amount, previous: $0.amount) } }
-            let improvement = delta.flatMap { YearOverYear.isImprovement(amount: $0.amount, categoryType: yearOverYearType(row)) }
-            let color = improvement.map { $0 ? Color.green : Color.red } ?? Color.secondary
             let isSectionHeader: Bool = { if case .sectionHeader = row { return true } else { return false } }()
-            HStack(spacing: 0) {
-                Group {
-                    if let delta, delta.amount != 0 {
-                        Text((delta.amount > 0 ? "+" : "") + Money.format(delta.amount, currency: current?.currency ?? .gbp))
-                    } else {
-                        Text("—")
-                    }
-                }
-                .multiYearValueCell()
-                Text(DashboardFormat.percent(delta?.amount == 0 ? nil : delta?.fraction))
-                    .multiYearValueCell()
-            }
-            .font(isSectionHeader ? Self.captionMoneyFont : Self.bodyMoneyFont)
-            .foregroundStyle(color)
-            .frame(height: isSectionHeader ? 24 : 28)
-            .background(rowBackground(row, shaded: shaded))
-            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator).opacity(isSectionHeader ? 0 : 1), alignment: .bottom)
+            YearDeltaCells(current: current?.amount, previous: yearValue(row, year: previous)?.amount, currency: current?.currency ?? .gbp,
+                           categoryType: yearOverYearType(row), isSectionHeader: isSectionHeader, background: rowBackground(row, shaded: shaded))
         }
     }
 
@@ -772,13 +726,6 @@ struct BudgetGridView: View {
         case .netWorthTotal: return Color.purple.opacity(0.10)
         case .category, .groupChild, .account, .unassignedAccount, .reserve: return shaded ? Color.primary.opacity(0.07) : Color.clear
         }
-    }
-
-    /// A multi-year header label, the width of a value column.
-    private func multiYearHeaderCell(_ title: String) -> some View {
-        Text(title)
-            .frame(width: GridMetrics.cellWidth, alignment: .trailing)
-            .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
     }
 
     /// A row's twelve month cells for the single selected year.
@@ -1165,7 +1112,7 @@ struct BudgetGridView: View {
     /// The scrolling area's full width (its cap): twelve months, or per selected year a total
     /// column plus Δ £ and Δ % after every year but the first.
     private var scrollingWidth: CGFloat {
-        isMultiYear ? CGFloat(3 * viewModel.selectedYears.count - 2) * GridMetrics.columnWidth : GridMetrics.monthsWidth
+        isMultiYear ? MultiYearColumns.width(yearCount: viewModel.selectedYears.count) : GridMetrics.monthsWidth
     }
 
     private static let bodyMoneyFont = PlanCellView.bodyFont
@@ -1244,24 +1191,5 @@ private extension View {
     func yearTotalCellPanel(_ grid: BudgetGridView, row: BudgetGridView.GridRowKind, name: String, members: [Category], year: Int) -> some View {
         noteMarker(grid.viewModel.hasNote(members, year: year))
             .selectable(grid.cellSelection, key: grid.cellKey(row, year: year)) { grid.openYear(row, name: name, members: members, year: year) }
-    }
-
-    /// A multi-year value cell's footprint, right-aligned like the month cells.
-    func multiYearValueCell() -> some View {
-        frame(width: GridMetrics.cellWidth, alignment: .trailing)
-            .padding(.horizontal, GridMetrics.cellPadding)
-    }
-
-    /// The leading 1pt separator between multi-year groups (none before the first year: the
-    /// category column draws its own).
-    /// Every other selected year's columns (its total, Δ and %) get a light tint, so each year
-    /// reads as one band when comparing several. An overlay, so it shows over row stripes and
-    /// cell fills alike, and never takes clicks.
-    func yearGroupBand(_ index: Int) -> some View {
-        overlay(Color.primary.opacity(index.isMultiple(of: 2) ? 0 : 0.06).allowsHitTesting(false))
-    }
-
-    func yearGroupSeparator(_ index: Int) -> some View {
-        overlay(Rectangle().frame(width: 1).foregroundStyle(.separator).opacity(index > 0 ? 1 : 0), alignment: .leading)
     }
 }
