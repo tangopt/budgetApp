@@ -372,7 +372,13 @@ struct BudgetGridView: View {
         }
         .fileExporter(isPresented: $showExporter, document: exportDocument, contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
         // A panel's target belongs to the year it was opened in.
-        .onChange(of: viewModel.selectedYears) { _, _ in cellSelection.clear() }
+        .onChange(of: viewModel.selectedYears) { _, _ in
+            cellSelection.clear()
+            applyRevealRequest()
+        }
+        // Search's Show in Budget (`BudgetGridViewModel.reveal`).
+        .onAppear { applyRevealRequest() }
+        .onChange(of: viewModel.revealRequest) { _, _ in applyRevealRequest() }
         // ...and to the accounts it was opened under.
         .onChange(of: viewModel.accountFilter) { _, _ in cellSelection.clear() }
         // Assigning the last unassigned item hides that row: its panel goes with it.
@@ -1033,6 +1039,33 @@ struct BudgetGridView: View {
     }
 
     // MARK: Side panel
+
+    /// Opens the requested category's month panel (Show in Budget): once its year is the one
+    /// shown, with its section expanded and its group open so the cell is outlined.
+    private func applyRevealRequest() {
+        guard let request = viewModel.revealRequest else { return }
+        guard viewModel.selectedYear == request.year else {
+            // The year change re-applies this (`onChange(of: selectedYears)`).
+            if viewModel.availableYears.contains(request.year) { viewModel.selectYear(request.year) } else { viewModel.revealRequest = nil }
+            return
+        }
+        viewModel.revealRequest = nil
+        guard let category = viewModel.categories.first(where: { $0.id == request.categoryId }), !category.isReserved else { return }
+        let row: GridRowKind
+        if let groupId = category.groupId {
+            guard viewModel.categoryGroups.contains(where: { $0.id == groupId }) else { return }
+            row = .groupChild(category)
+        } else {
+            row = .category(category)
+        }
+        updateOutline { outline in
+            let section = GridOutline.sectionKey(category.type)
+            if outline.isCollapsed(section) { outline.toggleSection(section) }
+            if let groupId = category.groupId { outline.setGroups([groupId], expanded: true) }
+        }
+        cellSelection.select(key: cellKey(row, month: request.month),
+                             target: monthTarget(name: category.name, categories: [category], year: request.year, month: request.month))
+    }
 
     /// A cell's selection key: its row and its month (or year) column.
     fileprivate func cellKey(_ row: GridRowKind, month: Int) -> String { "\(row.id)|m\(month)" }

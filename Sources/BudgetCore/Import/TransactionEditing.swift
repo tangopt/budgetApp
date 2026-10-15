@@ -40,6 +40,27 @@ public enum TransactionEditing {
     }
 }
 
+extension TransactionEditing {
+    /// Search's Set category… (spec 2026-10-15): each transaction gets `categoryId`, confirmed
+    /// and manual, its note kept; with `remember`, a rule is learned from each description
+    /// (`RuleLearner.learn`, as on Uncategorized). Call inside one write: a missing
+    /// transaction or category, or a reserve, throws and rolls everything back.
+    public static func setCategory(db: Database, ids: [Int64], categoryId: Int64, remember: Bool) throws {
+        guard let category = try Category.fetchOne(db, key: categoryId) else { throw TransactionEditError.categoryNotFound }
+        guard category.isAssignable else { throw TransactionEditError.reservedCategory }
+        for id in ids {
+            guard var transaction = try Transaction.fetchOne(db, key: id) else { throw TransactionEditError.transactionNotFound }
+            transaction.categoryId = categoryId
+            transaction.status = .confirmed
+            transaction.categorizedBy = .manual
+            try transaction.update(db)
+            if remember {
+                try RuleLearner.learn(description: transaction.rawDescription, categoryId: categoryId, db: db)
+            }
+        }
+    }
+}
+
 /// A transfer change Edit transaction holds until Save (at most one at a time).
 public enum PendingTransferChange: Equatable, Sendable {
     /// Add the other side… in `accountId` (`ManualTransactions.addOtherSide`).
