@@ -79,6 +79,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
             recomputeComparison()
             recomputeGrid()
             yearEndsCache = [:]
+            lastYearEndsKey = nil
             recomputeYearEnds()
         }
     }
@@ -156,6 +157,8 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     /// `gridYearEnds` by plan (0 = the Budget); emptied by every load and horizon change.
     private var yearEndsCache: [Int64: [Int: Int]] = [:]
     private var yearEndsTask: Task<Void, Never>?
+    /// The plan (0 = the Budget) `gridYearEnds` currently shows; nil after a horizon change.
+    private var lastYearEndsKey: Int64?
     /// Each plan's effective entries (`ForecastCalculator.planEntries`) by plan (0 = the
     /// Budget): the occurrences' plan, asked for every category by a Totals panel; emptied by
     /// every load.
@@ -460,7 +463,13 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         let key = gridSelection ?? 0
         if let cached = yearEndsCache[key] {
             gridYearEnds = cached
+            lastYearEndsKey = key
             return
+        }
+        // Another plan's (or another horizon's) figures must never show while this one's compute.
+        if lastYearEndsKey != key {
+            gridYearEnds = [:]
+            lastYearEndsKey = key
         }
         let data = comparisonData
         let plan = gridPlan

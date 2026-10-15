@@ -18,7 +18,8 @@ struct CSVDocument: FileDocument {
 
 /// The Budget's CSV as a file to share, named e.g. "Budget 2026.csv". The CSV is built only
 /// when a share actually asks for it (the export scans every category × pay month), then
-/// written to a temporary file whose URL is shared.
+/// written to the one fixed temporary folder `BudgetShare` (emptied first, so shares never
+/// pile up) and that file's URL is shared.
 struct CSVShareFile: Transferable {
     let name: String
     let makeText: @MainActor () -> String
@@ -26,7 +27,8 @@ struct CSVShareFile: Transferable {
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(exportedContentType: .commaSeparatedText) { file in
             let text = await MainActor.run { file.makeText() }
-            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("BudgetShare", isDirectory: true)
+            try? FileManager.default.removeItem(at: directory)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let url = directory.appendingPathComponent("\(file.name).csv")
             try Data(text.utf8).write(to: url)
@@ -389,7 +391,7 @@ struct BudgetGridView: View {
                 .help("Share or export")
             }
         }
-        .fileExporter(isPresented: $showExporter, document: exportDocument, contentType: .commaSeparatedText, defaultFilename: "budget-export") { _ in }
+        .fileExporter(isPresented: $showExporter, document: exportDocument, contentType: .commaSeparatedText, defaultFilename: csvFileName) { _ in }
         // A panel's target belongs to the year it was opened in.
         .onChange(of: viewModel.selectedYears) { _, _ in cellSelection.clear() }
         // ...and to the accounts it was opened under.

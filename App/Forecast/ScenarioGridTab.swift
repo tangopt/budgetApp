@@ -4,8 +4,10 @@ import BudgetCore
 import struct BudgetCore.Category
 
 /// The Grid chips (one plan: the Budget or a scenario), a header bar in that plan's colour,
-/// then the plan month by month (categories × the twelve months of a year within the
-/// horizon), valued as the Budget grid values it (`ScenarioComparison.grid`), with the Budget
+/// the year cards (`YearCard`: each horizon year captioned " forecast", with the plan's
+/// year-end net worth and its change on the previous year-end; ⌘-click compares several
+/// years, shown as the Budget grid's multi-year columns), then the plan month by month
+/// (categories × the twelve months of a year within the horizon), valued as the Budget grid values it (`ScenarioComparison.grid`), with the Budget
 /// grid's look and behaviour (spec 2026-10-15-forecast-grid-parity-design.md): category
 /// icons, collapsible sections and groups, the Totals block, and cell selection with the
 /// shared side panel (`GridCellPanel`: the cell's actual transactions and the plan's
@@ -104,7 +106,8 @@ struct ScenarioGridTab: View {
                     viewModel.selectGridYear(year)
                 }
             }, help: "⌘-click to compare several years") { year in
-                YearCard(year: year, caption: year == MonthRange.components(of: viewModel.today).year ? " forecast" : nil,
+                // Every year-end on the Forecast screen is a forecast (today's year included).
+                YearCard(year: year, caption: " forecast",
                          yearEnd: viewModel.gridYearEnds[year], change: viewModel.gridYearEndChange(year),
                          percent: viewModel.gridYearEndChangePercent(year), isSelected: viewModel.gridSelectedYears.contains(year))
             }

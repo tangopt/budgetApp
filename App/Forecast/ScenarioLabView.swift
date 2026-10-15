@@ -55,8 +55,14 @@ struct ScenarioLabView: View {
                     }
                     .pickerStyle(.inline)
                 } label: {
-                    Label("Horizon: \(viewModel.horizon.label)", systemImage: "calendar.badge.clock")
-                        .labelStyle(.titleAndIcon)
+                    // An HStack, not a Label: a toolbar shows a Label's icon only, whatever its
+                    // label style; the title must show the current horizon.
+                    HStack(spacing: 4) {
+                        Image(systemName: "calendar.badge.clock")
+                        Text("Horizon: \(viewModel.horizon.label)")
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Horizon: \(viewModel.horizon.label)")
                 }
                 .help("How far ahead to forecast")
             }
