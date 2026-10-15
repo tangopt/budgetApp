@@ -204,7 +204,11 @@ final class ImportViewModel: ObservableObject {
         isReviewing = true
         if result.staged.isEmpty && result.duplicates.isEmpty && result.unparsedLines.isEmpty {
             isReviewing = false
-            fail("No transactions were found in \(sourceFileName).")
+            if result.skippedRowCount > 0 {
+                fail("All \(result.skippedRowCount) rows in \(sourceFileName) are pending or reverted, so nothing was imported.")
+            } else {
+                fail("No transactions were found in \(sourceFileName).")
+            }
         }
     }
 
