@@ -1,0 +1,7 @@
+# Categories: Expand/Collapse All and Group Types — Design Spec
+
+Approved in chat 2026-10-15 ("go").
+
+1. **Expand / collapse all**: two small borderless toolbar buttons beside + Group (SF Symbols `rectangle.expand.vertical` / `rectangle.compress.vertical`, help "Expand all groups" / "Collapse all groups") opening/closing every group row in every section. ⌥-click a group's chevron toggles every group in that section (as in the Budget grid). Expansion state persisted across launches (AppStorage, keys "<type>-<groupId>"). While searching everything stays expanded (as today).
+2. **Group types**: migration (appended last) `categoryGroup.type TEXT NULL` (CategoryType raw value: expense/income/transfer); backfill each existing group with the majority type of its member categories (ties → expense; empty → expense). `CategoryGroups.create(db:name:type:moving:)` stores it. An empty group appears in its type's section; a group with members still appears in every section its members belong to (unchanged). New group sheet: segmented **Expenses / Income / Transfers** picker, default = section of the selected group/category (else Expenses). "Add category here…" from a group row preselects that row's section type (unchanged); from an empty group, its stored type.
+3. Tests: migration backfill (majority, tie, empty), create with type, empty-group placement in sections, ⌥ semantics if logic is in BudgetCore. App build, full suite, no warnings.
