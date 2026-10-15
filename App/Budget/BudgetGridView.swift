@@ -730,10 +730,12 @@ struct BudgetGridView: View {
         case .reservedTotal:
             return (viewModel.reserveYearCell(viewModel.reserves, year: year).value, .gbp)
         case .account(let account):
-            // The Year Total's figure: December's balance, actual or forecast.
-            switch viewModel.accountCell(account, year: year, month: 12) {
+            // The Year Total's figure: December's balance, actual or forecast (today's with
+            // Show forecast off this year).
+            switch viewModel.accountYearEnd(account, year: year) {
             case .actual(let balance): return balance.map { ($0.nativeBalanceMinorUnits, $0.account.currency) }
             case .forecast(let balance, let currency): return (balance.nativeMinorUnits, currency)
+            case .today(let native, let currency): return (native, currency)
             case .blank: return nil
             }
         case .unassignedAccount:
@@ -952,8 +954,9 @@ struct BudgetGridView: View {
         case .account(let account):
             // Year Total shows the year-end (December) balance rather than a sum —
             // summing 12 monthly balances isn't a meaningful figure for a balance row. Like
-            // the year card: actual for past years, the forecast December with Show forecast.
-            accountBalanceCell(viewModel.accountCell(account, year: year, month: 12)).bold()
+            // the year card: actual for past years, the forecast December with Show forecast,
+            // today's balance this year without it.
+            accountBalanceCell(viewModel.accountYearEnd(account, year: year)).bold()
                 .frame(height: 28)
                 .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
@@ -1103,6 +1106,9 @@ struct BudgetGridView: View {
                 MoneyText(minorUnits: balance.nativeMinorUnits, currency: currency, font: Self.bodyMoneyFont.italic(), alignment: .trailing, tint: .pending)
                     .help(currency == .gbp ? "Forecast: today's balance plus this account's planned items"
                           : "Forecast: today's balance plus this account's planned items (\(Money.format(balance.gbpMinorUnits, currency: .gbp)))")
+            case .today(let native, let currency):
+                MoneyText(minorUnits: native, currency: currency, alignment: .trailing)
+                    .help("Today's balance")
             case .actual(nil), .blank:
                 Text("—").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
             }

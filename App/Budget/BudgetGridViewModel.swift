@@ -140,6 +140,9 @@ final class BudgetGridViewModel: ObservableObject {
     /// account rows); the same as `netWorthInput` with no filter.
     private var allAccountsInputCache: DashboardInput?
     private var allAccountsActualsCache: NetWorthActuals??
+    /// Each account's native balance today (`NetWorthCalculator.balance` with no end date), for
+    /// the Year Total with Show forecast off. Cleared with the net worth caches.
+    private var todayBalanceCache: [Int64: Int] = [:]
 
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
@@ -286,6 +289,7 @@ final class BudgetGridViewModel: ObservableObject {
     private func clearNetWorthCaches() {
         accountBalanceCache = [:]
         accountForecastCache = [:]
+        todayBalanceCache = [:]
         allAccountsInputCache = nil
         allAccountsActualsCache = nil
         clearFilteredNetWorthCaches()
@@ -352,7 +356,19 @@ final class BudgetGridViewModel: ObservableObject {
     enum AccountCell {
         case actual(MonthlyAccountBalance?)
         case forecast(AccountForecastBalance, currency: Currency)
+        /// Today's actual balance (the current year's Year Total with Show forecast off).
+        case today(nativeMinorUnits: Int, currency: Currency)
         case blank
+    }
+
+    /// An account row's Year Total, like the Net Worth row's (`yearEndNetWorth`): December's
+    /// cell, except this year with Show forecast off, which is today's actual balance.
+    func accountYearEnd(_ account: Account, year: Int) -> AccountCell {
+        guard !showForecast, year == MonthRange.components(of: Date()).year, let id = account.id else { return accountCell(account, year: year, month: 12) }
+        if let cached = todayBalanceCache[id] { return .today(nativeMinorUnits: cached, currency: account.currency) }
+        guard let native = NetWorthCalculator.balance(accountId: id, at: nil, snapshots: balanceSnapshots, transactions: transactions)?.native else { return .actual(nil) }
+        todayBalanceCache[id] = native
+        return .today(nativeMinorUnits: native, currency: account.currency)
     }
 
     func accountCell(_ account: Account, year: Int, month: Int) -> AccountCell {

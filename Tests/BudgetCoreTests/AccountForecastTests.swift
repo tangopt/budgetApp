@@ -157,6 +157,38 @@ final class AccountForecastTests: XCTestCase {
         XCTAssertEqual(byAccount[joint], 50_000)
     }
 
+    private func remaining(_ entries: [ForecastEntry], actualsByAccount: [Int64: [Int64: Int]]) -> (byAccount: [Int64?: Int], whole: Int) {
+        let actuals = actualsByAccount.values.reduce(into: [Int64: Int]()) { totals, byCategory in byCategory.forEach { totals[$0.key, default: 0] += $0.value } }
+        let byAccount = ForecastProjector.remainingPlannedByAccount(year: 2026, month: 3, actuals: actuals, actualsByAccount: actualsByAccount, categories: categories, entries: entries,
+                                                                    groups: groups, exceptions: [], itemAccounts: itemAccounts())
+        return (byAccount.filter { $0.value != 0 },
+                ForecastProjector.remainingPlanned(year: 2026, month: 3, actuals: actuals, categories: categories, entries: entries, groups: groups, exceptions: []))
+    }
+
+    func testMixedSignPlanSharesTheRemainderOnlyAmongAccountsExpectingItsDirection() {
+        // A gift of £100 in on Current and £300 out from Joint: the plan's £200 out is Joint's.
+        let result = remaining([entry(5, gift, 10_000, day: 10, account: current), entry(8, gift, -30_000, day: 12, account: joint)], actualsByAccount: [:])
+        XCTAssertEqual(result.byAccount, [joint: -20_000])
+        XCTAssertEqual(result.byAccount.values.reduce(0, +), result.whole)
+    }
+
+    func testRemainderNoAccountExpectsGoesToTheLargestLegOfItsSign() {
+        // Each account paid its rent (Current more than planned), a refund landed on Euro: the
+        // plan's £10 still expected goes to one rent account, whole.
+        let result = remaining([entry(2, rent, -10_000, day: 1, account: current), entry(4, rent, -10_000, day: 20, account: joint)],
+                               actualsByAccount: [current: [rent: -15_000], joint: [rent: -10_000], euro: [rent: 6_000]])
+        XCTAssertEqual(result.whole, -1_000)
+        XCTAssertEqual(result.byAccount, [current: -1_000])
+    }
+
+    func testAnUnpaidTiedTransferLegIsKeptWhenAnotherPayerSentMore() {
+        // Current sent £600 of its planned £500 to Joint; Euro's £100 hasn't gone yet.
+        let result = remaining([entry(3, toJoint, -50_000, day: 5, account: current), entry(9, toJoint, -10_000, day: 6, account: euro)],
+                               actualsByAccount: [current: [toJoint: -60_000]])
+        XCTAssertEqual(result.byAccount, [euro: -10_000, joint: 10_000])
+        XCTAssertEqual(result.whole, 0)
+    }
+
     // MARK: Account rows
 
     func testAccountRowsFollowTheirOwnPlannedLegs() {
