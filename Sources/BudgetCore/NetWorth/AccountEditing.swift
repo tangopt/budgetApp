@@ -118,7 +118,8 @@ public enum BalanceUpdates {
     /// and the computed balance at `asOf` becomes a manual transaction dated `asOf` in the
     /// account's Manual entries batch — Market movement for investment accounts, Balance
     /// adjustment otherwise — described by the category's name, with the entry's note. A zero
-    /// difference writes nothing. No snapshot is written. A statement mismatch dated on or
+    /// difference writes no transaction. No snapshot is written. Every entry, whatever its
+    /// difference, records `asOf` as the account's `balanceConfirmedAt` (if later). A statement mismatch dated on or
     /// before `asOf` is cleared (`StatementCheck.clearMismatch`). Entries are applied in order, so a
     /// repeated account sees the earlier adjustment.
     public static func save(db: Database, entries: [Entry], asOf: Date) throws -> [Outcome] {
@@ -127,6 +128,7 @@ public enum BalanceUpdates {
             guard let account = try Account.fetchOne(db, key: entry.accountId) else { throw AccountEditError.accountNotFound }
             try checkDate(db: db, account: account, asOf: asOf)
             try StatementCheck.clearMismatch(db: db, accountId: entry.accountId, onOrBefore: asOf)
+            try confirmBalance(db: db, accountId: entry.accountId, on: asOf)
             let actual = NetWorthCalculator.signedSnapshotBalance(enteredMinorUnits: entry.enteredMinorUnits, accountKind: account.kind)
             let difference = actual - (try computedBalance(db: db, accountId: entry.accountId, asOf: asOf))
             guard difference != 0 else {
@@ -140,6 +142,13 @@ public enum BalanceUpdates {
             outcomes.append(Outcome(accountId: entry.accountId, accountName: account.displayName, currency: account.currency, differenceMinorUnits: difference, role: role, transactionId: transaction.id))
         }
         return outcomes
+    }
+
+    /// Records that the account's balance was confirmed on `day` (`Account.balanceConfirmedAt`),
+    /// unless a later confirmation is already recorded.
+    static func confirmBalance(db: Database, accountId: Int64, on day: Date) throws {
+        try db.execute(sql: "UPDATE account SET balanceConfirmedAt = ? WHERE id = ? AND (balanceConfirmedAt IS NULL OR balanceConfirmedAt < ?)",
+                       arguments: [day, accountId, day])
     }
 
     /// The earliest recorded balance (snapshot) of the account dated on or after `asOf`'s day,

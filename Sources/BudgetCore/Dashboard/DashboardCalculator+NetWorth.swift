@@ -102,8 +102,8 @@ extension DashboardCalculator {
             }
         }
 
-        // "As of": the latest activity (snapshot or transaction up to today) of any account.
-        let asOf = input.accounts.compactMap { BalanceStaleness.lastActivity(accountId: $0.id, snapshots: input.snapshots, transactions: input.transactions, today: input.today) }.max()
+        // "As of": the latest activity (snapshot, transaction up to today or balance confirmation) of any account.
+        let asOf = input.accounts.compactMap { BalanceStaleness.lastActivity(account: $0, snapshots: input.snapshots, transactions: input.transactions, today: input.today) }.max()
 
         let changeVsPrevious: Int? = actual.count >= 2 ? actual[actual.count - 1].valueMinorUnits - actual[actual.count - 2].valueMinorUnits : nil
 
@@ -113,7 +113,7 @@ extension DashboardCalculator {
         if let dataMonth {
             let dataIndex = MonthRange.index(year: dataMonth.year, month: dataMonth.month)
             for account in input.accounts where BalanceStaleness.needsUpdates(account: account, transactions: input.transactions) {
-                guard let latest = BalanceStaleness.lastActivity(accountId: account.id, snapshots: input.snapshots, transactions: input.transactions, today: input.today) else { continue }
+                guard let latest = BalanceStaleness.lastActivity(account: account, snapshots: input.snapshots, transactions: input.transactions, today: input.today) else { continue }
                 let parts = MonthRange.components(of: latest)
                 if MonthRange.index(year: parts.year, month: parts.month) < dataIndex { behindDates.append(latest) }
             }
@@ -146,7 +146,7 @@ extension DashboardCalculator {
             input.snapshots.lazy.filter { $0.accountId == account.id }.map(\.date).min()
                 ?? input.transactions.lazy.filter { $0.accountId == account.id }.map(\.date).min()
         }
-        let latestActivity = input.accounts.compactMap { BalanceStaleness.lastActivity(accountId: $0.id, snapshots: input.snapshots, transactions: input.transactions, today: input.today) }.max()
+        let latestActivity = input.accounts.compactMap { BalanceStaleness.lastActivity(account: $0, snapshots: input.snapshots, transactions: input.transactions, today: input.today) }.max()
         guard let firstData = starts.min(), let lastData = latestActivity ?? starts.max() else { return nil }
         let balances = NetWorthCalculator.accountBalances(accounts: input.accounts, snapshots: input.snapshots, transactions: input.transactions, rate: input.rate)
         let current = NetWorthCalculator.netWorth(balances: balances)

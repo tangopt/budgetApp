@@ -16,18 +16,24 @@ public enum BalanceStaleness {
         account.kind == .investment || !transactions.contains { $0.accountId == account.id && !$0.isManual }
     }
 
-    /// The account's last activity: its latest snapshot or transaction dated up to `today`'s day.
-    public static func lastActivity(accountId: Int64?, snapshots: [BalanceSnapshot], transactions: [Transaction], today: Date) -> Date? {
+    /// The account's last activity: its latest snapshot, transaction dated up to `today`'s day,
+    /// or balance confirmation (`Account.balanceConfirmedAt`, passed as `confirmedAt`).
+    public static func lastActivity(accountId: Int64?, snapshots: [BalanceSnapshot], transactions: [Transaction], today: Date, confirmedAt: Date? = nil) -> Date? {
         let calendar = MonthRange.calendar
         let endOfToday = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: today))!
         let snapshot = snapshots.lazy.filter { $0.accountId == accountId }.map(\.date).max()
         let transaction = transactions.lazy.filter { $0.accountId == accountId && $0.date < endOfToday }.map(\.date).max()
-        return [snapshot, transaction].compactMap { $0 }.max()
+        return [snapshot, transaction, confirmedAt].compactMap { $0 }.max()
+    }
+
+    /// `lastActivity` for `account`, its `balanceConfirmedAt` included.
+    public static func lastActivity(account: Account, snapshots: [BalanceSnapshot], transactions: [Transaction], today: Date) -> Date? {
+        lastActivity(accountId: account.id, snapshots: snapshots, transactions: transactions, today: today, confirmedAt: account.balanceConfirmedAt)
     }
 
     public static func isStale(account: Account, snapshots: [BalanceSnapshot], transactions: [Transaction], today: Date) -> Bool {
         guard needsUpdates(account: account, transactions: transactions) else { return false }
-        guard let last = lastActivity(accountId: account.id, snapshots: snapshots, transactions: transactions, today: today) else { return true }
+        guard let last = lastActivity(account: account, snapshots: snapshots, transactions: transactions, today: today) else { return true }
         let calendar = MonthRange.calendar
         let threshold = calendar.date(byAdding: .day, value: -thresholdDays, to: calendar.startOfDay(for: today))!
         return last < threshold
@@ -71,7 +77,7 @@ public struct AccountsOverview: Equatable {
         for balance in balances {
             let account = balance.account
             guard account.id != nil else { continue }
-            let lastUpdated = BalanceStaleness.lastActivity(accountId: account.id, snapshots: snapshots, transactions: transactions, today: today)
+            let lastUpdated = BalanceStaleness.lastActivity(account: account, snapshots: snapshots, transactions: transactions, today: today)
             let stale = BalanceStaleness.isStale(account: account, snapshots: snapshots, transactions: transactions, today: today)
             if stale {
                 staleCount += 1

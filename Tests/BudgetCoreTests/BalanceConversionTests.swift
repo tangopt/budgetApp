@@ -69,6 +69,9 @@ final class BalanceConversionTests: XCTestCase {
             XCTAssertEqual(accountReport.adjustmentCount, 2)
             XCTAssertEqual(accountReport.adjustmentSumMinorUnits, 0)
             XCTAssertEqual(accountReport.archivedCount, 3)
+            XCTAssertEqual(accountReport.latestSnapshotDate, day(2025, 4, 1))
+            XCTAssertEqual(accountReport.lastConfirmedBefore, day(2025, 4, 15))
+            XCTAssertEqual(accountReport.lastConfirmedAfter, day(2025, 4, 15))
 
             let remaining = try BalanceSnapshot.filter(Column("accountId") == id).fetchAll(db)
             XCTAssertEqual(remaining.map(\.date), [day(2025, 1, 1)])
@@ -231,6 +234,86 @@ final class BalanceConversionTests: XCTestCase {
             XCTAssertEqual(try BalanceSnapshotArchive.fetchCount(db), 0)
             XCTAssertEqual(try adjustments(db, id).count, 0)
             XCTAssertEqual(try Transaction.fetchCount(db), 4)
+        }
+    }
+
+    /// A later recorded balance that needed no adjustment still counts as activity after the
+    /// conversion (`Account.balanceConfirmedAt`): staleness and "as of" don't move earlier.
+    func testConversionKeepsLastActivityWhenALaterBalanceNeededNoAdjustment() throws {
+        let manager = try makeDB()
+        try manager.dbQueue.write { db in
+            let id = try addAccount(db, "ISA", kind: .investment)
+            try addSnapshot(db, id, day(2026, 1, 1), 100_000)
+            try addImported(db, id, day(2026, 1, 15), 20_000)
+            try addSnapshot(db, id, day(2026, 9, 1), 120_000)   // matches: no adjustment
+            let account = try XCTUnwrap(Account.fetchOne(db, key: id))
+            let before = BalanceStaleness.lastActivity(account: account, snapshots: try BalanceSnapshot.fetchAll(db), transactions: try Transaction.fetchAll(db), today: now)
+            XCTAssertEqual(before, day(2026, 9, 1))
+
+            let report = try BalanceConversion.convert(db: db, now: now)
+            XCTAssertEqual(report.violations, [])
+            XCTAssertEqual(try adjustments(db, id).count, 0)
+            let accountReport = try XCTUnwrap(report.accounts.first)
+            XCTAssertEqual(accountReport.latestSnapshotDate, day(2026, 9, 1))
+            XCTAssertEqual(accountReport.lastConfirmedBefore, day(2026, 9, 1))
+            XCTAssertEqual(accountReport.lastConfirmedAfter, day(2026, 9, 1))
+            XCTAssertTrue(report.text.contains("last confirmed 1 Sep 2026 → 1 Sep 2026"), report.text)
+
+            let converted = try XCTUnwrap(Account.fetchOne(db, key: id))
+            XCTAssertEqual(converted.balanceConfirmedAt, day(2026, 9, 1))
+            let snapshots = try BalanceSnapshot.fetchAll(db), transactions = try Transaction.fetchAll(db)
+            XCTAssertEqual(BalanceStaleness.lastActivity(account: converted, snapshots: snapshots, transactions: transactions, today: now), before)
+            XCTAssertFalse(BalanceStaleness.isStale(account: converted, snapshots: snapshots, transactions: transactions, today: now))
+            let overview = AccountsOverview.make(accounts: [converted], snapshots: snapshots, transactions: transactions,
+                                                 rate: ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: now), today: now)
+            XCTAssertEqual(overview.asOf, day(2026, 9, 1))
+        }
+    }
+
+    /// The safety net: a transaction later on a recorded balance's day than the balance itself
+    /// counted after it before; after conversion that day's end equals the recorded balance,
+    /// so the month-end and current balances would change — the conversion aborts.
+    func testTransactionLaterOnARecordedBalancesDayAbortsTheConversion() throws {
+        let manager = try makeDB()
+        try manager.dbQueue.write { db in
+            let id = try addAccount(db, "Monzo")
+            try addSnapshot(db, id, day(2026, 1, 1), 10_000)
+            try addSnapshot(db, id, day(2026, 2, 1), 12_000)
+            try addImported(db, id, MonthRange.calendar.date(from: DateComponents(year: 2026, month: 2, day: 1, hour: 10))!, -500)
+        }
+        XCTAssertThrowsError(try manager.dbQueue.write { db in try BalanceConversion.convert(db: db, now: self.now) }) { error in
+            guard case BalanceConversionError.invariantViolated(let report) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(report.violations.contains { $0.contains("28 Feb 2026") }, "\(report.violations)")
+        }
+        try manager.dbQueue.read { db in
+            XCTAssertEqual(try BalanceSnapshot.fetchCount(db), 2)
+            XCTAssertEqual(try BalanceSnapshotArchive.fetchCount(db), 0)
+        }
+    }
+
+    /// Update balance with nothing to adjust still records the confirmation and clears staleness.
+    func testUpdateBalanceWithZeroDifferenceConfirmsTheBalance() throws {
+        let manager = try makeDB()
+        try manager.dbQueue.write { db in
+            let id = try addAccount(db, "ISA", kind: .investment)
+            try addSnapshot(db, id, day(2026, 1, 1), 100_000)
+            let today = day(2026, 10, 15)
+            var snapshots = try BalanceSnapshot.fetchAll(db), transactions = try Transaction.fetchAll(db)
+            XCTAssertTrue(BalanceStaleness.isStale(account: try XCTUnwrap(Account.fetchOne(db, key: id)), snapshots: snapshots, transactions: transactions, today: today))
+
+            let outcomes = try BalanceUpdates.save(db: db, entries: [.init(accountId: id, enteredMinorUnits: 100_000)], asOf: today)
+            XCTAssertEqual(outcomes.map(\.differenceMinorUnits), [0])
+            XCTAssertEqual(try Transaction.fetchCount(db), 0)
+            let account = try XCTUnwrap(Account.fetchOne(db, key: id))
+            XCTAssertEqual(account.balanceConfirmedAt, today)
+            snapshots = try BalanceSnapshot.fetchAll(db)
+            transactions = try Transaction.fetchAll(db)
+            XCTAssertFalse(BalanceStaleness.isStale(account: account, snapshots: snapshots, transactions: transactions, today: today))
+            XCTAssertEqual(BalanceStaleness.lastActivity(account: account, snapshots: snapshots, transactions: transactions, today: today), today)
+
+            // An earlier Update balance never moves the confirmation back.
+            _ = try BalanceUpdates.save(db: db, entries: [.init(accountId: id, enteredMinorUnits: 100_000)], asOf: day(2026, 6, 1))
+            XCTAssertEqual(try Account.fetchOne(db, key: id)?.balanceConfirmedAt, today)
         }
     }
 

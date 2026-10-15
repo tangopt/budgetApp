@@ -29,7 +29,8 @@ guard FileManager.default.fileExists(atPath: dbPath) else {
 do {
     let manager = try DatabaseManager(path: dbPath)
     try manager.migrate()
-    print("Database: \(dbPath)\(dryRun ? " (dry run — nothing will be saved)" : "")")
+    print("Database: \(dbPath)\(dryRun ? " (dry run — the conversion will be rolled back)" : "")")
+    print("Migrations applied (outside the conversion's transaction; the app applies them anyway).")
     var report: BalanceConversion.Report?
     try manager.dbQueue.inDatabase { db in
         try db.inTransaction {

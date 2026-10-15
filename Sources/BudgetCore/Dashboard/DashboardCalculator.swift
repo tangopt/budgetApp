@@ -33,7 +33,7 @@ public enum DashboardCalculator {
         var oldest: Date?
         for account in input.accounts {
             guard BalanceStaleness.isStale(account: account, snapshots: input.snapshots, transactions: input.transactions, today: input.today) else { continue }
-            let latest = BalanceStaleness.lastActivity(accountId: account.id, snapshots: input.snapshots, transactions: input.transactions, today: input.today)
+            let latest = BalanceStaleness.lastActivity(account: account, snapshots: input.snapshots, transactions: input.transactions, today: input.today)
             staleCount += 1
             if let latest { oldest = oldest.map { min($0, latest) } ?? latest }
         }

@@ -41,7 +41,7 @@ public struct AccountHistory: Equatable, Sendable {
                             adjustmentCategoryNames: [Int64: String], today: Date) -> AccountHistory {
         let snapshots = snapshots.filter { $0.accountId == accountId }
         let transactions = transactions.filter { $0.accountId == accountId }
-        let ordered = snapshots.sorted { !NetWorthCalculator.isNewer($0, $1) }
+        let ordered = snapshots.sorted { NetWorthCalculator.isNewer($1, $0) }
         var entries: [(order: Int, entry: Entry)] = ordered.enumerated().map { index, snapshot in
             (0, Entry(id: "s\(snapshot.id ?? 0)", date: snapshot.date, kind: index == 0 ? .opening : .recordedBalance,
                       amountMinorUnits: snapshot.balanceMinorUnits, note: snapshot.note))

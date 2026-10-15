@@ -44,11 +44,15 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     /// The closing date of the latest-dated statement checked: an earlier statement never
     /// overrides what a later one recorded.
     public var statementLastCheckedDate: Date?
+    /// The latest day the user (Update balance, even with nothing to adjust) or the balance
+    /// conversion confirmed the computed balance — counts as activity for staleness and "as of"
+    /// (`BalanceStaleness.lastActivity`) though nothing else records it. Nil when never.
+    public var balanceConfirmedAt: Date?
 
     public init(id: Int64? = nil, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode,
                 alias: String? = nil, sortCode: String? = nil, accountNumber: String? = nil, iban: String? = nil, sortOrder: Int? = nil,
                 statementMismatchMinorUnits: Int? = nil, statementMismatchDate: Date? = nil,
-                statementMismatchClosingMinorUnits: Int? = nil, statementLastCheckedDate: Date? = nil) {
+                statementMismatchClosingMinorUnits: Int? = nil, statementLastCheckedDate: Date? = nil, balanceConfirmedAt: Date? = nil) {
         self.id = id
         self.name = name
         self.currency = currency
@@ -63,6 +67,7 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
         self.statementMismatchDate = statementMismatchDate
         self.statementMismatchClosingMinorUnits = statementMismatchClosingMinorUnits
         self.statementLastCheckedDate = statementLastCheckedDate
+        self.balanceConfirmedAt = balanceConfirmedAt
     }
 
     /// What the UI calls the account: the alias when set, otherwise the full name. `name`
@@ -126,6 +131,14 @@ func registerAccountStatementMismatchMigration(_ migrator: inout DatabaseMigrato
             t.add(column: "statementMismatchDate", .datetime)
             t.add(column: "statementMismatchClosingMinorUnits", .integer)
             t.add(column: "statementLastCheckedDate", .datetime)
+        }
+    }
+}
+
+func registerAccountBalanceConfirmedAtMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addAccountBalanceConfirmedAt") { db in
+        try db.alter(table: "account") { t in
+            t.add(column: "balanceConfirmedAt", .datetime)
         }
     }
 }
