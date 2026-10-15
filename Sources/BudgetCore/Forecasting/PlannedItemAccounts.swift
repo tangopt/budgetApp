@@ -102,6 +102,12 @@ public struct PlannedItemAccounts: Equatable, Sendable {
         entry.accountId ?? automaticAccount(categoryId: entry.categoryId)
     }
 
+    /// Whether an item filed under `categoryId` may be assigned to `accountId` (Assign to ▾,
+    /// budget-totals spec §2): not a transfer tied to that same account (it would pay itself).
+    public func canAssign(categoryId: Int64, to accountId: Int64) -> Bool {
+        tiedAccountByCategory[categoryId] != accountId
+    }
+
     /// A planned occurrence as one account sees it.
     public struct Leg: Equatable {
         public let accountId: Int64?

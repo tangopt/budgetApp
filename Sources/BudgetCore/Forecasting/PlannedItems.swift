@@ -66,6 +66,24 @@ public enum PlannedItems {
         return existing
     }
 
+    /// Assign to ▾ / Assign all to ▾ (budget-totals spec §2): sets `accountId` on each planned
+    /// series in `entryIds` — the whole series, since an item's account is series-level — in
+    /// the caller's write (one write for all). A legacy `.auto` series becomes `.manual`; a
+    /// scenario copy is marked `changed`. An unknown id throws `PlannedItemEditError.notFound`
+    /// and, inside the caller's transaction, nothing is saved.
+    public static func assignAccount(db: Database, entryIds: [Int64], accountId: Int64) throws {
+        try db.inSavepoint {
+            for entryId in Set(entryIds) {
+                guard var entry = try ForecastEntry.fetchOne(db, key: entryId) else { throw PlannedItemEditError.notFound }
+                entry.accountId = accountId
+                if entry.status == .auto { entry.status = .manual }
+                if entry.scenarioId != nil && entry.scenarioChange == nil { entry.scenarioChange = .changed }
+                try entry.update(db)
+            }
+            return .commit
+        }
+    }
+
     /// The "Planned" group, created on first use. A group the user switched off is switched
     /// back on: a confirmed item in a disabled group would silently count for nothing.
     @discardableResult
