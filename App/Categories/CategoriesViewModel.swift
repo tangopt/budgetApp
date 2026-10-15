@@ -80,10 +80,10 @@ final class CategoriesViewModel: ObservableObject {
 
     // MARK: Groups
 
-    /// The New group sheet's save: the group, with `categoryIds` moved into it, in one write
-    /// (a refused name or a built-in member creates nothing).
-    func createGroup(name: String, moving categoryIds: [Int64]) throws -> CategoryGroup {
-        let group = try dbQueue.write { db in try CategoryGroups.create(db: db, name: name, moving: categoryIds) }
+    /// The New group sheet's save: the group of `type`, with `categoryIds` moved into it, in
+    /// one write (a refused name or a built-in member creates nothing).
+    func createGroup(name: String, type: CategoryType, moving categoryIds: [Int64]) throws -> CategoryGroup {
+        let group = try dbQueue.write { db in try CategoryGroups.create(db: db, name: name, type: type, moving: categoryIds) }
         errorMessage = nil
         load()
         return group

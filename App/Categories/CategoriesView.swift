@@ -29,14 +29,16 @@ enum CategoryRowID: Hashable {
 /// (Return), Delete… (⌫/⌦); categories also move, change the icon (also by clicking its
 /// badge), exclude from the auto-forecast and set a transfer category's linked account
 /// (shown "↔ <account>" on its row); groups also Add category here…. Selecting one
-/// category or group opens its transactions panel.
+/// category or group opens its transactions panel. The toolbar expands or collapses every
+/// group; ⌥-click a chevron to toggle its whole section (expansion is remembered).
 struct CategoriesView: View {
     @ObservedObject var viewModel: CategoriesViewModel
 
     @State private var search = ""
     @State private var selection: Set<CategoryRowID> = []
-    /// Collapsed group rows, keyed "<type>-<group id>" or "<type>-ungrouped".
-    @State private var collapsed: Set<String> = []
+    /// Collapsed group rows (`CategoryOutline`, keyed "<type>-<group id>" or
+    /// "<type>-ungrouped"), remembered across launches.
+    @AppStorage("categories.collapsedGroups") private var collapsedStore = ""
     /// The drop target under the pointer (same keys), highlighted.
     @State private var dropTarget: String?
     /// The group row under the pointer (same keys), whose ⋯ menu shows.
@@ -120,7 +122,17 @@ struct CategoriesView: View {
         .searchable(text: $search, prompt: "Search categories and groups")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                Button { newGroupDraft = NewGroupDraft(selectedCategoryIds: movableIds(selectedCategoryIds)) } label: { Label("Group", systemImage: "folder.badge.plus") }
+                Button { updateOutline { $0.expandAll() } } label: { Label("Expand all", systemImage: "rectangle.expand.vertical") }
+                    .buttonStyle(.borderless)
+                    .help("Expand all groups")
+                    .disabled(isSearching)
+                Button { updateOutline { $0.collapseAll(allRowKeys) } } label: { Label("Collapse all", systemImage: "rectangle.compress.vertical") }
+                    .buttonStyle(.borderless)
+                    .help("Collapse all groups")
+                    .disabled(isSearching)
+                Button {
+                    newGroupDraft = NewGroupDraft(selectedCategoryIds: movableIds(selectedCategoryIds), type: newGroupType)
+                } label: { Label("Group", systemImage: "folder.badge.plus") }
                     .help("New group")
                 Button { newCategoryDraft = NewCategoryDraft(type: .expense, groupId: nil) } label: { Label("Category", systemImage: "plus") }
                     .help("New category")
@@ -146,7 +158,7 @@ struct CategoriesView: View {
             }
         }
         .sheet(item: $newGroupDraft) { draft in
-            NewGroupSheet(draft: draft, create: { name, ids in try viewModel.createGroup(name: name, moving: ids) }) { group in
+            NewGroupSheet(draft: draft, create: { name, type, ids in try viewModel.createGroup(name: name, type: type, moving: ids) }) { group in
                 reveal(group)
             }
         }
@@ -207,12 +219,49 @@ struct CategoriesView: View {
 
     // MARK: List
 
+    private var isSearching: Bool { !search.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    /// The collapsed rows, from their stored string.
+    private var outline: CategoryOutline { CategoryOutline(string: collapsedStore) }
+
+    private func updateOutline(_ change: (inout CategoryOutline) -> Void) {
+        var updated = outline
+        change(&updated)
+        collapsedStore = updated.string
+    }
+
+    /// A section's collapsible rows' keys: its groups, then Ungrouped.
+    private func rowKeys(_ section: CategorySection) -> [String] {
+        section.groups.map(\.id) + [ungroupedKey(section.type)]
+    }
+
+    private func ungroupedKey(_ type: CategoryType) -> String { "\(type.rawValue)-ungrouped" }
+
+    /// Every collapsible row's key (Collapse all).
+    private var allRowKeys: [String] {
+        viewModel.sections(search: "").filter { $0.type != .adjustment }.flatMap(rowKeys)
+    }
+
+    /// The New group sheet's starting type: the selected group's or category's section,
+    /// else Expenses.
+    private var newGroupType: CategoryType {
+        let types: [CategoryType] = selection.compactMap { row in
+            switch row {
+            case .group(_, let type): return type
+            case .category(let id): return viewModel.categories.first { $0.id == id }?.type
+            }
+        }
+        guard Set(types).count == 1, let type = types.first, type != .adjustment else { return .expense }
+        return type
+    }
+
     private var list: some View {
-        let searching = !search.trimmingCharacters(in: .whitespaces).isEmpty
+        let searching = isSearching
         let reserves = viewModel.reserves(search: search)
         return ScrollViewReader { proxy in
             List(selection: $selection) {
                 ForEach(viewModel.sections(search: search)) { section in
+                    let sectionKeys = rowKeys(section)
                     if section.type == .adjustment {
                         adjustmentsSection(section)
                     } else {
@@ -223,7 +272,7 @@ struct CategoriesView: View {
                             let key = block.id
                             let row = CategoryRowID.group(block.group.id ?? -1, section.type)
                             groupLabel(block.group, count: block.categories.count, type: section.type, key: key,
-                                       isExpanded: isExpanded(key, forced: searching))
+                                       isExpanded: isExpanded(key, forced: searching), sectionKeys: sectionKeys)
                                 .tag(row)
                                 .id(row)
                                 .onAppear { if scrollTarget == row { scrollTarget = nil } }
@@ -233,9 +282,9 @@ struct CategoriesView: View {
                         }
                         if !searching || !section.ungrouped.isEmpty {
                             // Not selectable (no tag): a drop target and its chevron.
-                            let key = "\(section.type.rawValue)-ungrouped"
+                            let key = ungroupedKey(section.type)
                             dropRow(key: key, groupId: nil) {
-                                chevron(key, isExpanded: isExpanded(key, forced: searching), disabled: searching)
+                                chevron(key, isExpanded: isExpanded(key, forced: searching), disabled: searching, sectionKeys: sectionKeys)
                                 countedName("Ungrouped", count: section.ungrouped.count)
                                 Spacer()
                             }
@@ -324,13 +373,15 @@ struct CategoriesView: View {
 
     /// Whether a group (or Ungrouped) row's categories show; always while searching.
     private func isExpanded(_ key: String, forced: Bool) -> Bool {
-        forced || !collapsed.contains(key)
+        forced || outline.isExpanded(key)
     }
 
-    /// A group or Ungrouped row's expand/collapse button (the row itself selects).
-    private func chevron(_ key: String, isExpanded: Bool, disabled: Bool) -> some View {
+    /// A group or Ungrouped row's expand/collapse button (the row itself selects); ⌥-click
+    /// gives every row of the section (`sectionKeys`) the clicked row's new state.
+    private func chevron(_ key: String, isExpanded: Bool, disabled: Bool, sectionKeys: [String]) -> some View {
         Button {
-            if collapsed.contains(key) { collapsed.remove(key) } else { collapsed.insert(key) }
+            let allInSection = NSEvent.modifierFlags.contains(.option)
+            updateOutline { $0.toggle(key, allIn: allInSection ? sectionKeys : nil) }
         } label: {
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
@@ -342,7 +393,7 @@ struct CategoriesView: View {
         }
         .buttonStyle(.plain)
         .disabled(disabled)
-        .help(isExpanded ? "Collapse" : "Expand")
+        .help(isExpanded ? "Collapse (⌥-click: every group in this section)" : "Expand (⌥-click: every group in this section)")
         .accessibilityLabel(isExpanded ? "Collapse" : "Expand")
     }
 
@@ -359,11 +410,11 @@ struct CategoriesView: View {
     }
 
     /// A group row: name · count and its ⋯ menu (shown on hover or selection); a drop target.
-    private func groupLabel(_ group: CategoryGroup, count: Int, type: CategoryType, key: String, isExpanded: Bool) -> some View {
+    private func groupLabel(_ group: CategoryGroup, count: Int, type: CategoryType, key: String, isExpanded: Bool, sectionKeys: [String]) -> some View {
         let showsMenu = hoveredGroupKey == key || selection.contains(.group(group.id ?? -1, type))
         let searching = !search.trimmingCharacters(in: .whitespaces).isEmpty
         return dropRow(key: key, groupId: group.id) {
-            chevron(key, isExpanded: isExpanded, disabled: searching)
+            chevron(key, isExpanded: isExpanded, disabled: searching, sectionKeys: sectionKeys)
             countedName(group.name, count: count)
             Spacer()
             Menu {
@@ -615,7 +666,7 @@ struct CategoriesView: View {
         guard let id = group.id else { return }
         search = ""
         let type = viewModel.sections(search: "").first { $0.groups.contains { $0.group.id == id } }?.type ?? .expense
-        collapsed.remove("\(type.rawValue)-\(id)")
+        updateOutline { $0.collapsedKeys.remove("\(type.rawValue)-\(id)") }
         let row = CategoryRowID.group(id, type)
         selection = [row]
         scrollTarget = row

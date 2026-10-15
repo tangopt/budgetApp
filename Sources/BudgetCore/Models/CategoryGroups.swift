@@ -18,13 +18,14 @@ public enum CategoryGroupError: Error, Equatable, LocalizedError {
 
 /// The Categories screen's group editing (spec §4). Names are trimmed and unique ignoring case.
 public enum CategoryGroups {
-    /// Creates the group named `name` (trimmed, unique ignoring case) and moves the categories
+    /// Creates the group named `name` (trimmed, unique ignoring case) of `type` (the section
+    /// it shows in while empty) and moves the categories
     /// in `ids` into it (`Categories.move`: refused when any is built in). Run inside one
     /// write, so a refusal creates nothing.
     @discardableResult
-    public static func create(db: Database, name: String, moving ids: [Int64] = []) throws -> CategoryGroup {
+    public static func create(db: Database, name: String, type: CategoryType = .expense, moving ids: [Int64] = []) throws -> CategoryGroup {
         let trimmed = try validName(db: db, name, excluding: nil)
-        var group = CategoryGroup(name: trimmed)
+        var group = CategoryGroup(name: trimmed, type: type)
         try group.insert(db)
         if !ids.isEmpty, let id = group.id {
             try Categories.move(db: db, ids: ids, toGroupId: id)

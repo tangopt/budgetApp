@@ -26,7 +26,7 @@ public enum CategorySections {
 
     /// The type sections for the Categories screen; reserves are left out (listed apart).
     /// Groups and categories sort by name. A group with no (non-reserve) categories shows,
-    /// empty, under Expenses. A category whose group no longer exists counts as ungrouped.
+    /// empty, in its type's section (`CategoryGroup.sectionType`). A category whose group no longer exists counts as ungrouped.
     ///
     /// Without a search every section and its Ungrouped row are kept (they're drop
     /// targets) — except Adjustments, which shows only when it has categories (the built-in
@@ -53,7 +53,7 @@ public enum CategorySections {
             let blocks: [CategorySection.GroupBlock] = sortedGroups.compactMap { group in
                 let groupMatches = !searching || matches(group.name)
                 let members = ofType.filter { $0.groupId == group.id && (groupMatches || matches($0.name)) }
-                let showsEmpty = type == .expense && !occupied.contains(group.id!) && groupMatches
+                let showsEmpty = type == group.sectionType && !occupied.contains(group.id!) && groupMatches
                 if members.isEmpty && !showsEmpty { return nil }
                 return CategorySection.GroupBlock(type: type, group: group, categories: members)
             }
