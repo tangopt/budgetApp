@@ -127,18 +127,52 @@ public enum BudgetTotals {
         return result
     }
 
+    // MARK: The plan's transfers
+
+    /// The confirmed plan's transfer money in `period` for the Totals block, as the filter's
+    /// accounts see it (`PlannedItemAccounts.legs`; nil filter = All accounts): `byCategory`
+    /// holds each counting transfer category's (`countsPlannedTransfer`) occurrences split by
+    /// direction; `incomingElsewhere` the incoming legs into a selected account filed under a
+    /// category that doesn't count (a payer with no transfer category of its own) — money
+    /// arriving from outside the selection (`ForecastCalculator.netWorthTotals`).
+    public static func plannedTransfers(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException],
+                                        filter: PlanAccountFilter?) -> (byCategory: [Int64: Flow], incomingElsewhere: Int) {
+        let counting = Set(categories.filter { countsPlannedTransfer($0, accountIds: filter?.accountIds) }.compactMap(\.id))
+        let plan = ForecastCalculator.confirmedEntries(entries: entries, groups: groups)
+        let occurrences = PlannedOccurrences.occurrences(entries: plan, exceptions: exceptions, in: period)
+        let legs: [(occurrence: PlannedOccurrence, isIncoming: Bool)] = filter.map { filter in
+            filter.itemAccounts.legs(occurrences, entries: plan, accountIds: filter.accountIds).map { ($0.occurrence, $0.isIncomingTransfer) }
+        } ?? occurrences.map { ($0, false) }
+        var byCategory: [Int64: Flow] = [:]
+        var elsewhere = 0
+        for leg in legs {
+            let amount = leg.occurrence.amountMinorUnits
+            if counting.contains(leg.occurrence.categoryId) {
+                if amount > 0 { byCategory[leg.occurrence.categoryId, default: Flow()].incoming += amount } else { byCategory[leg.occurrence.categoryId, default: Flow()].outgoing += amount }
+            } else if leg.isIncoming {
+                elsewhere += amount
+            }
+        }
+        return (byCategory, elsewhere)
+    }
+
     // MARK: A month
 
     /// One month's Total in and Total out.
     /// - `actuals`: each category's pay-month actual as the cells show it (the filter's accounts).
     /// - `transferActuals`: the counted transfers' flows per category (`transferActuals`).
-    /// - `planned`: the calendar month's planned totals per category for the filter's accounts.
+    /// - `planned`: the calendar month's planned totals per category for the filter's accounts
+    ///   (income and expenses).
+    /// - `plannedTransfers` / `plannedIncomingElsewhere`: `plannedTransfers(…)`'s parts.
     /// - `reserves`: the Total reserved cell (counted out).
     /// Income categories count in whole, expense categories out whole (refunds reduce them),
-    /// as their cells show; a transfer category's counted actuals split by direction, and what
-    /// its counted plan still expects goes by its sign. Reserves (as categories) and
-    /// adjustments are skipped. Show forecast off: actuals only.
-    public static func month(categories: [Category], actuals: [Int64: Int], transferActuals: [Int64: Flow], planned: [Int64: Int], reserves: Cell,
+    /// as their cells show. A transfer category's two directions are plan cells of their own
+    /// (`PlanStatus.cell`: counted incoming actuals against the planned incoming money, and
+    /// likewise outgoing), so money sent doesn't hide money still expected in. The incoming
+    /// money planned elsewhere is in only (all of it pending while the month is open). Reserves
+    /// (as categories) and adjustments are skipped. Show forecast off: actuals only.
+    public static func month(categories: [Category], actuals: [Int64: Int], transferActuals: [Int64: Flow], planned: [Int64: Int],
+                             plannedTransfers: [Int64: Flow] = [:], plannedIncomingElsewhere: Int = 0, reserves: Cell,
                              monthClass: MonthClass, includeForecast: Bool, accountIds: Set<Int64>?) -> (totalIn: Cell, totalOut: Cell) {
         var ins: [Cell] = []
         var outs: [Cell] = [reserves]
@@ -151,14 +185,15 @@ public enum BudgetTotals {
                 if category.type == .income { ins.append(cell) } else { outs.append(cell) }
             case .transfer:
                 let flow = transferActuals[id] ?? Flow()
-                let plan = includeForecast && countsPlannedTransfer(category, accountIds: accountIds) ? planned[id] ?? 0 : 0
-                let cell = PlanStatus.cell(actual: flow.net, planned: plan, categoryType: .transfer, monthClass: monthClass)
-                let pendingIn = max(cell.pending, 0), pendingOut = min(cell.pending, 0)
-                if flow.incoming != 0 || pendingIn != 0 { ins.append((flow.incoming + pendingIn, pendingIn, pendingIn != 0 ? cell.state : .none)) }
-                if flow.outgoing != 0 || pendingOut != 0 { outs.append((flow.outgoing + pendingOut, pendingOut, pendingOut != 0 ? cell.state : .none)) }
+                let plan = includeForecast && countsPlannedTransfer(category, accountIds: accountIds) ? plannedTransfers[id] ?? Flow() : Flow()
+                ins.append(PlanStatus.cell(actual: flow.incoming, planned: plan.incoming, categoryType: .transfer, monthClass: monthClass))
+                outs.append(PlanStatus.cell(actual: flow.outgoing, planned: plan.outgoing, categoryType: .transfer, monthClass: monthClass))
             case .adjustment:
                 continue
             }
+        }
+        if includeForecast, plannedIncomingElsewhere != 0 {
+            ins.append(PlanStatus.cell(actual: 0, planned: plannedIncomingElsewhere, categoryType: .transfer, monthClass: monthClass))
         }
         return (PlanStatus.combine(ins), PlanStatus.combine(outs))
     }

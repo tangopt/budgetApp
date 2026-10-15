@@ -99,7 +99,10 @@ struct BudgetCellPanel: View {
             plannedSection: {
                 // The filter's accounts' items only, each naming its account (spec 2026-10-15 §3);
                 // none with Show forecast off (actuals only).
-                if let plan = target.plan, viewModel.showForecast { plannedSection(plan) }
+                if let plan = target.plan, viewModel.showForecast {
+                    plannedSection(plan)
+                    if let row = plan.totals { reservedLine(row, plan: plan) }
+                }
             },
             onEdit: { transaction in
                 editingRecentIds = viewModel.recentCategoryIds()
@@ -140,6 +143,22 @@ struct BudgetCellPanel: View {
         }
     }
 
+    /// A Totals panel's reserves as one line: what's left of their allowances, as the Total
+    /// reserved cell shows it (nothing when none is left).
+    @ViewBuilder
+    private func reservedLine(_ row: BudgetTotals.Row, plan: CellPlan) -> some View {
+        let remaining = viewModel.totalsReserved(row, year: plan.year, month: plan.month)
+        if remaining != 0 {
+            Section("Reserved") {
+                HStack {
+                    Text("Remaining allowances")
+                    Spacer()
+                    MoneyText(minorUnits: remaining)
+                }
+            }
+        }
+    }
+
     /// Every member's occurrences in the month, by date; aggregates name each one's category.
     private func plannedSection(_ plan: CellPlan) -> some View {
         let rows = plan.totals.map { viewModel.totalsOccurrences($0, year: plan.year, month: plan.month) }
@@ -170,6 +189,8 @@ struct UnassignedItemsPanel: View {
     @State private var editing: PlannedRow?
     @State private var removing: PlannedRow?
     @State private var planError: String?
+    /// After Assign all to ▾: how many items were left out (transfers into that account).
+    @State private var assignNote: String?
 
     var body: some View {
         let rows = viewModel.unassignedRows(year: period.year, month: period.month)
@@ -182,7 +203,7 @@ struct UnassignedItemsPanel: View {
             onEdit: { _ in },
             onClose: onClose
         )
-        .onChange(of: title) { _, _ in planError = nil }
+        .onChange(of: title) { _, _ in planError = nil; assignNote = nil }
         .plannedOccurrenceEditing(editing: $editing, removing: $removing, planError: $planError,
                                   categories: viewModel.categories, actions: viewModel.planEditActions, accountOptions: viewModel.planAccountOptions)
     }
@@ -204,6 +225,9 @@ struct UnassignedItemsPanel: View {
         Section("Not assigned to an account") {
             if let planError {
                 Text(planError).foregroundStyle(.red).font(.callout)
+            }
+            if let assignNote {
+                Text(assignNote).foregroundStyle(.secondary).font(.callout)
             }
             if rows.isEmpty {
                 Text("Every planned item here has an account.").foregroundStyle(.secondary)
@@ -233,14 +257,19 @@ struct UnassignedItemsPanel: View {
         }
     }
 
-    /// The accounts by display name; picking one assigns every series behind `rows` to it.
+    /// The accounts by display name; picking one assigns every series behind `rows` to it. A
+    /// single row's menu leaves out the account a transfer pays into; Assign all skips those
+    /// rows and says how many.
     private func assignMenu(_ title: String, rows: [PlannedRow]) -> some View {
         Menu(title) {
             ForEach(viewModel.accounts) { account in
-                if let id = account.id {
+                if let id = account.id, rows.count != 1 || viewModel.canAssign(rows[0], to: id) {
                     Button(account.displayName) {
                         planError = nil
-                        if case .failed(let message) = viewModel.assignAccount(rows, to: id) { planError = message }
+                        let skipped = rows.filter { !viewModel.canAssign($0, to: id) }.count
+                        assignNote = skipped == 0 ? nil
+                            : "\(skipped == 1 ? "1 transfer" : "\(skipped) transfers") into \(account.displayName) not assigned: an item can't pay into its own account."
+                        if case .failed(let message) = viewModel.assignAccount(rows, to: id) { planError = message; assignNote = nil }
                     }
                 }
             }

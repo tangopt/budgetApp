@@ -1133,7 +1133,8 @@ struct BudgetGridView: View {
     fileprivate func openTotalsMonth(_ row: GridRowKind, _ totalsRow: BudgetTotals.Row, year: Int, month: Int) {
         let range = viewModel.dateRange(forYear: year, month: month)
         let hasTransactions = !viewModel.totalsTransactions(totalsRow, from: range.start, to: range.end).isEmpty
-        guard hasTransactions || (viewModel.showForecast && !viewModel.totalsOccurrences(totalsRow, year: year, month: month).isEmpty) else { return }
+        let hasPlan = viewModel.showForecast && (!viewModel.totalsOccurrences(totalsRow, year: year, month: month).isEmpty || viewModel.totalsReserved(totalsRow, year: year, month: month) != 0)
+        guard hasTransactions || hasPlan else { return }
         var plan = CellPlan(categories: [], year: year, month: month)
         plan.totals = totalsRow
         var target = BudgetCellTarget(title: "\(totalsRow.title) — \(Self.shortMonthYearLabel(year: year, month: month))", categoryIds: [],

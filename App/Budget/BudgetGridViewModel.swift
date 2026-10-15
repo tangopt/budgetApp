@@ -120,6 +120,11 @@ final class BudgetGridViewModel: ObservableObject {
     /// The Totals block's month (Total in, Total out) per Show forecast, then `MonthRange.index`.
     /// Cleared with the plan caches and whenever the shown actuals are rebuilt.
     private var totalsCache: [Bool: [Int: (totalIn: PlanCell, totalOut: PlanCell)]] = [:]
+    /// The plan's transfers for the Totals block (`BudgetTotals.plannedTransfers`) per
+    /// `MonthRange.index`, for the filter's accounts; cleared with `plannedCache`.
+    private var plannedTransfersCache: [Int: (byCategory: [Int64: BudgetTotals.Flow], incomingElsewhere: Int)] = [:]
+    /// `unassignedRows` per year * 100 + month (0 = the whole year); cleared with the plan caches.
+    private var unassignedRowsCache: [Int: [PlannedRow]] = [:]
     /// `payCalendar.monthClass` per `MonthRange.index`; reset when the calendar is rebuilt.
     private var monthClassCache: [Int: MonthClass] = [:]
     /// Account balance cells per `MonthRange.index` then account id (`nil` = no data yet). Each
@@ -209,6 +214,7 @@ final class BudgetGridViewModel: ObservableObject {
         reserveRemainingCache = [:]
         cellCache = [:]
         totalsCache = [:]
+        unassignedRowsCache = [:]
     }
 
     // MARK: Account filter
@@ -324,6 +330,8 @@ final class BudgetGridViewModel: ObservableObject {
         plannedCache = [:]
         cellCache = [:]
         totalsCache = [:]
+        plannedTransfersCache = [:]
+        unassignedRowsCache = [:]
     }
 
     /// The net-worth figures' input: every account and transaction, the budget's plan, and
@@ -665,11 +673,24 @@ final class BudgetGridViewModel: ObservableObject {
             if let actual = shownMonthTotals[id]?[year]?[month] { actuals[id] = actual }
             if let flow = transferFlows[id]?[year]?[month] { flows[id] = flow }
         }
+        let plannedTransfers = showForecast ? self.plannedTransfers(year: year, month: month) : (byCategory: [:], incomingElsewhere: 0)
         let result = BudgetTotals.month(categories: categories, actuals: actuals, transferActuals: flows,
                                         planned: showForecast ? plannedTotals(year: year, month: month) : [:],
+                                        plannedTransfers: plannedTransfers.byCategory, plannedIncomingElsewhere: plannedTransfers.incomingElsewhere,
                                         reserves: reserveCell(reserves, year: year, month: month),
                                         monthClass: monthClass(year: year, month: month), includeForecast: showForecast, accountIds: totalsAccountIds)
         totalsCache[showForecast, default: [:]][key] = result
+        return result
+    }
+
+    /// The calendar month's planned transfer money for the filter's accounts, memoised.
+    private func plannedTransfers(year: Int, month: Int) -> (byCategory: [Int64: BudgetTotals.Flow], incomingElsewhere: Int) {
+        let key = MonthRange.index(year: year, month: month)
+        if let cached = plannedTransfersCache[key] { return cached }
+        let range = MonthRange.of(year: year, month: month)
+        let result = BudgetTotals.plannedTransfers(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: categories,
+                                                   entries: forecastEntries, groups: forecastGroups, exceptions: exceptions, filter: planFilter)
+        plannedTransfersCache[key] = result
         return result
     }
 
@@ -695,16 +716,25 @@ final class BudgetGridViewModel: ObservableObject {
     }
 
     /// The planned occurrences in the calendar month a Totals row includes (as the filter's
-    /// accounts see them), by date.
+    /// accounts see them), by date. Reserves are left out: their cells show what's left of the
+    /// allowance, which the panel shows as one line (`totalsReserved`).
     func totalsOccurrences(_ row: BudgetTotals.Row, year: Int, month: Int) -> [PlannedRow] {
-        categories.filter { $0.type != .adjustment }
+        categories.filter { $0.type != .adjustment && !$0.isReserved }
             .flatMap { category in
                 let counted = BudgetTotals.countsPlannedTransfer(category, accountIds: totalsAccountIds)
                 return occurrences(category: category, year: year, month: month).filter {
-                    row.includes(category, amount: $0.occurrence.amountMinorUnits, countedTransfer: counted)
+                    // An incoming leg filed under a category that doesn't count still arrives
+                    // from outside the selection (`BudgetTotals.plannedTransfers`).
+                    row.includes(category, amount: $0.occurrence.amountMinorUnits, countedTransfer: counted || $0.source != nil)
                 }
             }
             .sorted { $0.occurrence.date < $1.occurrence.date }
+    }
+
+    /// The Total reserved cell's month as a Totals panel line (what's left of the allowances;
+    /// 0 for none, and for Total in).
+    func totalsReserved(_ row: BudgetTotals.Row, year: Int, month: Int) -> Int {
+        row == .totalIn ? 0 : reserveCell(reserves, year: year, month: month).value
     }
 
     // MARK: Unassigned planned items (budget-totals spec §2)
@@ -712,6 +742,14 @@ final class BudgetGridViewModel: ObservableObject {
     /// The planned occurrences with no effective account (`ForecastCalculator.unassignedOccurrences`)
     /// in the calendar month `year`/`month`, or the whole calendar year when `month` is nil.
     func unassignedRows(year: Int, month: Int?) -> [PlannedRow] {
+        let key = year * 100 + (month ?? 0)
+        if let cached = unassignedRowsCache[key] { return cached }
+        let rows = buildUnassignedRows(year: year, month: month)
+        unassignedRowsCache[key] = rows
+        return rows
+    }
+
+    private func buildUnassignedRows(year: Int, month: Int?) -> [PlannedRow] {
         let start = MonthRange.of(year: year, month: month ?? 1).start
         let end = MonthRange.of(year: year, month: month ?? 12).end
         let plan = plannedEntries
@@ -726,10 +764,17 @@ final class BudgetGridViewModel: ObservableObject {
             }
     }
 
+    /// Whether Assign to ▾ offers `accountId` for `row`: not a transfer into that same account
+    /// (`PlannedItemAccounts.canAssign`).
+    func canAssign(_ row: PlannedRow, to accountId: Int64) -> Bool {
+        itemAccounts.canAssign(categoryId: row.occurrence.categoryId, to: accountId)
+    }
+
     /// Assign to ▾ / Assign all to ▾: every series behind `rows` gets `accountId`, in one write
-    /// (`PlannedItems.assignAccount`), then the grid reloads.
+    /// (`PlannedItems.assignAccount`), then the grid reloads. Rows that can't take the account
+    /// (`canAssign`) are skipped; the caller says how many.
     func assignAccount(_ rows: [PlannedRow], to accountId: Int64) -> SaveOutcome {
-        let entryIds = rows.compactMap(\.entry.id)
+        let entryIds = rows.filter { canAssign($0, to: accountId) }.compactMap(\.entry.id)
         guard !entryIds.isEmpty else { return .saved }
         return perform { db in try PlannedItems.assignAccount(db: db, entryIds: entryIds, accountId: accountId) }
     }

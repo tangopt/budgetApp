@@ -131,10 +131,12 @@ final class BudgetTotalsTests: XCTestCase {
     // MARK: A month
 
     private let planned: [Int64: Int] = [1: 300_000, 2: -100_000, 3: -50_000, 5: 20_000, 6: -10_000, 7: 999]
+    /// `planned`'s transfers by direction: £500 to Joint, a £200 gift received.
+    private let plannedTransfers: [Int64: BudgetTotals.Flow] = [3: BudgetTotals.Flow(outgoing: -50_000), 5: BudgetTotals.Flow(incoming: 20_000)]
 
     func testFutureMonthIsAllExpectedAndLeavesOwnTransfersOut() {
         let reserves: BudgetTotals.Cell = (-10_000, -10_000, .allExpected)
-        let totals = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: [:], planned: planned, reserves: reserves,
+        let totals = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: [:], planned: planned, plannedTransfers: plannedTransfers, reserves: reserves,
                                         monthClass: .forecast, includeForecast: true, accountIds: nil)
         assertCell(totals.totalIn, 320_000, 320_000, .allExpected)
         assertCell(totals.totalOut, -110_000, -110_000, .allExpected)
@@ -145,10 +147,11 @@ final class BudgetTotalsTests: XCTestCase {
         // Salary in full, half the rent, a gift received and a gift given (both external).
         let actuals: [Int64: Int] = [salary: 300_000, rent: -50_000, market: 12_345]
         let flows: [Int64: BudgetTotals.Flow] = [gift: BudgetTotals.Flow(incoming: 5_000, outgoing: -2_000)]
-        let totals = BudgetTotals.month(categories: categories, actuals: actuals, transferActuals: flows, planned: planned, reserves: (-4_000, -4_000, .allExpected),
-                                        monthClass: .blended, includeForecast: true, accountIds: nil)
-        // In: salary 300k + gift received 5k + the gift plan's 17k still expected (20k planned, 3k net so far).
-        assertCell(totals.totalIn, 322_000, 17_000, .partial)
+        let totals = BudgetTotals.month(categories: categories, actuals: actuals, transferActuals: flows, planned: planned, plannedTransfers: plannedTransfers,
+                                        reserves: (-4_000, -4_000, .allExpected), monthClass: .blended, includeForecast: true, accountIds: nil)
+        // In: salary 300k + the gift plan's 20k (5k received, 15k still expected; the 2k given
+        // doesn't reduce what's expected in).
+        assertCell(totals.totalIn, 320_000, 15_000, .partial)
         // Out: rent 50k + 50k pending, the gift given 2k, reserves 4k.
         assertCell(totals.totalOut, -106_000, -54_000, .partial)
     }
@@ -156,7 +159,7 @@ final class BudgetTotalsTests: XCTestCase {
     func testShowForecastOffIsActualsOnly() {
         let actuals: [Int64: Int] = [salary: 300_000, rent: -50_000]
         let flows: [Int64: BudgetTotals.Flow] = [gift: BudgetTotals.Flow(incoming: 5_000)]
-        let totals = BudgetTotals.month(categories: categories, actuals: actuals, transferActuals: flows, planned: planned, reserves: none,
+        let totals = BudgetTotals.month(categories: categories, actuals: actuals, transferActuals: flows, planned: planned, plannedTransfers: plannedTransfers, reserves: none,
                                         monthClass: .blended, includeForecast: false, accountIds: nil)
         assertCell(totals.totalIn, 305_000, 0, .none)
         assertCell(totals.totalOut, -50_000, 0, .none)
@@ -171,15 +174,15 @@ final class BudgetTotalsTests: XCTestCase {
 
     func testFilterCountsPlannedTransfersLeavingTheSelection() {
         // Current only: the planned £500 to Joint leaves the selection.
-        let current = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: [:], planned: planned, reserves: none,
+        let current = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: [:], planned: planned, plannedTransfers: [toJoint: BudgetTotals.Flow(outgoing: -50_000)], reserves: none,
                                          monthClass: .forecast, includeForecast: true, accountIds: [self.current])
         assertCell(current.totalOut, -150_000, -150_000, .allExpected)
         // Joint only: the incoming leg is filed under "Transfer: Current" (tied to the unselected Current).
-        let joint = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: [:], planned: [toCurrent: 50_000], reserves: none,
+        let joint = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: [:], planned: [:], plannedTransfers: [toCurrent: BudgetTotals.Flow(incoming: 50_000)], reserves: none,
                                        monthClass: .forecast, includeForecast: true, accountIds: [self.joint])
         assertCell(joint.totalIn, 50_000, 50_000, .allExpected)
         // Both: within the selection.
-        let both = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: [:], planned: planned, reserves: none,
+        let both = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: [:], planned: planned, plannedTransfers: [toJoint: BudgetTotals.Flow(outgoing: -50_000)], reserves: none,
                                       monthClass: .forecast, includeForecast: true, accountIds: [self.current, self.joint])
         assertCell(both.totalOut, -100_000, -100_000, .allExpected)
     }
@@ -187,10 +190,53 @@ final class BudgetTotalsTests: XCTestCase {
     func testFilterSplitsCountedTransferActualsByDirection() {
         // Current only, £300 of the planned £500 to Joint sent so far.
         let flows: [Int64: BudgetTotals.Flow] = [toJoint: BudgetTotals.Flow(outgoing: -30_000)]
-        let totals = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: flows, planned: [toJoint: -50_000], reserves: none,
+        let totals = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: flows, planned: [:], plannedTransfers: [toJoint: BudgetTotals.Flow(outgoing: -50_000)], reserves: none,
                                         monthClass: .blended, includeForecast: true, accountIds: [current])
         assertCell(totals.totalOut, -50_000, -20_000, .partial)
         assertCell(totals.totalIn, 0, 0, .none)
+    }
+
+    func testPlannedTransferDirectionsAreTheirOwnCells() {
+        // £100 sent and £100 received in one external category: both show, not netted away.
+        let plan: [Int64: BudgetTotals.Flow] = [gift: BudgetTotals.Flow(incoming: 10_000, outgoing: -10_000)]
+        let future = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: [:], planned: [:], plannedTransfers: plan, reserves: none,
+                                        monthClass: .forecast, includeForecast: true, accountIds: nil)
+        assertCell(future.totalIn, 10_000, 10_000, .allExpected)
+        assertCell(future.totalOut, -10_000, -10_000, .allExpected)
+        // The £100 sent already: the £100 still expected in stays pending.
+        let open = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: [gift: BudgetTotals.Flow(outgoing: -10_000)], planned: [:], plannedTransfers: plan,
+                                      reserves: none, monthClass: .blended, includeForecast: true, accountIds: nil)
+        assertCell(open.totalIn, 10_000, 10_000, .allExpected)
+        assertCell(open.totalOut, -10_000, 0, .none)
+    }
+
+    func testPlannedTransfersSplitByDirectionAndIncomingElsewhere() {
+        // A payer (9) with no transfer category of its own sends £500 to Joint; gifts both ways.
+        let itemAccounts = PlannedItemAccounts(inferredByCategory: [:], categories: categories)
+        let entries = [entry(1, toJoint, -50_000, account: 9), entry(2, gift, 20_000, account: current), entry(3, gift, -5_000, account: current)]
+        let all = BudgetTotals.plannedTransfers(period: november, categories: categories, entries: entries, groups: groups, exceptions: [], filter: nil)
+        XCTAssertEqual(all.byCategory, [gift: BudgetTotals.Flow(incoming: 20_000, outgoing: -5_000)])
+        XCTAssertEqual(all.incomingElsewhere, 0)
+        // Joint only: the incoming leg is filed under "Transfer: Joint" (tied to the selected Joint): elsewhere.
+        let joint = BudgetTotals.plannedTransfers(period: november, categories: categories, entries: entries, groups: groups, exceptions: [],
+                                                  filter: PlanAccountFilter(accountIds: [self.joint], itemAccounts: itemAccounts))
+        XCTAssertEqual(joint.byCategory, [:])
+        XCTAssertEqual(joint.incomingElsewhere, 50_000)
+        let totals = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: [:], planned: [:], plannedTransfers: joint.byCategory,
+                                        plannedIncomingElsewhere: joint.incomingElsewhere, reserves: none, monthClass: .forecast, includeForecast: true, accountIds: [self.joint])
+        assertCell(totals.totalIn, 50_000, 50_000, .allExpected)
+        assertCell(totals.totalOut, 0, 0, .none)
+        // Show forecast off: nothing planned.
+        let off = BudgetTotals.month(categories: categories, actuals: [:], transferActuals: [:], planned: [:], plannedTransfers: joint.byCategory,
+                                     plannedIncomingElsewhere: joint.incomingElsewhere, reserves: none, monthClass: .forecast, includeForecast: false, accountIds: [self.joint])
+        assertCell(off.totalIn, 0, 0, .none)
+    }
+
+    func testAnItemCannotBeAssignedToTheAccountItTransfersInto() {
+        let itemAccounts = PlannedItemAccounts(inferredByCategory: [:], categories: categories)
+        XCTAssertFalse(itemAccounts.canAssign(categoryId: toJoint, to: joint))
+        XCTAssertTrue(itemAccounts.canAssign(categoryId: toJoint, to: current))
+        XCTAssertTrue(itemAccounts.canAssign(categoryId: salary, to: joint))
     }
 
     // MARK: Unassigned planned items (§2)
