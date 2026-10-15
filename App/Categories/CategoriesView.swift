@@ -373,15 +373,11 @@ struct CategoriesView: View {
         }
     }
 
-    /// Linked account (spec 2026-10-14 §4): None or one of the accounts; an account already
-    /// linked to another category shows that category and can't be picked.
+    /// Linked account (spec 2026-10-14 §4): one of the accounts — never none, since every
+    /// account keeps a transfer category; an account already linked to another category shows
+    /// that category and can't be picked (a tie moves by picking another account here).
     private func linkedAccountMenu(_ category: Category, id: Int64) -> some View {
         Menu("Linked account") {
-            Toggle("None", isOn: Binding(
-                get: { category.transferAccountId == nil },
-                set: { if $0 { viewModel.setLinkedAccount(id: id, accountId: nil) } }
-            ))
-            Divider()
             ForEach(viewModel.accounts.sortedByDisplayName(), id: \.id) { account in
                 let owner = viewModel.linkedCategory(forAccountId: account.id).flatMap { $0.id == id ? nil : $0 }
                 Toggle(owner.map { "\(account.displayName) — \($0.name)" } ?? account.displayName, isOn: Binding(
@@ -391,6 +387,7 @@ struct CategoriesView: View {
                 .disabled(owner != nil)
             }
         }
+        .help("Transfers with this account are filed here. Every account keeps a transfer category, so a link can't be removed — pick another account to move it.")
     }
 
     // MARK: Groups

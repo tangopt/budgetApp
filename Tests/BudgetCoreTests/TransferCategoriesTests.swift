@@ -453,4 +453,107 @@ final class TransferCategoriesTests: XCTestCase {
         XCTAssertEqual(TransferLinks.budgetFacing(all, links: links, accountIds: [f.current, f.joint]).compactMap(\.id), [out])
         XCTAssertEqual(try f.transaction(out).categoryId, try f.categoryId(forAccount: f.joint))
     }
+
+    // MARK: Review fixes
+
+    func testATiedCategoryCannotBeRenamed() throws {
+        let f = try makeFixture()
+        let joint = try XCTUnwrap(try f.categoryId(forAccount: f.joint))
+        try f.manager.dbQueue.write { db in
+            XCTAssertThrowsError(try Categories.rename(db: db, id: joint, name: "Household")) {
+                XCTAssertEqual($0 as? CategoryEditError, .linkedToAccount)
+                XCTAssertEqual(($0 as? LocalizedError)?.errorDescription, "Named after its linked account — rename the account instead.")
+            }
+            // Untied transfer categories still rename.
+            try Categories.rename(db: db, id: f.investments, name: "Investments")
+        }
+        XCTAssertEqual(try f.categoryName(joint), "Transfer: Joint")
+    }
+
+    func testTieMovesTheAccountsTieAndDeletesAnUnusedPreviousCategory() throws {
+        let f = try makeFixture() // the launch-time ensure created an empty "Transfer: Joint"
+        let created = try XCTUnwrap(try f.categoryId(forAccount: f.joint))
+        let lloydsJoint = try f.manager.dbQueue.write { db in try Categories.create(db: db, name: "Transfer: Lloyds Joint", type: .transfer, groupId: nil).id! }
+        let log = try f.manager.dbQueue.write { db in try TransferCategories.tie(db: db, categoryName: "Transfer: Lloyds Joint", accountNameOrAlias: "Joint") }
+        XCTAssertEqual(log, ["Deleted the unused “Transfer: Joint” (was tied to Lloyds Club Joint)",
+                             "Tied “Transfer: Lloyds Joint” to Lloyds Club Joint, renamed “Transfer: Joint”"])
+        XCTAssertNil(try f.categoryName(created))
+        XCTAssertEqual(try f.categoryId(forAccount: f.joint), lloydsJoint)
+        XCTAssertEqual(try f.categoryName(lloydsJoint), "Transfer: Joint")
+    }
+
+    func testTieKeepsAPreviousCategoryInUse() throws {
+        // name → how the previous category is in use
+        let uses: [(String, (Fixture, Int64) throws -> Void)] = [
+            ("transaction", { f, id in try f.add(f.euro, Self.day(2026, 1, 1), -100, category: id) }),
+            ("rule", { f, id in
+                try f.manager.dbQueue.write { db in
+                    try db.execute(sql: "INSERT INTO rule (matchPattern, matchType, categoryId, priority) VALUES ('TFR', 'contains', ?, 0)", arguments: [id])
+                }
+            }),
+            ("forecast entry", { f, id in
+                try f.manager.dbQueue.write { db in
+                    try db.execute(sql: "INSERT INTO forecastGroup (name, isEnabled, isSystemManaged) VALUES ('G', 1, 0)")
+                    try db.execute(sql: """
+                        INSERT INTO forecastEntry (groupId, categoryId, amountMinorUnits, frequency, interval, startDate, isEnabled, status)
+                        VALUES ((SELECT MAX(id) FROM forecastGroup), ?, -100, 'monthly', 1, '2026-01-01', 1, 'manual')
+                        """, arguments: [id])
+                }
+            })
+        ]
+        for (label, use) in uses {
+            let f = try makeFixture()
+            let previous = try XCTUnwrap(try f.categoryId(forAccount: f.euro))
+            try use(f, previous)
+            let eur = try f.manager.dbQueue.write { db in try Categories.create(db: db, name: "Transfer: Lloyds International EUR", type: .transfer, groupId: nil).id! }
+            let log = try f.manager.dbQueue.write { db in
+                try TransferCategories.tie(db: db, categoryName: "Transfer: Lloyds International EUR", accountNameOrAlias: "Lloyds International Account (EUR)")
+            }
+            XCTAssertEqual(log, ["Untied “Transfer: International Euro” from Lloyds International Account (EUR) (in use, kept)",
+                                 "Tied “Transfer: Lloyds International EUR” to Lloyds International Account (EUR)"], label)
+            XCTAssertEqual(try f.categoryName(previous), "Transfer: International Euro", label)
+            XCTAssertEqual(try f.categoryId(forAccount: f.euro), eur, label)
+        }
+    }
+
+    func testTieRefusesUnknownNames() throws {
+        let f = try makeFixture()
+        try f.manager.dbQueue.write { db in
+            XCTAssertThrowsError(try TransferCategories.tie(db: db, categoryName: "Nope", accountNameOrAlias: "Joint")) {
+                XCTAssertEqual($0 as? TransferCategoryError, .noCategoryNamed("Nope"))
+            }
+            XCTAssertThrowsError(try TransferCategories.tie(db: db, categoryName: "Investments (Stocks + Crypto)", accountNameOrAlias: "Nope")) {
+                XCTAssertEqual($0 as? TransferCategoryError, .noAccountNamed("Nope"))
+            }
+        }
+    }
+
+    /// A historical total (out) linked to money received in two accounts keeps its category —
+    /// as `match` applies it (every link inserted, then `applyOnLink` per pair) and in the
+    /// one-off `applyToExistingLinks`; its in legs still move.
+    func testHistoricalOutLinkedIntoTwoAccountsKeepsItsCategory() throws {
+        for viaExistingLinks in [false, true] {
+            let f = try makeFixture()
+            let out = try f.add(f.current, Self.day(2026, 1, 25), -50_000, category: f.investments, historical: true)
+            let a = try f.add(f.international, Self.day(2026, 1, 3), 30_000)
+            let b = try f.add(f.joint, Self.day(2026, 1, 10), 20_000)
+            try f.manager.dbQueue.write { db in
+                for inId in [a, b] {
+                    var link = TransferLink(outTransactionId: out, inTransactionId: inId, origin: .auto)
+                    try link.insert(db)
+                }
+                if viaExistingLinks {
+                    _ = try TransferCategories.applyToExistingLinks(db: db)
+                } else {
+                    for inId in [a, b] { try TransferCategories.applyOnLink(db: db, outTransactionId: out, inTransactionId: inId) }
+                }
+            }
+            XCTAssertEqual(try f.transaction(out).categoryId, f.investments, "\(viaExistingLinks)")
+            try assertLeg(f, a, account: f.current)
+            try assertLeg(f, b, account: f.current)
+            // Matching again changes nothing.
+            try f.manager.dbQueue.write { db in _ = try TransferMatcher.match(db: db, today: Self.day(2026, 10, 12)) }
+            XCTAssertEqual(try f.transaction(out).categoryId, f.investments, "\(viaExistingLinks)")
+        }
+    }
 }

@@ -180,8 +180,8 @@ final class CategoriesViewModel: ObservableObject {
     }
 
     /// Linked account: ties the transfer category to the account (renamed "Transfer:
-    /// <account>" when that name is free), or unties it (nil).
-    func setLinkedAccount(id: Int64, accountId: Int64?) {
+    /// <account>" when that name is free).
+    func setLinkedAccount(id: Int64, accountId: Int64) {
         write("Couldn't change the linked account") { db in
             try TransferCategories.setLinkedAccount(db: db, categoryId: id, accountId: accountId)
         }

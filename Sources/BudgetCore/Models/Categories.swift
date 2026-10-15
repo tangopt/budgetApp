@@ -22,6 +22,9 @@ public enum CategoryEditError: Error, Equatable, LocalizedError {
     case reserve(name: String)
     /// Built-in categories (Balance adjustment, Market movement) can't be renamed, moved or deleted.
     case builtIn(name: String)
+    /// Rename refused: a transfer category linked to an account is named after it
+    /// (`TransferCategories`).
+    case linkedToAccount
     /// Delete refused: transactions (`pending` of them still in review, included in
     /// `transactions`) or planned items still use it. A planned item is a forecast series
     /// in this category or with an occurrence moved into it.
@@ -35,6 +38,8 @@ public enum CategoryEditError: Error, Equatable, LocalizedError {
             return "\(name) is a reserve — manage it on the Budget grid."
         case .builtIn(let name):
             return "\(name) is built in — it can't be renamed, moved or deleted."
+        case .linkedToAccount:
+            return "Named after its linked account — rename the account instead."
         case let .inUse(name, transactions, pending, plannedItems):
             var parts: [String] = []
             if transactions > 0 {
@@ -70,9 +75,12 @@ public enum Categories {
     }
 
     /// Renames to `name`, trimmed; unique ignoring case (its own name in another case is fine).
+    /// Refused for built-in categories and for a transfer category linked to an account (named
+    /// after it — `TransferCategories.ensure` follows the account's name).
     public static func rename(db: Database, id: Int64, name: String) throws {
         guard var category = try Category.fetchOne(db, key: id) else { throw CategoryEditError.notFound }
         guard !category.isBuiltIn else { throw CategoryEditError.builtIn(name: category.name) }
+        guard category.transferAccountId == nil else { throw CategoryEditError.linkedToAccount }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw CategoryCreationError.emptyName }
         if let existing = try Category.fetchAll(db).first(where: { $0.id != id && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {

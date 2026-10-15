@@ -17,7 +17,6 @@
 import Foundation
 import BudgetCore
 import GRDB
-import struct BudgetCore.Category
 
 func usage() -> Never {
     FileHandle.standardError.write("Usage: ConvertBalances <db-path> [--dry-run] [--apply-transfer-categories [--tie \"<category>=<account name or alias>\"]...]\n".data(using: .utf8)!)
@@ -48,16 +47,6 @@ guard FileManager.default.fileExists(atPath: dbPath) else {
     exit(2)
 }
 
-enum TieError: Error, CustomStringConvertible {
-    case categoryNotFound(String), accountNotFound(String)
-    var description: String {
-        switch self {
-        case .categoryNotFound(let name): return "No category named “\(name)”."
-        case .accountNotFound(let name): return "No account named or aliased “\(name)”."
-        }
-    }
-}
-
 do {
     let manager = try DatabaseManager(path: dbPath)
     try manager.migrate()
@@ -70,28 +59,8 @@ do {
         try db.inTransaction {
             report = try BalanceConversion.convert(db: db)
             if applyTransferCategories {
-                let accounts = try Account.fetchAll(db)
                 for tie in ties {
-                    guard let category = try Category.filter(Column("name") == tie.category).fetchOne(db), let categoryId = category.id else {
-                        throw TieError.categoryNotFound(tie.category)
-                    }
-                    guard let account = accounts.first(where: { $0.name == tie.account || $0.alias == tie.account }), let accountId = account.id else {
-                        throw TieError.accountNotFound(tie.account)
-                    }
-                    // The account's tie moves here; an unused category it leaves (say one the
-                    // app created at launch) is deleted.
-                    if let previous = try TransferCategories.category(db: db, forAccountId: accountId), let previousId = previous.id, previousId != categoryId {
-                        try TransferCategories.setLinkedAccount(db: db, categoryId: previousId, accountId: nil)
-                        do {
-                            try Categories.delete(db: db, id: previousId)
-                            transferLog.append("Deleted the unused “\(previous.name)” (was tied to \(account.name))")
-                        } catch CategoryEditError.inUse {
-                            transferLog.append("Untied “\(previous.name)” from \(account.name) (in use, kept)")
-                        }
-                    }
-                    try TransferCategories.setLinkedAccount(db: db, categoryId: categoryId, accountId: accountId)
-                    let tiedName = try Category.fetchOne(db, key: categoryId)?.name ?? tie.category
-                    transferLog.append("Tied “\(tie.category)” to \(account.name)\(tiedName == tie.category ? "" : ", renamed “\(tiedName)”")")
+                    transferLog += try TransferCategories.tie(db: db, categoryName: tie.category, accountNameOrAlias: tie.account)
                 }
                 transferLog += try TransferCategories.ensure(db: db)
                 transferReport = try TransferCategories.applyToExistingLinks(db: db)

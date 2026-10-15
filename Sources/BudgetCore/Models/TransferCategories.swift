@@ -12,6 +12,10 @@ public enum TransferCategoryError: Error, Equatable, LocalizedError {
     case linkedCategory
     /// The account already has a transfer category.
     case accountAlreadyLinked(categoryName: String)
+    /// `tie`: no category has this exact name.
+    case noCategoryNamed(String)
+    /// `tie`: no account has this exact name or alias.
+    case noAccountNamed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -21,6 +25,8 @@ public enum TransferCategoryError: Error, Equatable, LocalizedError {
         case .externalCategory: return "This category is for an account you don't import — it can't be linked to one of yours."
         case .linkedCategory: return "This category is linked to one of your accounts — set its linked account to None first."
         case .accountAlreadyLinked(let name): return "That account is already linked to “\(name)”."
+        case .noCategoryNamed(let name): return "No category named “\(name)”."
+        case .noAccountNamed(let name): return "No account named or aliased “\(name)”."
         }
     }
 }
@@ -113,6 +119,42 @@ public enum TransferCategories {
             category.name = target
         }
         try category.update(db, columns: ["name", "transferAccountId"])
+    }
+
+    /// The conversion tool's `--tie`: ties the category named exactly `categoryName` to the
+    /// account named or aliased exactly `accountNameOrAlias` (`setLinkedAccount`, renaming it
+    /// when the name is free). The account's previous category is untied, and deleted only when
+    /// nothing uses it — no transaction, forecast entry, moved planned occurrence or rule.
+    /// Returns what it did, one line each.
+    @discardableResult
+    public static func tie(db: Database, categoryName: String, accountNameOrAlias: String) throws -> [String] {
+        guard let category = try Category.filter(Column("name") == categoryName).fetchOne(db), let categoryId = category.id else {
+            throw TransferCategoryError.noCategoryNamed(categoryName)
+        }
+        guard let account = try Account.fetchAll(db).first(where: { $0.name == accountNameOrAlias || $0.alias == accountNameOrAlias }),
+              let accountId = account.id else {
+            throw TransferCategoryError.noAccountNamed(accountNameOrAlias)
+        }
+        var log: [String] = []
+        if let previous = try self.category(db: db, forAccountId: accountId), let previousId = previous.id, previousId != categoryId {
+            try setLinkedAccount(db: db, categoryId: previousId, accountId: nil)
+            let uses = try Int.fetchOne(db, sql: """
+                SELECT (SELECT COUNT(*) FROM transaction_ WHERE categoryId = ?)
+                     + (SELECT COUNT(*) FROM forecastEntry WHERE categoryId = ?)
+                     + (SELECT COUNT(*) FROM plannedOccurrenceException WHERE categoryId = ?)
+                     + (SELECT COUNT(*) FROM rule WHERE categoryId = ?)
+                """, arguments: [previousId, previousId, previousId, previousId]) ?? 0
+            if uses == 0 {
+                _ = try Category.deleteOne(db, key: previousId)
+                log.append("Deleted the unused “\(previous.name)” (was tied to \(account.name))")
+            } else {
+                log.append("Untied “\(previous.name)” from \(account.name) (in use, kept)")
+            }
+        }
+        try setLinkedAccount(db: db, categoryId: categoryId, accountId: accountId)
+        let tiedName = try Category.fetchOne(db, key: categoryId)?.name ?? categoryName
+        log.append("Tied “\(categoryName)” to \(account.name)\(tiedName == categoryName ? "" : ", renamed “\(tiedName)”")")
+        return log
     }
 
     // MARK: Apply on link
