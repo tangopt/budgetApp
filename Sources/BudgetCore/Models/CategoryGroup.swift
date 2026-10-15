@@ -44,7 +44,7 @@ func registerCategoryGroupTypeMigration(_ migrator: inout DatabaseMigrator) {
         for id in groupIds {
             let counts = try Row.fetchAll(db, sql: """
                 SELECT type, COUNT(*) AS n FROM category
-                WHERE groupId = ? AND type IN ('expense', 'income', 'transfer')
+                WHERE groupId = ? AND type IN ('expense', 'income', 'transfer') AND isReserved = 0
                 GROUP BY type
                 """, arguments: [id])
             let tally = counts.map { (type: $0["type"] as String, n: $0["n"] as Int) }
