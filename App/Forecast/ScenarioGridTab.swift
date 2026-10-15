@@ -257,15 +257,19 @@ struct ScenarioGridTab: View {
         GridOutline.groupIds(categories: categoriesByType(type), groups: viewModel.categoryGroups)
     }
 
-    /// Every row shown for `outline`: a collapsed section keeps only its header row.
+    /// Every row shown for `outline`: a collapsed section keeps only its header row (Reserved
+    /// also keeps its total row, as its header shows no totals).
     private func allRows(_ outline: GridOutline) -> [Row] {
         func section(_ title: String, _ type: CategoryType) -> [Row] {
             [Row(kind: .sectionHeader(title, type), shaded: false)]
                 + rowKinds(for: type, outline).enumerated().map { Row(kind: $1, shaded: $0 % 2 == 1) }
         }
-        let reserves = outline.isCollapsed(GridOutline.reservedSection) ? [] : viewModel.reserves
+        let reserves = viewModel.reserves
         var reservedRows = [Row(kind: .reservedHeader, shaded: false)]
-        reservedRows += reserves.enumerated().map { Row(kind: .reserve($1), shaded: $0 % 2 == 1) }
+        if !outline.isCollapsed(GridOutline.reservedSection) {
+            reservedRows += reserves.enumerated().map { Row(kind: .reserve($1), shaded: $0 % 2 == 1) }
+        }
+        // Kept when collapsed: the Reserved header shows no totals.
         if !reserves.isEmpty { reservedRows.append(Row(kind: .reservedTotal, shaded: false)) }
         return section("Income", .income) + section("Expenses", .expense) + reservedRows + section("Transfers", .transfer)
     }

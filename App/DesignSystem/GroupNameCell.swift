@@ -23,6 +23,7 @@ struct GroupNameCell: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { toggle(NSEvent.modifierFlags.contains(.option)) }
+        .accessibilityAction { toggle(false) }
         .help("⌥-click to expand or collapse every group in this section")
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
@@ -71,6 +72,7 @@ struct SectionHeaderCell<Accessory: View>: View {
             }
             .contentShape(Rectangle())
             .onTapGesture(perform: toggle)
+            .accessibilityAction { toggle() }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isButton)
             .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")

@@ -156,7 +156,8 @@ struct BudgetGridView: View {
         }
     }
 
-    /// Every row shown for `outline`: a collapsed section keeps only its header row.
+    /// Every row shown for `outline`: a collapsed section keeps only its header row (Accounts
+    /// and Reserved also keep their total row, as their headers show no totals).
     private func allRows(_ outline: GridOutline) -> [GridRow] {
         func section(_ title: String, _ type: CategoryType) -> [GridRow] {
             var rows: [GridRow] = [GridRow(kind: .sectionHeader(title, type), shaded: false)]
@@ -170,15 +171,17 @@ struct BudgetGridView: View {
             for (index, account) in viewModel.accounts.enumerated() {
                 accountRows.append(GridRow(kind: .account(account), shaded: index % 2 == 1))
             }
-            accountRows.append(GridRow(kind: .netWorthTotal, shaded: false))
         }
+        // Kept when collapsed: the Accounts header shows no totals.
+        accountRows.append(GridRow(kind: .netWorthTotal, shaded: false))
         var reservedRows: [GridRow] = [GridRow(kind: .reservedHeader, shaded: false)]
         if !outline.isCollapsed(GridOutline.reservedSection) {
             for (index, reserve) in viewModel.reserves.enumerated() {
                 reservedRows.append(GridRow(kind: .reserve(reserve), shaded: index % 2 == 1))
             }
-            if !viewModel.reserves.isEmpty { reservedRows.append(GridRow(kind: .reservedTotal, shaded: false)) }
         }
+        // Kept when collapsed: the Reserved header shows no totals.
+        if !viewModel.reserves.isEmpty { reservedRows.append(GridRow(kind: .reservedTotal, shaded: false)) }
         // Adjustments (Balance adjustment, Market movement): their actuals only — never in
         // the income/expense/transfer totals or the plan; they reach net worth via balances.
         let adjustments = categoriesByType(.adjustment).isEmpty ? [] : section("Adjustments", .adjustment)
