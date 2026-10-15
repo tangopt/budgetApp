@@ -128,30 +128,6 @@ public struct PlannedItemAccounts: Equatable, Sendable {
     public func occurrences(_ occurrences: [PlannedOccurrence], entries: [ForecastEntry], accountIds: Set<Int64>) -> [PlannedOccurrence] {
         legs(occurrences, entries: entries, accountIds: accountIds).map(\.occurrence)
     }
-
-    /// The selected accounts' net-worth change from `occurrences`: income and expense legs
-    /// they see, plus tied-transfer legs crossing the selection's boundary (paid from a
-    /// selected account into an unselected one, or into a selected account from an
-    /// unselected one). Transfers within the selection, and untied transfers, change nothing,
-    /// as for All accounts (`ForecastCalculator.confirmedNetWorthImpact`).
-    public func netWorthImpact(_ occurrences: [PlannedOccurrence], entries: [ForecastEntry], categories: [Category], accountIds: Set<Int64>) -> Int {
-        let flowIds = Set(categories.filter { $0.type.isFlow }.compactMap(\.id))
-        let byId = Dictionary(entries.compactMap { e in e.id.map { ($0, e) } }, uniquingKeysWith: { a, _ in a })
-        var total = 0
-        for occurrence in occurrences {
-            let legs = legs(of: occurrence, entry: byId[occurrence.entryId])
-            let paying = legs[0]
-            let payingSelected = paying.accountId.map(accountIds.contains) ?? false
-            if flowIds.contains(occurrence.categoryId) {
-                if payingSelected { total += occurrence.amountMinorUnits }
-            } else if let incoming = legs.dropFirst().first {
-                let tiedSelected = incoming.accountId.map(accountIds.contains) ?? false
-                if payingSelected && !tiedSelected { total += occurrence.amountMinorUnits }
-                if tiedSelected && !payingSelected { total -= occurrence.amountMinorUnits }
-            }
-        }
-        return total
-    }
 }
 
 /// The Budget account filter applied to the plan: the selected accounts and how planned

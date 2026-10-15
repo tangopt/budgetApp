@@ -24,6 +24,9 @@ public struct DashboardInput {
     public let payCalendar: PayCalendar
     /// Confirmed pay-month totals per category, built once.
     let monthTotals: [Int64: [Int: [Int: Int]]]
+    /// The transfer links `budgetTransactions` was built with (an account filter's actuals
+    /// rebuild it for the selected accounts).
+    let transferLinks: [TransferLink]
     /// The Budget account filter (spec 2026-10-15 §4): when set, the net-worth figures
     /// (`netWorthSeries`, `netWorthActuals`, `yearEndNetWorth`, `budgetNetWorthMonths`) cover
     /// only its accounts, projected with only their planned items. Flows are unaffected.
@@ -33,6 +36,13 @@ public struct DashboardInput {
     var netWorthAccounts: [Account] {
         guard let filter = accountFilter else { return accounts }
         return accounts.filter { $0.id.map(filter.accountIds.contains) ?? false }
+    }
+
+    /// `monthTotals` for the net-worth figures: the filter's accounts' budget-facing actuals
+    /// (`TransferLinks.budgetFacing` with the filter) when set.
+    var netWorthMonthTotals: [Int64: [Int: [Int: Int]]] {
+        guard let filter = accountFilter else { return monthTotals }
+        return PayMonthTotals.lookup(transactions: TransferLinks.budgetFacing(transactions, links: transferLinks, accountIds: filter.accountIds), calendar: payCalendar)
     }
 
     public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, manualCloses: [PayMonthClose] = [], transferLinks: [TransferLink] = []) {
@@ -59,6 +69,7 @@ public struct DashboardInput {
         self.dataThrough = Transaction.importedDataThrough(transactions)
         self.payCalendar = payCalendar
         self.monthTotals = PayMonthTotals.lookup(transactions: budgetTransactions, calendar: payCalendar)
+        self.transferLinks = transferLinks
     }
 
     /// `today`, but never earlier than the data (a clock behind the data counts as "today = D").

@@ -194,7 +194,8 @@ final class PlannedItemAccountsTests: XCTestCase {
         XCTAssertEqual(DashboardCalculator.yearEndNetWorth(input(nil), year: 2026), YearEndNetWorth(valueMinorUnits: 3_150_000, isForecast: true))
         XCTAssertEqual(DashboardCalculator.yearEndNetWorth(input([current, joint]), year: 2026), YearEndNetWorth(valueMinorUnits: 3_150_000, isForecast: true))
         XCTAssertEqual(DashboardCalculator.yearEndNetWorth(input([current]), year: 2026), YearEndNetWorth(valueMinorUnits: 3_500_000, isForecast: true))
-        XCTAssertEqual(DashboardCalculator.yearEndNetWorth(input([joint]), year: 2026), YearEndNetWorth(valueMinorUnits: -350_000, isForecast: true))
+        // Joint: March's planned £500 from Current hasn't arrived yet, so it's still expected.
+        XCTAssertEqual(DashboardCalculator.yearEndNetWorth(input([joint]), year: 2026), YearEndNetWorth(valueMinorUnits: -300_000, isForecast: true))
         XCTAssertEqual(DashboardCalculator.yearEndNetWorth(input([joint]), year: 2025), nil)
         XCTAssertEqual(DashboardCalculator.netWorthSeries(input([current])).currentNetWorthMinorUnits, 1_250_000)
     }
