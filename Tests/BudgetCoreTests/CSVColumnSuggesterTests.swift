@@ -48,4 +48,25 @@ final class CSVColumnSuggesterTests: XCTestCase {
         let suggestion = CSVColumnSuggester.suggest(header: ["DATE", "DESCRIPTION", "AMOUNT", "RUNNING BALANCE"])
         XCTAssertEqual(suggestion, CSVColumnSuggestion(dateColumn: 0, descriptionColumn: 1, amountColumn: 2, creditColumn: nil, balanceColumn: 3))
     }
+
+    func testTwoDateColumnsPickTheFirst() {
+        XCTAssertEqual(CSVColumnSuggester.suggest(header: ["Type", "Started Date", "Completed Date", "Description", "Amount"]).dateColumn, 1)
+    }
+
+    func testFeeAndStatusColumns() {
+        let s = CSVColumnSuggester.suggest(header: ["Started Date", "Description", "Amount", "Fee", "Currency", "State", "Balance"])
+        XCTAssertEqual(s.feeColumn, 3)
+        XCTAssertEqual(s.statusColumn, 5)
+        XCTAssertEqual(s.amountColumn, 2)
+        XCTAssertEqual(s.balanceColumn, 6)
+        let other = CSVColumnSuggester.suggest(header: ["Date", "Details", "Amount", "FEES", "Status"])
+        XCTAssertEqual(other.feeColumn, 3)
+        XCTAssertEqual(other.statusColumn, 4)
+    }
+
+    func testFeeAndStatusMatchWholeWordsOnly() {
+        let s = CSVColumnSuggester.suggest(header: ["Date", "Coffee Notes", "Amount", "Statement Ref", "Feedback"])
+        XCTAssertNil(s.feeColumn)
+        XCTAssertNil(s.statusColumn)
+    }
 }

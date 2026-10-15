@@ -98,4 +98,27 @@ final class CSVColumnMappingTests: XCTestCase {
         let single = CSVColumnMapping(columnCount: 3, suggestion: CSVColumnSuggestion(dateColumn: 0, descriptionColumn: 1, amountColumn: 2))
         XCTAssertEqual(single.roles, [.date, .description, .amount])
     }
+
+    func testFeeAndStatusRoundTripThroughAProfile() throws {
+        let s = CSVColumnSuggestion(dateColumn: 0, descriptionColumn: 1, amountColumn: 2, balanceColumn: 5, feeColumn: 3, statusColumn: 4)
+        let m = CSVColumnMapping(columnCount: 6, suggestion: s)
+        XCTAssertEqual(m.roles, [.date, .description, .amount, .fee, .status, .balance])
+        let p = try XCTUnwrap(m.profile(accountId: 1, dateFormat: "yyyy-MM-dd HH:mm:ss", negateAmounts: false, allowBalance: true))
+        XCTAssertEqual(p.csvFeeColumnIndex, 3)
+        XCTAssertEqual(p.csvStatusColumnIndex, 4)
+        XCTAssertEqual(CSVColumnMapping(columnCount: 6, profile: p).roles, m.roles)
+    }
+
+    func testFeeAndStatusAreEachHeldByOneColumn() {
+        var m = CSVColumnMapping(columnCount: 3)
+        m.assign(.fee, toColumn: 0)
+        m.assign(.fee, toColumn: 1)
+        m.assign(.status, toColumn: 2)
+        XCTAssertEqual(m.roles, [.ignore, .fee, .status])
+    }
+
+    func testProfilesWithoutFeeOrStatusMapNeither() {
+        let p = ImportProfile(accountId: 1, format: .csv, csvDelimiter: ",", csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2, csvDateFormat: "dd/MM/yyyy")
+        XCTAssertEqual(CSVColumnMapping(columnCount: 5, profile: p).roles, [.date, .description, .amount, .ignore, .ignore])
+    }
 }

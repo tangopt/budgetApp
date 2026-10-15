@@ -27,13 +27,21 @@ public struct ImportProfile: Codable, Equatable, Identifiable, FetchableRecord, 
     /// `StatementCheck`).
     /// `nil` (the default) means no balance column — unchanged for every existing profile.
     public var csvBalanceColumnIndex: Int?
+    /// Optional column holding a fee charged on top of the amount (Revolut's "Fee"): the stored
+    /// amount is `amount − |fee|`. `nil` (the default, and every profile saved before this
+    /// existed) means no fee column.
+    public var csvFeeColumnIndex: Int?
+    /// Optional column holding each row's state (Revolut's "State"). Rows whose state is
+    /// non-blank and not a completed one (see `CSVStatementParser.completedStatuses`) are
+    /// skipped. `nil` (the default) imports every row, as before.
+    public var csvStatusColumnIndex: Int?
     public var csvDateFormat: String?
     public var pdfLayoutConfig: String?
     /// Flips the sign of a single signed amount column (statements that list spending as
     /// positive). Ignored for split debit/credit columns. Default false.
     public var csvNegateAmounts: Bool
 
-    public init(id: Int64? = nil, accountId: Int64, format: ImportFormat, csvDelimiter: String? = nil, csvDateColumnIndex: Int? = nil, csvDescriptionColumnIndex: Int? = nil, csvAmountColumnIndex: Int? = nil, csvCreditAmountColumnIndex: Int? = nil, csvBalanceColumnIndex: Int? = nil, csvDateFormat: String? = nil, pdfLayoutConfig: String? = nil, csvNegateAmounts: Bool = false) {
+    public init(id: Int64? = nil, accountId: Int64, format: ImportFormat, csvDelimiter: String? = nil, csvDateColumnIndex: Int? = nil, csvDescriptionColumnIndex: Int? = nil, csvAmountColumnIndex: Int? = nil, csvCreditAmountColumnIndex: Int? = nil, csvBalanceColumnIndex: Int? = nil, csvFeeColumnIndex: Int? = nil, csvStatusColumnIndex: Int? = nil, csvDateFormat: String? = nil, pdfLayoutConfig: String? = nil, csvNegateAmounts: Bool = false) {
         self.id = id
         self.accountId = accountId
         self.format = format
@@ -43,6 +51,8 @@ public struct ImportProfile: Codable, Equatable, Identifiable, FetchableRecord, 
         self.csvAmountColumnIndex = csvAmountColumnIndex
         self.csvCreditAmountColumnIndex = csvCreditAmountColumnIndex
         self.csvBalanceColumnIndex = csvBalanceColumnIndex
+        self.csvFeeColumnIndex = csvFeeColumnIndex
+        self.csvStatusColumnIndex = csvStatusColumnIndex
         self.csvDateFormat = csvDateFormat
         self.pdfLayoutConfig = pdfLayoutConfig
         self.csvNegateAmounts = csvNegateAmounts
@@ -96,6 +106,16 @@ func registerImportProfileNegateAmountsMigration(_ migrator: inout DatabaseMigra
     migrator.registerMigration("addCSVNegateAmounts") { db in
         try db.alter(table: "importProfile") { t in
             t.add(column: "csvNegateAmounts", .boolean).notNull().defaults(to: false)
+        }
+    }
+}
+
+/// Plain nullable columns, same approach as the balance-column migration.
+func registerImportProfileFeeStatusColumnsMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addFeeAndStatusColumnIndexToImportProfile") { db in
+        try db.alter(table: "importProfile") { t in
+            t.add(column: "csvFeeColumnIndex", .integer)
+            t.add(column: "csvStatusColumnIndex", .integer)
         }
     }
 }

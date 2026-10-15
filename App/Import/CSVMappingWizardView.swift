@@ -82,7 +82,7 @@ struct CSVMappingWizardView: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Picker("Date format", selection: $model.selectedDateFormat) {
                 ForEach(model.dateFormatCandidates, id: \.self) { format in
-                    Text(format).tag(Optional(format))
+                    Text(CSVDateFormatDetector.label(for: format)).tag(Optional(format))
                 }
                 if !model.dateFormatCandidates.isEmpty { Divider() }
                 Text("Custom…").tag(String?.none)
@@ -139,7 +139,10 @@ struct CSVMappingWizardView: View {
     }
 
     private func rowsRead(_ count: Int) -> String {
-        count == 1 ? "1 row read" : "\(count) rows read"
+        let read = count == 1 ? "1 row read" : "\(count) rows read"
+        let skipped = model.skippedRowCount
+        guard skipped > 0 else { return read }
+        return "\(read) (\(skipped) pending or reverted \(skipped == 1 ? "row" : "rows") skipped)"
     }
 
     private var previewTransactions: [ParsedTransaction] {

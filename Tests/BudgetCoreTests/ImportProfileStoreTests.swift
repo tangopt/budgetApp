@@ -97,4 +97,30 @@ final class ImportProfileStoreTests: XCTestCase {
         XCTAssertEqual(found?.csvDateFormat, "yyyy-MM-dd")
         XCTAssertEqual(found?.csvDelimiter, ";")
     }
+
+    func testSaveThenFindRoundTripsFeeAndStatusColumns() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        var account = Account(name: "Revolut", currency: .gbp, kind: .cash, trackingMode: .imported)
+        try manager.dbQueue.write { db in try account.insert(db) }
+        let store = ImportProfileStore(dbQueue: manager.dbQueue)
+        try store.save(ImportProfile(accountId: account.id!, format: .csv, csvDelimiter: ",", csvDateColumnIndex: 2, csvDescriptionColumnIndex: 4,
+                                     csvAmountColumnIndex: 5, csvBalanceColumnIndex: 9, csvFeeColumnIndex: 6, csvStatusColumnIndex: 8,
+                                     csvDateFormat: "yyyy-MM-dd HH:mm:ss"))
+        let found = try XCTUnwrap(try store.find(accountId: account.id!, format: .csv))
+        XCTAssertEqual(found.csvFeeColumnIndex, 6)
+        XCTAssertEqual(found.csvStatusColumnIndex, 8)
+    }
+
+    func testExistingProfilesHaveNoFeeOrStatusColumn() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
+        try manager.dbQueue.write { db in try account.insert(db) }
+        let store = ImportProfileStore(dbQueue: manager.dbQueue)
+        try store.save(ImportProfile(accountId: account.id!, format: .csv, csvDelimiter: ",", csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2, csvDateFormat: "dd/MM/yyyy"))
+        let found = try XCTUnwrap(try store.find(accountId: account.id!, format: .csv))
+        XCTAssertNil(found.csvFeeColumnIndex)
+        XCTAssertNil(found.csvStatusColumnIndex)
+    }
 }

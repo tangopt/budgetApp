@@ -279,4 +279,70 @@ final class CSVStatementParserTests: XCTestCase {
         let result = CSVStatementParser.parse(csvText: csv, profile: profile)
         XCTAssertEqual(result.transactions.map(\.amountMinorUnits), [-4564, 280000])
     }
+
+    // MARK: - Date-time, fee and status columns
+
+    private func profile(dateFormat: String, fee: Int? = nil, status: Int? = nil) -> ImportProfile {
+        ImportProfile(accountId: 1, format: .csv, csvDelimiter: ",", csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1,
+                      csvAmountColumnIndex: 2, csvFeeColumnIndex: fee, csvStatusColumnIndex: status, csvDateFormat: dateFormat)
+    }
+
+    private func utcDay(_ y: Int, _ m: Int, _ d: Int) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar.date(from: DateComponents(year: y, month: m, day: d))!
+    }
+
+    func testDateTimesKeepOnlyTheCalendarDay() {
+        let cases: [(String, String)] = [
+            ("yyyy-MM-dd HH:mm:ss", "2026-01-05 23:59:59"), ("yyyy-MM-dd HH:mm", "2026-01-05 00:01"),
+            ("yyyy-MM-dd'T'HH:mm:ss", "2026-01-05T14:20:05"), ("dd/MM/yyyy HH:mm:ss", "05/01/2026 14:20:05"),
+            ("dd/MM/yyyy HH:mm", "05/01/2026 14:20"), ("MM/dd/yyyy HH:mm:ss", "01/05/2026 14:20:05")
+        ]
+        for (format, value) in cases {
+            let result = CSVStatementParser.parse(csvText: "Date,Description,Amount\n\(value),SHOP,-1.00", profile: profile(dateFormat: format))
+            XCTAssertEqual(result.transactions.map(\.date), [utcDay(2026, 1, 5)], format)
+        }
+    }
+
+    func testFeeIsChargedOnTopOfTheAmount() {
+        let csv = "Date,Description,Amount,Fee\n01/07/2026,SHOP,-23.59,0.24\n02/07/2026,IN,100.00,1.00\n03/07/2026,NEG FEE,-10.00,-0.50\n04/07/2026,NO FEE,-5.00,"
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile(dateFormat: "dd/MM/yyyy", fee: 3))
+        XCTAssertEqual(result.transactions.map(\.amountMinorUnits), [-2_383, 9_900, -1_050, -500])
+        XCTAssertEqual(result.unparsedLines, [])
+    }
+
+    func testUnreadableFeeIsUnparsed() {
+        let csv = "Date,Description,Amount,Fee\n01/07/2026,SHOP,-23.59,abc"
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile(dateFormat: "dd/MM/yyyy", fee: 3))
+        XCTAssertEqual(result.transactions.count, 0)
+        XCTAssertEqual(result.unparsedLines.count, 1)
+    }
+
+    func testRowsThatAreNotCompletedAreSkippedNotUnparsed() {
+        let csv = """
+        Date,Description,Amount,State
+        01/07/2026,A,-1.00,COMPLETED
+        01/07/2026,B,-1.00,completed
+        01/07/2026,C,-1.00,Settled
+        01/07/2026,D,-1.00,BOOKED
+        01/07/2026,E,-1.00,posted
+        01/07/2026,F,-1.00,Complete
+        01/07/2026,G,-1.00,
+        01/07/2026,H,-1.00,PENDING
+        ,I,-1.00,REVERTED
+        01/07/2026,J,-1.00,DECLINED
+        """
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile(dateFormat: "dd/MM/yyyy", status: 3))
+        XCTAssertEqual(result.transactions.map(\.rawDescription), ["A", "B", "C", "D", "E", "F", "G"])
+        XCTAssertEqual(result.skippedRows, 3)
+        XCTAssertEqual(result.unparsedLines, [])
+    }
+
+    func testProfilesWithoutFeeOrStatusIgnoreThoseColumns() {
+        let csv = "Date,Description,Amount,Fee,State\n01/07/2026,SHOP,-23.59,0.24,PENDING"
+        let result = CSVStatementParser.parse(csvText: csv, profile: profile(dateFormat: "dd/MM/yyyy"))
+        XCTAssertEqual(result.transactions.map(\.amountMinorUnits), [-2_359])
+        XCTAssertEqual(result.skippedRows, 0)
+    }
 }

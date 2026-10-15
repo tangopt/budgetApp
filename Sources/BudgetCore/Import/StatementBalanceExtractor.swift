@@ -35,32 +35,46 @@ public enum StatementBalanceExtractor {
     /// closing point at the last transaction date.
     ///
     /// The order of rows *within a day* isn't knowable from dates alone and varies by bank
-    /// (newest-first exports list a day's rows newest-first). Two candidate chronological
-    /// orders are tried — rows stably date-sorted as given, and reversed-then-stably-sorted
-    /// — and a candidate is accepted only if `balance[i-1] + amount[i] == balance[i]`
-    /// holds for every consecutive pair. If neither does, nothing is checked.
+    /// (newest-first exports list a day's rows newest-first), and some banks list rows in an
+    /// order that isn't their dates' at all (Revolut dates a row by when it started but lists
+    /// and balances it by when it completed). Four candidate orders are tried — rows stably
+    /// date-sorted as given, reversed-then-stably-sorted, the file order, and the file order
+    /// reversed — and a candidate is accepted only if `balance[i-1] + amount[i] == balance[i]`
+    /// holds for every consecutive pair. If none does, nothing is checked; nor if several do
+    /// but start from different opening balances (e.g. +10 then −10 on one day reads either
+    /// way round), since the closing balance would then be a guess.
+    ///
+    /// From the accepted order, the opening balance is the first row's balance less its amount,
+    /// and each point is the opening balance plus every amount dated on or before it — so the
+    /// closing point is the last row's balance (in file order when that's the order that adds up).
     public static func extract(from rows: [ParsedTransaction]) -> StatementBalanceResult {
         guard rows.contains(where: { $0.balanceAfterMinorUnits != nil }) else { return .notProvided }
         guard rows.allSatisfy({ $0.balanceAfterMinorUnits != nil }) else {
             return .unverified("Some rows have no readable balance, so the statement's balances can't be used.")
         }
-        let candidates = [chronological(rows), chronological(Array(rows.reversed()))]
-        guard let ordered = candidates.first(where: isConsistent) else {
+        let candidates = [chronological(rows), chronological(Array(rows.reversed())), rows, Array(rows.reversed())]
+        let consistent = candidates.filter(isConsistent)
+        guard let ordered = consistent.first else {
             return .unverified("The Balance column doesn't add up with the transaction amounts, so it wasn't used.")
         }
+        let opening = openingBalance(ordered)
+        guard consistent.allSatisfy({ openingBalance($0) == opening }) else {
+            return .unverified("The Balance column could be read in more than one order, each giving a different closing balance, so it wasn't used.")
+        }
 
-        let firstDate = ordered.first!.date
-        let lastDate = ordered.last!.date
+        func balance(atCloseOf date: Date) -> Int {
+            opening + ordered.filter { $0.date <= date }.reduce(0) { $0 + $1.amountMinorUnits }
+        }
+        let firstDate = rows.map(\.date).min()!
+        let lastDate = rows.map(\.date).max()!
         var points: [StatementBalancePoint] = []
         var cursor = firstOfMonth(onOrAfter: firstDate)
         while cursor <= lastDate {
-            if let row = ordered.last(where: { $0.date <= cursor }) {
-                points.append(StatementBalancePoint(date: cursor, balanceMinorUnits: row.balanceAfterMinorUnits!, isClosing: cursor == lastDate))
-            }
+            points.append(StatementBalancePoint(date: cursor, balanceMinorUnits: balance(atCloseOf: cursor), isClosing: cursor == lastDate))
             cursor = calendar.date(byAdding: .month, value: 1, to: cursor)!
         }
         if points.last?.date != lastDate {
-            points.append(StatementBalancePoint(date: lastDate, balanceMinorUnits: ordered.last!.balanceAfterMinorUnits!, isClosing: true))
+            points.append(StatementBalancePoint(date: lastDate, balanceMinorUnits: balance(atCloseOf: lastDate), isClosing: true))
         }
         return .available(points)
     }
@@ -72,6 +86,11 @@ public enum StatementBalanceExtractor {
                 lhs.element.date != rhs.element.date ? lhs.element.date < rhs.element.date : lhs.offset < rhs.offset
             }
             .map(\.element)
+    }
+
+    /// The balance before the first row of `ordered`.
+    private static func openingBalance(_ ordered: [ParsedTransaction]) -> Int {
+        ordered.first!.balanceAfterMinorUnits! - ordered.first!.amountMinorUnits
     }
 
     private static func isConsistent(_ ordered: [ParsedTransaction]) -> Bool {
