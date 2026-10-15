@@ -5,11 +5,14 @@ import struct BudgetCore.Category
 
 /// The Grid chips (one plan: the Budget or a scenario), a header bar in that plan's colour,
 /// then the plan month by month (categories × the twelve months of a year within the
-/// horizon), valued as the Budget grid values it (`ScenarioComparison.gridCells`). For a
-/// scenario, cells that differ from the Budget are shaded in a light tint of the scenario's
-/// colour, a month cell opens its
-/// planned occurrences with Edit… / Remove…, and section headers add items — the Budget
-/// grid's own sheets, scoped to the scenario. The Budget shows read-only.
+/// horizon), valued as the Budget grid values it (`ScenarioComparison.grid`), with the Budget
+/// grid's look and behaviour (spec 2026-10-15-forecast-grid-parity-design.md): category
+/// icons, collapsible sections and groups, the Totals block, and cell selection with the
+/// shared side panel (`GridCellPanel`: the cell's actual transactions and the plan's
+/// occurrences, with Edit… / Remove… for a scenario's). For a scenario, cells that differ from
+/// the Budget are shaded in a light tint of the scenario's colour, an empty open-month cell
+/// adds an item and section headers add items — the Budget grid's own sheets, scoped to the
+/// scenario. The Budget shows read-only.
 ///
 /// Same frozen header / frozen columns (category left, Year Total right) technique as
 /// `BudgetGridView`: the horizontal offset lives in a `HorizontalScrollOffset` held in plain
@@ -24,20 +27,15 @@ struct ScenarioGridTab: View {
     /// (one outline for every scenario).
     @AppStorage("forecastGrid.collapsedSections") private var collapsedSectionsStore = ""
     @AppStorage("forecastGrid.expandedGroups") private var expandedGroupsStore = ""
-    @State private var drillDown: DrillDownTarget?
+    /// The clicked cell whose side panel is open. Plain `@State` like `scrollOffset`: only the
+    /// cells' outlines and the panel host observe it, so a click doesn't re-run `body`.
+    @State private var cellSelection = CellSelection<GridCellTarget>()
     @State private var addTarget: AddTarget?
     @State private var addingAllowance = false
     /// An empty reserve cell's Add allowance: the reserve and the start date.
     @State private var cellAllowance: CellAllowance?
     /// A failed allowance save, shown inside the open form.
     @State private var allowanceError: String?
-
-    private struct DrillDownTarget: Identifiable {
-        let category: Category
-        let year: Int
-        let month: Int
-        var id: String { "\(category.id ?? -1)-\(year)-\(month)" }
-    }
 
     private struct AddTarget: Identifiable {
         let type: CategoryType
@@ -62,6 +60,9 @@ struct ScenarioGridTab: View {
         case reservedHeader
         case reserve(Category)
         case reservedTotal
+        /// The Totals block: its header and Total in / Total out / Net.
+        case totalsHeader
+        case totals(BudgetTotals.Row)
 
         var id: String {
             switch self {
@@ -72,6 +73,8 @@ struct ScenarioGridTab: View {
             case .reservedHeader: return "reserved-header"
             case .reserve(let reserve): return "reserve-\(reserve.id ?? -1)"
             case .reservedTotal: return "reserved-total"
+            case .totalsHeader: return "totals-header"
+            case .totals(let row): return "totals-\(row.rawValue)"
             }
         }
     }
@@ -99,11 +102,15 @@ struct ScenarioGridTab: View {
             .labelsHidden()
             .fixedSize()
             .padding(.bottom, 8)
-            grid
+            SidePanelHost(selection: cellSelection) {
+                grid
+            } panel: { target in
+                GridCellPanel(target: target, model: viewModel) { cellSelection.clear() }
+            }
         }
-        .sheet(item: $drillDown) { target in
-            ScenarioDrillDownSheet(viewModel: viewModel, category: target.category, year: target.year, month: target.month)
-        }
+        // A panel belongs to the plan and the year it was opened in.
+        .onChange(of: viewModel.gridSelection) { _, _ in cellSelection.clear() }
+        .onChange(of: viewModel.gridYear) { _, _ in cellSelection.clear() }
         .sheet(isPresented: $addingAllowance, onDismiss: { allowanceError = nil }) {
             ReserveFormView(mode: .chooseReserve(reserves: viewModel.reserves, scenarioName: viewModel.gridScenario?.name ?? ""),
                             errorMessage: allowanceError, onEdit: { if allowanceError != nil { allowanceError = nil } }) { target, amount, frequency, interval, start, end in
@@ -236,11 +243,16 @@ struct ScenarioGridTab: View {
         GridOutline(sectionsString: collapsedSectionsStore, groupsString: expandedGroupsStore)
     }
 
+    /// Changes the outline and stores it; a selected cell whose row it hides loses its panel.
     private func updateOutline(_ change: (inout GridOutline) -> Void) {
         var updated = outline
         change(&updated)
         collapsedSectionsStore = updated.sectionsString
         expandedGroupsStore = updated.groupsString
+        if let key = cellSelection.key, let rowId = key.split(separator: "|").first,
+           !allRows(updated).contains(where: { $0.id == rowId }) {
+            cellSelection.clear()
+        }
     }
 
     /// As `BudgetGridView.rowKinds(for:_:)` (`GridOutline.rows`): a category group shows as one
@@ -261,7 +273,9 @@ struct ScenarioGridTab: View {
     }
 
     /// Every row shown for `outline`: a collapsed section keeps only its header row (Reserved
-    /// also keeps its total row, as its header shows no totals).
+    /// also keeps its total row, and Totals its Net, as their headers show no totals). The
+    /// Totals block comes last, where the Budget grid has it after its Adjustments (this grid
+    /// has no Adjustments or Accounts sections).
     private func allRows(_ outline: GridOutline) -> [Row] {
         func section(_ title: String, _ type: CategoryType) -> [Row] {
             [Row(kind: .sectionHeader(title, type), shaded: false)]
@@ -274,16 +288,9 @@ struct ScenarioGridTab: View {
         }
         // Kept when collapsed: the Reserved header shows no totals.
         if !reserves.isEmpty { reservedRows.append(Row(kind: .reservedTotal, shaded: false)) }
-        return section("Income", .income) + section("Expenses", .expense) + reservedRows + section("Transfers", .transfer)
-    }
-
-    private func rowColor(for type: CategoryType) -> Color {
-        switch type {
-        case .income: return .green
-        case .expense: return .red
-        case .transfer: return .blue
-        case .adjustment: return .gray
-        }
+        let totalsRows = [Row(kind: .totalsHeader, shaded: false)]
+            + BudgetTotals.Row.visible(collapsed: outline.isCollapsed(GridOutline.totalsSection)).map { Row(kind: .totals($0), shaded: false) }
+        return section("Income", .income) + section("Expenses", .expense) + reservedRows + section("Transfers", .transfer) + totalsRows
     }
 
     @ViewBuilder
@@ -302,7 +309,7 @@ struct ScenarioGridTab: View {
                 }
             }
         case .category(let category):
-            label(category.name, shaded: shaded, stripe: rowColor(for: category.type))
+            CategoryRowLabel(category: category, shaded: shaded)
         case .groupHeader(let group, let categories):
             GroupNameCell(name: group.name, isExpanded: group.id.map(outline.isExpanded) ?? false) { allInSection in
                 if let id = group.id {
@@ -311,14 +318,9 @@ struct ScenarioGridTab: View {
                 }
             }
             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-            .overlay(Rectangle().frame(width: 3).foregroundStyle(categories.first.map { rowColor(for: $0.type) } ?? .clear), alignment: .leading)
+            .overlay(Rectangle().frame(width: 3).foregroundStyle(categories.first.map { $0.type.gridStripeColor } ?? .clear), alignment: .leading)
         case .groupChild(let category):
-            Text(category.name).foregroundStyle(.secondary)
-                .frame(width: 200, height: 28, alignment: .leading)
-                .padding(.leading, 28).padding(.trailing, 8)
-                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
-                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                .overlay(Rectangle().frame(width: 3).foregroundStyle(rowColor(for: category.type)), alignment: .leading)
+            CategoryRowLabel(category: category, shaded: shaded, isGroupChild: true)
         case .reservedHeader:
             SectionHeaderCell(title: "RESERVED", isCollapsed: outline.isCollapsed(GridOutline.reservedSection),
                               toggle: { updateOutline { $0.toggleSection(GridOutline.reservedSection) } }, setAllGroups: nil) {
@@ -329,99 +331,128 @@ struct ScenarioGridTab: View {
                 }
             }
         case .reserve(let reserve):
-            label(reserve.name, shaded: shaded, stripe: .purple)
+            Text(reserve.name)
+                .gridRowLabel(background: GridRowShade.background(shaded), stripe: .purple)
         case .reservedTotal:
             Text("Total reserved").bold()
-                .frame(width: 220, height: 28, alignment: .leading)
-                .padding(.horizontal, 8)
-                .background(Color.purple.opacity(0.08))
-                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                .overlay(Rectangle().frame(width: 3).foregroundStyle(.purple), alignment: .leading)
+                .gridRowLabel(background: Color.purple.opacity(0.08), stripe: .purple)
+        case .totalsHeader:
+            SectionHeaderCell(title: "Totals", isCollapsed: outline.isCollapsed(GridOutline.totalsSection),
+                              toggle: { updateOutline { $0.toggleSection(GridOutline.totalsSection) } }, setAllGroups: nil) { EmptyView() }
+        case .totals(let totalsRow):
+            TotalsRowLabel(row: totalsRow)
         }
-    }
-
-    private func label(_ name: String, shaded: Bool, stripe: Color) -> some View {
-        Text(name)
-            .frame(width: 220, height: 28, alignment: .leading)
-            .padding(.horizontal, 8)
-            .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
-            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-            .overlay(Rectangle().frame(width: 3).foregroundStyle(stripe), alignment: .leading)
     }
 
     @ViewBuilder
     private func rowCells(_ row: RowKind, shaded: Bool, year: Int) -> some View {
         switch row {
-        case .sectionHeader(_, let type):
+        case .sectionHeader(let title, let type):
             let members = categoriesByType(type)
             HStack(spacing: 0) {
                 ForEach(1...12, id: \.self) { month in
                     cellView(cell(members, month: month), font: PlanCellView.captionFont, height: 24).bold()
+                        .selectable(cellSelection, key: cellKey(row, month: month)) {
+                            openAggregateMonth(row, name: title, members: members, year: year, month: month)
+                        }
                 }
             }
             .background(Color.accentColor.opacity(0.08))
         case .category(let category), .groupChild(let category), .reserve(let category):
-            let isReserve = category.isReserved
             HStack(spacing: 0) {
                 ForEach(1...12, id: \.self) { month in
                     cellView(cell([category], month: month))
                         .frame(height: 28)
-                        .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                        .background(GridRowShade.background(shaded))
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                         .monthSeparator(month)
-                        .contentShape(Rectangle())
-                        .onTapGesture { cellTapped(category, year: year, month: month, isReserve: isReserve) }
+                        .selectable(cellSelection, key: cellKey(row, month: month)) {
+                            cellTapped(row, category, year: year, month: month)
+                        }
                 }
             }
-        case .groupHeader(_, let categories):
-            combinedRow(categories, background: Color.orange.opacity(0.10))
-        case .reservedHeader:
+        case .groupHeader(let group, let categories):
+            HStack(spacing: 0) {
+                ForEach(1...12, id: \.self) { month in
+                    cellView(cell(categories, month: month)).bold()
+                        .frame(height: 28)
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                        .monthSeparator(month)
+                        .selectable(cellSelection, key: cellKey(row, month: month)) {
+                            openAggregateMonth(row, name: group.name, members: categories, year: year, month: month)
+                        }
+                }
+            }
+            .background(Color.orange.opacity(0.10))
+        case .reservedHeader, .totalsHeader:
             HStack(spacing: 0) {
                 ForEach(1...12, id: \.self) { _ in Color.clear.frame(width: GridMetrics.columnWidth, height: 24) }
             }
             .background(Color.accentColor.opacity(0.08))
         case .reservedTotal:
-            combinedRow(viewModel.reserves, background: Color.purple.opacity(0.08))
-        }
-    }
-
-    private func combinedRow(_ categories: [Category], background: Color) -> some View {
-        HStack(spacing: 0) {
-            ForEach(1...12, id: \.self) { month in
-                cellView(cell(categories, month: month)).bold()
-                    .frame(height: 28)
-                    .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                    .monthSeparator(month)
+            HStack(spacing: 0) {
+                ForEach(1...12, id: \.self) { month in
+                    cellView(cell(viewModel.reserves, month: month)).bold()
+                        .frame(height: 28)
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                        .monthSeparator(month)
+                }
             }
+            .background(Color.purple.opacity(0.08))
+        case .totals(let totalsRow):
+            HStack(spacing: 0) {
+                ForEach(1...12, id: \.self) { month in
+                    cellView(totalsCell(totalsRow, month: month)).fontWeight(totalsRow == .net ? .bold : .semibold)
+                        .frame(height: 28)
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                        .monthSeparator(month)
+                        .selectable(cellSelection, key: cellKey(row, month: month)) {
+                            openTotalsMonth(row, totalsRow, year: year, month: month)
+                        }
+                }
+            }
+            .background(totalsRow.gridBackground)
         }
-        .background(background)
     }
 
     /// A row's Year Total, for the pinned right-hand column: the row's height and background,
     /// and the differs fill (from `cellView`) when it differs from the budget.
     @ViewBuilder
     private func yearTotalCell(_ row: RowKind, shaded: Bool) -> some View {
+        let year = viewModel.gridYear
         switch row {
-        case .sectionHeader(_, let type):
-            cellView(yearCell(categoriesByType(type)), isYearTotal: true, font: PlanCellView.captionFont, height: 24).bold()
+        case .sectionHeader(let title, let type):
+            let members = categoriesByType(type)
+            cellView(yearCell(members), isYearTotal: true, font: PlanCellView.captionFont, height: 24).bold()
                 .background(Color.accentColor.opacity(0.08))
-        case .category(let category), .groupChild(let category), .reserve(let category):
+                .selectable(cellSelection, key: cellKey(row, year: year)) { openYear(row, name: title, members: members, year: year) }
+        case .category(let category), .groupChild(let category):
             cellView(yearCell([category]), isYearTotal: true).bold()
                 .frame(height: 28)
-                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .background(GridRowShade.background(shaded))
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-        case .groupHeader(_, let categories):
-            combinedYearTotal(categories, background: Color.orange.opacity(0.10))
-        case .reservedHeader:
+                .selectable(cellSelection, key: cellKey(row, year: year)) { openYear(row, name: category.name, members: [category], year: year) }
+        case .reserve(let reserve):
+            cellView(yearCell([reserve]), isYearTotal: true).bold()
+                .frame(height: 28)
+                .background(GridRowShade.background(shaded))
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+        case .groupHeader(let group, let categories):
+            combinedYearTotal(yearCell(categories), background: Color.orange.opacity(0.10))
+                .selectable(cellSelection, key: cellKey(row, year: year)) { openYear(row, name: group.name, members: categories, year: year) }
+        case .reservedHeader, .totalsHeader:
             Color.clear.frame(width: GridMetrics.columnWidth, height: 24)
                 .background(Color.accentColor.opacity(0.08))
         case .reservedTotal:
-            combinedYearTotal(viewModel.reserves, background: Color.purple.opacity(0.08))
+            combinedYearTotal(yearCell(viewModel.reserves), background: Color.purple.opacity(0.08))
+        case .totals(let totalsRow):
+            combinedYearTotal(totalsYearCell(totalsRow), background: totalsRow.gridBackground)
+                .selectable(cellSelection, key: cellKey(row, year: year)) { openTotalsYear(row, totalsRow, year: year) }
         }
     }
 
-    private func combinedYearTotal(_ categories: [Category], background: Color) -> some View {
-        cellView(yearCell(categories), isYearTotal: true).bold()
+    private func combinedYearTotal(_ cell: Cell, background: Color) -> some View {
+        cellView(cell, isYearTotal: true).bold()
             .frame(height: 28)
             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
             .background(background)
@@ -443,7 +474,20 @@ struct ScenarioGridTab: View {
     }
 
     private func yearCell(_ categories: [Category]) -> Cell {
-        let months = (1...12).map { cell(categories, month: $0) }
+        combinedYear((1...12).map { cell(categories, month: $0) })
+    }
+
+    /// A Totals row's month (`ScenarioComparison.grid`'s Totals block), with the Budget's.
+    private func totalsCell(_ row: BudgetTotals.Row, month: Int) -> Cell {
+        guard let cell = viewModel.grid.totals[row]?[month] else { return (0, 0, .none, 0) }
+        return (cell.value, cell.pending, cell.state, cell.budgetValue)
+    }
+
+    private func totalsYearCell(_ row: BudgetTotals.Row) -> Cell {
+        combinedYear((1...12).map { totalsCell(row, month: $0) })
+    }
+
+    private func combinedYear(_ months: [Cell]) -> Cell {
         let combined = PlanStatus.combine(months.map { ($0.value, $0.pending, $0.state) })
         return (combined.value, combined.pending, combined.state, months.reduce(0) { $0 + $1.budgetValue })
     }
@@ -458,19 +502,49 @@ struct ScenarioGridTab: View {
             .background(differs ? differsFill : Color.clear)
     }
 
-    /// A month cell: its planned occurrences open the drill-down; an empty one (no value, nothing
-    /// planned) in an open or future month adds an item (a reserve: an allowance) to the selected
-    /// scenario. Nothing while the Budget is selected.
-    private func cellTapped(_ category: Category, year: Int, month: Int, isReserve: Bool) {
-        guard !isReadOnly else { return }
-        guard viewModel.occurrences(category: category, year: year, month: month).isEmpty,
-              (viewModel.gridCells[category.id ?? -1]?[month]?.value ?? 0) == 0 else {
-            openDrillDown(category, year: year, month: month)
+    // MARK: Side panel
+
+    /// A cell's selection key: its row and its month (or year) column.
+    private func cellKey(_ row: RowKind, month: Int) -> String { "\(row.id)|m\(month)" }
+    private func cellKey(_ row: RowKind, year: Int) -> String { "\(row.id)|y\(year)" }
+
+    private func monthRange(year: Int, month: Int) -> (start: Date, end: Date) {
+        viewModel.payCalendar.range(of: PayMonth(year: year, month: month))
+    }
+
+    /// January's pay month start ... December's pay month end, matching the Year Total column.
+    private func yearRange(_ year: Int) -> (start: Date, end: Date) {
+        (monthRange(year: year, month: 1).start, monthRange(year: year, month: 12).end)
+    }
+
+    /// A month cell's panel for `categories` (one category, or a group's or section's members,
+    /// which name each transaction's category): the pay month's transactions and the calendar
+    /// month's planned occurrences.
+    private func monthTarget(name: String, categories: [Category], year: Int, month: Int) -> GridCellTarget {
+        let range = monthRange(year: year, month: month)
+        return GridCellTarget(title: "\(name) — \(GridMonthLabel.shortMonthYear(year: year, month: month))", categoryIds: Set(categories.compactMap(\.id)),
+                              start: range.start, end: range.end, showCategory: categories.count > 1,
+                              plan: CellPlan(categories: categories, year: year, month: month))
+    }
+
+    /// A category's or reserve's month cell: with a value or anything planned, its panel (a
+    /// reserve's planned allowances only); an empty one (no value, nothing planned) in an open
+    /// or future month adds an item (a reserve: an allowance) to the selected scenario —
+    /// nothing while the Budget is selected.
+    private func cellTapped(_ row: RowKind, _ category: Category, year: Int, month: Int) {
+        let hasOccurrences = !viewModel.occurrences(category: category, year: year, month: month).isEmpty
+        let hasValue = (viewModel.gridCells[category.id ?? -1]?[month]?.value ?? 0) != 0
+        if hasOccurrences || (hasValue && !category.isReserved) {
+            var target = monthTarget(name: category.name, categories: [category], year: year, month: month)
+            target.showsTransactions = !category.isReserved
+            cellSelection.select(key: cellKey(row, month: month), target: target)
             return
         }
+        // A reserve with a value but no allowance occurrences isn't empty: nothing to add.
+        guard !hasValue else { return }
         guard !viewModel.payCalendar.isClosed(PayMonth(year: year, month: month)), let scope = viewModel.editScope else { return }
         let date = CellAddDate.date(year: year, month: month)
-        if isReserve {
+        if category.isReserved {
             allowanceError = nil
             cellAllowance = CellAllowance(reserve: category, date: date)
         } else if let id = category.id {
@@ -478,40 +552,49 @@ struct ScenarioGridTab: View {
         }
     }
 
-    private func openDrillDown(_ category: Category, year: Int, month: Int) {
-        guard !isReadOnly, !viewModel.occurrences(category: category, year: year, month: month).isEmpty else { return }
-        drillDown = DrillDownTarget(category: category, year: year, month: month)
+    /// Opens a group's or section's month panel when its members have any transaction or
+    /// planned occurrence there (an empty aggregate cell does nothing).
+    private func openAggregateMonth(_ row: RowKind, name: String, members: [Category], year: Int, month: Int) {
+        var target = monthTarget(name: name, categories: members, year: year, month: month)
+        let hasTransactions = !viewModel.transactions(forCategoryIds: target.categoryIds, from: target.start, to: target.end).isEmpty
+        guard hasTransactions || members.contains(where: { !viewModel.occurrences(category: $0, year: year, month: month).isEmpty }) else { return }
+        target.showCategory = true
+        cellSelection.select(key: cellKey(row, month: month), target: target)
     }
-}
 
-/// A scenario cell's planned occurrences with Edit… / Remove… (the Budget grid's sheets).
-private struct ScenarioDrillDownSheet: View {
-    @ObservedObject var viewModel: ScenarioLabViewModel
-    let category: Category
-    let year: Int
-    let month: Int
-    @Environment(\.dismiss) private var dismiss
+    /// Opens a Year Total's panel (the year's transactions) when there are any.
+    private func openYear(_ row: RowKind, name: String, members: [Category], year: Int) {
+        var showCategory = members.count > 1
+        if case .groupHeader = row { showCategory = true }
+        if case .sectionHeader = row { showCategory = true }
+        let range = yearRange(year)
+        let target = GridCellTarget(title: "\(name) — \(year)", categoryIds: Set(members.compactMap(\.id)),
+                                    start: range.start, end: range.end, showCategory: showCategory, plan: nil)
+        guard !viewModel.transactions(forCategoryIds: target.categoryIds, from: target.start, to: target.end).isEmpty else { return }
+        cellSelection.select(key: cellKey(row, year: year), target: target)
+    }
 
-    @State private var editing: PlannedRow?
-    @State private var removing: PlannedRow?
-    @State private var planError: String?
+    /// A Totals row's month panel: the transactions and planned occurrences it sums, when
+    /// there are any (an empty cell does nothing).
+    private func openTotalsMonth(_ row: RowKind, _ totalsRow: BudgetTotals.Row, year: Int, month: Int) {
+        let range = monthRange(year: year, month: month)
+        let hasTransactions = !viewModel.totalsTransactions(totalsRow, from: range.start, to: range.end).isEmpty
+        let hasPlan = !viewModel.totalsOccurrences(totalsRow, year: year, month: month).isEmpty || viewModel.totalsReserved(totalsRow, year: year, month: month) != 0
+        guard hasTransactions || hasPlan else { return }
+        var plan = CellPlan(categories: [], year: year, month: month)
+        plan.totals = totalsRow
+        var target = GridCellTarget(title: "\(totalsRow.title) — \(GridMonthLabel.shortMonthYear(year: year, month: month))", categoryIds: [],
+                                    start: range.start, end: range.end, showCategory: true, plan: plan)
+        target.totals = totalsRow
+        cellSelection.select(key: cellKey(row, month: month), target: target)
+    }
 
-    var body: some View {
-        SheetScaffold(title: "\(category.name) — \(PayMonthFormat.name(PayMonth(year: year, month: month)))",
-                      subtitle: viewModel.gridScenario.map { "In “\($0.name)”. Changes stay in the scenario until you apply them." },
-                      width: 560, cancelTitle: "Done", onCancel: { dismiss() }) {
-            List {
-                PlannedOccurrencesSection(
-                    rows: viewModel.occurrences(category: category, year: year, month: month),
-                    inScenario: true,
-                    errorMessage: planError,
-                    onEdit: { row in planError = nil; editing = row },
-                    onRemove: { row in planError = nil; removing = row }
-                )
-            }
-            .frame(height: 300)
-        }
-        .plannedOccurrenceEditing(editing: $editing, removing: $removing, planError: $planError,
-                                  categories: viewModel.categories, actions: viewModel.planEditActions, accountOptions: viewModel.accountOptions)
+    /// A Totals row's Year Total panel: the year's transactions it sums.
+    private func openTotalsYear(_ row: RowKind, _ totalsRow: BudgetTotals.Row, year: Int) {
+        let range = yearRange(year)
+        guard !viewModel.totalsTransactions(totalsRow, from: range.start, to: range.end).isEmpty else { return }
+        var target = GridCellTarget(title: "\(totalsRow.title) — \(year)", categoryIds: [], start: range.start, end: range.end, showCategory: true, plan: nil)
+        target.totals = totalsRow
+        cellSelection.select(key: cellKey(row, year: year), target: target)
     }
 }

@@ -90,6 +90,30 @@ public struct ScenarioGridCell: Equatable {
     public var differsFromBudget: Bool { value != budgetValue }
 }
 
+/// The actuals every plan's grid shares (with All accounts): the budget-facing transactions
+/// (`TransferLinks.budgetFacing`), their pay-month totals, and the transfers whose money counts
+/// in the Totals block with their flows (`BudgetTotals.countedTransfers` / `transferActuals`).
+/// Computed once per load (`ScenarioComparison.gridActuals`), shared by every plan and year.
+public struct ScenarioGridActuals: Sendable {
+    public let budgetFacing: [Transaction]
+    /// Category id → year → month → the pay month's confirmed total (`PayMonthTotals.lookup`).
+    public let monthTotals: [Int64: [Int: [Int: Int]]]
+    public let countedTransferIds: Set<Int64>
+    public let transferFlows: [Int64: [Int: [Int: BudgetTotals.Flow]]]
+
+    /// No transactions (before the first load).
+    public static let empty = ScenarioGridActuals(budgetFacing: [], monthTotals: [:], countedTransferIds: [], transferFlows: [:])
+}
+
+/// A year of a plan's grid: every category's cells (`ScenarioGridCell`) and the Totals block's
+/// rows (Total in, Total out, Net), each by month, with the Budget's values alongside.
+public struct ScenarioGrid: Equatable {
+    public let cells: [Int64: [Int: ScenarioGridCell]]
+    public let totals: [BudgetTotals.Row: [Int: ScenarioGridCell]]
+
+    public static let empty = ScenarioGrid(cells: [:], totals: [:])
+}
+
 /// The scenario comparison (spec 2026-10-08-scenario-lab-design.md, "Comparison"). Pure:
 /// each plan is evaluated with the dashboard's and the Budget grid's own calculators, over
 /// the same actuals and pay calendar.
@@ -140,19 +164,42 @@ public enum ScenarioComparison {
 
     /// Every category's twelve cells of `year`, by category id then month.
     public static func gridCells(_ data: ComparisonData, scenario: PlanInput, budget: PlanInput, year: Int) -> [Int64: [Int: ScenarioGridCell]] {
-        let monthTotals = PayMonthTotals.lookup(transactions: TransferLinks.budgetFacing(data.transactions, links: data.transferLinks), calendar: data.payCalendar)
+        grid(data, actuals: gridActuals(data), scenario: scenario, budget: budget, year: year).cells
+    }
+
+    /// The actuals the grids share (`ScenarioGridActuals`), with All accounts.
+    public static func gridActuals(_ data: ComparisonData) -> ScenarioGridActuals {
+        let budgetFacing = TransferLinks.budgetFacing(data.transactions, links: data.transferLinks)
+        let counted = BudgetTotals.countedTransfers(budgetFacing, categories: data.categories, accountIds: nil,
+                                                    counterpartAccounts: BudgetTotals.counterpartAccounts(transactions: data.transactions, links: data.transferLinks))
+        return ScenarioGridActuals(budgetFacing: budgetFacing,
+                                   monthTotals: PayMonthTotals.lookup(transactions: budgetFacing, calendar: data.payCalendar),
+                                   countedTransferIds: Set(counted.compactMap(\.id)),
+                                   transferFlows: BudgetTotals.transferActuals(counted, calendar: data.payCalendar))
+    }
+
+    /// `year` of `scenario`'s grid against `budget`'s: every category's cells, and the Totals
+    /// block (`BudgetTotals.month`, as the Budget grid computes it with All accounts and Show
+    /// forecast on) over the same `actuals` with each plan's entries.
+    public static func grid(_ data: ComparisonData, actuals: ScenarioGridActuals, scenario: PlanInput, budget: PlanInput, year: Int) -> ScenarioGrid {
         let scenarioPlan = normalized(scenario)
         let budgetPlan = normalized(budget)
-        var result: [Int64: [Int: ScenarioGridCell]] = [:]
+        var cells: [Int64: [Int: ScenarioGridCell]] = [:]
+        var totals: [BudgetTotals.Row: [Int: ScenarioGridCell]] = [:]
         for month in 1...12 {
             let monthClass = data.payCalendar.monthClass(PayMonth(year: year, month: month))
-            let mine = cells(data, scenarioPlan, year: year, month: month, monthClass: monthClass, monthTotals: monthTotals)
-            let theirs = cells(data, budgetPlan, year: year, month: month, monthClass: monthClass, monthTotals: monthTotals)
-            for (categoryId, cell) in mine {
-                result[categoryId, default: [:]][month] = ScenarioGridCell(value: cell.value, pending: cell.pending, state: cell.state, budgetValue: theirs[categoryId]?.value ?? 0)
+            let mine = monthCells(data, scenarioPlan, year: year, month: month, monthClass: monthClass, actuals: actuals)
+            let theirs = monthCells(data, budgetPlan, year: year, month: month, monthClass: monthClass, actuals: actuals)
+            for (categoryId, cell) in mine.cells {
+                cells[categoryId, default: [:]][month] = ScenarioGridCell(value: cell.value, pending: cell.pending, state: cell.state, budgetValue: theirs.cells[categoryId]?.value ?? 0)
+            }
+            for row in BudgetTotals.Row.allCases {
+                let cell = BudgetTotals.cell(row, totalIn: mine.totalIn, totalOut: mine.totalOut)
+                let budgetCell = BudgetTotals.cell(row, totalIn: theirs.totalIn, totalOut: theirs.totalOut)
+                totals[row, default: [:]][month] = ScenarioGridCell(value: cell.value, pending: cell.pending, state: cell.state, budgetValue: budgetCell.value)
             }
         }
-        return result
+        return ScenarioGrid(cells: cells, totals: totals)
     }
 
     // MARK: - Helpers
@@ -188,8 +235,11 @@ public enum ScenarioComparison {
     }
 
     /// One month of the Budget grid for a (normalized) plan: `PlanStatus.cell` of the pay
-    /// month's actual and the calendar month's plan; reserves by `monthAllowances`.
-    private static func cells(_ data: ComparisonData, _ plan: PlanInput, year: Int, month: Int, monthClass: MonthClass, monthTotals: [Int64: [Int: [Int: Int]]]) -> [Int64: (value: Int, pending: Int, state: PendingState)] {
+    /// month's actual and the calendar month's plan; reserves by `monthAllowances`; and the
+    /// Totals block's Total in and Total out over those cells (`BudgetTotals.month`).
+    private static func monthCells(_ data: ComparisonData, _ plan: PlanInput, year: Int, month: Int, monthClass: MonthClass,
+                                   actuals: ScenarioGridActuals) -> (cells: [Int64: BudgetTotals.Cell], totalIn: BudgetTotals.Cell, totalOut: BudgetTotals.Cell) {
+        let monthTotals = actuals.monthTotals
         let range = MonthRange.of(year: year, month: month)
         let period = PayPeriod(startDate: range.start, endDate: range.end, type: .projected)
         let planned = ForecastCalculator.confirmedTotalsByCategory(period: period, entries: plan.entries, groups: plan.groups, exceptions: plan.exceptions)
@@ -200,17 +250,29 @@ public enum ScenarioComparison {
         let allowances = ReservedCategories.monthAllowances(reserves, monthClass: monthClass) {
             ReservedCategories.unforecastSpend(year: year, month: month, categories: data.categories, monthTotals: monthTotals, entries: plan.entries, groups: plan.groups, exceptions: plan.exceptions)
         }
-        var result: [Int64: (value: Int, pending: Int, state: PendingState)] = [:]
+        var result: [Int64: BudgetTotals.Cell] = [:]
+        var reserveCells: [BudgetTotals.Cell] = []
+        var monthActuals: [Int64: Int] = [:]
+        var flows: [Int64: BudgetTotals.Flow] = [:]
         for category in data.categories {
             guard let id = category.id else { continue }
             if category.isReserved {
                 let value = allowances[id] ?? 0
                 result[id] = (value, value, value == 0 ? .none : .allExpected)
+                reserveCells.append(result[id]!)
             } else {
-                result[id] = PlanStatus.cell(actual: monthTotals[id]?[year]?[month] ?? 0, planned: planned[id] ?? 0,
+                let actual = monthTotals[id]?[year]?[month]
+                if let actual { monthActuals[id] = actual }
+                if let flow = actuals.transferFlows[id]?[year]?[month] { flows[id] = flow }
+                result[id] = PlanStatus.cell(actual: actual ?? 0, planned: planned[id] ?? 0,
                                              categoryType: category.type, monthClass: monthClass)
             }
         }
-        return result
+        let transfers = BudgetTotals.plannedTransfers(period: period, categories: data.categories, entries: plan.entries, groups: plan.groups,
+                                                      exceptions: plan.exceptions, filter: nil)
+        let totals = BudgetTotals.month(categories: data.categories, actuals: monthActuals, transferActuals: flows, planned: planned,
+                                        plannedTransfers: transfers.byCategory, plannedIncomingElsewhere: transfers.incomingElsewhere,
+                                        reserves: PlanStatus.combine(reserveCells), monthClass: monthClass, includeForecast: true, accountIds: nil)
+        return (result, totals.totalIn, totals.totalOut)
     }
 }

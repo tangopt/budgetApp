@@ -4,16 +4,6 @@ import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
 
-/// The categories and calendar month a month cell's panel lists planned occurrences for (one
-/// category, or a group's or section's members).
-struct CellPlan {
-    let categories: [Category]
-    let year: Int
-    let month: Int
-    /// A Totals row's month: the occurrences that row includes (`totalsOccurrences`) instead.
-    var totals: BudgetTotals.Row? = nil
-}
-
 /// The period a "Not assigned to an account" cell's panel lists (budget-totals spec §2): a
 /// calendar month, or the whole year (`month` nil).
 struct UnassignedPeriod {
@@ -21,37 +11,15 @@ struct UnassignedPeriod {
     let month: Int?
 }
 
-/// What a clicked Budget cell's side panel shows (spec §2): the transactions of
-/// `categoryIds` in `start...end` (read live from the view model, so an edit shows at once),
-/// then the planned occurrences of `plan` when set.
-struct BudgetCellTarget {
-    let title: String
-    let categoryIds: Set<Int64>
-    let start: Date
-    let end: Date
-    /// Group and section rows: each transaction names its category.
-    var showCategory = false
-    /// False for a reserve (planned items only).
-    var showsTransactions = true
-    /// nil for a Year Total (transactions only).
-    var plan: CellPlan?
-    /// A Totals row: the transactions it sums (`totalsTransactions`) instead of `categoryIds`'.
-    var totals: BudgetTotals.Row? = nil
-    /// A "Not assigned to an account" cell: the unassigned planned items to assign instead.
-    var unassigned: UnassignedPeriod? = nil
-}
-
-/// The Budget grid's side panel for the selected cell: `TransactionsSidePanel` plus the
-/// planned occurrences' Edit…/Remove… and each transaction's Edit… (EditTransactionSheet).
+/// The Budget grid's side panel for the selected cell: the shared `GridCellPanel` (its
+/// transactions, then the planned occurrences' Edit…/Remove…) plus each transaction's Edit…
+/// (EditTransactionSheet) and Add transaction…; or, for a "Not assigned to an account" cell,
+/// `UnassignedItemsPanel`.
 struct BudgetCellPanel: View {
-    let target: BudgetCellTarget
+    let target: GridCellTarget
     @ObservedObject var viewModel: BudgetGridViewModel
     let onClose: () -> Void
 
-    @State private var editing: PlannedRow?
-    @State private var removing: PlannedRow?
-    /// A failed Remove… (an Edit… failure shows in its own sheet).
-    @State private var planError: String?
     @State private var editingTransaction: Transaction?
     /// Read when Edit… is clicked, for the sheet's picker.
     @State private var editingRecentIds: [Int64] = []
@@ -69,12 +37,6 @@ struct BudgetCellPanel: View {
         target.categoryIds.count == 1 ? target.categoryIds.first : nil
     }
 
-    /// The transactions listed: a Totals row's, else the cell's categories'.
-    private var transactions: [Transaction] {
-        if let row = target.totals { return viewModel.totalsTransactions(row, from: target.start, to: target.end) }
-        return viewModel.transactions(forCategoryIds: target.categoryIds, from: target.start, to: target.end)
-    }
-
     var body: some View {
         if let period = target.unassigned {
             UnassignedItemsPanel(title: target.title, period: period, viewModel: viewModel, onClose: onClose)
@@ -84,36 +46,19 @@ struct BudgetCellPanel: View {
     }
 
     private var cellPanel: some View {
-        TransactionsSidePanel(
-            title: target.title,
-            transactions: transactions,
-            categoryById: viewModel.categoryById,
-            showCategory: target.showCategory,
-            accountNameById: viewModel.accountNameById,
-            transfers: viewModel.transferCounterparts,
-            showsTransactions: target.showsTransactions,
-            onAdd: target.showsTransactions && !viewModel.accounts.isEmpty ? {
+        GridCellPanel(
+            target: target,
+            model: viewModel,
+            onAdd: viewModel.accounts.isEmpty ? nil : {
                 editingRecentIds = viewModel.recentCategoryIds()
                 isAdding = true
-            } : nil,
-            plannedSection: {
-                // The filter's accounts' items only, each naming its account (spec 2026-10-15 §3);
-                // none with Show forecast off (actuals only).
-                if let plan = target.plan, viewModel.showForecast {
-                    plannedSection(plan)
-                    if let row = plan.totals { reservedLine(row, plan: plan) }
-                }
             },
-            onEdit: { transaction in
+            onEditTransaction: { transaction in
                 editingRecentIds = viewModel.recentCategoryIds()
                 editingTransaction = transaction
             },
             onClose: onClose
         )
-        // Another cell's panel: a stale Remove… error doesn't carry over.
-        .onChange(of: target.title) { _, _ in planError = nil }
-        .plannedOccurrenceEditing(editing: $editing, removing: $removing, planError: $planError,
-                                  categories: viewModel.categories, actions: viewModel.planEditActions, accountOptions: viewModel.planAccountOptions)
         .sheet(item: $editingTransaction) { transaction in
             EditTransactionSheet(
                 transaction: transaction,
@@ -142,38 +87,12 @@ struct BudgetCellPanel: View {
             )
         }
     }
+}
 
-    /// A Totals panel's reserves as one line: what's left of their allowances, as the Total
-    /// reserved cell shows it (nothing when none is left).
-    @ViewBuilder
-    private func reservedLine(_ row: BudgetTotals.Row, plan: CellPlan) -> some View {
-        let remaining = viewModel.totalsReserved(row, year: plan.year, month: plan.month)
-        if remaining != 0 {
-            Section("Reserved") {
-                HStack {
-                    Text("Remaining allowances")
-                    Spacer()
-                    MoneyText(minorUnits: remaining)
-                }
-            }
-        }
-    }
-
-    /// Every member's occurrences in the month, by date; aggregates name each one's category.
-    private func plannedSection(_ plan: CellPlan) -> some View {
-        let rows = plan.totals.map { viewModel.totalsOccurrences($0, year: plan.year, month: plan.month) }
-            ?? plan.categories
-                .flatMap { viewModel.occurrences(category: $0, year: plan.year, month: plan.month) }
-                .sorted { $0.occurrence.date < $1.occurrence.date }
-        return PlannedOccurrencesSection(
-            rows: rows,
-            compact: true,
-            categoryNameById: plan.categories.count > 1 ? viewModel.categoryNameById : nil,
-            errorMessage: planError,
-            onEdit: { row in planError = nil; editing = row },
-            onRemove: { row in planError = nil; removing = row }
-        )
-    }
+extension BudgetGridViewModel: GridCellPanelModel {
+    var panelShowsPlan: Bool { showForecast }
+    var panelPlanIsScenario: Bool { false }
+    var panelAllowsPlanEditing: Bool { true }
 }
 
 /// A "Not assigned to an account" cell's panel (budget-totals spec §2): the period's planned

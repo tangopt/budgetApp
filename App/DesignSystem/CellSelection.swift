@@ -90,3 +90,13 @@ extension View {
         }
     }
 }
+
+extension View {
+    /// A selectable grid cell: `SelectedCellOutline` while `key` is selected, and the whole
+    /// cell clickable (`action` decides whether to select it, add, or do nothing).
+    func selectable<Target>(_ selection: CellSelection<Target>, key: String, action: @escaping () -> Void) -> some View {
+        overlay(SelectedCellOutline(selection: selection, key: key))
+            .contentShape(Rectangle())
+            .onTapGesture(perform: action)
+    }
+}

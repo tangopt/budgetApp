@@ -198,6 +198,66 @@ final class ScenarioComparisonTests: XCTestCase {
         XCTAssertEqual(next[holidayId]?[1]?.differsFromBudget, true)
         XCTAssertEqual(cells[holidayId]?[12]?.differsFromBudget, false)
     }
+
+    func testGridCellsMatchTheGridsCells() {
+        let grid = ScenarioComparison.grid(data, actuals: ScenarioComparison.gridActuals(data), scenario: scenario, budget: budget, year: 2026)
+        XCTAssertEqual(grid.cells, ScenarioComparison.gridCells(data, scenario: scenario, budget: budget, year: 2026))
+    }
+
+    /// The Totals block (`BudgetTotals`) for the scenario's plan, with All accounts: the same
+    /// actuals, the scenario's entries instead of the budget's, and the budget's own totals
+    /// for the differs shading.
+    func testGridTotalsFollowTheScenariosPlanOverTheSameActuals() throws {
+        let actuals = ScenarioComparison.gridActuals(data)
+        let grid = ScenarioComparison.grid(data, actuals: actuals, scenario: scenario, budget: budget, year: 2026)
+
+        // Closed January: actuals only, the same in both plans.
+        let netJan = try XCTUnwrap(grid.totals[.net]?[1])
+        XCTAssertEqual(netJan.value, 200_000)
+        XCTAssertEqual(netJan.pending, 0)
+        XCTAssertEqual(netJan.budgetValue, 200_000)
+        XCTAssertEqual(grid.totals[.totalIn]?[1]?.value, 300_000)
+        XCTAssertEqual(grid.totals[.totalOut]?[1]?.value, -100_000)
+
+        // Open March: the scenario's rent (-1,500) against the budget's (-1,000), all expected.
+        let outMar = try XCTUnwrap(grid.totals[.totalOut]?[3])
+        XCTAssertEqual(outMar.value, -150_000)
+        XCTAssertEqual(outMar.pending, -150_000)
+        XCTAssertEqual(outMar.state, .allExpected)
+        XCTAssertEqual(outMar.budgetValue, -100_000)
+        XCTAssertEqual(grid.totals[.totalIn]?[3]?.value, 300_000)
+        XCTAssertEqual(grid.totals[.net]?[3]?.value, 150_000)
+        XCTAssertEqual(grid.totals[.net]?[3]?.budgetValue, 200_000)
+        // June: the gym's one-off -300 (an exception) is out too.
+        XCTAssertEqual(grid.totals[.totalOut]?[6]?.value, -180_000)
+        XCTAssertEqual(grid.totals[.net]?[12]?.value, 140_000)
+        XCTAssertEqual(grid.totals[.net]?.count, 12)
+
+        // Reserves count out at their cells' value (the holiday allowance from 2027).
+        let next = ScenarioComparison.grid(data, actuals: actuals, scenario: scenario, budget: budget, year: 2027)
+        XCTAssertEqual(next.totals[.totalOut]?[1]?.value, -170_000)
+        XCTAssertEqual(next.totals[.net]?[1]?.value, 130_000)
+        XCTAssertEqual(next.totals[.net]?[1]?.budgetValue, 200_000)
+    }
+
+    /// The panel's figures: the budget-facing actuals by pay month, and which transfers count
+    /// (with All accounts: external ones only).
+    func testGridActualsHoldTheBudgetFacingTotalsAndCountedTransfers() {
+        var data = data
+        var categories = data.categories
+        categories.append(Category(id: 6, name: "Gift from Mum", type: .transfer, isExternalTransfer: true))
+        let gift = Transaction(id: 20, importBatchId: 1, accountId: 9, date: utc(2026, 2, 10), rawDescription: "Gift", amountMinorUnits: 5_000, categoryId: 6, status: .confirmed, categorizedBy: .manual, fingerprint: "fp20")
+        let own = Transaction(id: 21, importBatchId: 1, accountId: 9, date: utc(2026, 2, 11), rawDescription: "Savings", amountMinorUnits: -7_000, categoryId: savingsId, status: .confirmed, categorizedBy: .manual, fingerprint: "fp21")
+        data = ComparisonData(today: data.today, accounts: data.accounts, snapshots: data.snapshots, transactions: data.transactions + [gift, own],
+                              categories: categories, rate: data.rate, payCalendar: data.payCalendar, horizonYear: data.horizonYear, horizonMonth: data.horizonMonth)
+        let actuals = ScenarioComparison.gridActuals(data)
+        XCTAssertEqual(actuals.monthTotals[rentId]?[2026]?[2], -100_000)
+        XCTAssertEqual(actuals.countedTransferIds, [20])
+        XCTAssertEqual(actuals.budgetFacing.count, 6)
+        let grid = ScenarioComparison.grid(data, actuals: actuals, scenario: scenario, budget: budget, year: 2026)
+        XCTAssertEqual(grid.totals[.totalIn]?[2]?.value, 305_000)
+        XCTAssertEqual(grid.totals[.totalOut]?[2]?.value, -100_000)
+    }
 }
 
 private extension ForecastEntry {

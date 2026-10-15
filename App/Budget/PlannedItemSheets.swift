@@ -265,6 +265,8 @@ struct PlannedOccurrencesSection: View {
     var inScenario = false
     var compact = false
     var categoryNameById: [Int64: String]? = nil
+    /// False for a read-only plan (the Forecast grid's Budget): no Edit… / Remove….
+    var allowsEditing = true
     let errorMessage: String?
     let onEdit: (PlannedRow) -> Void
     let onRemove: (PlannedRow) -> Void
@@ -292,7 +294,7 @@ struct PlannedOccurrencesSection: View {
                             Spacer()
                             status(row)
                         }
-                        if !row.isConfirmed {
+                        if allowsEditing, !row.isConfirmed {
                             HStack {
                                 Spacer()
                                 Button("Edit…") { onEdit(row.editable) }
@@ -313,7 +315,7 @@ struct PlannedOccurrencesSection: View {
                         MoneyText(minorUnits: row.occurrence.amountMinorUnits)
                         status(row)
                             .frame(width: 90, alignment: .trailing)
-                        if !row.isConfirmed {
+                        if allowsEditing, !row.isConfirmed {
                             Button("Edit…") { onEdit(row.editable) }
                             Button("Remove…") { onRemove(row.editable) }
                         }
