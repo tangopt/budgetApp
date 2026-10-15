@@ -1,0 +1,8 @@
+# Net Worth Forecast Fix — Design Spec
+
+Approved in chat 2026-10-15 ("go"). Found on the user's data: the projection skips the rest of the current month (e.g. the 24 Oct salary), ignores external transfers (Santander Patricia −£1,250/month), and the Budget's monthly Net Worth rows don't project future months.
+
+1. **Start from today**: `ForecastProjector` (shared by Dashboard line/year-ends, Budget year cards, Forecast compare via DashboardCalculator.netWorthSeries/yearEndNetWorth/ScenarioComparison) projects from the current net worth with, for the month containing the latest data (the current walk-start month), the **remaining** planned amounts: the plan's occurrences in that month not yet matched by actuals — use the same pending logic as the Budget grid's pending/expected amounts (PlanStatus / BudgetGridCalculator) so already-paid items aren't counted twice; then full months after it as today. The year-end/Dec values and the dashed line include it.
+2. **External transfers count**: in the projection's monthly impact, categories with `isExternalTransfer` count like flows (out negative, in positive); transfers between own accounts still excluded. Same for actual-based flow helpers only if they feed net worth projection (don't change budget totals).
+3. **Budget Net Worth rows**: future months (after the current one) show the projected net worth (same walk); the current month shows current + remaining pending. Handled together with the forecast-by-account Budget UI task (forecast toggle, account filter).
+Testing: projector with a mid-month data date (pending remainder counted once; paid items not double counted), external transfer counted, internal not; Dashboard/Budget/Forecast use the same values; regression for months fully after.
