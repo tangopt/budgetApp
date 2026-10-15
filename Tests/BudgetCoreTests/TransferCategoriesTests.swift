@@ -177,6 +177,21 @@ final class TransferCategoriesTests: XCTestCase {
         XCTAssertEqual(joint.transferAccountId, f.joint)
     }
 
+    func testEnsurePutsANewAccountsCategoryInTheGroupMostTiedCategoriesUse() throws {
+        let f = try makeFixture()
+        let groupId = try f.manager.dbQueue.write { db -> Int64 in
+            var group = CategoryGroup(name: "Own accounts")
+            try group.insert(db)
+            try db.execute(sql: "UPDATE category SET groupId = ? WHERE transferAccountId IS NOT NULL", arguments: [group.id!])
+            var account = Account(name: "Monzo", currency: .gbp, kind: .cash, trackingMode: .imported)
+            try account.insert(db)
+            return group.id!
+        }
+        try f.ensure()
+        let monzo = try f.manager.dbQueue.read { db in try Category.filter(Column("name") == "Transfer: Monzo").fetchOne(db) }
+        XCTAssertEqual(monzo?.groupId, groupId)
+    }
+
     func testEnsureTiesAnExistingUntiedCategoryOfTheSameName() throws {
         let f = try makeFixture(ensure: false)
         let existing = try f.manager.dbQueue.write { db in
