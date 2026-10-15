@@ -1,0 +1,13 @@
+# Spreadsheet Balance Correction — Design Spec
+
+Approved in chat 2026-10-15 ("go, delete the three bank rows").
+
+Root cause (investigation 2026-10-15): MigrateAccountBalances dated spreadsheet month column M on the 1st of M, but column M is the balance at the END of M (Current: after M's outgoings but before M's salary, which arrives ~25th); International Euro snapshots were taken from the GBP-converted row (81) instead of the EUR row (62); the Feb 2026 column was a partial reading (as of 16 Feb) plus forecasts, so its Income £7,758.25 (dated 14 Feb) duplicates the real 25 Feb salary, and the bank rows SAINSBURYS −45.64, MARKS&SPENCER −33.60, NOW AF2B5 −3.99 (16 Feb) are already in the spreadsheet's Feb totals. The fake 14 Feb payday also makes the pay calendar end February on 14 Feb (25 Feb dropped as <20 days), moving 15–25 Feb bank transactions into March.
+
+One-off executable `CorrectSpreadsheetBalances <db> [--dry-run]` (like ConvertBalances; not in the app), in ONE transaction:
+1. Delete every "Balance adjustment (converted)" / "Market movement (converted)" transaction created by BalanceConversion (identify precisely by its note/description/batch; none linked).
+2. Restore the archived Numbers-import snapshots (balanceSnapshotArchive) as balanceSnapshot rows with corrections: date = 1st of month M+1 for column M; drop a restored Numbers snapshot where a Statement-balance snapshot exists on the same date; drop the Feb 2026 column; Current: value += that column's Income + Bonus + Other income; International Euro: values from the EUR row (native EUR). Statement-balance snapshots restored unchanged. (Exact values come from the spreadsheet: re-read "Budget copy.numbers" rather than trusting archived values where they differ.)
+3. Delete the Feb 2026 spreadsheet Income transaction (£7,758.25, 14 Feb, batch "Budget copy.numbers") and the three 16 Feb bank rows (SAINSBURYS S/MKTS −45.64, MARKS&SPENCER PLC −33.60, NOW AF2B5 Sky Cine −3.99), after verifying they're inside the spreadsheet's Feb totals.
+4. Re-run BalanceConversion.convert (opening = earliest snapshot per account; later snapshots → adjustments; archive) with its invariant verification.
+5. Report: per account opening balance, adjustments count/total, list of adjustments ≥ £100 with dates; pay calendar paydays Dec 2025–Apr 2026 and the pay month containing 16 Feb and 20 Feb; month-end balances before/after for 2025-11..2026-04 per account; net worth today unchanged check (today's balances must be identical except International Euro, which becomes €6,157.76).
+Safety: dry run on a copy first, shown to the user; real run only after backup + app quit + user "go"; second run must be a no-op (refuse if already corrected).
