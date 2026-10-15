@@ -108,4 +108,39 @@ final class StatementBalanceExtractorTests: XCTestCase {
         XCTAssertEqual(StatementBalanceExtractor.extract(from: rows), .notProvided)
         XCTAssertEqual(StatementBalanceExtractor.extract(from: []), .notProvided)
     }
+
+    /// Rows dated by when they started but listed (and balanced) in the order they completed:
+    /// no date ordering adds up, the file order does, and the closing balance is the last row's.
+    func testFileOrderIsUsedWhenNoDateOrderAddsUp() {
+        let rows = [row(2026, 1, 10, -1000, 99_000), row(2026, 1, 8, -500, 98_500), row(2026, 2, 3, -200, 98_300), row(2026, 2, 2, -100, 98_200)]
+        XCTAssertEqual(points(StatementBalanceExtractor.extract(from: rows)), [
+            StatementBalancePoint(date: utc(2026, 2, 1), balanceMinorUnits: 98_500, isClosing: false),
+            StatementBalancePoint(date: utc(2026, 2, 3), balanceMinorUnits: 98_200, isClosing: true)
+        ])
+    }
+
+    func testReversedFileOrderIsUsedWhenNoDateOrderAddsUp() {
+        let rows = [row(2026, 1, 10, -1000, 99_000), row(2026, 1, 8, -500, 98_500), row(2026, 2, 3, -200, 98_300), row(2026, 2, 2, -100, 98_200)]
+        XCTAssertEqual(points(StatementBalanceExtractor.extract(from: Array(rows.reversed()))), [
+            StatementBalancePoint(date: utc(2026, 2, 1), balanceMinorUnits: 98_500, isClosing: false),
+            StatementBalancePoint(date: utc(2026, 2, 3), balanceMinorUnits: 98_200, isClosing: true)
+        ])
+    }
+
+    /// +10 then −10 on one day adds up both ways round, from different opening balances
+    /// (0 or 10), so the closing balance can't be trusted.
+    func testOrdersThatAddUpFromDifferentOpeningBalancesAreUnverified() {
+        let rows = [row(2026, 1, 15, 1000, 1000), row(2026, 1, 15, -1000, 0)]
+        guard case .unverified(let reason) = StatementBalanceExtractor.extract(from: rows) else {
+            return XCTFail("expected .unverified")
+        }
+        XCTAssertTrue(reason.hasPrefix("The Balance column could be read in more than one order"))
+    }
+
+    /// Several orders adding up from the same opening balance (e.g. the file is already in
+    /// date order) are not ambiguous.
+    func testOrdersThatAgreeOnTheOpeningBalanceAreAccepted() {
+        let rows = [row(2026, 1, 15, -1000, 99_000), row(2026, 1, 16, -500, 98_500)]
+        XCTAssertEqual(points(StatementBalanceExtractor.extract(from: rows)).last?.balanceMinorUnits, 98_500)
+    }
 }

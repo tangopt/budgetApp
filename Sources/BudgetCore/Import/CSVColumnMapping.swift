@@ -1,7 +1,7 @@
 import Foundation
 
 public enum CSVColumnRole: String, CaseIterable, Sendable {
-    case date, description, amount, moneyOut, moneyIn, balance, ignore
+    case date, description, amount, moneyOut, moneyIn, balance, fee, status, ignore
 }
 
 /// Pure model of the import mapping screen: one role per CSV column, convertible to and
@@ -27,6 +27,8 @@ public struct CSVColumnMapping: Equatable, Sendable {
             }
         }
         if let c = suggestion.balanceColumn { assign(.balance, toColumn: c) }
+        if let c = suggestion.feeColumn { assign(.fee, toColumn: c) }
+        if let c = suggestion.statusColumn { assign(.status, toColumn: c) }
     }
 
     public init(columnCount: Int, profile: ImportProfile) {
@@ -42,6 +44,8 @@ public struct CSVColumnMapping: Equatable, Sendable {
             }
         }
         if let c = profile.csvBalanceColumnIndex { assign(.balance, toColumn: c) }
+        if let c = profile.csvFeeColumnIndex { assign(.fee, toColumn: c) }
+        if let c = profile.csvStatusColumnIndex { assign(.status, toColumn: c) }
     }
 
     /// Applies the exclusivity rules: the role moves to `index` (any other column holding
@@ -91,6 +95,8 @@ public struct CSVColumnMapping: Equatable, Sendable {
             csvAmountColumnIndex: split ? column(of: .moneyOut) : column(of: .amount),
             csvCreditAmountColumnIndex: split ? column(of: .moneyIn) : nil,
             csvBalanceColumnIndex: allowBalance ? column(of: .balance) : nil,
+            csvFeeColumnIndex: column(of: .fee),
+            csvStatusColumnIndex: column(of: .status),
             csvDateFormat: dateFormat,
             csvNegateAmounts: negateAmounts
         )
