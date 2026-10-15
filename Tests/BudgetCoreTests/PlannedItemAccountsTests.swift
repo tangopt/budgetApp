@@ -252,6 +252,24 @@ final class PlannedItemAccountsTests: XCTestCase {
         XCTAssertEqual(currentOnly[11], 3_500_000)
     }
 
+    /// The Budget grid works `netWorthActuals` out once and passes it in for every year and
+    /// both Show forecast states: the figures must match working it out each time.
+    func testNetWorthFiguresWithSharedActualsMatchTheUncachedOnes() {
+        for ids in [nil, [current], [joint], [current, joint]] as [Set<Int64>?] {
+            let input = input(ids)
+            let actuals = DashboardCalculator.netWorthActuals(input)
+            XCTAssertNotNil(actuals)
+            for includeForecast in [true, false] {
+                for year in 2024...2028 {
+                    XCTAssertEqual(DashboardCalculator.budgetNetWorthMonths(input, actuals: actuals, year: year, includeForecast: includeForecast),
+                                   DashboardCalculator.budgetNetWorthMonths(input, year: year, includeForecast: includeForecast), "\(String(describing: ids)) \(includeForecast) \(year)")
+                    XCTAssertEqual(DashboardCalculator.yearEndNetWorth(input, actuals: actuals, year: year, includeForecast: includeForecast),
+                                   DashboardCalculator.yearEndNetWorth(input, year: year, includeForecast: includeForecast), "\(String(describing: ids)) \(includeForecast) \(year)")
+                }
+            }
+        }
+    }
+
     // MARK: Editing
 
     private func editingFixture() throws -> (DatabaseManager, entryId: Int64, accountId: Int64) {

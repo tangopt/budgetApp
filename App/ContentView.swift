@@ -150,6 +150,9 @@ struct ContentView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 AppearanceToggle()
             }
+            // The whole column, title bar and toggle included: without it the sidebar is the
+            // content area's colour in dark mode (see `SidebarMaterial`).
+            .background { SidebarMaterial().ignoresSafeArea() }
         } detail: {
             Group {
                 switch selection {

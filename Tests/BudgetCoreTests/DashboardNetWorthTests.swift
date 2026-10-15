@@ -66,6 +66,21 @@ final class DashboardNetWorthTests: XCTestCase {
         XCTAssertNil(DashboardCalculator.yearEndNetWorth(input, year: 2020))
     }
 
+    /// Past years' cards and months read the shared `NetWorthActuals` (the Budget grid's
+    /// cache): the same figures as working each one out, in both Show forecast states.
+    func testYearEndAndNetWorthRowWithSharedActualsMatchTheUncachedOnes() {
+        let input = series2026Input
+        let actuals = DashboardCalculator.netWorthActuals(input)
+        for includeForecast in [true, false] {
+            for year in 2024...2028 {
+                XCTAssertEqual(DashboardCalculator.yearEndNetWorth(input, actuals: actuals, year: year, includeForecast: includeForecast),
+                               DashboardCalculator.yearEndNetWorth(input, year: year, includeForecast: includeForecast), "\(includeForecast) \(year)")
+                XCTAssertEqual(DashboardCalculator.budgetNetWorthMonths(input, actuals: actuals, year: year, includeForecast: includeForecast),
+                               DashboardCalculator.budgetNetWorthMonths(input, year: year, includeForecast: includeForecast), "\(includeForecast) \(year)")
+            }
+        }
+    }
+
     // Data past December's payday starts the walk in next January: this year's card and the
     // Dashboard both show today's net worth, without January's plan.
     func testYearEndAgreesWithTheDashboardWhenDataRunsPastDecembersPayday() throws {
