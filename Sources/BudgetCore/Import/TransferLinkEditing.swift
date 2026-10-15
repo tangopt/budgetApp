@@ -31,6 +31,8 @@ public enum TransferLinkError: LocalizedError, Equatable {
     case alreadyLinked
     /// Unlink: the link is gone or isn't this transaction's.
     case linkNotFound
+    /// A balance adjustment (built-in category) is never a transfer leg.
+    case adjustment
 
     public var errorDescription: String? {
         switch self {
@@ -39,6 +41,7 @@ public enum TransferLinkError: LocalizedError, Equatable {
         case .sameAccount: return "A transfer links two different accounts."
         case .alreadyLinked: return "That transaction is already linked to a transfer."
         case .linkNotFound: return "That transfer link no longer exists."
+        case .adjustment: return "A balance adjustment can't be part of a transfer."
         }
     }
 }
@@ -86,6 +89,7 @@ extension TransferLinks {
     /// opposite sign in another account, not already the leg of an active link (a historical
     /// monthly total sent can take more). Bank rows: within ±7 days and ±3% amount (converted
     /// at the stored rate across currencies); spreadsheet-history rows: within the same pay month.
+    /// Never a balance adjustment (built-in category), on either side.
     public static func candidates(db: Database, for transactionId: Int64, today: Date = Date()) throws -> [TransferCandidate] {
         guard let transaction = try Transaction.fetchOne(db, key: transactionId) else { throw TransferLinkError.transactionNotFound }
         guard transaction.amountMinorUnits != 0 else { return [] }
@@ -100,7 +104,10 @@ extension TransferLinks {
             guard let id = t.id else { return false }
             return t.amountMinorUnits > 0 ? !linkedIns.contains(id) : (isHistorical(t) || !linkedOuts.contains(id))
         }
-        guard isFree(transaction), let account = accounts[transaction.accountId] else { return [] }
+        // Balance adjustments (built-in categories) are never transfer legs.
+        let builtInIds = Set(try Int64.fetchAll(db, sql: "SELECT id FROM category WHERE builtInRole IS NOT NULL"))
+        let isAdjustment = { (t: Transaction) in t.categoryId.map(builtInIds.contains) ?? false }
+        guard isFree(transaction), !isAdjustment(transaction), let account = accounts[transaction.accountId] else { return [] }
 
         let thisHistorical = isHistorical(transaction)
         let calendar = try PayCalendar.load(db: db, today: today)
@@ -111,7 +118,7 @@ extension TransferLinks {
             .filter(Column("accountId") != transaction.accountId && Column("date") >= wide.0 && Column("date") <= wide.1)
             .fetchAll(db)
         let candidates = nearby.filter { other in
-            guard (other.amountMinorUnits > 0) != (transaction.amountMinorUnits > 0), other.amountMinorUnits != 0, isFree(other),
+            guard (other.amountMinorUnits > 0) != (transaction.amountMinorUnits > 0), other.amountMinorUnits != 0, isFree(other), !isAdjustment(other),
                   let otherAccount = accounts[other.accountId] else { return false }
             if thisHistorical || isHistorical(other) {
                 // A monthly total sent is made of smaller amounts received.
@@ -141,7 +148,8 @@ extension TransferLinks {
         return abs(Double(abs(inAmount)) - converted) <= converted * TransferMatcher.fxTolerance
     }
 
-    /// Link to transfer…: links the two by hand (origin `manual`), whichever was sent, and
+    /// Link to transfer…: links the two by hand (origin `manual`), whichever was sent — never a
+    /// balance adjustment (`TransferLinkError.adjustment`) — and
     /// files each leg under the other account's transfer category (`TransferCategories.applyOnLink`).
     @discardableResult
     public static func link(db: Database, transactionId: Int64, with otherId: Int64) throws -> TransferLink {
@@ -152,6 +160,8 @@ extension TransferLinks {
             throw TransferLinkError.notOppositeAmounts
         }
         guard first.accountId != second.accountId else { throw TransferLinkError.sameAccount }
+        let builtInIds = Set(try Int64.fetchAll(db, sql: "SELECT id FROM category WHERE builtInRole IS NOT NULL"))
+        guard ![first, second].contains(where: { $0.categoryId.map(builtInIds.contains) ?? false }) else { throw TransferLinkError.adjustment }
         let (out, inLeg) = first.amountMinorUnits < 0 ? (first, second) : (second, first)
         let historicalBatchIds = Set(try ImportBatch.fetchAll(db).filter(TransferMatcher.isHistoricalSource).compactMap(\.id))
         if try TransferLink.active.filter(Column("inTransactionId") == inLeg.id!).fetchCount(db) > 0 { throw TransferLinkError.alreadyLinked }

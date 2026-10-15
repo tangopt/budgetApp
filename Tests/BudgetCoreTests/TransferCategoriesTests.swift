@@ -340,12 +340,67 @@ final class TransferCategoriesTests: XCTestCase {
         let in2 = try f.add(f.revolut, Self.day(2026, 5, 9), 1_000, category: builtIn)
         try f.manager.dbQueue.write { db in
             try TransferLinks.link(db: db, transactionId: out, with: inLeg)
-            try TransferLinks.link(db: db, transactionId: out2, with: in2)
+            // Link to transfer… refuses an adjustment; a link made otherwise still leaves it be.
+            var link = TransferLink(outTransactionId: out2, inTransactionId: in2, origin: .manual)
+            try link.insert(db)
+            try TransferCategories.applyOnLink(db: db, outTransactionId: out2, inTransactionId: in2)
         }
         XCTAssertEqual(try f.transaction(out).categoryId, f.external)
         try assertLeg(f, inLeg, account: f.current)
         try assertLeg(f, out2, account: f.revolut)
         XCTAssertEqual(try f.transaction(in2).categoryId, builtIn)
+    }
+
+    func testIncomeAndExpenseLegsKeepTheirCategory() throws {
+        let f = try makeFixture()
+        let salary = try f.manager.dbQueue.write { db in try Categories.create(db: db, name: "Income", type: .income, groupId: nil).id! }
+        // Money sent filed as Groceries, received as Income: both keep them.
+        let out = try f.add(f.current, Self.day(2026, 3, 9), -36_000, category: f.groceries)
+        let inLeg = try f.add(f.joint, Self.day(2026, 3, 9), 36_000, category: salary)
+        // An uncategorised out leg with an income in leg: only the out leg moves.
+        let out2 = try f.add(f.current, Self.day(2026, 5, 9), -1_000)
+        let in2 = try f.add(f.revolut, Self.day(2026, 5, 9), 1_000, category: salary)
+        try f.manager.dbQueue.write { db in
+            try TransferLinks.link(db: db, transactionId: out, with: inLeg)
+            try TransferLinks.link(db: db, transactionId: out2, with: in2)
+        }
+        XCTAssertEqual(try f.transaction(out).categoryId, f.groceries)
+        XCTAssertEqual(try f.transaction(inLeg).categoryId, salary)
+        try assertLeg(f, out2, account: f.revolut)
+        XCTAssertEqual(try f.transaction(in2).categoryId, salary)
+        // The one-off step leaves them too.
+        let report = try f.manager.dbQueue.write { db in try TransferCategories.applyToExistingLinks(db: db) }
+        XCTAssertTrue(report.changedTransactionIds.isEmpty)
+        XCTAssertEqual(try f.transaction(out).categoryId, f.groceries)
+        XCTAssertEqual(try f.transaction(in2).categoryId, salary)
+    }
+
+    func testLinkToTransferNeverOffersOrLinksAnAdjustment() throws {
+        let f = try makeFixture()
+        let builtIn = try f.manager.dbQueue.read { db in try BuiltInCategories.category(db: db, role: .marketMovement).id! }
+        let out = try f.add(f.current, Self.day(2026, 3, 9), -36_000)
+        let adjustment = try f.add(f.isaInvestment, Self.day(2026, 3, 9), 36_000, category: builtIn)
+        let plain = try f.add(f.joint, Self.day(2026, 3, 10), 36_000)
+        try f.manager.dbQueue.write { db in
+            XCTAssertEqual(try TransferLinks.candidates(db: db, for: out, today: Self.day(2026, 10, 12)).map(\.transactionId), [plain])
+            XCTAssertEqual(try TransferLinks.candidates(db: db, for: adjustment, today: Self.day(2026, 10, 12)), [])
+            XCTAssertThrowsError(try TransferLinks.link(db: db, transactionId: out, with: adjustment)) {
+                XCTAssertEqual($0 as? TransferLinkError, .adjustment)
+                XCTAssertEqual(($0 as? LocalizedError)?.errorDescription, "A balance adjustment can't be part of a transfer.")
+            }
+            XCTAssertEqual(try TransferLink.fetchCount(db), 0)
+        }
+    }
+
+    func testTieIsANoOpWhenRerunAfterTheCategoryWasRenamed() throws {
+        let f = try makeFixture(ensure: false)
+        try f.manager.dbQueue.write { db in _ = try Categories.create(db: db, name: "Transfer: Lloyds Joint", type: .transfer, groupId: nil) }
+        let first = try f.manager.dbQueue.write { db in try TransferCategories.tie(db: db, categoryName: "Transfer: Lloyds Joint", accountNameOrAlias: "Joint") }
+        XCTAssertEqual(first, ["Tied “Transfer: Lloyds Joint” to Lloyds Club Joint, renamed “Transfer: Joint”"])
+        let before = try f.manager.dbQueue.read { db in try Category.order(Column("id")).fetchAll(db) }
+        let again = try f.manager.dbQueue.write { db in try TransferCategories.tie(db: db, categoryName: "Transfer: Lloyds Joint", accountNameOrAlias: "Joint") }
+        XCTAssertEqual(again, ["“Transfer: Lloyds Joint” not found; Lloyds Club Joint already tied to “Transfer: Joint”"])
+        XCTAssertEqual(try f.manager.dbQueue.read { db in try Category.order(Column("id")).fetchAll(db) }, before)
     }
 
     func testUnlinkLeavesCategoriesAsTheyAre() throws {
@@ -517,7 +572,8 @@ final class TransferCategoriesTests: XCTestCase {
     }
 
     func testTieRefusesUnknownNames() throws {
-        let f = try makeFixture()
+        // No ties yet: an unknown category is an error (with a tie, see the re-run test).
+        let f = try makeFixture(ensure: false)
         try f.manager.dbQueue.write { db in
             XCTAssertThrowsError(try TransferCategories.tie(db: db, categoryName: "Nope", accountNameOrAlias: "Joint")) {
                 XCTAssertEqual($0 as? TransferCategoryError, .noCategoryNamed("Nope"))

@@ -125,15 +125,20 @@ public enum TransferCategories {
     /// account named or aliased exactly `accountNameOrAlias` (`setLinkedAccount`, renaming it
     /// when the name is free). The account's previous category is untied, and deleted only when
     /// nothing uses it — no transaction, forecast entry, moved planned occurrence or rule.
-    /// Returns what it did, one line each.
+    /// Returns what it did, one line each. Re-running with the same names is a no-op: a
+    /// category already renamed by an earlier tie isn't found, and the account is tied — that's
+    /// logged, not thrown.
     @discardableResult
     public static func tie(db: Database, categoryName: String, accountNameOrAlias: String) throws -> [String] {
-        guard let category = try Category.filter(Column("name") == categoryName).fetchOne(db), let categoryId = category.id else {
-            throw TransferCategoryError.noCategoryNamed(categoryName)
-        }
         guard let account = try Account.fetchAll(db).first(where: { $0.name == accountNameOrAlias || $0.alias == accountNameOrAlias }),
               let accountId = account.id else {
             throw TransferCategoryError.noAccountNamed(accountNameOrAlias)
+        }
+        guard let category = try Category.filter(Column("name") == categoryName).fetchOne(db), let categoryId = category.id else {
+            if let tied = try self.category(db: db, forAccountId: accountId) {
+                return ["“\(categoryName)” not found; \(account.name) already tied to “\(tied.name)”"]
+            }
+            throw TransferCategoryError.noCategoryNamed(categoryName)
         }
         var log: [String] = []
         if let previous = try self.category(db: db, forAccountId: accountId), let previousId = previous.id, previousId != categoryId {
@@ -168,9 +173,10 @@ public enum TransferCategories {
 
     /// A pair was just linked (auto match, Link to transfer…, Add the other side…): the out
     /// leg goes to the receiving account's transfer category, the in leg to the sending
-    /// account's — confirmed, `categorizedBy` `.transfer`. A leg whose account's partner has no
-    /// tied category, or filed under an external-transfer or built-in category, is left alone;
-    /// so is a historical out leg linked to money received in more than one account.
+    /// account's — confirmed, `categorizedBy` `.transfer`. Only an uncategorised leg or one in a
+    /// (non-external) transfer category is re-filed: an income or expense leg, an
+    /// external-transfer or built-in one, or one whose partner's account has no tied category
+    /// is left alone; so is a historical out leg linked to money received in more than one account.
     public static func applyOnLink(db: Database, outTransactionId: Int64, inTransactionId: Int64) throws {
         guard let out = try Transaction.fetchOne(db, key: outTransactionId),
               let inLeg = try Transaction.fetchOne(db, key: inTransactionId) else { return }
@@ -206,9 +212,10 @@ public enum TransferCategories {
         return Change(transactionId: id, fromCategoryId: transaction.categoryId, toCategoryId: categoryId)
     }
 
-    /// External-transfer and built-in categories: a leg filed there keeps it.
+    /// Every category a leg keeps: income, expense and built-in ones, and external transfers.
     private static func protectedCategoryIds(db: Database) throws -> Set<Int64> {
-        Set(try Int64.fetchAll(db, sql: "SELECT id FROM category WHERE isExternalTransfer = 1 OR builtInRole IS NOT NULL"))
+        Set(try Int64.fetchAll(db, sql: "SELECT id FROM category WHERE type <> ? OR isExternalTransfer = 1 OR builtInRole IS NOT NULL",
+                               arguments: [CategoryType.transfer.rawValue]))
     }
 
     // MARK: Existing links (one-off data step)
