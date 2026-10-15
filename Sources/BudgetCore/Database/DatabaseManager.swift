@@ -63,5 +63,6 @@ public final class DatabaseManager {
         registerTransactionIsManualMigration(&migrator)
         registerCategoryBuiltInRoleMigration(&migrator)
         registerAccountStatementMismatchMigration(&migrator)
+        registerBalanceSnapshotArchiveMigration(&migrator)
     }
 }

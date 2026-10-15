@@ -323,7 +323,7 @@ private struct AccountBankDetails: View {
 
 private struct AccountDetailView: View {
     let row: AccountRow?
-    let history: [BalanceSnapshot]
+    let history: AccountHistory
     let onUpdateBalance: (AccountRow) -> Void
     let onEdit: (AccountRow) -> Void
     let onAddTransaction: (AccountRow) -> Void
@@ -394,8 +394,8 @@ private struct AccountDetailView: View {
 
     @ViewBuilder
     private func chart(_ row: AccountRow) -> some View {
-        // Indexed: same-day snapshots share a date, so the date can't be the identity.
-        let points = history.reversed().enumerated().map { (index: $0.offset, date: $0.element.date, value: Double($0.element.balanceMinorUnits) / 100, minorUnits: $0.element.balanceMinorUnits) }
+        // Computed balances: the opening day, each month end, then today.
+        let points = history.points.enumerated().map { (index: $0.offset, date: $0.element.date, value: Double($0.element.balanceMinorUnits) / 100, minorUnits: $0.element.balanceMinorUnits) }
         if points.count >= 2 {
             let hovered = selectedDate.flatMap { date in points.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) } }
             Chart {
@@ -445,29 +445,46 @@ private struct AccountDetailView: View {
 
     @ViewBuilder
     private func historyList(_ row: AccountRow) -> some View {
+        let entries = history.entries
         VStack(alignment: .leading, spacing: 6) {
             Text("Balance history").font(.headline)
-            if history.isEmpty {
-                Text("No balances recorded.").font(.callout).foregroundStyle(.secondary)
+            if entries.isEmpty {
+                Text("No opening balance or adjustments.").font(.callout).foregroundStyle(.secondary)
             }
-            let visible = showAllHistory ? history : Array(history.prefix(historyLimit))
-            ForEach(visible, id: \.id) { snapshot in
+            let visible = showAllHistory ? entries : Array(entries.prefix(historyLimit))
+            ForEach(visible) { entry in
                 HStack(alignment: .firstTextBaseline) {
-                    Text(DashboardFormat.day(snapshot.date))
-                    if let note = snapshot.note, !note.isEmpty {
-                        Text(note).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(DashboardFormat.day(entry.date))
+                        Text(Self.label(entry)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                     }
                     Spacer()
-                    AccountsFormat.balanceText(snapshot.balanceMinorUnits, kind: row.account.kind, currency: row.account.currency)
+                    switch entry.kind {
+                    case .opening, .recordedBalance:
+                        AccountsFormat.balanceText(entry.amountMinorUnits, kind: row.account.kind, currency: row.account.currency)
+                    case .adjustment:
+                        Text(AccountsFormat.signedMoney(entry.amountMinorUnits, currency: row.account.currency))
+                            .foregroundStyle(entry.amountMinorUnits < 0 ? Color.red : Color.primary)
+                    }
                 }
                 .font(.callout.monospacedDigit())
+                .help(entry.note ?? "")
                 Divider()
             }
-            if history.count > historyLimit {
-                Button(showAllHistory ? "Show fewer" : "Show all \(history.count)") { showAllHistory.toggle() }
+            if entries.count > historyLimit {
+                Button(showAllHistory ? "Show fewer" : "Show all \(entries.count)") { showAllHistory.toggle() }
                     .buttonStyle(.link)
                     .font(.caption)
             }
+        }
+    }
+
+    /// "Opening balance", "Recorded balance · Statement", "Market movement".
+    private static func label(_ entry: AccountHistory.Entry) -> String {
+        switch entry.kind {
+        case .opening: return "Opening balance"
+        case .recordedBalance: return ["Recorded balance", entry.note].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+        case .adjustment(let categoryName): return categoryName
         }
     }
 }

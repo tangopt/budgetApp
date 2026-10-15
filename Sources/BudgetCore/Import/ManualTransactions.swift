@@ -75,6 +75,7 @@ public enum ManualTransactions {
 
     /// `add`; `allowBuiltIn` lets Update balance (`BalanceUpdates.save`) file into a built-in
     /// adjustment category.
+    @discardableResult
     static func add(db: Database, accountId: Int64, date: Date, description: String, amountMinorUnits: Int,
                     categoryId: Int64?, note: String?, allowBuiltIn: Bool) throws -> Transaction {
         let trimmed = try validate(db: db, accountId: accountId, description: description, amountMinorUnits: amountMinorUnits, categoryId: categoryId, allowBuiltIn: allowBuiltIn)

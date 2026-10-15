@@ -22,8 +22,8 @@ final class AccountsViewModel: ObservableObject {
     @Published var selectedAccountId: Int64? {
         didSet { if selectedAccountId != oldValue { updateSelectedHistory() } }
     }
-    /// The selected account's snapshots, newest first.
-    @Published private(set) var selectedHistory: [BalanceSnapshot] = []
+    /// The selected account's computed month-end balances, opening balance and adjustments.
+    @Published private(set) var selectedHistory: AccountHistory = .empty
     /// The screen's banner error (load failures, "Saved, but …"). Sheets keep their own.
     @Published var errorMessage: String?
     /// What the last Update balance did, one line per account ("added a Market movement of
@@ -39,6 +39,9 @@ final class AccountsViewModel: ObservableObject {
     var onTransactionAdded: (() -> Void)?
 
     private var snapshots: [BalanceSnapshot] = []
+    private var transactions: [Transaction] = []
+    /// The built-in adjustment categories' names by id (`AccountHistory`).
+    private var adjustmentCategoryNames: [Int64: String] = [:]
     private let dbQueue: DatabaseQueue
 
     init(dbQueue: DatabaseQueue) {
@@ -51,17 +54,20 @@ final class AccountsViewModel: ObservableObject {
     @discardableResult
     func load() -> Bool {
         do {
-            let (accounts, snapshots, transactions, rate) = try dbQueue.read { db in
-                (try Account.fetchAll(db), try BalanceSnapshot.fetchAll(db), try Transaction.fetchAll(db), try ExchangeRateSetting.currentOrDefault(db: db))
+            let (accounts, snapshots, transactions, rate, builtIns) = try dbQueue.read { db in
+                (try Account.fetchAll(db), try BalanceSnapshot.fetchAll(db), try Transaction.fetchAll(db), try ExchangeRateSetting.currentOrDefault(db: db),
+                 try Category.filter(Column("builtInRole") != nil).fetchAll(db))
             }
             self.accounts = accounts.sortedForDisplay()
             self.snapshots = snapshots
+            self.transactions = transactions
+            adjustmentCategoryNames = Dictionary(builtIns.compactMap { category in category.id.map { ($0, category.name) } }, uniquingKeysWith: { first, _ in first })
             self.rate = rate
             let overview = AccountsOverview.make(accounts: accounts, snapshots: snapshots, transactions: transactions, rate: rate, today: Date())
             self.overview = overview
             let rowIds = overview.groups.flatMap(\.rows).map(\.id)
             if selectedAccountId.map(rowIds.contains) != true { selectedAccountId = rowIds.first }
-            // Snapshots may have changed even when the selection didn't.
+            // Balances may have changed even when the selection didn't.
             updateSelectedHistory()
             errorMessage = nil
             return true
@@ -209,9 +215,12 @@ final class AccountsViewModel: ObservableObject {
     }
 
     private func updateSelectedHistory() {
-        selectedHistory = snapshots
-            .filter { $0.accountId == selectedAccountId }
-            .sorted { $0.date != $1.date ? $0.date > $1.date : ($0.id ?? 0) > ($1.id ?? 0) }
+        guard let selectedAccountId else {
+            selectedHistory = .empty
+            return
+        }
+        selectedHistory = AccountHistory.make(accountId: selectedAccountId, snapshots: snapshots, transactions: transactions,
+                                              adjustmentCategoryNames: adjustmentCategoryNames, today: Date())
     }
 
     static func message(for error: Error) -> String {
