@@ -3,39 +3,88 @@ import SwiftUI
 import BudgetCore
 import struct BudgetCore.Category
 
-/// The Categories screen (spec §4): Expenses / Income / Transfers sections, each with its
-/// collapsible groups and Ungrouped, the read-only built-in Adjustments, then the read-only
-/// Reserves. Categories multi-select
-/// and drag onto a group (or Ungrouped) to move; right-click to move, rename, change the
-/// icon (also by clicking its badge), exclude from the auto-forecast, set a transfer
-/// category's linked account (shown "↔ <account>" on its row) or delete. Selecting one category opens its transactions panel.
+/// A selectable row of the Categories screen: a category, or a group row in one type
+/// section (a mixed group shows in each section it has members in, so the type keeps the
+/// rows distinct). Categories and groups never share an id space.
+enum CategoryRowID: Hashable {
+    case category(Int64)
+    case group(Int64, CategoryType)
+
+    var categoryId: Int64? {
+        if case .category(let id) = self { return id }
+        return nil
+    }
+
+    var groupId: Int64? {
+        if case .group(let id, _) = self { return id }
+        return nil
+    }
+}
+
+/// The Categories screen (spec §4; groups 2026-10-15): Expenses / Income / Transfers
+/// sections, each with its collapsible groups and Ungrouped, the read-only built-in
+/// Adjustments, then the read-only Reserves. Categories multi-select and drag onto a group
+/// (or Ungrouped) to move; a group selects on its own (clicking its chevron only
+/// expands/collapses). Groups and categories share the right-click menu and keys: Rename…
+/// (Return), Delete… (⌫/⌦); categories also move, change the icon (also by clicking its
+/// badge), exclude from the auto-forecast and set a transfer category's linked account
+/// (shown "↔ <account>" on its row); groups also Add category here…. Selecting one
+/// category or group opens its transactions panel.
 struct CategoriesView: View {
     @ObservedObject var viewModel: CategoriesViewModel
 
     @State private var search = ""
-    @State private var selection: Set<Int64> = []
+    @State private var selection: Set<CategoryRowID> = []
     /// Collapsed group rows, keyed "<type>-<group id>" or "<type>-ungrouped".
     @State private var collapsed: Set<String> = []
     /// The drop target under the pointer (same keys), highlighted.
     @State private var dropTarget: String?
+    /// The group row under the pointer (same keys), whose ⋯ menu shows.
+    @State private var hoveredGroupKey: String?
+    /// A row to scroll to once the list has updated (a new group).
+    @State private var pendingScroll: CategoryRowID?
 
-    @State private var renamingGroupId: Int64?
-    @State private var groupNameDraft = ""
-    /// The group whose inline name field has focus (keyed by id, so moving from one
-    /// group's field to another's never reads as "clicked away" from the new one).
-    @FocusState private var focusedGroupId: Int64?
-    @State private var deletingGroup: CategoryGroup?
-
+    @State private var newGroupDraft: NewGroupDraft?
     @State private var newCategoryDraft: NewCategoryDraft?
-    @State private var renamingCategory: Category?
-    @State private var deletingCategory: Category?
+    @State private var renaming: RenameTarget?
+    @State private var deleting: DeleteTarget?
     /// The category whose badge shows the icon picker.
     @State private var iconPickerCategoryId: Int64?
 
-    /// The one selected (non-reserve) category, whose panel is open.
-    private var panelCategory: Category? {
-        guard selection.count == 1, let id = selection.first else { return nil }
-        return viewModel.categories.first { $0.id == id && !$0.isReserved }
+    /// What Rename… renames.
+    private enum RenameTarget: Identifiable {
+        case category(Category)
+        case group(CategoryGroup)
+
+        var id: String {
+            switch self {
+            case .category(let category): return "c-\(category.id ?? -1)"
+            case .group(let group): return "g-\(group.id ?? -1)"
+            }
+        }
+    }
+
+    /// What Delete… deletes, once confirmed.
+    private enum DeleteTarget {
+        case categories([Category])
+        case group(CategoryGroup, memberCount: Int)
+    }
+
+    /// The selected categories' ids.
+    private var selectedCategoryIds: [Int64] { selection.compactMap(\.categoryId) }
+
+    /// The one selected (non-reserve) category or group, whose panel is open.
+    private var panelSubject: CategoryPanelSubject? {
+        guard selection.count == 1, let row = selection.first else { return nil }
+        switch row {
+        case .category(let id):
+            guard let category = viewModel.categories.first(where: { $0.id == id && !$0.isReserved }) else { return nil }
+            return CategoryPanelSubject(key: "c-\(id)", title: category.name, categoryIds: [id])
+        case .group(let id, _):
+            guard let group = viewModel.groups.first(where: { $0.id == id }) else { return nil }
+            return CategoryPanelSubject(key: "g-\(id)", title: group.name,
+                                        categoryIds: Set(viewModel.members(ofGroupId: id).compactMap(\.id)))
+        }
     }
 
     var body: some View {
@@ -55,19 +104,19 @@ struct CategoriesView: View {
             HStack(spacing: 0) {
                 list
                     .frame(maxWidth: .infinity)
-                if let category = panelCategory {
+                if let subject = panelSubject {
                     Divider()
-                    CategoryTransactionsPanel(category: category, viewModel: viewModel, onClose: { selection = [] })
+                    CategoryTransactionsPanel(subject: subject, viewModel: viewModel, onClose: { selection = [] })
                         .frame(width: 320)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
-            .animation(.easeOut(duration: 0.2), value: panelCategory == nil)
+            .animation(.easeOut(duration: 0.2), value: panelSubject == nil)
         }
         .searchable(text: $search, prompt: "Search categories and groups")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                Button { addGroup() } label: { Label("Group", systemImage: "folder.badge.plus") }
+                Button { newGroupDraft = NewGroupDraft(selectedCategoryIds: movableIds(selectedCategoryIds)) } label: { Label("Group", systemImage: "folder.badge.plus") }
                     .help("New group")
                 Button { newCategoryDraft = NewCategoryDraft(type: .expense, groupId: nil) } label: { Label("Category", systemImage: "plus") }
                     .help("New category")
@@ -77,44 +126,79 @@ struct CategoriesView: View {
         .onChange(of: viewModel.categories) { _, categories in
             // A deleted category leaves the selection.
             let ids = Set(categories.compactMap(\.id))
-            selection = selection.filter(ids.contains)
+            selection = selection.filter { $0.categoryId.map(ids.contains) ?? true }
         }
-        .onChange(of: focusedGroupId) { old, new in
-            // Clicking away from the field being edited saves it.
-            if let old, old != new, renamingGroupId == old { commitGroupRename(keepEditingOnFailure: false) }
+        .onChange(of: viewModel.groups) { _, groups in
+            // So does a deleted group.
+            let ids = Set(groups.compactMap(\.id))
+            selection = selection.filter { $0.groupId.map(ids.contains) ?? true }
+        }
+        .onChange(of: selection) { old, new in
+            // A group selects on its own: picking one clears the categories, and vice versa.
+            guard new.count > 1, new.contains(where: { $0.groupId != nil }) else { return }
+            if let group = new.subtracting(old).first(where: { $0.groupId != nil }) {
+                selection = [group]
+            } else {
+                selection = new.filter { $0.groupId == nil }
+            }
+        }
+        .sheet(item: $newGroupDraft) { draft in
+            NewGroupSheet(draft: draft, create: { name, ids in try viewModel.createGroup(name: name, moving: ids) }) { group in
+                reveal(group)
+            }
         }
         .newCategorySheet(draft: $newCategoryDraft, groups: viewModel.groups, create: viewModel.createCategory) { category in
-            if let id = category.id { selection = [id] }
+            if let id = category.id { selection = [.category(id)] }
         }
-        .sheet(item: $renamingCategory) { category in
-            ScenarioNameSheet(title: "Rename category", message: nil, actionLabel: "Rename", initialName: category.name) { name in
-                guard let id = category.id else { return .failed("This category no longer exists.") }
-                return viewModel.renameCategory(id: id, to: name)
+        .sheet(item: $renaming) { target in
+            switch target {
+            case .category(let category):
+                ScenarioNameSheet(title: "Rename category", message: nil, actionLabel: "Rename", initialName: category.name) { name in
+                    guard let id = category.id else { return .failed("This category no longer exists.") }
+                    return viewModel.renameCategory(id: id, to: name)
+                }
+            case .group(let group):
+                ScenarioNameSheet(title: "Rename group", message: nil, actionLabel: "Rename", initialName: group.name) { name in
+                    guard let id = group.id else { return .failed("This group no longer exists.") }
+                    return viewModel.renameGroup(id: id, to: name)
+                }
             }
         }
         .confirmationDialog(
-            "Delete the group “\(deletingGroup?.name ?? "")”?",
-            isPresented: Binding(get: { deletingGroup != nil }, set: { if !$0 { deletingGroup = nil } }),
+            deleteTitle,
+            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
             titleVisibility: .visible,
-            presenting: deletingGroup
-        ) { group in
-            Button("Delete group", role: .destructive) {
-                if let id = group.id { viewModel.deleteGroup(id: id) }
+            presenting: deleting
+        ) { target in
+            switch target {
+            case .group(let group, _):
+                Button("Delete group", role: .destructive) {
+                    if let id = group.id { viewModel.deleteGroup(id: id) }
+                }
+            case .categories(let categories):
+                Button(categories.count == 1 ? "Delete category" : "Delete categories", role: .destructive) {
+                    viewModel.deleteCategories(ids: categories.compactMap(\.id))
+                }
             }
-        } message: { _ in
-            Text("Its categories become ungrouped. No category is deleted.")
+        } message: { target in
+            switch target {
+            case .group(_, let count):
+                Text(count == 0 ? "It has no categories."
+                     : count == 1 ? "Its 1 category moves to Ungrouped."
+                     : "Its \(count) categories move to Ungrouped.")
+            case .categories(let categories):
+                Text(categories.count == 1 ? "Rules that file into it are deleted too."
+                     : "Rules that file into them are deleted too. Any still in use are kept and listed.")
+            }
         }
-        .confirmationDialog(
-            "Delete the category “\(deletingCategory?.name ?? "")”?",
-            isPresented: Binding(get: { deletingCategory != nil }, set: { if !$0 { deletingCategory = nil } }),
-            titleVisibility: .visible,
-            presenting: deletingCategory
-        ) { category in
-            Button("Delete category", role: .destructive) {
-                if let id = category.id { viewModel.deleteCategory(id: id) }
-            }
-        } message: { _ in
-            Text("Rules that file into it are deleted too.")
+    }
+
+    private var deleteTitle: String {
+        switch deleting {
+        case .group(let group, _): return "Delete the group “\(group.name)”?"
+        case .categories(let categories) where categories.count == 1: return "Delete the category “\(categories[0].name)”?"
+        case .categories(let categories): return "Delete \(categories.count) categories?"
+        case nil: return ""
         }
     }
 
@@ -123,53 +207,71 @@ struct CategoriesView: View {
     private var list: some View {
         let searching = !search.trimmingCharacters(in: .whitespaces).isEmpty
         let reserves = viewModel.reserves(search: search)
-        return List(selection: $selection) {
-            ForEach(viewModel.sections(search: search)) { section in
-                if section.type == .adjustment {
-                    adjustmentsSection(section)
-                } else {
-                Section(section.title) {
-                    ForEach(section.groups) { block in
-                        let key = block.id
-                        DisclosureGroup(isExpanded: expanded(key, forced: searching)) {
-                            ForEach(block.categories) { categoryRow($0) }
-                        } label: {
-                            groupLabel(block.group, count: block.categories.count, type: section.type, key: key)
+        return ScrollViewReader { proxy in
+            List(selection: $selection) {
+                ForEach(viewModel.sections(search: search)) { section in
+                    if section.type == .adjustment {
+                        adjustmentsSection(section)
+                    } else {
+                    Section(section.title) {
+                        ForEach(section.groups) { block in
+                            let key = block.id
+                            DisclosureGroup(isExpanded: expanded(key, forced: searching)) {
+                                ForEach(block.categories) { categoryRow($0) }
+                            } label: {
+                                groupLabel(block.group, count: block.categories.count, type: section.type, key: key)
+                                    .tag(CategoryRowID.group(block.group.id ?? -1, section.type))
+                                    .id(CategoryRowID.group(block.group.id ?? -1, section.type))
+                            }
                         }
-                    }
-                    if !searching || !section.ungrouped.isEmpty {
-                        let key = "\(section.type.rawValue)-ungrouped"
-                        DisclosureGroup(isExpanded: expanded(key, forced: searching)) {
-                            ForEach(section.ungrouped) { categoryRow($0) }
-                        } label: {
-                            dropRow(key: key, groupId: nil) {
-                                countedName("Ungrouped", count: section.ungrouped.count)
-                                Spacer()
+                        if !searching || !section.ungrouped.isEmpty {
+                            let key = "\(section.type.rawValue)-ungrouped"
+                            DisclosureGroup(isExpanded: expanded(key, forced: searching)) {
+                                ForEach(section.ungrouped) { categoryRow($0) }
+                            } label: {
+                                dropRow(key: key, groupId: nil) {
+                                    countedName("Ungrouped", count: section.ungrouped.count)
+                                    Spacer()
+                                }
                             }
                         }
                     }
-                }
-                }
-            }
-            if !reserves.isEmpty {
-                Section {
-                    ForEach(reserves) { reserve in
-                        HStack {
-                            CategoryBadge(category: reserve, size: .medium)
-                            Text(reserve.name)
-                            Spacer()
-                        }
-                        .foregroundStyle(.secondary)
                     }
-                } header: {
-                    Text("Reserves")
-                } footer: {
-                    Text("Reserves are managed on the Budget grid.").font(.caption).foregroundStyle(.secondary)
+                }
+                if !reserves.isEmpty {
+                    Section {
+                        ForEach(reserves) { reserve in
+                            HStack {
+                                CategoryBadge(category: reserve, size: .medium)
+                                Text(reserve.name)
+                                Spacer()
+                            }
+                            .foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text("Reserves")
+                    } footer: {
+                        Text("Reserves are managed on the Budget grid.").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
-        }
-        .contextMenu(forSelectionType: Int64.self) { ids in
-            categoryMenu(Array(ids))
+            .contextMenu(forSelectionType: CategoryRowID.self) { rows in
+                rowMenu(rows)
+            }
+            .onKeyPress(keys: [.return]) { _ in
+                renameSelection() ? .handled : .ignored
+            }
+            .onKeyPress(keys: [.delete, .deleteForward]) { _ in
+                deleteSelection() ? .handled : .ignored
+            }
+            .onChange(of: pendingScroll) { _, row in
+                guard let row else { return }
+                // After the list has laid out the new row.
+                DispatchQueue.main.async {
+                    withAnimation { proxy.scrollTo(row, anchor: .center) }
+                    pendingScroll = nil
+                }
+            }
         }
     }
 
@@ -190,7 +292,7 @@ struct CategoriesView: View {
                             .help("No transactions in the last 12 pay months")
                     }
                 }
-                .tag(category.id ?? -1)
+                .tag(CategoryRowID.category(category.id ?? -1))
             }
         } header: {
             Text(section.title)
@@ -203,9 +305,13 @@ struct CategoriesView: View {
     /// The ids a drag from `id` carries: the selection when it includes `id`, built-in
     /// categories left out (they can't be moved).
     private func dragIds(_ id: Int64) -> [Int64] {
-        let ids = selection.contains(id) ? Array(selection) : [id]
-        let builtIn = Set(viewModel.categories.filter(\.isBuiltIn).compactMap(\.id))
-        return ids.filter { !builtIn.contains($0) }
+        movableIds(selection.contains(.category(id)) ? selectedCategoryIds : [id])
+    }
+
+    /// `ids` without built-in or reserve categories (they can't be moved).
+    private func movableIds(_ ids: [Int64]) -> [Int64] {
+        let fixed = Set(viewModel.categories.filter { $0.isBuiltIn || $0.isReserved }.compactMap(\.id))
+        return ids.filter { !fixed.contains($0) }
     }
 
     private func expanded(_ key: String, forced: Bool) -> Binding<Bool> {
@@ -223,25 +329,14 @@ struct CategoriesView: View {
             .lineLimit(1)
     }
 
-    /// A group row: name · count (or the inline rename field) and its ⋯ menu; a drop target.
+    /// A group row: name · count and its ⋯ menu (shown on hover or selection); a drop target.
     private func groupLabel(_ group: CategoryGroup, count: Int, type: CategoryType, key: String) -> some View {
-        dropRow(key: key, groupId: group.id) {
-            if renamingGroupId == group.id {
-                TextField("Group name", text: $groupNameDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($focusedGroupId, equals: group.id)
-                    .onSubmit { commitGroupRename(keepEditingOnFailure: true) }
-                    .onExitCommand { renamingGroupId = nil }
-                    .frame(maxWidth: 240)
-            } else {
-                countedName(group.name, count: count)
-            }
+        let showsMenu = hoveredGroupKey == key || selection.contains(.group(group.id ?? -1, type))
+        return dropRow(key: key, groupId: group.id) {
+            countedName(group.name, count: count)
             Spacer()
             Menu {
-                Button("Rename") { startGroupRename(group) }
-                Button("Add category here") { newCategoryDraft = NewCategoryDraft(type: type, groupId: group.id) }
-                Divider()
-                Button("Delete…", role: .destructive) { deletingGroup = group }
+                groupMenu(group, type: type)
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
@@ -249,7 +344,22 @@ struct CategoriesView: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help("Group actions")
+            .opacity(showsMenu ? 1 : 0)
+            .allowsHitTesting(showsMenu)
+            .accessibilityHidden(!showsMenu)
         }
+        .onHover { hovering in
+            if hovering { hoveredGroupKey = key } else if hoveredGroupKey == key { hoveredGroupKey = nil }
+        }
+    }
+
+    /// A group's actions, in its ⋯ menu and on right-click.
+    @ViewBuilder
+    private func groupMenu(_ group: CategoryGroup, type: CategoryType) -> some View {
+        Button("Rename…") { renaming = .group(group) }
+        Button("Add category here…") { newCategoryDraft = NewCategoryDraft(type: type, groupId: group.id) }
+        Divider()
+        Button("Delete…", role: .destructive) { confirmDelete(group) }
     }
 
     /// A group or Ungrouped row that dragged categories can be dropped on.
@@ -306,7 +416,7 @@ struct CategoriesView: View {
                     .help("No transactions in the last 12 pay months")
             }
         }
-        .tag(id)
+        .tag(CategoryRowID.category(id))
         .draggable(CategoryDrag.payload(dragIds(id))) {
             let count = dragIds(id).count
             Label(count == 1 ? category.name : "\(count) categories", systemImage: "tag")
@@ -333,6 +443,17 @@ struct CategoriesView: View {
         )
     }
 
+    /// Right-click: a group's menu, or the categories' (a group selects on its own).
+    @ViewBuilder
+    private func rowMenu(_ rows: Set<CategoryRowID>) -> some View {
+        if rows.count == 1, let row = rows.first, case .group(let id, let type) = row,
+           let group = viewModel.groups.first(where: { $0.id == id }) {
+            groupMenu(group, type: type)
+        } else {
+            categoryMenu(rows.compactMap(\.categoryId))
+        }
+    }
+
     /// Right-click on one or several categories (reserves aren't selectable, so never here;
     /// built-in ones are left out).
     @ViewBuilder
@@ -347,7 +468,7 @@ struct CategoriesView: View {
                 }
             }
             if chosen.count == 1, let category = chosen.first, let id = category.id {
-                Button("Rename…") { renamingCategory = category }
+                Button("Rename…") { renaming = .category(category) }
                 Button("Change icon…") {
                     // Opened once the menu has closed, so the popover can anchor to the badge.
                     DispatchQueue.main.async { iconPickerCategoryId = id }
@@ -367,9 +488,9 @@ struct CategoriesView: View {
                     ))
                     .disabled(category.transferAccountId != nil)
                 }
-                Divider()
-                Button("Delete…", role: .destructive) { deletingCategory = category }
             }
+            Divider()
+            Button("Delete…", role: .destructive) { deleting = .categories(chosen) }
         }
     }
 
@@ -390,38 +511,58 @@ struct CategoriesView: View {
         .help("Transfers with this account are filed here. Every account keeps a transfer category, so a link can't be removed — pick another account to move it.")
     }
 
-    // MARK: Groups
+    // MARK: Actions
 
-    private func addGroup() {
-        guard let group = viewModel.createGroup() else { return }
+    /// The selected categories that can be renamed, moved or deleted (built-in ones and
+    /// reserves are left out).
+    private var editableSelectedCategories: [Category] {
+        let ids = Set(selectedCategoryIds)
+        return viewModel.categories.filter { c in c.id.map(ids.contains) == true && !c.isReserved && !c.isBuiltIn }
+    }
+
+    /// The selected group, if a group is selected.
+    private var selectedGroup: CategoryGroup? {
+        guard selection.count == 1, let id = selection.first?.groupId else { return nil }
+        return viewModel.groups.first { $0.id == id }
+    }
+
+    /// Return: Rename… the one selected group or category. False when there's nothing to rename.
+    private func renameSelection() -> Bool {
+        if let group = selectedGroup {
+            renaming = .group(group)
+            return true
+        }
+        let categories = editableSelectedCategories
+        guard selection.count == 1, categories.count == 1 else { return false }
+        renaming = .category(categories[0])
+        return true
+    }
+
+    /// ⌫/⌦: Delete… the selected group or categories. False when there's nothing to delete.
+    private func deleteSelection() -> Bool {
+        if let group = selectedGroup {
+            confirmDelete(group)
+            return true
+        }
+        let categories = editableSelectedCategories
+        guard !categories.isEmpty else { return false }
+        deleting = .categories(categories)
+        return true
+    }
+
+    private func confirmDelete(_ group: CategoryGroup) {
+        deleting = .group(group, memberCount: group.id.map { viewModel.members(ofGroupId: $0).count } ?? 0)
+    }
+
+    /// A new group: selected, expanded and scrolled into view.
+    private func reveal(_ group: CategoryGroup) {
+        guard let id = group.id else { return }
         search = ""
-        collapsed.remove("\(CategoryType.expense.rawValue)-\(group.id ?? -1)")
-        startGroupRename(group)
-    }
-
-    private func startGroupRename(_ group: CategoryGroup) {
-        // Another group's field is open: save its draft first (as clicking away would).
-        if let current = renamingGroupId, current != group.id { commitGroupRename(keepEditingOnFailure: false) }
-        groupNameDraft = group.name
-        renamingGroupId = group.id
-        // The field appears on the next pass; focus it then.
-        let id = group.id
-        DispatchQueue.main.async { focusedGroupId = id }
-    }
-
-    /// Saves the inline name; an unchanged name just ends editing. A refused one shows the
-    /// banner message and, on Return, keeps the field open; clicking away abandons it.
-    private func commitGroupRename(keepEditingOnFailure: Bool) {
-        guard let id = renamingGroupId else { return }
-        if viewModel.groups.first(where: { $0.id == id })?.name == groupNameDraft {
-            renamingGroupId = nil
-            return
-        }
-        if viewModel.renameGroup(id: id, to: groupNameDraft) || !keepEditingOnFailure {
-            renamingGroupId = nil
-        } else {
-            DispatchQueue.main.async { focusedGroupId = id }
-        }
+        let type = viewModel.sections(search: "").first { $0.groups.contains { $0.group.id == id } }?.type ?? .expense
+        collapsed.remove("\(type.rawValue)-\(id)")
+        let row = CategoryRowID.group(id, type)
+        selection = [row]
+        pendingScroll = row
     }
 }
 
