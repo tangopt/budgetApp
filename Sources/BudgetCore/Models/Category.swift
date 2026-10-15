@@ -97,11 +97,18 @@ func registerCategoryBuiltInRoleMigration(_ migrator: inout DatabaseMigrator) {
         try db.create(index: "category_builtInRole", on: "category", columns: ["builtInRole"], unique: true, condition: Column("builtInRole") != nil)
         // Raw SQL, not `Category`: later migrations may add columns this one doesn't know.
         for role in CategoryBuiltInRole.allCases {
-            // A category the user already named this way becomes the built-in one (unless
-            // it's a reserve, which can't hold transactions: then the built-in one gets a
-            // distinct name).
-            if let id = try Int64.fetchOne(db, sql: "SELECT id FROM category WHERE name = ? COLLATE NOCASE AND isReserved = 0", arguments: [role.defaultName]) {
-                try db.execute(sql: "UPDATE category SET type = ?, builtInRole = ?, groupId = NULL WHERE id = ?",
+            // A category the user already named this way becomes the built-in one — unless it
+            // is a reserve, is planned (forecast entries or moved occurrences) or holds a
+            // linked transfer leg: then the built-in one gets a distinct name instead.
+            let adoptable = try Int64.fetchOne(db, sql: """
+                SELECT c.id FROM category c
+                WHERE c.name = ? COLLATE NOCASE AND c.isReserved = 0
+                  AND NOT EXISTS (SELECT 1 FROM forecastEntry WHERE categoryId = c.id)
+                  AND NOT EXISTS (SELECT 1 FROM plannedOccurrenceException WHERE categoryId = c.id)
+                  AND NOT EXISTS (SELECT 1 FROM transferLink l JOIN transaction_ t ON t.id IN (l.outTransactionId, l.inTransactionId) WHERE t.categoryId = c.id)
+                """, arguments: [role.defaultName])
+            if let id = adoptable {
+                try db.execute(sql: "UPDATE category SET type = ?, builtInRole = ?, groupId = NULL, isExternalTransfer = 0 WHERE id = ?",
                                arguments: [CategoryType.adjustment.rawValue, role.rawValue, id])
                 // Built-in categories are filled only by the app.
                 try db.execute(sql: "DELETE FROM rule WHERE categoryId = ?", arguments: [id])

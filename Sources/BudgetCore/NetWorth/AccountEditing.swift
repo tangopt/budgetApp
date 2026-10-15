@@ -4,19 +4,20 @@ import GRDB
 public enum AccountEditError: Error, Equatable { case emptyName, duplicateName, creditKindChange, accountNotFound }
 
 public enum BalanceUpdateError: Error, Equatable, LocalizedError {
-    /// Update balance as of a day the account's opening balance (or a legacy statement
-    /// balance) already sets, or before it: an adjustment dated then wouldn't count.
-    case balanceAlreadySet(accountName: String, through: Date)
+    /// Update balance dated on or before a recorded balance (the opening balance or a legacy
+    /// statement balance): a snapshot is the balance at the end of its day, so an adjustment
+    /// dated then wouldn't count after it. `date` is the earliest such balance.
+    case recordedBalance(accountName: String, date: Date)
 
     public var errorDescription: String? {
         switch self {
-        case let .balanceAlreadySet(name, through):
+        case let .recordedBalance(name, date):
             let formatter = DateFormatter()
             formatter.calendar = MonthRange.calendar
             formatter.timeZone = MonthRange.calendar.timeZone
             formatter.locale = Locale(identifier: "en_GB")
             formatter.dateFormat = "d MMM yyyy"
-            return "\(name)'s balance is set by its opening balance as of \(formatter.string(from: through)) — update it as of a later day."
+            return "\(name): there's a recorded balance on \(formatter.string(from: date)) — pick a later date."
         }
     }
 }
@@ -133,22 +134,23 @@ public enum BalanceUpdates {
             let role = CategoryBuiltInRole.forAccount(kind: account.kind)
             let category = try BuiltInCategories.category(db: db, role: role)
             let transaction = try ManualTransactions.add(db: db, accountId: entry.accountId, date: asOf, description: category.name,
-                                                         amountMinorUnits: difference, categoryId: category.id, note: entry.note)
+                                                         amountMinorUnits: difference, categoryId: category.id, note: entry.note, allowBuiltIn: true)
             outcomes.append(Outcome(accountId: entry.accountId, accountName: account.displayName, currency: account.currency, differenceMinorUnits: difference, role: role, transactionId: transaction.id))
         }
         return outcomes
     }
 
-    /// A balance snapshot is the balance at the end of its day, so transactions dated that
-    /// day or earlier don't count after it: Update balance must be dated after the latest
-    /// snapshot at or before `asOf` (and not before the account's first one).
+    /// The earliest recorded balance (snapshot) of the account dated on or after `asOf`'s day,
+    /// which blocks an Update balance as of `asOf`; nil when that day is free. A snapshot is
+    /// the balance at the end of its day, so an adjustment dated on or before it wouldn't count.
+    public static func blockingBalanceDate(db: Database, accountId: Int64, asOf: Date) throws -> Date? {
+        try Date.fetchOne(db, sql: "SELECT MIN(date) FROM balanceSnapshot WHERE accountId = ? AND date >= ?",
+                          arguments: [accountId, MonthRange.calendar.startOfDay(for: asOf)])
+    }
+
     static func checkDate(db: Database, account: Account, asOf: Date) throws {
-        let snapshots = try BalanceSnapshot.filter(Column("accountId") == account.id).fetchAll(db)
-        guard !snapshots.isEmpty else { return }
-        let startOfDay = MonthRange.calendar.startOfDay(for: asOf)
-        let latest = snapshots.filter { $0.date <= endOfDay(asOf) }.map(\.date).max()
-        if let latest, latest < startOfDay { return }
-        throw BalanceUpdateError.balanceAlreadySet(accountName: account.displayName, through: latest ?? snapshots.map(\.date).min()!)
+        guard let id = account.id, let blocking = try blockingBalanceDate(db: db, accountId: id, asOf: asOf) else { return }
+        throw BalanceUpdateError.recordedBalance(accountName: account.displayName, date: blocking)
     }
 
     /// The last moment of `day`'s UTC calendar day: a stored day counts every transaction

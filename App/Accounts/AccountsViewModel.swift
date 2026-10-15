@@ -107,10 +107,23 @@ final class AccountsViewModel: ObservableObject {
         (try? dbQueue.read { db in try AccountEditing.hasHistory(db: db, accountId: id) }) ?? true
     }
 
-    /// The account's computed signed balance at the end of `asOf` (what Update balance
-    /// compares against); nil when the read fails.
-    func computedBalance(accountId: Int64, asOf: Date) -> Int? {
-        try? dbQueue.read { db in try BalanceUpdates.computedBalance(db: db, accountId: accountId, asOf: asOf) }
+    /// What Update balance as of `asOf` compares against for each account: its computed
+    /// signed balance at the end of that day, or the message for a recorded balance on or
+    /// after it (which blocks the update). One read for all of them; absent when it fails.
+    func balanceBaselines(accountIds: [Int64], asOf: Date) -> [Int64: BalanceBaseline] {
+        let result = try? dbQueue.read { db -> [Int64: BalanceBaseline] in
+            var baselines: [Int64: BalanceBaseline] = [:]
+            for id in accountIds {
+                guard let account = try Account.fetchOne(db, key: id) else { continue }
+                if let blocking = try BalanceUpdates.blockingBalanceDate(db: db, accountId: id, asOf: asOf) {
+                    baselines[id] = .blocked(BalanceUpdateError.recordedBalance(accountName: account.displayName, date: blocking).errorDescription ?? "Pick a later date.")
+                } else {
+                    baselines[id] = .computed(try BalanceUpdates.computedBalance(db: db, accountId: id, asOf: asOf))
+                }
+            }
+            return baselines
+        }
+        return result ?? [:]
     }
 
     /// Update balance… (single or bulk): each difference becomes an adjustment transaction

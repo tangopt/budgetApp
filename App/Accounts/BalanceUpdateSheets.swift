@@ -6,8 +6,8 @@ import BudgetCore
 /// between the entered balance and the computed one at the as-of day, as Market movement
 /// (investments) or Balance adjustment (anything else); nothing when they match.
 enum BalanceUpdatePreview {
-    static func difference(_ row: AccountRow, entered: Int?, computed: Int?) -> Int? {
-        guard let entered, let computed else { return nil }
+    static func difference(_ row: AccountRow, entered: Int?, baseline: BalanceBaseline?) -> Int? {
+        guard let entered, case .computed(let computed)? = baseline else { return nil }
         return NetWorthCalculator.signedSnapshotBalance(enteredMinorUnits: entered, accountKind: row.account.kind) - computed
     }
 
@@ -28,6 +28,28 @@ enum BalanceUpdatePreview {
     }
 }
 
+/// An account's Update balance baseline for one day (`AccountsViewModel.balanceBaselines`).
+enum BalanceBaseline: Equatable {
+    case computed(Int)
+    /// A recorded balance on or after the day blocks the update; the message says which.
+    case blocked(String)
+}
+
+/// Baselines read once per as-of day (never per keystroke): `refresh` re-reads only when the
+/// day changes.
+struct BalanceBaselineCache: Equatable {
+    private(set) var day: Date?
+    private(set) var values: [Int64: BalanceBaseline] = [:]
+
+    subscript(id: Int64) -> BalanceBaseline? { values[id] }
+
+    @MainActor mutating func refresh(_ viewModel: AccountsViewModel, accountIds: [Int64], day: Date) {
+        guard day != self.day else { return }
+        self.day = day
+        values = viewModel.balanceBaselines(accountIds: accountIds, asOf: day)
+    }
+}
+
 /// "Update balance…" for one account: amount (amount owed for credit), as-of day, note. Saving
 /// adds the difference from the computed balance as an adjustment transaction (no snapshot).
 struct UpdateBalanceSheet: View {
@@ -39,6 +61,7 @@ struct UpdateBalanceSheet: View {
     @State private var asOf = Date()
     @State private var note = ""
     @State private var error: String?
+    @State private var baselines = BalanceBaselineCache()
 
     init(viewModel: AccountsViewModel, row: AccountRow) {
         self.viewModel = viewModel
@@ -47,8 +70,9 @@ struct UpdateBalanceSheet: View {
     }
 
     private var amount: Int? { Money.parseMinorUnits(amountText) }
+    private var day: Date { AccountsFormat.snapshotDay(asOf) }
     private var difference: Int? {
-        BalanceUpdatePreview.difference(row, entered: amount, computed: viewModel.computedBalance(accountId: row.id, asOf: AccountsFormat.snapshotDay(asOf)))
+        BalanceUpdatePreview.difference(row, entered: amount, baseline: baselines[row.id])
     }
 
     var body: some View {
@@ -66,7 +90,9 @@ struct UpdateBalanceSheet: View {
                         .onChange(of: asOf) { _, _ in error = nil }
                 }
                 LabeledContent("Note") { TextField("Note", text: $note, prompt: Text("Optional")) }
-                if let difference {
+                if case .blocked(let message)? = baselines[row.id] {
+                    SheetFormNote(message, isError: true)
+                } else if let difference {
                     SheetFormNote(BalanceUpdatePreview.text(row, difference: difference))
                     if difference != 0, let caution = BalanceUpdatePreview.caution(row.account.kind) {
                         SheetFormNote(caution, isError: true)
@@ -74,6 +100,8 @@ struct UpdateBalanceSheet: View {
                 }
             }
         }
+        .onAppear { baselines.refresh(viewModel, accountIds: [row.id], day: day) }
+        .onChange(of: day) { _, newDay in baselines.refresh(viewModel, accountIds: [row.id], day: newDay) }
     }
 
     private func save() {
@@ -97,6 +125,7 @@ struct UpdateBalancesSheet: View {
     @State private var texts: [Int64: String]
     @State private var asOf = Date()
     @State private var error: String?
+    @State private var baselines = BalanceBaselineCache()
 
     init(viewModel: AccountsViewModel, groups: [AccountGroup]) {
         self.viewModel = viewModel
@@ -127,13 +156,23 @@ struct UpdateBalancesSheet: View {
 
     /// Included cash and credit rows whose entered balance differs from the computed one.
     private var cautionCount: Int {
-        let day = AccountsFormat.snapshotDay(asOf)
-        return includedRows.filter { row in
+        includedRows.filter { row in
             guard row.account.kind != .investment else { return false }
-            let difference = BalanceUpdatePreview.difference(row, entered: Money.parseMinorUnits(texts[row.id] ?? ""), computed: viewModel.computedBalance(accountId: row.id, asOf: day))
+            let difference = BalanceUpdatePreview.difference(row, entered: Money.parseMinorUnits(texts[row.id] ?? ""), baseline: baselines[row.id])
             return (difference ?? 0) != 0
         }.count
     }
+
+    /// Included rows a recorded balance on or after the day blocks, with why.
+    private var blockedMessages: [String] {
+        includedRows.compactMap { row in
+            if case .blocked(let message)? = baselines[row.id] { return message }
+            return nil
+        }
+    }
+
+    private var day: Date { AccountsFormat.snapshotDay(asOf) }
+    private var allIds: [Int64] { groups.flatMap(\.rows).map(\.id) }
 
     var body: some View {
         SheetScaffold(title: "Update balances", subtitle: "Credit cards: enter the amount owed. Each difference from the computed balance is added as a Market movement (investments) or Balance adjustment; matching rows add nothing.",
@@ -157,12 +196,15 @@ struct UpdateBalancesSheet: View {
                         .fixedSize()
                         .onChange(of: asOf) { _, _ in error = nil }
                 }
+                ForEach(blockedMessages, id: \.self) { SheetFormNote($0, isError: true) }
                 let cautions = cautionCount
                 if cautions > 0 {
                     SheetFormNote("\(cautions == 1 ? "1 cash or credit account" : "\(cautions) cash or credit accounts") would be adjusted. That's unusual — check for missing or duplicate transactions first.", isError: true)
                 }
             }
         }
+        .onAppear { baselines.refresh(viewModel, accountIds: allIds, day: day) }
+        .onChange(of: day) { _, newDay in baselines.refresh(viewModel, accountIds: allIds, day: newDay) }
     }
 
     private func rowView(_ row: AccountRow) -> some View {

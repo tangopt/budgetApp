@@ -101,6 +101,42 @@ final class BalancesAndAdjustmentsTests: XCTestCase {
         XCTAssertEqual(try m.dbQueue.read { db in try Category.filter(Column("builtInRole") != nil).fetchCount(db) }, 2)
     }
 
+    func testMigrationAdoptionClearsExternalTransferAndIsRefusedForPlannedLinkedOrReservedCategories() throws {
+        // name → (setup SQL, expected built-in name, the original keeps its own row)
+        let cases: [(String, String, String, Bool)] = [
+            ("external", "INSERT INTO category (name, type, isExternalTransfer) VALUES ('Balance adjustment', 'transfer', 1)", "Balance adjustment", false),
+            ("planned", """
+                INSERT INTO category (name, type) VALUES ('Balance adjustment', 'expense');
+                INSERT INTO forecastGroup (name, isEnabled, isSystemManaged) VALUES ('G', 1, 0);
+                INSERT INTO forecastEntry (groupId, categoryId, amountMinorUnits, frequency, interval, startDate, isEnabled, status)
+                    VALUES (1, (SELECT id FROM category WHERE name = 'Balance adjustment'), -100, 'monthly', 1, '2026-01-01', 1, 'manual');
+                """, "Balance adjustment (built-in)", true),
+            ("linked", """
+                INSERT INTO category (name, type) VALUES ('Balance adjustment', 'transfer');
+                INSERT INTO account (name, currency, kind, trackingMode) VALUES ('A', 'gbp', 'cash', 'imported'), ('B', 'gbp', 'cash', 'imported');
+                INSERT INTO importBatch (accountId, sourceFileName, importedAt) VALUES (1, 'f', '2026-01-01');
+                INSERT INTO transaction_ (importBatchId, accountId, date, rawDescription, amountMinorUnits, categoryId, status, categorizedBy, fingerprint)
+                    VALUES (1, 1, '2026-01-01', 'out', -100, (SELECT id FROM category WHERE name = 'Balance adjustment'), 'confirmed', 'manual', 'a'),
+                           (1, 2, '2026-01-01', 'in', 100, NULL, 'confirmed', 'manual', 'b');
+                INSERT INTO transferLink (outTransactionId, inTransactionId, origin) VALUES (1, 2, 'manual');
+                """, "Balance adjustment (built-in)", true),
+            ("reserve", "INSERT INTO category (name, type, isReserved) VALUES ('Balance adjustment', 'expense', 1)", "Balance adjustment (built-in)", true),
+        ]
+        for (label, sql, expectedName, keepsOriginal) in cases {
+            let m = try DatabaseManager(path: nil)
+            try m.migrate(upTo: "addTransactionIsManual")
+            try m.dbQueue.write { db in try db.execute(sql: sql) }
+            try m.migrate()
+            let builtIn = try m.dbQueue.read { db in try BuiltInCategories.category(db: db, role: .balanceAdjustment) }
+            XCTAssertEqual(builtIn.name, expectedName, label)
+            XCTAssertEqual(builtIn.type, .adjustment, label)
+            XCTAssertFalse(builtIn.isExternalTransfer, label)
+            XCTAssertFalse(builtIn.isReserved, label)
+            let original = try m.dbQueue.read { db in try Category.filter(Column("name") == "Balance adjustment").fetchOne(db) }
+            XCTAssertEqual(original != nil && original?.builtInRole == nil, keepsOriginal, label)
+        }
+    }
+
     func testBuiltInCategoriesCannotBeRenamedMovedOrDeleted() throws {
         let m = try makeDB()
         try m.dbQueue.write { db in
@@ -189,7 +225,7 @@ final class BalancesAndAdjustmentsTests: XCTestCase {
             try account.insert(db)
             let category = try BuiltInCategories.category(db: db, role: .marketMovement)
             for month in 1...6 {
-                try ManualTransactions.add(db: db, accountId: account.id!, date: day(2026, month, 3), description: "Market movement", amountMinorUnits: 10_000, categoryId: category.id, note: nil)
+                try ManualTransactions.add(db: db, accountId: account.id!, date: day(2026, month, 3), description: "Market movement", amountMinorUnits: 10_000, categoryId: category.id, note: nil, allowBuiltIn: true)
             }
             let periods = (1...6).map { month in
                 let range = MonthRange.of(year: 2026, month: month)
@@ -286,16 +322,41 @@ final class BalancesAndAdjustmentsTests: XCTestCase {
         }
     }
 
-    func testUpdateBalanceMustBeDatedAfterTheOpeningBalance() throws {
+    func testUpdateBalanceMustBeDatedAfterEveryRecordedBalanceFromThatDayOn() throws {
         let m = try makeDB()
         try m.dbQueue.write { db in
             let account = try AccountEditing.add(db: db, name: "Current", currency: .gbp, kind: .cash, openingBalanceEntered: 100, asOf: day(2026, 1, 10))
-            for date in [day(2026, 1, 10), day(2026, 1, 9)] {
+            // A later recorded balance (legacy statement snapshot) blocks every day up to it.
+            try BalanceUpdates.upsertSnapshot(db: db, accountId: account.id!, date: day(2026, 3, 1), balanceMinorUnits: 500, note: nil)
+            for (date, blocking) in [(day(2026, 1, 9), day(2026, 1, 10)), (day(2026, 1, 10), day(2026, 1, 10)), (day(2026, 2, 1), day(2026, 3, 1)), (day(2026, 3, 1), day(2026, 3, 1))] {
+                XCTAssertEqual(try BalanceUpdates.blockingBalanceDate(db: db, accountId: account.id!, asOf: date), blocking)
                 XCTAssertThrowsError(try BalanceUpdates.save(db: db, entries: [.init(accountId: account.id!, enteredMinorUnits: 200)], asOf: date)) {
-                    XCTAssertEqual($0 as? BalanceUpdateError, .balanceAlreadySet(accountName: "Current", through: day(2026, 1, 10)))
+                    XCTAssertEqual($0 as? BalanceUpdateError, .recordedBalance(accountName: "Current", date: blocking))
+                    XCTAssertEqual($0.localizedDescription, "Current: there's a recorded balance on \(blocking == day(2026, 1, 10) ? "10 Jan 2026" : "1 Mar 2026") — pick a later date.")
                 }
             }
-            XCTAssertEqual(try BalanceUpdates.save(db: db, entries: [.init(accountId: account.id!, enteredMinorUnits: 200)], asOf: day(2026, 1, 11)).map(\.differenceMinorUnits), [100])
+            XCTAssertNil(try BalanceUpdates.blockingBalanceDate(db: db, accountId: account.id!, asOf: day(2026, 3, 2)))
+            XCTAssertEqual(try BalanceUpdates.save(db: db, entries: [.init(accountId: account.id!, enteredMinorUnits: 200)], asOf: day(2026, 3, 2)).map(\.differenceMinorUnits), [-300])
+        }
+    }
+
+    func testManualEntriesCantBeFiledIntoBuiltInCategoriesByHand() throws {
+        let m = try makeDB()
+        try m.dbQueue.write { db in
+            let account = try AccountEditing.add(db: db, name: "Current", currency: .gbp, kind: .cash, openingBalanceEntered: 1_000, asOf: day(2026, 1, 1))
+            let builtIn = try BuiltInCategories.category(db: db, role: .balanceAdjustment)
+            XCTAssertThrowsError(try ManualTransactions.add(db: db, accountId: account.id!, date: day(2026, 1, 5), description: "x", amountMinorUnits: -1, categoryId: builtIn.id, note: nil)) {
+                XCTAssertEqual($0 as? ManualTransactionError, .reservedCategory)
+            }
+            let other = try ManualTransactions.add(db: db, accountId: account.id!, date: day(2026, 1, 5), description: "x", amountMinorUnits: -1, categoryId: nil, note: nil)
+            XCTAssertThrowsError(try ManualTransactions.update(db: db, id: other.id!, date: day(2026, 1, 5), description: "x", amountMinorUnits: -1, accountId: account.id!, categoryId: builtIn.id, note: nil)) {
+                XCTAssertEqual($0 as? ManualTransactionError, .reservedCategory)
+            }
+            // An adjustment itself can still be edited (its category kept).
+            let outcome = try BalanceUpdates.save(db: db, entries: [.init(accountId: account.id!, enteredMinorUnits: 900)], asOf: day(2026, 1, 10))[0]
+            try ManualTransactions.update(db: db, id: outcome.transactionId!, date: day(2026, 1, 10), description: "Balance adjustment", amountMinorUnits: -99,
+                                          accountId: account.id!, categoryId: builtIn.id, note: "fixed")
+            XCTAssertEqual(try Transaction.fetchOne(db, key: outcome.transactionId!)?.note, "fixed")
         }
     }
 
