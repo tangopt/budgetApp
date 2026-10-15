@@ -55,10 +55,20 @@ public enum TransferCategories {
 
     // MARK: Ensure
 
+    /// The group most tied transfer categories sit in (e.g. "Own accounts"), so a new account's
+    /// category joins its siblings; nil when none are grouped.
+    private static func sharedGroupId(db: Database) throws -> Int64? {
+        try Int64.fetchOne(db, sql: """
+            SELECT groupId FROM category
+            WHERE transferAccountId IS NOT NULL AND groupId IS NOT NULL
+            GROUP BY groupId ORDER BY COUNT(*) DESC, groupId LIMIT 1
+            """)
+    }
+
     /// Gives every account a transfer category and keeps their names current. An account
     /// without one ties an untied, non-external transfer category named "Transfer: <displayName>"
     /// when there is one, or gets a new one (" (<account name>)" appended when that name is
-    /// taken by any other category). A tied category whose name isn't "Transfer: <displayName>"
+    /// taken by any other category), in the group most tied categories use. A tied category whose name isn't "Transfer: <displayName>"
     /// is renamed when that name is free. Idempotent. Runs at launch (before transfer matching)
     /// and after an account is added, renamed or re-aliased (`AccountEditing`). Returns what it
     /// did, one line each (for the conversion tool).
@@ -88,7 +98,7 @@ public enum TransferCategories {
                     attempt += 1
                     candidate = attempt == 2 ? "\(target) (\(account.name))" : "\(target) (\(account.name)) \(attempt - 1)"
                 } else {
-                    var created = Category(name: candidate, type: .transfer, transferAccountId: accountId)
+                    var created = Category(name: candidate, type: .transfer, groupId: try sharedGroupId(db: db), transferAccountId: accountId)
                     try created.insert(db)
                     log.append("Created “\(candidate)” for \(account.name)")
                     break
