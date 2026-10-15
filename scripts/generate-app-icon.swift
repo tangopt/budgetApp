@@ -38,6 +38,13 @@ func drawIcon(in ctx: CGContext, simplified: Bool) {
     let bg = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: [color(0x0E5B45), color(0x127C7A)] as CFArray, locations: [0, 1])!
     ctx.drawLinearGradient(bg, start: CGPoint(x: 100, y: 100), end: CGPoint(x: 924, y: 924), options: [])
 
+    // Breathing room: the ledger and chart are drawn scaled down about the tile's centre
+    // (less for the small simplified sizes, where the mark must stay legible).
+    let artworkScale: CGFloat = simplified ? 0.88 : 0.8
+    ctx.translateBy(x: 512, y: 512)
+    ctx.scaleBy(x: artworkScale, y: artworkScale)
+    ctx.translateBy(x: -512, y: -512)
+
     let chart: [CGPoint]
     if simplified {
         chart = [CGPoint(x: 210, y: 760), CGPoint(x: 470, y: 650), CGPoint(x: 834, y: 290)]
