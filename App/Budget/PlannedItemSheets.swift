@@ -160,9 +160,14 @@ struct PlanAccountOptions {
         accountId.flatMap { id in accounts.first { $0.id == id }?.displayName }
     }
 
-    /// "Automatic (Current)", or "Automatic (none)" when the category has no history.
+    /// "Automatic (Current)" from the category's history, "Automatic (Current — main account)"
+    /// when it falls back to the main account, or "Automatic (none)" with neither. With no
+    /// category picked yet, the main account (if any).
     func automaticLabel(categoryId: Int64?) -> String {
-        "Automatic (\(name(categoryId.flatMap { itemAccounts?.inferredAccount(categoryId: $0) }) ?? "none"))"
+        let account = categoryId.map { itemAccounts?.automaticAccount(categoryId: $0) } ?? itemAccounts?.mainAccountId
+        guard let accountName = name(account) else { return "Automatic (none)" }
+        let isMain = categoryId.map { itemAccounts?.isMainFallback(categoryId: $0) ?? false } ?? true
+        return "Automatic (\(accountName)\(isMain ? " — main account" : ""))"
     }
 
     /// The item's effective account's name (nil = none).

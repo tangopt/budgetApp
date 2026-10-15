@@ -91,12 +91,16 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     /// conversion confirmed the computed balance — counts as activity for staleness and "as of"
     /// (`BalanceStaleness.lastActivity`) though nothing else records it. Nil when never.
     public var balanceConfirmedAt: Date?
+    /// The main account (spec 2026-10-15 account-forecast §1): planned items with no account of
+    /// their own and no category history go to it. At most one account is main
+    /// (`AccountEditing.setMain`, enforced by a partial unique index).
+    public var isMain: Bool
 
     public init(id: Int64? = nil, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode,
                 alias: String? = nil, sortCode: String? = nil, accountNumber: String? = nil, iban: String? = nil, sortOrder: Int? = nil,
                 statementMismatchMinorUnits: Int? = nil, statementMismatchDate: Date? = nil,
                 statementMismatchClosingMinorUnits: Int? = nil, statementLastCheckedDate: Date? = nil, balanceConfirmedAt: Date? = nil,
-                bankRegion: BankRegion? = nil, bankName: String? = nil, routingNumber: String? = nil, bic: String? = nil) {
+                bankRegion: BankRegion? = nil, bankName: String? = nil, routingNumber: String? = nil, bic: String? = nil, isMain: Bool = false) {
         self.id = id
         self.name = name
         self.currency = currency
@@ -116,6 +120,7 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
         self.bankName = bankName
         self.routingNumber = routingNumber
         self.bic = bic
+        self.isMain = isMain
     }
 
     /// The stored region; else derived from the details set (sort code → UK, IBAN → Europe,
@@ -212,7 +217,21 @@ func registerAccountBankRegionMigration(_ migrator: inout DatabaseMigrator) {
     }
 }
 
+func registerAccountIsMainMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addAccountIsMain") { db in
+        try db.alter(table: "account") { t in
+            t.add(column: "isMain", .boolean).notNull().defaults(to: false)
+        }
+        try db.execute(sql: "CREATE UNIQUE INDEX account_single_main ON account(isMain) WHERE isMain = 1")
+    }
+}
+
 extension Sequence where Element == Account {
+    /// The main account's id (`Account.isMain`), nil when none is set.
+    public var mainAccountId: Int64? {
+        first(where: \.isMain)?.id
+    }
+
     /// The accounts in `Account.displayNameOrder`.
     public func sortedByDisplayName() -> [Account] {
         sorted(by: Account.displayNameOrder)

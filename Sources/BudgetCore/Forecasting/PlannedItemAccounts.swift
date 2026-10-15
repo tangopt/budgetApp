@@ -6,7 +6,8 @@ import Foundation
 /// An entry's **effective account** is its explicit `accountId`, else the account **inferred**
 /// for its category: the account holding most of the category's budget-facing (confirmed)
 /// transactions over the last 12 pay months (ties → the account of the most recent of those
-/// transactions); none in that window → over all history; none at all → nil. Detected /
+/// transactions); none in that window → over all history; none at all → the **main account**
+/// (`Account.isMain`, account-forecast spec §1); no main account → nil. Detected /
 /// auto-forecast entries and reserves follow the same rule.
 ///
 /// A planned item in a transfer category tied to an account (`Category.transferAccountId`,
@@ -25,9 +26,12 @@ public struct PlannedItemAccounts: Equatable, Sendable {
     public let tiedAccountByCategory: [Int64: Int64]
     /// Each account's own transfer category ("Transfer: <account>").
     public let transferCategoryByAccount: [Int64: Int64]
+    /// Where items with no account of their own and no category history go (nil = nowhere).
+    public let mainAccountId: Int64?
 
-    public init(inferredByCategory: [Int64: Int64], categories: [Category]) {
+    public init(inferredByCategory: [Int64: Int64], categories: [Category], mainAccountId: Int64? = nil) {
         self.inferredByCategory = inferredByCategory
+        self.mainAccountId = mainAccountId
         var tied: [Int64: Int64] = [:]
         var byAccount: [Int64: Int64] = [:]
         for category in categories where category.type == .transfer {
@@ -41,9 +45,9 @@ public struct PlannedItemAccounts: Equatable, Sendable {
 
     /// Inference over `budgetTransactions` (`TransferLinks.budgetFacing` over every account)
     /// with the window ending at `calendar`'s current pay month.
-    public init(categories: [Category], budgetTransactions: [Transaction], calendar: PayCalendar) {
+    public init(categories: [Category], budgetTransactions: [Transaction], calendar: PayCalendar, mainAccountId: Int64? = nil) {
         self.init(inferredByCategory: Self.inferAccounts(budgetTransactions: budgetTransactions, since: Self.windowStart(calendar: calendar)),
-                  categories: categories)
+                  categories: categories, mainAccountId: mainAccountId)
     }
 
     /// The first day of the inference window: the start of the pay month eleven before the
@@ -82,9 +86,20 @@ public struct PlannedItemAccounts: Equatable, Sendable {
         inferredByCategory[categoryId]
     }
 
-    /// The entry's explicit account, else its category's inferred one (nil = none).
+    /// The account an item of the category goes to without one of its own: the inferred
+    /// account, else the main account (nil = none).
+    public func automaticAccount(categoryId: Int64) -> Int64? {
+        inferredByCategory[categoryId] ?? mainAccountId
+    }
+
+    /// Whether the category's automatic account is the main account (no history to infer from).
+    public func isMainFallback(categoryId: Int64) -> Bool {
+        inferredByCategory[categoryId] == nil && mainAccountId != nil
+    }
+
+    /// The entry's explicit account, else its category's automatic one (nil = none).
     public func effectiveAccount(of entry: ForecastEntry) -> Int64? {
-        entry.accountId ?? inferredByCategory[entry.categoryId]
+        entry.accountId ?? automaticAccount(categoryId: entry.categoryId)
     }
 
     /// A planned occurrence as one account sees it.

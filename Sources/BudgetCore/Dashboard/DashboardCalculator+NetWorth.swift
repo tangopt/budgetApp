@@ -57,6 +57,8 @@ public struct NetWorthActuals: Equatable, Sendable {
     /// and whether it is closed: what the walk needs for the month's remaining plan
     /// (`ForecastProjector.remainingPlanned`).
     let walkStartActuals: [Int64: Int]
+    /// `walkStartActuals` per account id (the account rows' remaining plan).
+    let walkStartActualsByAccount: [Int64: [Int64: Int]]
     let walkStartIsClosed: Bool
     /// The `MonthRange.index`es `actual` was worked out over (first data month through the data
     /// month), a month with no point there having no data: those month-ends need no recomputing.
@@ -87,6 +89,49 @@ public struct NetWorthActuals: Equatable, Sendable {
         guard year >= startYear else { return currentNetWorthMinorUnits }
         return ForecastProjector.forecastNetWorth(startingNetWorth: start, latestRealMonth: (startYear, startMonth), atEndOf: year, categories: categories, entries: entries,
                                                   groups: groups, exceptions: exceptions, filter: filter)
+    }
+}
+
+/// A forecast account balance: GBP for totals, the account's own currency for display.
+public struct AccountForecastBalance: Equatable, Sendable {
+    public let gbpMinorUnits: Int
+    public let nativeMinorUnits: Int
+
+    public init(gbpMinorUnits: Int, nativeMinorUnits: Int) {
+        self.gbpMinorUnits = gbpMinorUnits
+        self.nativeMinorUnits = nativeMinorUnits
+    }
+}
+
+/// One year of the Budget's account rows' forecast months (`DashboardCalculator.budgetAccountForecast`).
+public struct BudgetAccountForecast: Equatable, Sendable {
+    /// Month (1…12) → account id → forecast balance; months without a forecast are absent.
+    public let accounts: [Int: [Int64: AccountForecastBalance]]
+    /// Month → the planned items with no account, accumulated (GBP), for the same months.
+    public let unassigned: [Int: Int]
+    /// Months past today with no forecast (Show forecast off): the rows show "—" there.
+    public let blankMonths: Set<Int>
+
+    public init(accounts: [Int: [Int64: AccountForecastBalance]], unassigned: [Int: Int], blankMonths: Set<Int> = []) {
+        self.accounts = accounts
+        self.unassigned = unassigned
+        self.blankMonths = blankMonths
+    }
+
+    public static let empty = BudgetAccountForecast(accounts: [:], unassigned: [:])
+
+    public func balance(accountId: Int64, month: Int) -> AccountForecastBalance? {
+        accounts[month]?[accountId]
+    }
+
+    /// Whether `month` is a forecast month (an account row shows the forecast, not the actual).
+    public func isForecast(month: Int) -> Bool {
+        unassigned[month] != nil
+    }
+
+    /// Whether the "Not assigned to an account" row has anything to show this year.
+    public var hasUnassigned: Bool {
+        unassigned.values.contains { $0 != 0 }
     }
 }
 
@@ -234,6 +279,71 @@ extension DashboardCalculator {
         }
     }
 
+    /// The Budget's account rows' forecast months for `year` (account-forecast spec §2): the
+    /// months `budgetNetWorthMonths` forecasts (the walk-start month when it isn't over yet, and
+    /// every later month; with `includeForecast` off none, the later months `blankMonths`), per account and for the items with no
+    /// account. Each account starts from today's balance plus its share of the walk-start month's
+    /// remaining plan (`ForecastProjector.remainingPlannedByAccount`) and adds its planned legs
+    /// month by month (`ForecastCalculator.netWorthImpactByAccount`); the unassigned row starts
+    /// from zero. Every account has a value in every forecast month, so the accounts plus the
+    /// unassigned row sum to the Net Worth row. `input` and `actuals` must cover All accounts
+    /// (no `accountFilter`).
+    public static func budgetAccountForecast(_ input: DashboardInput, actuals: NetWorthActuals?, itemAccounts: PlannedItemAccounts, year: Int, includeForecast: Bool) -> BudgetAccountForecast {
+        let today = MonthRange.components(of: input.effectiveToday)
+        let todayIndex = MonthRange.index(year: today.year, month: today.month)
+        let decemberIndex = MonthRange.index(year: year, month: 12)
+        guard includeForecast else {
+            return BudgetAccountForecast(accounts: [:], unassigned: [:], blankMonths: Set((1...12).filter { MonthRange.index(year: year, month: $0) > todayIndex }))
+        }
+        guard decemberIndex >= todayIndex, let actuals, let startYear = actuals.walkStartYear, let startMonth = actuals.walkStartMonth else { return .empty }
+        let startIndex = MonthRange.index(year: startYear, month: startMonth)
+
+        let balances = NetWorthCalculator.accountBalances(accounts: input.accounts, snapshots: input.snapshots, transactions: input.transactions, rate: input.rate)
+        var running: [Int64?: Int] = [:]
+        for balance in balances { if let id = balance.account.id { running[id] = balance.gbpBalanceMinorUnits } }
+        if !actuals.walkStartIsClosed {
+            let remaining = ForecastProjector.remainingPlannedByAccount(year: startYear, month: startMonth, actuals: actuals.walkStartActuals, actualsByAccount: actuals.walkStartActualsByAccount,
+                                                                         categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups,
+                                                                         exceptions: input.exceptions, itemAccounts: itemAccounts)
+            for (account, amount) in remaining { running[account, default: 0] += amount }
+        }
+
+        var accounts: [Int: [Int64: AccountForecastBalance]] = [:]
+        var unassigned: [Int: Int] = [:]
+        func record(_ index: Int) {
+            let parts = (year: index / 12, month: index % 12 + 1)
+            guard parts.year == year else { return }
+            for balance in balances {
+                guard let id = balance.account.id else { continue }
+                let gbp = running[id] ?? 0
+                accounts[parts.month, default: [:]][id] = AccountForecastBalance(gbpMinorUnits: gbp, nativeMinorUnits: native(gbp, balance: balance, rate: input.rate))
+            }
+            unassigned[parts.month] = running[nil] ?? 0
+        }
+        if startIndex >= todayIndex { record(startIndex) }
+        var index = startIndex + 1
+        while index <= decemberIndex {
+            let range = MonthRange.of(year: index / 12, month: index % 12 + 1)
+            let impact = ForecastCalculator.netWorthImpactByAccount(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: input.categories,
+                                                                    entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions, itemAccounts: itemAccounts)
+            for (account, amount) in impact { running[account, default: 0] += amount }
+            if index > todayIndex { record(index) }
+            index += 1
+        }
+        return BudgetAccountForecast(accounts: accounts, unassigned: unassigned)
+    }
+
+    /// A forecast GBP balance in the account's own currency: today's native balance plus the
+    /// planned change converted at the stored rate.
+    private static func native(_ gbp: Int, balance: AccountBalance, rate: ExchangeRateSetting) -> Int {
+        switch balance.account.currency {
+        case .gbp: return gbp
+        case .eur:
+            guard rate.eurToGbpRate > 0 else { return balance.nativeBalanceMinorUnits }
+            return balance.nativeBalanceMinorUnits + Int((Double(gbp - balance.gbpBalanceMinorUnits) / rate.eurToGbpRate).rounded())
+        }
+    }
+
     /// The series' plan-independent part (`NetWorthActuals`); nil when no account has a
     /// balance yet (no snapshot and no transaction).
     public static func netWorthActuals(_ input: DashboardInput) -> NetWorthActuals? {
@@ -269,7 +379,8 @@ extension DashboardCalculator {
         // where the solid one ends (`dataMonth`): past payday the pay month is the next
         // calendar month, which would otherwise leave a one-month gap between them.
         guard let dataMonth, let dataThrough = input.dataThrough else {
-            return NetWorthActuals(actual: actual, currentNetWorthMinorUnits: current, forecastAnchors: [], walkStartYear: nil, walkStartMonth: nil, walkStartActuals: [:], walkStartIsClosed: false,
+            return NetWorthActuals(actual: actual, currentNetWorthMinorUnits: current, forecastAnchors: [], walkStartYear: nil, walkStartMonth: nil, walkStartActuals: [:],
+                                   walkStartActualsByAccount: [:], walkStartIsClosed: false,
                                    actualMonths: actualMonths)
         }
         let payMonth = input.payCalendar.month(containing: dataThrough)
@@ -281,12 +392,15 @@ extension DashboardCalculator {
         // every status (current net worth already holds unreviewed ones, so they count as paid).
         let range = input.payCalendar.range(of: payMonth)
         let facing = input.accountFilter.map { TransferLinks.budgetFacing(input.transactions, links: input.transferLinks, accountIds: $0.accountIds) } ?? input.budgetTransactions
-        let walkStartActuals = facing.reduce(into: [Int64: Int]()) { totals, transaction in
-            guard let categoryId = transaction.categoryId, transaction.date >= range.start, transaction.date <= range.end else { return }
-            totals[categoryId, default: 0] += transaction.amountMinorUnits
+        var walkStartActuals: [Int64: Int] = [:]
+        var walkStartActualsByAccount: [Int64: [Int64: Int]] = [:]
+        for transaction in facing {
+            guard let categoryId = transaction.categoryId, transaction.date >= range.start, transaction.date <= range.end else { continue }
+            walkStartActuals[categoryId, default: 0] += transaction.amountMinorUnits
+            walkStartActualsByAccount[transaction.accountId, default: [:]][categoryId, default: 0] += transaction.amountMinorUnits
         }
         return NetWorthActuals(actual: actual, currentNetWorthMinorUnits: current, forecastAnchors: anchors, walkStartYear: payMonth.year, walkStartMonth: payMonth.month,
-                               walkStartActuals: walkStartActuals, walkStartIsClosed: input.payCalendar.isClosed(payMonth), actualMonths: actualMonths)
+                               walkStartActuals: walkStartActuals, walkStartActualsByAccount: walkStartActualsByAccount, walkStartIsClosed: input.payCalendar.isClosed(payMonth), actualMonths: actualMonths)
     }
 
     /// A plan's forecast line from shared `actuals`: the anchors (at the current net worth,

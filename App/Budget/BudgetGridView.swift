@@ -84,6 +84,9 @@ struct BudgetGridView: View {
         case groupHeader(CategoryGroup, categories: [Category])
         case groupChild(Category)
         case account(Account)
+        /// Planned items with no effective account (account-forecast spec §2), so the account
+        /// rows always sum to Net Worth.
+        case unassignedAccount
         case netWorthTotal
         case reservedHeader
         case reserve(Category)
@@ -96,6 +99,7 @@ struct BudgetGridView: View {
             case .groupHeader(let group, let categories): return "group-\(group.id ?? -1)-\(categories.first?.type.rawValue ?? "")"
             case .groupChild(let category): return "groupchild-\(category.id ?? -1)"
             case .account(let account): return "account-\(account.id ?? -1)"
+            case .unassignedAccount: return "account-unassigned"
             case .netWorthTotal: return "networth-total"
             case .reservedHeader: return "reserved-header"
             case .reserve(let reserve): return "reserve-\(reserve.id ?? -1)"
@@ -172,6 +176,10 @@ struct BudgetGridView: View {
             // Under an account filter, only the selected accounts (spec 2026-10-15 §4).
             for (index, account) in viewModel.shownAccounts.enumerated() {
                 accountRows.append(GridRow(kind: .account(account), shaded: index % 2 == 1))
+            }
+            // All accounts only, and only when something is unassigned in a shown year.
+            if viewModel.showsUnassignedRow {
+                accountRows.append(GridRow(kind: .unassignedAccount, shaded: viewModel.shownAccounts.count % 2 == 1))
             }
         }
         // Kept when collapsed: the Accounts header shows no totals.
@@ -587,6 +595,15 @@ struct BudgetGridView: View {
                 .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(Color.purple), alignment: .leading)
+        case .unassignedAccount:
+            Text("Not assigned to an account")
+                .foregroundStyle(.secondary)
+                .frame(width: 220, height: 28, alignment: .leading)
+                .padding(.horizontal, 8)
+                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(Color.purple), alignment: .leading)
+                .help("Planned items with no account of their own, no category history and no main account. Set a main account on the Accounts screen to place them.")
         case .reservedHeader:
             SectionHeaderCell(title: "RESERVED", isCollapsed: outline.isCollapsed(GridOutline.reservedSection),
                               toggle: { updateOutline { $0.toggleSection(GridOutline.reservedSection) } }, setAllGroups: nil) {
@@ -713,7 +730,16 @@ struct BudgetGridView: View {
         case .reservedTotal:
             return (viewModel.reserveYearCell(viewModel.reserves, year: year).value, .gbp)
         case .account(let account):
-            return viewModel.accountBalance(account, year: year, month: 12).map { ($0.nativeBalanceMinorUnits, $0.account.currency) }
+            // The Year Total's figure: December's balance, actual or forecast (today's with
+            // Show forecast off this year).
+            switch viewModel.accountYearEnd(account, year: year) {
+            case .actual(let balance): return balance.map { ($0.nativeBalanceMinorUnits, $0.account.currency) }
+            case .forecast(let balance, let currency): return (balance.nativeMinorUnits, currency)
+            case .today(let native, let currency): return (native, currency)
+            case .blank: return nil
+            }
+        case .unassignedAccount:
+            return viewModel.unassignedForecast(year: year, month: 12).map { ($0, .gbp) }
         case .netWorthTotal:
             // The year card's figure (today's net worth this year with Show forecast off).
             return viewModel.yearEndNetWorth(year).map { ($0.valueMinorUnits, .gbp) }
@@ -729,7 +755,7 @@ struct BudgetGridView: View {
         case .groupHeader(_, let categories): return categories.first?.type
         case .reserve(let reserve): return reserve.type
         case .reservedTotal: return .expense
-        case .reservedHeader, .account, .netWorthTotal: return nil
+        case .reservedHeader, .account, .unassignedAccount, .netWorthTotal: return nil
         }
     }
 
@@ -740,7 +766,7 @@ struct BudgetGridView: View {
         case .groupHeader: return Color.orange.opacity(0.10)
         case .reservedTotal: return Color.purple.opacity(0.08)
         case .netWorthTotal: return Color.purple.opacity(0.10)
-        case .category, .groupChild, .account, .reserve: return shaded ? Color.primary.opacity(0.07) : Color.clear
+        case .category, .groupChild, .account, .unassignedAccount, .reserve: return shaded ? Color.primary.opacity(0.07) : Color.clear
         }
     }
 
@@ -843,7 +869,19 @@ struct BudgetGridView: View {
             if let year = viewModel.selectedYear {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { month in
-                        accountBalanceCell(viewModel.accountBalance(account, year: year, month: month))
+                        accountBalanceCell(viewModel.accountCell(account, year: year, month: month))
+                            .frame(height: 28)
+                            .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                            .monthSeparator(month)
+                    }
+                }
+            }
+        case .unassignedAccount:
+            if let year = viewModel.selectedYear {
+                HStack(spacing: 0) {
+                    ForEach(1...12, id: \.self) { month in
+                        unassignedCell(viewModel.unassignedForecast(year: year, month: month))
                             .frame(height: 28)
                             .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
@@ -915,8 +953,15 @@ struct BudgetGridView: View {
                 .yearTotalCellPanel(self, row: row, name: group.name, members: categories, year: year)
         case .account(let account):
             // Year Total shows the year-end (December) balance rather than a sum —
-            // summing 12 monthly balances isn't a meaningful figure for a balance row.
-            accountBalanceCell(viewModel.accountBalance(account, year: year, month: 12)).bold()
+            // summing 12 monthly balances isn't a meaningful figure for a balance row. Like
+            // the year card: actual for past years, the forecast December with Show forecast,
+            // today's balance this year without it.
+            accountBalanceCell(viewModel.accountYearEnd(account, year: year)).bold()
+                .frame(height: 28)
+                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+        case .unassignedAccount:
+            unassignedCell(viewModel.unassignedForecast(year: year, month: 12)).bold()
                 .frame(height: 28)
                 .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
@@ -1047,13 +1092,37 @@ struct BudgetGridView: View {
         PlanCellView(value: cell.value, pending: cell.pending, state: cell.state, isYearTotal: isYearTotal, font: font)
     }
 
-    private func accountBalanceCell(_ balance: MonthlyAccountBalance?) -> some View {
+    /// An account row's month: an actual balance as it was; a forecast one italic in the
+    /// pending colour, in the account's currency (GBP in the help for others); "—" without one.
+    private func accountBalanceCell(_ cell: BudgetGridViewModel.AccountCell) -> some View {
         Group {
-            if let balance {
+            switch cell {
+            case .actual(let balance?):
                 MoneyText(minorUnits: balance.nativeBalanceMinorUnits, currency: balance.account.currency, alignment: .trailing)
                     // Carried-forward balances (no fresh snapshot/transaction that month)
                     // read a bit lighter, so a stale figure doesn't look like a fresh update.
                     .opacity(balance.isCarriedForward ? 0.55 : 1.0)
+            case .forecast(let balance, let currency):
+                MoneyText(minorUnits: balance.nativeMinorUnits, currency: currency, font: Self.bodyMoneyFont.italic(), alignment: .trailing, tint: .pending)
+                    .help(currency == .gbp ? "Forecast: today's balance plus this account's planned items"
+                          : "Forecast: today's balance plus this account's planned items (\(Money.format(balance.gbpMinorUnits, currency: .gbp)))")
+            case .today(let native, let currency):
+                MoneyText(minorUnits: native, currency: currency, alignment: .trailing)
+                    .help("Today's balance")
+            case .actual(nil), .blank:
+                Text("—").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .frame(width: GridMetrics.cellWidth)
+        .padding(.horizontal, GridMetrics.cellPadding)
+    }
+
+    /// A "Not assigned to an account" month: the unassigned planned items accumulated (a
+    /// forecast, so italic in the pending colour); "—" for none.
+    private func unassignedCell(_ total: Int?) -> some View {
+        Group {
+            if let total, total != 0 {
+                MoneyText(minorUnits: total, font: Self.bodyMoneyFont.italic(), alignment: .trailing, tint: .pending)
             } else {
                 Text("—").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
             }

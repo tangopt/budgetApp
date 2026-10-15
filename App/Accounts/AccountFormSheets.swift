@@ -83,6 +83,7 @@ struct EditAccountSheet: View {
     @State private var name: String
     @State private var kind: AccountKind
     @State private var details: AccountDetailsDraft
+    @State private var isMain: Bool
     @State private var hasHistory = true
     /// Set when Save is pressed with invalid details: every field shows its error.
     @State private var revealErrors = false
@@ -94,6 +95,7 @@ struct EditAccountSheet: View {
         _name = State(initialValue: account.name)
         _kind = State(initialValue: account.kind)
         _details = State(initialValue: AccountDetailsDraft(account))
+        _isMain = State(initialValue: account.isMain)
     }
 
     /// Whether switching to `candidate` would cross the credit boundary.
@@ -117,6 +119,12 @@ struct EditAccountSheet: View {
                     KindPicker(selection: $kind, isDisabled: { hasHistory && crossesCredit($0) })
                         .sheetFieldNote(hasHistory ? "Can't change to or from credit once the account has history." : nil)
                 }
+                LabeledContent("Main account") {
+                    Toggle("Main account", isOn: $isMain)
+                        .labelsHidden()
+                        .help(Self.mainAccountHelp)
+                        .sheetFieldNote(Self.mainAccountHelp)
+                }
                 AccountDetailsFields(draft: $details, revealAll: revealErrors)
             }
         }
@@ -131,8 +139,10 @@ struct EditAccountSheet: View {
             return
         }
         guard let id = account.id else { return }
-        finish(viewModel.updateAccount(id: id, name: name, kind: kind, details: details.details), error: $error, dismiss: dismiss)
+        finish(viewModel.updateAccount(id: id, name: name, kind: kind, details: details.details, isMain: isMain), error: $error, dismiss: dismiss)
     }
+
+    static let mainAccountHelp = "Planned items with no account of their own go to this account"
 }
 
 // MARK: - Shared pieces
