@@ -68,5 +68,6 @@ public final class DatabaseManager {
         registerCategoryTransferAccountMigration(&migrator)
         registerImportProfileFeeStatusColumnsMigration(&migrator)
         registerAccountBankRegionMigration(&migrator)
+        registerImportProfileAccountColumnsMigration(&migrator)
     }
 }

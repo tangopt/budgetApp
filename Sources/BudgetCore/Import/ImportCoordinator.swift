@@ -273,9 +273,12 @@ public final class ImportCoordinator {
     /// adjustment added when ticked — in the same transaction (`StatementCheck.finish`), so a
     /// failed commit leaves neither an adjustment nor a recorded mismatch behind. Returns that
     /// check's outcome (nil without a statement). Either way the account's flagged mismatch is
-    /// re-checked (`StatementCheck.recheckStoredMismatch`).
+    /// re-checked (`StatementCheck.recheckStoredMismatch`). An `accountFill` (spec 2026-10-15 §5)
+    /// sets the account's still-empty sort code / account number in the same write
+    /// (`StatementAccountCheck.fill`).
     @discardableResult
-    public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statement: StatementFinish? = nil) throws -> StatementFinishOutcome? {
+    public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statement: StatementFinish? = nil,
+                       accountFill: StatementAccountFill? = nil) throws -> StatementFinishOutcome? {
         let decisionById = Dictionary(decisions.map { ($0.stagedId, $0.finalCategoryId) }, uniquingKeysWith: { _, last in last })
         let learnById = Dictionary(decisions.map { ($0.stagedId, $0.learnRule) }, uniquingKeysWith: { _, last in last })
         let noteById = Dictionary(decisions.map { ($0.stagedId, $0.note) }, uniquingKeysWith: { _, last in last })
@@ -311,6 +314,7 @@ public final class ImportCoordinator {
                     try RuleLearner.learn(description: stagedTransaction.parsed.rawDescription, categoryId: finalCategoryId, db: db)
                 }
             }
+            if let accountFill { try StatementAccountCheck.fill(db: db, accountId: accountId, with: accountFill) }
             // Link transfers first, so the forecast refresh counts each one once.
             try TransferMatcher.match(db: db)
             let outcome = try statement.map { try StatementCheck.finish(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: $0) }
@@ -323,11 +327,18 @@ public final class ImportCoordinator {
     /// Finish import with no rows to save: the statement's closing balance is still checked
     /// (and adjusted when ticked) on its own — never an empty batch.
     @discardableResult
-    public func finishStatement(accountId: Int64, sourceFileName: String, statement: StatementFinish) throws -> StatementFinishOutcome {
+    public func finishStatement(accountId: Int64, sourceFileName: String, statement: StatementFinish, accountFill: StatementAccountFill? = nil) throws -> StatementFinishOutcome {
         try dbQueue.write { db in
+            if let accountFill { try StatementAccountCheck.fill(db: db, accountId: accountId, with: accountFill) }
             let outcome = try StatementCheck.finish(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: statement)
             if outcome.adjustmentTransactionId != nil { try AutoForecastGenerator.refresh(db: db) }
             return outcome
         }
+    }
+
+    /// Finish import with nothing else to write: just the account's empty-field fill.
+    @discardableResult
+    public func fillAccountDetails(accountId: Int64, fill: StatementAccountFill) throws -> StatementAccountFill? {
+        try dbQueue.write { db in try StatementAccountCheck.fill(db: db, accountId: accountId, with: fill) }
     }
 }

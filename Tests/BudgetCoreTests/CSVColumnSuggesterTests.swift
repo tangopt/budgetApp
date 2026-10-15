@@ -8,7 +8,8 @@ final class CSVColumnSuggesterTests: XCTestCase {
                       "Transaction Description", "Debit Amount", "Credit Amount", "Balance"]
         XCTAssertEqual(
             CSVColumnSuggester.suggest(header: header),
-            CSVColumnSuggestion(dateColumn: 0, descriptionColumn: 4, amountColumn: 5, creditColumn: 6, balanceColumn: 7)
+            CSVColumnSuggestion(dateColumn: 0, descriptionColumn: 4, amountColumn: 5, creditColumn: 6, balanceColumn: 7,
+                                sortCodeColumn: 2, accountNumberColumn: 3)
         )
     }
 

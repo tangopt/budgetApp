@@ -23,7 +23,8 @@ public enum AccountDetailsError: Error, Equatable, LocalizedError {
 ///
 /// With a `region` (spec 2026-10-15 §2) only that region's fields plus bank name and BIC are
 /// validated and saved (`activeFields`); the others are left as stored. Without one (legacy
-/// callers) every field is, with the UK account-number rule.
+/// callers) only sort code, account number and IBAN are, with the UK account-number rule —
+/// bank name, routing number and BIC are never cleared by a caller that doesn't know them.
 public struct AccountDetails: Equatable, Sendable {
     public var alias: String?
     public var sortCode: String?
@@ -54,7 +55,7 @@ public struct AccountDetails: Equatable, Sendable {
 
     /// The fields validated and saved.
     public var activeFields: [BankDetailField] {
-        guard let region else { return BankDetailField.allCases }
+        guard let region else { return [.sortCode, .accountNumber, .iban] }
         return [.bankName] + region.fields + [.bic]
     }
 

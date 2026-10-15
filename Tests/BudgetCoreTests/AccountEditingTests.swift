@@ -71,4 +71,18 @@ final class AccountEditingTests: XCTestCase {
             XCTAssertThrowsError(try AccountEditing.update(db: db, accountId: a.id!, name: "A", kind: .credit, trackingMode: .imported)) { XCTAssertEqual($0 as? AccountEditError, .creditKindChange) }
         }
     }
+
+    func testAliasOnlyUpdateKeepsBankNameBICAndRoutingNumber() throws {
+        let m = try makeDB()
+        try m.dbQueue.write { db in
+            let a = try AccountEditing.add(db: db, name: "A", currency: .gbp, kind: .cash, openingBalanceEntered: nil, asOf: Date(),
+                                           details: AccountDetails(region: .us, bankName: "Chase", routingNumber: "021000021", bic: "CHASUS33"))
+            try AccountEditing.update(db: db, accountId: a.id!, name: "A", kind: .cash, details: AccountDetails(alias: "Joint"))
+            let fetched = try Account.fetchOne(db, key: a.id!)!
+            XCTAssertEqual(fetched.alias, "Joint")
+            XCTAssertEqual(fetched.bankName, "Chase")
+            XCTAssertEqual(fetched.bic, "CHASUS33")
+            XCTAssertEqual(fetched.routingNumber, "021000021")
+        }
+    }
 }

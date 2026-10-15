@@ -8,7 +8,17 @@ import BudgetCore
 struct AccountsView: View {
     @ObservedObject var viewModel: AccountsViewModel
     @ObservedObject var environment: AppEnvironment
+    /// Import statement (spec 2026-10-15 §1): the shared import flow, started here with the
+    /// selected account; staging moves to the Import screen (`ContentView`).
+    @ObservedObject var importViewModel: ImportViewModel
+    let profileStore: ImportProfileStore
+    let navigate: (AppScreen) -> Void
     @State private var activeSheet: AccountsSheet?
+    /// A row's Import statement ▸ CSV…/PDF…: selects the account, then the detail's import
+    /// host starts it once it shows that account.
+    @State private var pendingImport: PendingImport?
+
+    private var importBusy: Bool { importViewModel.isStaging || importViewModel.isReviewing }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -18,19 +28,17 @@ struct AccountsView: View {
                 HStack(alignment: .top, spacing: 16) {
                     VStack(alignment: .leading, spacing: 8) {
                         AccountsListView(groups: overview.groups, selection: $viewModel.selectedAccountId,
-                                         onAddTransaction: addTransaction(in:)) { group, from, to in
+                                         onAddTransaction: addTransaction(in:), importDisabled: importBusy,
+                                         onImport: { id, format in
+                                             viewModel.selectedAccountId = id
+                                             pendingImport = PendingImport(accountId: id, format: format)
+                                         }) { group, from, to in
                             viewModel.moveAccounts(ids: group.rows.map(\.id), fromOffsets: from, toOffset: to)
                         }
                         footer
                     }
                     .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    AccountDetailView(
-                        row: viewModel.selectedRow,
-                        history: viewModel.selectedHistory,
-                        onUpdateBalance: { activeSheet = .updateOne($0) },
-                        onEdit: { activeSheet = .edit($0.account) },
-                        onAddTransaction: { addTransaction(in: $0.id) }
-                    )
+                    detail
                         .frame(width: 320)
                         .frame(maxHeight: .infinity, alignment: .top)
                 }
@@ -67,6 +75,40 @@ struct AccountsView: View {
                 )
             }
         }
+    }
+
+    /// The detail panel, inside the import host for its account (file pickers, mapping and
+    /// layout sheets, reset confirmations) so its Import statement menu can start an import.
+    @ViewBuilder
+    private var detail: some View {
+        if let row = viewModel.selectedRow, !importBusy {
+            ImportFlowHost(viewModel: importViewModel, account: row.account, profileStore: profileStore) { actions in
+                detailView(importActions: actions)
+                    .onChange(of: pendingImport, initial: true) { _, request in
+                        guard let request, request.accountId == row.account.id else { return }
+                        pendingImport = nil
+                        switch request.format {
+                        case .csv: actions.startCSV()
+                        case .pdf: actions.startPDF()
+                        }
+                    }
+            }
+        } else {
+            detailView(importActions: nil)
+        }
+    }
+
+    private func detailView(importActions: ImportFlowActions?) -> some View {
+        AccountDetailView(
+            row: viewModel.selectedRow,
+            history: viewModel.selectedHistory,
+            importActions: importActions,
+            importBusy: importBusy,
+            onUpdateBalance: { activeSheet = .updateOne($0) },
+            onEdit: { activeSheet = .edit($0.account) },
+            onAddTransaction: { addTransaction(in: $0.id) },
+            onResumeReview: { navigate(.importReview) }
+        )
     }
 
     /// Add transaction… for an account (its row's menu, or the detail's button).
@@ -190,6 +232,13 @@ private enum AccountsSheet: Identifiable {
     }
 }
 
+/// A row's Import statement ▸ CSV…/PDF… waiting for the detail's import host.
+private struct PendingImport: Equatable {
+    let id = UUID()
+    let accountId: Int64
+    let format: ImportFormat
+}
+
 // MARK: - Banner
 
 private struct Banner<Content: View>: View {
@@ -219,6 +268,10 @@ private struct AccountsListView: View {
     @Binding var selection: Int64?
     /// Add transaction… from a row's context menu.
     let onAddTransaction: (Int64) -> Void
+    /// True while an import is staging or in review: Import statement is disabled.
+    let importDisabled: Bool
+    /// Import statement ▸ CSV…/PDF… from a row's context menu.
+    let onImport: (Int64, ImportFormat) -> Void
     /// A drag within a section (accounts reorder within their kind).
     let onMove: (AccountGroup, IndexSet, Int) -> Void
 
@@ -230,6 +283,11 @@ private struct AccountsListView: View {
                         AccountListRow(row: row).tag(row.id)
                             .contextMenu {
                                 Button("Add transaction…") { onAddTransaction(row.id) }
+                                Menu("Import statement") {
+                                    Button("CSV…") { onImport(row.id, .csv) }
+                                    Button("PDF…") { onImport(row.id, .pdf) }
+                                }
+                                .disabled(importDisabled)
                             }
                     }
                     .onMove { from, to in onMove(group, from, to) }
@@ -339,9 +397,13 @@ private struct AccountBankDetails: View {
 private struct AccountDetailView: View {
     let row: AccountRow?
     let history: AccountHistory
+    /// The import host's actions for this account; nil while an import is staging or in review.
+    let importActions: ImportFlowActions?
+    let importBusy: Bool
     let onUpdateBalance: (AccountRow) -> Void
     let onEdit: (AccountRow) -> Void
     let onAddTransaction: (AccountRow) -> Void
+    let onResumeReview: () -> Void
     @State private var showAllHistory = false
     @State private var selectedDate: Date?
     private let historyLimit = 12
@@ -378,6 +440,7 @@ private struct AccountDetailView: View {
                         Button("Edit…") { onEdit(row) }
                         Button("Add transaction…") { onAddTransaction(row) }
                     }
+                    importRow
                     AccountBankDetails(account: row.account, onAdd: { onEdit(row) })
                     chart(row)
                     historyList(row)
@@ -392,6 +455,32 @@ private struct AccountDetailView: View {
             Text("Select an account.")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// Import statement ▾ (spec 2026-10-15 §1): CSV…, PDF…, then the saved mapping/layout's
+    /// Edit and Reset items. Disabled, with a link to the review, while an import is under way.
+    private var importRow: some View {
+        HStack {
+            Menu("Import statement") {
+                if let actions = importActions {
+                    Button("CSV…") { actions.startCSV() }
+                    Button("PDF…") { actions.startPDF() }
+                    if actions.editCSVMapping != nil || actions.resetCSVMapping != nil || actions.resetPDFLayout != nil {
+                        Divider()
+                    }
+                    if let edit = actions.editCSVMapping { Button("Edit column mapping…") { edit() } }
+                    if let reset = actions.resetCSVMapping { Button("Reset column mapping…") { reset() } }
+                    if let reset = actions.resetPDFLayout { Button("Reset PDF layout…") { reset() } }
+                }
+            }
+            .fixedSize()
+            .disabled(importBusy || importActions == nil)
+            if importBusy {
+                Button("Resume review ›", action: onResumeReview)
+                    .buttonStyle(.link)
+                    .fixedSize()
+            }
         }
     }
 

@@ -14,9 +14,13 @@ public struct CSVColumnSuggestion: Equatable {
     public var feeColumn: Int?
     /// Each row's state (e.g. Revolut's "State": COMPLETED, PENDING, REVERTED).
     public var statusColumn: Int?
+    /// The account's sort code on each row (Lloyds' "Sort Code").
+    public var sortCodeColumn: Int?
+    /// The account's number on each row (Lloyds' "Account Number").
+    public var accountNumberColumn: Int?
 
     public init(dateColumn: Int? = nil, descriptionColumn: Int? = nil, amountColumn: Int? = nil, creditColumn: Int? = nil, balanceColumn: Int? = nil,
-                feeColumn: Int? = nil, statusColumn: Int? = nil) {
+                feeColumn: Int? = nil, statusColumn: Int? = nil, sortCodeColumn: Int? = nil, accountNumberColumn: Int? = nil) {
         self.dateColumn = dateColumn
         self.descriptionColumn = descriptionColumn
         self.amountColumn = amountColumn
@@ -24,6 +28,8 @@ public struct CSVColumnSuggestion: Equatable {
         self.balanceColumn = balanceColumn
         self.feeColumn = feeColumn
         self.statusColumn = statusColumn
+        self.sortCodeColumn = sortCodeColumn
+        self.accountNumberColumn = accountNumberColumn
     }
 
     public var hasSeparateDebitCredit: Bool { creditColumn != nil }
@@ -68,6 +74,8 @@ public enum CSVColumnSuggester {
         suggestion.dateColumn = dateIndices.first { lowered[$0].contains("transaction") } ?? dateIndices.first
 
         suggestion.statusColumn = lowered.firstIndex { words($0).contains(where: { $0 == "state" || $0 == "status" }) }
+        suggestion.sortCodeColumn = sortCodeColumn(header: header)
+        suggestion.accountNumberColumn = accountNumberColumn(header: header)
 
         for keyword in ["description", "details", "narrative", "payee", "reference"] {
             if let index = lowered.firstIndex(where: { $0.contains(keyword) }) {
@@ -76,6 +84,22 @@ public enum CSVColumnSuggester {
             }
         }
         return suggestion
+    }
+
+    /// "Sort Code", "Sort code", "Sortcode" (case-insensitive, whole header).
+    public static func sortCodeColumn(header: [String]) -> Int? {
+        header.firstIndex { squashed($0) == "sortcode" }
+    }
+
+    /// "Account Number", "Account No", "Account No.", "Account" (case-insensitive, whole
+    /// header) — never "Account Name".
+    public static func accountNumberColumn(header: [String]) -> Int? {
+        header.firstIndex { ["accountnumber", "accountno", "account"].contains(squashed($0)) }
+    }
+
+    /// Lowercased letters and digits only: "Account No." → "accountno".
+    private static func squashed(_ name: String) -> String {
+        String(name.lowercased().filter { $0.isLetter || $0.isNumber })
     }
 
     private static func words(_ name: String) -> [Substring] {
