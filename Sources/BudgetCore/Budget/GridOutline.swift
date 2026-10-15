@@ -6,7 +6,7 @@ import Foundation
 /// under the group row). Remembered per screen as two comma-separated strings
 /// (`sectionsString` / `groupsString`); unknown or malformed entries are ignored.
 public struct GridOutline: Equatable, Sendable {
-    /// Keys of collapsed sections (`sectionKey(_:)`, `accountsSection`, `reservedSection`).
+    /// Keys of collapsed sections (`sectionKey(_:)`, `accountsSection`, `reservedSection`, `totalsSection`).
     public var collapsedSections: Set<String>
     public var expandedGroupIds: Set<Int64>
 
@@ -34,6 +34,8 @@ public struct GridOutline: Equatable, Sendable {
     public static func sectionKey(_ type: CategoryType) -> String { type.rawValue }
     public static let accountsSection = "accounts"
     public static let reservedSection = "reserved"
+    /// The Budget grid's Totals block (Total in / Total out / Net).
+    public static let totalsSection = "totals"
 
     // MARK: Sections
 

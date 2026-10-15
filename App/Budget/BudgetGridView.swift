@@ -91,6 +91,9 @@ struct BudgetGridView: View {
         case reservedHeader
         case reserve(Category)
         case reservedTotal
+        /// The Totals block (budget-totals spec §1): its header and Total in / Total out / Net.
+        case totalsHeader
+        case totals(BudgetTotals.Row)
 
         var id: String {
             switch self {
@@ -104,6 +107,8 @@ struct BudgetGridView: View {
             case .reservedHeader: return "reserved-header"
             case .reserve(let reserve): return "reserve-\(reserve.id ?? -1)"
             case .reservedTotal: return "reserved-total"
+            case .totalsHeader: return "totals-header"
+            case .totals(let row): return "totals-\(row.rawValue)"
             }
         }
     }
@@ -195,7 +200,10 @@ struct BudgetGridView: View {
         // Adjustments (Balance adjustment, Market movement): their actuals only — never in
         // the income/expense/transfer totals or the plan; they reach net worth via balances.
         let adjustments = categoriesByType(.adjustment).isEmpty ? [] : section("Adjustments", .adjustment)
-        return section("Income", .income) + section("Expenses", .expense) + reservedRows + section("Transfers", .transfer) + adjustments + accountRows
+        // Total in / Total out / Net; collapsed, Net stays (the header shows no totals).
+        let totalsRows = [GridRow(kind: .totalsHeader, shaded: false)]
+            + BudgetTotals.Row.visible(collapsed: outline.isCollapsed(GridOutline.totalsSection)).map { GridRow(kind: .totals($0), shaded: false) }
+        return section("Income", .income) + section("Expenses", .expense) + reservedRows + section("Transfers", .transfer) + adjustments + totalsRows + accountRows
     }
 
     var body: some View {
@@ -376,6 +384,10 @@ struct BudgetGridView: View {
         .onChange(of: viewModel.selectedYears) { _, _ in cellSelection.clear() }
         // ...and to the accounts it was opened under.
         .onChange(of: viewModel.accountFilter) { _, _ in cellSelection.clear() }
+        // Assigning the last unassigned item hides that row: its panel goes with it.
+        .onChange(of: viewModel.showsUnassignedRow) { _, shows in
+            if !shows, cellSelection.key?.hasPrefix(GridRowKind.unassignedAccount.id + "|") == true { cellSelection.clear() }
+        }
         .sheet(item: $addPlannedTarget) { target in
             AddPlannedItemSheet(type: target.type, scope: .budget, categories: viewModel.categories, plannedEntries: viewModel.plannedEntries,
                                 accountOptions: viewModel.planAccountOptions, initialCategoryId: target.categoryId, initialDate: target.date,
@@ -636,6 +648,17 @@ struct BudgetGridView: View {
                 .background(Color.purple.opacity(0.08))
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .overlay(Rectangle().frame(width: 3).foregroundStyle(.purple), alignment: .leading)
+        case .totalsHeader:
+            SectionHeaderCell(title: "Totals", isCollapsed: outline.isCollapsed(GridOutline.totalsSection),
+                              toggle: { updateOutline { $0.toggleSection(GridOutline.totalsSection) } }, setAllGroups: nil) { EmptyView() }
+        case .totals(let totalsRow):
+            Text(totalsRow.title).fontWeight(totalsRow == .net ? .bold : .semibold)
+                .frame(width: 220, height: 28, alignment: .leading)
+                .padding(.horizontal, 8)
+                .background(Self.totalsBackground(totalsRow))
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(Color.teal), alignment: .leading)
+                .help(Self.totalsHelp(totalsRow))
         case .netWorthTotal:
             Text("Net Worth").bold()
                 .frame(width: 220, height: 28, alignment: .leading)
@@ -679,7 +702,7 @@ struct BudgetGridView: View {
     @ViewBuilder
     private func deltaCells(_ row: GridRowKind, year: Int, previous: Int, shaded: Bool) -> some View {
         switch row {
-        case .sectionHeader(_, nil), .reservedHeader:
+        case .sectionHeader(_, nil), .reservedHeader, .totalsHeader:
             HStack(spacing: 0) { emptyBandCell; emptyBandCell }
                 .background(Color.accentColor.opacity(0.08))
         case .category(let category) where category.id == nil, .groupChild(let category) where category.id == nil:
@@ -723,8 +746,10 @@ struct BudgetGridView: View {
             return (viewModel.yearCell([category], year: year).value, .gbp)
         case .groupHeader(_, let categories):
             return (viewModel.yearCell(categories, year: year).value, .gbp)
-        case .reservedHeader:
+        case .reservedHeader, .totalsHeader:
             return nil
+        case .totals(let totalsRow):
+            return (viewModel.totalsYearCell(totalsRow, year: year).value, .gbp)
         case .reserve(let reserve):
             return (viewModel.reserveYearCell([reserve], year: year).value, .gbp)
         case .reservedTotal:
@@ -755,14 +780,17 @@ struct BudgetGridView: View {
         case .groupHeader(_, let categories): return categories.first?.type
         case .reserve(let reserve): return reserve.type
         case .reservedTotal: return .expense
-        case .reservedHeader, .account, .unassignedAccount, .netWorthTotal: return nil
+        // More in, and a higher net, are better; more out (a larger negative) is worse.
+        case .totals(let totalsRow): return totalsRow == .totalOut ? .expense : .income
+        case .reservedHeader, .totalsHeader, .account, .unassignedAccount, .netWorthTotal: return nil
         }
     }
 
     /// The row's background, as its month and Year Total cells draw it.
     private func rowBackground(_ row: GridRowKind, shaded: Bool) -> Color {
         switch row {
-        case .sectionHeader, .reservedHeader: return Color.accentColor.opacity(0.08)
+        case .sectionHeader, .reservedHeader, .totalsHeader: return Color.accentColor.opacity(0.08)
+        case .totals(let totalsRow): return Self.totalsBackground(totalsRow)
         case .groupHeader: return Color.orange.opacity(0.10)
         case .reservedTotal: return Color.purple.opacity(0.08)
         case .netWorthTotal: return Color.purple.opacity(0.10)
@@ -886,8 +914,33 @@ struct BudgetGridView: View {
                             .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .monthSeparator(month)
+                            .overlay(SelectedCellOutline(selection: cellSelection, key: cellKey(row, month: month)))
+                            .contentShape(Rectangle())
+                            .onTapGesture { openUnassigned(row, year: year, month: month) }
                     }
                 }
+            }
+        case .totalsHeader:
+            if viewModel.selectedYear != nil {
+                HStack(spacing: 0) {
+                    ForEach(1...12, id: \.self) { _ in emptyBandCell }
+                }
+                .background(Color.accentColor.opacity(0.08))
+            }
+        case .totals(let totalsRow):
+            if let year = viewModel.selectedYear {
+                HStack(spacing: 0) {
+                    ForEach(1...12, id: \.self) { month in
+                        planCell(viewModel.totalsCell(totalsRow, year: year, month: month)).fontWeight(totalsRow == .net ? .bold : .semibold)
+                            .frame(height: 28)
+                            .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                            .monthSeparator(month)
+                            .overlay(SelectedCellOutline(selection: cellSelection, key: cellKey(row, month: month)))
+                            .contentShape(Rectangle())
+                            .onTapGesture { openTotalsMonth(row, totalsRow, year: year, month: month) }
+                    }
+                }
+                .background(Self.totalsBackground(totalsRow))
             }
         case .netWorthTotal:
             if let year = viewModel.selectedYear {
@@ -965,6 +1018,20 @@ struct BudgetGridView: View {
                 .frame(height: 28)
                 .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .overlay(SelectedCellOutline(selection: cellSelection, key: cellKey(row, year: year)))
+                .contentShape(Rectangle())
+                .onTapGesture { openUnassigned(row, year: year, month: nil) }
+        case .totalsHeader:
+            emptyBandCell
+                .background(Color.accentColor.opacity(0.08))
+        case .totals(let totalsRow):
+            planCell(viewModel.totalsYearCell(totalsRow, year: year), isYearTotal: true).bold()
+                .frame(height: 28)
+                .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
+                .background(Self.totalsBackground(totalsRow))
+                .overlay(SelectedCellOutline(selection: cellSelection, key: cellKey(row, year: year)))
+                .contentShape(Rectangle())
+                .onTapGesture { openTotalsYear(row, totalsRow, year: year) }
         case .netWorthTotal:
             // The year card's figure (today's net worth this year with Show forecast off).
             calendarCell(viewModel.yearEndNetWorth(year)?.valueMinorUnits).bold()
@@ -1059,6 +1126,54 @@ struct BudgetGridView: View {
         let target = yearTarget(name: name, categories: members, year: year, showCategory: showCategory)
         guard !viewModel.transactions(forCategoryIds: target.categoryIds, from: target.start, to: target.end).isEmpty else { return }
         cellSelection.select(key: cellKey(row, year: year), target: target)
+    }
+
+    /// A Totals row's month panel (budget-totals spec §1): the transactions and planned
+    /// occurrences it sums, when there are any (an empty cell does nothing).
+    fileprivate func openTotalsMonth(_ row: GridRowKind, _ totalsRow: BudgetTotals.Row, year: Int, month: Int) {
+        let range = viewModel.dateRange(forYear: year, month: month)
+        let hasTransactions = !viewModel.totalsTransactions(totalsRow, from: range.start, to: range.end).isEmpty
+        guard hasTransactions || (viewModel.showForecast && !viewModel.totalsOccurrences(totalsRow, year: year, month: month).isEmpty) else { return }
+        var plan = CellPlan(categories: [], year: year, month: month)
+        plan.totals = totalsRow
+        var target = BudgetCellTarget(title: "\(totalsRow.title) — \(Self.shortMonthYearLabel(year: year, month: month))", categoryIds: [],
+                                      start: range.start, end: range.end, showCategory: true, plan: plan)
+        target.totals = totalsRow
+        cellSelection.select(key: cellKey(row, month: month), target: target)
+    }
+
+    /// A Totals row's Year Total panel: the year's transactions it sums.
+    fileprivate func openTotalsYear(_ row: GridRowKind, _ totalsRow: BudgetTotals.Row, year: Int) {
+        let range = viewModel.dateRange(forYear: year)
+        guard !viewModel.totalsTransactions(totalsRow, from: range.start, to: range.end).isEmpty else { return }
+        var target = BudgetCellTarget(title: "\(totalsRow.title) — \(year)", categoryIds: [], start: range.start, end: range.end, showCategory: true, plan: nil)
+        target.totals = totalsRow
+        cellSelection.select(key: cellKey(row, year: year), target: target)
+    }
+
+    /// A "Not assigned to an account" cell's panel (budget-totals spec §2): the period's
+    /// unassigned planned items, to assign; nothing when there are none.
+    fileprivate func openUnassigned(_ row: GridRowKind, year: Int, month: Int?) {
+        guard viewModel.showForecast, !viewModel.unassignedRows(year: year, month: month).isEmpty else { return }
+        let range = month.map { viewModel.dateRange(forYear: year, month: $0) } ?? viewModel.dateRange(forYear: year)
+        let period = month.map { Self.shortMonthYearLabel(year: year, month: $0) } ?? String(year)
+        var target = BudgetCellTarget(title: "Not assigned to an account — \(period)", categoryIds: [], start: range.start, end: range.end, plan: nil)
+        target.showsTransactions = false
+        target.unassigned = UnassignedPeriod(year: year, month: month)
+        cellSelection.select(key: month.map { cellKey(row, month: $0) } ?? cellKey(row, year: year), target: target)
+    }
+
+    /// A Totals row's background: Net a shade stronger.
+    fileprivate static func totalsBackground(_ row: BudgetTotals.Row) -> Color {
+        Color.teal.opacity(row == .net ? 0.14 : 0.07)
+    }
+
+    fileprivate static func totalsHelp(_ row: BudgetTotals.Row) -> String {
+        switch row {
+        case .totalIn: return "Income, plus transfers in from outside the shown accounts"
+        case .totalOut: return "Expenses and reserves, plus transfers out of the shown accounts"
+        case .net: return "Total in plus Total out"
+        }
     }
 
     /// A section header's name in a panel title ("Expenses — Oct 2026").

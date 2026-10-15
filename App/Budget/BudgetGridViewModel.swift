@@ -110,6 +110,16 @@ final class BudgetGridViewModel: ObservableObject {
     /// cells on every render. Cleared with `plannedCache`, when categories change, and when the
     /// pay calendar is rebuilt.
     private var cellCache: [Bool: [Int: [Int64: PlanCell]]] = [:]
+    /// Each transaction's linked other legs' accounts (`BudgetTotals.counterpartAccounts`),
+    /// rebuilt with the pay calendar: which transfers cross the account filter.
+    private var counterpartAccounts: [Int64: Set<Int64>] = [:]
+    /// The shown transfers whose money counts in the Totals block (`BudgetTotals.countedTransfers`)
+    /// and their flows per category per pay month; rebuilt with `shownMonthTotals`.
+    private var countedTransferIds: Set<Int64> = []
+    private var transferFlows: [Int64: [Int: [Int: BudgetTotals.Flow]]] = [:]
+    /// The Totals block's month (Total in, Total out) per Show forecast, then `MonthRange.index`.
+    /// Cleared with the plan caches and whenever the shown actuals are rebuilt.
+    private var totalsCache: [Bool: [Int: (totalIn: PlanCell, totalOut: PlanCell)]] = [:]
     /// `payCalendar.monthClass` per `MonthRange.index`; reset when the calendar is rebuilt.
     private var monthClassCache: [Int: MonthClass] = [:]
     /// Account balance cells per `MonthRange.index` then account id (`nil` = no data yet). Each
@@ -171,6 +181,7 @@ final class BudgetGridViewModel: ObservableObject {
         allAccountsBudgetTransactions = TransferLinks.budgetFacing(transactions, links: transferLinks)
         itemAccountsCache = nil
         monthTotals = PayMonthTotals.lookup(transactions: allAccountsBudgetTransactions, calendar: payCalendar)
+        counterpartAccounts = BudgetTotals.counterpartAccounts(transactions: transactions, links: transferLinks)
         transactionCountByAccount = transactions.reduce(into: [:]) { counts, transaction in counts[transaction.accountId, default: 0] += 1 }
         monthClassCache = [:]
         rebuildShownActuals()
@@ -192,8 +203,12 @@ final class BudgetGridViewModel: ObservableObject {
             shownMonthTotals = PayMonthTotals.lookup(transactions: budgetTransactions, calendar: payCalendar)
         }
         noteMonths = PayMonthTotals.noteMonths(transactions: budgetTransactions, calendar: payCalendar)
+        let counted = BudgetTotals.countedTransfers(budgetTransactions, categories: categories, accountIds: totalsAccountIds, counterpartAccounts: counterpartAccounts)
+        countedTransferIds = Set(counted.compactMap(\.id))
+        transferFlows = BudgetTotals.transferActuals(counted, calendar: payCalendar)
         reserveRemainingCache = [:]
         cellCache = [:]
+        totalsCache = [:]
     }
 
     // MARK: Account filter
@@ -308,6 +323,7 @@ final class BudgetGridViewModel: ObservableObject {
         reserveRemainingCache = [:]
         plannedCache = [:]
         cellCache = [:]
+        totalsCache = [:]
     }
 
     /// The net-worth figures' input: every account and transaction, the budget's plan, and
@@ -629,6 +645,93 @@ final class BudgetGridViewModel: ObservableObject {
         guard showForecast else { return (0, 0, .none) }
         let value = reserves.reduce(0) { $0 + reserveTotal($1, year: year, month: month) }
         return (value, value, value == 0 ? .none : .allExpected)
+    }
+
+    // MARK: Totals (budget-totals spec §1)
+
+    /// The account filter as the Totals block takes it (nil = All accounts).
+    private var totalsAccountIds: Set<Int64>? { accountFilter.isEmpty ? nil : accountFilter }
+
+    /// The month's Total in and Total out (`BudgetTotals.month`) over the cells' own figures:
+    /// the shown actuals, the filter's planned totals and the Total reserved cell. Memoised per
+    /// Show forecast and month.
+    private func totals(year: Int, month: Int) -> (totalIn: PlanCell, totalOut: PlanCell) {
+        let key = MonthRange.index(year: year, month: month)
+        if let cached = totalsCache[showForecast]?[key] { return cached }
+        var actuals: [Int64: Int] = [:]
+        var flows: [Int64: BudgetTotals.Flow] = [:]
+        for category in categories {
+            guard let id = category.id else { continue }
+            if let actual = shownMonthTotals[id]?[year]?[month] { actuals[id] = actual }
+            if let flow = transferFlows[id]?[year]?[month] { flows[id] = flow }
+        }
+        let result = BudgetTotals.month(categories: categories, actuals: actuals, transferActuals: flows,
+                                        planned: showForecast ? plannedTotals(year: year, month: month) : [:],
+                                        reserves: reserveCell(reserves, year: year, month: month),
+                                        monthClass: monthClass(year: year, month: month), includeForecast: showForecast, accountIds: totalsAccountIds)
+        totalsCache[showForecast, default: [:]][key] = result
+        return result
+    }
+
+    /// A Totals row's month cell.
+    func totalsCell(_ row: BudgetTotals.Row, year: Int, month: Int) -> PlanCell {
+        let month = totals(year: year, month: month)
+        return BudgetTotals.cell(row, totalIn: month.totalIn, totalOut: month.totalOut)
+    }
+
+    /// A Totals row's Year Total: its twelve month cells combined.
+    func totalsYearCell(_ row: BudgetTotals.Row, year: Int) -> PlanCell {
+        PlanStatus.combine((1...12).map { totalsCell(row, year: year, month: $0) })
+    }
+
+    /// The shown transactions in `start...end` a Totals row sums (its side panel).
+    func totalsTransactions(_ row: BudgetTotals.Row, from startDate: Date, to endDate: Date) -> [Transaction] {
+        let byId = categoryById
+        return budgetTransactions.filter { transaction in
+            guard transaction.status == .confirmed, transaction.date >= startDate, transaction.date <= endDate,
+                  let category = transaction.categoryId.flatMap({ byId[$0] }) else { return false }
+            return row.includes(category, amount: transaction.amountMinorUnits, countedTransfer: transaction.id.map(countedTransferIds.contains) ?? false)
+        }
+    }
+
+    /// The planned occurrences in the calendar month a Totals row includes (as the filter's
+    /// accounts see them), by date.
+    func totalsOccurrences(_ row: BudgetTotals.Row, year: Int, month: Int) -> [PlannedRow] {
+        categories.filter { $0.type != .adjustment }
+            .flatMap { category in
+                let counted = BudgetTotals.countsPlannedTransfer(category, accountIds: totalsAccountIds)
+                return occurrences(category: category, year: year, month: month).filter {
+                    row.includes(category, amount: $0.occurrence.amountMinorUnits, countedTransfer: counted)
+                }
+            }
+            .sorted { $0.occurrence.date < $1.occurrence.date }
+    }
+
+    // MARK: Unassigned planned items (budget-totals spec §2)
+
+    /// The planned occurrences with no effective account (`ForecastCalculator.unassignedOccurrences`)
+    /// in the calendar month `year`/`month`, or the whole calendar year when `month` is nil.
+    func unassignedRows(year: Int, month: Int?) -> [PlannedRow] {
+        let start = MonthRange.of(year: year, month: month ?? 1).start
+        let end = MonthRange.of(year: year, month: month ?? 12).end
+        let plan = plannedEntries
+        let byId = Dictionary(plan.compactMap { e in e.id.map { ($0, e) } }, uniquingKeysWith: { a, _ in a })
+        return ForecastCalculator.unassignedOccurrences(period: PayPeriod(startDate: start, endDate: end, type: .projected), categories: categories,
+                                                        entries: forecastEntries, groups: forecastGroups, exceptions: exceptions, itemAccounts: itemAccounts)
+            .compactMap { occurrence in
+                guard let entry = byId[occurrence.entryId] else { return nil }
+                let locked = PlannedItemEditing.isLocked(entry: entry, occurrence: occurrence, calendar: payCalendar, monthTotals: monthTotals,
+                                                         entries: forecastEntries, groups: forecastGroups, exceptions: exceptions, categories: categories)
+                return PlannedRow(occurrence: occurrence, isConfirmed: locked, entry: entry, accountLabel: nil)
+            }
+    }
+
+    /// Assign to ▾ / Assign all to ▾: every series behind `rows` gets `accountId`, in one write
+    /// (`PlannedItems.assignAccount`), then the grid reloads.
+    func assignAccount(_ rows: [PlannedRow], to accountId: Int64) -> SaveOutcome {
+        let entryIds = rows.compactMap(\.entry.id)
+        guard !entryIds.isEmpty else { return .saved }
+        return perform { db in try PlannedItems.assignAccount(db: db, entryIds: entryIds, accountId: accountId) }
     }
 
     /// Every planned item (`ForecastCalculator.confirmedEntries`): the add sheet's "Already

@@ -136,6 +136,21 @@ public enum ForecastCalculator {
         return result
     }
 
+    /// The occurrences behind `netWorthImpactByAccount`'s nil key (budget-totals spec §2): the
+    /// confirmed plan's occurrences in `period` whose series has no effective account and that
+    /// move net worth — a counting category, or a transfer tied to an account. By date.
+    public static func unassignedOccurrences(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException], itemAccounts: PlannedItemAccounts) -> [PlannedOccurrence] {
+        let plan = confirmedEntries(entries: entries, groups: groups)
+        let byId = Dictionary(plan.compactMap { e in e.id.map { ($0, e) } }, uniquingKeysWith: { a, _ in a })
+        let counting = Set(categories.filter { countsInNetWorth($0, accountIds: nil) }.compactMap(\.id))
+        return PlannedOccurrences.occurrences(entries: plan, exceptions: exceptions, in: period)
+            .filter { occurrence in
+                guard let entry = byId[occurrence.entryId], itemAccounts.effectiveAccount(of: entry) == nil else { return false }
+                return counting.contains(occurrence.categoryId) || itemAccounts.tiedAccountByCategory[occurrence.categoryId] != nil
+            }
+            .sorted { ($0.date, $0.entryId) < ($1.date, $1.entryId) }
+    }
+
     private static func total(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException]) -> Int {
         // Expand every candidate entry (a re-filed occurrence can belong to another
         // category than its series), then keep occurrences filed under this category.
