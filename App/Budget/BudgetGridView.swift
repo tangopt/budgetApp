@@ -723,7 +723,8 @@ struct BudgetGridView: View {
         case .account(let account):
             return viewModel.accountBalance(account, year: year, month: 12).map { ($0.nativeBalanceMinorUnits, $0.account.currency) }
         case .netWorthTotal:
-            return viewModel.netWorthTotal(year: year, month: 12).map { ($0, .gbp) }
+            // The year card's figure (today's net worth this year with Show forecast off).
+            return viewModel.yearEndNetWorth(year).map { ($0.valueMinorUnits, .gbp) }
         }
     }
 
@@ -928,7 +929,8 @@ struct BudgetGridView: View {
                 .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
         case .netWorthTotal:
-            calendarCell(viewModel.netWorthTotal(year: year, month: 12)).bold()
+            // The year card's figure (today's net worth this year with Show forecast off).
+            calendarCell(viewModel.yearEndNetWorth(year)?.valueMinorUnits).bold()
                 .frame(height: 28)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .background(Color.purple.opacity(0.10))
@@ -997,12 +999,12 @@ struct BudgetGridView: View {
                                 start: range.start, end: range.end, showCategory: showCategory, plan: nil)
     }
 
-    /// Opens a group's or section's month panel when its members have any transaction or
-    /// planned occurrence there (an empty aggregate cell does nothing).
+    /// Opens a group's or section's month panel when its members have any transaction or, with
+    /// Show forecast on, planned occurrence there (an empty aggregate cell does nothing).
     fileprivate func openAggregateMonth(_ row: GridRowKind, name: String, members: [Category], year: Int, month: Int) {
         var target = monthTarget(name: name, categories: members, year: year, month: month)
         let hasTransactions = !viewModel.transactions(forCategoryIds: target.categoryIds, from: target.start, to: target.end).isEmpty
-        guard hasTransactions || members.contains(where: { hasShownOccurrences($0, year: year, month: month) }) else { return }
+        guard hasTransactions || (viewModel.showForecast && members.contains(where: { hasShownOccurrences($0, year: year, month: month) })) else { return }
         target.showCategory = true
         cellSelection.select(key: cellKey(row, month: month), target: target)
     }

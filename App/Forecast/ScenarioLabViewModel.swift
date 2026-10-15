@@ -550,7 +550,8 @@ final class ScenarioLabViewModel: ObservableObject {
     /// the Budget, which the lab doesn't edit). Only closed months lock a scenario occurrence.
     func occurrences(category: Category, year: Int, month: Int) -> [PlannedRow] {
         guard let categoryId = category.id, let id = gridSelection, let plan = scenarioPlans[id] else { return [] }
-        return PlannedRow.rows(categoryId: categoryId, year: year, month: month, plan: scenarioPlanEntries, exceptions: plan.exceptions) { entry, occurrence in
+        return PlannedRow.rows(categoryId: categoryId, year: year, month: month, plan: scenarioPlanEntries, exceptions: plan.exceptions,
+                               accounts: accounts.isEmpty ? nil : accountOptions) { entry, occurrence in
             PlannedItemEditing.isLocked(entry: entry, occurrence: occurrence, calendar: payCalendar, monthTotals: [:],
                                         entries: budgetPlan.entries, groups: groups, exceptions: budgetPlan.exceptions, categories: categories)
         }

@@ -70,8 +70,9 @@ struct BudgetCellPanel: View {
                 isAdding = true
             } : nil,
             plannedSection: {
-                // The filter's accounts' items only, each naming its account (spec 2026-10-15 §3).
-                if let plan = target.plan { plannedSection(plan) }
+                // The filter's accounts' items only, each naming its account (spec 2026-10-15 §3);
+                // none with Show forecast off (actuals only).
+                if let plan = target.plan, viewModel.showForecast { plannedSection(plan) }
             },
             onEdit: { transaction in
                 editingRecentIds = viewModel.recentCategoryIds()
