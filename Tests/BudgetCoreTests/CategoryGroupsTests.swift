@@ -94,4 +94,35 @@ final class CategoryGroupsTests: XCTestCase {
         XCTAssertNil(categories.first { $0.name == "Rent" }?.groupId)
         XCTAssertEqual(categories.first { $0.name == "Fuel" }?.groupId, car.id)
     }
+
+    func testCreateStoresTheGroupsType() throws {
+        let m = try makeDB()
+        let (salary, plain) = try m.dbQueue.write { db in
+            (try CategoryGroups.create(db: db, name: "Pay", type: .income),
+             try CategoryGroups.create(db: db, name: "Home"))
+        }
+        XCTAssertEqual(salary.type, .income)
+        XCTAssertEqual(try m.dbQueue.read { db in try CategoryGroup.fetchOne(db, key: salary.id)?.type }, .income)
+        XCTAssertEqual(try m.dbQueue.read { db in try CategoryGroup.fetchOne(db, key: plain.id)?.type }, .expense)
+    }
+
+    func testTypeMigrationBackfillsTheMajorityTypeOfEachGroup() throws {
+        let m = try DatabaseManager(path: nil)
+        try m.migrate(upTo: "addAccountIsMain")
+        try m.dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO categoryGroup (id, name) VALUES (1, 'Pay'), (2, 'Tie'), (3, 'Empty'), (4, 'Moves'), (5, 'TieNoExpense');
+                INSERT INTO category (name, type, groupId) VALUES
+                    ('Salary', 'income', 1), ('Bonus', 'income', 1), ('Payroll fee', 'expense', 1),
+                    ('Rent', 'expense', 2), ('Lodger', 'income', 2),
+                    ('To savings', 'transfer', 4),
+                    ('Gift', 'income', 5), ('To ISA', 'transfer', 5);
+                """)
+        }
+        try m.migrate()
+        let types = try m.dbQueue.read { db in
+            Dictionary(uniqueKeysWithValues: try CategoryGroup.fetchAll(db).map { ($0.name, $0.type) })
+        }
+        XCTAssertEqual(types, ["Pay": .income, "Tie": .expense, "Empty": .expense, "Moves": .transfer, "TieNoExpense": .expense])
+    }
 }

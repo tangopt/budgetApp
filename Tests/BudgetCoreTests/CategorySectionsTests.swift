@@ -85,4 +85,21 @@ final class CategorySectionsTests: XCTestCase {
         XCTAssertEqual(build("spa").first?.groups.map(\.group.name), ["Spare"])
         XCTAssertFalse(build("fuel").first?.groups.contains { $0.group.name == "Spare" } ?? true)
     }
+
+    func testAnEmptyGroupShowsInItsTypesSection() {
+        let pay = CategoryGroup(id: 5, name: "Pay", type: .income)
+        let moves = CategoryGroup(id: 6, name: "Moves", type: .transfer)
+        let sections = CategorySections.build(categories: categories, groups: [home, pay, moves], search: "")
+        XCTAssertFalse(sections[0].groups.contains { $0.group.name == "Pay" || $0.group.name == "Moves" })
+        XCTAssertEqual(sections[1].groups.map(\.group.name), ["Home", "Pay"])
+        XCTAssertEqual(sections[2].groups.map(\.group.name), ["Moves"])
+    }
+
+    func testAGroupWithMembersShowsWhereItsMembersAreWhateverItsType() {
+        let incomeHome = CategoryGroup(id: 1, name: "Home", type: .income)
+        let sections = CategorySections.build(categories: categories, groups: [incomeHome], search: "")
+        XCTAssertEqual(sections[0].groups.map(\.group.name), ["Home"])
+        XCTAssertEqual(sections[1].groups.map(\.group.name), ["Home"])
+        XCTAssertTrue(sections[2].groups.isEmpty)
+    }
 }

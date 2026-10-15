@@ -71,5 +71,6 @@ public final class DatabaseManager {
         registerImportProfileAccountColumnsMigration(&migrator)
         registerForecastEntryAccountMigration(&migrator)
         registerAccountIsMainMigration(&migrator)
+        registerCategoryGroupTypeMigration(&migrator)
     }
 }
