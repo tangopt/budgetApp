@@ -4,11 +4,20 @@ import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
 
-/// The Categories screen's side panel (spec §4): the selected category's transactions in a
+/// What the Categories screen's side panel shows: one category, or a group's members.
+struct CategoryPanelSubject: Equatable {
+    /// Distinguishes a category from a group with the same id ("c-<id>" / "g-<id>").
+    let key: String
+    let title: String
+    let categoryIds: Set<Int64>
+}
+
+/// The Categories screen's side panel (spec §4, groups 2026-10-15): the selected category's
+/// (or group's member categories') transactions in a
 /// pay-month year (the current one by default, or All years), via `TransactionsSidePanel`,
 /// with Edit… per transaction (EditTransactionSheet).
 struct CategoryTransactionsPanel: View {
-    let category: Category
+    let subject: CategoryPanelSubject
     @ObservedObject var viewModel: CategoriesViewModel
     let onClose: () -> Void
 
@@ -18,28 +27,27 @@ struct CategoryTransactionsPanel: View {
     /// Read when Edit… is clicked, for the sheet's picker.
     @State private var editingRecentIds: [Int64] = []
 
-    init(category: Category, viewModel: CategoriesViewModel, onClose: @escaping () -> Void) {
-        self.category = category
+    init(subject: CategoryPanelSubject, viewModel: CategoriesViewModel, onClose: @escaping () -> Void) {
+        self.subject = subject
         self.viewModel = viewModel
         self.onClose = onClose
         _year = State(initialValue: viewModel.payCalendar.current.year)
     }
 
     var body: some View {
-        let id = category.id ?? -1
         TransactionsSidePanel(
-            title: category.name,
-            transactions: viewModel.transactions(forCategoryId: id, year: year),
+            title: subject.title,
+            transactions: viewModel.transactions(forCategoryIds: subject.categoryIds, year: year),
             transfers: viewModel.transferCounterparts,
-            accessory: AnyView(yearPicker(id)),
+            accessory: AnyView(yearPicker),
             onEdit: { transaction in
                 editingRecentIds = viewModel.recentCategoryIds()
                 editingTransaction = transaction
             },
             onClose: onClose
         )
-        // Another category: back to the current year.
-        .onChange(of: category.id) { _, _ in year = viewModel.payCalendar.current.year }
+        // Another category or group: back to the current year.
+        .onChange(of: subject.key) { _, _ in year = viewModel.payCalendar.current.year }
         .sheet(item: $editingTransaction) { transaction in
             EditTransactionSheet(
                 transaction: transaction,
@@ -57,9 +65,9 @@ struct CategoryTransactionsPanel: View {
         }
     }
 
-    private func yearPicker(_ id: Int64) -> some View {
+    private var yearPicker: some View {
         Picker("Year", selection: $year) {
-            ForEach(viewModel.years(forCategoryId: id), id: \.self) { year in
+            ForEach(viewModel.years(forCategoryIds: subject.categoryIds), id: \.self) { year in
                 Text(String(year)).tag(Int?.some(year))
             }
             Divider()
