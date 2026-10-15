@@ -270,12 +270,15 @@ struct BudgetGridView: View {
                                     HorizontalOffsetFollower(offset: scrollOffset) {
                                         HStack(spacing: 0) {
                                             ForEach(Array(years.enumerated()), id: \.element) { index, year in
-                                                multiYearHeaderCell(String(year)).bold()
-                                                    .yearGroupSeparator(index)
-                                                if index > 0 {
-                                                    multiYearHeaderCell("Δ vs \(String(years[index - 1]))")
-                                                    multiYearHeaderCell("%")
+                                                HStack(spacing: 0) {
+                                                    multiYearHeaderCell(String(year)).bold()
+                                                    if index > 0 {
+                                                        multiYearHeaderCell("Δ vs \(String(years[index - 1]))")
+                                                        multiYearHeaderCell("%")
+                                                    }
                                                 }
+                                                .yearGroupBand(index)
+                                                .yearGroupSeparator(index)
                                             }
                                         }
                                     }
@@ -657,11 +660,14 @@ struct BudgetGridView: View {
         let years = viewModel.selectedYears
         return HStack(spacing: 0) {
             ForEach(Array(years.enumerated()), id: \.element) { index, year in
-                yearTotalCell(row, year: year, shaded: shaded)
-                    .yearGroupSeparator(index)
-                if index > 0 {
-                    deltaCells(row, year: year, previous: years[index - 1], shaded: shaded)
+                HStack(spacing: 0) {
+                    yearTotalCell(row, year: year, shaded: shaded)
+                    if index > 0 {
+                        deltaCells(row, year: year, previous: years[index - 1], shaded: shaded)
+                    }
                 }
+                .yearGroupBand(index)
+                .yearGroupSeparator(index)
             }
         }
     }
@@ -1248,6 +1254,13 @@ private extension View {
 
     /// The leading 1pt separator between multi-year groups (none before the first year: the
     /// category column draws its own).
+    /// Every other selected year's columns (its total, Δ and %) get a light tint, so each year
+    /// reads as one band when comparing several. An overlay, so it shows over row stripes and
+    /// cell fills alike, and never takes clicks.
+    func yearGroupBand(_ index: Int) -> some View {
+        overlay(Color.primary.opacity(index.isMultiple(of: 2) ? 0 : 0.06).allowsHitTesting(false))
+    }
+
     func yearGroupSeparator(_ index: Int) -> some View {
         overlay(Rectangle().frame(width: 1).foregroundStyle(.separator).opacity(index > 0 ? 1 : 0), alignment: .leading)
     }
