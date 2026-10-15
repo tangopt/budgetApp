@@ -19,3 +19,6 @@ Requested 2026-10-15; option A chosen in chat ("A").
 
 ## Testing
 BudgetCore XCTest: migration; inference (majority, ties, 12-month window fallback, none); explicit wins; transfer-category planned item split per account; budget calculator with filter (single account, two accounts incl. both transfer legs selected → once as sent, unfiltered unchanged); show-forecast off yields actuals only. App: build, full suite, no warnings.
+
+## 4. Net worth follows the account filter (added 2026-10-15)
+- With an account filter, the Budget net-worth rows and the year cards show only the selected accounts: actual balances of those accounts (GBP-converted as today) and, with Show forecast on, their projection using only planned items whose effective account is selected (plus incoming planned transfers into a selected account). "All accounts" is unchanged. The year cards' YoY change uses the same filtered figures.
