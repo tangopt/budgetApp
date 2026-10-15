@@ -1,3 +1,4 @@
+import Foundation
 import GRDB
 
 public enum AccountKind: String, Codable, CaseIterable, Sendable {
@@ -31,9 +32,16 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     /// The user's drag-and-drop position (`AccountOrdering`); nil until the first reorder.
     /// Ordered accounts list first, ascending; the rest follow alphabetically.
     public var sortOrder: Int?
+    /// The last statement import's unresolved closing-balance difference (spec 2026-10-14 §2):
+    /// statement − computed, signed like a transaction amount; nil when there's none.
+    /// Set and cleared by `StatementCheck` (Finish import) and cleared by Update balance.
+    public var statementMismatchMinorUnits: Int?
+    /// The statement's closing date for `statementMismatchMinorUnits`.
+    public var statementMismatchDate: Date?
 
     public init(id: Int64? = nil, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode,
-                alias: String? = nil, sortCode: String? = nil, accountNumber: String? = nil, iban: String? = nil, sortOrder: Int? = nil) {
+                alias: String? = nil, sortCode: String? = nil, accountNumber: String? = nil, iban: String? = nil, sortOrder: Int? = nil,
+                statementMismatchMinorUnits: Int? = nil, statementMismatchDate: Date? = nil) {
         self.id = id
         self.name = name
         self.currency = currency
@@ -44,6 +52,8 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
         self.accountNumber = accountNumber
         self.iban = iban
         self.sortOrder = sortOrder
+        self.statementMismatchMinorUnits = statementMismatchMinorUnits
+        self.statementMismatchDate = statementMismatchDate
     }
 
     /// What the UI calls the account: the alias when set, otherwise the full name. `name`
@@ -96,6 +106,15 @@ func registerAccountSortOrderMigration(_ migrator: inout DatabaseMigrator) {
     migrator.registerMigration("addAccountSortOrder") { db in
         try db.alter(table: "account") { t in
             t.add(column: "sortOrder", .integer)
+        }
+    }
+}
+
+func registerAccountStatementMismatchMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addAccountStatementMismatch") { db in
+        try db.alter(table: "account") { t in
+            t.add(column: "statementMismatchMinorUnits", .integer)
+            t.add(column: "statementMismatchDate", .datetime)
         }
     }
 }

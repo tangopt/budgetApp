@@ -118,13 +118,15 @@ public enum BalanceUpdates {
     /// and the computed balance at `asOf` becomes a manual transaction dated `asOf` in the
     /// account's Manual entries batch — Market movement for investment accounts, Balance
     /// adjustment otherwise — described by the category's name, with the entry's note. A zero
-    /// difference writes nothing. No snapshot is written. Entries are applied in order, so a
+    /// difference writes nothing. No snapshot is written. A statement mismatch dated on or
+    /// before `asOf` is cleared (`StatementCheck.clearMismatch`). Entries are applied in order, so a
     /// repeated account sees the earlier adjustment.
     public static func save(db: Database, entries: [Entry], asOf: Date) throws -> [Outcome] {
         var outcomes: [Outcome] = []
         for entry in entries {
             guard let account = try Account.fetchOne(db, key: entry.accountId) else { throw AccountEditError.accountNotFound }
             try checkDate(db: db, account: account, asOf: asOf)
+            try StatementCheck.clearMismatch(db: db, accountId: entry.accountId, onOrBefore: asOf)
             let actual = NetWorthCalculator.signedSnapshotBalance(enteredMinorUnits: entry.enteredMinorUnits, accountKind: account.kind)
             let difference = actual - (try computedBalance(db: db, accountId: entry.accountId, asOf: asOf))
             guard difference != 0 else {

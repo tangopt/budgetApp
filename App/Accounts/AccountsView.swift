@@ -263,6 +263,13 @@ private struct AccountListRow: View {
                     .font(.caption)
                     .help("Not updated in over \(BalanceStaleness.thresholdDays) days")
             }
+            if let mismatch = AccountsFormat.statementMismatch(row.account) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .font(.caption)
+                    .help(mismatch)
+                    .accessibilityLabel(mismatch)
+            }
             Spacer()
             if row.account.currency != .gbp {
                 AccountsFormat.balanceText(row.nativeBalanceMinorUnits, kind: row.account.kind, currency: row.account.currency)
@@ -345,6 +352,12 @@ private struct AccountDetailView: View {
                         }
                     }
                     updatedLine(row)
+                    if let mismatch = AccountsFormat.statementMismatch(row.account) {
+                        Label(mismatch, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                            .help("A statement import's closing balance didn't match. Check for missing or duplicate transactions, or use Update balance… to settle it.")
+                    }
                     AccountBankDetails(account: row.account)
                     HStack {
                         Button("Update balance…") { onUpdateBalance(row) }
@@ -482,6 +495,18 @@ enum AccountsFormat {
         } else {
             MoneyText(minorUnits: signedMinorUnits, currency: currency, font: font, tint: signedMinorUnits < 0 ? .red : .primary)
         }
+    }
+
+    /// "Statement mismatch on 29 Sep 2026: +£12.00" (statement − computed) — nil when the
+    /// account has none (spec 2026-10-14 §2).
+    static func statementMismatch(_ account: Account) -> String? {
+        guard let difference = account.statementMismatchMinorUnits, let date = account.statementMismatchDate else { return nil }
+        return "Statement mismatch on \(DashboardFormat.day(date)): \(signedMoney(difference, currency: account.currency))"
+    }
+
+    /// "+£12.00" / "-£12.00" / "£0.00".
+    static func signedMoney(_ minorUnits: Int, currency: Currency) -> String {
+        (minorUnits > 0 ? "+" : "") + Money.format(minorUnits, currency: currency)
     }
 
     /// A picked local calendar day as the stored snapshot date (that day, 00:00 UTC).

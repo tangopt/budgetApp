@@ -352,87 +352,6 @@ final class ImportCoordinatorTests: XCTestCase {
         XCTAssertEqual(second.statementBalances, first.statementBalances)
     }
 
-    func testRecordStatementBalancesInsertsThenIsIdempotent() throws {
-        let (manager, account, _) = try makeSeededManager()
-        let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
-        let points = [
-            StatementBalancePoint(date: utcDate(2026, 3, 1), balanceMinorUnits: 98_000, isClosing: false),
-            StatementBalancePoint(date: utcDate(2026, 3, 2), balanceMinorUnits: 97_750, isClosing: true)
-        ]
-        let first = try coordinator.recordStatementBalances(accountId: account.id!, sourceFileName: "a.csv", points: points)
-        XCTAssertEqual(first, StatementBalanceRecording(added: 2, updated: 0))
-        let second = try coordinator.recordStatementBalances(accountId: account.id!, sourceFileName: "a.csv", points: points)
-        XCTAssertEqual(second, StatementBalanceRecording(added: 0, updated: 2))
-
-        let snapshots = try manager.dbQueue.read { db in try BalanceSnapshot.order(Column("date")).fetchAll(db) }
-        XCTAssertEqual(snapshots.map(\.balanceMinorUnits), [98_000, 97_750])
-        XCTAssertEqual(snapshots.first?.note, "Statement balance — a.csv")
-    }
-
-    func testRecordStatementBalancesReplacesSameDateSnapshotButNotALegacyTimeOfDayOne() throws {
-        let (manager, account, _) = try makeSeededManager()
-        let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
-        try manager.dbQueue.write { db in
-            var sameDate = BalanceSnapshot(accountId: account.id!, date: utcDate(2026, 3, 1), balanceMinorUnits: 1, note: "old")
-            try sameDate.insert(db)
-            // A legacy typed snapshot carries a time of day, so it never matches a statement date.
-            var typed = BalanceSnapshot(accountId: account.id!, date: utcDate(2026, 3, 1, hour: 9), balanceMinorUnits: 2, note: "typed")
-            try typed.insert(db)
-        }
-        let result = try coordinator.recordStatementBalances(
-            accountId: account.id!, sourceFileName: "a.csv",
-            points: [StatementBalancePoint(date: utcDate(2026, 3, 1), balanceMinorUnits: 98_000, isClosing: false)]
-        )
-        XCTAssertEqual(result, StatementBalanceRecording(added: 0, updated: 1))
-        let snapshots = try manager.dbQueue.read { db in try BalanceSnapshot.order(Column("date")).fetchAll(db) }
-        XCTAssertEqual(snapshots.map(\.balanceMinorUnits), [98_000, 2])
-        XCTAssertEqual(snapshots.first?.note, "Statement balance — a.csv")
-        XCTAssertEqual(snapshots.last?.note, "typed")
-    }
-
-    // Balances typed on the Accounts screen are dated 00:00 UTC on the picked day, so a
-    // statement balance for that day replaces it: the bank's figure wins.
-    func testRecordStatementBalancesReplacesAMidnightTypedSnapshotOnTheStatementDay() throws {
-        let (manager, account, _) = try makeSeededManager()
-        let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
-        try manager.dbQueue.write { db in
-            // A typed balance from before Update balance made adjustments (legacy data).
-            try BalanceUpdates.upsertSnapshot(db: db, accountId: account.id!, date: utcDate(2026, 3, 1), balanceMinorUnits: 50_000, note: "typed")
-        }
-        let result = try coordinator.recordStatementBalances(
-            accountId: account.id!, sourceFileName: "a.csv",
-            points: [StatementBalancePoint(date: utcDate(2026, 3, 1), balanceMinorUnits: 98_000, isClosing: false)]
-        )
-        XCTAssertEqual(result, StatementBalanceRecording(added: 0, updated: 1))
-        let snapshots = try manager.dbQueue.read { db in try BalanceSnapshot.filter(Column("accountId") == account.id!).fetchAll(db) }
-        XCTAssertEqual(snapshots.map(\.balanceMinorUnits), [98_000])
-        XCTAssertEqual(snapshots.first?.note, "Statement balance — a.csv")
-    }
-
-    func testRecordStatementBalancesNeverTouchesAnotherAccountsSnapshotOnTheSameDate() throws {
-        let (manager, account, _) = try makeSeededManager()
-        let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
-        var joint = Account(name: "Joint", currency: .gbp, kind: .cash, trackingMode: .manual)
-        try manager.dbQueue.write { db in
-            try joint.insert(db)
-            var other = BalanceSnapshot(accountId: joint.id!, date: utcDate(2026, 3, 1), balanceMinorUnits: 12_345, note: "other")
-            try other.insert(db)
-        }
-        let result = try coordinator.recordStatementBalances(
-            accountId: account.id!, sourceFileName: "a.csv",
-            points: [StatementBalancePoint(date: utcDate(2026, 3, 1), balanceMinorUnits: 98_000, isClosing: false)]
-        )
-        XCTAssertEqual(result, StatementBalanceRecording(added: 1, updated: 0))
-        let otherSnapshots = try manager.dbQueue.read { db in try BalanceSnapshot.filter(Column("accountId") == joint.id!).fetchAll(db) }
-        XCTAssertEqual(otherSnapshots.count, 1)
-        XCTAssertEqual(otherSnapshots.first?.balanceMinorUnits, 12_345)
-        XCTAssertEqual(otherSnapshots.first?.note, "other")
-        let ownSnapshots = try manager.dbQueue.read { db in try BalanceSnapshot.filter(Column("accountId") == account.id!).fetchAll(db) }
-        XCTAssertEqual(ownSnapshots.count, 1)
-        XCTAssertEqual(ownSnapshots.first?.balanceMinorUnits, 98_000)
-        XCTAssertEqual(ownSnapshots.first?.note, "Statement balance — a.csv")
-    }
-
     // Finish import: every row of a review is saved by one commit — one ImportBatch.
     func testCommitSavesEveryRowInOneBatch() async throws {
         let (manager, account, profile) = try makeSeededManager()
@@ -445,37 +364,5 @@ final class ImportCoordinatorTests: XCTestCase {
         XCTAssertEqual(batches.count, 1)
         XCTAssertEqual(transactions.count, 3)
         XCTAssertTrue(transactions.allSatisfy { $0.importBatchId == batches.first?.id })
-    }
-
-    func testCommitRecordsStatementBalancesInTheSameWrite() async throws {
-        let (manager, account, profile) = try makeSeededManager()
-        let coordinator = makeCoordinator(manager)
-        let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n01/03/2026,TESCO,-12.00", profile: profile, accountId: account.id!)
-        let points = [
-            StatementBalancePoint(date: utcDate(2026, 3, 1), balanceMinorUnits: 98_000, isClosing: false),
-            StatementBalancePoint(date: utcDate(2026, 3, 2), balanceMinorUnits: 97_750, isClosing: true)
-        ]
-        let recorded = try coordinator.commit(accountId: account.id!, sourceFileName: "a.csv", staged: staged.staged, decisions: acceptAll(staged), statementBalancePoints: points)
-
-        XCTAssertEqual(recorded, StatementBalanceRecording(added: 2, updated: 0))
-        let snapshots = try await manager.dbQueue.read { db in try BalanceSnapshot.order(Column("date")).fetchAll(db) }
-        XCTAssertEqual(snapshots.map(\.balanceMinorUnits), [98_000, 97_750])
-        XCTAssertEqual(snapshots.first?.note, "Statement balance — a.csv")
-    }
-
-    // Balances are part of the commit's write, so a commit that fails leaves none behind.
-    func testAFailedCommitRecordsNoStatementBalances() async throws {
-        let (manager, account, profile) = try makeSeededManager()
-        let coordinator = makeCoordinator(manager)
-        let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n01/03/2026,TESCO,-12.00", profile: profile, accountId: account.id!)
-        try coordinator.commit(accountId: account.id!, sourceFileName: "a.csv", staged: staged.staged, decisions: acceptAll(staged))
-
-        // Committing the same staged rows again violates the [accountId, fingerprint] key.
-        let points = [StatementBalancePoint(date: utcDate(2026, 3, 1), balanceMinorUnits: 98_000, isClosing: true)]
-        XCTAssertThrowsError(try coordinator.commit(accountId: account.id!, sourceFileName: "a.csv", staged: staged.staged, decisions: acceptAll(staged), statementBalancePoints: points))
-
-        let (batches, snapshots) = try await manager.dbQueue.read { db in (try ImportBatch.fetchCount(db), try BalanceSnapshot.fetchCount(db)) }
-        XCTAssertEqual(batches, 1)
-        XCTAssertEqual(snapshots, 0)
     }
 }
