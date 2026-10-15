@@ -239,7 +239,8 @@ final class ScenarioLabViewModel: ObservableObject {
         payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: loaded.manualCloses, today: today)
         // Planned items' accounts for the Account picker (spec 2026-10-15 §2), as the Budget infers them.
         accountOptions = PlanAccountOptions(accounts: accounts.sortedForDisplay(),
-                                            itemAccounts: PlannedItemAccounts(categories: categories, budgetTransactions: TransferLinks.budgetFacing(transactions, links: transferLinks), calendar: payCalendar))
+                                            itemAccounts: PlannedItemAccounts(categories: categories, budgetTransactions: TransferLinks.budgetFacing(transactions, links: transferLinks), calendar: payCalendar,
+                                                                                mainAccountId: accounts.mainAccountId))
         // A deleted scenario leaves every tab's selection; the callers recompute after.
         let ids = Set(scenarios.compactMap(\.id))
         isReading = true

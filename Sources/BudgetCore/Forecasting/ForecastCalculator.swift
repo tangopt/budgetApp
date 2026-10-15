@@ -113,6 +113,29 @@ public enum ForecastCalculator {
         return (byCategory, elsewhere)
     }
 
+    /// `confirmedNetWorthImpact` (All accounts) split by account (account-forecast spec §2): each
+    /// occurrence on its effective (paying) account — income, expenses and external transfers
+    /// as they are; a transfer tied to another account out of the payer and into the tied
+    /// account (net worth unchanged); other transfers and adjustments nowhere. The nil key holds
+    /// the items with no effective account. The values sum to `confirmedNetWorthImpact`.
+    public static func netWorthImpactByAccount(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException], itemAccounts: PlannedItemAccounts) -> [Int64?: Int] {
+        let plan = confirmedEntries(entries: entries, groups: groups)
+        let byId = Dictionary(plan.compactMap { e in e.id.map { ($0, e) } }, uniquingKeysWith: { a, _ in a })
+        let counting = Set(categories.filter { countsInNetWorth($0, accountIds: nil) }.compactMap(\.id))
+        var result: [Int64?: Int] = [:]
+        for occurrence in PlannedOccurrences.occurrences(entries: plan, exceptions: exceptions, in: period) {
+            let payer = byId[occurrence.entryId].flatMap(itemAccounts.effectiveAccount(of:))
+            let amount = occurrence.amountMinorUnits
+            if counting.contains(occurrence.categoryId) {
+                result[payer, default: 0] += amount
+            } else if let tied = itemAccounts.tiedAccountByCategory[occurrence.categoryId], tied != payer {
+                result[payer, default: 0] += amount
+                result[tied, default: 0] -= amount
+            }
+        }
+        return result
+    }
+
     private static func total(categoryId: Int64, period: PayPeriod, entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException]) -> Int {
         // Expand every candidate entry (a re-filed occurrence can belong to another
         // category than its series), then keep occurrences filed under this category.

@@ -65,6 +65,16 @@ public enum AccountEditing {
         try TransferCategories.ensure(db: db)
     }
 
+    /// Makes `accountId` the main account (spec 2026-10-15 account-forecast §1), clearing any
+    /// other; nil clears it.
+    public static func setMain(db: Database, accountId: Int64?) throws {
+        if let accountId, try Account.fetchOne(db, key: accountId) == nil { throw AccountEditError.accountNotFound }
+        try db.execute(sql: "UPDATE account SET isMain = 0 WHERE isMain = 1")
+        if let accountId {
+            try db.execute(sql: "UPDATE account SET isMain = 1 WHERE id = ?", arguments: [accountId])
+        }
+    }
+
     public static func hasHistory(db: Database, accountId: Int64) throws -> Bool {
         let snapshots = try BalanceSnapshot.filter(Column("accountId") == accountId).fetchCount(db)
         if snapshots > 0 { return true }

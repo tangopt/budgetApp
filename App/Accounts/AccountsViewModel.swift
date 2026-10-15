@@ -90,9 +90,21 @@ final class AccountsViewModel: ObservableObject {
         }
     }
 
-    func updateAccount(id: Int64, name: String, kind: AccountKind, details: AccountDetails) -> SaveOutcome {
-        perform { db in
+    /// Edit…'s Save: the account's fields and, when `isMain` changed, the main account
+    /// (`AccountEditing.setMain`), in one write.
+    func updateAccount(id: Int64, name: String, kind: AccountKind, details: AccountDetails, isMain: Bool) -> SaveOutcome {
+        let wasMain = accounts.first { $0.id == id }?.isMain ?? false
+        return perform { db in
             try AccountEditing.update(db: db, accountId: id, name: name, kind: kind, details: details)
+            if isMain != wasMain { try AccountEditing.setMain(db: db, accountId: isMain ? id : nil) }
+        }
+    }
+
+    /// The row menu's Set as main account / Unset main account (`AccountEditing.setMain`);
+    /// a failure shows in the banner.
+    func setMain(_ id: Int64?) {
+        if case .failed(let message) = perform({ db in try AccountEditing.setMain(db: db, accountId: id) }) {
+            errorMessage = message
         }
     }
 

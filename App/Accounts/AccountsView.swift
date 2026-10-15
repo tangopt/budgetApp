@@ -32,7 +32,7 @@ struct AccountsView: View {
                                          onImport: { id, format in
                                              viewModel.selectedAccountId = id
                                              pendingImport = PendingImport(accountId: id, format: format)
-                                         }) { group, from, to in
+                                         }, onSetMain: { viewModel.setMain($0) }) { group, from, to in
                             viewModel.moveAccounts(ids: group.rows.map(\.id), fromOffsets: from, toOffset: to)
                         }
                         footer
@@ -280,6 +280,8 @@ private struct AccountsListView: View {
     let importDisabled: Bool
     /// Import statement ▸ CSV…/PDF… from a row's context menu.
     let onImport: (Int64, ImportFormat) -> Void
+    /// Set as main account / Unset main account (nil) from a row's context menu.
+    let onSetMain: (Int64?) -> Void
     /// A drag within a section (accounts reorder within their kind).
     let onMove: (AccountGroup, IndexSet, Int) -> Void
 
@@ -296,6 +298,12 @@ private struct AccountsListView: View {
                                     Button("PDF…") { onImport(row.id, .pdf) }
                                 }
                                 .disabled(importDisabled)
+                                Divider()
+                                if row.account.isMain {
+                                    Button("Unset main account") { onSetMain(nil) }
+                                } else {
+                                    Button("Set as main account") { onSetMain(row.id) }
+                                }
                             }
                     }
                     .onMove { from, to in onMove(group, from, to) }
@@ -425,9 +433,19 @@ private struct AccountDetailView: View {
                         if row.account.displayName != row.account.name {
                             Text(row.account.name).font(.callout).foregroundStyle(.secondary)
                         }
-                        Text("\(row.account.currency.rawValue.uppercased()) · \(AccountsFormat.kind(row.account.kind))")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: 6) {
+                            Text("\(row.account.currency.rawValue.uppercased()) · \(AccountsFormat.kind(row.account.kind))")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            if row.account.isMain {
+                                Text("Main account")
+                                    .font(.caption.weight(.medium))
+                                    .padding(.horizontal, 6).padding(.vertical, 1)
+                                    .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                                    .foregroundStyle(Color.accentColor)
+                                    .help(EditAccountSheet.mainAccountHelp)
+                            }
+                        }
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         AccountsFormat.balanceText(row.nativeBalanceMinorUnits, kind: row.account.kind, currency: row.account.currency, font: .title.bold().monospacedDigit())

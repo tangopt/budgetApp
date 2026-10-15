@@ -26,7 +26,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// The account panel's selection (spec §7); empty = All accounts. Kept for the app session
     /// (this view model lives as long as the window). Changing it rebuilds the shown actuals once.
     @Published private(set) var accountFilter: Set<Int64> = [] {
-        didSet { if accountFilter != oldValue { rebuildShownActuals(); clearPlanCaches(); clearNetWorthCaches() } }
+        didSet { if accountFilter != oldValue { rebuildShownActuals(); clearPlanCaches(); clearFilteredNetWorthCaches() } }
     }
     /// The toolbar's Show forecast (spec 2026-10-15 §1), remembered across launches: off, cells
     /// show actuals only and net worth stops at today. The caches that depend on it (cells,
@@ -57,6 +57,8 @@ final class BudgetGridViewModel: ObservableObject {
     }
     @Published var accounts: [Account] = [] {
         didSet {
+            // The main account decides where items with no account go.
+            if accounts.mainAccountId != oldValue.mainAccountId { itemAccountsCache = nil; clearPlanCaches() }
             clearNetWorthCaches()
             // A deleted account leaves the filter (none left = All accounts).
             let ids = Set(accounts.compactMap(\.id))
@@ -127,9 +129,17 @@ final class BudgetGridViewModel: ObservableObject {
     private var netWorthActualsCache: NetWorthActuals??
     /// The net-worth figures' input (filter and plan included), built once per change.
     private var netWorthInputCache: DashboardInput?
-    /// Planned items' accounts (`PlannedItemAccounts`), rebuilt lazily when categories or
-    /// transactions change.
+    /// Planned items' accounts (`PlannedItemAccounts`), rebuilt lazily when categories,
+    /// transactions or the main account change.
     private var itemAccountsCache: PlannedItemAccounts?
+    /// The account rows' forecast months per Show forecast, then year
+    /// (`DashboardCalculator.budgetAccountForecast`, always over All accounts, so the filter
+    /// keeps it). Cleared with the net worth caches.
+    private var accountForecastCache: [Bool: [Int: BudgetAccountForecast]] = [:]
+    /// `netWorthInput` and its `NetWorthActuals` for All accounts, whatever the filter (the
+    /// account rows); the same as `netWorthInput` with no filter.
+    private var allAccountsInputCache: DashboardInput?
+    private var allAccountsActualsCache: NetWorthActuals??
 
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
@@ -193,7 +203,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// category's history over every account).
     var itemAccounts: PlannedItemAccounts {
         if let cached = itemAccountsCache { return cached }
-        let built = PlannedItemAccounts(categories: categories, budgetTransactions: allAccountsBudgetTransactions, calendar: payCalendar)
+        let built = PlannedItemAccounts(categories: categories, budgetTransactions: allAccountsBudgetTransactions, calendar: payCalendar, mainAccountId: accounts.mainAccountId)
         itemAccountsCache = built
         return built
     }
@@ -275,6 +285,14 @@ final class BudgetGridViewModel: ObservableObject {
 
     private func clearNetWorthCaches() {
         accountBalanceCache = [:]
+        accountForecastCache = [:]
+        allAccountsInputCache = nil
+        allAccountsActualsCache = nil
+        clearFilteredNetWorthCaches()
+    }
+
+    /// The net-worth figures that follow the account filter.
+    private func clearFilteredNetWorthCaches() {
         yearEndCache = [:]
         netWorthRowCache = [:]
         netWorthInputCache = nil
@@ -298,6 +316,62 @@ final class BudgetGridViewModel: ObservableObject {
         input.accountFilter = planFilter
         netWorthInputCache = input
         return input
+    }
+
+    /// `netWorthInput` with All accounts (the account rows).
+    private var allAccountsInput: DashboardInput {
+        if accountFilter.isEmpty { return netWorthInput }
+        if let cached = allAccountsInputCache { return cached }
+        var input = netWorthInput
+        input.accountFilter = nil
+        allAccountsInputCache = input
+        return input
+    }
+
+    /// `allAccountsInput`'s `NetWorthActuals`, memoised (shared with the Net Worth row with no filter).
+    private var allAccountsActuals: NetWorthActuals? {
+        if accountFilter.isEmpty { return netWorthActuals }
+        if let cached = allAccountsActualsCache { return cached }
+        let actuals = DashboardCalculator.netWorthActuals(allAccountsInput)
+        allAccountsActualsCache = .some(actuals)
+        return actuals
+    }
+
+    /// The account rows' forecast months for `year` (`DashboardCalculator.budgetAccountForecast`),
+    /// memoised per Show forecast and year.
+    private func accountForecast(year: Int) -> BudgetAccountForecast {
+        if let cached = accountForecastCache[showForecast]?[year] { return cached }
+        let forecast = DashboardCalculator.budgetAccountForecast(allAccountsInput, actuals: allAccountsActuals, itemAccounts: itemAccounts, year: year, includeForecast: showForecast)
+        accountForecastCache[showForecast, default: [:]][year] = forecast
+        return forecast
+    }
+
+    /// An account row's month (account-forecast spec §2): the actual month-end balance to
+    /// today; with Show forecast the walk-start month and later months forecast (today's
+    /// balance plus the account's planned legs), else "—" after today.
+    enum AccountCell {
+        case actual(MonthlyAccountBalance?)
+        case forecast(AccountForecastBalance, currency: Currency)
+        case blank
+    }
+
+    func accountCell(_ account: Account, year: Int, month: Int) -> AccountCell {
+        let forecast = accountForecast(year: year)
+        if let id = account.id, let balance = forecast.balance(accountId: id, month: month) { return .forecast(balance, currency: account.currency) }
+        if forecast.blankMonths.contains(month) || forecast.isForecast(month: month) { return .blank }
+        return .actual(accountBalance(account, year: year, month: month))
+    }
+
+    /// The "Not assigned to an account" row's month: planned items with no effective account,
+    /// accumulated over the forecast months (GBP); nil elsewhere.
+    func unassignedForecast(year: Int, month: Int) -> Int? {
+        accountForecast(year: year).unassigned[month]
+    }
+
+    /// Whether the "Not assigned to an account" row shows: All accounts, and something
+    /// unassigned in one of the shown years.
+    var showsUnassignedRow: Bool {
+        accountFilter.isEmpty && selectedYears.contains { accountForecast(year: $0).hasUnassigned }
     }
 
     /// `netWorthInput`'s `NetWorthActuals` (nil = no balance data yet), memoised.
