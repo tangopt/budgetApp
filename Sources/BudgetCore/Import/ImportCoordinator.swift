@@ -276,10 +276,16 @@ public final class ImportCoordinator {
     /// re-checked (`StatementCheck.recheckStoredMismatch`).
     @discardableResult
     public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statement: StatementFinish? = nil) throws -> StatementFinishOutcome? {
+        try dbQueue.write { db in
+            try commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions, statement: statement)
+        }
+    }
+
+    private func commitRows(db: Database, accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statement: StatementFinish?) throws -> StatementFinishOutcome? {
         let decisionById = Dictionary(decisions.map { ($0.stagedId, $0.finalCategoryId) }, uniquingKeysWith: { _, last in last })
         let learnById = Dictionary(decisions.map { ($0.stagedId, $0.learnRule) }, uniquingKeysWith: { _, last in last })
         let noteById = Dictionary(decisions.map { ($0.stagedId, $0.note) }, uniquingKeysWith: { _, last in last })
-        return try dbQueue.write { db in
+        do {
             var batch = ImportBatch(accountId: accountId, sourceFileName: sourceFileName, importedAt: Date())
             try batch.insert(db)
             for stagedTransaction in staged {
@@ -324,10 +330,38 @@ public final class ImportCoordinator {
     /// (and adjusted when ticked) on its own — never an empty batch.
     @discardableResult
     public func finishStatement(accountId: Int64, sourceFileName: String, statement: StatementFinish) throws -> StatementFinishOutcome {
+        try dbQueue.write { db in try Self.finishStatementOnly(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: statement) }
+    }
+
+    private static func finishStatementOnly(db: Database, accountId: Int64, sourceFileName: String, statement: StatementFinish) throws -> StatementFinishOutcome {
+        let outcome = try StatementCheck.finish(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: statement)
+        if outcome.adjustmentTransactionId != nil { try AutoForecastGenerator.refresh(db: db) }
+        return outcome
+    }
+
+    /// Finish import in ONE write: the rows (`commit`), or with none the statement check alone
+    /// (`finishStatement`), plus the account's empty sort code / account number from
+    /// `accountFill` (spec 2026-10-15 §5, `StatementAccountCheck.fill`). `filled` is what that
+    /// fill actually wrote (nil when nothing), for the finish message.
+    public func finish(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision],
+                       statement: StatementFinish?, accountFill: StatementAccountFill?) throws -> ImportFinishResult {
         try dbQueue.write { db in
-            let outcome = try StatementCheck.finish(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: statement)
-            if outcome.adjustmentTransactionId != nil { try AutoForecastGenerator.refresh(db: db) }
-            return outcome
+            let filled = try accountFill.flatMap { try StatementAccountCheck.fill(db: db, accountId: accountId, with: $0) }
+            let outcome: StatementFinishOutcome?
+            if !staged.isEmpty {
+                outcome = try commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions, statement: statement)
+            } else {
+                outcome = try statement.map { try Self.finishStatementOnly(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: $0) }
+            }
+            return ImportFinishResult(statementOutcome: outcome, filled: filled)
         }
     }
+}
+
+/// What `ImportCoordinator.finish` did.
+public struct ImportFinishResult: Equatable {
+    /// The statement check's outcome (nil without a statement).
+    public let statementOutcome: StatementFinishOutcome?
+    /// The account details the fill actually wrote (nil when none).
+    public let filled: StatementAccountFill?
 }

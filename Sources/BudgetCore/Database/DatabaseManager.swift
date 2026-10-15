@@ -67,5 +67,7 @@ public final class DatabaseManager {
         registerAccountBalanceConfirmedAtMigration(&migrator)
         registerCategoryTransferAccountMigration(&migrator)
         registerImportProfileFeeStatusColumnsMigration(&migrator)
+        registerAccountBankRegionMigration(&migrator)
+        registerImportProfileAccountColumnsMigration(&migrator)
     }
 }

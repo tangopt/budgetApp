@@ -9,6 +9,10 @@ struct ImportFlowActions {
     /// Reopens the column-mapping sheet prefilled from the saved CSV profile — `nil` when the
     /// account has none yet.
     let editCSVMapping: (() -> Void)?
+    /// "Reset column mapping…" (asks first) — `nil` when the account has no CSV profile.
+    let resetCSVMapping: (() -> Void)?
+    /// "Reset PDF layout…" (asks first) — `nil` when the account has no PDF profile.
+    let resetPDFLayout: (() -> Void)?
 }
 
 /// One presentation of the column-mapping sheet: the file it's shown with, and whether the
@@ -22,10 +26,10 @@ private struct CSVMappingRequest: Identifiable {
 }
 
 /// Owns everything needed to START an import — the two file pickers, the column-mapping and
-/// PDF-layout wizards, and the "which file did the user pick" state. Hosted by the
-/// Dashboard's import card, the only place an import starts (spec §6); progress and review
-/// are on the Import screen (`ImportView`), which the sidebar shows and selects as soon as
-/// staging begins (`ContentView`).
+/// PDF-layout wizards, the "which file did the user pick" state, and resetting a saved
+/// mapping or layout (spec 2026-10-15 §4). Hosted by the Dashboard's import card and the
+/// Accounts screen (spec 2026-10-15 §1); progress and review are on the Import screen
+/// (`ImportView`), which the sidebar shows and selects as soon as staging begins (`ContentView`).
 struct ImportFlowHost<Content: View>: View {
     @ObservedObject var viewModel: ImportViewModel
     let account: Account
@@ -41,6 +45,9 @@ struct ImportFlowHost<Content: View>: View {
     /// the sheet (prefilled from the saved profile) instead of importing straight away.
     @State private var editMappingAfterPick = false
     @State private var hasCSVProfile = false
+    @State private var hasPDFProfile = false
+    /// The format whose saved mapping/layout the reset alert is asking about.
+    @State private var pendingReset: ImportFormat?
     @State private var showPDFPicker = false
     @State private var pendingPDFLines: [String]?
     @State private var pendingPDFFileName = "statement.pdf"
@@ -49,9 +56,11 @@ struct ImportFlowHost<Content: View>: View {
         content(ImportFlowActions(
             startCSV: { editMappingAfterPick = false; showFilePicker = true },
             startPDF: { showPDFPicker = true },
-            editCSVMapping: hasCSVProfile ? { editCSVMapping() } : nil
+            editCSVMapping: hasCSVProfile ? { editCSVMapping() } : nil,
+            resetCSVMapping: hasCSVProfile ? { pendingReset = .csv } : nil,
+            resetPDFLayout: hasPDFProfile ? { pendingReset = .pdf } : nil
         ))
-            .task(id: account.id) { refreshHasCSVProfile() }
+            .task(id: account.id) { refreshHasProfiles() }
             .onChange(of: account.id) { lastCSVFileURL = nil; editMappingAfterPick = false }
             .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.commaSeparatedText]) { result in
                 switch result {
@@ -64,6 +73,14 @@ struct ImportFlowHost<Content: View>: View {
                 case .success(let url): handlePickedPDF(url)
                 case .failure(let error): viewModel.fail("Couldn't open the file: \(error.localizedDescription)")
                 }
+            }
+            .alert(resetTitle, isPresented: Binding(get: { pendingReset != nil }, set: { if !$0 { pendingReset = nil } })) {
+                Button("Cancel", role: .cancel) { pendingReset = nil }
+                Button("Reset", role: .destructive) { resetProfile() }
+            } message: {
+                Text(pendingReset == .pdf
+                     ? "The next PDF import asks you to set up its layout again."
+                     : "The next CSV import asks you to map its columns again.")
             }
             .sheet(item: $pendingCSVMapping) { request in
                 CSVMappingWizardView(account: account, csvText: request.csvText, existingProfile: request.existingProfile) { profile in
@@ -83,6 +100,7 @@ struct ImportFlowHost<Content: View>: View {
                     pendingPDFLines = nil
                     do {
                         try profileStore.save(profile)
+                        hasPDFProfile = true
                         guard let configJSON = profile.pdfLayoutConfig else {
                             viewModel.fail("The PDF layout couldn't be saved.")
                             return
@@ -173,9 +191,30 @@ struct ImportFlowHost<Content: View>: View {
         return text
     }
 
-    private func refreshHasCSVProfile() {
-        guard let accountId = account.id else { hasCSVProfile = false; return }
+    private func refreshHasProfiles() {
+        guard let accountId = account.id else { hasCSVProfile = false; hasPDFProfile = false; return }
         hasCSVProfile = (try? profileStore.find(accountId: accountId, format: .csv)) != nil
+        hasPDFProfile = (try? profileStore.find(accountId: accountId, format: .pdf)) != nil
+    }
+
+    private var resetTitle: String {
+        pendingReset == .pdf
+            ? "Reset the PDF layout for \(account.displayName)?"
+            : "Reset the column mapping for \(account.displayName)?"
+    }
+
+    /// Deletes the account's saved mapping or layout (`ImportProfileStore.delete`).
+    private func resetProfile() {
+        guard let format = pendingReset else { return }
+        pendingReset = nil
+        guard let accountId = account.id else { return }
+        do {
+            try profileStore.delete(accountId: accountId, format: format)
+            if format == .csv { lastCSVFileURL = nil }
+        } catch {
+            viewModel.fail("Couldn't reset the \(format == .pdf ? "PDF layout" : "column mapping"): \(error.localizedDescription)")
+        }
+        refreshHasProfiles()
     }
 
     private func handlePickedPDF(_ url: URL) {

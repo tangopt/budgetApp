@@ -30,4 +30,15 @@ public final class ImportProfileStore {
         }
         return mutableProfile
     }
+
+    /// Forgets the account's saved mapping (CSV) or layout (PDF) for `format`, so the next
+    /// import of that format asks for it again (spec 2026-10-15 §4). Returns whether one existed.
+    @discardableResult
+    public func delete(accountId: Int64, format: ImportFormat) throws -> Bool {
+        try dbQueue.write { db in
+            try ImportProfile
+                .filter(Column("accountId") == accountId && Column("format") == format.rawValue)
+                .deleteAll(db) > 0
+        }
+    }
 }

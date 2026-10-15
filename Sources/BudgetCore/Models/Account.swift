@@ -12,6 +12,41 @@ public enum AccountTrackingMode: String, Codable, CaseIterable, Sendable {
     case manual
 }
 
+/// Which bank-detail fields an account uses (spec 2026-10-15 §2).
+public enum BankRegion: String, Codable, CaseIterable, Sendable {
+    case uk, us, europe, other
+
+    public var title: String {
+        switch self {
+        case .uk: return "UK"
+        case .us: return "US"
+        case .europe: return "Europe"
+        case .other: return "Other"
+        }
+    }
+
+    /// The region-specific fields, in display order (bank name and BIC apply to every region).
+    public var fields: [BankDetailField] {
+        switch self {
+        case .uk: return [.sortCode, .accountNumber, .iban]
+        case .us: return [.routingNumber, .accountNumber]
+        case .europe: return [.iban]
+        case .other: return [.accountNumber]
+        }
+    }
+
+    public static func forCurrency(_ currency: Currency) -> BankRegion {
+        switch currency {
+        case .gbp: return .uk
+        case .eur: return .europe
+        }
+    }
+}
+
+public enum BankDetailField: String, CaseIterable, Hashable, Sendable {
+    case bankName, sortCode, routingNumber, accountNumber, iban, bic
+}
+
 public struct Account: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var id: Int64?
     public var name: String
@@ -29,6 +64,14 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     public var accountNumber: String?
     /// Uppercase, no spaces (shown in groups of 4).
     public var iban: String?
+    /// The stored bank region; nil derives one (`effectiveBankRegion`).
+    public var bankRegion: BankRegion?
+    /// Optional, trimmed free text.
+    public var bankName: String?
+    /// US ABA routing number: 9 digits, no separators.
+    public var routingNumber: String?
+    /// BIC/SWIFT: uppercase, 8 or 11 characters.
+    public var bic: String?
     /// The user's drag-and-drop position (`AccountOrdering`); nil until the first reorder.
     /// Ordered accounts list first, ascending; the rest follow alphabetically.
     public var sortOrder: Int?
@@ -52,7 +95,8 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     public init(id: Int64? = nil, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode,
                 alias: String? = nil, sortCode: String? = nil, accountNumber: String? = nil, iban: String? = nil, sortOrder: Int? = nil,
                 statementMismatchMinorUnits: Int? = nil, statementMismatchDate: Date? = nil,
-                statementMismatchClosingMinorUnits: Int? = nil, statementLastCheckedDate: Date? = nil, balanceConfirmedAt: Date? = nil) {
+                statementMismatchClosingMinorUnits: Int? = nil, statementLastCheckedDate: Date? = nil, balanceConfirmedAt: Date? = nil,
+                bankRegion: BankRegion? = nil, bankName: String? = nil, routingNumber: String? = nil, bic: String? = nil) {
         self.id = id
         self.name = name
         self.currency = currency
@@ -68,6 +112,20 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
         self.statementMismatchClosingMinorUnits = statementMismatchClosingMinorUnits
         self.statementLastCheckedDate = statementLastCheckedDate
         self.balanceConfirmedAt = balanceConfirmedAt
+        self.bankRegion = bankRegion
+        self.bankName = bankName
+        self.routingNumber = routingNumber
+        self.bic = bic
+    }
+
+    /// The stored region; else derived from the details set (sort code → UK, IBAN → Europe,
+    /// routing number → US), else from the currency.
+    public var effectiveBankRegion: BankRegion {
+        if let bankRegion { return bankRegion }
+        if sortCode != nil { return .uk }
+        if iban != nil { return .europe }
+        if routingNumber != nil { return .us }
+        return .forCurrency(currency)
     }
 
     /// What the UI calls the account: the alias when set, otherwise the full name. `name`
@@ -139,6 +197,17 @@ func registerAccountBalanceConfirmedAtMigration(_ migrator: inout DatabaseMigrat
     migrator.registerMigration("addAccountBalanceConfirmedAt") { db in
         try db.alter(table: "account") { t in
             t.add(column: "balanceConfirmedAt", .datetime)
+        }
+    }
+}
+
+func registerAccountBankRegionMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addAccountBankRegion") { db in
+        try db.alter(table: "account") { t in
+            t.add(column: "bankRegion", .text)
+            t.add(column: "bankName", .text)
+            t.add(column: "routingNumber", .text)
+            t.add(column: "bic", .text)
         }
     }
 }

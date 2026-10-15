@@ -8,7 +8,17 @@ import BudgetCore
 struct AccountsView: View {
     @ObservedObject var viewModel: AccountsViewModel
     @ObservedObject var environment: AppEnvironment
+    /// Import statement (spec 2026-10-15 §1): the shared import flow, started here with the
+    /// selected account; staging moves to the Import screen (`ContentView`).
+    @ObservedObject var importViewModel: ImportViewModel
+    let profileStore: ImportProfileStore
+    let navigate: (AppScreen) -> Void
     @State private var activeSheet: AccountsSheet?
+    /// A row's Import statement ▸ CSV…/PDF…: selects the account, then the detail's import
+    /// host starts it once it shows that account.
+    @State private var pendingImport: PendingImport?
+
+    private var importBusy: Bool { importViewModel.isStaging || importViewModel.isReviewing }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -18,19 +28,17 @@ struct AccountsView: View {
                 HStack(alignment: .top, spacing: 16) {
                     VStack(alignment: .leading, spacing: 8) {
                         AccountsListView(groups: overview.groups, selection: $viewModel.selectedAccountId,
-                                         onAddTransaction: addTransaction(in:)) { group, from, to in
+                                         onAddTransaction: addTransaction(in:), importDisabled: importBusy,
+                                         onImport: { id, format in
+                                             viewModel.selectedAccountId = id
+                                             pendingImport = PendingImport(accountId: id, format: format)
+                                         }) { group, from, to in
                             viewModel.moveAccounts(ids: group.rows.map(\.id), fromOffsets: from, toOffset: to)
                         }
                         footer
                     }
                     .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    AccountDetailView(
-                        row: viewModel.selectedRow,
-                        history: viewModel.selectedHistory,
-                        onUpdateBalance: { activeSheet = .updateOne($0) },
-                        onEdit: { activeSheet = .edit($0.account) },
-                        onAddTransaction: { addTransaction(in: $0.id) }
-                    )
+                    detail
                         .frame(width: 320)
                         .frame(maxHeight: .infinity, alignment: .top)
                 }
@@ -45,6 +53,11 @@ struct AccountsView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onChange(of: viewModel.selectedAccountId) { _, id in
+            // A different selection drops a request for another account (a row's Import
+            // statement sets both together, so its own request survives).
+            if let request = pendingImport, request.accountId != id { pendingImport = nil }
+        }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .add:
@@ -67,6 +80,43 @@ struct AccountsView: View {
                 )
             }
         }
+    }
+
+    /// The detail panel, inside the import host for its account (file pickers, mapping and
+    /// layout sheets, reset confirmations) so its Import statement menu can start an import.
+    @ViewBuilder
+    private var detail: some View {
+        if let row = viewModel.selectedRow, !importBusy {
+            ImportFlowHost(viewModel: importViewModel, account: row.account, profileStore: profileStore) { actions in
+                detailView(importActions: actions)
+                    .onChange(of: pendingImport, initial: true) { _, request in
+                        guard let request else { return }
+                        // Taken or dropped either way: a request that doesn't match the shown
+                        // account must not start an import later.
+                        pendingImport = nil
+                        guard request.accountId == row.account.id else { return }
+                        switch request.format {
+                        case .csv: actions.startCSV()
+                        case .pdf: actions.startPDF()
+                        }
+                    }
+            }
+        } else {
+            detailView(importActions: nil)
+        }
+    }
+
+    private func detailView(importActions: ImportFlowActions?) -> some View {
+        AccountDetailView(
+            row: viewModel.selectedRow,
+            history: viewModel.selectedHistory,
+            importActions: importActions,
+            importBusy: importBusy,
+            onUpdateBalance: { activeSheet = .updateOne($0) },
+            onEdit: { activeSheet = .edit($0.account) },
+            onAddTransaction: { addTransaction(in: $0.id) },
+            onResumeReview: { navigate(.importReview) }
+        )
     }
 
     /// Add transaction… for an account (its row's menu, or the detail's button).
@@ -190,6 +240,13 @@ private enum AccountsSheet: Identifiable {
     }
 }
 
+/// A row's Import statement ▸ CSV…/PDF… waiting for the detail's import host.
+private struct PendingImport: Equatable {
+    let id = UUID()
+    let accountId: Int64
+    let format: ImportFormat
+}
+
 // MARK: - Banner
 
 private struct Banner<Content: View>: View {
@@ -219,6 +276,10 @@ private struct AccountsListView: View {
     @Binding var selection: Int64?
     /// Add transaction… from a row's context menu.
     let onAddTransaction: (Int64) -> Void
+    /// True while an import is staging or in review: Import statement is disabled.
+    let importDisabled: Bool
+    /// Import statement ▸ CSV…/PDF… from a row's context menu.
+    let onImport: (Int64, ImportFormat) -> Void
     /// A drag within a section (accounts reorder within their kind).
     let onMove: (AccountGroup, IndexSet, Int) -> Void
 
@@ -230,6 +291,11 @@ private struct AccountsListView: View {
                         AccountListRow(row: row).tag(row.id)
                             .contextMenu {
                                 Button("Add transaction…") { onAddTransaction(row.id) }
+                                Menu("Import statement") {
+                                    Button("CSV…") { onImport(row.id, .csv) }
+                                    Button("PDF…") { onImport(row.id, .pdf) }
+                                }
+                                .disabled(importDisabled)
                             }
                     }
                     .onMove { from, to in onMove(group, from, to) }
@@ -284,49 +350,68 @@ private struct AccountListRow: View {
 
 // MARK: - Detail
 
-/// Sort code, account number and IBAN (only those set), each with a copy button that puts
-/// the unformatted value on the clipboard. Nothing when none is set.
+/// The "Bank details" section (spec 2026-10-15 §3): bank name, the region's fields and BIC
+/// (only those set), each with a copy button that puts the unformatted value on the
+/// clipboard, and Copy all. Without any, an "Add bank details…" link opens Edit.
 private struct AccountBankDetails: View {
     let account: Account
-
-    private var items: [(label: String, shown: String, copied: String)] {
-        var items: [(label: String, shown: String, copied: String)] = []
-        if let sortCode = account.sortCode { items.append(("Sort code", AccountDetailsFormat.formattedSortCode(sortCode), sortCode)) }
-        if let number = account.accountNumber { items.append(("Account number", number, number)) }
-        if let iban = account.iban { items.append(("IBAN", AccountDetailsFormat.formattedIBAN(iban), iban)) }
-        return items
-    }
+    let onAdd: () -> Void
 
     var body: some View {
-        if !items.isEmpty {
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 4) {
-                ForEach(items, id: \.label) { item in
-                    GridRow {
-                        Text(item.label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                        Text(item.shown).font(.body.monospacedDigit()).textSelection(.enabled)
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(item.copied, forType: .string)
-                        } label: {
-                            Image(systemName: "doc.on.doc")
-                        }
+        let lines = BankDetailsFormat.lines(for: account)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Bank details").font(.headline)
+                Spacer()
+                if let all = BankDetailsFormat.copyAllText(for: account) {
+                    Button("Copy all") { Self.copy(all) }
                         .buttonStyle(.borderless)
-                        .help("Copy \(item.label.lowercased())")
-                        .accessibilityLabel("Copy \(item.label.lowercased())")
-                    }
+                        .font(.callout)
+                        .help("Copy all bank details as text")
                 }
             }
-            .font(.callout)
+            if lines.isEmpty {
+                Button("Add bank details…", action: onAdd)
+                    .buttonStyle(.link)
+                    .font(.callout)
+            } else {
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 4) {
+                    ForEach(lines, id: \.label) { line in
+                        GridRow {
+                            Text(line.label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                            Text(line.shown).font(.body.monospacedDigit()).textSelection(.enabled)
+                            Button {
+                                Self.copy(line.copied)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Copy \(line.label.lowercased())")
+                            .accessibilityLabel("Copy \(line.label.lowercased())")
+                        }
+                    }
+                }
+                .font(.callout)
+            }
         }
+    }
+
+    private static func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }
 
 private struct AccountDetailView: View {
     let row: AccountRow?
     let history: AccountHistory
+    /// The import host's actions for this account; nil while an import is staging or in review.
+    let importActions: ImportFlowActions?
+    let importBusy: Bool
     let onUpdateBalance: (AccountRow) -> Void
     let onEdit: (AccountRow) -> Void
     let onAddTransaction: (AccountRow) -> Void
+    let onResumeReview: () -> Void
     @State private var showAllHistory = false
     @State private var selectedDate: Date?
     private let historyLimit = 12
@@ -358,12 +443,13 @@ private struct AccountDetailView: View {
                             .foregroundStyle(.red)
                             .help("A statement import's closing balance didn't match. Check for missing or duplicate transactions, or use Update balance… to settle it.")
                     }
-                    AccountBankDetails(account: row.account)
                     HStack {
                         Button("Update balance…") { onUpdateBalance(row) }
                         Button("Edit…") { onEdit(row) }
                         Button("Add transaction…") { onAddTransaction(row) }
                     }
+                    importRow
+                    AccountBankDetails(account: row.account, onAdd: { onEdit(row) })
                     chart(row)
                     historyList(row)
                 }
@@ -377,6 +463,32 @@ private struct AccountDetailView: View {
             Text("Select an account.")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// Import statement ▾ (spec 2026-10-15 §1): CSV…, PDF…, then the saved mapping/layout's
+    /// Edit and Reset items. Disabled, with a link to the review, while an import is under way.
+    private var importRow: some View {
+        HStack {
+            Menu("Import statement") {
+                if let actions = importActions {
+                    Button("CSV…") { actions.startCSV() }
+                    Button("PDF…") { actions.startPDF() }
+                    if actions.editCSVMapping != nil || actions.resetCSVMapping != nil || actions.resetPDFLayout != nil {
+                        Divider()
+                    }
+                    if let edit = actions.editCSVMapping { Button("Edit column mapping…") { edit() } }
+                    if let reset = actions.resetCSVMapping { Button("Reset column mapping…") { reset() } }
+                    if let reset = actions.resetPDFLayout { Button("Reset PDF layout…") { reset() } }
+                }
+            }
+            .fixedSize()
+            .disabled(importBusy || importActions == nil)
+            if importBusy {
+                Button("Resume review ›", action: onResumeReview)
+                    .buttonStyle(.link)
+                    .fixedSize()
+            }
         }
     }
 

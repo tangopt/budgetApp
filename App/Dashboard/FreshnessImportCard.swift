@@ -119,7 +119,8 @@ struct FreshnessImportCard: View {
     /// Account picker plus the two import buttons. `actions` is nil when the selected id
     /// doesn't match a saved account (the picker alone is shown to correct it). For an
     /// account with a saved CSV mapping, Import CSV… is a pull-down whose menu holds
-    /// "Edit column mapping…".
+    /// "Edit column mapping…" and "Reset column mapping…"; with a saved PDF layout, Import PDF…
+    /// holds "Reset PDF layout…".
     private func idleControls(actions: ImportFlowActions?) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -129,6 +130,9 @@ struct FreshnessImportCard: View {
                     if let editCSVMapping = actions.editCSVMapping {
                         Menu("Import CSV…") {
                             Button("Edit column mapping…") { editCSVMapping() }
+                            if let reset = actions.resetCSVMapping {
+                                Button("Reset column mapping…") { reset() }
+                            }
                         } primaryAction: {
                             actions.startCSV()
                         }
@@ -136,7 +140,16 @@ struct FreshnessImportCard: View {
                     } else {
                         Button("Import CSV…") { actions.startCSV() }.fixedSize()
                     }
-                    Button("Import PDF…") { actions.startPDF() }.fixedSize()
+                    if let resetPDFLayout = actions.resetPDFLayout {
+                        Menu("Import PDF…") {
+                            Button("Reset PDF layout…") { resetPDFLayout() }
+                        } primaryAction: {
+                            actions.startPDF()
+                        }
+                        .fixedSize()
+                    } else {
+                        Button("Import PDF…") { actions.startPDF() }.fixedSize()
+                    }
                 }
             }
             // Capped so a long caption wraps instead of widening the controls (which would
