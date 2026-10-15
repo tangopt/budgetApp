@@ -6,12 +6,15 @@ public enum TransactionEditError: Error, Equatable, LocalizedError {
     case categoryNotFound
     /// Reserves are forecast-only and never hold transactions.
     case reservedCategory
+    /// Balance adjustment and Market movement are only ever set by the Accounts screen.
+    case builtInCategory
 
     public var errorDescription: String? {
         switch self {
         case .transactionNotFound: return "That transaction no longer exists."
         case .categoryNotFound: return "That category no longer exists."
         case .reservedCategory: return "Reserved categories can't hold transactions."
+        case .builtInCategory: return "Balance adjustments and market movements are recorded from the Accounts screen, not chosen as a category."
         }
     }
 }
@@ -27,6 +30,7 @@ public enum TransactionEditing {
             // A note-only edit: how it was categorised stays as it was.
         } else if let categoryId {
             guard let category = try Category.fetchOne(db, key: categoryId) else { throw TransactionEditError.categoryNotFound }
+            guard !category.isBuiltIn else { throw TransactionEditError.builtInCategory }
             guard category.isAssignable else { throw TransactionEditError.reservedCategory }
             transaction.status = .confirmed
             transaction.categorizedBy = .manual
@@ -37,6 +41,56 @@ public enum TransactionEditing {
         transaction.categoryId = categoryId
         transaction.note = Transaction.normalizedNote(note)
         try transaction.update(db)
+    }
+}
+
+/// What Search's Set category… changed.
+public struct SetCategoryResult: Equatable, Sendable {
+    /// Transactions given the category.
+    public let updatedCount: Int
+    /// Transactions left alone because they're a balance adjustment or market movement
+    /// (a built-in category, set only by the Accounts screen).
+    public let skippedBuiltInCount: Int
+
+    public init(updatedCount: Int, skippedBuiltInCount: Int) {
+        self.updatedCount = updatedCount
+        self.skippedBuiltInCount = skippedBuiltInCount
+    }
+}
+
+extension TransactionEditing {
+    /// Search's Set category… (spec 2026-10-15): each transaction gets `categoryId`, confirmed
+    /// and manual, its note kept. Rows in a built-in category (balance adjustments, market
+    /// movements) are skipped and counted. With `remember`, a rule is learned from each
+    /// description (`RuleLearner.learn`, as on Uncategorized) — never from a leg of an active
+    /// transfer link, whose description names the transfer, not a merchant. Call inside one
+    /// write: a missing transaction or category, a reserve or a built-in target throws and
+    /// rolls everything back.
+    @discardableResult
+    public static func setCategory(db: Database, ids: [Int64], categoryId: Int64, remember: Bool) throws -> SetCategoryResult {
+        guard let category = try Category.fetchOne(db, key: categoryId) else { throw TransactionEditError.categoryNotFound }
+        guard !category.isBuiltIn else { throw TransactionEditError.builtInCategory }
+        guard category.isAssignable else { throw TransactionEditError.reservedCategory }
+        let builtInIds = Set(try Category.fetchAll(db).filter(\.isBuiltIn).compactMap(\.id))
+        let linkedIds = Set(try TransferLink.active.fetchAll(db).flatMap { [$0.outTransactionId, $0.inTransactionId] })
+        var updated = 0
+        var skipped = 0
+        for id in ids {
+            guard var transaction = try Transaction.fetchOne(db, key: id) else { throw TransactionEditError.transactionNotFound }
+            if let current = transaction.categoryId, builtInIds.contains(current) {
+                skipped += 1
+                continue
+            }
+            transaction.categoryId = categoryId
+            transaction.status = .confirmed
+            transaction.categorizedBy = .manual
+            try transaction.update(db)
+            updated += 1
+            if remember, !linkedIds.contains(id) {
+                try RuleLearner.learn(description: transaction.rawDescription, categoryId: categoryId, db: db)
+            }
+        }
+        return SetCategoryResult(updatedCount: updated, skippedBuiltInCount: skipped)
     }
 }
 

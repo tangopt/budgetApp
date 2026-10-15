@@ -78,6 +78,13 @@ struct EditTransactionSheet: View {
         _note = State(initialValue: transaction.note ?? "")
     }
 
+    /// The transaction's category when it's built in (a balance adjustment or market
+    /// movement): shown read-only.
+    private var builtInCategory: Category? {
+        guard let id = transaction.categoryId else { return nil }
+        return categories.first { $0.id == id && $0.isBuiltIn }
+    }
+
     /// A transaction added by hand, with the actions to edit it.
     private var editsManually: Bool {
         transaction.isManual && transaction.id != nil && manual != nil
@@ -123,18 +130,29 @@ struct EditTransactionSheet: View {
                     }
                     LabeledContent("Amount") { MoneyText(minorUnits: transaction.amountMinorUnits) }
                 }
-                LabeledContent("Category") {
-                    CategoryPickerButton(
-                        selection: $categoryId,
-                        categories: categories,
-                        groups: groups,
-                        suggestedId: nil,
-                        recentIds: recentIds,
-                        amountMinorUnits: pickerAmount,
-                        createCategory: createCategory
-                    )
-                    .frame(maxWidth: 260)
-                    .onChange(of: categoryId) { _, _ in errorMessage = nil }
+                if let builtIn = builtInCategory {
+                    // Balance adjustments and market movements are the Accounts screen's.
+                    LabeledContent("Category") {
+                        HStack(spacing: 4) {
+                            CategoryBadge(category: builtIn, size: .small)
+                            Text(builtIn.name)
+                        }
+                        .help("Set by the Accounts screen; its category can't be changed here")
+                    }
+                } else {
+                    LabeledContent("Category") {
+                        CategoryPickerButton(
+                            selection: $categoryId,
+                            categories: categories,
+                            groups: groups,
+                            suggestedId: nil,
+                            recentIds: recentIds,
+                            amountMinorUnits: pickerAmount,
+                            createCategory: createCategory
+                        )
+                        .frame(maxWidth: 260)
+                        .onChange(of: categoryId) { _, _ in errorMessage = nil }
+                    }
                 }
                 LabeledContent("Note") {
                     TextField("Note", text: $note, prompt: Text("Optional"), axis: .vertical)

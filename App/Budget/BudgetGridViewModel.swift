@@ -467,6 +467,28 @@ final class BudgetGridViewModel: ObservableObject {
         }
     }
 
+    // MARK: Show in Budget
+
+    /// A category's pay-month cell whose side panel the grid opens when it next shows (or
+    /// right away when on screen): Search's Show in Budget.
+    struct RevealRequest: Equatable {
+        let categoryId: Int64
+        let year: Int
+        let month: Int
+    }
+
+    @Published var revealRequest: RevealRequest?
+
+    /// Show in Budget: selects the pay year `date` falls in and asks the grid to open the
+    /// category's cell for its pay month. An account filter that hides `accountId` is
+    /// cleared, so the panel lists the transaction. Call after `load` (the pay calendar).
+    func reveal(categoryId: Int64, date: Date, accountId: Int64) {
+        let payMonth = payCalendar.month(containing: date)
+        if !accountFilter.isEmpty, !accountFilter.contains(accountId) { accountFilter = [] }
+        if selectedYears != [payMonth.year] { selectedYears = [payMonth.year] }
+        revealRequest = RevealRequest(categoryId: categoryId, year: payMonth.year, month: payMonth.month)
+    }
+
     /// A plain click on a year: show just that year.
     func selectYear(_ year: Int) {
         selectedYears = [year]

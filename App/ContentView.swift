@@ -2,11 +2,13 @@
 import SwiftUI
 import BudgetCore
 import struct BudgetCore.Category
+import struct BudgetCore.Transaction
 import GRDB
 
 enum AppScreen: String, CaseIterable, Identifiable {
     case importReview = "Import"
     case dashboard = "Dashboard"
+    case search = "Search"
     case budgetGrid = "Budget"
     case forecast = "Forecast"
     case accounts = "Accounts"
@@ -20,6 +22,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
         case .importReview: return "square.and.arrow.down"
         case .uncategorized: return "folder.badge.questionmark"
         case .dashboard: return "square.grid.2x2"
+        case .search: return "magnifyingglass"
         case .budgetGrid: return "tablecells"
         case .forecast: return "chart.line.uptrend.xyaxis"
         case .rules: return "wand.and.stars"
@@ -39,7 +42,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
     var sidebarSection: String {
         switch self {
         case .importReview, .uncategorized: return "Workflow"
-        case .dashboard, .budgetGrid, .forecast, .accounts: return "Overview"
+        case .dashboard, .search, .budgetGrid, .forecast, .accounts: return "Overview"
         case .rules, .categories: return "Settings"
         }
     }
@@ -63,6 +66,8 @@ struct ContentView: View {
     /// Uncategorized sidebar row shows only while it's above zero.
     @State private var uncategorizedCount = 0
     @AppStorage("lastImportAccountId") private var lastImportAccountId = 0
+    /// Show in Budget has just loaded the Budget grid's data (so its appearance needn't).
+    @State private var budgetGridJustLoaded = false
 
     // Each screen's view model is owned once by ContentView and handed down as a
     // stable reference, rather than reconstructed inline in the switch below on
@@ -76,6 +81,8 @@ struct ContentView: View {
     @StateObject private var uncategorizedViewModel: UncategorizedViewModel
     @StateObject private var accountsViewModel: AccountsViewModel
     @StateObject private var dashboardViewModel: DashboardViewModel
+    /// Kept for the app session: the search, its filters and sort survive navigation.
+    @StateObject private var searchViewModel: SearchViewModel
 
     private let profileStore: ImportProfileStore
 
@@ -93,6 +100,7 @@ struct ContentView: View {
         _uncategorizedViewModel = StateObject(wrappedValue: UncategorizedViewModel(dbQueue: environment.dbQueue))
         _accountsViewModel = StateObject(wrappedValue: AccountsViewModel(dbQueue: environment.dbQueue))
         _dashboardViewModel = StateObject(wrappedValue: DashboardViewModel(dbQueue: environment.dbQueue))
+        _searchViewModel = StateObject(wrappedValue: SearchViewModel(dbQueue: environment.dbQueue))
     }
 
     /// How far ahead to project forecasted pay periods in the Budget grid (the Forecast
@@ -163,12 +171,16 @@ struct ContentView: View {
                         profileStore: profileStore, navigate: { selection = $0 }
                     )
                     .onAppear { dashboardViewModel.load() }
+                case .search:
+                    SearchView(viewModel: searchViewModel, showInBudget: showInBudget)
                 case .importReview:
                     // Account and file are picked on the Dashboard's import card (spec §6).
                     ImportView(viewModel: importViewModel)
                 case .budgetGrid:
                     BudgetGridView(viewModel: budgetGridViewModel)
-                        .onAppear { try? budgetGridViewModel.load(horizon: forecastHorizon) }
+                        .onAppear {
+                            if budgetGridJustLoaded { budgetGridJustLoaded = false } else { try? budgetGridViewModel.load(horizon: forecastHorizon) }
+                        }
                 case .forecast:
                     ScenarioLabView(viewModel: scenarioLabViewModel)
                         .onAppear { scenarioLabViewModel.load() }
@@ -224,6 +236,7 @@ struct ContentView: View {
             budgetGridViewModel.onTransactionEdited = { refreshUncategorizedCount() }
             categoriesViewModel.onTransactionEdited = { refreshUncategorizedCount() }
             accountsViewModel.onTransactionAdded = { refreshUncategorizedCount() }
+            searchViewModel.onTransactionEdited = { refreshUncategorizedCount() }
             refreshSharedState()
         }
         .onChange(of: importViewModel.isStaging) { _, staging in
@@ -238,6 +251,11 @@ struct ContentView: View {
             refreshUncategorizedCount()
         }
         .onChange(of: sidebarSelection) { _, newValue in sidebarSelectionChanged(to: newValue) }
+        // ⌘F (Edit ▸ Search Transactions) in this window: the Search screen, its field focused.
+        .focusedSceneValue(\.transactionSearch, TransactionSearchAction {
+            sidebarSelectionChanged(to: .search)
+            searchViewModel.requestFocus()
+        })
         .onChange(of: selection) {
             // Screens can also be changed in code (the Dashboard's links, the alert below).
             if sidebarSelection != selection { sidebarSelection = selection }
@@ -261,6 +279,18 @@ struct ContentView: View {
             if selection == .dashboard { dashboardViewModel.load() }
             if selection == .accounts { accountsViewModel.load() }
         }
+    }
+
+    /// Search's Show in Budget: the Budget grid on the transaction's pay year, with its
+    /// category/month cell's side panel open.
+    private func showInBudget(_ transaction: Transaction) {
+        guard let categoryId = transaction.categoryId else { return }
+        // Fresh data first, so the pay calendar places the transaction's month; the grid's
+        // own appearance then skips its load.
+        try? budgetGridViewModel.load(horizon: forecastHorizon)
+        budgetGridViewModel.reveal(categoryId: categoryId, date: transaction.date, accountId: transaction.accountId)
+        budgetGridJustLoaded = true
+        selection = .budgetGrid
     }
 
     /// The sidebar's selection, guarded: leaving the Import screen while confirmed rows are
