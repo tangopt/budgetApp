@@ -514,18 +514,12 @@ final class ImportViewModel: ObservableObject {
         let statement = statementClosing.map {
             StatementFinish(closing: $0, addAdjustment: addStatementAdjustment && statementAdjustmentBlockedBy == nil)
         }
-        let outcome: StatementFinishOutcome?
-        let fill = accountFill
+        let result: ImportFinishResult
         do {
-            if plan.isEmpty {
-                outcome = try statement.map { try coordinator.finishStatement(accountId: lastAccountId, sourceFileName: lastSourceFileName, statement: $0, accountFill: fill) }
-                if statement == nil, let fill { try coordinator.fillAccountDetails(accountId: lastAccountId, fill: fill) }
-            } else {
-                outcome = try coordinator.commit(
-                    accountId: lastAccountId, sourceFileName: lastSourceFileName,
-                    staged: plan.staged, decisions: plan.decisions, statement: statement, accountFill: fill
-                )
-            }
+            result = try coordinator.finish(
+                accountId: lastAccountId, sourceFileName: lastSourceFileName,
+                staged: plan.staged, decisions: plan.decisions, statement: statement, accountFill: accountFill
+            )
         } catch {
             fail("Couldn't finish the import: \(error.localizedDescription)")
             return false
@@ -534,8 +528,8 @@ final class ImportViewModel: ObservableObject {
         var parts = [plan.isEmpty ? "No new transactions to save from \(lastSourceFileName)."
                                   : "Saved \(plan.staged.count) transaction(s) from \(lastSourceFileName)."]
         if pendingCount > 0 { parts.append("\(pendingCount) to assign from Uncategorized.") }
-        if let outcome { parts.append(Self.summary(of: outcome, currency: lastAccountCurrency)) }
-        if let fill { parts.append(StatementAccountCheck.savedMessage(fill, accountName: lastAccountName)) }
+        if let outcome = result.statementOutcome { parts.append(Self.summary(of: outcome, currency: lastAccountCurrency)) }
+        if let filled = result.filled { parts.append(StatementAccountCheck.savedMessage(filled, accountName: lastAccountName)) }
         reset()
         statusMessage = parts.joined(separator: " ")
         return true

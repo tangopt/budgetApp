@@ -162,6 +162,33 @@ final class StatementAccountCheckTests: XCTestCase {
         XCTAssertEqual(StatementAccountCheck.evaluate(file: StatementAccountValues(), account: account()), .ok(fill: nil))
     }
 
+    func testFinishWithNothingToSaveStillFillsAndReportsIt() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        var a = account()
+        try manager.dbQueue.write { db in try a.insert(db) }
+        let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
+        let fill = StatementAccountFill(sortCode: "309457", accountNumber: "12345678")
+        XCTAssertEqual(try coordinator.finish(accountId: a.id!, sourceFileName: "f.csv", staged: [], decisions: [], statement: nil, accountFill: fill).filled, fill)
+        XCTAssertNil(try coordinator.finish(accountId: a.id!, sourceFileName: "f.csv", staged: [], decisions: [], statement: nil, accountFill: fill).filled)
+        XCTAssertEqual(try manager.dbQueue.read { db in try ImportBatch.fetchCount(db) }, 0)
+    }
+
+    func testNonUKStoredRegionIsNeitherCheckedNorFilled() {
+        let file = StatementAccountValues(sortCodes: ["309457"], accountNumbers: ["12345678"])
+        for region in [BankRegion.us, .europe, .other] {
+            var other = account(accountNumber: "87654321")
+            other.bankRegion = region
+            XCTAssertEqual(StatementAccountCheck.evaluate(file: file, account: other), .ok(fill: nil), "\(region)")
+            var empty = account()
+            empty.bankRegion = region
+            XCTAssertEqual(StatementAccountCheck.evaluate(file: file, account: empty), .ok(fill: nil), "\(region)")
+        }
+        var uk = account()
+        uk.bankRegion = .uk
+        XCTAssertEqual(StatementAccountCheck.evaluate(file: file, account: uk), .ok(fill: StatementAccountFill(sortCode: "309457", accountNumber: "12345678")))
+    }
+
     func testSavedMessage() {
         XCTAssertEqual(StatementAccountCheck.savedMessage(StatementAccountFill(sortCode: "1", accountNumber: "2"), accountName: "Lloyds"),
                        "Saved sort code and account number to Lloyds.")
@@ -184,9 +211,13 @@ final class StatementAccountCheckTests: XCTestCase {
         let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
         let csv = lloydsCSV([("'30-94-57", "12345678")])
         let staged = try await coordinator.stageCSVImport(csvText: csv, profile: lloydsProfile(accountId: a.id!), accountId: a.id!)
-        try coordinator.commit(accountId: a.id!, sourceFileName: "f.csv", staged: staged.staged, decisions: [],
-                               accountFill: StatementAccountFill(sortCode: "309457", accountNumber: "12345678"))
-        let saved = try await manager.dbQueue.read { db in try Account.fetchOne(db, key: a.id!)! }
+        let result = try coordinator.finish(accountId: a.id!, sourceFileName: "f.csv", staged: staged.staged, decisions: [], statement: nil,
+                                            accountFill: StatementAccountFill(sortCode: "309457", accountNumber: "12345678"))
+        XCTAssertEqual(result.filled, StatementAccountFill(sortCode: "309457", accountNumber: nil), "reports what was written, not the plan")
+        let accountId = a.id!
+        let transactionCount = try await manager.dbQueue.read { db in try Transaction.fetchCount(db) }
+        XCTAssertEqual(transactionCount, 1)
+        let saved = try await manager.dbQueue.read { db in try Account.fetchOne(db, key: accountId)! }
         XCTAssertEqual(saved.sortCode, "309457")
         XCTAssertEqual(saved.accountNumber, "87654321", "a stored account number is never overwritten")
         XCTAssertEqual(saved.bankRegion, .uk)

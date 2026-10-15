@@ -82,7 +82,10 @@ public enum StatementAccountCheck {
     /// or account number is blocked by a different value or by a file with several; one with
     /// neither is never blocked. The fill takes the file's single value for each empty
     /// account field (an account number only when the UK rule accepts it, 6–8 digits).
+    /// Sort codes are UK details: an account with a stored region other than UK is neither
+    /// checked nor filled.
     public static func evaluate(file: StatementAccountValues, account: Account) -> Result {
+        if let region = account.bankRegion, region != .uk { return .ok(fill: nil) }
         let stored = StatementAccountFill(sortCode: account.sortCode.flatMap(normalizedSortCode),
                                           accountNumber: account.accountNumber.flatMap(normalizedAccountNumber))
         guard !file.isEmpty else { return .ok(fill: nil) }

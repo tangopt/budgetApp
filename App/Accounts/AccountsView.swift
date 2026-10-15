@@ -53,6 +53,11 @@ struct AccountsView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onChange(of: viewModel.selectedAccountId) { _, id in
+            // A different selection drops a request for another account (a row's Import
+            // statement sets both together, so its own request survives).
+            if let request = pendingImport, request.accountId != id { pendingImport = nil }
+        }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .add:
@@ -85,8 +90,11 @@ struct AccountsView: View {
             ImportFlowHost(viewModel: importViewModel, account: row.account, profileStore: profileStore) { actions in
                 detailView(importActions: actions)
                     .onChange(of: pendingImport, initial: true) { _, request in
-                        guard let request, request.accountId == row.account.id else { return }
+                        guard let request else { return }
+                        // Taken or dropped either way: a request that doesn't match the shown
+                        // account must not start an import later.
                         pendingImport = nil
+                        guard request.accountId == row.account.id else { return }
                         switch request.format {
                         case .csv: actions.startCSV()
                         case .pdf: actions.startPDF()
