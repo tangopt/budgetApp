@@ -75,7 +75,7 @@ func drawIcon(in ctx: CGContext, simplified: Bool) {
     }
 
     ctx.setStrokeColor(color(0xA8FFE0))
-    ctx.setLineWidth(simplified ? 110 : 44)
+    ctx.setLineWidth(simplified ? 120 : 56)
     ctx.setLineCap(.round)
     ctx.setLineJoin(.round)
     ctx.addLines(between: chart)
@@ -83,7 +83,7 @@ func drawIcon(in ctx: CGContext, simplified: Bool) {
 
     if !simplified {
         ctx.setFillColor(color(0xFFFFFF))
-        ctx.fillEllipse(in: CGRect(x: 834 - 46, y: 290 - 46, width: 92, height: 92))
+        ctx.fillEllipse(in: CGRect(x: 834 - 58, y: 290 - 58, width: 116, height: 116))
     }
     ctx.restoreGState()
 }
