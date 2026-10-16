@@ -11,16 +11,16 @@ final class BBVAHistoryImportTests: XCTestCase {
     /// A synthetic two-month statement (not real data): opening €1,000.00.
     private let csv = """
     Date,ValueDate,Description,Amount,Balance,kind,matched_text,detail,source_file
-    02/01/2023,31/12/2022,COBR. REC. TOT 076 97-001331-2,-500.00,500.00,mortgage_instalment,COBR. REC. TOT,,a.pdf
-    03/01/2023,03/01/2023,0269881 TENANTX,1000.00,1500.00,rent_received,TENANTX,,a.pdf
+    02/01/2023,31/12/2022,COBR. REC. TOT 076 00-000000-0,-500.00,500.00,mortgage_instalment,COBR. REC. TOT,,a.pdf
+    03/01/2023,03/01/2023,0000001 TENANTX,1000.00,1500.00,rent_received,TENANTX,,a.pdf
     10/01/2023,10/01/2023,SEPADD/BBVASEG ADC/111,-20.00,1480.00,life_insurance,SEPADD/BBVASEG,,a.pdf
     11/01/2023,11/01/2023,SEPADD/BBVASEG ADC/222,-30.00,1450.00,building_insurance_mr,SEPADD/BBVASEG,,a.pdf
     12/01/2023,12/01/2023,Conta Revolut 230112EVN1,-100.00,1350.00,transfer_own_accounts,Conta Revolut,,a.pdf
     13/01/2023,13/01/2023,PABLO X 230113SCR1,5.00,1355.00,transfer_own_accounts,PABLO X,,a.pdf
-    15/01/2023,15/01/2023,"SUBSCRIÇÃO PERI 6,5960",-50.00,1305.00,investment_subscription,SUBSCRI,,a.pdf
+    15/01/2023,15/01/2023,"SUBSCRIÇÃO PERI 5,0000",-50.00,1305.00,investment_subscription,SUBSCRI,,a.pdf
     20/01/2023,20/01/2023,PAGAMENTO - CLASSIC- EXT :0152,-40.00,1265.00,card_payment,PAGAMENTO - CLASSIC,,a.pdf
-    02/02/2023,02/02/2023,COBR. REC. TOT 076 97-001331-2,-500.00,765.00,mortgage_instalment,COBR. REC. TOT,,b.pdf
-    03/02/2023,03/02/2023,0269882 TENANTX,1000.00,1765.00,rent_received,TENANTX,,b.pdf
+    02/02/2023,02/02/2023,COBR. REC. TOT 076 00-000000-0,-500.00,765.00,mortgage_instalment,COBR. REC. TOT,,b.pdf
+    03/02/2023,03/02/2023,0000002 TENANTX,1000.00,1765.00,rent_received,TENANTX,,b.pdf
     10/02/2023,10/02/2023,SEPADD/BBVASEG ADC/111,-20.00,1745.00,life_insurance,SEPADD/BBVASEG,,b.pdf
     14/02/2023,14/02/2023,Dev2rendas 240214EVN1,-200.00,1545.00,tenant_deposit_return,Dev2rendas,,b.pdf
     15/02/2023,15/02/2023,PG PAGOPT 936,-20.00,1525.00,state_payment_other,PG PAGOPT,,b.pdf
@@ -78,7 +78,7 @@ final class BBVAHistoryImportTests: XCTestCase {
         XCTAssertEqual(rows[0].amountMinorUnits, -50_000)
         XCTAssertEqual(rows[0].balanceAfterMinorUnits, 50_000)
         XCTAssertEqual(rows[0].kind, "mortgage_instalment")
-        XCTAssertEqual(rows[6].description, "SUBSCRIÇÃO PERI 6,5960")
+        XCTAssertEqual(rows[6].description, "SUBSCRIÇÃO PERI 5,0000")
         XCTAssertEqual(rows[6].amountMinorUnits, -5_000)
         let months = try BBVAHistoryImport.parseMonthlySummary(summary)
         XCTAssertEqual(months.map(\.label), ["2023-01", "2023-02"])
@@ -185,7 +185,7 @@ final class BBVAHistoryImportTests: XCTestCase {
         XCTAssertEqual(report.unresolvedTransfers, ["PABLO X 230113SCR1"])
         try m.dbQueue.read { db in
             let pending = try bbvaTransactions(db).filter { $0.categoryId == nil }
-            XCTAssertEqual(pending.map(\.rawDescription), ["PABLO X 230113SCR1", "SUBSCRIÇÃO PERI 6,5960", "PG PAGOPT 936"])
+            XCTAssertEqual(pending.map(\.rawDescription), ["PABLO X 230113SCR1", "SUBSCRIÇÃO PERI 5,0000", "PG PAGOPT 936"])
             XCTAssertTrue(pending.allSatisfy { $0.status == .pendingReview })
             let screen = Set(try UncategorizedTransactions.fetch(db: db).map(\.rawDescription))
             XCTAssertTrue(screen.isSuperset(of: pending.map(\.rawDescription)))

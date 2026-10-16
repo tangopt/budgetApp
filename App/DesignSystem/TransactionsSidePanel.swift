@@ -10,7 +10,7 @@ import struct BudgetCore.Category
 /// spec §6), its account when `accountNameById` is given (the Budget grid's, spec §7), its
 /// category (badge and name) when `showCategory` (group and section rows), the amount and
 /// an Edit transaction (pencil) button — newest first, a transaction added by hand tagged
-/// "Manual"; then an optional `plannedSection` (a `Section` for the panel's `List`). With
+/// "Manual", one with documents a paperclip and their count; then an optional `plannedSection` (a `Section` for the panel's `List`). With
 /// `onAdd`, the header also has Add transaction… (+).
 struct TransactionsSidePanel<Planned: View>: View {
     let title: String
@@ -153,6 +153,7 @@ struct TransactionsSidePanel<Planned: View>: View {
                     .lineLimit(1)
                     .layoutPriority(1)
                 if transaction.isManual { ManualTag() }
+                TransactionDocumentBadge(transactionId: transaction.id)
                 if showCategory {
                     Text("·").font(.caption).foregroundStyle(.secondary)
                     if let category = transaction.categoryId.flatMap({ categoryById[$0] }) {

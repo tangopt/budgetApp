@@ -167,6 +167,7 @@ struct SearchView: View {
                     .accessibilityLabel("Not reviewed yet")
             }
             if row.transaction.isManual { ManualTag() }
+            TransactionDocumentBadge(transactionId: row.transaction.id)
         }
     }
 

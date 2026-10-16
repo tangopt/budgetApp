@@ -2,8 +2,9 @@
 import SwiftUI
 import BudgetCore
 
-/// Budget ▸ Settings… (⌘,): Appearance (System / Light / Dark) and Theme (the swatch grid).
-/// Both apply immediately, app-wide, and are remembered (`appAppearance`, `appTheme`).
+/// Budget ▸ Settings… (⌘,): Appearance (System / Light / Dark) and Theme (the swatch grid) —
+/// both apply immediately, app-wide, and are remembered (`appAppearance`, `appTheme`) — and
+/// Evidence (the source folders scanned for documents).
 struct SettingsView: View {
     var body: some View {
         TabView {
@@ -12,6 +13,9 @@ struct SettingsView: View {
             }
             Tab("Theme", systemImage: "paintpalette") {
                 ThemeSettings()
+            }
+            Tab("Evidence", systemImage: "folder.badge.gearshape") {
+                EvidenceSourcesSettings()
             }
         }
         .scenePadding()

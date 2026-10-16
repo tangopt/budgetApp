@@ -1,0 +1,185 @@
+// App/Documents/LinkPickers.swift
+import SwiftUI
+import UniformTypeIdentifiers
+import BudgetCore
+
+/// Link to transaction… (Documents screen): the transactions the document may be evidence
+/// for first (`EvidenceMatcher`), then any transaction found by searching (after a pause in
+/// typing, off the main thread). Each Link applies at once — the Documents screen has no
+/// Save — and the sheet stays open to link more (one notice → several instalments).
+struct LinkTransactionSheet: View {
+    let documentName: String
+    @ObservedObject var viewModel: DocumentsViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var role: String?
+    @State private var results: [EvidenceTransactionInfo] = []
+
+    var body: some View {
+        SheetScaffold(title: "Link to transaction", subtitle: documentName, error: viewModel.errorMessage, width: 560,
+                      cancelTitle: "Done", onCancel: { dismiss() }) {
+            HStack(spacing: 8) {
+                TextField("Search descriptions, notes, categories or an amount", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                Picker("Role", selection: $role) {
+                    Text("No role").tag(String?.none)
+                    Divider()
+                    ForEach(EvidenceRoles.presets, id: \.self) { Text($0).tag(String?.some($0)) }
+                }
+                .fixedSize()
+                .help("The role new links get")
+            }
+            List {
+                if viewModel.catalog == nil {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading transactions…").foregroundStyle(.secondary)
+                    }
+                }
+                if !viewModel.suggestions.isEmpty {
+                    Section("Suggested") {
+                        ForEach(viewModel.suggestions, id: \.transactionId) { suggestion in
+                            if let info = viewModel.catalog?.info(suggestion.transactionId) {
+                                pickRow(info, reasons: suggestion.reasons)
+                            }
+                        }
+                    }
+                }
+                if !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Section("Search results") {
+                        if results.isEmpty, viewModel.catalog != nil {
+                            Text("No transactions match.").foregroundStyle(.secondary)
+                        }
+                        ForEach(results) { info in pickRow(info) }
+                    }
+                }
+            }
+            .frame(height: 380)
+        }
+        .task(id: SearchKey(text: query, isReady: viewModel.catalog != nil)) {
+            let text = query.trimmingCharacters(in: .whitespaces)
+            guard !text.isEmpty, let catalog = viewModel.catalog else { results = []; return }
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            let found = await Task.detached(priority: .userInitiated) { catalog.search(text) }.value
+            if !Task.isCancelled { results = found }
+        }
+    }
+
+    private func pickRow(_ info: EvidenceTransactionInfo, reasons: [String] = []) -> some View {
+        HStack(spacing: 8) {
+            EvidenceTransactionRow(info: info, reasons: reasons)
+            if viewModel.linkedTransactionIds.contains(info.id) {
+                Label("Linked", systemImage: "checkmark")
+                    .labelStyle(.titleAndIcon)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            } else {
+                Button("Link") { viewModel.link(transactionId: info.id, role: role) }
+                    .controlSize(.small)
+                    .accessibilityLabel("Link to \(info.transaction.rawDescription)")
+            }
+        }
+    }
+}
+
+/// Link document… (Edit transaction): documents that would propose this transaction first,
+/// then any document found by searching (after a pause in typing, off the main thread); Add
+/// file… copies one into the library. Link only stages the link — Edit transaction's Save
+/// writes it, Cancel discards it.
+struct LinkDocumentSheet: View {
+    @ObservedObject var model: TransactionDocumentsModel
+    let transactionName: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var importing = false
+    @State private var results: [EvidenceDocumentSearch.Entry] = []
+
+    var body: some View {
+        SheetScaffold(title: "Link document", subtitle: transactionName, error: model.errorMessage, width: 560,
+                      cancelTitle: "Done", onCancel: { dismiss() }) {
+            HStack(spacing: 8) {
+                TextField("Search names, kinds, notes, text or an amount", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                Button("Add file…") { importing = true }
+                    .help("Add a file to the library and link it to this transaction")
+            }
+            List {
+                if model.pickerIndex == nil {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading documents…").foregroundStyle(.secondary)
+                    }
+                }
+                if !model.pickerSuggestions.isEmpty {
+                    Section("Suggested") {
+                        ForEach(model.pickerSuggestions, id: \.documentId) { suggestion in
+                            if let entry = model.pickerEntry(suggestion.documentId) {
+                                pickRow(entry, reasons: suggestion.reasons)
+                            }
+                        }
+                    }
+                }
+                Section(query.trimmingCharacters(in: .whitespaces).isEmpty ? "Not linked yet" : "Search results") {
+                    if results.isEmpty, model.pickerIndex != nil {
+                        Text("No documents.").foregroundStyle(.secondary)
+                    }
+                    ForEach(results) { entry in pickRow(entry) }
+                }
+            }
+            .frame(height: 380)
+        }
+        .onAppear { model.loadPicker() }
+        .task(id: SearchKey(text: query, isReady: model.pickerIndex != nil)) {
+            guard let index = model.pickerIndex else { results = []; return }
+            let text = query.trimmingCharacters(in: .whitespaces)
+            if !text.isEmpty { try? await Task.sleep(for: .milliseconds(150)) }
+            guard !Task.isCancelled else { return }
+            let filter = EvidenceDocumentSearch.Filter(text: text, linkState: text.isEmpty ? .unlinked : .any)
+            let found = await Task.detached(priority: .userInitiated) {
+                Array(EvidenceDocumentSearch.entries(index, filter: filter).prefix(100))
+            }.value
+            if !Task.isCancelled { results = found }
+        }
+        .fileImporter(isPresented: $importing, allowedContentTypes: EvidenceFiles.contentTypes, allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls): model.addFiles(urls)
+            case .failure(let error): model.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func pickRow(_ entry: EvidenceDocumentSearch.Entry, reasons: [String] = []) -> some View {
+        let summary = entry.summary
+        return HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(summary.displayName).lineLimit(1)
+                Text(DocumentFormat.caption(kind: summary.kind, date: summary.docDate, amountMinorUnits: summary.amountMinorUnits,
+                                            currency: summary.currency))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if !reasons.isEmpty {
+                    Text(reasons.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+            Spacer(minLength: 8)
+            if model.staging.isLinked(summary.id) {
+                Label(model.staging.willLink(summary.id) ? "Will be linked" : "Linked", systemImage: "checkmark")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            } else {
+                Button("Link") { model.stageLink(summary.id) }
+                    .controlSize(.small)
+                    .help("Link on Save")
+                    .accessibilityLabel("Link \(summary.displayName)")
+            }
+        }
+    }
+}
+
+/// What a picker's search re-runs on: the text, and whether its data has loaded.
+private struct SearchKey: Equatable {
+    let text: String
+    let isReady: Bool
+}

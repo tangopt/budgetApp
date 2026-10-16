@@ -12,6 +12,8 @@ enum AppScreen: String, CaseIterable, Identifiable {
     case budgetGrid = "Budget"
     case forecast = "Forecast"
     case accounts = "Accounts"
+    case documents = "Documents"
+    case missingEvidence = "Missing evidence"
     case rules = "Rules"
     case categories = "Categories"
     case uncategorized = "Uncategorized"
@@ -28,6 +30,8 @@ enum AppScreen: String, CaseIterable, Identifiable {
         case .rules: return "wand.and.stars"
         case .categories: return "tag"
         case .accounts: return "building.columns"
+        case .documents: return "doc.on.doc"
+        case .missingEvidence: return "checklist"
         }
     }
 
@@ -42,7 +46,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
     var sidebarSection: String {
         switch self {
         case .importReview, .uncategorized: return "Workflow"
-        case .dashboard, .search, .budgetGrid, .forecast, .accounts: return "Overview"
+        case .dashboard, .search, .budgetGrid, .forecast, .accounts, .documents, .missingEvidence: return "Overview"
         case .rules, .categories: return "Settings"
         }
     }
@@ -87,6 +91,10 @@ struct ContentView: View {
     @StateObject private var dashboardViewModel: DashboardViewModel
     /// Kept for the app session: the search, its filters and sort survive navigation.
     @StateObject private var searchViewModel: SearchViewModel
+    /// Kept for the app session, like Search: the document search and filters survive navigation.
+    @StateObject private var documentsViewModel: DocumentsViewModel
+    /// Kept for the app session: the period and filters survive navigation.
+    @StateObject private var missingEvidenceViewModel: MissingEvidenceViewModel
 
     private let profileStore: ImportProfileStore
 
@@ -105,6 +113,8 @@ struct ContentView: View {
         _accountsViewModel = StateObject(wrappedValue: AccountsViewModel(dbQueue: environment.dbQueue))
         _dashboardViewModel = StateObject(wrappedValue: DashboardViewModel(dbQueue: environment.dbQueue))
         _searchViewModel = StateObject(wrappedValue: SearchViewModel(dbQueue: environment.dbQueue))
+        _documentsViewModel = StateObject(wrappedValue: DocumentsViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
+        _missingEvidenceViewModel = StateObject(wrappedValue: MissingEvidenceViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
     }
 
     /// How far ahead to project forecasted pay periods in the Budget grid (the Forecast
@@ -205,6 +215,10 @@ struct ContentView: View {
                                  importViewModel: importViewModel, profileStore: profileStore,
                                  navigate: { selection = $0 })
                         .onAppear { accountsViewModel.load() }
+                case .documents:
+                    DocumentsView(viewModel: documentsViewModel, openTransaction: openTransaction)
+                case .missingEvidence:
+                    MissingEvidenceView(viewModel: missingEvidenceViewModel, openTransaction: openTransaction)
                 case .none:
                     Text("Select a screen from the sidebar.")
                 }
@@ -308,6 +322,26 @@ struct ContentView: View {
         budgetGridViewModel.reveal(categoryId: categoryId, date: transaction.date, accountId: transaction.accountId)
         budgetGridJustLoaded = true
         selection = .budgetGrid
+    }
+
+    /// A document's linked transaction where it lives: its Budget cell; the Uncategorized
+    /// screen while it has no category and is listed there; otherwise Search, for its
+    /// description (e.g. a transfer's incoming leg, which never needs a category).
+    private func openTransaction(_ transaction: Transaction) {
+        if transaction.categoryId != nil {
+            showInBudget(transaction)
+            return
+        }
+        refreshUncategorizedCount()
+        let listed = transaction.id.flatMap { id in
+            try? environment.dbQueue.read { db in try UncategorizedTransactions.contains(db: db, id: id) }
+        } ?? false
+        if listed, isInSidebar(.uncategorized) {
+            selection = .uncategorized
+        } else {
+            searchViewModel.queryText = transaction.rawDescription
+            selection = .search
+        }
     }
 
     /// The sidebar's selection, guarded: leaving the Import screen while confirmed rows are

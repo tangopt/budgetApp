@@ -126,19 +126,23 @@ public struct TransactionEditChanges: Equatable, Sendable {
     /// Only for a transaction added by hand (`ManualTransactions.update`); nil = category and note only.
     public var manual: ManualFields?
     public var transfer: PendingTransferChange?
+    /// Documents linked and unlinked in the sheet (spec 2026-10-16 §2), applied last.
+    public var documents: EvidenceLinkChanges
 
-    public init(categoryId: Int64?, note: String?, manual: ManualFields? = nil, transfer: PendingTransferChange? = nil) {
+    public init(categoryId: Int64?, note: String?, manual: ManualFields? = nil, transfer: PendingTransferChange? = nil,
+                documents: EvidenceLinkChanges = EvidenceLinkChanges()) {
         self.categoryId = categoryId
         self.note = note
         self.manual = manual
         self.transfer = transfer
+        self.documents = documents
     }
 }
 
 extension TransactionEditing {
     /// Edit transaction's Save: the fields first (`ManualTransactions.update` for manual
     /// fields, else `update`), then the pending transfer change — so Add the other side… sees
-    /// the saved category. Call inside one write: any refusal throws and rolls everything back.
+    /// the saved category — then the staged document links and unlinks. Call inside one write: any refusal throws and rolls everything back.
     public static func save(db: Database, id: Int64, changes: TransactionEditChanges) throws {
         if let manual = changes.manual {
             try ManualTransactions.update(db: db, id: id, date: manual.date, description: manual.description,
@@ -161,5 +165,6 @@ extension TransactionEditing {
         case .link(let otherId):
             _ = try TransferLinks.link(db: db, transactionId: id, with: otherId)
         }
+        try changes.documents.apply(db: db, to: .transaction(id))
     }
 }

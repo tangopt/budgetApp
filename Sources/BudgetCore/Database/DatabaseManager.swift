@@ -73,5 +73,8 @@ public final class DatabaseManager {
         registerAccountIsMainMigration(&migrator)
         registerCategoryGroupTypeMigration(&migrator)
         registerAccountIncludeInNetWorthMigration(&migrator)
+        registerEvidenceLibraryMigration(&migrator)
+        registerEvidenceSourceFilesMigration(&migrator)
+        registerEvidenceRequirementMigration(&migrator)
     }
 }

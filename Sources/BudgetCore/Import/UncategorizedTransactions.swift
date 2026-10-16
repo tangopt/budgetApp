@@ -14,6 +14,11 @@ public enum UncategorizedTransactions {
         try request.fetchCount(db)
     }
 
+    /// Whether the transaction is one `fetch` returns (on the Uncategorized screen).
+    public static func contains(db: Database, id: Int64) throws -> Bool {
+        try request.filter(key: id).fetchCount(db) > 0
+    }
+
     static var request: QueryInterfaceRequest<Transaction> {
         Transaction.budgetFacing.filter(Column("categoryId") == nil || Column("status") == TransactionStatus.pendingReview.rawValue)
     }

@@ -7,12 +7,15 @@ import OSLog
 @MainActor
 final class AppEnvironment: ObservableObject {
     let dbQueue: DatabaseQueue
+    /// Where the evidence library keeps its copies: beside the database.
+    let evidenceRoot: URL
     /// Set once, right after launch, only if the fetched rate actually differs from the
     /// last saved one at 2 decimal places. `AccountsView` displays and dismisses it.
     @Published var exchangeRateBanner: String?
 
-    private init(dbQueue: DatabaseQueue) {
+    private init(dbQueue: DatabaseQueue, evidenceRoot: URL) {
         self.dbQueue = dbQueue
+        self.evidenceRoot = evidenceRoot
 
         Task { [weak self] in
             await self?.refreshExchangeRate()
@@ -23,7 +26,7 @@ final class AppEnvironment: ObservableObject {
     /// `LaunchView` straight away instead of blocking launch. Throws on any setup failure;
     /// `LaunchView` shows the error instead of crashing.
     static func load() async throws -> AppEnvironment {
-        let dbQueue = try await Task.detached(priority: .userInitiated) {
+        let (dbQueue, dbPath) = try await Task.detached(priority: .userInitiated) {
             let dbPath: String
             if let override = ProcessInfo.processInfo.environment["BUDGET_DB_PATH"], !override.isEmpty {
                 // Lets the app run against a copy of the database for safe manual testing.
@@ -52,9 +55,28 @@ final class AppEnvironment: ObservableObject {
             } catch {
                 Logger(subsystem: "com.personal.budget", category: "Transfers").error("Transfer matching at launch failed: \(error.localizedDescription, privacy: .public)")
             }
-            return manager.dbQueue
+            return (manager.dbQueue, dbPath)
         }.value
-        return AppEnvironment(dbQueue: dbQueue)
+        // `Evidence` next to the database: `Application Support/Budget/Evidence` normally, and
+        // beside a `BUDGET_DB_PATH` copy when testing against one.
+        let evidenceRoot = URL(fileURLWithPath: dbPath).deletingLastPathComponent().appendingPathComponent("Evidence", isDirectory: true)
+        let environment = AppEnvironment(dbQueue: dbQueue, evidenceRoot: evidenceRoot)
+        AppEnvironment.Current.shared.environment = environment
+        // Every transaction's paperclip count, kept current from here on.
+        TransactionDocumentCounts.shared.start(dbQueue: dbQueue)
+        return environment
+    }
+
+    /// The most recently loaded environment, for scenes without a main window of their own
+    /// (Settings ▸ Evidence). `nil` until the main window has opened the database.
+    final class Current: ObservableObject {
+        static let shared = Current()
+        @Published var environment: AppEnvironment?
+    }
+
+    /// The evidence library next to the database (`Application Support/Budget/Evidence`).
+    var evidenceLibrary: EvidenceLibrary {
+        EvidenceLibrary(root: evidenceRoot, database: dbQueue)
     }
 
     /// Never blocks launch (it's kicked off from `init` as a detached `Task`) and never

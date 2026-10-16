@@ -213,7 +213,7 @@ public enum BBVAHistoryImport {
         return MonthRange.calendar.date(from: DateComponents(year: parts[2], month: parts[1], day: parts[0]))
     }
 
-    /// "-927.85" → -92785 (at most 2 decimals).
+    /// "-1234.56" → -123456 (at most 2 decimals).
     public static func minorUnits(_ text: String) -> Int? {
         var s = text.trimmingCharacters(in: .whitespaces)
         var sign = 1

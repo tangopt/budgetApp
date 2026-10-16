@@ -206,13 +206,14 @@ public enum ManualTransactions {
     }
 
     /// Finish import: the imported transaction takes over the manual entry — its transfer
-    /// links are repointed to the imported one — then the manual entry is deleted. Skipped
+    /// links and documents are repointed to the imported one — then the manual entry is deleted. Skipped
     /// when the entry is gone or is no longer manual in that account.
     static func replace(db: Database, manualId: Int64, with importedId: Int64) throws {
         guard let entry = try Transaction.fetchOne(db, key: manualId), entry.isManual,
               let imported = try Transaction.fetchOne(db, key: importedId), entry.accountId == imported.accountId else { return }
         try db.execute(sql: "UPDATE transferLink SET outTransactionId = ? WHERE outTransactionId = ?", arguments: [importedId, manualId])
         try db.execute(sql: "UPDATE transferLink SET inTransactionId = ? WHERE inTransactionId = ?", arguments: [importedId, manualId])
+        try EvidenceLinks.repoint(db: db, from: .transaction(manualId), to: .transaction(importedId))
         _ = try Transaction.deleteOne(db, key: manualId)
         try removeBrokenLinks(db: db, transaction: imported)
     }

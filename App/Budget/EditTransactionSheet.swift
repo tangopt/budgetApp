@@ -9,10 +9,15 @@ import struct BudgetCore.Transaction
 /// also the transaction's transfer link (spec §6): each linked leg with Unlink, or Link to
 /// transfer… when it has none, plus Add the other side… when the chosen category is none or a
 /// (non-external) transfer category (spec 2026-10-14 §2). With `manual`, a transaction
-/// added by hand also has its account, date, description and amount editable, and Delete….
+/// added by hand also has its account, date, description and amount editable, and Delete…
+/// (which warns when the transaction has documents). Documents lists its linked documents
+/// (spec 2026-10-16 §2), with Unlink, Link document… and a drop target; links and unlinks are
+/// staged like the rest and written by Save (a dropped file is copied into the library at
+/// once, and stays there unlinked after Cancel).
 ///
 /// Nothing is written until Save: a transfer change is held (one at a time, previewed with
-/// Undo) and Save writes it with the fields in one transaction (`TransactionEditing.save`).
+/// Undo), document links are staged, and Save writes them with the fields in one transaction
+/// (`TransactionEditing.save`).
 /// Cancel discards everything. Delete… is its own confirmed, immediate action.
 struct EditTransactionSheet: View {
     let transaction: Transaction
@@ -44,6 +49,9 @@ struct EditTransactionSheet: View {
     /// The stored EUR→GBP rate, read once when the sheet appears; nil = unknown (a
     /// cross-currency preview then leaves out the amount).
     @State private var eurToGbpRate: Double?
+    /// The transaction's documents (spec 2026-10-16 §2), staged until Save.
+    @StateObject private var documentsModel: TransactionDocumentsModel
+    @ObservedObject private var documentCounts = TransactionDocumentCounts.shared
 
     /// A transfer change held until Save, with what the Transfer row previews.
     private enum PendingTransfer: Equatable {
@@ -76,6 +84,7 @@ struct EditTransactionSheet: View {
         _draft = State(initialValue: ManualTransactionDraft(transaction))
         _categoryId = State(initialValue: transaction.categoryId)
         _note = State(initialValue: transaction.note ?? "")
+        _documentsModel = StateObject(wrappedValue: TransactionDocumentsModel.make(transactionId: transaction.id))
     }
 
     /// The transaction's category when it's built in (a balance adjustment or market
@@ -94,10 +103,11 @@ struct EditTransactionSheet: View {
         categoryId != transaction.categoryId || Transaction.normalizedNote(note) != transaction.note
             || (editsManually && draft != ManualTransactionDraft(transaction))
             || pendingTransfer != nil
+            || documentsModel.staging.hasChanges
     }
 
     private var canSave: Bool {
-        isChanged && (!editsManually || draft.isValid) && pendingProblem == nil
+        isChanged && (!editsManually || draft.isValid) && pendingProblem == nil && documentsModel.addingCount == 0
     }
 
     /// Why the pending Add the other side… no longer applies to what's entered (Save is off
@@ -161,6 +171,12 @@ struct EditTransactionSheet: View {
                 if transfer != nil, transaction.id != nil {
                     LabeledContent("Transfer") { transferContent }
                 }
+                if documentsModel.isAvailable {
+                    LabeledContent("Documents") {
+                        TransactionDocumentsSection(model: documentsModel, transactionName: transaction.rawDescription)
+                    }
+                    SheetFormNote("Document changes are saved with the transaction.")
+                }
             }
         }
         .onChange(of: draft) { _, _ in errorMessage = nil }
@@ -170,8 +186,18 @@ struct EditTransactionSheet: View {
             Button("Delete", role: .destructive, action: delete)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("“\(transaction.rawDescription)” will be removed, along with any transfer link. This can't be undone.")
+            Text(deleteMessage)
         }
+    }
+
+    /// The delete confirmation's text: a transaction with documents says they stay in the
+    /// library, unlinked.
+    private var deleteMessage: String {
+        let base = "“\(transaction.rawDescription)” will be removed, along with any transfer link"
+        let count = documentCounts.count(transaction.id)
+        guard count > 0 else { return base + ". This can't be undone." }
+        let documents = count == 1 ? "its linked document" : "its \(count) linked documents"
+        return base + ". It has \(count) document\(count == 1 ? "" : "s"): \(documents) will stay in the library but no longer be linked to it. This can't be undone."
     }
 
     /// Add the other side… applies while the chosen (possibly unsaved) category is none or a
@@ -332,7 +358,7 @@ struct EditTransactionSheet: View {
             manualFields = fields
         }
         let changes = TransactionEditChanges(categoryId: categoryId, note: note, manual: manualFields,
-                                             transfer: pendingTransfer?.change)
+                                             transfer: pendingTransfer?.change, documents: documentsModel.staging.changes)
         switch onSave(changes) {
         case .saved, .savedButReloadFailed: dismiss()
         case .failed(let message): errorMessage = message
