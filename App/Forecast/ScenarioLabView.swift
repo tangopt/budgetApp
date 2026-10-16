@@ -50,10 +50,19 @@ struct ScenarioLabView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    Picker("Horizon", selection: $viewModel.horizon) {
-                        ForEach(ComparisonHorizon.allCases) { horizon in Text(horizon.label).tag(horizon) }
+                    // Plain buttons (not an inline Picker), so this is a pull-down that opens
+                    // under its label rather than a pop-up that opens over it.
+                    ForEach(ComparisonHorizon.allCases) { horizon in
+                        Button {
+                            viewModel.horizon = horizon
+                        } label: {
+                            if horizon == viewModel.horizon {
+                                Label(horizon.label, systemImage: "checkmark")
+                            } else {
+                                Text(horizon.label)
+                            }
+                        }
                     }
-                    .pickerStyle(.inline)
                 } label: {
                     // An HStack, not a Label: a toolbar shows a Label's icon only, whatever its
                     // label style; the title must show the current horizon.

@@ -268,14 +268,26 @@ struct CategoriesView: View {
     /// Above the list: its search field, then expand or collapse every group (search shows
     /// every match expanded, so both are off while searching).
     private var listHeader: some View {
-        HStack(spacing: 12) {
-            searchField
-                .frame(maxWidth: 260)
-            Spacer()
-            outlineControls(disabled: isSearching)
+        VStack(spacing: 6) {
+            HStack(spacing: 12) {
+                searchField
+                    .frame(maxWidth: 260)
+                Spacer()
+                outlineControls(disabled: isSearching)
+            }
+            // Column header for the amount on each category row.
+            HStack {
+                Spacer()
+                Text("Avg per month, last 12 months")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help("Each category's average monthly actuals over the last 12 pay months")
+            }
+            .padding(.trailing, 10)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
     }
 
     private var searchField: some View {
