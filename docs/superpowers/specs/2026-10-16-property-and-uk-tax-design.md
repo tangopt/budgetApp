@@ -41,7 +41,7 @@ New **Property** area (sidebar), one page per property (Lisbon today):
 - **Regression gate**: from the stored records the engine reproduces the 2024/25 and 2023/24 SA302s/approval packs for both people (box values and liability) before 2025/26 is marked ready.
 
 ## 5. Phasing (each its own plan)
-1. **Evidence library + links** (library, source folders, transaction↔document links, BBVA glyph-decoding import of PDFs, matching suggestions).
+1. **Evidence library + links** (library, source folders, transaction↔document links, BBVA glyph-decoding import of PDFs, matching suggestions) **+ missing-evidence checklist machinery** (§7).
 2. **Property area** (profile, tenancies, deposit, money views, checks) + **rent receipts import**.
 3. **Tax years + attribution + rental accounts** (per person, GBP, drill-down) + accountant template export; regression on rental accounts 2023/24, 2024/25.
 4. **Personal income imports (P60/P45/P11D) + SA computation + box values + filing checklist**; full regression on both SA302s; 2025/26 live.
@@ -49,8 +49,16 @@ New **Property** area (sidebar), one page per property (Lisbon today):
 ## 6. Answers (2026-10-16)
 1. **Rent receipts**: the portal exports all receipts for all four tenancies as one XLSX ("ListaRecibos": Referência, Nº de Contrato, Nº de Recibo, Locador, Locatário, Data de Início/Fim, Data de Rec., Valor, Retenção IRS, Importância recebida, Imóvel, Estado — 118 receipts so far). Import that file; individual receipt PDFs are optional evidence the user downloads one by one and links later (the app lists which receipts still lack a PDF).
 2. **FX**: follow HMRC guidance as the accountant does — HMRC's published **average rate for the year** for each currency; stored per tax year (pre-filled for past years from the filed returns; the app offers to fetch HMRC's published rates for new years, with manual override).
-3. **Other income**: eToro (≈ USD 12.6k) and Trading 212 (≈ GBP 700) stock and crypto accounts, never withdrawn. Implications: no disposals so far → no CGT yet, but **dividends (and any staking/interest) credited inside those accounts are taxable in the year received** even if not withdrawn, and disposals inside the accounts (switching holdings) are CGT events. Needs: USD currency support, the two accounts as investment accounts (net worth), and import of their annual statements (dividends, disposals) — added to phase 4.
+3. **Other income**: eToro (≈ USD 12.6k) and Trading 212 (≈ GBP 700) stock and crypto accounts, never withdrawn. Implications: no disposals so far → no CGT yet, but **dividends (and any staking/interest) credited inside those accounts are taxable in the year received** even if not withdrawn, and disposals inside the accounts (switching holdings) are CGT events. **Deferred (user, 2026-10-16): ignore eToro/T212 for now; revisit after phase 4** (would need USD support, investment accounts, dividend/disposal import).
 4. **Tenant utility recharges**: confirmed — a new feature (phase 5): each month the user emails the tenant the utility charges with the invoices attached (downloaded manually from each provider); the tenant adds them to the rent transfer. Tracker today: `Lisboa/Aluguer/4to Aluguer/Despesas/Despesas-novo.numbers` plus the invoices in that folder. The app will: collect each utility invoice (document + amount + period) against its BBVA debit, compute the monthly recharge, draft the email with attachments for the user to send, and split each tenant transfer into rent (matched to the rent receipt) and recharge (netted against Utilities) in the property view and tax.
 
-## 7. Phase 5 — Tenant utility recharges
+## 7. Missing-evidence checklist (requested 2026-10-16)
+Per tax year (and for the current, in-progress year), a **Missing evidence** view lists everything the year needs that isn't in the library yet, so the user knows what to find and upload:
+- **Expected documents** generated from the records and rules: one rent receipt PDF per rent period; one mortgage notice per instalment; the annual mortgage interest statement; IMI notice + one payment proof per instalment; condomínio receipt(s) covering every quota month; insurance receipt/policy per cover period; accountant invoice + payment; utility invoices (once phase 5 lands); P60/P45 per employment; P11D; PT IRS declaração + liquidação + payment per person; HMRC payment proofs (balancing payment, payments on account); UK accountant invoice.
+- **Unevidenced transactions**: every transaction feeding a tax line without a linked document.
+- Each item shows what it is, the period/amount/date it should match, where it usually comes from (BBVA app, Portal das Finanças, condomínio administrator, insurer, employer, HMRC), and a drop target / "Add document…" that links the file straight to the right record.
+- Grouped by source, with counts and a "done" percentage per year; exportable as a checklist (Markdown/PDF). Rules for what's expected are data per expense type, so new years generate their list automatically; an item can be marked "not available" with a reason.
+- Lives in the evidence-library phase (phase 1) for the generic machinery, filled in by phases 2–4 as each record type arrives.
+
+## 8. Phase 5 — Tenant utility recharges
 See answer 4. Its own spec/plan after phase 2.
