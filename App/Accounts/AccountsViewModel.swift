@@ -24,6 +24,8 @@ final class AccountsViewModel: ObservableObject {
     }
     /// The selected account's computed month-end balances, opening balance and adjustments.
     @Published private(set) var selectedHistory: AccountHistory = .empty
+    /// Each account's latest imported transaction date (`ImportCoverage`); absent: none.
+    @Published private(set) var importedThrough: [Int64: Date] = [:]
     /// The screen's banner error (load failures, "Saved, but …"). Sheets keep their own.
     @Published var errorMessage: String?
     /// What the last Update balance did, one line per account ("added a Market movement of
@@ -54,15 +56,17 @@ final class AccountsViewModel: ObservableObject {
     @discardableResult
     func load() -> Bool {
         do {
-            let (accounts, snapshots, transactions, rate, builtIns) = try dbQueue.read { db in
+            let (accounts, snapshots, transactions, rate, builtIns, batches) = try dbQueue.read { db in
                 (try Account.fetchAll(db), try BalanceSnapshot.fetchAll(db), try Transaction.fetchAll(db), try ExchangeRateSetting.currentOrDefault(db: db),
-                 try Category.filter(Column("builtInRole") != nil).fetchAll(db))
+                 try Category.filter(Column("builtInRole") != nil).fetchAll(db), try ImportBatch.fetchAll(db))
             }
             self.accounts = accounts.sortedForDisplay()
             self.snapshots = snapshots
             self.transactions = transactions
             adjustmentCategoryNames = Dictionary(builtIns.compactMap { category in category.id.map { ($0, category.name) } }, uniquingKeysWith: { first, _ in first })
             self.rate = rate
+            // Only the built-in categories matter here: they're the ones excluded.
+            importedThrough = ImportCoverage.importedThroughByAccount(transactions: transactions, batches: batches, categories: builtIns)
             let overview = AccountsOverview.make(accounts: accounts, snapshots: snapshots, transactions: transactions, rate: rate, today: Date())
             self.overview = overview
             let rowIds = overview.groups.flatMap(\.rows).map(\.id)

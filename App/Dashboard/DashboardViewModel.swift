@@ -10,6 +10,8 @@ import GRDB
 struct DashboardContent {
     let today: Date
     let freshness: DataFreshness
+    /// Each account's latest imported transaction date (`ImportCoverage`).
+    let importedThrough: [Int64: Date]
     let netWorth: NetWorthSeries
     let yearChanges: [YearChange]
     let currentMonth: CurrentMonthTracking
@@ -73,6 +75,7 @@ final class DashboardViewModel: ObservableObject {
             content = DashboardContent(
                 today: today,
                 freshness: DashboardCalculator.dataFreshness(loaded),
+                importedThrough: ImportCoverage.importedThroughByAccount(transactions: loaded.transactions, batches: loaded.importBatches, categories: loaded.categories),
                 netWorth: netWorth,
                 yearChanges: DashboardCalculator.yearOverYear(loaded, series: netWorth),
                 currentMonth: DashboardCalculator.currentMonth(loaded),

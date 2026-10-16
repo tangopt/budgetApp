@@ -4,6 +4,8 @@ import BudgetCore
 
 struct FreshnessImportCard: View {
     let freshness: DataFreshness
+    /// Each account's latest imported transaction date, shown for the picked account.
+    let importedThrough: [Int64: Date]
     @ObservedObject var importViewModel: ImportViewModel
     let accounts: [Account]
     @Binding var selectedAccountId: Int64?
@@ -151,6 +153,11 @@ struct FreshnessImportCard: View {
                         Button("Import PDF…") { actions.startPDF() }.fixedSize()
                     }
                 }
+            }
+            if let account = selectedAccount, let id = account.id {
+                Text(importedThrough[id].map { "Imported up to \(DashboardFormat.day($0))" } ?? "Not imported yet")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             // Capped so a long caption wraps instead of widening the controls (which would
             // tip the card into its stacked layout earlier than the buttons need).
