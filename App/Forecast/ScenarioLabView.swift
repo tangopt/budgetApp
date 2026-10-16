@@ -64,8 +64,11 @@ struct ScenarioLabView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel("Horizon: \(viewModel.horizon.label)")
                 }
+                .menuStyle(.button)
+                .buttonStyle(.borderless)
                 .help("How far ahead to forecast")
             }
+            .sharedBackgroundVisibility(.hidden)
         }
         .scenarioChipPrompts($chipPrompts, viewModel: viewModel)
         .alert(viewModel.notice?.title ?? "", isPresented: Binding(

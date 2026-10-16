@@ -30,8 +30,9 @@ enum CategoryRowID: Hashable {
 /// badge), exclude from the auto-forecast and set a transfer category's linked account
 /// (shown "↔ <account>" on its row); groups also Add category here…. Selecting one
 /// category or group opens its transactions panel; otherwise the panel shows the
-/// Distribution charts (spec 2026-10-16 §C). The list's first row expands or collapses every
-/// group; ⌥-click a chevron to toggle its whole section (expansion is remembered).
+/// Distribution charts (spec 2026-10-16 §C). The header above the list holds its search
+/// field and expands or collapses every group; ⌥-click a chevron to toggle its whole
+/// section (expansion is remembered).
 struct CategoriesView: View {
     @Environment(\.theme) private var theme
     @ObservedObject var viewModel: CategoriesViewModel
@@ -114,8 +115,12 @@ struct CategoriesView: View {
                 .padding(.vertical, 8)
             }
             HStack(spacing: 0) {
-                list
-                    .frame(maxWidth: .infinity)
+                // The search field sits with the list, never over the side panel.
+                VStack(spacing: 0) {
+                    listHeader
+                    list
+                }
+                .frame(maxWidth: .infinity)
                 Divider()
                 if let subject = panelSubject {
                     CategoryTransactionsPanel(subject: subject, viewModel: viewModel, onClose: { selection = [] })
@@ -130,16 +135,18 @@ struct CategoriesView: View {
             }
             .animation(.easeOut(duration: 0.2), value: panelSubject == nil)
         }
-        .searchable(text: $search, prompt: "Search categories and groups")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     newGroupDraft = NewGroupDraft(selectedCategoryIds: movableIds(selectedCategoryIds), type: newGroupType)
                 } label: { Label("Group", systemImage: "folder.badge.plus") }
+                    .buttonStyle(.borderless)
                     .help("New group")
                 Button { newCategoryDraft = NewCategoryDraft(type: .expense, groupId: nil) } label: { Label("Category", systemImage: "plus") }
+                    .buttonStyle(.borderless)
                     .help("New category")
             }
+            .sharedBackgroundVisibility(.hidden)
         }
         .onAppear { viewModel.load() }
         .onChange(of: viewModel.categories) { _, _ in reconcileSelection() }
@@ -258,11 +265,44 @@ struct CategoriesView: View {
         return type
     }
 
-    /// The list's first row (not selectable): expand or collapse every group (search shows
+    /// Above the list: its search field, then expand or collapse every group (search shows
     /// every match expanded, so both are off while searching).
+    private var listHeader: some View {
+        HStack(spacing: 12) {
+            searchField
+                .frame(maxWidth: 260)
+            Spacer()
+            outlineControls(disabled: isSearching)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            TextField("Search categories and groups", text: $search)
+                .textFieldStyle(.plain)
+                .accessibilityLabel("Search categories and groups")
+            if !search.isEmpty {
+                Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("Clear search")
+                    .accessibilityLabel("Clear search")
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+        .onExitCommand { search = "" }
+    }
+
     private func outlineControls(disabled: Bool) -> some View {
         HStack(spacing: 12) {
-            Spacer()
             Button { updateOutline { $0.expandAll() } } label: { Label("Expand all", systemImage: "rectangle.expand.vertical") }
                 .help("Expand all groups")
             Button { updateOutline { $0.collapseAll(allRowKeys) } } label: { Label("Collapse all", systemImage: "rectangle.compress.vertical") }
@@ -273,7 +313,6 @@ struct CategoriesView: View {
         .font(.caption)
         .foregroundStyle(.secondary)
         .disabled(disabled)
-        .selectionDisabled()
     }
 
     private var list: some View {
@@ -281,7 +320,6 @@ struct CategoriesView: View {
         let reserves = viewModel.reserves(search: search)
         return ScrollViewReader { proxy in
             List(selection: $selection) {
-                outlineControls(disabled: searching)
                 ForEach(viewModel.sections(search: search)) { section in
                     let sectionKeys = rowKeys(section)
                     if section.type == .adjustment {

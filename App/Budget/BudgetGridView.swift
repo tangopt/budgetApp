@@ -396,6 +396,7 @@ struct BudgetGridView: View {
                 .menuIndicator(.hidden)
                 .help("Share or export")
             }
+            .sharedBackgroundVisibility(.hidden)
         }
         .fileExporter(isPresented: $showExporter, document: exportDocument, contentType: .commaSeparatedText, defaultFilename: csvFileName) { _ in }
         // A panel's target belongs to the year it was opened in.
