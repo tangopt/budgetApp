@@ -91,7 +91,7 @@ final class BBVAHistoryImportTests: XCTestCase {
         XCTAssertEqual(BBVAHistoryImport.mapping(forKind: "insurance_mapfre"), M.category("Building insurance"))
         XCTAssertEqual(BBVAHistoryImport.mapping(forKind: "utilities_water"), M.category("Utilities"))
         XCTAssertEqual(BBVAHistoryImport.mapping(forKind: "legal_fees"), M.category("Legal fees"))
-        XCTAssertEqual(BBVAHistoryImport.mapping(forKind: "tenant_deposit_return"), M.category("Other"))
+        XCTAssertEqual(BBVAHistoryImport.mapping(forKind: "tenant_deposit_return"), M.depositTransfer)
         XCTAssertEqual(BBVAHistoryImport.mapping(forKind: "card_payment"), M.category("BBVA credit card"))
         XCTAssertEqual(BBVAHistoryImport.mapping(forKind: "transfer_own_accounts"), M.ownAccountTransfer)
         for kind in ["investment_subscription", "state_payment_other", "other"] {
@@ -112,9 +112,12 @@ final class BBVAHistoryImportTests: XCTestCase {
             XCTAssertEqual(account.currency, .eur)
             XCTAssertEqual(account.kind, .cash)
             XCTAssertEqual(account.bankRegion, .europe)
-            // Listed after the existing accounts, which keep their displayed order.
+            // No account is ordered: neither is BBVA (alphabetical by display name), and the
+            // others are left alone.
+            XCTAssertNil(account.sortOrder)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM account WHERE sortOrder IS NOT NULL"), 0)
             let ordered = AccountOrdering.sorted(try Account.fetchAll(db)).map(\.name)
-            XCTAssertEqual(ordered, ["Lloyds Classic", "Revolut", "BBVA"])
+            XCTAssertEqual(ordered, ["BBVA", "Lloyds Classic", "Revolut", "Tenant deposit held"])
             let snapshots = try BalanceSnapshot.filter(Column("accountId") == report.accountId).fetchAll(db)
             XCTAssertEqual(snapshots.map(\.balanceMinorUnits), [100_000])
             XCTAssertEqual(snapshots.map(\.date), [day(2023, 1, 1)])
@@ -125,6 +128,16 @@ final class BBVAHistoryImportTests: XCTestCase {
         }
     }
 
+    func testGoesAfterOrderedAccountsWithoutRenumberingThem() throws {
+        let m = try makeDB()
+        try m.dbQueue.write { db in try db.execute(sql: "UPDATE account SET sortOrder = CASE name WHEN 'Revolut' THEN 0 ELSE 1 END") }
+        let report = try m.dbQueue.write { db in try BBVAHistoryImport.apply(db: db, input: try input()) }
+        XCTAssertEqual(report.sortOrder, 2)
+        try m.dbQueue.read { db in
+            XCTAssertEqual(AccountOrdering.sorted(try Account.fetchAll(db)).map(\.name), ["Revolut", "Lloyds Classic", "BBVA", "Tenant deposit held"])
+        }
+    }
+
     func testCreatesLisbonGroupAndCategories() throws {
         let m = try makeDB()
         try m.dbQueue.write { db in _ = try BBVAHistoryImport.apply(db: db, input: try input()) }
@@ -132,7 +145,7 @@ final class BBVAHistoryImportTests: XCTestCase {
             let group = try CategoryGroup.filter(Column("name") == "Lisbon").fetchOne(db)!
             XCTAssertEqual(group.type, .expense)
             let inGroup = try Category.filter(Column("groupId") == group.id).fetchAll(db)
-            XCTAssertEqual(Set(inGroup.map(\.name)), Set(BBVAHistoryImport.categories.map(\.name)))
+            XCTAssertEqual(Set(inGroup.map(\.name)), Set(BBVAHistoryImport.categories.map(\.name) + ["Transfer: Tenant deposit held"]))
             XCTAssertEqual(try category(db, "Rental income")?.type, .income)
             XCTAssertEqual(try category(db, "Repairs")?.type, .expense)
             let card = try category(db, "BBVA credit card")!
@@ -154,7 +167,7 @@ final class BBVAHistoryImportTests: XCTestCase {
             let names = Dictionary(try Category.fetchAll(db).map { ($0.id!, $0.name) }, uniquingKeysWith: { a, _ in a })
             let filed = rows.map { $0.categoryId.flatMap { names[$0] } }
             XCTAssertEqual(filed, ["Mortgage", "Rental income", "Life insurance", "Building insurance", "Transfer: Revolut", nil, nil,
-                                   "BBVA credit card", "Mortgage", "Rental income", "Life insurance", "Other", nil, "Legal fees", "BBVA fees"])
+                                   "BBVA credit card", "Mortgage", "Rental income", "Life insurance", "Transfer: Tenant deposit held", nil, "Legal fees", "BBVA fees"])
             for row in rows where row.categoryId != nil && row.rawDescription != "Conta Revolut 230112EVN1" {
                 XCTAssertEqual(row.status, .confirmed)
                 XCTAssertEqual(row.categorizedBy, .manual)
@@ -182,13 +195,14 @@ final class BBVAHistoryImportTests: XCTestCase {
     func testOwnAccountTransferIsLinkedByTheMatcher() throws {
         let m = try makeDB()
         let report = try m.dbQueue.write { db in try BBVAHistoryImport.apply(db: db, input: try input()) }
-        XCTAssertEqual(report.links.count, 1)
+        XCTAssertEqual(report.links.count, 2)
         XCTAssertEqual(report.links.first?.bbvaDescription, "Conta Revolut 230112EVN1")
         XCTAssertEqual(report.links.first?.otherAccountName, "Revolut")
+        XCTAssertEqual(report.links.last?.otherAccountName, "Tenant deposit held")
         try m.dbQueue.read { db in
             let revolutLeg = try Transaction.filter(Column("fingerprint") == "r1").fetchOne(db)!
             XCTAssertEqual(revolutLeg.categoryId, try category(db, "Transfer: BBVA PT")?.id)
-            XCTAssertEqual(try TransferLink.fetchCount(db), 1)
+            XCTAssertEqual(try TransferLink.filter(Column("inTransactionId") == revolutLeg.id!).fetchCount(db), 1)
         }
     }
 
@@ -229,6 +243,10 @@ final class BBVAHistoryImportTests: XCTestCase {
         XCTAssertEqual(mortgage2023?.count, 2)
         XCTAssertEqual(mortgage2023?.totalMinorUnits, -100_000)
         XCTAssertTrue(report.text.contains("Rules learned: 3"))
+        // Every category with rows is in the per-year table.
+        for name in ["Building insurance", "BBVA credit card", "Legal fees", "Transfer: Tenant deposit held", "(uncategorised)"] {
+            XCTAssertTrue(report.text.contains("  \(name) — "), name)
+        }
     }
 
     func testRefusesInconsistentStatements() throws {
@@ -264,7 +282,7 @@ final class BBVAHistoryImportTests: XCTestCase {
     func testRefusesExistingAccountNamedBBVA() throws {
         let m = try makeDB()
         try m.dbQueue.write { db in
-            try AccountEditing.add(db: db, name: "bbva", currency: .eur, kind: .cash, openingBalanceEntered: nil, asOf: day(2023, 1, 1))
+            _ = try AccountEditing.add(db: db, name: "bbva", currency: .eur, kind: .cash, openingBalanceEntered: nil, asOf: day(2023, 1, 1))
         }
         XCTAssertThrowsError(try m.dbQueue.write { db in try BBVAHistoryImport.apply(db: db, input: try input()) }) { error in
             XCTAssertEqual(error as? BBVAHistoryImport.ImportError, .accountNameTaken("bbva"))
@@ -283,6 +301,98 @@ final class BBVAHistoryImportTests: XCTestCase {
         try m.dbQueue.read { db in
             XCTAssertNil(try Account.filter(Column("name") == "BBVA").fetchOne(db))
             XCTAssertNil(try category(db, "Rental income"))
+        }
+    }
+
+    // MARK: Tenant deposit
+
+    private func depositAccount(_ db: Database) throws -> Account {
+        try Account.filter(Column("name") == "Tenant deposit held").fetchOne(db)!
+    }
+
+    private func depositBalance(_ db: Database) throws -> Int? {
+        let id = try depositAccount(db).id!
+        return NetWorthCalculator.balance(accountId: id, at: nil, snapshots: try BalanceSnapshot.filter(Column("accountId") == id).fetchAll(db),
+                                          transactions: try Transaction.filter(Column("accountId") == id).fetchAll(db))?.native
+    }
+
+    func testDepositReturnIsATransferToTheLiabilityWithItsOtherSideLinked() throws {
+        let m = try makeDB()
+        let opening = BBVAHistoryImport.Input(rows: try input().rows, months: try input().months, depositOpening: (-20_000, day(2023, 1, 5)))
+        let report = try m.dbQueue.write { db in try BBVAHistoryImport.apply(db: db, input: opening) }
+        try m.dbQueue.read { db in
+            let account = try depositAccount(db)
+            XCTAssertEqual(account.kind, .credit)
+            XCTAssertEqual(account.currency, .eur)
+            let tied = try TransferCategories.category(db: db, forAccountId: account.id!)!
+            XCTAssertEqual(tied.name, "Transfer: Tenant deposit held")
+            XCTAssertEqual(tied.groupId, try CategoryGroup.filter(Column("name") == "Lisbon").fetchOne(db)?.id)
+            let snapshots = try BalanceSnapshot.filter(Column("accountId") == account.id!).fetchAll(db)
+            XCTAssertEqual(snapshots.map(\.balanceMinorUnits), [-20_000])
+            XCTAssertEqual(snapshots.map(\.date), [day(2023, 1, 5)])
+            let legs = try Transaction.filter(Column("accountId") == account.id!).fetchAll(db)
+            XCTAssertEqual(legs.map(\.amountMinorUnits), [20_000])
+            XCTAssertEqual(legs.first?.date, day(2023, 2, 14))
+            XCTAssertEqual(legs.first?.categoryId, try category(db, "Transfer: BBVA PT")?.id)
+            XCTAssertEqual(try TransferLink.filter(Column("inTransactionId") == legs.first!.id!).fetchCount(db), 1)
+            XCTAssertEqual(try depositBalance(db), 0)
+        }
+        XCTAssertEqual(report.deposit.balanceMinorUnits, 0)
+        XCTAssertEqual(report.deposit.legs.count, 1)
+        XCTAssertTrue(report.verification.allSatisfy { $0.hasPrefix("OK") }, report.verification.joined(separator: "\n"))
+    }
+
+    func testWithoutOpeningTheLiabilityStartsFromZero() throws {
+        let m = try makeDB()
+        let report = try m.dbQueue.write { db in try BBVAHistoryImport.apply(db: db, input: try input()) }
+        XCTAssertNil(report.deposit.openingMinorUnits)
+        try m.dbQueue.read { db in
+            XCTAssertTrue(try BalanceSnapshot.filter(Column("accountId") == depositAccount(db).id!).fetchAll(db).isEmpty)
+            XCTAssertEqual(try depositBalance(db), 20_000)
+        }
+    }
+
+    func testSplitsATenantCreditIntoRentAndDeposit() throws {
+        let m = try makeDB()
+        let split = BBVAHistoryImport.Input(rows: try input().rows, months: try input().months, depositOpening: (0, day(2023, 1, 5)),
+                                            depositSplits: [.init(date: day(2023, 2, 3), depositMinorUnits: 30_000)])
+        let report = try m.dbQueue.write { db in try BBVAHistoryImport.apply(db: db, input: split) }
+        XCTAssertTrue(report.verification.allSatisfy { $0.hasPrefix("OK") }, report.verification.joined(separator: "\n"))
+        XCTAssertEqual(report.rowCount, 16)
+        XCTAssertEqual(report.deposit.splits.map(\.depositMinorUnits), [30_000])
+        // The rent rule is still learned: the deposit part doesn't count against it.
+        XCTAssertTrue(report.rulesLearned.contains { $0.pattern == "TENANTX" && $0.matchCount == 2 })
+        try m.dbQueue.read { db in
+            let parts = try bbvaTransactions(db).filter { $0.date == day(2023, 2, 3) }
+            XCTAssertEqual(parts.map(\.amountMinorUnits), [70_000, 30_000])
+            XCTAssertEqual(parts.map(\.categoryId), [try category(db, "Rental income")?.id, try category(db, "Transfer: Tenant deposit held")?.id])
+            XCTAssertEqual(parts.map(\.note), ["Rent part of a €1,000.00 credit (rest: deposit)", "Deposit part of a €1,000.00 credit"])
+            // Received 300 (owed −300), returned 200 → −100.
+            XCTAssertEqual(try depositBalance(db), -10_000)
+        }
+    }
+
+    func testRefusesBadSplitsAndLateDepositDate() throws {
+        let m = try makeDB()
+        let rows = try input().rows, months = try input().months
+        for bad in [
+            BBVAHistoryImport.Input(rows: rows, months: months, depositSplits: [.init(date: day(2023, 1, 4), depositMinorUnits: 100)]),
+            BBVAHistoryImport.Input(rows: rows, months: months, depositSplits: [.init(date: day(2023, 1, 3), depositMinorUnits: 100_000)]),
+            BBVAHistoryImport.Input(rows: rows, months: months, depositOpening: (-20_000, day(2023, 2, 14)))
+        ] {
+            XCTAssertThrowsError(try m.dbQueue.write { db in try BBVAHistoryImport.apply(db: db, input: bad) }) { error in
+                guard case .badInput = error as? BBVAHistoryImport.ImportError else { return XCTFail("\(error)") }
+            }
+        }
+    }
+
+    func testRefusesExistingDepositAccount() throws {
+        let m = try makeDB()
+        try m.dbQueue.write { db in
+            _ = try AccountEditing.add(db: db, name: "Tenant deposit held", currency: .eur, kind: .credit, openingBalanceEntered: nil, asOf: day(2023, 1, 1))
+        }
+        XCTAssertThrowsError(try m.dbQueue.write { db in try BBVAHistoryImport.apply(db: db, input: try input()) }) { error in
+            XCTAssertEqual(error as? BBVAHistoryImport.ImportError, .accountNameTaken("Tenant deposit held"))
         }
     }
 }

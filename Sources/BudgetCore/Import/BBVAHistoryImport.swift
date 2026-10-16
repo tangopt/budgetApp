@@ -12,6 +12,10 @@ public enum BBVAHistoryImport {
     public static let accountAlias = "BBVA PT"
     public static let groupName = "Lisbon"
     public static let sourceFileName = "BBVA extratos 2023-01 to 2026-09"
+    /// The tenant's deposit the user holds: a liability (credit, EUR). Its tied transfer
+    /// category is named after it ("Transfer: Tenant deposit held" — `TransferCategories.ensure`
+    /// keeps tied categories named so) and sits in the Lisbon group.
+    public static let depositAccountName = "Tenant deposit held"
 
     /// The Lisbon group's categories, created in this order.
     public static let categories: [(name: String, type: CategoryType)] = [
@@ -35,6 +39,9 @@ public enum BBVAHistoryImport {
         /// Between the user's own accounts: the other account's tied transfer category, when
         /// the description names exactly one account; else uncategorised.
         case ownAccountTransfer
+        /// To or from the tenant-deposit liability (its tied transfer category); the other leg
+        /// is added there (`ManualTransactions.addOtherSide`).
+        case depositTransfer
         /// No category, pending review (the Uncategorized screen).
         case uncategorised
     }
@@ -53,7 +60,7 @@ public enum BBVAHistoryImport {
         case "accountant": return .category("PT accountant")
         case "bank_fees": return .category("BBVA fees")
         case "legal_fees": return .category("Legal fees")
-        case "tenant_deposit_return": return .category("Other")
+        case "tenant_deposit_return": return .depositTransfer
         case "card_payment": return .category("BBVA credit card")
         case "transfer_own_accounts": return .ownAccountTransfer
         case "investment_subscription", "state_payment_other", "other": return .uncategorised
@@ -101,15 +108,38 @@ public enum BBVAHistoryImport {
         public var range: (start: Date, end: Date) { MonthRange.of(year: year, month: month) }
     }
 
+    /// A tenant credit to split: of the rent_received row booked on `date`, `depositMinorUnits`
+    /// (> 0, less than the row) is the deposit received (a transfer from the deposit liability).
+    public struct DepositSplit: Equatable, Sendable {
+        public let date: Date
+        public let depositMinorUnits: Int
+
+        public init(date: Date, depositMinorUnits: Int) {
+            self.date = date
+            self.depositMinorUnits = depositMinorUnits
+        }
+    }
+
     public struct Input: Equatable, Sendable {
         /// In statement order.
         public let rows: [Row]
         /// Contiguous, oldest first; the first one's opening is the account's opening balance.
         public let months: [Month]
+        /// The deposit liability's opening balance, signed (negative = owed), and its day;
+        /// nil starts it from zero.
+        public let depositOpening: (minorUnits: Int, date: Date)?
+        public let depositSplits: [DepositSplit]
 
-        public init(rows: [Row], months: [Month]) {
+        public init(rows: [Row], months: [Month], depositOpening: (minorUnits: Int, date: Date)? = nil, depositSplits: [DepositSplit] = []) {
             self.rows = rows
             self.months = months
+            self.depositOpening = depositOpening
+            self.depositSplits = depositSplits
+        }
+
+        public static func == (lhs: Input, rhs: Input) -> Bool {
+            lhs.rows == rhs.rows && lhs.months == rhs.months && lhs.depositSplits == rhs.depositSplits
+                && lhs.depositOpening?.minorUnits == rhs.depositOpening?.minorUnits && lhs.depositOpening?.date == rhs.depositOpening?.date
         }
     }
 
@@ -177,14 +207,14 @@ public enum BBVAHistoryImport {
         }
     }
 
-    static func parseDay(_ text: String) -> Date? {
+    public static func parseDay(_ text: String) -> Date? {
         let parts = text.split(separator: "/").compactMap { Int($0) }
         guard parts.count == 3 else { return nil }
         return MonthRange.calendar.date(from: DateComponents(year: parts[2], month: parts[1], day: parts[0]))
     }
 
     /// "-927.85" → -92785 (at most 2 decimals).
-    static func minorUnits(_ text: String) -> Int? {
+    public static func minorUnits(_ text: String) -> Int? {
         var s = text.trimmingCharacters(in: .whitespaces)
         var sign = 1
         if s.hasPrefix("-") { sign = -1; s.removeFirst() } else if s.hasPrefix("+") { s.removeFirst() }
@@ -267,9 +297,8 @@ public enum BBVAHistoryImport {
         public let accountId: Int64
         public let openingMinorUnits: Int
         public let openingDate: Date
+        /// Nil when no account is ordered yet (BBVA then sorts alphabetically, like them).
         public let sortOrder: Int?
-        /// Other accounts given a sortOrder (in their displayed order) so BBVA could go last.
-        public let renumberedAccounts: Int
         public let transferCategory: String?
         public let transferCategoryGroup: String?
         public let createdCategories: [String]
@@ -283,6 +312,7 @@ public enum BBVAHistoryImport {
         public let links: [LinkFound]
         /// Rows whose category changed after the commit (linked transfer legs re-filed).
         public let refiledByLinks: Int
+        public let deposit: DepositReport
         public let verification: [String]
 
         public var text: String {
@@ -292,8 +322,7 @@ public enum BBVAHistoryImport {
             day.timeZone = MonthRange.calendar.timeZone
             day.dateFormat = "yyyy-MM-dd"
             var lines: [String] = []
-            lines.append("Account “\(accountName)” (alias “\(accountAlias)”, EUR, cash, Europe) id \(accountId), sortOrder \(sortOrder.map(String.init) ?? "—")"
-                         + (renumberedAccounts > 0 ? " (\(renumberedAccounts) other accounts numbered in their displayed order first)" : ""))
+            lines.append("Account “\(accountName)” (alias “\(accountAlias)”, EUR, cash, Europe) id \(accountId), sortOrder \(sortOrder.map(String.init) ?? "none (sorted alphabetically)")")
             lines.append("  Opening balance \(money(openingMinorUnits)) on \(day.string(from: openingDate))")
             lines.append("  Transfer category: \(transferCategory ?? "none") in group \(transferCategoryGroup ?? "none")")
             lines.append("Group “\(groupName)”: created \(createdCategories.joined(separator: ", "))")
@@ -324,6 +353,15 @@ public enum BBVAHistoryImport {
                              + "\(day.string(from: link.otherDate)) \(link.otherDescription) \(Money.format(link.otherAmountMinorUnits, currency: link.otherCurrency))")
             }
             if refiledByLinks > 0 { lines.append("  \(refiledByLinks) BBVA row(s) re-filed by linking") }
+            lines.append("Account “\(depositAccountName)” (credit, EUR) id \(deposit.accountId); transfer category \(deposit.transferCategory ?? "none") in group \(deposit.transferCategoryGroup ?? "none")")
+            if let opening = deposit.openingMinorUnits, let date = deposit.openingDate {
+                lines.append("  Opening balance \(money(opening)) (signed; negative = owed) on \(day.string(from: date))")
+            } else {
+                lines.append("  No opening balance given (--deposit-opening): starts from zero")
+            }
+            for split in deposit.splits { lines.append("  Split \(day.string(from: split.date)) \(split.description) \(money(split.totalMinorUnits)) → rent \(money(split.totalMinorUnits - split.depositMinorUnits)) + deposit \(money(split.depositMinorUnits))") }
+            for leg in deposit.legs { lines.append("  Leg \(day.string(from: leg.date)) \(leg.description) \(money(leg.amountMinorUnits)) (other side of BBVA “\(leg.bbvaDescription)”)") }
+            lines.append("  Balance now \(deposit.balanceMinorUnits.map(money) ?? "—") (signed)")
             lines.append("Verification:")
             lines.append(contentsOf: verification.map { "  " + $0 })
             return lines.joined(separator: "\n")
@@ -342,20 +380,12 @@ public enum BBVAHistoryImport {
         // 1. The account and its opening balance.
         let first = input.months[0]
         let openingDate = first.range.start
-        let others = AccountOrdering.sorted(try Account.fetchAll(db))
         let account = try AccountEditing.add(db: db, name: accountName, currency: .eur, kind: .cash, openingBalanceEntered: first.openingMinorUnits,
                                              asOf: openingDate, details: AccountDetails(alias: accountAlias, region: .europe))
         let accountId = account.id!
         try db.execute(sql: "UPDATE balanceSnapshot SET note = ? WHERE accountId = ?", arguments: ["Opening balance (statement \(first.label))", accountId])
-        var renumbered = 0
-        if others.contains(where: { $0.sortOrder == nil }) {
-            for (position, other) in others.enumerated() {
-                try db.execute(sql: "UPDATE account SET sortOrder = ? WHERE id = ?", arguments: [position, other.id])
-            }
-            renumbered = others.count
-        }
-        let sortOrder = (try Int.fetchOne(db, sql: "SELECT MAX(sortOrder) FROM account WHERE id <> ?", arguments: [accountId])).map { $0 + 1 } ?? 0
-        try db.execute(sql: "UPDATE account SET sortOrder = ? WHERE id = ?", arguments: [sortOrder, accountId])
+        // After the ordered accounts (`AccountEditing.add`); none ordered leaves it nil.
+        let sortOrder = account.sortOrder
         let tied = try TransferCategories.category(db: db, forAccountId: accountId)
         let tiedGroup = try tied?.groupId.flatMap { try CategoryGroup.fetchOne(db, key: $0)?.name }
 
@@ -366,20 +396,37 @@ public enum BBVAHistoryImport {
             categoryIds[name] = try Categories.create(db: db, name: name, type: type, groupId: group.id).id
         }
 
-        // 3. The rows, through the import commit.
-        let parsed = input.rows.map { ParsedTransaction(date: $0.date, rawDescription: $0.description, amountMinorUnits: $0.amountMinorUnits, balanceAfterMinorUnits: $0.balanceAfterMinorUnits) }
+        // The tenant-deposit liability, its tied transfer category moved into the group.
+        let depositAccount = try AccountEditing.add(db: db, name: depositAccountName, currency: .eur, kind: .credit,
+                                                    openingBalanceEntered: input.depositOpening.map { NetWorthCalculator.enteredBalance(signedMinorUnits: $0.minorUnits, accountKind: .credit) },
+                                                    asOf: input.depositOpening?.date ?? openingDate, details: AccountDetails(region: .europe))
+        let depositAccountId = depositAccount.id!
+        if input.depositOpening != nil {
+            try db.execute(sql: "UPDATE balanceSnapshot SET note = ? WHERE accountId = ?", arguments: ["Tenant deposit held (opening)", depositAccountId])
+        }
+        guard let depositCategory = try TransferCategories.category(db: db, forAccountId: depositAccountId), let depositCategoryId = depositCategory.id else {
+            throw ImportError.badInput("no transfer category for \(depositAccountName)")
+        }
+        try Categories.move(db: db, ids: [depositCategoryId], toGroupId: group.id)
+
+        // 3. The rows (deposit splits as two), through the import commit.
+        let rows = try importRows(input)
+        let parsed = rows.map { ParsedTransaction(date: $0.row.date, rawDescription: $0.row.description, amountMinorUnits: $0.amountMinorUnits) }
         let fingerprints = TransactionFingerprint.computeAll(accountId: accountId, transactions: parsed)
         let transferIds = try TransferCategories.categoryIdsByAccount(db: db)
-        let otherAccounts = try Account.fetchAll(db).filter { $0.id != accountId }
+        let otherAccounts = try Account.fetchAll(db).filter { $0.id != accountId && $0.id != depositAccountId }
         var unresolved: [String] = []
         var finalCategories: [Int64?] = []
         var staged: [StagedTransaction] = []
         var decisions: [ImportDecision] = []
-        for (index, row) in input.rows.enumerated() {
+        var depositStagedIds: [UUID] = []
+        for (index, item) in rows.enumerated() {
+            let row = item.row
             let categoryId: Int64?
-            switch mapping(forKind: row.kind)! {
+            switch item.isDepositPart ? .depositTransfer : mapping(forKind: row.kind)! {
             case .category(let name): categoryId = categoryIds[name]
             case .uncategorised: categoryId = nil
+            case .depositTransfer: categoryId = depositCategoryId
             case .ownAccountTransfer:
                 let named = otherAccounts.filter { other in
                     [other.name, other.alias].compactMap { $0 }.contains { !$0.isEmpty && row.description.range(of: $0, options: .caseInsensitive) != nil }
@@ -392,16 +439,27 @@ public enum BBVAHistoryImport {
                 }
             }
             finalCategories.append(categoryId)
-            let item = StagedTransaction(parsed: parsed[index], suggestedCategoryId: categoryId, source: categoryId == nil ? .none : .manual,
-                                         confidence: 1, fingerprint: fingerprints[index])
-            staged.append(item)
-            decisions.append(ImportDecision(stagedId: item.id, finalCategoryId: categoryId, learnRule: false))
+            let stagedRow = StagedTransaction(parsed: parsed[index], suggestedCategoryId: categoryId, source: categoryId == nil ? .none : .manual,
+                                              confidence: 1, fingerprint: fingerprints[index])
+            staged.append(stagedRow)
+            if categoryId == depositCategoryId { depositStagedIds.append(stagedRow.id) }
+            decisions.append(ImportDecision(stagedId: stagedRow.id, finalCategoryId: categoryId, learnRule: false, note: item.note))
         }
         try ImportCoordinator.commit(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions)
 
+        // The deposit legs: the other side of each deposit transfer, linked (Add the other side…).
+        var depositLegs: [DepositLeg] = []
+        for stagedId in depositStagedIds {
+            let index = staged.firstIndex { $0.id == stagedId }!
+            guard let bbvaRow = try Transaction.filter(Column("accountId") == accountId && Column("fingerprint") == fingerprints[index]).fetchOne(db) else { continue }
+            let leg = try ManualTransactions.addOtherSide(db: db, transactionId: bbvaRow.id!, accountId: depositAccountId)
+            depositLegs.append(DepositLeg(date: leg.date, description: leg.rawDescription, amountMinorUnits: leg.amountMinorUnits, bbvaDescription: bbvaRow.rawDescription))
+        }
+
         // 4. Rules for the repeatable kinds.
         let names = Dictionary(try Category.fetchAll(db).compactMap { c in c.id.map { ($0, c.name) } }, uniquingKeysWith: { a, _ in a })
-        let candidates = ruleCandidates(rows: input.rows.enumerated().map { ($1.description, $1.matchedText, finalCategories[$0].flatMap { names[$0] }) },
+        // A split's deposit part shares the rent's description: left out, so it can't block the rent rule.
+        let candidates = ruleCandidates(rows: rows.indices.filter { !rows[$0].isDepositPart }.map { (rows[$0].row.description, rows[$0].row.matchedText, finalCategories[$0].flatMap { names[$0] }) },
                                         learnFor: ruleCategories)
         var learned: [RuleCandidate] = []
         var skipped: [String] = []
@@ -425,7 +483,7 @@ public enum BBVAHistoryImport {
             verification.append((ok ? "OK   " : "FAIL ") + line)
             if !ok { failures.append(line) }
         }
-        check(transactions.count == input.rows.count, "rows saved: \(transactions.count) of \(input.rows.count)")
+        check(transactions.count == rows.count, "rows saved: \(transactions.count) of \(rows.count) (\(input.rows.count) statement rows, \(input.depositSplits.count) split)")
         var monthFailures = 0
         for month in input.months {
             let balance = NetWorthCalculator.balance(accountId: accountId, at: month.range.end, snapshots: snapshots, transactions: transactions)?.native
@@ -468,12 +526,89 @@ public enum BBVAHistoryImport {
         }
         links.sort { $0.bbvaDate < $1.bbvaDate }
 
+        let depositTransactions = try Transaction.filter(Column("accountId") == depositAccountId).fetchAll(db)
+        let depositSnapshots = try BalanceSnapshot.filter(Column("accountId") == depositAccountId).fetchAll(db)
+        let depositBalance = NetWorthCalculator.balance(accountId: depositAccountId, at: nil, snapshots: depositSnapshots, transactions: depositTransactions)?.native
+        let expectedDeposit = (input.depositOpening?.minorUnits ?? 0) + depositLegs.reduce(0) { $0 + $1.amountMinorUnits }
+        check(depositLegs.count == depositStagedIds.count && (depositBalance ?? 0) == expectedDeposit,
+              "\(depositAccountName): \(depositLegs.count) leg(s) for \(depositStagedIds.count) deposit transfer(s), balance \(Money.format(depositBalance ?? 0, currency: .eur))")
+        let depositLegIds = Set(depositTransactions.compactMap(\.id))
+        let linkedDepositLegs = try TransferLink.active.fetchAll(db).filter { depositLegIds.contains($0.outTransactionId) || depositLegIds.contains($0.inTransactionId) }.count
+        check(linkedDepositLegs == depositLegs.count, "every deposit leg is linked to its BBVA row: \(linkedDepositLegs) of \(depositLegs.count)")
+        let splits = rows.filter(\.isDepositPart).map { part in
+            DepositSplitDone(date: part.row.date, description: part.row.description, totalMinorUnits: part.row.amountMinorUnits, depositMinorUnits: part.amountMinorUnits)
+        }
+
         guard failures.isEmpty else { throw ImportError.verificationFailed(verification) }
+        let deposit = DepositReport(accountId: depositAccountId, transferCategory: try Category.fetchOne(db, key: depositCategoryId)?.name, transferCategoryGroup: groupName,
+                                    openingMinorUnits: input.depositOpening?.minorUnits, openingDate: input.depositOpening?.date,
+                                    splits: splits, legs: depositLegs, balanceMinorUnits: depositBalance)
         return Report(accountId: accountId, openingMinorUnits: first.openingMinorUnits, openingDate: openingDate, sortOrder: sortOrder,
-                      renumberedAccounts: renumbered, transferCategory: tied?.name, transferCategoryGroup: tiedGroup,
+                      transferCategory: tied?.name, transferCategoryGroup: tiedGroup,
                       createdCategories: categories.map(\.name), rowCount: transactions.count, byCategoryYear: byCategoryYear,
                       uncategorisedPending: pending, unresolvedTransfers: unresolved, rulesLearned: learned, rulesSkipped: skipped,
-                      links: links, refiledByLinks: refiled, verification: verification)
+                      links: links, refiledByLinks: refiled, deposit: deposit, verification: verification)
+    }
+
+    public struct DepositLeg: Equatable, Sendable {
+        public let date: Date
+        public let description: String
+        public let amountMinorUnits: Int
+        public let bbvaDescription: String
+    }
+
+    public struct DepositSplitDone: Equatable, Sendable {
+        public let date: Date
+        public let description: String
+        public let totalMinorUnits: Int
+        public let depositMinorUnits: Int
+    }
+
+    public struct DepositReport: Equatable, Sendable {
+        public let accountId: Int64
+        public let transferCategory: String?
+        public let transferCategoryGroup: String?
+        public let openingMinorUnits: Int?
+        public let openingDate: Date?
+        public let splits: [DepositSplitDone]
+        public let legs: [DepositLeg]
+        /// Signed (negative = owed), now.
+        public let balanceMinorUnits: Int?
+    }
+
+    /// One row to save: a statement row, or one part of a split one.
+    struct ImportRow {
+        let row: Row
+        let amountMinorUnits: Int
+        let isDepositPart: Bool
+        let note: String?
+    }
+
+    /// The statement rows in order, each split row (`depositSplits`) as its rent part then its
+    /// deposit part. Each split must name exactly one rent_received row, for less than it.
+    static func importRows(_ input: Input) throws -> [ImportRow] {
+        var splitByIndex: [Int: Int] = [:]
+        for split in input.depositSplits {
+            let matches = input.rows.indices.filter { input.rows[$0].kind == "rent_received" && input.rows[$0].date == split.date }
+            guard matches.count == 1, let index = matches.first else {
+                throw ImportError.badInput("--split-deposit: \(matches.count) rent_received rows on that day (need exactly 1)")
+            }
+            guard split.depositMinorUnits > 0, split.depositMinorUnits < input.rows[index].amountMinorUnits, splitByIndex[index] == nil else {
+                throw ImportError.badInput("--split-deposit: the deposit must be positive, less than the credit, and split once")
+            }
+            splitByIndex[index] = split.depositMinorUnits
+        }
+        var result: [ImportRow] = []
+        for (index, row) in input.rows.enumerated() {
+            guard let deposit = splitByIndex[index] else {
+                result.append(ImportRow(row: row, amountMinorUnits: row.amountMinorUnits, isDepositPart: false, note: nil))
+                continue
+            }
+            let total = Money.format(row.amountMinorUnits, currency: .eur)
+            result.append(ImportRow(row: row, amountMinorUnits: row.amountMinorUnits - deposit, isDepositPart: false, note: "Rent part of a \(total) credit (rest: deposit)"))
+            result.append(ImportRow(row: row, amountMinorUnits: deposit, isDepositPart: true, note: "Deposit part of a \(total) credit"))
+        }
+        return result
     }
 
     private struct Pair: Hashable {
@@ -503,11 +638,18 @@ public enum BBVAHistoryImport {
             }
         }
         guard balance == last.closingMinorUnits else { throw ImportError.badInput("rows end at \(balance), statements close at \(last.closingMinorUnits)") }
+        // A snapshot is the balance at the end of its day: every deposit transfer must come after it.
+        if let opening = input.depositOpening {
+            let depositDates = input.rows.filter { mapping(forKind: $0.kind) == .depositTransfer }.map(\.date) + input.depositSplits.map(\.date)
+            if let earliest = depositDates.min(), earliest <= opening.date {
+                throw ImportError.badInput("--deposit-date must be before the first deposit movement")
+            }
+        }
     }
 
     static func checkNotApplied(db: Database) throws {
         if try ImportBatch.filter(Column("sourceFileName") == sourceFileName).fetchCount(db) > 0 { throw ImportError.alreadyApplied }
-        if let existing = try Account.fetchAll(db).first(where: { $0.name.caseInsensitiveCompare(accountName) == .orderedSame }) {
+        if let existing = try Account.fetchAll(db).first(where: { account in [accountName, depositAccountName].contains { account.name.caseInsensitiveCompare($0) == .orderedSame } }) {
             throw ImportError.accountNameTaken(existing.name)
         }
     }
@@ -521,8 +663,9 @@ public enum BBVAHistoryImport {
         for (name, _) in categories {
             if let existing = categoryNames.first(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) { clashes.append("category “\(existing)”") }
         }
-        let transferName = "Transfer: \(accountAlias)"
-        if let existing = categoryNames.first(where: { $0.caseInsensitiveCompare(transferName) == .orderedSame }) { clashes.append("category “\(existing)”") }
+        for transferName in ["Transfer: \(accountAlias)", "Transfer: \(depositAccountName)"] {
+            if let existing = categoryNames.first(where: { $0.caseInsensitiveCompare(transferName) == .orderedSame }) { clashes.append("category “\(existing)”") }
+        }
         guard clashes.isEmpty else { throw ImportError.nameClash(clashes) }
     }
 }
