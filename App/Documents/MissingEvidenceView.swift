@@ -153,6 +153,15 @@ struct MissingEvidenceView: View {
             .accessibilityLabel("Show")
             searchField
                 .frame(maxWidth: 360)
+            if let filter = viewModel.propertyFilter {
+                Button { viewModel.propertyFilter = nil } label: {
+                    Label("\(filter.name)", systemImage: "xmark.circle.fill")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderless)
+                .help("Showing only \(filter.name)'s rules. Click to show everything.")
+                .accessibilityLabel("Property filter: \(filter.name). Remove filter")
+            }
             Spacer()
         }
     }

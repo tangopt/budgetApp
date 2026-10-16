@@ -40,12 +40,16 @@ public enum EvidenceRequirementScope: Codable, Equatable, Hashable, Sendable {
     case periodic(entity: EvidenceEntity, every: EvidencePeriodicity)
     /// One document linked to the record, whatever its date (deed, P60 for a tax-year record).
     case single(entity: EvidenceEntity)
+    /// One document for each record of `recordType` of the property — each issued rent receipt
+    /// (its PDF) whose rent period meets the checklist's period, each tenancy (its contract)
+    /// running in it (`PropertyEvidence`). New records are covered as they arrive.
+    case recordsOfProperty(propertyId: Int64, recordType: EvidenceEntityType)
 
     /// Whether the scope targets transactions (one item per transaction).
     public var isTransactionScope: Bool {
         switch self {
         case .transactionsInCategory, .transactionsInCategoryGroup, .transactionsMatching: return true
-        case .periodic, .single: return false
+        case .periodic, .single, .recordsOfProperty: return false
         }
     }
 }
@@ -57,6 +61,8 @@ public enum EvidenceRequirementError: Error, Equatable {
     /// `activeFrom` isn't before `activeTo`.
     case invalidActiveRange
     case requirementNotFound
+    /// `recordsOfProperty` supports tenancies and rent receipts only.
+    case unsupportedRecordType
 }
 
 /// A rule for what evidence the records need (spec §7), stored as data so new years
@@ -168,6 +174,9 @@ public enum EvidenceRequirements {
             let blankText = trimmed?.isEmpty ?? true
             guard !categoryIds.isEmpty || !accountIds.isEmpty || !blankText else { throw EvidenceRequirementError.noMatchingCriteria }
             requirement.scope = .transactionsMatching(categoryIds: categoryIds, accountIds: accountIds, descriptionContains: blankText ? nil : trimmed)
+        }
+        if case let .recordsOfProperty(_, recordType) = requirement.scope, !PropertyEvidence.recordTypes.contains(recordType) {
+            throw EvidenceRequirementError.unsupportedRecordType
         }
         if let from = requirement.activeFrom, let to = requirement.activeTo, from >= to { throw EvidenceRequirementError.invalidActiveRange }
         requirement.usualSource = Transaction.normalizedNote(requirement.usualSource)

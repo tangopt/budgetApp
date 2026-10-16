@@ -217,8 +217,12 @@ final class DocumentsViewModel: ObservableObject {
         case .category:
             let name = try Category.fetchOne(db, key: link.entityId)?.name ?? "Category no longer exists"
             return LinkRow(link: link, title: name, subtitle: "Category", transaction: nil)
-        case .property, .taxYear, .person, .other:
-            return LinkRow(link: link, title: "\(link.entityType.rawValue.capitalized) #\(link.entityId)", subtitle: nil, transaction: nil)
+        case .property, .person, .tenancy, .rentReceipt:
+            let kind = link.entityType.displayName
+            let title = try PropertyEvidence.title(db: db, entity: link.entity) ?? "\(kind) no longer exists"
+            return LinkRow(link: link, title: title, subtitle: kind, transaction: nil)
+        case .taxYear, .other:
+            return LinkRow(link: link, title: "\(link.entityType.displayName) #\(link.entityId)", subtitle: nil, transaction: nil)
         }
     }
 

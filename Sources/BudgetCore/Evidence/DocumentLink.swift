@@ -2,7 +2,7 @@ import GRDB
 import Foundation
 
 /// The kinds of record a document can be evidence for (spec §2). Records without a table yet
-/// (property, tax year, person) are referenced by the id their phase will give them.
+/// (tax year) are referenced by the id their phase will give them.
 public enum EvidenceEntityType: String, Codable, CaseIterable, Sendable {
     case transaction
     case account
@@ -11,6 +11,8 @@ public enum EvidenceEntityType: String, Codable, CaseIterable, Sendable {
     case taxYear
     case person
     case other
+    case tenancy
+    case rentReceipt
 }
 
 /// A record a document links to.
@@ -99,7 +101,11 @@ public enum EvidenceLinks {
         case .transaction: return try Transaction.exists(db, key: entity.id)
         case .account: return try Account.exists(db, key: entity.id)
         case .category: return try Category.exists(db, key: entity.id)
-        case .property, .taxYear, .person, .other: return true
+        case .property: return try Property.exists(db, key: entity.id)
+        case .person: return try Person.exists(db, key: entity.id)
+        case .tenancy: return try Tenancy.exists(db, key: entity.id)
+        case .rentReceipt: return try RentReceipt.exists(db, key: entity.id)
+        case .taxYear, .other: return true
         }
     }
 

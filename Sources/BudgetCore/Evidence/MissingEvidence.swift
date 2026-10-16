@@ -174,6 +174,16 @@ public enum MissingEvidence {
                 result.append(item(requirement: requirement, target: target, documents: documents, waiver: waiver(target),
                                    date: nil, amount: nil, currency: nil, period: nil, title: requirement.name,
                                    categoryName: nil, accountName: nil))
+            case let .recordsOfProperty(propertyId, recordType):
+                let records = try PropertyEvidence.records(db: db, propertyId: propertyId, type: recordType,
+                                                           overlapping: DateInterval(start: window.start, end: window.end))
+                for record in records {
+                    let target = Target(entity: record.entity)
+                    let documents = try linked.documents(for: record.entity).filter { requirement.accepts($0.kind) }
+                    result.append(item(requirement: requirement, target: target, documents: documents, waiver: waiver(target),
+                                       date: record.date, amount: record.amountMinorUnits, currency: record.currency, period: record.period,
+                                       title: record.title, categoryName: nil, accountName: nil))
+                }
             }
         }
         return result.sorted(by: itemOrder)
@@ -333,7 +343,7 @@ public enum MissingEvidence {
                 clauses.append("rawDescription LIKE ? ESCAPE '\\'")
                 arguments.append("%\(escaped)%")
             }
-        case .periodic, .single:
+        case .periodic, .single, .recordsOfProperty:
             return []
         }
         switch requirement.direction {

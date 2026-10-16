@@ -1,0 +1,454 @@
+// App/Property/PropertySheets.swift
+import SwiftUI
+import UniformTypeIdentifiers
+import BudgetCore
+
+// MARK: - Property
+
+/// New property / Edit property's fields.
+struct PropertyDraft: Identifiable {
+    let id = UUID()
+    let existing: Property?
+    var name = ""
+    var country = "PT"
+    var currency = Currency.eur
+    var matrixArticle = ""
+    var priceText = ""
+    var hasPurchaseDate = false
+    var purchaseDate: Date? = nil
+    var notes = ""
+
+    init(_ property: Property?) {
+        existing = property
+        guard let property else { return }
+        name = property.name
+        country = property.country
+        currency = property.currency
+        matrixArticle = property.matrixArticle ?? ""
+        priceText = property.purchasePriceMinorUnits.map(Money.formatInput) ?? ""
+        hasPurchaseDate = property.purchaseDate != nil
+        purchaseDate = property.purchaseDate
+        notes = property.notes ?? ""
+    }
+}
+
+struct PropertyFormSheet: View {
+    @ObservedObject var viewModel: PropertyViewModel
+    @State var draft: PropertyDraft
+    @Environment(\.dismiss) private var dismiss
+    @State private var error: String?
+
+    var body: some View {
+        SheetScaffold(title: draft.existing == nil ? "New property" : "Edit property", error: error, onCancel: { dismiss() },
+                      primary: SheetAction(draft.existing == nil ? "Add property" : "Save",
+                                           isEnabled: !draft.name.trimmingCharacters(in: .whitespaces).isEmpty, action: save)) {
+            SheetForm {
+                LabeledContent("Name") { TextField("Name", text: $draft.name, prompt: Text("e.g. Lisbon flat")) }
+                LabeledContent("Country") {
+                    TextField("Country", text: $draft.country, prompt: Text("PT")).frame(width: 60)
+                }
+                LabeledContent("Currency") {
+                    Picker("Currency", selection: $draft.currency) {
+                        ForEach(Currency.allCases, id: \.self) { Text($0.rawValue.uppercased()).tag($0) }
+                    }
+                    .pickerStyle(.segmented).fixedSize()
+                }
+                LabeledContent("Matrix article") { TextField("Matrix article", text: $draft.matrixArticle, prompt: Text("Artigo matricial")) }
+                LabeledContent("Purchase price") { MoneyField("Purchase price", text: $draft.priceText, currency: draft.currency, width: 140) }
+                LabeledContent("Purchase date") {
+                    HStack {
+                        Toggle("Known", isOn: $draft.hasPurchaseDate).toggleStyle(.checkbox)
+                        if draft.hasPurchaseDate {
+                            DatePicker("Purchase date", selection: utcOptionalDay($draft.purchaseDate, default: PropertyDays.utcToday(Date())),
+                                       displayedComponents: .date)
+                                .labelsHidden()
+                        }
+                    }
+                }
+                LabeledContent("Notes") { TextField("Notes", text: $draft.notes, axis: .vertical).lineLimit(2...4) }
+            }
+        }
+    }
+
+    private func save() {
+        let priceText = draft.priceText.trimmingCharacters(in: .whitespaces)
+        let price = priceText.isEmpty ? nil : Money.parseMinorUnits(priceText)
+        if !priceText.isEmpty, price == nil { error = MoneyField.invalidAmountMessage(priceText); return }
+        var property = draft.existing ?? Property(name: "", country: "")
+        property.name = draft.name
+        property.country = draft.country
+        property.currency = draft.currency
+        property.matrixArticle = draft.matrixArticle
+        property.purchasePriceMinorUnits = price
+        property.purchaseDate = draft.hasPurchaseDate ? (draft.purchaseDate ?? PropertyDays.utcToday(Date())) : nil
+        property.notes = draft.notes
+        switch viewModel.saveProperty(property) {
+        case .success(let id):
+            viewModel.onPropertiesChanged?(id)
+            dismiss()
+        case .failure(let failure):
+            error = PropertyMessages.text(for: failure)
+        }
+    }
+}
+
+// MARK: - Owners
+
+/// Edit owners…: every ownership row (person, share, from, to), saved together so the shares
+/// are checked as a whole (`Properties.setOwners`). New person… adds someone to choose.
+struct OwnersSheet: View {
+    @ObservedObject var viewModel: PropertyViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    struct Row: Identifiable {
+        let id = UUID()
+        var personId: Int64?
+        var shareText = "100"
+        var from: Date?
+        var to: Date?
+    }
+
+    @State private var rows: [Row] = []
+    @State private var error: String?
+    @State private var addingPerson = false
+
+    var body: some View {
+        SheetScaffold(title: "Owners", subtitle: "At any date someone owns the property, the shares must add up to 100%.",
+                      error: error, width: 640, onCancel: { dismiss() }, primary: SheetAction("Save", action: save)) {
+            VStack(alignment: .leading, spacing: 8) {
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 8) {
+                    GridRow {
+                        Text("Person"); Text("Share %"); Text("From"); Text("To"); Text("")
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                    ForEach($rows) { $row in
+                        GridRow {
+                            Picker("Person", selection: $row.personId) {
+                                Text("Choose…").tag(Int64?.none)
+                                ForEach(viewModel.snapshot.people) { person in Text(person.name).tag(person.id) }
+                            }
+                            .labelsHidden()
+                            .frame(width: 160)
+                            TextField("Share", text: $row.shareText).frame(width: 70).multilineTextAlignment(.trailing)
+                                .accessibilityLabel("Share percent")
+                            optionalDay($row.from, label: "From")
+                            optionalDay($row.to, label: "To")
+                            Button { rows.removeAll { $0.id == row.id } } label: { Image(systemName: "minus.circle") }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Remove row")
+                        }
+                    }
+                }
+                HStack {
+                    Button("Add row") { rows.append(Row()) }
+                    Button("New person…") { addingPerson = true }
+                }
+            }
+        }
+        .onAppear {
+            rows = viewModel.snapshot.owners.map {
+                Row(personId: $0.personId, shareText: PropertyFormat.percent($0.shareBasisPoints).replacingOccurrences(of: "%", with: ""),
+                    from: $0.fromDate, to: $0.toDate)
+            }
+            if rows.isEmpty { rows = [Row()] }
+        }
+        .sheet(isPresented: $addingPerson) { PersonFormSheet(viewModel: viewModel, person: nil) }
+    }
+
+    private func optionalDay(_ day: Binding<Date?>, label: String) -> some View {
+        HStack(spacing: 4) {
+            Toggle(label, isOn: Binding(get: { day.wrappedValue != nil },
+                                        set: { day.wrappedValue = $0 ? PropertyDays.utcToday(Date()) : nil }))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .accessibilityLabel("Has \(label.lowercased()) date")
+            if day.wrappedValue != nil {
+                DatePicker(label, selection: utcOptionalDay(day, default: PropertyDays.utcToday(Date())), displayedComponents: .date)
+                    .labelsHidden()
+            } else {
+                Text(label == "From" ? "Always" : "Still").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func save() {
+        guard let propertyId = viewModel.propertyId else { return }
+        var owners: [PropertyOwner] = []
+        for row in rows {
+            guard let personId = row.personId else { error = "Choose a person on every row (or remove it)."; return }
+            guard let share = Decimal(string: row.shareText.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespaces)) else {
+                error = "“\(row.shareText)” isn't a percentage."; return
+            }
+            let basisPoints = NSDecimalNumber(decimal: share * 100).rounding(accordingToBehavior: nil).intValue
+            owners.append(PropertyOwner(propertyId: propertyId, personId: personId, shareBasisPoints: basisPoints, fromDate: row.from, toDate: row.to))
+        }
+        if let failure = viewModel.setOwners(owners) { error = failure } else { dismiss() }
+    }
+}
+
+/// New person / Edit person: name, short name and tax identifiers (kept on this device).
+struct PersonFormSheet: View {
+    @ObservedObject var viewModel: PropertyViewModel
+    let person: Person?
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var shortName = ""
+    @State private var utr = ""
+    @State private var nino = ""
+    @State private var nif = ""
+    @State private var error: String?
+
+    var body: some View {
+        SheetScaffold(title: person == nil ? "New person" : "Edit person",
+                      subtitle: "Tax identifiers stay in this Mac's database.", error: error, onCancel: { dismiss() },
+                      primary: SheetAction("Save", isEnabled: !name.trimmingCharacters(in: .whitespaces).isEmpty, action: save)) {
+            SheetForm {
+                LabeledContent("Name") { TextField("Name", text: $name) }
+                LabeledContent("Short name") { TextField("Short name", text: $shortName) }
+                LabeledContent("UK UTR") { TextField("UK UTR", text: $utr) }
+                LabeledContent("UK NI number") { TextField("UK NI number", text: $nino) }
+                LabeledContent("PT NIF") { TextField("PT NIF", text: $nif) }
+            }
+        }
+        .onAppear {
+            guard let person else { return }
+            name = person.name; shortName = person.shortName ?? ""; utr = person.ukUtr ?? ""; nino = person.ukNino ?? ""; nif = person.ptNif ?? ""
+        }
+    }
+
+    private func save() {
+        var edited = person ?? Person(name: "")
+        edited.name = name; edited.shortName = shortName; edited.ukUtr = utr; edited.ukNino = nino; edited.ptNif = nif
+        switch viewModel.savePerson(edited) {
+        case .success: dismiss()
+        case .failure(let failure): error = PropertyMessages.text(for: failure)
+        }
+    }
+}
+
+// MARK: - Accounts
+
+struct LinkAccountSheet: View {
+    @ObservedObject var viewModel: PropertyViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var accountId: Int64?
+    @State private var role = PropertyAccountRole.current
+    @State private var error: String?
+
+    var body: some View {
+        let linked = Set(viewModel.snapshot.propertyAccounts.map(\.accountId))
+        SheetScaffold(title: "Link account", error: error, onCancel: { dismiss() },
+                      primary: SheetAction("Link", isEnabled: accountId != nil, action: save)) {
+            SheetForm {
+                LabeledContent("Account") {
+                    Picker("Account", selection: $accountId) {
+                        Text("Choose…").tag(Int64?.none)
+                        ForEach(viewModel.snapshot.accounts.filter { !linked.contains($0.id ?? -1) }) { account in
+                            Text(account.displayName).tag(account.id)
+                        }
+                    }
+                }
+                LabeledContent("Role") {
+                    Picker("Role", selection: $role) {
+                        ForEach(PropertyAccountRole.allCases, id: \.self) { Text(PropertyFormat.role($0)).tag($0) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func save() {
+        guard let accountId else { return }
+        if let failure = viewModel.setAccount(accountId, role: role) { error = failure } else { dismiss() }
+    }
+}
+
+// MARK: - Tenancy
+
+struct TenancyDraft: Identifiable {
+    let id = UUID()
+    let existing: Tenancy?
+    let propertyId: Int64
+    var reference = ""
+    var contract = ""
+    var tenant = ""
+    var start = PropertyDays.utcToday(Date())
+    var end: Date? = nil
+    var advanceMonths = 0
+    var depositMonths = 0
+    var notes = ""
+    var rents: [RentRow] = []
+
+    struct RentRow: Identifiable {
+        let id = UUID()
+        var from: Date
+        var amountText: String
+    }
+
+    init(_ tenancy: Tenancy?, rents: [TenancyRent], propertyId: Int64) {
+        existing = tenancy
+        self.propertyId = propertyId
+        guard let tenancy else { return }
+        reference = tenancy.referenceLabel
+        contract = tenancy.contractNumber ?? ""
+        tenant = tenancy.tenantName ?? ""
+        start = tenancy.startDate
+        end = tenancy.endDate
+        advanceMonths = tenancy.advanceRentMonths
+        depositMonths = tenancy.depositMonths
+        notes = tenancy.notes ?? ""
+        self.rents = rents.map { RentRow(from: $0.fromDate, amountText: Money.formatInput($0.monthlyAmountMinorUnits)) }
+    }
+}
+
+struct TenancyFormSheet: View {
+    @ObservedObject var viewModel: PropertyViewModel
+    @State var draft: TenancyDraft
+    @Environment(\.dismiss) private var dismiss
+    @State private var error: String?
+
+    var body: some View {
+        SheetScaffold(title: draft.existing == nil ? "New tenancy" : "Edit tenancy", error: error, width: 520, onCancel: { dismiss() },
+                      primary: SheetAction("Save", isEnabled: !draft.reference.trimmingCharacters(in: .whitespaces).isEmpty, action: save)) {
+            SheetForm {
+                LabeledContent("Reference") { TextField("Reference", text: $draft.reference, prompt: Text("The portal's Referência")) }
+                LabeledContent("Contract no.") { TextField("Contract no.", text: $draft.contract) }
+                LabeledContent("Tenant") { TextField("Tenant", text: $draft.tenant) }
+                LabeledContent("Start") { DatePicker("Start", selection: utcDay($draft.start), displayedComponents: .date) }
+                LabeledContent("End") {
+                    HStack {
+                        Toggle("Ended", isOn: Binding(get: { draft.end != nil }, set: { draft.end = $0 ? PropertyDays.utcToday(Date()) : nil }))
+                            .toggleStyle(.checkbox)
+                        if draft.end != nil {
+                            DatePicker("End", selection: utcOptionalDay($draft.end, default: draft.start), displayedComponents: .date).labelsHidden()
+                        }
+                    }
+                }
+                LabeledContent("Advance rent") {
+                    Stepper("\(draft.advanceMonths) month\(draft.advanceMonths == 1 ? "" : "s")", value: $draft.advanceMonths, in: 0...24)
+                }
+                LabeledContent("Deposit") {
+                    Stepper("\(draft.depositMonths) month\(draft.depositMonths == 1 ? "" : "s")", value: $draft.depositMonths, in: 0...24)
+                }
+                LabeledContent("Rent") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach($draft.rents) { $rent in
+                            HStack {
+                                DatePicker("From", selection: utcDay($rent.from), displayedComponents: .date).labelsHidden()
+                                MoneyField("Monthly rent", text: $rent.amountText, currency: viewModel.currency, width: 110)
+                                Button { draft.rents.removeAll { $0.id == rent.id } } label: { Image(systemName: "minus.circle") }
+                                    .buttonStyle(.borderless)
+                                    .accessibilityLabel("Remove rent")
+                            }
+                        }
+                        Button("Add rent") {
+                            draft.rents.append(.init(from: draft.rents.last.map { _ in PropertyDays.utcToday(Date()) } ?? draft.start, amountText: ""))
+                        }
+                    }
+                }
+                LabeledContent("Notes") { TextField("Notes", text: $draft.notes, axis: .vertical).lineLimit(2...4) }
+            }
+        }
+    }
+
+    private func save() {
+        var rents: [TenancyRent] = []
+        for row in draft.rents {
+            guard let amount = Money.parseMinorUnits(row.amountText) else { error = MoneyField.invalidAmountMessage(row.amountText); return }
+            rents.append(TenancyRent(tenancyId: draft.existing?.id ?? 0, fromDate: row.from, monthlyAmountMinorUnits: amount))
+        }
+        var tenancy = draft.existing ?? Tenancy(propertyId: draft.propertyId, referenceLabel: "", startDate: draft.start)
+        tenancy.referenceLabel = draft.reference
+        tenancy.contractNumber = draft.contract
+        tenancy.tenantName = draft.tenant
+        tenancy.startDate = draft.start
+        tenancy.endDate = draft.end
+        tenancy.advanceRentMonths = draft.advanceMonths
+        tenancy.depositMonths = draft.depositMonths
+        tenancy.notes = draft.notes
+        if let failure = viewModel.saveTenancy(tenancy, rents: rents) { error = failure } else { dismiss() }
+    }
+}
+
+// MARK: - Import receipts
+
+/// Import receipts…: pick the portal's ListaRecibos .xlsx, see what it would do, apply (and
+/// match credits).
+struct ImportReceiptsSheet: View {
+    @ObservedObject var viewModel: PropertyViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var picking = false
+    @State private var preview: ReceiptsImportPreview?
+    @State private var reading = false
+    @State private var error: String?
+
+    var body: some View {
+        SheetScaffold(title: "Import rent receipts",
+                      subtitle: "The Portal das Finanças export: Arrendamento ▸ Recibos ▸ Exportar (ListaRecibos .xlsx). Re-importing updates statuses and never duplicates.",
+                      error: error, width: 520, onCancel: { dismiss() },
+                      primary: SheetAction("Import", isEnabled: preview != nil, action: apply)) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Button(preview == nil ? "Choose file…" : "Choose another file…") { picking = true }
+                    if reading { ProgressView().controlSize(.small) }
+                    if let preview { Text(preview.fileName).foregroundStyle(.secondary).lineLimit(1) }
+                }
+                if let preview {
+                    let report = preview.report
+                    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 4) {
+                        line("Receipts in the file", "\(preview.rows.count) in \(preview.contractCount) contract\(preview.contractCount == 1 ? "" : "s")")
+                        line("New tenancies", report.createdTenancies.isEmpty ? "None" : report.createdTenancies.joined(separator: ", "))
+                        line("Tenancies updated", report.updatedTenancies.isEmpty ? "None" : report.updatedTenancies.joined(separator: ", "))
+                        line("New receipts", "\(report.createdReceipts)")
+                        line("Updated receipts", "\(report.updatedReceipts)")
+                        line("Unchanged", "\(report.unchangedReceipts)")
+                        line("Cancelled", "\(report.cancelledReceipts)")
+                        if !report.missingFromExport.isEmpty {
+                            line("Not in this file (kept)", report.missingFromExport.map(\.receiptNumber).joined(separator: ", "))
+                        }
+                        if report.removedPaymentLinks > 0 {
+                            line("Credit links removed", "\(report.removedPaymentLinks) (cancelled receipts or changed amounts)")
+                        }
+                        if report.clampedManualLinks > 0 {
+                            line("Manual links trimmed", "\(report.clampedManualLinks) (the receipt now received less)")
+                        }
+                        if report.propertyDescriptions.count > 1 {
+                            line("Properties in the file", "\(report.propertyDescriptions.count) — check it's this property's export")
+                        }
+                    }
+                }
+            }
+        }
+        .fileImporter(isPresented: $picking, allowedContentTypes: [UTType(filenameExtension: "xlsx") ?? .spreadsheet]) { result in
+            switch result {
+            case .success(let url): read(url)
+            case .failure(let failure): error = failure.localizedDescription
+            }
+        }
+    }
+
+    private func line(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+            Text(value).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func read(_ url: URL) {
+        reading = true
+        error = nil
+        Task {
+            let result = await viewModel.previewImport(url)
+            reading = false
+            switch result {
+            case .success(let value): preview = value
+            case .failure(let failure): preview = nil; error = PropertyMessages.text(for: failure)
+            }
+        }
+    }
+
+    private func apply() {
+        guard let preview else { return }
+        if let failure = viewModel.applyImport(preview) { error = failure } else { dismiss() }
+    }
+}

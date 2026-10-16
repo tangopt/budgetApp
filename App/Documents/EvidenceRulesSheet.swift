@@ -116,7 +116,7 @@ struct EvidenceRuleEditorSheet: View {
                     }
                     LabeledContent("Covers") {
                         Picker("Covers", selection: $draft.scopeKind) {
-                            ForEach(EvidenceRuleDraft.ScopeKind.allCases, id: \.self) { Text($0.title).tag($0) }
+                            ForEach(draft.availableScopeKinds, id: \.self) { Text($0.title).tag($0) }
                         }
                     }
                     scopeRows
@@ -204,6 +204,11 @@ struct EvidenceRuleEditorSheet: View {
                 TextField("Description contains", text: $draft.descriptionContains, prompt: Text("Text the description contains"))
                     .sheetFieldNote("A transaction must match everything set here.")
             }
+        case .propertyRecords:
+            LabeledContent("Records") {
+                Text(draft.propertyRecordsDescription)
+                    .foregroundStyle(.secondary)
+            }
         case .periodic, .single:
             LabeledContent("Record") {
                 Picker("Record", selection: $draft.entity) {
@@ -259,6 +264,9 @@ struct EvidenceRuleEditorSheet: View {
 struct EvidenceRuleDraft {
     enum ScopeKind: CaseIterable {
         case category, categoryGroup, matching, periodic, single
+        /// Each tenancy or rent receipt of a property (made by the property's default rules;
+        /// kept as is when edited).
+        case propertyRecords
 
         var title: String {
             switch self {
@@ -267,6 +275,7 @@ struct EvidenceRuleDraft {
             case .matching: return "Transactions matching…"
             case .periodic: return "A document every period"
             case .single: return "A single document"
+            case .propertyRecords: return "Each record of a property"
             }
         }
 
@@ -292,6 +301,19 @@ struct EvidenceRuleDraft {
     var hasUntil = false
     var until = Calendar.current.startOfDay(for: Date())
     var notes = ""
+    /// A `recordsOfProperty` scope being edited (not built from the fields).
+    var propertyRecordsScope: EvidenceRequirementScope?
+
+    /// What a property-records scope covers, for the editor.
+    var propertyRecordsDescription: String {
+        guard case let .recordsOfProperty(_, recordType) = propertyRecordsScope else { return "" }
+        return recordType == .tenancy ? "Each tenancy's contract" : "Each issued rent receipt"
+    }
+
+    /// The kinds offered: property records only when the rule already is one.
+    var availableScopeKinds: [ScopeKind] {
+        ScopeKind.allCases.filter { $0 != .propertyRecords || propertyRecordsScope != nil }
+    }
 
     init(_ requirement: EvidenceRequirement?) {
         guard let requirement else { return }
@@ -315,6 +337,9 @@ struct EvidenceRuleDraft {
         case let .single(entity):
             scopeKind = .single
             self.entity = entity
+        case .recordsOfProperty:
+            scopeKind = .propertyRecords
+            propertyRecordsScope = requirement.scope
         }
         kinds = Set(requirement.kinds)
         direction = requirement.direction
@@ -339,6 +364,7 @@ struct EvidenceRuleDraft {
         case .categoryGroup: return groupId != nil
         case .matching: return true
         case .periodic, .single: return entity != nil
+        case .propertyRecords: return propertyRecordsScope != nil
         }
     }
 
@@ -351,6 +377,7 @@ struct EvidenceRuleDraft {
                                          descriptionContains: descriptionContains)
         case .periodic: return entity.map { .periodic(entity: $0, every: every) }
         case .single: return entity.map { .single(entity: $0) }
+        case .propertyRecords: return propertyRecordsScope
         }
     }
 

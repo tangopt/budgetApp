@@ -12,6 +12,8 @@ enum AppScreen: String, CaseIterable, Identifiable {
     case budgetGrid = "Budget"
     case forecast = "Forecast"
     case accounts = "Accounts"
+    /// One sidebar row per property (`ContentView.sidebarRows`); "Property" while there is none.
+    case property = "Property"
     case documents = "Documents"
     case missingEvidence = "Missing evidence"
     case rules = "Rules"
@@ -30,6 +32,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
         case .rules: return "wand.and.stars"
         case .categories: return "tag"
         case .accounts: return "building.columns"
+        case .property: return "house"
         case .documents: return "doc.on.doc"
         case .missingEvidence: return "checklist"
         }
@@ -46,11 +49,17 @@ enum AppScreen: String, CaseIterable, Identifiable {
     var sidebarSection: String {
         switch self {
         case .importReview, .uncategorized: return "Workflow"
-        case .dashboard, .search, .budgetGrid, .forecast, .accounts: return "Overview"
+        case .dashboard, .search, .budgetGrid, .forecast, .accounts, .property: return "Overview"
         case .documents, .missingEvidence: return "Tax"
         case .rules, .categories: return "Settings"
         }
     }
+}
+
+/// A sidebar row: a screen, or one property's page.
+enum SidebarItem: Hashable {
+    case screen(AppScreen)
+    case property(Int64)
 }
 
 struct ContentView: View {
@@ -59,13 +68,17 @@ struct ContentView: View {
     /// What the sidebar List shows as selected. A click lands here first and is then either
     /// accepted into `selection` or reverted (see `sidebarSelectionChanged`), so the
     /// sidebar highlight always matches the screen on show.
-    @State private var sidebarSelection: AppScreen? = .dashboard
+    @State private var sidebarSelection: SidebarItem? = .screen(.dashboard)
+    /// The properties listed in the sidebar (Overview, after Accounts).
+    @State private var properties: [Property] = []
     /// The split view's columns, toggled by the toolbar's own sidebar button (the system one
     /// can't drop its glass capsule).
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     /// Where the sidebar was asked to go while confirmed import rows were still unsaved;
     /// set while the "Save the N confirmed transactions?" alert is up.
     @State private var pendingSelection: AppScreen?
+    /// The property row asked for with `pendingSelection` (applied on Save / Discard).
+    @State private var pendingPropertyId: Int64?
     @State private var showUnsavedImportAlert = false
     @State private var selectedImportAccountId: Int64?
     @State private var accounts: [Account] = []
@@ -96,6 +109,8 @@ struct ContentView: View {
     @StateObject private var documentsViewModel: DocumentsViewModel
     /// Kept for the app session: the period and filters survive navigation.
     @StateObject private var missingEvidenceViewModel: MissingEvidenceViewModel
+    /// The property page on show (`propertyId`), kept for the session like the others.
+    @StateObject private var propertyViewModel: PropertyViewModel
 
     private let profileStore: ImportProfileStore
 
@@ -116,6 +131,7 @@ struct ContentView: View {
         _searchViewModel = StateObject(wrappedValue: SearchViewModel(dbQueue: environment.dbQueue))
         _documentsViewModel = StateObject(wrappedValue: DocumentsViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
         _missingEvidenceViewModel = StateObject(wrappedValue: MissingEvidenceViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
+        _propertyViewModel = StateObject(wrappedValue: PropertyViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
     }
 
     /// How far ahead to project forecasted pay periods in the Budget grid (the Forecast
@@ -165,7 +181,14 @@ struct ContentView: View {
                 ForEach(sidebarSections, id: \.name) { section in
                     Section(section.name) {
                         ForEach(section.screens) { screen in
-                            Label(screen.sidebarTitle(uncategorizedCount: uncategorizedCount), systemImage: screen.systemImage).tag(screen)
+                            if screen == .property, !properties.isEmpty {
+                                ForEach(properties) { property in
+                                    Label(property.name, systemImage: screen.systemImage).tag(SidebarItem.property(property.id!))
+                                }
+                            } else {
+                                Label(screen.sidebarTitle(uncategorizedCount: uncategorizedCount), systemImage: screen.systemImage)
+                                    .tag(SidebarItem.screen(screen))
+                            }
                         }
                     }
                 }
@@ -220,11 +243,16 @@ struct ContentView: View {
                     DocumentsView(viewModel: documentsViewModel, openTransaction: openTransaction)
                 case .missingEvidence:
                     MissingEvidenceView(viewModel: missingEvidenceViewModel, openTransaction: openTransaction)
+                case .property:
+                    PropertyView(viewModel: propertyViewModel, openTransaction: openTransaction, openMissingEvidence: { id, name in
+                        missingEvidenceViewModel.propertyFilter = .init(propertyId: id, name: name)
+                        selection = .missingEvidence
+                    })
                 case .none:
                     Text("Select a screen from the sidebar.")
                 }
             }
-            .navigationTitle(selection?.rawValue ?? "Budget")
+            .navigationTitle(selection == .property ? (propertyViewModel.property?.name ?? "Property") : (selection?.rawValue ?? "Budget"))
             // The theme's window colour behind every screen (clear for Classic).
             .background(theme.windowBackground.ignoresSafeArea())
             .toolbar {
@@ -240,11 +268,11 @@ struct ContentView: View {
         ) {
             Button("Save") {
                 // Saves only the confirmed rows; on failure stay on the review to show why.
-                if importViewModel.finish(unconfirmed: .leaveOut) { selection = pendingSelection }
+                if importViewModel.finish(unconfirmed: .leaveOut) { applyPendingSelection() }
             }
             Button("Discard", role: .destructive) {
                 importViewModel.cancel()
-                selection = pendingSelection
+                applyPendingSelection()
             }
             Button("Keep reviewing", role: .cancel) {}
         } message: {
@@ -269,6 +297,7 @@ struct ContentView: View {
             accountsViewModel.onTransactionAdded = { refreshUncategorizedCount() }
             searchViewModel.onTransactionEdited = { refreshUncategorizedCount() }
             rulesViewModel.onTransactionsCategorised = { refreshUncategorizedCount() }
+            propertyViewModel.onPropertiesChanged = { id in refreshProperties(select: id) }
             refreshSharedState()
         }
         .onChange(of: importViewModel.isStaging) { _, staging in
@@ -285,12 +314,12 @@ struct ContentView: View {
         .onChange(of: sidebarSelection) { _, newValue in sidebarSelectionChanged(to: newValue) }
         // ⌘F (Edit ▸ Search Transactions) in this window: the Search screen, its field focused.
         .focusedSceneValue(\.transactionSearch, TransactionSearchAction {
-            sidebarSelectionChanged(to: .search)
+            sidebarSelectionChanged(to: .screen(.search))
             searchViewModel.requestFocus()
         })
         .onChange(of: selection) {
             // Screens can also be changed in code (the Dashboard's links, the alert below).
-            if sidebarSelection != selection { sidebarSelection = selection }
+            if sidebarSelection != currentSidebarItem { sidebarSelection = currentSidebarItem }
             // Re-read accounts/categories on every navigation so a newly-added
             // account (via the Accounts screen) or category shows up immediately
             // in the Dashboard's import picker and the Forecast/Budget category lists,
@@ -349,15 +378,54 @@ struct ContentView: View {
     /// unsaved asks first (confirming no longer saves anything — Finish import does). A
     /// refused click is reverted on the next runloop turn, since the sidebar's outline view
     /// keeps the clicked row highlighted if the change is just ignored.
-    private func sidebarSelectionChanged(to newValue: AppScreen?) {
-        guard newValue != selection else { return }
+    private func sidebarSelectionChanged(to item: SidebarItem?) {
+        guard item != currentSidebarItem else { return }
+        let newValue: AppScreen?
+        switch item {
+        case let .screen(screen): newValue = screen
+        case .property: newValue = .property
+        case nil: newValue = nil
+        }
         if selection == .importReview, importViewModel.isReviewing, importViewModel.confirmedCount > 0 {
             pendingSelection = newValue
+            if case let .property(id) = item { pendingPropertyId = id } else { pendingPropertyId = nil }
             showUnsavedImportAlert = true
-            DispatchQueue.main.async { sidebarSelection = selection }
+            DispatchQueue.main.async { sidebarSelection = currentSidebarItem }
         } else {
+            if case let .property(id) = item { propertyViewModel.propertyId = id }
+            if selection == newValue {
+                // Another property: the screen stays, the row follows.
+                sidebarSelection = currentSidebarItem
+            }
             selection = newValue
         }
+    }
+
+    private func applyPendingSelection() {
+        if let id = pendingPropertyId { propertyViewModel.propertyId = id }
+        pendingPropertyId = nil
+        selection = pendingSelection
+    }
+
+    /// The sidebar row of the screen on show.
+    private var currentSidebarItem: SidebarItem? {
+        guard let selection else { return nil }
+        if selection == .property, let id = propertyViewModel.propertyId, properties.contains(where: { $0.id == id }) {
+            return .property(id)
+        }
+        return .screen(selection)
+    }
+
+    /// Re-reads the sidebar's properties; `select` (a property just added) is shown.
+    private func refreshProperties(select: Int64? = nil) {
+        properties = (try? environment.dbQueue.read { db in try Properties.all(db: db) }) ?? []
+        if let select {
+            propertyViewModel.propertyId = select
+            selection = .property
+        } else if !properties.contains(where: { $0.id == propertyViewModel.propertyId }) {
+            propertyViewModel.propertyId = properties.first?.id
+        }
+        if sidebarSelection != currentSidebarItem { sidebarSelection = currentSidebarItem }
     }
 
     /// An import finished, was cancelled, or failed to stage: the Import row leaves the
@@ -394,6 +462,7 @@ struct ContentView: View {
     }
 
     private func refreshSharedState() {
+        refreshProperties()
         categories = (try? environment.dbQueue.read { db in try Category.fetchAll(db) }.filter(\.isAssignable)) ?? []
         accounts = (try? environment.dbQueue.read { db in try Account.fetchAll(db) })?.sortedForDisplay() ?? []
         refreshUncategorizedCount()

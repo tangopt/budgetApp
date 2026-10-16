@@ -76,5 +76,8 @@ public final class DatabaseManager {
         registerEvidenceLibraryMigration(&migrator)
         registerEvidenceSourceFilesMigration(&migrator)
         registerEvidenceRequirementMigration(&migrator)
+        registerPropertyMigration(&migrator)
+        registerRentReceiptPaymentMigration(&migrator)
+        registerPropertyEvidenceRequirementMigration(&migrator)
     }
 }

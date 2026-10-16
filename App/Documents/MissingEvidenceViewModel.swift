@@ -18,6 +18,12 @@ final class MissingEvidenceViewModel: ObservableObject {
         case custom
     }
 
+    /// The checklist narrowed to one property's rules (from its Checks tab).
+    struct PropertyFilter: Equatable, Sendable {
+        let propertyId: Int64
+        let name: String
+    }
+
     /// What one observation reads: the rules, and the checklist they make.
     struct Snapshot: Equatable, Sendable {
         var requirements: [EvidenceRequirement]
@@ -57,11 +63,17 @@ final class MissingEvidenceViewModel: ObservableObject {
     @Published private(set) var addingItemIds: Set<String> = []
     @Published var errorMessage: String?
     @Published var infoMessage: String?
+    /// Only the items of rules concerning this property (`PropertyEvidence.relatedRequirementIds`).
+    @Published var propertyFilter: PropertyFilter? {
+        didSet { if propertyFilter != oldValue { restartObservation() } }
+    }
 
     // The rule editor's choices.
     @Published private(set) var accounts: [Account] = []
     @Published private(set) var categories: [Category] = []
     @Published private(set) var categoryGroups: [CategoryGroup] = []
+    /// Property records' titles (`PropertyEvidence.entityTitles`).
+    @Published private(set) var entityTitles: [EvidenceEntity: String] = [:]
 
     private var observationTask: Task<Void, Never>?
     private var isActive = false
@@ -94,11 +106,12 @@ final class MissingEvidenceViewModel: ObservableObject {
 
     func loadReferenceData() {
         do {
-            let (accounts, categories, groups, earliest) = try dbQueue.read { db in
+            let (accounts, categories, groups, earliest, titles) = try dbQueue.read { db in
                 (try Account.fetchAll(db), try Category.order(Column("name").collating(.localizedCaseInsensitiveCompare)).fetchAll(db),
                  try CategoryGroup.order(Column("name").collating(.localizedCaseInsensitiveCompare)).fetchAll(db),
-                 try Date.fetchOne(db, sql: "SELECT MIN(date) FROM transaction_"))
+                 try Date.fetchOne(db, sql: "SELECT MIN(date) FROM transaction_"), try PropertyEvidence.entityTitles(db: db))
             }
+            entityTitles = titles
             self.accounts = accounts.sortedForDisplay()
             self.categories = categories
             categoryGroups = groups
@@ -137,10 +150,16 @@ final class MissingEvidenceViewModel: ObservableObject {
             return
         }
         isLoading = true
+        let propertyId = propertyFilter?.propertyId
         let values = ValueObservation
             .tracking { db -> Snapshot in
                 let requirements = try EvidenceRequirements.all(db: db)
-                return Snapshot(requirements: requirements, items: try MissingEvidence.items(db: db, period: period, requirements: requirements))
+                var items = try MissingEvidence.items(db: db, period: period, requirements: requirements)
+                if let propertyId {
+                    let related = try PropertyEvidence.relatedRequirementIds(db: db, propertyId: propertyId)
+                    items = items.filter { $0.requirement.id.map(related.contains) ?? false }
+                }
+                return Snapshot(requirements: requirements, items: items)
             }
             .removeDuplicates()
             .values(in: dbQueue)
@@ -288,6 +307,7 @@ final class MissingEvidenceViewModel: ObservableObject {
             case .noMatchingCriteria: return "Pick at least one category or account, or enter text the description contains."
             case .invalidActiveRange: return "The rule must start before it ends."
             case .requirementNotFound: return "The rule no longer exists."
+            case .unsupportedRecordType: return "Only rent receipts and tenancies can be covered record by record."
             }
         } catch {
             return error.localizedDescription
@@ -323,7 +343,9 @@ final class MissingEvidenceViewModel: ObservableObject {
         case .account: return accountName(entity.id)
         case .category: return categoryName(entity.id)
         case .transaction: return "Transaction #\(entity.id)"
-        case .property, .taxYear, .person, .other: return "\(entity.type.rawValue.capitalized) #\(entity.id)"
+        case .property, .person, .tenancy, .rentReceipt:
+            return entityTitles[entity] ?? "\(entity.type.displayName) #\(entity.id)"
+        case .taxYear, .other: return "\(entity.type.displayName) #\(entity.id)"
         }
     }
 
@@ -351,6 +373,8 @@ final class MissingEvidenceViewModel: ObservableObject {
             text = "One document per \(every.rawValue) for \(entityName(entity))"
         case let .single(entity):
             text = "One document for \(entityName(entity))"
+        case let .recordsOfProperty(_, recordType):
+            text = recordType == .tenancy ? "One contract per tenancy" : "One document per rent receipt"
         }
         if requirement.scope.isTransactionScope, !requirement.excludedAccountIds.isEmpty {
             text += ", except on " + requirement.excludedAccountIds.map(accountName).joined(separator: " or ")

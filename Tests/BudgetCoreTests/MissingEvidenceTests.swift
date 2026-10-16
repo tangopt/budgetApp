@@ -284,6 +284,7 @@ final class MissingEvidenceTests: XCTestCase {
     }
 
     func testSingleSatisfiedByAnyLinkedDocumentOfKind() throws {
+        try db.write { db in var property = Property(id: 1, name: "Property A", country: "PT"); try Properties.save(db: db, &property) }
         try requirement("Deed", .single(entity: EvidenceEntity(type: .property, id: 1)), kinds: [.propertyDeed])
         try requirement("P60", .single(entity: EvidenceEntity(type: .taxYear, id: 2025)), kinds: [.p60])
         try document(.propertyDeed, docDate: Self.date(2016, 7, 4), linkedTo: EvidenceEntity(type: .property, id: 1))
