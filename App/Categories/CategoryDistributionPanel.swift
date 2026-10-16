@@ -12,20 +12,25 @@ import BudgetCore
 /// list of every slice (name, amount, %).
 struct CategoryDistributionPanel: View {
     @ObservedObject var viewModel: CategoriesViewModel
+    /// The year filter and drill-in, kept by the Categories screen so they survive the panel
+    /// giving way to a selection's transactions and coming back.
+    @Binding var year: DistributionYear
+    /// The expense group (slice id) whose categories the Expenses donut shows; nil = the groups.
+    @Binding var drilledGroupId: String?
     @Environment(\.theme) private var theme
 
-    /// nil = All years.
-    @State private var year: Int?
-    /// The expense group whose categories the Expenses donut shows (nil = the groups).
-    @State private var drilledGroup: CategoryDistribution.Slice?
-
-    init(viewModel: CategoriesViewModel) {
-        self.viewModel = viewModel
-        _year = State(initialValue: viewModel.payCalendar.current.year)
+    /// The pay year shown; nil = All years.
+    private var resolvedYear: Int? {
+        switch year {
+        case .current: return viewModel.payCalendar.current.year
+        case .year(let year): return year
+        case .all: return nil
+        }
     }
 
     var body: some View {
-        let distribution = viewModel.distribution(year: year)
+        let distribution = viewModel.distribution(year: resolvedYear)
+        let incomeSlots = viewModel.distributionColorSlots(.income)
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Distribution").font(.headline)
@@ -37,7 +42,8 @@ struct CategoryDistributionPanel: View {
                     expenses(distribution)
                     Divider()
                     DistributionDonut(title: "Income", emptyText: emptyText("income"),
-                                      slices: distribution.incomeByCategory, total: distribution.incomeTotal)
+                                      slices: distribution.incomeByCategory, total: distribution.incomeTotal,
+                                      colorSlot: { incomeSlots[$0] ?? 0 }, otherHint: "Smaller categories — see the list")
                 }
                 .padding(.vertical, 4)
             }
@@ -45,32 +51,44 @@ struct CategoryDistributionPanel: View {
         .padding(12)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(theme.windowFill)
-        .onChange(of: year) { _, _ in drilledGroup = nil }
+        .onChange(of: year) { _, _ in drilledGroupId = nil }
     }
 
     @ViewBuilder
     private func expenses(_ distribution: CategoryDistribution) -> some View {
-        // The drilled group is shown as it is this year (gone if it has no spending now).
-        if let group = drilledGroup, let current = distribution.expensesByGroup.first(where: { $0.id == group.id }) {
-            let categories = distribution.expenseCategories(inGroup: current.groupId)
-            DistributionDonut(title: "Expenses · \(current.name)", emptyText: emptyText("expenses"),
-                              slices: categories, total: categories.reduce(0) { $0 + $1.amountMinorUnits },
-                              onBack: { drilledGroup = nil })
-                .id(current.id)
+        // The drilled group is shown as it is this year (back to the groups if it has no spending now).
+        if let id = drilledGroupId, let group = distribution.expensesByGroup.first(where: { $0.id == id }) {
+            let categories = distribution.expenseCategories(inGroup: group.groupId)
+            let total = categories.reduce(0) { $0 + $1.amountMinorUnits }
+            let slots = viewModel.distributionColorSlots(.expenseCategories(groupId: group.groupId))
+            DistributionDonut(title: "Expenses · \(group.name)", emptyText: emptyText("expenses"),
+                              caption: total == group.amountMinorUnits ? nil
+                                : "Net \(Money.format(group.amountMinorUnits, currency: .gbp)) after refunds",
+                              slices: categories, total: total,
+                              colorSlot: { slots[$0] ?? 0 }, otherHint: "Smaller categories — see the list",
+                              onBack: { drilledGroupId = nil })
+                .id(group.id)
         } else {
+            let slots = viewModel.distributionColorSlots(.expenseGroups)
             DistributionDonut(title: "Expenses by group", emptyText: emptyText("expenses"),
                               slices: distribution.expensesByGroup, total: distribution.expenseTotal,
-                              onSelect: { drilledGroup = $0 })
+                              colorSlot: { slots[$0] ?? 0 }, otherHint: "Smaller groups — see the list",
+                              onSelect: { drilledGroupId = $0.id })
                 .id("groups")
         }
     }
 
     private func emptyText(_ kind: String) -> String {
-        year.map { "No \(kind) in \(String($0))." } ?? "No \(kind) yet."
+        resolvedYear.map { "No \(kind) in \(String($0))." } ?? "No \(kind) yet."
     }
 
     private var yearPicker: some View {
-        Picker("Year", selection: $year) {
+        let current = viewModel.payCalendar.current.year
+        let selection = Binding<Int?>(
+            get: { resolvedYear },
+            set: { picked in year = picked.map { $0 == current ? .current : .year($0) } ?? .all }
+        )
+        return Picker("Year", selection: selection) {
             ForEach(viewModel.distributionYears, id: \.self) { year in
                 Text(String(year)).tag(Int?.some(year))
             }
@@ -82,14 +100,29 @@ struct CategoryDistributionPanel: View {
     }
 }
 
-/// One donut with its centre total, hover readout and legend list. Slices keep the theme's
-/// chart series colours in order (largest first); past the palette's length the smallest
+/// The Distribution panel's year filter: the current pay year (the default, resolved when
+/// shown), a given year, or All years.
+enum DistributionYear: Hashable {
+    case current
+    case year(Int)
+    case all
+}
+
+/// One donut with its centre total, hover readout and legend list. Each slice wears its
+/// entity's stable chart series colour (`colorSlot`); past the palette's length the smallest
 /// fold into one grey "Other" wedge (the legend still lists each).
 private struct DistributionDonut: View {
     let title: String
     let emptyText: String
+    /// Under the title (a drilled group's net when refunds make it differ from the total).
+    var caption: String? = nil
     let slices: [CategoryDistribution.Slice]
     let total: Int
+    /// Each slice's stable palette slot by slice id (`distributionColorSlots`), so a group or
+    /// category keeps its colour across years and ranks.
+    let colorSlot: (String) -> Int
+    /// Shown in the centre while the folded Other wedge is hovered.
+    let otherHint: String
     /// Back to the groups (a drilled-in Expenses donut).
     var onBack: (() -> Void)? = nil
     /// A slice clicked (the groups donut drills in).
@@ -119,15 +152,18 @@ private struct DistributionDonut: View {
 
     private var otherColor: Color { Color.secondary.opacity(0.45) }
 
-    private func color(at index: Int) -> Color { index < colouredCount ? theme.series(index) : otherColor }
+    /// A kept slice's entity colour; folded ones share Other's grey.
+    private func color(at index: Int) -> Color {
+        index < colouredCount ? theme.series(colorSlot(slices[index].id)) : otherColor
+    }
 
     private var wedges: [Wedge] {
         var wedges = slices.prefix(colouredCount).enumerated().map { index, slice in
-            Wedge(id: slice.id, name: slice.name, amount: slice.amountMinorUnits, color: theme.series(index), slice: slice)
+            Wedge(id: slice.id, name: slice.name, amount: slice.amountMinorUnits, color: color(at: index), slice: slice)
         }
         let rest = slices.dropFirst(colouredCount)
         if !rest.isEmpty {
-            wedges.append(Wedge(id: Self.otherId, name: rest.count == 1 ? rest[rest.startIndex].name : "Other (\(rest.count))",
+            wedges.append(Wedge(id: Self.otherId, name: "Other (\(rest.count))",
                                 amount: rest.reduce(0) { $0 + $1.amountMinorUnits }, color: otherColor, slice: nil))
         }
         return wedges
@@ -144,6 +180,9 @@ private struct DistributionDonut: View {
                 }
                 Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
                 Spacer()
+            }
+            if let caption {
+                Text(caption).font(.caption).foregroundStyle(.secondary)
             }
             if slices.isEmpty {
                 Text(emptyText).font(.callout).foregroundStyle(.secondary)
@@ -213,6 +252,10 @@ private struct DistributionDonut: View {
                 .minimumScaleFactor(0.6)
             if let hovered {
                 Text(percent(hovered.amount)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                if hovered.slice == nil {
+                    Text(otherHint).font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(2).multilineTextAlignment(.center)
+                }
             }
         }
         .accessibilityElement(children: .combine)

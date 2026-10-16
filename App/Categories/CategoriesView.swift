@@ -56,6 +56,10 @@ struct CategoriesView: View {
     @State private var newCategoryDraft: NewCategoryDraft?
     @State private var renaming: RenameTarget?
     @State private var deleting: DeleteTarget?
+    /// The Distribution panel's year filter and drilled-in group, kept while a selection's
+    /// transactions panel replaces it.
+    @State private var distributionYear: DistributionYear = .current
+    @State private var distributionGroupId: String?
     /// The category whose badge shows the icon picker.
     @State private var iconPickerCategoryId: Int64?
 
@@ -119,7 +123,7 @@ struct CategoriesView: View {
                         .transition(.opacity)
                 } else {
                     // Nothing (or several categories) selected: where the money goes.
-                    CategoryDistributionPanel(viewModel: viewModel)
+                    CategoryDistributionPanel(viewModel: viewModel, year: $distributionYear, drilledGroupId: $distributionGroupId)
                         .frame(width: 320)
                         .transition(.opacity)
                 }
