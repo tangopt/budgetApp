@@ -58,6 +58,7 @@ struct NoteIcon: View {
         Image(systemName: "note.text")
             .foregroundStyle(filled ? Color.white : Color.secondary)
             .padding(2)
+            // The system accent: the white symbol needs its contrast (a theme's accent can be light).
             .background(filled ? Color.accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 4))
     }
 }

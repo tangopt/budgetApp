@@ -108,6 +108,7 @@ struct CategoryPickerPopover: View {
     /// steal the highlight; cleared only by real pointer movement over the list.
     @State private var isKeyboardNavigating = true
     @State private var lastPointer: CGPoint?
+    @Environment(\.theme) private var theme
     @FocusState private var searchFocused: Bool
 
     private var sections: [CategoryPickerSection] {
@@ -252,16 +253,18 @@ struct CategoryPickerPopover: View {
                     CategoryBadge(category: category, size: .small)
                 }
                 Text(entry.title)
-                    .foregroundStyle(isHighlighted ? Color.white : (isAction ? Color.accentColor : Color.primary))
+                    .foregroundStyle(isHighlighted ? Color.white : (isAction ? theme.accent : Color.primary))
                 Spacer()
                 if isSelected {
                     Image(systemName: "checkmark")
-                        .foregroundStyle(isHighlighted ? Color.white : Color.accentColor)
+                        .foregroundStyle(isHighlighted ? Color.white : theme.accent)
                 }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // The system accent, like a menu's highlight: white text needs its contrast (a
+            // theme's accent can be light in dark mode).
             .background(isHighlighted ? Color.accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 5))
             .contentShape(Rectangle())
         }

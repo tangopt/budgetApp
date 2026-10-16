@@ -32,6 +32,7 @@ enum CategoryRowID: Hashable {
 /// category or group opens its transactions panel. The toolbar expands or collapses every
 /// group; ⌥-click a chevron to toggle its whole section (expansion is remembered).
 struct CategoriesView: View {
+    @Environment(\.theme) private var theme
     @ObservedObject var viewModel: CategoriesViewModel
 
     @State private var search = ""
@@ -453,7 +454,7 @@ struct CategoriesView: View {
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.accentColor.opacity(dropTarget == key ? 0.2 : 0))
+                    .fill(theme.accent.opacity(dropTarget == key ? 0.2 : 0))
             )
             .dropDestination(for: String.self) { items, _ in
                 let ids = items.flatMap(CategoryDrag.ids(from:))

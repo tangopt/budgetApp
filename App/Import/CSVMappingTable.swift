@@ -6,6 +6,7 @@ import BudgetCore
 /// each header. Scrolls horizontally when the file is wider than the sheet (a Lloyds-style
 /// export has eight columns).
 struct CSVMappingTable: View {
+    @Environment(\.theme) private var theme
     @ObservedObject var model: CSVMappingModel
 
     /// The Description column holds the longest text, so it never gets narrower than this.
@@ -83,17 +84,17 @@ struct CSVMappingTable: View {
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption2)
             }
-            .foregroundStyle(mapped ? Color.accentColor : Color.secondary)
+            .foregroundStyle(mapped ? theme.accent : Color.secondary)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(mapped ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.08))
+                    .fill(mapped ? theme.accent.opacity(0.15) : Color.secondary.opacity(0.08))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(mapped ? Color.accentColor.opacity(0.6) : Color.secondary.opacity(0.25))
+                    .strokeBorder(mapped ? theme.accent.opacity(0.6) : Color.secondary.opacity(0.25))
             )
             .contentShape(Rectangle())
         }

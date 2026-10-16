@@ -7,6 +7,7 @@ struct CurrentMonthCard: View {
     let navigate: (AppScreen) -> Void
     /// Opens the Close month sheet for this pay month.
     let closeMonth: () -> Void
+    @Environment(\.theme) private var theme
 
     private var monthName: String {
         DashboardFormat.monthYear(MonthRange.of(year: month.year, month: month.month).start)
@@ -24,8 +25,8 @@ struct CurrentMonthCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.15)))
             }
-            row("Income", month.income, tint: .green)
-            row("Expenses", month.expenses, tint: month.expenses.actual > month.expenses.expected ? .red : .orange)
+            row("Income", month.income, tint: theme.income)
+            row("Expenses", month.expenses, tint: month.expenses.actual > month.expenses.expected ? theme.expense : theme.series(1))
             if month.reservedProjected > 0 {
                 HStack {
                     Text("of which reserved").font(.caption)

@@ -185,7 +185,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     /// The Grid tab's scenario (nil while the Budget is selected).
     var gridScenario: Scenario? { scenarios.first { $0.id == gridSelection } }
 
-    /// A plan's `PlanPalette` index: 0 for the Budget (nil), a scenario's position + 1.
+    /// A plan's chart series index (`Theme.series`): 0 for the Budget (nil), a scenario's position + 1.
     func colorIndex(of scenarioId: Int64?) -> Int {
         guard let scenarioId, let index = scenarios.firstIndex(where: { $0.id == scenarioId }) else { return 0 }
         return index + 1

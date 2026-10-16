@@ -6,6 +6,7 @@ struct DashboardCard<Content: View>: View {
     var linkTitle: String? = nil
     var onLink: (() -> Void)? = nil
     @ViewBuilder let content: Content
+    @Environment(\.theme) private var theme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -22,7 +23,7 @@ struct DashboardCard<Content: View>: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(theme.surface))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(nsColor: .separatorColor)))
     }
 }

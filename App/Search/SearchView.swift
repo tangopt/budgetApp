@@ -11,6 +11,7 @@ private typealias Row = TransactionSearch.Row
 /// count and totals plus Set category…. Double-click or the pencil opens Edit transaction;
 /// the context menu also has Show in Budget.
 struct SearchView: View {
+    @Environment(\.theme) private var theme
     @ObservedObject var viewModel: SearchViewModel
     /// Show in Budget: the transaction whose category/month cell the Budget grid opens.
     let showInBudget: (Transaction) -> Void
@@ -147,7 +148,7 @@ struct SearchView: View {
             Text(row.description).lineLimit(1).truncationMode(.tail)
             if let note = row.transaction.note, !note.isEmpty {
                 Image(systemName: "note.text")
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(theme.accent)
                     .help(note)
                     .accessibilityLabel("Note: \(note)")
             }

@@ -5,6 +5,7 @@ import BudgetCore
 struct YearChangeCard: View {
     let changes: [YearChange]
     let navigate: (AppScreen) -> Void
+    @Environment(\.theme) private var theme
 
     var body: some View {
         DashboardCard(title: "Net worth change per year", linkTitle: "Accounts", onLink: { navigate(.accounts) }) {
@@ -13,8 +14,8 @@ struct YearChangeCard: View {
             } else {
                 YearOverYearChart(changes: changes)
                 HStack(spacing: 14) {
-                    Label("Realised", systemImage: "square.fill").foregroundStyle(.green)
-                    Label("Forecast", systemImage: "square.dashed").foregroundStyle(.green.opacity(0.7))
+                    Label("Realised", systemImage: "square.fill").foregroundStyle(theme.yoyGood)
+                    Label("Forecast", systemImage: "square.dashed").foregroundStyle(theme.yoyGood.opacity(0.7))
                 }
                 .font(.caption)
                 .labelStyle(.titleAndIcon)

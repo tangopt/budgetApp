@@ -79,9 +79,3 @@ struct ScenarioLabView: View {
     }
 }
 
-/// Chart and legend colours: the Budget first, then each scenario by its list position.
-enum PlanPalette {
-    static let colors: [Color] = [.blue, .orange, .green, .purple, .pink, .teal, .brown, .indigo, .mint, .red]
-
-    static func color(_ index: Int) -> Color { colors[index % colors.count] }
-}

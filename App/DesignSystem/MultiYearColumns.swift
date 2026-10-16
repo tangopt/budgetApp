@@ -47,8 +47,9 @@ struct MultiYearHeaderCell: View {
     }
 }
 
-/// The Δ £ and Δ % cells: `current` against `previous` (`YearOverYear.delta`), green when the
-/// change is good for a line of `categoryType` (`YearOverYear.isImprovement`), red when bad,
+/// The Δ £ and Δ % cells: `current` against `previous` (`YearOverYear.delta`), the theme's
+/// good colour when the change is good for a line of `categoryType`
+/// (`YearOverYear.isImprovement`), its bad colour when bad,
 /// secondary when neutral (transfers, balances); "—" when either is missing or nothing changed.
 struct YearDeltaCells: View {
     let current: Int?
@@ -58,11 +59,12 @@ struct YearDeltaCells: View {
     /// A section header's band: caption type, 24pt high, no bottom rule.
     var isSectionHeader = false
     let background: Color
+    @Environment(\.theme) private var theme
 
     var body: some View {
         let delta = current.flatMap { current in previous.map { YearOverYear.delta(current: current, previous: $0) } }
         let improvement = delta.flatMap { YearOverYear.isImprovement(amount: $0.amount, categoryType: categoryType) }
-        let color = improvement.map { $0 ? Color.green : Color.red } ?? Color.secondary
+        let color = theme.change(improvement: improvement)
         HStack(spacing: 0) {
             Group {
                 if let delta, delta.amount != 0 {

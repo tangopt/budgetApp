@@ -4,6 +4,7 @@ import BudgetCore
 import struct BudgetCore.Category
 
 struct ReviewView: View {
+    @Environment(\.theme) private var theme
     @ObservedObject var viewModel: ImportViewModel
     let onCommitted: () -> Void
 
@@ -684,8 +685,8 @@ struct ReviewView: View {
             .font(.caption)
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
-            .background(Capsule().fill(Color.accentColor.opacity(0.15)))
-            .foregroundStyle(Color.accentColor)
+            .background(Capsule().fill(theme.accent.opacity(0.15)))
+            .foregroundStyle(theme.accent)
             .help("Counted once, as sent from \(transfer.isIncoming ? transfer.otherAccountName : "this account")")
     }
 
@@ -696,8 +697,8 @@ struct ReviewView: View {
             .font(.caption)
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
-            .background(Capsule().fill(Color.accentColor.opacity(0.15)))
-            .foregroundStyle(Color.accentColor)
+            .background(Capsule().fill(theme.accent.opacity(0.15)))
+            .foregroundStyle(theme.accent)
             .help(replacement.isLinked
                   ? "Finish import saves this transaction in place of the one you added by hand, keeping its transfer link"
                   : "Finish import saves this transaction in place of the one you added by hand")

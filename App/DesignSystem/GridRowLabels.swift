@@ -7,16 +7,6 @@ import struct BudgetCore.Category
 /// column's cells, the type stripe colours, the Totals block's styling and the panel titles.
 
 extension CategoryType {
-    /// A grid row's leading stripe: income green, expenses red, transfers blue, adjustments grey.
-    var gridStripeColor: Color {
-        switch self {
-        case .income: return .green
-        case .expense: return .red
-        case .transfer: return .blue
-        case .adjustment: return .gray
-        }
-    }
-
     /// A section's name in a side panel title ("Expenses — Oct 2026").
     var gridSectionName: String {
         switch self {
@@ -40,17 +30,14 @@ extension View {
     }
 }
 
-/// The alternating-shade background of a body row (category, account, reserve).
-enum GridRowShade {
-    static func background(_ shaded: Bool) -> Color { shaded ? Color.primary.opacity(0.07) : Color.clear }
-}
-
-/// A category row's label: its icon (`CategoryBadge`) and name, stripe in its type's colour.
+/// A category row's label: its icon (`CategoryBadge`) and name, stripe in its type's colour
+/// (`Theme.stripe`), on the theme's alternating row shade (`Theme.rowBackground`).
 /// A group's member is indented, its name secondary.
 struct CategoryRowLabel: View {
     let category: Category
     let shaded: Bool
     var isGroupChild = false
+    @Environment(\.theme) private var theme
 
     var body: some View {
         HStack(spacing: 6) {
@@ -59,31 +46,26 @@ struct CategoryRowLabel: View {
         }
         .frame(width: isGroupChild ? 200 : 220, height: 28, alignment: .leading)
         .padding(.leading, isGroupChild ? 28 : 8).padding(.trailing, 8)
-        .background(GridRowShade.background(shaded))
+        .background(theme.rowBackground(shaded))
         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-        .overlay(Rectangle().frame(width: 3).foregroundStyle(category.type.gridStripeColor), alignment: .leading)
+        .overlay(Rectangle().frame(width: 3).foregroundStyle(theme.stripe(category.type)), alignment: .leading)
     }
 }
 
-/// A Totals block row's label (Total in, Total out, Net), teal-striped, with its help.
+/// A Totals block row's label (Total in, Total out, Net), in the theme's totals tint and
+/// stripe (`Theme.totalsBackground`; Classic's system teal), with its help.
 struct TotalsRowLabel: View {
     let row: BudgetTotals.Row
+    @Environment(\.theme) private var theme
 
     var body: some View {
         Text(row.title).fontWeight(row == .net ? .bold : .semibold)
-            .gridRowLabel(background: row.gridBackground, stripe: .teal)
+            .gridRowLabel(background: theme.totalsBackground(row), stripe: theme.totalsStripe)
             .help(row.gridHelp)
     }
 }
 
 extension BudgetTotals.Row {
-    /// The row's background, across the label, month, Year Total and multi-year cells: a teal
-    /// tint that sets the block apart from the category rows' grey banding in light and dark
-    /// mode (the system teal adapts to both); Net a shade stronger.
-    var gridBackground: Color {
-        Color.teal.opacity(self == .net ? 0.28 : 0.17)
-    }
-
     var gridHelp: String {
         switch self {
         case .totalIn: return "Income, plus transfers in from outside the shown accounts"

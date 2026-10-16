@@ -23,17 +23,19 @@ final class CellSelection<Target>: ObservableObject {
     }
 }
 
-/// A cell's selected state: a 2pt accent outline over a light accent fill, drawn only while
-/// `key` is the selected cell. Goes in an `.overlay`, so it never changes the cell's size.
+/// A cell's selected state: a 2pt outline over a light fill (the theme's selection colours),
+/// drawn only while `key` is the selected cell. Goes in an `.overlay`, so it never changes
+/// the cell's size.
 struct SelectedCellOutline<Target>: View {
     @ObservedObject var selection: CellSelection<Target>
     let key: String
+    @Environment(\.theme) private var theme
 
     var body: some View {
         if selection.key == key {
             Rectangle()
-                .fill(Color.accentColor.opacity(0.12))
-                .overlay(Rectangle().strokeBorder(Color.accentColor, lineWidth: 2))
+                .fill(theme.selectionFill)
+                .overlay(Rectangle().strokeBorder(theme.selectionOutline, lineWidth: 2))
                 .allowsHitTesting(false)
         }
     }
@@ -69,6 +71,8 @@ struct SidePanelHost<Target, Content: View, Panel: View>: View {
 
 /// A cell's "has a note" marker (spec §3): a small accent triangle in its top-right corner.
 struct NoteCornerMarker: View {
+    @Environment(\.theme) private var theme
+
     var body: some View {
         Path { path in
             path.move(to: CGPoint(x: 0, y: 0))
@@ -76,7 +80,7 @@ struct NoteCornerMarker: View {
             path.addLine(to: CGPoint(x: 6, y: 6))
             path.closeSubpath()
         }
-        .fill(Color.accentColor.opacity(0.85))
+        .fill(theme.noteMarker)
         .frame(width: 6, height: 6)
         .allowsHitTesting(false)
     }

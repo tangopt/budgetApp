@@ -10,6 +10,7 @@ struct NetWorthLineChart: View {
     let today: Date
 
     @State private var selectedDate: Date?
+    @Environment(\.theme) private var theme
 
     private struct Plotted: Identifiable {
         let id: Int
@@ -33,19 +34,19 @@ struct NetWorthLineChart: View {
         Chart {
             ForEach(actualPlotted) { point in
                 AreaMark(x: .value("Month", point.date), y: .value("Net worth", point.pounds), series: .value("Series", "Actual area"))
-                    .foregroundStyle(Color.blue.opacity(0.12))
+                    .foregroundStyle(theme.series(0).opacity(0.12))
                 LineMark(x: .value("Month", point.date), y: .value("Net worth", point.pounds), series: .value("Series", "Actual"))
-                    .foregroundStyle(Color.blue)
+                    .foregroundStyle(theme.series(0))
                     .lineStyle(StrokeStyle(lineWidth: 2))
             }
             ForEach(forecastPlotted) { point in
                 LineMark(x: .value("Month", point.date), y: .value("Net worth", point.pounds), series: .value("Series", "Forecast"))
-                    .foregroundStyle(Color.blue)
+                    .foregroundStyle(theme.series(0))
                     .lineStyle(StrokeStyle(lineWidth: 2, dash: [5, 4]))
             }
             ForEach(forecastPlotted.filter { $0.month == 12 }) { point in
                 PointMark(x: .value("Month", point.date), y: .value("Net worth", point.pounds))
-                    .foregroundStyle(Color.blue)
+                    .foregroundStyle(theme.series(0))
                     .symbolSize(40)
             }
             RuleMark(x: .value("Today", today))
@@ -63,7 +64,7 @@ struct NetWorthLineChart: View {
                             Text(DashboardFormat.pounds(Int(selected.pounds * 100))).font(.caption.bold())
                         }
                         .padding(4)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)))
+                        .background(RoundedRectangle(cornerRadius: 6).fill(theme.windowFill))
                     }
             }
         }

@@ -32,6 +32,7 @@ struct TransactionsSidePanel<Planned: View>: View {
     /// panel lists actuals read-only).
     let onEdit: ((Transaction) -> Void)?
     let onClose: () -> Void
+    @Environment(\.theme) private var theme
 
     init(title: String, transactions: [Transaction], categoryById: [Int64: Category] = [:], showCategory: Bool = false,
          accountNameById: [Int64: String] = [:],
@@ -103,7 +104,7 @@ struct TransactionsSidePanel<Planned: View>: View {
         }
         .padding(12)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(theme.windowFill)
     }
 
     private func row(_ transaction: Transaction) -> some View {
@@ -117,7 +118,7 @@ struct TransactionsSidePanel<Planned: View>: View {
             if let note = transaction.note, !note.isEmpty {
                 Label(note, systemImage: "note.text")
                     .font(.caption)
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(theme.accent)
             }
             ForEach(transaction.id.flatMap { transfers[$0] } ?? []) { counterpart in
                 Text(TransferFormat.line(counterpart))

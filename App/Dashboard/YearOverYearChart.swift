@@ -7,6 +7,7 @@ struct YearOverYearChart: View {
     let changes: [YearChange]
 
     @State private var selectedYear: String?
+    @Environment(\.theme) private var theme
 
     private var selected: YearChange? {
         guard let selectedYear else { return nil }
@@ -18,10 +19,10 @@ struct YearOverYearChart: View {
     }
     private func pounds(_ minorUnits: Int) -> Double { Double(minorUnits) / 100 }
     /// The hatched forecast part takes the sign of the year's total...
-    private func color(_ change: YearChange) -> Color { change.totalMinorUnits < 0 ? .red : .green }
+    private func color(_ change: YearChange) -> Color { change.totalMinorUnits < 0 ? theme.yoyBad : theme.yoyGood }
     /// ...while the solid realised part takes its own sign (they can differ: a small loss so
     /// far that the forecast turns into a gain, or the reverse).
-    private func realisedColor(_ change: YearChange) -> Color { change.realisedMinorUnits < 0 ? .red : .green }
+    private func realisedColor(_ change: YearChange) -> Color { change.realisedMinorUnits < 0 ? theme.yoyBad : theme.yoyGood }
 
     var body: some View {
         Chart {
@@ -61,7 +62,7 @@ struct YearOverYearChart: View {
                             }
                         }
                         .padding(4)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)))
+                        .background(RoundedRectangle(cornerRadius: 6).fill(theme.windowFill))
                     }
             }
         }

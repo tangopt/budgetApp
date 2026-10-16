@@ -8,6 +8,7 @@ import BudgetCore
 struct AccountsView: View {
     @ObservedObject var viewModel: AccountsViewModel
     @ObservedObject var environment: AppEnvironment
+    @Environment(\.theme) private var theme
     /// Import statement (spec 2026-10-15 §1): the shared import flow, started here with the
     /// selected account; staging moves to the Import screen (`ContentView`).
     @ObservedObject var importViewModel: ImportViewModel
@@ -156,7 +157,7 @@ struct AccountsView: View {
                 }
                 .font(.callout)
                 .monospacedDigit()
-                .foregroundStyle(change > 0 ? Color.green : (change < 0 ? Color.red : Color.secondary))
+                .foregroundStyle(change > 0 ? theme.yoyGood : (change < 0 ? theme.yoyBad : Color.secondary))
             }
         }
     }
@@ -275,6 +276,7 @@ private struct Banner<Content: View>: View {
 
 private struct AccountsListView: View {
     let groups: [AccountGroup]
+    @Environment(\.theme) private var theme
     @Binding var selection: Int64?
     /// Each account's latest imported transaction date (absent: nothing imported).
     let importedThrough: [Int64: Date]
@@ -314,7 +316,7 @@ private struct AccountsListView: View {
                 } header: {
                     HStack(spacing: 4) {
                         Text("\(AccountsFormat.kind(group.kind)) ·")
-                        MoneyText(minorUnits: group.subtotalGBP, font: .headline.monospacedDigit(), tint: group.subtotalGBP < 0 ? .red : .primary)
+                        MoneyText(minorUnits: group.subtotalGBP, font: .headline.monospacedDigit(), tint: group.subtotalGBP < 0 ? theme.expense : .primary)
                     }
                     .font(.headline)
                 }
@@ -421,6 +423,7 @@ private struct AccountBankDetails: View {
 
 private struct AccountDetailView: View {
     let row: AccountRow?
+    @Environment(\.theme) private var theme
     /// The account's latest imported transaction date; nil: nothing imported.
     let importedThrough: Date?
     let history: AccountHistory
@@ -452,8 +455,8 @@ private struct AccountDetailView: View {
                                 Text("Main account")
                                     .font(.caption.weight(.medium))
                                     .padding(.horizontal, 6).padding(.vertical, 1)
-                                    .background(Capsule().fill(Color.accentColor.opacity(0.15)))
-                                    .foregroundStyle(Color.accentColor)
+                                    .background(Capsule().fill(theme.accent.opacity(0.15)))
+                                    .foregroundStyle(theme.accent)
                                     .help(EditAccountSheet.mainAccountHelp)
                             }
                         }
@@ -490,7 +493,7 @@ private struct AccountDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)
             }
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+            .background(RoundedRectangle(cornerRadius: 12).fill(theme.surface))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(nsColor: .separatorColor)))
             .onChange(of: row.id) { showAllHistory = false }
         } else {
@@ -578,14 +581,14 @@ private struct AccountDetailView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(DashboardFormat.day(date)).font(.caption2).foregroundStyle(.secondary)
             HStack(spacing: 4) {
-                Circle().fill(Color.accentColor).frame(width: 6, height: 6)
+                Circle().fill(theme.accent).frame(width: 6, height: 6)
                 Text(row.account.displayName).font(.caption2).lineLimit(1)
                 Spacer(minLength: 8)
                 AccountsFormat.balanceText(minorUnits, kind: row.account.kind, currency: row.account.currency, font: .caption.bold().monospacedDigit())
             }
         }
         .padding(6)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 6).fill(theme.windowFill))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
     }
 
@@ -610,7 +613,7 @@ private struct AccountDetailView: View {
                         AccountsFormat.balanceText(entry.amountMinorUnits, kind: row.account.kind, currency: row.account.currency)
                     case .adjustment:
                         Text(AccountsFormat.signedMoney(entry.amountMinorUnits, currency: row.account.currency))
-                            .foregroundStyle(entry.amountMinorUnits < 0 ? Color.red : Color.primary)
+                            .foregroundStyle(entry.amountMinorUnits < 0 ? theme.expense : Color.primary)
                     }
                 }
                 .font(.callout.monospacedDigit())
@@ -665,17 +668,10 @@ enum AccountsFormat {
     }
 
     /// Credit balances are stored signed (negative = owed) and shown as the amount owed,
-    /// coloured by the stored sign so debt reads red — as the Net Worth screen did.
-    @ViewBuilder
+    /// coloured by the stored sign so debt reads in the theme's expense colour — as the Net
+    /// Worth screen did.
     static func balanceText(_ signedMinorUnits: Int, kind: AccountKind, currency: Currency, font: Font = .body.monospacedDigit()) -> some View {
-        if kind == .credit && signedMinorUnits < 0 {
-            HStack(spacing: 4) {
-                MoneyText(minorUnits: NetWorthCalculator.enteredBalance(signedMinorUnits: signedMinorUnits, accountKind: .credit), currency: currency, font: font, colorOverride: signedMinorUnits)
-                Text("owed").font(font).foregroundStyle(.red)
-            }
-        } else {
-            MoneyText(minorUnits: signedMinorUnits, currency: currency, font: font, tint: signedMinorUnits < 0 ? .red : .primary)
-        }
+        AccountBalanceText(signedMinorUnits: signedMinorUnits, kind: kind, currency: currency, font: font)
     }
 
     /// "Statement mismatch on 29 Sep 2026: +£12.00" (statement − computed) — nil when the
@@ -709,5 +705,25 @@ enum AccountsFormat {
         if days < 60 { return days == 1 ? "1 day ago" : "\(days) days ago" }
         let months = calendar.dateComponents([.month], from: date, to: today).month ?? 0
         return months == 1 ? "1 month ago" : "\(months) months ago"
+    }
+}
+
+/// `AccountsFormat.balanceText`: a balance, a credit debt as the amount "owed".
+private struct AccountBalanceText: View {
+    let signedMinorUnits: Int
+    let kind: AccountKind
+    let currency: Currency
+    let font: Font
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        if kind == .credit && signedMinorUnits < 0 {
+            HStack(spacing: 4) {
+                MoneyText(minorUnits: NetWorthCalculator.enteredBalance(signedMinorUnits: signedMinorUnits, accountKind: .credit), currency: currency, font: font, colorOverride: signedMinorUnits)
+                Text("owed").font(font).foregroundStyle(theme.expense)
+            }
+        } else {
+            MoneyText(minorUnits: signedMinorUnits, currency: currency, font: font, tint: signedMinorUnits < 0 ? theme.expense : .primary)
+        }
     }
 }
