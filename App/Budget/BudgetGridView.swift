@@ -39,6 +39,7 @@ struct CSVShareFile: Transferable {
 
 struct BudgetGridView: View {
     @ObservedObject var viewModel: BudgetGridViewModel
+    @Environment(\.theme) private var theme
     @State private var showExporter = false
     /// Built only when "Export CSV…" is pressed: the export scans every
     /// category × pay month, so it must not be computed in `body`.
@@ -307,7 +308,7 @@ struct BudgetGridView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .font(.headline)
-                        .background(Color(nsColor: .controlBackgroundColor))
+                        .background(theme.gridHeaderBackground)
                         .overlay(Rectangle().frame(height: 1.5).foregroundStyle(Color.primary.opacity(0.18)), alignment: .bottom)
                         // A frozen row that floats above the scrolling body reads better with a
                         // little elevation; kept as a constant subtle shadow rather than toggled by
@@ -557,24 +558,24 @@ struct BudgetGridView: View {
                 }
             }
             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-            .overlay(Rectangle().frame(width: 3).foregroundStyle(categories.first.map { $0.type.gridStripeColor } ?? .clear), alignment: .leading)
+            .overlay(Rectangle().frame(width: 3).foregroundStyle(categories.first.map { theme.stripe($0.type) } ?? .clear), alignment: .leading)
         case .groupChild(let category):
             CategoryRowLabel(category: category, shaded: shaded, isGroupChild: true)
         case .account(let account):
             Text(account.displayName)
                 .frame(width: 220, height: 28, alignment: .leading)
                 .padding(.horizontal, 8)
-                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .background(theme.rowBackground(shaded))
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                .overlay(Rectangle().frame(width: 3).foregroundStyle(Color.purple), alignment: .leading)
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(theme.reserved), alignment: .leading)
         case .unassignedAccount:
             Text("Not assigned to an account")
                 .foregroundStyle(.secondary)
                 .frame(width: 220, height: 28, alignment: .leading)
                 .padding(.horizontal, 8)
-                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .background(theme.rowBackground(shaded))
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                .overlay(Rectangle().frame(width: 3).foregroundStyle(Color.purple), alignment: .leading)
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(theme.reserved), alignment: .leading)
                 .help("Planned items with no account of their own, no category history and no main account. Set a main account on the Accounts screen to place them.")
         case .reservedHeader:
             SectionHeaderCell(title: "RESERVED", isCollapsed: outline.isCollapsed(GridOutline.reservedSection),
@@ -588,7 +589,7 @@ struct BudgetGridView: View {
             }
         case .reserve(let reserve):
             Text(reserve.name)
-                .gridRowLabel(background: GridRowShade.background(shaded), stripe: .purple)
+                .gridRowLabel(background: theme.rowBackground(shaded), stripe: theme.reserved)
                 .contentShape(Rectangle())
                 .help("Right-click to add an amount, rename or delete. Click a month to edit its allowance.")
                 .contextMenu {
@@ -599,7 +600,7 @@ struct BudgetGridView: View {
                 }
         case .reservedTotal:
             Text("Total reserved").bold()
-                .gridRowLabel(background: Color.purple.opacity(0.08), stripe: .purple)
+                .gridRowLabel(background: theme.reservedTint, stripe: theme.reserved)
         case .totalsHeader:
             SectionHeaderCell(title: "Totals", isCollapsed: outline.isCollapsed(GridOutline.totalsSection),
                               toggle: { updateOutline { $0.toggleSection(GridOutline.totalsSection) } }, setAllGroups: nil) { EmptyView() }
@@ -609,9 +610,9 @@ struct BudgetGridView: View {
             Text("Net Worth").bold()
                 .frame(width: 220, height: 28, alignment: .leading)
                 .padding(.horizontal, 8)
-                .background(Color.purple.opacity(0.10))
+                .background(theme.netWorthTint)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                .overlay(Rectangle().frame(width: 3).foregroundStyle(Color.purple), alignment: .leading)
+                .overlay(Rectangle().frame(width: 3).foregroundStyle(theme.reserved), alignment: .leading)
         }
     }
 
@@ -653,7 +654,7 @@ struct BudgetGridView: View {
         switch row {
         case .sectionHeader(_, nil), .reservedHeader, .totalsHeader:
             HStack(spacing: 0) { emptyBandCell; emptyBandCell }
-                .background(Color.accentColor.opacity(0.08))
+                .background(theme.sectionHeaderTint)
         case .category(let category) where category.id == nil, .groupChild(let category) where category.id == nil:
             // Nothing without an id, like `yearTotalCell`.
             EmptyView()
@@ -719,12 +720,12 @@ struct BudgetGridView: View {
     /// The row's background, as its month and Year Total cells draw it.
     private func rowBackground(_ row: GridRowKind, shaded: Bool) -> Color {
         switch row {
-        case .sectionHeader, .reservedHeader, .totalsHeader: return Color.accentColor.opacity(0.08)
-        case .totals(let totalsRow): return totalsRow.gridBackground
-        case .groupHeader: return Color.orange.opacity(0.10)
-        case .reservedTotal: return Color.purple.opacity(0.08)
-        case .netWorthTotal: return Color.purple.opacity(0.10)
-        case .category, .groupChild, .account, .unassignedAccount, .reserve: return shaded ? Color.primary.opacity(0.07) : Color.clear
+        case .sectionHeader, .reservedHeader, .totalsHeader: return theme.sectionHeaderTint
+        case .totals(let totalsRow): return theme.totalsBackground(totalsRow)
+        case .groupHeader: return theme.groupRowTint
+        case .reservedTotal: return theme.reservedTint
+        case .netWorthTotal: return theme.netWorthTint
+        case .category, .groupChild, .account, .unassignedAccount, .reserve: return theme.rowBackground(shaded)
         }
     }
 
@@ -747,7 +748,7 @@ struct BudgetGridView: View {
                         ForEach(1...12, id: \.self) { _ in emptyBandCell }
                     }
                 }
-                .background(Color.accentColor.opacity(0.08))
+                .background(theme.sectionHeaderTint)
             }
         case .category(let category):
             categoryCells(row, category, shaded: shaded)
@@ -756,7 +757,7 @@ struct BudgetGridView: View {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { _ in emptyBandCell }
                 }
-                .background(Color.accentColor.opacity(0.08))
+                .background(theme.sectionHeaderTint)
             }
         case .reserve(let reserve):
             // Reserves hold no transactions: a month cell drills into its planned allowance
@@ -766,7 +767,7 @@ struct BudgetGridView: View {
                     ForEach(1...12, id: \.self) { month in
                         planCell(viewModel.reserveCell([reserve], year: year, month: month))
                             .frame(height: 28)
-                            .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                            .background(theme.rowBackground(shaded))
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .monthSeparator(month)
                             .selectable(cellSelection, key: cellKey(row, month: month)) {
@@ -797,7 +798,7 @@ struct BudgetGridView: View {
                             .monthSeparator(month)
                     }
                 }
-                .background(Color.purple.opacity(0.08))
+                .background(theme.reservedTint)
             }
         case .groupHeader(let group, let categories):
             if let year = viewModel.selectedYear {
@@ -810,7 +811,7 @@ struct BudgetGridView: View {
                             .aggregateMonthCell(self, row: row, name: group.name, members: categories, year: year, month: month)
                     }
                 }
-                .background(Color.orange.opacity(0.10))
+                .background(theme.groupRowTint)
             }
         case .groupChild(let category):
             categoryCells(row, category, shaded: shaded)
@@ -820,7 +821,7 @@ struct BudgetGridView: View {
                     ForEach(1...12, id: \.self) { month in
                         accountBalanceCell(viewModel.accountCell(account, year: year, month: month))
                             .frame(height: 28)
-                            .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                            .background(theme.rowBackground(shaded))
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .monthSeparator(month)
                     }
@@ -832,7 +833,7 @@ struct BudgetGridView: View {
                     ForEach(1...12, id: \.self) { month in
                         unassignedCell(viewModel.unassignedForecast(year: year, month: month))
                             .frame(height: 28)
-                            .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                            .background(theme.rowBackground(shaded))
                             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                             .monthSeparator(month)
                             .selectable(cellSelection, key: cellKey(row, month: month)) { openUnassigned(row, year: year, month: month) }
@@ -844,7 +845,7 @@ struct BudgetGridView: View {
                 HStack(spacing: 0) {
                     ForEach(1...12, id: \.self) { _ in emptyBandCell }
                 }
-                .background(Color.accentColor.opacity(0.08))
+                .background(theme.sectionHeaderTint)
             }
         case .totals(let totalsRow):
             if let year = viewModel.selectedYear {
@@ -857,7 +858,7 @@ struct BudgetGridView: View {
                             .selectable(cellSelection, key: cellKey(row, month: month)) { openTotalsMonth(row, totalsRow, year: year, month: month) }
                     }
                 }
-                .background(totalsRow.gridBackground)
+                .background(theme.totalsBackground(totalsRow))
             }
         case .netWorthTotal:
             if let year = viewModel.selectedYear {
@@ -869,7 +870,7 @@ struct BudgetGridView: View {
                             .monthSeparator(month)
                     }
                 }
-                .background(Color.purple.opacity(0.10))
+                .background(theme.netWorthTint)
             }
         }
     }
@@ -891,35 +892,35 @@ struct BudgetGridView: View {
                     emptyBandCell
                 }
             }
-            .background(Color.accentColor.opacity(0.08))
+            .background(theme.sectionHeaderTint)
         case .category(let category), .groupChild(let category):
             // Nothing without an id, as `categoryCells` renders no months then.
             if category.id != nil {
                 let yearCell = viewModel.yearCell([category], year: year)
                 planCell(yearCell, isYearTotal: true).bold()
                     .frame(height: 28)
-                    .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                    .background(theme.rowBackground(shaded))
                     .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                     .yearTotalCellPanel(self, row: row, name: category.name, members: [category], year: year)
             }
         case .reservedHeader:
             emptyBandCell
-                .background(Color.accentColor.opacity(0.08))
+                .background(theme.sectionHeaderTint)
         case .reserve(let reserve):
             planCell(viewModel.reserveYearCell([reserve], year: year), isYearTotal: true).bold()
                 .frame(height: 28)
-                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .background(theme.rowBackground(shaded))
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
         case .reservedTotal:
             planCell(viewModel.reserveYearCell(viewModel.reserves, year: year), isYearTotal: true).bold()
                 .frame(height: 28)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                .background(Color.purple.opacity(0.08))
+                .background(theme.reservedTint)
         case .groupHeader(let group, let categories):
             planCell(viewModel.yearCell(categories, year: year), isYearTotal: true).bold()
                 .frame(height: 28)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                .background(Color.orange.opacity(0.10))
+                .background(theme.groupRowTint)
                 .yearTotalCellPanel(self, row: row, name: group.name, members: categories, year: year)
         case .account(let account):
             // Year Total shows the year-end (December) balance rather than a sum —
@@ -928,29 +929,29 @@ struct BudgetGridView: View {
             // today's balance this year without it.
             accountBalanceCell(viewModel.accountYearEnd(account, year: year)).bold()
                 .frame(height: 28)
-                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .background(theme.rowBackground(shaded))
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
         case .unassignedAccount:
             unassignedCell(viewModel.unassignedForecast(year: year, month: 12)).bold()
                 .frame(height: 28)
-                .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                .background(theme.rowBackground(shaded))
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .selectable(cellSelection, key: cellKey(row, year: year)) { openUnassigned(row, year: year, month: nil) }
         case .totalsHeader:
             emptyBandCell
-                .background(Color.accentColor.opacity(0.08))
+                .background(theme.sectionHeaderTint)
         case .totals(let totalsRow):
             planCell(viewModel.totalsYearCell(totalsRow, year: year), isYearTotal: true).bold()
                 .frame(height: 28)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                .background(totalsRow.gridBackground)
+                .background(theme.totalsBackground(totalsRow))
                 .selectable(cellSelection, key: cellKey(row, year: year)) { openTotalsYear(row, totalsRow, year: year) }
         case .netWorthTotal:
             // The year card's figure (today's net worth this year with Show forecast off).
             calendarCell(viewModel.yearEndNetWorth(year)?.valueMinorUnits).bold()
                 .frame(height: 28)
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-                .background(Color.purple.opacity(0.10))
+                .background(theme.netWorthTint)
         }
     }
 
@@ -970,7 +971,7 @@ struct BudgetGridView: View {
                     let cell = viewModel.cell(category, year: year, month: month)
                     planCell(cell)
                         .frame(height: 28)
-                        .background(shaded ? Color.primary.opacity(0.07) : Color.clear)
+                        .background(theme.rowBackground(shaded))
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                         .monthSeparator(month)
                         .noteMarker(viewModel.hasNote([category], year: year, month: month))
@@ -1134,7 +1135,7 @@ struct BudgetGridView: View {
                     // read a bit lighter, so a stale figure doesn't look like a fresh update.
                     .opacity(balance.isCarriedForward ? 0.55 : 1.0)
             case .forecast(let balance, let currency):
-                MoneyText(minorUnits: balance.nativeMinorUnits, currency: currency, font: Self.bodyMoneyFont.italic(), alignment: .trailing, tint: .pending)
+                MoneyText(minorUnits: balance.nativeMinorUnits, currency: currency, font: Self.bodyMoneyFont.italic(), alignment: .trailing, tint: theme.pending)
                     .help(currency == .gbp ? "Forecast: today's balance plus this account's planned items"
                           : "Forecast: today's balance plus this account's planned items (\(Money.format(balance.gbpMinorUnits, currency: .gbp)))")
             case .today(let native, let currency):
@@ -1153,7 +1154,7 @@ struct BudgetGridView: View {
     private func unassignedCell(_ total: Int?) -> some View {
         Group {
             if let total, total != 0 {
-                MoneyText(minorUnits: total, font: Self.bodyMoneyFont.italic(), alignment: .trailing, tint: .pending)
+                MoneyText(minorUnits: total, font: Self.bodyMoneyFont.italic(), alignment: .trailing, tint: theme.pending)
             } else {
                 Text("—").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
             }

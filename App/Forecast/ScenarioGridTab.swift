@@ -22,6 +22,7 @@ import struct BudgetCore.Category
 /// re-runs this `body`.
 struct ScenarioGridTab: View {
     @ObservedObject var viewModel: ScenarioLabViewModel
+    @Environment(\.theme) private var theme
     @Binding var chipPrompts: ScenarioChipPrompts
     @State private var scrollOffset = HorizontalScrollOffset()
     @State private var bodyWidth = GridBodyWidth()
@@ -211,7 +212,7 @@ struct ScenarioGridTab: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .font(.headline)
-            .background(Color(nsColor: .controlBackgroundColor))
+            .background(theme.gridHeaderBackground)
             .overlay(Rectangle().frame(height: 1.5).foregroundStyle(Color.primary.opacity(0.18)), alignment: .bottom)
             .shadow(color: .black.opacity(0.08), radius: 3, y: 2)
 
@@ -350,7 +351,7 @@ struct ScenarioGridTab: View {
                 }
             }
             .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
-            .overlay(Rectangle().frame(width: 3).foregroundStyle(categories.first.map { $0.type.gridStripeColor } ?? .clear), alignment: .leading)
+            .overlay(Rectangle().frame(width: 3).foregroundStyle(categories.first.map { theme.stripe($0.type) } ?? .clear), alignment: .leading)
         case .groupChild(let category):
             CategoryRowLabel(category: category, shaded: shaded, isGroupChild: true)
         case .reservedHeader:
@@ -364,10 +365,10 @@ struct ScenarioGridTab: View {
             }
         case .reserve(let reserve):
             Text(reserve.name)
-                .gridRowLabel(background: GridRowShade.background(shaded), stripe: .purple)
+                .gridRowLabel(background: theme.rowBackground(shaded), stripe: theme.reserved)
         case .reservedTotal:
             Text("Total reserved").bold()
-                .gridRowLabel(background: Color.purple.opacity(0.08), stripe: .purple)
+                .gridRowLabel(background: theme.reservedTint, stripe: theme.reserved)
         case .totalsHeader:
             SectionHeaderCell(title: "Totals", isCollapsed: outline.isCollapsed(GridOutline.totalsSection),
                               toggle: { updateOutline { $0.toggleSection(GridOutline.totalsSection) } }, setAllGroups: nil) { EmptyView() }
@@ -389,13 +390,13 @@ struct ScenarioGridTab: View {
                         }
                 }
             }
-            .background(Color.accentColor.opacity(0.08))
+            .background(theme.sectionHeaderTint)
         case .category(let category), .groupChild(let category), .reserve(let category):
             HStack(spacing: 0) {
                 ForEach(1...12, id: \.self) { month in
                     cellView(cell([category], month: month))
                         .frame(height: 28)
-                        .background(GridRowShade.background(shaded))
+                        .background(theme.rowBackground(shaded))
                         .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                         .monthSeparator(month)
                         .selectable(cellSelection, key: cellKey(row, month: month)) {
@@ -415,12 +416,12 @@ struct ScenarioGridTab: View {
                         }
                 }
             }
-            .background(Color.orange.opacity(0.10))
+            .background(theme.groupRowTint)
         case .reservedHeader, .totalsHeader:
             HStack(spacing: 0) {
                 ForEach(1...12, id: \.self) { _ in Color.clear.frame(width: GridMetrics.columnWidth, height: 24) }
             }
-            .background(Color.accentColor.opacity(0.08))
+            .background(theme.sectionHeaderTint)
         case .reservedTotal:
             HStack(spacing: 0) {
                 ForEach(1...12, id: \.self) { month in
@@ -430,7 +431,7 @@ struct ScenarioGridTab: View {
                         .monthSeparator(month)
                 }
             }
-            .background(Color.purple.opacity(0.08))
+            .background(theme.reservedTint)
         case .totals(let totalsRow):
             HStack(spacing: 0) {
                 ForEach(1...12, id: \.self) { month in
@@ -443,7 +444,7 @@ struct ScenarioGridTab: View {
                         }
                 }
             }
-            .background(totalsRow.gridBackground)
+            .background(theme.totalsBackground(totalsRow))
         }
     }
 
@@ -455,29 +456,29 @@ struct ScenarioGridTab: View {
         case .sectionHeader(let title, let type):
             let members = categoriesByType(type)
             cellView(yearCell(members, year: year), isYearTotal: true, font: PlanCellView.captionFont, height: 24).bold()
-                .background(Color.accentColor.opacity(0.08))
+                .background(theme.sectionHeaderTint)
                 .selectable(cellSelection, key: cellKey(row, year: year)) { openYear(row, name: title, members: members, year: year) }
         case .category(let category), .groupChild(let category):
             cellView(yearCell([category], year: year), isYearTotal: true).bold()
                 .frame(height: 28)
-                .background(GridRowShade.background(shaded))
+                .background(theme.rowBackground(shaded))
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
                 .selectable(cellSelection, key: cellKey(row, year: year)) { openYear(row, name: category.name, members: [category], year: year) }
         case .reserve(let reserve):
             cellView(yearCell([reserve], year: year), isYearTotal: true).bold()
                 .frame(height: 28)
-                .background(GridRowShade.background(shaded))
+                .background(theme.rowBackground(shaded))
                 .overlay(Rectangle().frame(height: 1).foregroundStyle(.separator), alignment: .bottom)
         case .groupHeader(let group, let categories):
-            combinedYearTotal(yearCell(categories, year: year), background: Color.orange.opacity(0.10))
+            combinedYearTotal(yearCell(categories, year: year), background: theme.groupRowTint)
                 .selectable(cellSelection, key: cellKey(row, year: year)) { openYear(row, name: group.name, members: categories, year: year) }
         case .reservedHeader, .totalsHeader:
             Color.clear.frame(width: GridMetrics.columnWidth, height: 24)
-                .background(Color.accentColor.opacity(0.08))
+                .background(theme.sectionHeaderTint)
         case .reservedTotal:
-            combinedYearTotal(yearCell(viewModel.reserves, year: year), background: Color.purple.opacity(0.08))
+            combinedYearTotal(yearCell(viewModel.reserves, year: year), background: theme.reservedTint)
         case .totals(let totalsRow):
-            combinedYearTotal(totalsYearCell(totalsRow, year: year), background: totalsRow.gridBackground)
+            combinedYearTotal(totalsYearCell(totalsRow, year: year), background: theme.totalsBackground(totalsRow))
                 .selectable(cellSelection, key: cellKey(row, year: year)) { openTotalsYear(row, totalsRow, year: year) }
         }
     }
@@ -509,7 +510,7 @@ struct ScenarioGridTab: View {
                 Color.clear.frame(width: GridMetrics.columnWidth, height: 24)
                 Color.clear.frame(width: GridMetrics.columnWidth, height: 24)
             }
-            .background(Color.accentColor.opacity(0.08))
+            .background(theme.sectionHeaderTint)
         default:
             let isSectionHeader: Bool = { if case .sectionHeader = row { return true } else { return false } }()
             YearDeltaCells(current: yearValue(row, year: year), previous: yearValue(row, year: previous),
@@ -546,11 +547,11 @@ struct ScenarioGridTab: View {
     /// The row's background, as its month and Year Total cells draw it.
     private func rowBackground(_ row: RowKind, shaded: Bool) -> Color {
         switch row {
-        case .sectionHeader, .reservedHeader, .totalsHeader: return Color.accentColor.opacity(0.08)
-        case .totals(let totalsRow): return totalsRow.gridBackground
-        case .groupHeader: return Color.orange.opacity(0.10)
-        case .reservedTotal: return Color.purple.opacity(0.08)
-        case .category, .groupChild, .reserve: return GridRowShade.background(shaded)
+        case .sectionHeader, .reservedHeader, .totalsHeader: return theme.sectionHeaderTint
+        case .totals(let totalsRow): return theme.totalsBackground(totalsRow)
+        case .groupHeader: return theme.groupRowTint
+        case .reservedTotal: return theme.reservedTint
+        case .category, .groupChild, .reserve: return theme.rowBackground(shaded)
         }
     }
 
@@ -563,11 +564,13 @@ struct ScenarioGridTab: View {
 
     // MARK: Cells
 
-    /// The Grid tab's plan's `PlanPalette` colour (the Budget's blue when it is selected).
-    private var planColor: Color { PlanPalette.color(viewModel.colorIndex(of: viewModel.gridSelection)) }
+    /// The Grid tab's plan's chart series colour (`Theme.series`; the Budget's first, Classic's
+    /// blue, when it is selected).
+    private var planColor: Color { theme.series(viewModel.colorIndex(of: viewModel.gridSelection)) }
 
-    /// A differing cell's shading: a light tint of the scenario's colour.
-    private var differsFill: Color { planColor.opacity(0.22) }
+    /// A differing cell's shading: a light tint of the scenario's colour (`Theme.differsFill`;
+    /// Classic's 22%).
+    private var differsFill: Color { theme.differsFill(viewModel.colorIndex(of: viewModel.gridSelection)) }
 
     /// Members' cells combined (`PlanStatus.combine`), with the Budget's values summed.
     private func cell(_ categories: [Category], month: Int, year: Int? = nil) -> Cell {

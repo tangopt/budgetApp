@@ -4,9 +4,11 @@ import AppKit
 import BudgetCore
 import struct BudgetCore.Category
 
-/// A small colored circle keyed by category type (expense red, income green, transfer
-/// blue), sized small/medium/large, with an optional white SF Symbol inside. Categories use
-/// `init(category:size:)`, which shows the category's own icon or its type's generic one.
+/// A small colored circle keyed by category type (the theme's expense, income, transfer and
+/// adjustment colours: Classic's red, green, blue, grey), sized small/medium/large, with an
+/// optional SF Symbol inside (white, or black on a light theme fill: `Theme.badgeGlyph`).
+/// Categories use `init(category:size:)`, which shows the category's own icon or its type's
+/// generic one.
 struct CategoryBadge: View {
     enum Size {
         case small, medium, large
@@ -23,15 +25,9 @@ struct CategoryBadge: View {
     let type: CategoryType
     var size: Size = .medium
     var systemImage: String? = nil
+    @Environment(\.theme) private var theme
 
-    private var color: Color {
-        switch type {
-        case .expense: return .red
-        case .income: return .green
-        case .transfer: return .blue
-        case .adjustment: return .gray
-        }
-    }
+    private var color: Color { theme.stripe(type) }
 
     var body: some View {
         ZStack {
@@ -39,7 +35,7 @@ struct CategoryBadge: View {
             if let systemImage {
                 Image(systemName: systemImage)
                     .font(.system(size: size.diameter * 0.5, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(theme.badgeGlyph(type))
             }
         }
         .frame(width: size.diameter, height: size.diameter)

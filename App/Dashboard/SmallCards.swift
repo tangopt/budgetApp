@@ -6,6 +6,7 @@ struct TopCategoriesCard: View {
     let categories: [CategorySpend]
     let hasActuals: Bool
     let navigate: (AppScreen) -> Void
+    @Environment(\.theme) private var theme
 
     var body: some View {
         DashboardCard(title: "Top categories this month", linkTitle: "Budget", onLink: { navigate(.budgetGrid) }) {
@@ -23,8 +24,8 @@ struct TopCategoriesCard: View {
                             Text("\(DashboardFormat.pounds(category.actual)) · unplanned").foregroundStyle(.orange)
                         } else if hasActuals {
                             Text("\(DashboardFormat.pounds(category.actual)) of \(DashboardFormat.pounds(category.expected))")
-                                .foregroundStyle(category.isOver ? Color.red : Color.primary)
-                            if category.isOver { Text("+\(DashboardFormat.pounds(category.actual - category.expected))").foregroundStyle(.red) }
+                                .foregroundStyle(category.isOver ? theme.expense : Color.primary)
+                            if category.isOver { Text("+\(DashboardFormat.pounds(category.actual - category.expected))").foregroundStyle(theme.expense) }
                         } else {
                             Text("expected \(DashboardFormat.pounds(category.expected))").foregroundStyle(.secondary)
                         }
@@ -34,7 +35,7 @@ struct TopCategoriesCard: View {
                     // Spent so far against what was planned for the month; PaceMeter caps the bar
                     // at full width, so an over-budget row reads as a full red bar.
                     if hasActuals && category.expected > 0 {
-                        PaceMeter(fraction: max(Double(category.actual) / Double(category.expected), 0), pace: nil, tint: category.isOver ? .red : .orange)
+                        PaceMeter(fraction: max(Double(category.actual) / Double(category.expected), 0), pace: nil, tint: category.isOver ? theme.expense : theme.series(1))
                     }
                 }
                 if category.id != categories.last?.id { Divider() }
@@ -109,6 +110,7 @@ struct UpcomingBillsCard: View {
 struct AccountsCard: View {
     let accounts: [AccountSummary]
     let navigate: (AppScreen) -> Void
+    @Environment(\.theme) private var theme
     private let shown = 4
 
     var body: some View {
@@ -143,13 +145,13 @@ struct AccountsCard: View {
         HStack(spacing: 4) {
             if account.currency == .gbp {
                 if isOwed {
-                    Text("\(DashboardFormat.pounds(abs(account.gbpBalanceMinorUnits))) owed").foregroundStyle(.red)
+                    Text("\(DashboardFormat.pounds(abs(account.gbpBalanceMinorUnits))) owed").foregroundStyle(theme.expense)
                 } else {
                     Text(DashboardFormat.pounds(account.gbpBalanceMinorUnits))
                 }
             } else {
                 if isOwed {
-                    Text("\(Money.format(abs(account.nativeBalanceMinorUnits), currency: account.currency)) owed").foregroundStyle(.red)
+                    Text("\(Money.format(abs(account.nativeBalanceMinorUnits), currency: account.currency)) owed").foregroundStyle(theme.expense)
                 } else {
                     Text(Money.format(account.nativeBalanceMinorUnits, currency: account.currency))
                 }

@@ -44,7 +44,7 @@ struct CompareTab: View {
     }
 }
 
-/// One line per plan, coloured by `PlanPalette`; the shared actual months in grey. Hovering
+/// One line per plan, coloured by the theme's chart series (`Theme.series`); the shared actual months in grey. Hovering
 /// shows every line's value for that month.
 struct ScenarioNetWorthChart: View {
     let actual: [NetWorthPoint]
@@ -52,6 +52,7 @@ struct ScenarioNetWorthChart: View {
     let today: Date
 
     @State private var selectedDate: Date?
+    @Environment(\.theme) private var theme
 
     private struct Plotted: Identifiable {
         let id: String
@@ -89,7 +90,7 @@ struct ScenarioNetWorthChart: View {
 
     var body: some View {
         let ids = [Self.actualId] + lines.map(\.id)
-        let colors = [Color.gray] + lines.map { PlanPalette.color($0.colorIndex) }
+        let colors = [Color.gray] + lines.map { theme.series($0.colorIndex) }
         let readout = readout
         VStack(alignment: .leading, spacing: 8) {
         Chart {
@@ -158,7 +159,7 @@ struct ScenarioNetWorthChart: View {
             Text(DashboardFormat.monthYear(readout.date)).font(.caption2).foregroundStyle(.secondary)
             ForEach(Array(readout.values.enumerated()), id: \.offset) { _, value in
                 HStack(spacing: 4) {
-                    Circle().fill(value.colorIndex.map(PlanPalette.color) ?? .gray).frame(width: 6, height: 6)
+                    Circle().fill(value.colorIndex.map(theme.series) ?? .gray).frame(width: 6, height: 6)
                     Text(value.name).font(.caption2).lineLimit(1)
                     Spacer(minLength: 8)
                     Text(DashboardFormat.pounds(value.minorUnits)).font(.caption.bold()).monospacedDigit()
@@ -166,14 +167,14 @@ struct ScenarioNetWorthChart: View {
             }
         }
         .padding(6)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 6).fill(theme.windowFill))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
     }
 
     private var legend: some View {
         HStack(spacing: 14) {
             legendItem(Self.actualName, color: .gray)
-            ForEach(lines) { line in legendItem(line.name, color: PlanPalette.color(line.colorIndex)) }
+            ForEach(lines) { line in legendItem(line.name, color: theme.series(line.colorIndex)) }
         }
         .font(.caption)
     }
@@ -192,6 +193,7 @@ struct SummaryTable: View {
     let rows: [ScenarioLabViewModel.SummaryRow]
     /// The horizon's last month: its year's block is labelled "to <month>".
     let horizon: (year: Int, month: Int)
+    @Environment(\.theme) private var theme
 
     private static let columns = ["Year-end net worth", "Δ vs Budget", "Income", "Expenses", "Reserves (unspent)"]
 
@@ -219,7 +221,7 @@ struct SummaryTable: View {
                 .font(.subheadline.bold())
                 .padding(.horizontal, 8).padding(.vertical, 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.accentColor.opacity(0.08))
+                .background(theme.sectionHeaderTint)
             Grid(alignment: .trailing, horizontalSpacing: 12, verticalSpacing: 0) {
                 GridRow {
                     Text("Plan").font(.caption.bold()).frame(width: Self.planWidth, alignment: .leading).gridColumnAlignment(.leading)
@@ -269,7 +271,7 @@ struct SummaryTable: View {
     private func amountContent(_ minorUnits: Int?, signed: Bool) -> some View {
         if let minorUnits {
             if signed && minorUnits > 0 {
-                Text("+" + Money.format(minorUnits, currency: .gbp)).font(.body.monospacedDigit()).foregroundStyle(.green)
+                Text("+" + Money.format(minorUnits, currency: .gbp)).font(.body.monospacedDigit()).foregroundStyle(theme.income)
             } else {
                 MoneyText(minorUnits: minorUnits)
             }

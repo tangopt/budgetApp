@@ -270,6 +270,7 @@ struct PlannedOccurrencesSection: View {
     let errorMessage: String?
     let onEdit: (PlannedRow) -> Void
     let onRemove: (PlannedRow) -> Void
+    @Environment(\.theme) private var theme
 
     var body: some View {
         Section("Planned") {
@@ -338,7 +339,7 @@ struct PlannedOccurrencesSection: View {
         Text(inScenario ? (row.isConfirmed ? "Closed month" : "Open") : (row.isConfirmed ? "Confirmed" : "Unconfirmed"))
             .font(.caption)
             .italic(!row.isConfirmed)
-            .foregroundStyle(row.isConfirmed ? Color.secondary : Color.pending)
+            .foregroundStyle(row.isConfirmed ? Color.secondary : theme.pending)
     }
 }
 

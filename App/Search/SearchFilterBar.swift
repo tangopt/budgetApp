@@ -98,6 +98,7 @@ struct SearchFilterBar: View {
 
 /// A filter's button: its current value, accented while the filter is on; opens `content` in a popover.
 private struct FilterButton<Content: View>: View {
+    @Environment(\.theme) private var theme
     let title: String
     let isActive: Bool
     @ViewBuilder let content: Content
@@ -110,7 +111,7 @@ private struct FilterButton<Content: View>: View {
                 Image(systemName: "chevron.down").font(.caption2)
                     .accessibilityHidden(true)
             }
-            .foregroundStyle(isActive ? Color.accentColor : Color.primary)
+            .foregroundStyle(isActive ? theme.accent : Color.primary)
         }
         .accessibilityLabel(title)
         .accessibilityValue(isActive ? "On" : "Off")

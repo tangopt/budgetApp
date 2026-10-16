@@ -2,8 +2,8 @@
 import SwiftUI
 import BudgetCore
 
-/// Renders a minor-units amount via `Money.format`, colored green for positive and red
-/// for negative using semantic colors (adapts automatically to light/dark mode). This is
+/// Renders a minor-units amount via `Money.format`, colored by sign in the theme's income
+/// (positive) and expense (negative) colours, which adapt to light/dark mode. This is
 /// the one place money color/formatting logic lives — every other view should use this
 /// instead of formatting `Money.format` output directly.
 struct MoneyText: View {
@@ -19,14 +19,15 @@ struct MoneyText: View {
     /// Nil (the default) keeps the text at its natural size, which inline call sites
     /// (Net Worth, Import, Forecast, lists with a `Spacer`) rely on.
     var alignment: Alignment? = nil
-    /// When set, overrides the sign-based red/green/primary color entirely — for callers
+    /// When set, overrides the sign-based income/expense/neutral color entirely — for callers
     /// that need a fixed color regardless of the value's sign (e.g. marking a figure as a
     /// pending amount, not a real change in either direction).
     var tint: Color? = nil
+    @Environment(\.theme) private var theme
 
     var body: some View {
         let colorSource = colorOverride ?? minorUnits
-        let color = tint ?? (colorSource < 0 ? Color.red : (colorSource > 0 ? Color.green : Color.primary))
+        let color = tint ?? theme.money(colorSource)
         let text = Text(Money.format(minorUnits, currency: currency))
             .font(font)
             .foregroundStyle(color)

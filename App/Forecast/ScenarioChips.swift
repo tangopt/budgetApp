@@ -3,7 +3,7 @@ import SwiftUI
 import BudgetCore
 
 /// A Forecast tab's plan chips (spec 2026-10-08-scenario-lab-tabs-design.md, "Forecast screen
-/// layout"): "Budget" first, then each scenario in its `PlanPalette` colour, then
+/// layout"): "Budget" first, then each scenario in its chart series colour (`Theme.series`), then
 /// "+ New scenario" (copies the budget). A scenario chip's context menu renames, duplicates,
 /// refreshes from the budget or deletes it.
 ///
@@ -22,6 +22,7 @@ struct ScenarioChips: View {
     @ObservedObject var viewModel: ScenarioLabViewModel
     let mode: Mode
     @Binding var prompts: ScenarioChipPrompts
+    @Environment(\.theme) private var theme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -61,10 +62,10 @@ struct ScenarioChips: View {
         switch mode {
         case .multi:
             // Always on: Δ and the differences are measured against it.
-            PlanChip(name: "Budget", color: PlanPalette.color(0), isSelected: true, isEmphasised: true, action: nil)
+            PlanChip(name: "Budget", color: theme.series(0), isSelected: true, isEmphasised: true, action: nil)
                 .help("The budget is always shown")
         case .single(let selected):
-            PlanChip(name: "Budget", color: PlanPalette.color(0), isSelected: selected.wrappedValue == nil, isEmphasised: true) {
+            PlanChip(name: "Budget", color: theme.series(0), isSelected: selected.wrappedValue == nil, isEmphasised: true) {
                 selected.wrappedValue = nil
             }
             .help("The budget, read-only")
@@ -72,7 +73,7 @@ struct ScenarioChips: View {
     }
 
     private func scenarioChip(_ scenario: Scenario, colorIndex: Int) -> some View {
-        PlanChip(name: scenario.name, color: PlanPalette.color(colorIndex), isSelected: isSelected(scenario), isEmphasised: false) {
+        PlanChip(name: scenario.name, color: theme.series(colorIndex), isSelected: isSelected(scenario), isEmphasised: false) {
             select(scenario)
         }
         .help(Self.copiedLabel(scenario))

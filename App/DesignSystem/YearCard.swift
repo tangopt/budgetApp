@@ -18,6 +18,7 @@ struct YearCard: View {
     /// `change` as a fraction of the previous year-end's magnitude.
     let percent: Double?
     let isSelected: Bool
+    @Environment(\.theme) private var theme
 
     /// Every year card's size: fits the largest content (three lines; a seven-figure net worth).
     static let size = CGSize(width: 160, height: 66)
@@ -39,7 +40,7 @@ struct YearCard: View {
             if let change, DashboardFormat.pounds(abs(change)) != DashboardFormat.pounds(0) {
                 Text(Self.changeText(change: change, percent: percent))
                     .font(.caption2).monospacedDigit()
-                    .foregroundStyle(change >= 0 ? Color.green : Color.red)
+                    .foregroundStyle(change >= 0 ? theme.yoyGood : theme.yoyBad)
             } else {
                 Text("—").font(.caption2).foregroundStyle(.secondary)
             }
@@ -47,8 +48,8 @@ struct YearCard: View {
         .lineLimit(1)
         .padding(8)
         .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.3), lineWidth: isSelected ? 2 : 1))
+        .background(RoundedRectangle(cornerRadius: 8).fill(isSelected ? theme.accent.opacity(0.15) : Color.clear))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(isSelected ? theme.accent : Color.secondary.opacity(0.3), lineWidth: isSelected ? 2 : 1))
         // The whole tile is the button: an unselected card's background is clear, which a plain
         // button otherwise doesn't hit-test (only its text was clickable).
         .contentShape(RoundedRectangle(cornerRadius: 8))

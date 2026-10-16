@@ -14,6 +14,7 @@ struct AccountFilterPanel: View {
     /// The account row a drag is over; `isDropTargetingAll` for "All accounts".
     @State private var dropTargetId: Int64?
     @State private var isDropTargetingAll = false
+    @Environment(\.theme) private var theme
 
     var body: some View {
         if viewModel.isAccountPanelOpen {
@@ -78,7 +79,7 @@ struct AccountFilterPanel: View {
                 .help("Show accounts")
                 if viewModel.isAccountFiltered {
                     Image(systemName: "line.3.horizontal.decrease.circle.fill")
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(theme.accent)
                         .help("Filtered to some accounts")
                 }
                 Spacer()
@@ -86,7 +87,7 @@ struct AccountFilterPanel: View {
                     viewModel.showForecast.toggle()
                 } label: {
                     Image(systemName: "chart.line.uptrend.xyaxis")
-                        .foregroundStyle(viewModel.showForecast ? Color.pending : Color.secondary)
+                        .foregroundStyle(viewModel.showForecast ? theme.pending : Color.secondary)
                 }
                 .buttonStyle(.borderless)
                 .help(viewModel.showForecast ? "Hide forecast" : "Show forecast")
@@ -104,7 +105,7 @@ struct AccountFilterPanel: View {
     private var forecastRow: some View {
         HStack(spacing: 6) {
             Image(systemName: "chart.line.uptrend.xyaxis")
-                .foregroundStyle(viewModel.showForecast ? Color.pending : Color.secondary)
+                .foregroundStyle(viewModel.showForecast ? theme.pending : Color.secondary)
                 .frame(width: 16)
             Text("Show forecast").lineLimit(1)
             Spacer(minLength: 4)
@@ -144,7 +145,7 @@ struct AccountFilterPanel: View {
     @ViewBuilder
     private func dropIndicator(_ visible: Bool) -> some View {
         if visible {
-            RoundedRectangle(cornerRadius: 5).strokeBorder(Color.accentColor, lineWidth: 1.5).allowsHitTesting(false)
+            RoundedRectangle(cornerRadius: 5).strokeBorder(theme.accent, lineWidth: 1.5).allowsHitTesting(false)
         }
     }
 
@@ -154,7 +155,7 @@ struct AccountFilterPanel: View {
     private func row(_ name: String, count: Int, ticked: Bool, action: @escaping () -> Void) -> some View {
         HStack(spacing: 6) {
             Image(systemName: ticked ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(ticked ? Color.accentColor : Color.secondary)
+                .foregroundStyle(ticked ? theme.accent : Color.secondary)
             Text(name).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 4)
             Text(count.formatted())
@@ -162,7 +163,7 @@ struct AccountFilterPanel: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(RoundedRectangle(cornerRadius: 5).fill(ticked ? Color.accentColor.opacity(0.12) : Color.clear))
+        .background(RoundedRectangle(cornerRadius: 5).fill(ticked ? theme.accent.opacity(0.12) : Color.clear))
         .contentShape(Rectangle())
         .onTapGesture(perform: action)
         .accessibilityElement(children: .combine)

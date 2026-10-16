@@ -6,6 +6,7 @@ struct YearAtAGlanceCard: View {
     @ObservedObject var viewModel: DashboardViewModel
     let content: DashboardContent
     let navigate: (AppScreen) -> Void
+    @Environment(\.theme) private var theme
 
     var body: some View {
         // Summed once per body evaluation (twelve additions), shared by every block below.
@@ -22,10 +23,10 @@ struct YearAtAGlanceCard: View {
             }
             YearAtAGlanceChart(flows: viewModel.flows)
             HStack(spacing: 14) {
-                Label("Income", systemImage: "square.fill").foregroundStyle(.green)
-                Label("Expenses", systemImage: "square.fill").foregroundStyle(.orange)
-                Label("Reserved", systemImage: "square.fill").foregroundStyle(.purple)
-                Label("Net", systemImage: "circle.fill").foregroundStyle(.blue)
+                Label("Income", systemImage: "square.fill").foregroundStyle(theme.income)
+                Label("Expenses", systemImage: "square.fill").foregroundStyle(theme.series(1))
+                Label("Reserved", systemImage: "square.fill").foregroundStyle(theme.reserved)
+                Label("Net", systemImage: "circle.fill").foregroundStyle(theme.series(0))
                 Text("Solid = actual · hatched = forecast or still expected").foregroundStyle(.secondary)
             }
             .font(.caption)
@@ -63,6 +64,6 @@ struct YearAtAGlanceCard: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .windowBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(theme.windowFill))
     }
 }

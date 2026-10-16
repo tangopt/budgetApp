@@ -13,6 +13,7 @@ struct CategoryIconPicker: View {
 
     @State private var query = ""
     @FocusState private var searchFocused: Bool
+    @Environment(\.theme) private var theme
 
     private let columns = Array(repeating: GridItem(.fixed(32), spacing: 6), count: 8)
 
@@ -32,7 +33,7 @@ struct CategoryIconPicker: View {
                             Text("Use default")
                             Spacer()
                             if current == nil {
-                                Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
+                                Image(systemName: "checkmark").foregroundStyle(theme.accent)
                             }
                         }
                         .contentShape(Rectangle())
@@ -68,7 +69,7 @@ struct CategoryIconPicker: View {
             CategoryBadge(type: type, size: .large, systemImage: icon.symbol)
                 .padding(2)
                 .overlay(
-                    Circle().strokeBorder(Color.accentColor, lineWidth: isCurrent ? 2 : 0)
+                    Circle().strokeBorder(theme.accent, lineWidth: isCurrent ? 2 : 0)
                 )
                 .contentShape(Rectangle())
         }

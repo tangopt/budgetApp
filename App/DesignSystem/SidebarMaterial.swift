@@ -9,8 +9,8 @@ import AppKit
 /// dark mode the glass takes on that dark grey, so the sidebar came out the same colour as
 /// the rest of the window. This material blends with what's behind the window instead, so the
 /// sidebar stays distinct in both modes. It follows the effective appearance, which includes
-/// `AppearanceToggle`'s `NSApp.appearance`, and dims with the window's active state like
-/// a standard sidebar.
+/// the `NSApp.appearance` chosen in Settings ▸ Appearance (`AppAppearance`, applied by
+/// `ThemedRoot`), and dims with the window's active state like a standard sidebar.
 struct SidebarMaterial: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()

@@ -16,6 +16,7 @@ struct DifferencesTab: View {
     @State private var undoing: Scenario?
     @State private var reverting: RevertTarget?
     @State private var editing: PlannedRow?
+    @Environment(\.theme) private var theme
 
     private struct RevertTarget: Identifiable {
         let scenario: Scenario
@@ -127,9 +128,9 @@ struct DifferencesTab: View {
             Text("Category").fontWeight(.medium)
                 .padding(8)
                 .frame(width: Self.categoryWidth, alignment: .leading)
-            columnHeader("Budget", color: PlanPalette.color(0), width: Self.budgetWidth)
+            columnHeader("Budget", color: theme.series(0), width: Self.budgetWidth)
             ForEach(viewModel.differencesScenarios) { scenario in
-                columnHeader(scenario.name, color: PlanPalette.color(viewModel.colorIndex(of: scenario.id)), width: Self.scenarioWidth)
+                columnHeader(scenario.name, color: theme.series(viewModel.colorIndex(of: scenario.id)), width: Self.scenarioWidth)
             }
         }
         .font(.callout)
@@ -170,7 +171,7 @@ struct DifferencesTab: View {
                     .padding(8)
                     .frame(width: Self.scenarioWidth, alignment: .topLeading)
                     .frame(maxHeight: .infinity, alignment: .topLeading)
-                    .background(row.cells[scenario.id ?? -1] == nil ? Color.clear : PlanPalette.color(viewModel.colorIndex(of: scenario.id)).opacity(0.1))
+                    .background(row.cells[scenario.id ?? -1] == nil ? Color.clear : theme.differencesFill(viewModel.colorIndex(of: scenario.id)))
             }
         }
         .font(.callout)

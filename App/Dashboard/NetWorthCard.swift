@@ -5,6 +5,7 @@ import BudgetCore
 struct NetWorthCard: View {
     let content: DashboardContent
     let navigate: (AppScreen) -> Void
+    @Environment(\.theme) private var theme
 
     private var series: NetWorthSeries { content.netWorth }
 
@@ -76,7 +77,7 @@ struct NetWorthCard: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .windowBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(theme.windowFill))
     }
 
     /// Swatch matching the chart: a solid line for actual, a dashed line (same blue) for the
@@ -85,14 +86,14 @@ struct NetWorthCard: View {
         HStack(spacing: 4) {
             if solid {
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(Color.blue)
+                    .fill(theme.series(0))
                     .frame(width: 14, height: 3)
             } else {
                 Path { path in
                     path.move(to: CGPoint(x: 0, y: 1.5))
                     path.addLine(to: CGPoint(x: 14, y: 1.5))
                 }
-                .stroke(Color.blue, style: StrokeStyle(lineWidth: 2, dash: [3, 2]))
+                .stroke(theme.series(0), style: StrokeStyle(lineWidth: 2, dash: [3, 2]))
                 .frame(width: 14, height: 3)
             }
             Text(text)

@@ -6,9 +6,15 @@ struct BudgetApp: App {
     var body: some Scene {
         WindowGroup {
             LaunchView()
+                .themedRoot()
         }
         .commands {
             SearchCommands()
+        }
+        // Budget ▸ Settings… (⌘,): Appearance and Theme.
+        Settings {
+            SettingsView()
+                .themedRoot()
         }
     }
 }

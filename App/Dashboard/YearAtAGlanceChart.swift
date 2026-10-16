@@ -8,6 +8,8 @@ struct YearAtAGlanceChart: View {
     let flows: [MonthlyFlow]
 
     @State private var selectedMonth: String?
+    @Environment(\.theme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
 
     private var selected: MonthlyFlow? {
         guard let selectedMonth else { return nil }
@@ -23,33 +25,33 @@ struct YearAtAGlanceChart: View {
             ForEach(flows) { flow in
                 BarMark(x: .value("Month", name(flow)), y: .value("Income", pounds(flow.incomeActual)))
                     .position(by: .value("Type", "Income"))
-                    .foregroundStyle(Color.green)
+                    .foregroundStyle(theme.income)
                 if flow.incomeRemaining > 0 {
                     BarMark(x: .value("Month", name(flow)), y: .value("Income", pounds(flow.incomeRemaining)))
                         .position(by: .value("Type", "Income"))
-                        .foregroundStyle(HatchPattern.style(.green))
+                        .foregroundStyle(HatchPattern.style(theme.income, colorScheme: colorScheme))
                 }
                 BarMark(x: .value("Month", name(flow)), y: .value("Expenses", pounds(flow.expenseActual)))
                     .position(by: .value("Type", "Expenses"))
-                    .foregroundStyle(Color.orange)
+                    .foregroundStyle(theme.series(1))
                 let otherRemaining = flow.expenseRemaining - flow.reservedRemaining
                 if otherRemaining > 0 {
                     BarMark(x: .value("Month", name(flow)), y: .value("Expenses", pounds(otherRemaining)))
                         .position(by: .value("Type", "Expenses"))
-                        .foregroundStyle(HatchPattern.style(.orange))
+                        .foregroundStyle(HatchPattern.style(theme.series(1), colorScheme: colorScheme))
                 }
                 if flow.reservedRemaining > 0 {
                     BarMark(x: .value("Month", name(flow)), y: .value("Expenses", pounds(flow.reservedRemaining)))
                         .position(by: .value("Type", "Expenses"))
-                        .foregroundStyle(HatchPattern.style(.purple))
+                        .foregroundStyle(HatchPattern.style(theme.reserved, colorScheme: colorScheme))
                 }
             }
             ForEach(flows) { flow in
                 LineMark(x: .value("Month", name(flow)), y: .value("Net", pounds(flow.net)), series: .value("Series", "Net"))
-                    .foregroundStyle(Color.blue)
+                    .foregroundStyle(theme.series(0))
                     .lineStyle(StrokeStyle(lineWidth: 1.5))
                 PointMark(x: .value("Month", name(flow)), y: .value("Net", pounds(flow.net)))
-                    .foregroundStyle(Color.blue)
+                    .foregroundStyle(theme.series(0))
                     .symbolSize(flow.monthClass == .forecast ? 24 : 40)
             }
             if let selected {
@@ -86,7 +88,7 @@ struct YearAtAGlanceChart: View {
             Text("Net \(DashboardFormat.pounds(flow.net))").font(.caption.bold())
         }
         .padding(4)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 6).fill(theme.windowFill))
     }
 
     @ViewBuilder

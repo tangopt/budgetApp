@@ -10,6 +10,7 @@ struct GroupNameCell: View {
     let isExpanded: Bool
     let toggle: (_ allInSection: Bool) -> Void
     @State private var hovering = false
+    @Environment(\.theme) private var theme
 
     var body: some View {
         HStack(spacing: 4) {
@@ -19,7 +20,7 @@ struct GroupNameCell: View {
         .frame(width: 220, height: 28, alignment: .leading)
         .padding(.horizontal, 8)
         .background(Color.primary.opacity(hovering ? 0.06 : 0))
-        .background(Color.orange.opacity(0.10))
+        .background(theme.groupRowTint)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { toggle(NSEvent.modifierFlags.contains(.option)) }
@@ -56,6 +57,7 @@ struct SectionHeaderCell<Accessory: View>: View {
     let setAllGroups: ((Bool) -> Void)?
     @ViewBuilder let accessory: () -> Accessory
     @State private var hovering = false
+    @Environment(\.theme) private var theme
 
     var body: some View {
         HStack(spacing: 4) {
@@ -89,7 +91,7 @@ struct SectionHeaderCell<Accessory: View>: View {
         }
         .frame(width: 220, height: 24, alignment: .leading)
         .padding(.horizontal, 8)
-        .background(Color.accentColor.opacity(0.08))
+        .background(theme.sectionHeaderTint)
         .onHover { hovering = $0 }
     }
 

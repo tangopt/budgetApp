@@ -68,6 +68,7 @@ struct ContentView: View {
     @AppStorage("lastImportAccountId") private var lastImportAccountId = 0
     /// Show in Budget has just loaded the Budget grid's data (so its appearance needn't).
     @State private var budgetGridJustLoaded = false
+    @Environment(\.theme) private var theme
 
     // Each screen's view model is owned once by ContentView and handed down as a
     // stable reference, rather than reconstructed inline in the switch below on
@@ -155,11 +156,10 @@ struct ContentView: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                AppearanceToggle()
-            }
-            // The whole column, title bar and toggle included: without it the sidebar is the
-            // content area's colour in dark mode (see `SidebarMaterial`).
+            // The sidebar's selection keeps the system accent whatever the theme.
+            .tint(nil)
+            // The whole column, title bar included: without it the sidebar is the content area's
+            // colour in dark mode (see `SidebarMaterial`).
             .background { SidebarMaterial().ignoresSafeArea() }
         } detail: {
             Group {
@@ -202,6 +202,8 @@ struct ContentView: View {
                 }
             }
             .navigationTitle(selection?.rawValue ?? "Budget")
+            // The theme's window colour behind every screen (clear for Classic).
+            .background(theme.windowBackground.ignoresSafeArea())
         }
         .alert(
             "Save the \(importViewModel.confirmedCount) confirmed transaction\(importViewModel.confirmedCount == 1 ? "" : "s")?",
