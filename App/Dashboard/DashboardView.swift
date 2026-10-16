@@ -100,6 +100,8 @@ struct TwoUpRow<First: View, Second: View>: View {
                 first.frame(minWidth: Self.minimumCardWidth, idealWidth: Self.minimumCardWidth, maxWidth: .infinity)
                 second.frame(minWidth: Self.minimumCardWidth, idealWidth: Self.minimumCardWidth, maxWidth: .infinity)
             }
+            // The row takes the taller card's height and both cards stretch to it.
+            .fixedSize(horizontal: false, vertical: true)
             VStack(spacing: Self.spacing) {
                 first
                 second

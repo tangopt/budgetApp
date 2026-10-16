@@ -22,7 +22,9 @@ struct DashboardCard<Content: View>: View {
             content
         }
         .padding(14)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        // maxHeight lets a card stretch to its row partner's height (`TwoUpRow`); in the
+        // dashboard's scroll view it otherwise takes just its own height.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 12).fill(theme.surface))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(nsColor: .separatorColor)))
     }
