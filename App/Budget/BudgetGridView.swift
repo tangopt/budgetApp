@@ -387,8 +387,13 @@ struct BudgetGridView: View {
                         Label("Share CSV…", systemImage: "square.and.arrow.up")
                     }
                 } label: {
-                    Label("Share or export", systemImage: "square.and.arrow.up")
+                    Image(systemName: "square.and.arrow.up")
+                        .accessibilityLabel("Share or export")
                 }
+                // A plain icon: no button chrome or menu arrow.
+                .menuStyle(.button)
+                .buttonStyle(.borderless)
+                .menuIndicator(.hidden)
                 .help("Share or export")
             }
         }

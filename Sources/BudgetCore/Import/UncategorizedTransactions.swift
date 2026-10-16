@@ -14,7 +14,7 @@ public enum UncategorizedTransactions {
         try request.fetchCount(db)
     }
 
-    private static var request: QueryInterfaceRequest<Transaction> {
+    static var request: QueryInterfaceRequest<Transaction> {
         Transaction.budgetFacing.filter(Column("categoryId") == nil || Column("status") == TransactionStatus.pendingReview.rawValue)
     }
 }

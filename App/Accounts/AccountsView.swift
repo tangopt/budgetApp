@@ -39,10 +39,13 @@ struct AccountsView: View {
                         }
                         footer
                     }
-                    .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    // About a third of the width (at least 260pt); the detail takes the rest.
+                    .containerRelativeFrame(.horizontal, alignment: .leading) { length, _ in
+                        max(260, length * 0.32)
+                    }
+                    .frame(maxHeight: .infinity, alignment: .top)
                     detail
-                        .frame(width: 320)
-                        .frame(maxHeight: .infinity, alignment: .top)
+                        .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
             } else {
                 commonBanners
@@ -330,17 +333,26 @@ private struct AccountListRow: View {
     let row: AccountRow
     let importedThrough: Date?
 
+    private var importedCaption: String {
+        importedThrough.map { "Imported up to \(AccountsFormat.shortDay($0))" } ?? "Not imported yet"
+    }
+
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
+            // The import date shares a line: under the name with the account's own name when
+            // it has a nickname, else beside the name (no extra row height either way).
             VStack(alignment: .leading, spacing: 1) {
-                Text(row.account.displayName)
                 if row.account.displayName != row.account.name {
-                    Text(row.account.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(row.account.displayName)
+                    Text("\(row.account.name) · \(importedCaption)")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                } else {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(row.account.displayName).lineLimit(1).layoutPriority(1)
+                        Text(importedCaption)
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
-                Text(importedThrough.map { "Imported up to \(AccountsFormat.shortDay($0))" } ?? "Not imported yet")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
             if row.isStale {
                 Image(systemName: "exclamationmark.circle.fill")
