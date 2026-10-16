@@ -11,7 +11,8 @@ public enum RuleLearner {
         guard !trimmed.isEmpty else { return }
         let key = MerchantKey.make(description)
         let pattern = key.count < minimumKeyLength ? trimmed : key
-        if var existing = try Rule.filter(Column("matchPattern") == pattern).fetchOne(db) {
+        // Only a contains rule is updated: a hand-made regex rule with the same text is left alone.
+        if var existing = try Rule.filter(Column("matchPattern") == pattern && Column("matchType") == RuleMatchType.contains.rawValue).fetchOne(db) {
             existing.categoryId = categoryId
             try existing.update(db)
         } else {

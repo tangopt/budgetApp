@@ -35,8 +35,13 @@ struct CompareTab: View {
                     ScenarioNetWorthChart(actual: viewModel.actualLine, lines: viewModel.lines, today: viewModel.today)
                 }
                 Text("Summary").font(.headline)
+                // At least the full width (its columns flex to fill it); scrolls sideways
+                // only when the window is narrower than the columns' minimum widths.
                 ScrollView(.horizontal) {
                     SummaryTable(rows: viewModel.summaries, horizon: viewModel.horizon.endMonth(today: viewModel.today))
+                        .containerRelativeFrame(.horizontal, alignment: .leading) { length, _ in
+                            max(length, SummaryTable.minimumWidth)
+                        }
                 }
             }
             .padding(.bottom)
@@ -197,8 +202,16 @@ struct SummaryTable: View {
 
     private static let columns = ["Year-end net worth", "Δ vs Budget", "Income", "Expenses", "Reserves (unspent)"]
 
+    /// The columns' minimum widths; they share out any extra width.
     private static let columnWidth: CGFloat = 120
     private static let planWidth: CGFloat = 170
+    private static let columnSpacing: CGFloat = 12
+    private static let horizontalPadding: CGFloat = 8
+
+    /// The narrowest the table lays out at (every column at its minimum).
+    static var minimumWidth: CGFloat {
+        planWidth + CGFloat(columns.count) * (columnWidth + columnSpacing) + 2 * horizontalPadding
+    }
 
     private var years: [Int] { rows.first?.years.map(\.year) ?? [] }
 
@@ -222,12 +235,12 @@ struct SummaryTable: View {
                 .padding(.horizontal, 8).padding(.vertical, 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(theme.sectionHeaderTint)
-            Grid(alignment: .trailing, horizontalSpacing: 12, verticalSpacing: 0) {
+            Grid(alignment: .trailing, horizontalSpacing: Self.columnSpacing, verticalSpacing: 0) {
                 GridRow {
-                    Text("Plan").font(.caption.bold()).frame(width: Self.planWidth, alignment: .leading).gridColumnAlignment(.leading)
+                    Text("Plan").font(.caption.bold()).frame(minWidth: Self.planWidth, maxWidth: .infinity, alignment: .leading).gridColumnAlignment(.leading)
                     ForEach(Self.columns, id: \.self) { column in
                         Text(column).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            .frame(width: Self.columnWidth, alignment: .trailing)
+                            .frame(minWidth: Self.columnWidth, maxWidth: .infinity, alignment: .trailing)
                     }
                 }
                 .padding(.vertical, 4)
@@ -236,7 +249,7 @@ struct SummaryTable: View {
                     GridRow {
                         Text(row.name).fontWeight(row.isBudget ? .semibold : .regular)
                             .lineLimit(1)
-                            .frame(width: Self.planWidth, alignment: .leading)
+                            .frame(minWidth: Self.planWidth, maxWidth: .infinity, alignment: .leading)
                         if let summary = row.years.first(where: { $0.year == year }) {
                             amount(summary.yearEndNetWorth)
                             if row.isBudget {
@@ -255,7 +268,7 @@ struct SummaryTable: View {
                     Divider().gridCellUnsizedAxes(.horizontal)
                 }
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, Self.horizontalPadding)
         }
     }
 
@@ -264,7 +277,7 @@ struct SummaryTable: View {
         Group {
             amountContent(minorUnits, signed: signed)
         }
-        .frame(width: Self.columnWidth, alignment: .trailing)
+        .frame(minWidth: Self.columnWidth, maxWidth: .infinity, alignment: .trailing)
     }
 
     @ViewBuilder

@@ -40,8 +40,15 @@ final class BudgetGridViewModel: ObservableObject {
         }
     }
     private static let showForecastKey = "budgetGrid.showForecast"
-    /// Whether the account panel is open beside the grid (kept for the session like the filter).
-    @Published var isAccountPanelOpen = true
+    /// Whether the account panel is open beside the grid: collapsed until the user opens it,
+    /// then remembered across launches (the same defaults store as `@AppStorage`).
+    @Published var isAccountPanelOpen: Bool = UserDefaults.standard.object(forKey: BudgetGridViewModel.accountPanelOpenKey) as? Bool ?? false {
+        didSet {
+            guard isAccountPanelOpen != oldValue else { return }
+            UserDefaults.standard.set(isAccountPanelOpen, forKey: Self.accountPanelOpenKey)
+        }
+    }
+    private static let accountPanelOpenKey = "budgetGrid.accountPanelOpen"
     /// Every transaction's count per account id, for the account panel; rebuilt with the pay calendar.
     @Published private(set) var transactionCountByAccount: [Int64: Int] = [:]
     /// Linked transfers' other legs by transaction id, for the side panel and Edit transaction.

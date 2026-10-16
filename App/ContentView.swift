@@ -158,8 +158,11 @@ struct ContentView: View {
             }
             // The sidebar's selection keeps the system accent whatever the theme.
             .tint(nil)
-            // The whole column, title bar included: without it the sidebar is the content area's
-            // colour in dark mode (see `SidebarMaterial`).
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                SidebarSettingsButton()
+            }
+            // The whole column, title bar and Settings button included: without it the sidebar is
+            // the content area's colour in dark mode (see `SidebarMaterial`).
             .background { SidebarMaterial().ignoresSafeArea() }
         } detail: {
             Group {
@@ -239,6 +242,7 @@ struct ContentView: View {
             categoriesViewModel.onTransactionEdited = { refreshUncategorizedCount() }
             accountsViewModel.onTransactionAdded = { refreshUncategorizedCount() }
             searchViewModel.onTransactionEdited = { refreshUncategorizedCount() }
+            rulesViewModel.onTransactionsCategorised = { refreshUncategorizedCount() }
             refreshSharedState()
         }
         .onChange(of: importViewModel.isStaging) { _, staging in
@@ -352,5 +356,26 @@ struct ContentView: View {
         if selectedImportAccount == nil {
             selectedImportAccountId = accounts.first { Int($0.id ?? -1) == lastImportAccountId }?.id ?? accounts.first?.id
         }
+    }
+}
+
+
+/// The sidebar's foot: opens the Settings window (also Budget ▸ Settings…, ⌘,).
+private struct SidebarSettingsButton: View {
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        Button {
+            openSettings()
+        } label: {
+            Label("Settings", systemImage: "gearshape")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("Open Settings (⌘,)")
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 }
