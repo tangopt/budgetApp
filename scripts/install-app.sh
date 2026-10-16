@@ -27,6 +27,15 @@ ditto "$APP" /Applications/Budget.app
 # Point macOS at the installed copy (icon, Spotlight, Open With), not a build folder.
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 "$LSREGISTER" -u "$APP" 2>/dev/null || true
+
+# Remove Xcode's own builds of the app so Spotlight and Launchpad only offer the installed one.
+# Xcode rebuilds them the next time you run from Xcode (only the .app is removed, not the cache).
+for old in ~/Library/Developer/Xcode/DerivedData/Budget-*/Build/Products/*/Budget.app(N); do
+    "$LSREGISTER" -u "$old" 2>/dev/null || true
+    rm -rf "$old"
+    echo "Removed Xcode build: $old"
+done
+
 "$LSREGISTER" -f /Applications/Budget.app
 
 echo "Installed /Applications/Budget.app"
