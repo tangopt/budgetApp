@@ -18,7 +18,7 @@ final class NetWorthForecastFixTests: XCTestCase {
         [Category(id: pay, name: "Pay", type: .income),
          Category(id: rent, name: "Rent", type: .expense),
          Category(id: groceries, name: "Groceries", type: .expense),
-         Category(id: santander, name: "Transfer: Santander Patricia", type: .transfer, isExternalTransfer: true),
+         Category(id: santander, name: "Transfer: Santander Person B", type: .transfer, isExternalTransfer: true),
          Category(id: savings, name: "Transfer: Savings", type: .transfer),
          Category(id: holiday, name: "Holiday", type: .expense, isReserved: true)]
     }

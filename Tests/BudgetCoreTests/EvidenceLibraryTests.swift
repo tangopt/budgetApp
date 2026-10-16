@@ -330,12 +330,14 @@ final class EvidenceLibraryTests: XCTestCase {
 
     func testRecordsWithoutTablesYetCanBeLinked() throws {
         let document = try library.add(try file("p60.pdf", "p60"), metadata: EvidenceMetadata(kind: .p60, persons: ["Person A"])).document
-        try library.link(document.id!, to: EvidenceEntity(type: .taxYear, id: 2025))
+        try library.link(document.id!, to: EvidenceEntity(type: .other, id: 2025))
+        // Tax years have a table since phase 3: the tax year must exist.
+        XCTAssertThrowsError(try library.link(document.id!, to: EvidenceEntity(type: .taxYear, id: 2025)))
         // People have a table since phase 2: the person must exist.
         XCTAssertThrowsError(try library.link(document.id!, to: EvidenceEntity(type: .person, id: 1)))
         try manager.dbQueue.write { db in var person = Person(id: 1, name: "Person A"); try People.save(db: db, &person) }
         try library.link(document.id!, to: EvidenceEntity(type: .person, id: 1))
-        XCTAssertEqual(try library.entities(for: document.id!).map(\.entity.type), [.taxYear, .person])
+        XCTAssertEqual(try library.entities(for: document.id!).map(\.entity.type), [.other, .person])
     }
 
     func testUnlink() throws {

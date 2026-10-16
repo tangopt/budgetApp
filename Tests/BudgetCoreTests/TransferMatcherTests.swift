@@ -31,7 +31,7 @@ struct TransferFixture {
                 try batch.insert(db)
                 ids.append(batch.id!)
             }
-            for (name, type, external) in [("Transfer: International", CategoryType.transfer, false), ("Transfer: Santander Patricia", .transfer, true), ("Groceries", .expense, false)] {
+            for (name, type, external) in [("Transfer: International", CategoryType.transfer, false), ("Transfer: Santander Person B", .transfer, true), ("Groceries", .expense, false)] {
                 var category = Category(name: name, type: type, isExternalTransfer: external)
                 try category.insert(db)
                 ids.append(category.id!)
@@ -49,7 +49,7 @@ struct TransferFixture {
 
     /// Inserts a transaction; `historical` files it under Classic's spreadsheet batch.
     @discardableResult
-    func add(_ account: Int64, _ date: Date, _ amount: Int, category: Int64? = nil, historical: Bool = false, description: String = "P DIMENZA") throws -> Int64 {
+    func add(_ account: Int64, _ date: Date, _ amount: Int, category: Int64? = nil, historical: Bool = false, description: String = "A PERSON") throws -> Int64 {
         try manager.dbQueue.write { db in
             var transaction = Transaction(importBatchId: historical ? historyBatch : batch(for: account), accountId: account, date: date,
                                           rawDescription: description, amountMinorUnits: amount, categoryId: category,
@@ -187,10 +187,10 @@ final class TransferMatcherTests: XCTestCase {
     func testExternalTransferCategoriesAreNeverMatchedOnEitherLeg() throws {
         let f = try TransferFixture()
         // Classic → Santander (external) and money back from Santander into International.
-        try f.add(f.classic, d(2026, 3, 9), -125_000, category: f.externalCategory, description: "PATRICIA DIMENZA")
+        try f.add(f.classic, d(2026, 3, 9), -125_000, category: f.externalCategory, description: "B PERSON")
         try f.add(f.international, d(2026, 3, 9), 125_000)
         try f.add(f.classic, d(2026, 4, 9), -100_000)
-        try f.add(f.international, d(2026, 4, 9), 100_000, category: f.externalCategory, description: "PATRICIA DIMENZA")
+        try f.add(f.international, d(2026, 4, 9), 100_000, category: f.externalCategory, description: "B PERSON")
         XCTAssertEqual(try f.match(), 0)
     }
 
@@ -326,7 +326,7 @@ final class TransferMatcherTests: XCTestCase {
         let fake = FakeCategorizer()
         fake.stubbedSuggestion = nil
         let coordinator = ImportCoordinator(dbQueue: f.manager.dbQueue, categorizationService: CategorizationService(categorizer: fake))
-        let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n09/03/2026,P DIMENZA,360.00\n10/03/2026,SHOP,-5.00",
+        let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n09/03/2026,A PERSON,360.00\n10/03/2026,SHOP,-5.00",
                                                           profile: profile, accountId: f.international)
         let row = staged.staged[0]
         XCTAssertEqual(row.source, .transfer)
@@ -344,7 +344,7 @@ final class TransferMatcherTests: XCTestCase {
         XCTAssertEqual(saved.categorizedBy, .transfer)
         // A transfer's category comes from its other leg: no rule learned.
         let rules = try await f.manager.dbQueue.read { db in try Rule.fetchAll(db) }
-        XCTAssertFalse(rules.contains { $0.matchPattern.contains("P DIMENZA") })
+        XCTAssertFalse(rules.contains { $0.matchPattern.contains("A PERSON") })
     }
 
     /// Stages Classic rows against a saved International receipt filed under `receivedCategory`.
@@ -354,7 +354,7 @@ final class TransferMatcherTests: XCTestCase {
         let fake = FakeCategorizer()
         fake.stubbedSuggestion = nil
         let coordinator = ImportCoordinator(dbQueue: f.manager.dbQueue, categorizationService: CategorizationService(categorizer: fake))
-        let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n09/03/2026,P DIMENZA,-360.00", profile: profile, accountId: f.classic)
+        let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n09/03/2026,A PERSON,-360.00", profile: profile, accountId: f.classic)
         try coordinator.commit(accountId: f.classic, sourceFileName: "classic.csv", staged: staged.staged,
                                decisions: staged.staged.map { ImportDecision(stagedId: $0.id, finalCategoryId: $0.suggestedCategoryId) })
         return (staged.staged[0], inLeg)
@@ -388,7 +388,7 @@ final class TransferMatcherTests: XCTestCase {
         let fake = FakeCategorizer()
         fake.stubbedSuggestion = nil
         let coordinator = ImportCoordinator(dbQueue: f.manager.dbQueue, categorizationService: CategorizationService(categorizer: fake))
-        let parsed = ParsedTransaction(date: d(2026, 3, 9), rawDescription: "P DIMENZA", amountMinorUnits: 36_000)
+        let parsed = ParsedTransaction(date: d(2026, 3, 9), rawDescription: "A PERSON", amountMinorUnits: 36_000)
         let forced = try await coordinator.stageForcedDuplicates([parsed], accountId: f.international, alreadyStaged: [])
         XCTAssertEqual(forced.first?.transfer?.otherTransactionId, out)
         XCTAssertEqual(forced.first?.suggestedCategoryId, f.transferCategory)

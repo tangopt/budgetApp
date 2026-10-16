@@ -137,7 +137,7 @@ extension PropertyEvidence {
             case .account: return accountIds.contains(entity.id)
             case .category: return categoryIds.contains(entity.id)
             case .person: return ownerIds.contains(entity.id)
-            case .transaction, .taxYear, .other: return false
+            case .transaction, .taxYear, .taxManualItem, .other: return false
             }
         }
         var ids: Set<Int64> = []
@@ -172,6 +172,7 @@ extension EvidenceEntityType {
         case .other: return "Other"
         case .tenancy: return "Tenancy"
         case .rentReceipt: return "Rent receipt"
+        case .taxManualItem: return "Tax item"
         }
     }
 }

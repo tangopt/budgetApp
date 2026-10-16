@@ -221,7 +221,11 @@ final class DocumentsViewModel: ObservableObject {
             let kind = link.entityType.displayName
             let title = try PropertyEvidence.title(db: db, entity: link.entity) ?? "\(kind) no longer exists"
             return LinkRow(link: link, title: title, subtitle: kind, transaction: nil)
-        case .taxYear, .other:
+        case .taxYear, .taxManualItem:
+            let kind = link.entityType.displayName
+            let title = try TaxEvidence.title(db: db, entity: link.entity) ?? "\(kind) no longer exists"
+            return LinkRow(link: link, title: title, subtitle: kind, transaction: nil)
+        case .other:
             return LinkRow(link: link, title: "\(link.entityType.displayName) #\(link.entityId)", subtitle: nil, transaction: nil)
         }
     }

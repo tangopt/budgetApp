@@ -30,7 +30,7 @@ final class TransferCategoriesTests: XCTestCase {
         func add(_ account: Int64, _ date: Date, _ amount: Int, category: Int64? = nil, historical: Bool = false) throws -> Int64 {
             try manager.dbQueue.write { db in
                 var t = Transaction(importBatchId: historical ? historyBatch : bankBatch[account]!, accountId: account, date: date,
-                                    rawDescription: "P DIMENZA", amountMinorUnits: amount, categoryId: category,
+                                    rawDescription: "A PERSON", amountMinorUnits: amount, categoryId: category,
                                     status: category == nil ? .pendingReview : .confirmed, categorizedBy: category == nil ? .none : .manual,
                                     fingerprint: UUID().uuidString)
                 try t.insert(db)
@@ -73,7 +73,7 @@ final class TransferCategoriesTests: XCTestCase {
             }
             var history = ImportBatch(accountId: ids[0], sourceFileName: "Budget.numbers", importedAt: Date())
             try history.insert(db)
-            var external = Category(name: "Transfer: Santander Patricia", type: .transfer, isExternalTransfer: true)
+            var external = Category(name: "Transfer: Santander Person B", type: .transfer, isExternalTransfer: true)
             var groceries = Category(name: "Groceries", type: .expense)
             var investments = Category(name: "Investments (Stocks + Crypto)", type: .transfer)
             try external.insert(db); try groceries.insert(db); try investments.insert(db)
@@ -445,7 +445,7 @@ final class TransferCategoriesTests: XCTestCase {
         let fake = FakeCategorizer()
         fake.stubbedSuggestion = nil
         let coordinator = ImportCoordinator(dbQueue: f.manager.dbQueue, categorizationService: CategorizationService(categorizer: fake))
-        let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n09/03/2026,P DIMENZA,360.00", profile: profile, accountId: f.joint)
+        let staged = try await coordinator.stageCSVImport(csvText: "Date,Description,Amount\n09/03/2026,A PERSON,360.00", profile: profile, accountId: f.joint)
         let row = staged.staged[0]
         XCTAssertEqual(row.transfer?.otherTransactionId, out)
         XCTAssertEqual(row.source, .transfer)

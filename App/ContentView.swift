@@ -14,6 +14,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
     case accounts = "Accounts"
     /// One sidebar row per property (`ContentView.sidebarRows`); "Property" while there is none.
     case property = "Property"
+    case taxYears = "Tax years"
     case documents = "Documents"
     case missingEvidence = "Missing evidence"
     case rules = "Rules"
@@ -33,6 +34,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
         case .categories: return "tag"
         case .accounts: return "building.columns"
         case .property: return "house"
+        case .taxYears: return "doc.text"
         case .documents: return "doc.on.doc"
         case .missingEvidence: return "checklist"
         }
@@ -50,7 +52,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
         switch self {
         case .importReview, .uncategorized: return "Workflow"
         case .dashboard, .search, .budgetGrid, .forecast, .accounts, .property: return "Overview"
-        case .documents, .missingEvidence: return "Tax"
+        case .taxYears, .documents, .missingEvidence: return "Tax"
         case .rules, .categories: return "Settings"
         }
     }
@@ -111,6 +113,8 @@ struct ContentView: View {
     @StateObject private var missingEvidenceViewModel: MissingEvidenceViewModel
     /// The property page on show (`propertyId`), kept for the session like the others.
     @StateObject private var propertyViewModel: PropertyViewModel
+    /// Kept for the app session: the year on show and its tab survive navigation.
+    @StateObject private var taxYearsViewModel: TaxYearsViewModel
 
     private let profileStore: ImportProfileStore
 
@@ -132,6 +136,7 @@ struct ContentView: View {
         _documentsViewModel = StateObject(wrappedValue: DocumentsViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
         _missingEvidenceViewModel = StateObject(wrappedValue: MissingEvidenceViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
         _propertyViewModel = StateObject(wrappedValue: PropertyViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
+        _taxYearsViewModel = StateObject(wrappedValue: TaxYearsViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
     }
 
     /// How far ahead to project forecasted pay periods in the Budget grid (the Forecast
@@ -239,6 +244,8 @@ struct ContentView: View {
                                  importViewModel: importViewModel, profileStore: profileStore,
                                  navigate: { selection = $0 })
                         .onAppear { accountsViewModel.load() }
+                case .taxYears:
+                    TaxYearsView(viewModel: taxYearsViewModel, missingEvidenceViewModel: missingEvidenceViewModel, openTransaction: openTransaction)
                 case .documents:
                     DocumentsView(viewModel: documentsViewModel, openTransaction: openTransaction)
                 case .missingEvidence:

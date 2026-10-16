@@ -26,6 +26,7 @@ let package = Package(
         .executableTarget(name: "ImportBBVAHistory", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
         .executableTarget(name: "ImportBBVAFundAndMortgage", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
         .executableTarget(name: "ImportExistingEvidence", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "SetUpLisbonProperty", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")])
+        .executableTarget(name: "SetUpLisbonProperty", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
+        .executableTarget(name: "TaxRegression", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")])
     ]
 )

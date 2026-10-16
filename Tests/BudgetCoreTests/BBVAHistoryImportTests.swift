@@ -16,7 +16,7 @@ final class BBVAHistoryImportTests: XCTestCase {
     10/01/2023,10/01/2023,SEPADD/BBVASEG ADC/111,-20.00,1480.00,life_insurance,SEPADD/BBVASEG,,a.pdf
     11/01/2023,11/01/2023,SEPADD/BBVASEG ADC/222,-30.00,1450.00,building_insurance_mr,SEPADD/BBVASEG,,a.pdf
     12/01/2023,12/01/2023,Conta Revolut 230112EVN1,-100.00,1350.00,transfer_own_accounts,Conta Revolut,,a.pdf
-    13/01/2023,13/01/2023,PABLO X 230113SCR1,5.00,1355.00,transfer_own_accounts,PABLO X,,a.pdf
+    13/01/2023,13/01/2023,PERSON X 230113SCR1,5.00,1355.00,transfer_own_accounts,PERSON X,,a.pdf
     15/01/2023,15/01/2023,"SUBSCRIÇÃO PERI 5,0000",-50.00,1305.00,investment_subscription,SUBSCRI,,a.pdf
     20/01/2023,20/01/2023,PAGAMENTO - CLASSIC- EXT :0152,-40.00,1265.00,card_payment,PAGAMENTO - CLASSIC,,a.pdf
     02/02/2023,02/02/2023,COBR. REC. TOT 076 00-000000-0,-500.00,765.00,mortgage_instalment,COBR. REC. TOT,,b.pdf
@@ -182,10 +182,10 @@ final class BBVAHistoryImportTests: XCTestCase {
         let m = try makeDB()
         let report = try m.dbQueue.write { db in try BBVAHistoryImport.apply(db: db, input: try input()) }
         XCTAssertEqual(report.uncategorisedPending, 3)
-        XCTAssertEqual(report.unresolvedTransfers, ["PABLO X 230113SCR1"])
+        XCTAssertEqual(report.unresolvedTransfers, ["PERSON X 230113SCR1"])
         try m.dbQueue.read { db in
             let pending = try bbvaTransactions(db).filter { $0.categoryId == nil }
-            XCTAssertEqual(pending.map(\.rawDescription), ["PABLO X 230113SCR1", "SUBSCRIÇÃO PERI 5,0000", "PG PAGOPT 936"])
+            XCTAssertEqual(pending.map(\.rawDescription), ["PERSON X 230113SCR1", "SUBSCRIÇÃO PERI 5,0000", "PG PAGOPT 936"])
             XCTAssertTrue(pending.allSatisfy { $0.status == .pendingReview })
             let screen = Set(try UncategorizedTransactions.fetch(db: db).map(\.rawDescription))
             XCTAssertTrue(screen.isSuperset(of: pending.map(\.rawDescription)))
