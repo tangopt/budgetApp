@@ -15,16 +15,30 @@ public enum ForecastCalculator {
     }
 
     /// Whether a category's amounts change the net worth of `accountIds` (nil = every account):
-    /// income, expenses and external transfers always; a transfer category tied to an account
-    /// only under a filter that leaves that account out (money crossing the selection's
+    /// income, expenses, external transfers and transfers tied to an account left out of net
+    /// worth (`Category.movesMoneyOutsideNetWorth`) always; another transfer category tied to an
+    /// account only under a filter that leaves that account out (money crossing the selection's
     /// boundary — a planned incoming leg is filed under the paying account's transfer
     /// category, tied to an unselected account); other transfers and adjustments never.
     public static func countsInNetWorth(_ category: Category, accountIds: Set<Int64>?) -> Bool {
         if category.type.isFlow { return true }
         guard category.type == .transfer else { return false }
-        if category.isExternalTransfer { return true }
+        if category.movesMoneyOutsideNetWorth { return true }
         guard let accountIds, let tied = category.transferAccountId else { return false }
         return !accountIds.contains(tied)
+    }
+
+    /// The plan entries the net-worth forecast counts: every one but an income or expense item
+    /// whose effective account (`PlannedItemAccounts.effectiveAccount`) is left out of net worth
+    /// (`excludedAccountIds`) — its money never reaches a counted account. `entries` unchanged
+    /// when nothing is excluded.
+    public static func netWorthEntries(_ entries: [ForecastEntry], categories: [Category], excludedAccountIds: Set<Int64>, itemAccounts: PlannedItemAccounts) -> [ForecastEntry] {
+        guard !excludedAccountIds.isEmpty else { return entries }
+        let flows = Set(categories.filter(\.type.isFlow).compactMap(\.id))
+        return entries.filter { entry in
+            guard flows.contains(entry.categoryId), let account = itemAccounts.effectiveAccount(of: entry) else { return true }
+            return !excludedAccountIds.contains(account)
+        }
     }
 
     /// The sum of `totals` (per category id) over the categories that count in net worth.
@@ -116,18 +130,25 @@ public enum ForecastCalculator {
     /// `confirmedNetWorthImpact` (All accounts) split by account (account-forecast spec §2): each
     /// occurrence on its effective (paying) account — income, expenses and external transfers
     /// as they are; a transfer tied to another account out of the payer and into the tied
-    /// account (net worth unchanged); other transfers and adjustments nowhere. The nil key holds
-    /// the items with no effective account. The values sum to `confirmedNetWorthImpact`.
+    /// account (net worth unchanged — or, the tied account left out of net worth, out of it);
+    /// other transfers and adjustments nowhere. The nil key holds the items with no effective
+    /// account. The values of the nil key and the accounts that count toward net worth sum to
+    /// `confirmedNetWorthImpact`.
     public static func netWorthImpactByAccount(period: PayPeriod, categories: [Category], entries: [ForecastEntry], groups: [ForecastGroup], exceptions: [PlannedOccurrenceException], itemAccounts: PlannedItemAccounts) -> [Int64?: Int] {
         let plan = confirmedEntries(entries: entries, groups: groups)
         let byId = Dictionary(plan.compactMap { e in e.id.map { ($0, e) } }, uniquingKeysWith: { a, _ in a })
         let counting = Set(categories.filter { countsInNetWorth($0, accountIds: nil) }.compactMap(\.id))
+        let outsideNetWorth = Set(categories.filter(\.isTiedToAccountOutsideNetWorth).compactMap(\.id))
         var result: [Int64?: Int] = [:]
         for occurrence in PlannedOccurrences.occurrences(entries: plan, exceptions: exceptions, in: period) {
             let payer = byId[occurrence.entryId].flatMap(itemAccounts.effectiveAccount(of:))
             let amount = occurrence.amountMinorUnits
             if counting.contains(occurrence.categoryId) {
                 result[payer, default: 0] += amount
+                // Into an account left out of net worth: its own balance still moves.
+                if outsideNetWorth.contains(occurrence.categoryId), let tied = itemAccounts.tiedAccountByCategory[occurrence.categoryId], tied != payer {
+                    result[tied, default: 0] -= amount
+                }
             } else if let tied = itemAccounts.tiedAccountByCategory[occurrence.categoryId], tied != payer {
                 result[payer, default: 0] += amount
                 result[tied, default: 0] -= amount

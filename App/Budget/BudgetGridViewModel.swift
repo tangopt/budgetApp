@@ -373,7 +373,7 @@ final class BudgetGridViewModel: ObservableObject {
         if let cached = netWorthInputCache { return cached }
         var input = DashboardInput(today: Date(), accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, categories: categories, categoryGroups: categoryGroups,
                                    forecastEntries: forecastEntries, forecastGroups: forecastGroups, exceptions: exceptions, importBatches: [], rate: exchangeRate, payCalendar: payCalendar,
-                                   transferLinks: transferLinks)
+                                   transferLinks: transferLinks, itemAccounts: itemAccounts)
         input.accountFilter = planFilter
         netWorthInputCache = input
         return input

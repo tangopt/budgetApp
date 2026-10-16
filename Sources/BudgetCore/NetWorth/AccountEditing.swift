@@ -25,13 +25,15 @@ public enum BalanceUpdateError: Error, Equatable, LocalizedError {
 public enum AccountEditing {
     /// The opening balance (entered as the amount owed for credit) is stored as the account's
     /// first snapshot dated `asOf`; without one the account starts from zero.
-    /// `trackingMode` is legacy (stored, ignored by every calculation).
+    /// `trackingMode` is legacy (stored, ignored by every calculation). `includeInNetWorth`:
+    /// Count toward net worth (`Account.includeInNetWorth`).
     @discardableResult
-    public static func add(db: Database, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode = .imported, openingBalanceEntered: Int?, asOf: Date, details: AccountDetails = AccountDetails()) throws -> Account {
+    public static func add(db: Database, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode = .imported, openingBalanceEntered: Int?, asOf: Date,
+                           details: AccountDetails = AccountDetails(), includeInNetWorth: Bool = true) throws -> Account {
         let trimmed = try validatedName(db: db, name: name, excluding: nil)
         let details = try details.normalized()
         var account = Account(name: trimmed, currency: currency, kind: kind, trackingMode: trackingMode,
-                              sortOrder: try AccountOrdering.orderForNewAccount(db: db))
+                              sortOrder: try AccountOrdering.orderForNewAccount(db: db), includeInNetWorth: includeInNetWorth)
         account.apply(details)
         try account.insert(db)
         if let openingBalanceEntered {
@@ -47,8 +49,9 @@ public enum AccountEditing {
     /// `details` nil leaves the alias and bank details as they are; otherwise they are
     /// normalised and replace them (blank fields clear) — with a region, only that region's
     /// fields plus bank name and BIC; stored values that predate a rule pass unchanged. `trackingMode` nil keeps the stored
-    /// (legacy, ignored) value.
-    public static func update(db: Database, accountId: Int64, name: String, kind: AccountKind, trackingMode: AccountTrackingMode? = nil, details: AccountDetails? = nil) throws {
+    /// (legacy, ignored) value. `includeInNetWorth` nil keeps Count toward net worth as it is.
+    public static func update(db: Database, accountId: Int64, name: String, kind: AccountKind, trackingMode: AccountTrackingMode? = nil, details: AccountDetails? = nil,
+                              includeInNetWorth: Bool? = nil) throws {
         guard var account = try Account.fetchOne(db, key: accountId) else { throw AccountEditError.accountNotFound }
         let trimmed = try validatedName(db: db, name: name, excluding: accountId)
         if (account.kind == .credit) != (kind == .credit), try hasHistory(db: db, accountId: accountId) {
@@ -57,6 +60,7 @@ public enum AccountEditing {
         account.name = trimmed
         account.kind = kind
         if let trackingMode { account.trackingMode = trackingMode }
+        if let includeInNetWorth { account.includeInNetWorth = includeInNetWorth }
         if let details = try details?.normalized(existing: account) {
             account.apply(details)
         }
@@ -73,6 +77,12 @@ public enum AccountEditing {
         if let accountId {
             try db.execute(sql: "UPDATE account SET isMain = 1 WHERE id = ?", arguments: [accountId])
         }
+    }
+
+    /// Count toward net worth on or off (`Account.includeInNetWorth`), e.g. from the row menu.
+    public static func setIncludeInNetWorth(db: Database, accountId: Int64, _ include: Bool) throws {
+        guard try Account.fetchOne(db, key: accountId) != nil else { throw AccountEditError.accountNotFound }
+        try db.execute(sql: "UPDATE account SET includeInNetWorth = ? WHERE id = ?", arguments: [include, accountId])
     }
 
     public static func hasHistory(db: Database, accountId: Int64) throws -> Bool {

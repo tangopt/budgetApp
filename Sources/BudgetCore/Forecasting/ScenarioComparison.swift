@@ -29,6 +29,9 @@ public struct ComparisonData: Sendable {
     public let payCalendar: PayCalendar
     public let horizonYear: Int
     public let horizonMonth: Int
+    /// The planned items' accounts, built only when an account is left out of net worth (its
+    /// income and expense items leave the net-worth forecast: `ForecastCalculator.netWorthEntries`).
+    let itemAccounts: PlannedItemAccounts?
 
     public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], transferLinks: [TransferLink] = [], categories: [Category], rate: ExchangeRateSetting, payCalendar: PayCalendar, horizonYear: Int, horizonMonth: Int) {
         self.today = today
@@ -36,11 +39,20 @@ public struct ComparisonData: Sendable {
         self.snapshots = snapshots
         self.transactions = transactions
         self.transferLinks = transferLinks
-        self.categories = categories
+        self.categories = categories.markingNetWorthExclusions(accounts: accounts)
         self.rate = rate
         self.payCalendar = payCalendar
         self.horizonYear = horizonYear
         self.horizonMonth = horizonMonth
+        self.itemAccounts = accounts.excludedFromNetWorthIds.isEmpty ? nil
+            : PlannedItemAccounts(categories: self.categories, budgetTransactions: TransferLinks.budgetFacing(transactions, links: transferLinks), calendar: payCalendar,
+                                  mainAccountId: accounts.mainAccountId)
+    }
+
+    /// A plan's entries as its net-worth forecast counts them.
+    func netWorthEntries(_ entries: [ForecastEntry]) -> [ForecastEntry] {
+        guard let itemAccounts else { return entries }
+        return ForecastCalculator.netWorthEntries(entries, categories: categories, excludedAccountIds: accounts.excludedFromNetWorthIds, itemAccounts: itemAccounts)
     }
 
     var horizonIndex: Int { MonthRange.index(year: horizonYear, month: horizonMonth) }
@@ -130,7 +142,7 @@ public enum ScenarioComparison {
     public static func netWorthSeries(_ data: ComparisonData, plan: PlanInput, actuals: NetWorthActuals?) -> PlanNetWorthSeries {
         guard let actuals else { return PlanNetWorthSeries(actual: [], forecast: []) }
         let plan = normalized(plan)
-        let forecast = DashboardCalculator.netWorthForecast(actuals, throughYear: data.horizonYear, categories: data.categories, entries: plan.entries,
+        let forecast = DashboardCalculator.netWorthForecast(actuals, throughYear: data.horizonYear, categories: data.categories, entries: data.netWorthEntries(plan.entries),
                                                             groups: plan.groups, exceptions: plan.exceptions)
         return PlanNetWorthSeries(actual: actuals.actual, forecast: forecast.filter { $0.id <= data.horizonIndex })
     }
@@ -242,7 +254,7 @@ public enum ScenarioComparison {
         return DashboardInput(today: data.today, accounts: data.accounts, snapshots: data.snapshots, transactions: data.transactions,
                               categories: data.categories, categoryGroups: [], forecastEntries: plan.entries, forecastGroups: plan.groups,
                               exceptions: plan.exceptions, importBatches: [], rate: data.rate, payCalendar: data.payCalendar,
-                              transferLinks: data.transferLinks)
+                              transferLinks: data.transferLinks, itemAccounts: data.itemAccounts)
     }
 
     /// Month index → value, actual months winning where the two lines meet.

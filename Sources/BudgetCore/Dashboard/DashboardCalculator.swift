@@ -31,7 +31,8 @@ public enum DashboardCalculator {
 
         var staleCount = 0
         var oldest: Date?
-        for account in input.accounts {
+        // Accounts left out of net worth (a mortgage the app doesn't track) never need updating.
+        for account in input.accounts where account.includeInNetWorth {
             guard BalanceStaleness.isStale(account: account, snapshots: input.snapshots, transactions: input.transactions, today: input.today) else { continue }
             let latest = BalanceStaleness.lastActivity(account: account, snapshots: input.snapshots, transactions: input.transactions, today: input.today)
             staleCount += 1

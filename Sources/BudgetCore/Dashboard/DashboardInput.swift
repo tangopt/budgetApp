@@ -16,6 +16,9 @@ public struct DashboardInput {
     public let categories: [Category]
     public let categoryGroups: [CategoryGroup]
     public let forecastEntries: [ForecastEntry]
+    /// `forecastEntries` as the net-worth forecast counts them (`ForecastCalculator.netWorthEntries`):
+    /// without income and expense items on accounts left out of net worth.
+    public let netWorthEntries: [ForecastEntry]
     public let forecastGroups: [ForecastGroup]
     public let exceptions: [PlannedOccurrenceException]
     public let importBatches: [ImportBatch]
@@ -34,10 +37,20 @@ public struct DashboardInput {
     /// only its accounts, projected with only their planned items. Flows are unaffected.
     public var accountFilter: PlanAccountFilter?
 
-    /// The accounts the net-worth figures cover: `accountFilter`'s, else every account.
+    /// The accounts the net-worth figures cover: `accountFilter`'s, else every account — only
+    /// those that count toward net worth (`Account.includeInNetWorth`).
     var netWorthAccounts: [Account] {
-        guard let filter = accountFilter else { return accounts }
-        return accounts.filter { $0.id.map(filter.accountIds.contains) ?? false }
+        guard let filter = accountFilter else { return accounts.countedInNetWorth }
+        return accounts.filter { $0.includeInNetWorth && ($0.id.map(filter.accountIds.contains) ?? false) }
+    }
+
+    /// `accountFilter` for the net-worth figures: its accounts that count toward net worth (an
+    /// excluded account's planned legs then cross the selection's boundary). Nil = All accounts.
+    var netWorthFilter: PlanAccountFilter? {
+        guard let filter = accountFilter else { return nil }
+        let excluded = accounts.excludedFromNetWorthIds
+        guard !excluded.isDisjoint(with: filter.accountIds) else { return filter }
+        return PlanAccountFilter(accountIds: filter.accountIds.subtracting(excluded), itemAccounts: filter.itemAccounts)
     }
 
     public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, manualCloses: [PayMonthClose] = [], transferLinks: [TransferLink] = []) {
@@ -47,18 +60,28 @@ public struct DashboardInput {
 
     /// With a pay calendar the caller already built (the scenario comparison reuses the
     /// dashboard's calculators with each plan's entries over one shared calendar).
-    public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, payCalendar: PayCalendar, transferLinks: [TransferLink] = []) {
+    /// `itemAccounts`: the planned items' accounts when the caller already has them (built here
+    /// otherwise, only when an account is left out of net worth: `netWorthEntries`).
+    public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, payCalendar: PayCalendar, transferLinks: [TransferLink] = [], itemAccounts: PlannedItemAccounts? = nil) {
         self.today = today
         self.accounts = accounts
         self.snapshots = snapshots
         self.transactions = transactions
         let conversion = CurrencyConversion(accounts: accounts, rate: rate)
         self.conversion = conversion
-        let budgetTransactions = conversion.toGBP(TransferLinks.budgetFacing(transactions, links: transferLinks))
+        let nativeBudgetTransactions = TransferLinks.budgetFacing(transactions, links: transferLinks)
+        let budgetTransactions = conversion.toGBP(nativeBudgetTransactions)
         self.budgetTransactions = budgetTransactions
-        self.categories = categories
+        self.categories = categories.markingNetWorthExclusions(accounts: accounts)
         self.categoryGroups = categoryGroups
         self.forecastEntries = forecastEntries
+        let excluded = accounts.excludedFromNetWorthIds
+        if excluded.isEmpty {
+            self.netWorthEntries = forecastEntries
+        } else {
+            let items = itemAccounts ?? PlannedItemAccounts(categories: categories, budgetTransactions: nativeBudgetTransactions, calendar: payCalendar, mainAccountId: accounts.mainAccountId)
+            self.netWorthEntries = ForecastCalculator.netWorthEntries(forecastEntries, categories: categories, excludedAccountIds: excluded, itemAccounts: items)
+        }
         self.forecastGroups = forecastGroups
         self.exceptions = exceptions
         self.importBatches = importBatches
