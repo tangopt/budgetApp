@@ -24,4 +24,17 @@ public enum TransactionFingerprint {
         let digest = SHA256.hash(data: Data(raw.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
     }
+
+    /// Every row's fingerprint as staging assigns it: the nth identical-looking row of the
+    /// file (same day, amount and description) gets occurrence n-1.
+    public static func computeAll(accountId: Int64, transactions: [ParsedTransaction]) -> [String] {
+        var occurrencesSeen: [String: Int] = [:]
+        return transactions.map { parsed in
+            let base = compute(accountId: accountId, date: parsed.date, amountMinorUnits: parsed.amountMinorUnits, description: parsed.rawDescription)
+            let occurrence = occurrencesSeen[base, default: 0]
+            occurrencesSeen[base] = occurrence + 1
+            return compute(accountId: accountId, date: parsed.date, amountMinorUnits: parsed.amountMinorUnits, description: parsed.rawDescription,
+                           occurrence: occurrence)
+        }
+    }
 }
