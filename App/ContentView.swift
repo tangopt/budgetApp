@@ -55,6 +55,9 @@ struct ContentView: View {
     /// accepted into `selection` or reverted (see `sidebarSelectionChanged`), so the
     /// sidebar highlight always matches the screen on show.
     @State private var sidebarSelection: AppScreen? = .dashboard
+    /// The split view's columns, toggled by the toolbar's own sidebar button (the system one
+    /// can't drop its glass capsule).
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     /// Where the sidebar was asked to go while confirmed import rows were still unsaved;
     /// set while the "Save the N confirmed transactions?" alert is up.
     @State private var pendingSelection: AppScreen?
@@ -146,7 +149,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             List(selection: $sidebarSelection) {
                 ForEach(sidebarSections, id: \.name) { section in
                     Section(section.name) {
@@ -164,6 +167,8 @@ struct ContentView: View {
             // The whole column, title bar and Settings button included: without it the sidebar is
             // the content area's colour in dark mode (see `SidebarMaterial`).
             .background { SidebarMaterial().ignoresSafeArea() }
+            // Replaced by the borderless toggle below.
+            .toolbar(removing: .sidebarToggle)
         } detail: {
             Group {
                 switch selection {
@@ -207,6 +212,12 @@ struct ContentView: View {
             .navigationTitle(selection?.rawValue ?? "Budget")
             // The theme's window colour behind every screen (clear for Classic).
             .background(theme.windowBackground.ignoresSafeArea())
+            .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    SidebarToggleButton(columnVisibility: $columnVisibility)
+                }
+                .sharedBackgroundVisibility(.hidden)
+            }
         }
         .alert(
             "Save the \(importViewModel.confirmedCount) confirmed transaction\(importViewModel.confirmedCount == 1 ? "" : "s")?",
@@ -368,14 +379,37 @@ private struct SidebarSettingsButton: View {
         Button {
             openSettings()
         } label: {
-            Label("Settings", systemImage: "gearshape")
+            Image(systemName: "gearshape")
+                .imageScale(.large)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
-        .help("Open Settings (⌘,)")
+        .help("Settings")
+        .accessibilityLabel("Settings")
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.top, 8)
+        .padding(.bottom, 14)
+    }
+}
+
+/// The window's Hide/Show sidebar button: the system toggle's job (⌃⌘S included) without
+/// its glass capsule.
+private struct SidebarToggleButton: View {
+    @Binding var columnVisibility: NavigationSplitViewVisibility
+
+    private var sidebarShown: Bool { columnVisibility != .detailOnly }
+
+    var body: some View {
+        Button {
+            withAnimation { columnVisibility = sidebarShown ? .detailOnly : .all }
+        } label: {
+            Image(systemName: "sidebar.left")
+        }
+        .buttonStyle(.borderless)
+        .keyboardShortcut("s", modifiers: [.control, .command])
+        .help(sidebarShown ? "Hide sidebar" : "Show sidebar")
+        .accessibilityLabel(sidebarShown ? "Hide sidebar" : "Show sidebar")
     }
 }

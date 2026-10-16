@@ -49,8 +49,10 @@ struct RulesView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { sheetDraft = RuleDraft() } label: { Label("Rule", systemImage: "plus") }
+                    .buttonStyle(.borderless)
                     .help("New rule")
             }
+            .sharedBackgroundVisibility(.hidden)
         }
         .sheet(item: $sheetDraft) { draft in
             RuleSheet(draft: draft, viewModel: viewModel) { sheetDraft = nil }
