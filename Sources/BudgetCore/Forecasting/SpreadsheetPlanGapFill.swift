@@ -77,6 +77,9 @@ public enum SpreadsheetPlanGapFill {
     static func label(_ month: Int) -> String { String(format: "%d-%02d", year, month) }
 
     /// Pure computation: reads the database, writes nothing.
+    // Unoptimised on purpose: the Release optimiser (BoundsCheckOpts) crashes the Swift
+    // compiler on this function. It only runs once, from a one-off tool, so speed doesn't matter.
+    @_optimize(none)
     public static func plan(db: Database) throws -> GapFillPlan {
         var categories: [String: Category] = [:]
         for category in try Category.fetchAll(db) { categories[category.name] = category }
