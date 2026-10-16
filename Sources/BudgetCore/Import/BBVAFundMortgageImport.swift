@@ -16,8 +16,9 @@ import GRDB
 ///   +total leg on the loan, plus one manual "Mortgage interest" expense on the loan for the
 ///   instalment's interest, fees and taxes — so the loan's balance falls by the capital only. An
 ///   instalment with no breakdown has its interest derived from its amount: per rate period
-///   (consecutive instalments of the same total), the annual rate whose standard annuity payment
-///   for the outstanding balance and remaining payments equals that total (`resolve`); a
+///   (consecutive instalments of the same total), the TAN whose annuity payment with the loan's
+///   final balloon, for the outstanding balance and remaining payments, equals that total
+///   (`resolve`; BBVA's notices fit it to the cent: 30/360, interest = balance × TAN / 12); a
 ///   balance the bank confirmed afterwards absorbs any residual into the last derived
 ///   instalment's interest and is recorded on the loan (Update balance, nothing to adjust). The
 ///   learned rule for the instalments moves to the transfer category.
@@ -34,7 +35,7 @@ public enum BBVAFundMortgageImport {
     public static let oldInterestCategoryName = "Mortgage"
     public static let interestCategoryName = "Mortgage interest"
     public static let instalmentRulePattern = "COBR REC TOT"
-    public static let derivedNote = "interest derived from instalment amount"
+    public static let derivedNote = "interest derived"
 
     // MARK: Input
 
@@ -136,12 +137,15 @@ public enum BBVAFundMortgageImport {
         public let loanOpening: Value
         public let statements: [Statement]
         public let instalments: [Instalment]
-        /// Payments left after the last instalment with a notice; nil derives it from that notice.
+        /// Payments left after the last instalment with a notice (needed to derive the others).
         public let remainingPaymentsAfterLastNotice: Int?
+        /// The capital left to repay with the final instalment (the balloon), owed, positive.
+        public let balloonMinorUnits: Int
         public let confirmedOutstanding: ConfirmedOutstanding?
 
         public init(fundOpening: Value, fundSubscriptionCount: Int, fundValues: [Value], loanOpening: Value, statements: [Statement], instalments: [Instalment],
-                    remainingPaymentsAfterLastNotice: Int? = nil, confirmedOutstanding: ConfirmedOutstanding? = nil) {
+                    remainingPaymentsAfterLastNotice: Int? = nil, balloonMinorUnits: Int = 0, confirmedOutstanding: ConfirmedOutstanding? = nil) {
+            self.balloonMinorUnits = balloonMinorUnits
             self.remainingPaymentsAfterLastNotice = remainingPaymentsAfterLastNotice
             self.confirmedOutstanding = confirmedOutstanding
             self.fundOpening = fundOpening
@@ -175,8 +179,8 @@ public enum BBVAFundMortgageImport {
     /// subscriptionCount, values [{date, value, source}]} and `loan` {openingDate, opening,
     /// openingSource, statements [{month "yyyy-MM", outstanding, source}], instalments [{date,
     /// valueDate, total, capital?, interest?, fees?, taxes?, receipt?, tan?, source?}],
-    /// remainingPaymentsAfterLastNotice?, confirmed? {date, outstanding, source, nextTAN?,
-    /// nextPayment?}}. Dates "yyyy-MM-dd", amounts "1234.56".
+    /// remainingPaymentsAfterLastNotice?, balloon? (amount), confirmed? {date, outstanding,
+    /// source, nextTAN?, nextPayment?}}. Dates "yyyy-MM-dd", amounts "1234.56".
     public static func parseInput(json data: Data) throws -> Input {
         struct ValueJSON: Decodable { let date: String; let value: String; let source: String }
         struct FundJSON: Decodable { let openingDate: String; let opening: String; let openingSource: String; let subscriptionCount: Int; let values: [ValueJSON] }
@@ -188,7 +192,7 @@ public enum BBVAFundMortgageImport {
         struct ConfirmedJSON: Decodable { let date: String; let outstanding: String; let source: String; let nextTAN: String?; let nextPayment: String? }
         struct LoanJSON: Decodable {
             let openingDate: String; let opening: String; let openingSource: String; let statements: [StatementJSON]; let instalments: [InstalmentJSON]
-            let remainingPaymentsAfterLastNotice: Int?; let confirmed: ConfirmedJSON?
+            let remainingPaymentsAfterLastNotice: Int?; let balloon: String?; let confirmed: ConfirmedJSON?
         }
         struct File: Decodable { let fund: FundJSON; let loan: LoanJSON }
 
@@ -223,6 +227,7 @@ public enum BBVAFundMortgageImport {
                      fundValues: try file.fund.values.map { Value(date: try day($0.date), minorUnits: try amount($0.value), source: $0.source) },
                      loanOpening: Value(date: try day(file.loan.openingDate), minorUnits: try amount(file.loan.opening), source: file.loan.openingSource),
                      statements: statements, instalments: instalments, remainingPaymentsAfterLastNotice: file.loan.remainingPaymentsAfterLastNotice,
+                     balloonMinorUnits: try file.loan.balloon.map(amount) ?? 0,
                      confirmedOutstanding: try file.loan.confirmed.map { c in
                          ConfirmedOutstanding(date: try day(c.date), outstandingMinorUnits: try amount(c.outstanding), source: c.source,
                                               nextTAN: c.nextTAN.flatMap(Double.init), nextPaymentMinorUnits: try c.nextPayment.map(amount))
@@ -274,55 +279,54 @@ public enum BBVAFundMortgageImport {
         public let residualMinorUnits: Int
         /// Owed after the last instalment, positive.
         public let outstandingAfterMinorUnits: Int
-        /// Payments left after the last instalment (the next instalment counted).
+        /// Payments left after the last instalment.
         public let remainingAfterLast: Int?
+        /// The noticed instalments (with a receipt and TAN) checked against the balloon annuity
+        /// (payments left after each counted back from `remainingAfterLastNotice` by receipt) and
+        /// against balance × TAN / 12: how many, and the largest differences (minor units).
+        public let noticesChecked: Int
+        public let noticePaymentMaxError: Int
+        public let noticeInterestMaxError: Int
     }
 
-    /// The standard annuity payment (minor units, unrounded) for `balance` over `payments`
-    /// monthly payments at `annualRate` %.
-    public static func annuityPayment(balance: Int, annualRate: Double, payments: Int) -> Double {
+    /// The annuity payment (minor units, unrounded) for `balance` over `payments` monthly
+    /// payments at `annualRate` % (monthly rate TAN / 12) leaving `balloon` to repay with the
+    /// last: (B − R·v)·r / (1 − v), v = (1 + r)^−n.
+    public static func annuityPayment(balance: Int, annualRate: Double, payments: Int, balloon: Int = 0) -> Double {
         let r = annualRate / 1200
-        guard r > 0 else { return Double(balance) / Double(payments) }
-        return Double(balance) * r / (1 - pow(1 + r, -Double(payments)))
+        guard r > 0 else { return Double(balance - balloon) / Double(payments) }
+        let v = pow(1 + r, -Double(payments))
+        return (Double(balance) - Double(balloon) * v) * r / (1 - v)
     }
 
-    /// The annual rate (%) whose annuity payment for `balance` over `payments` equals `payment`.
-    public static func impliedRate(balance: Int, payment: Int, payments: Int) -> Double? {
-        guard payments > 0, Double(payment) * Double(payments) > Double(balance) else { return nil }
+    /// The TAN (%) whose `annuityPayment` for `balance` over `payments` with `balloon` equals `payment`.
+    public static func impliedRate(balance: Int, payment: Int, payments: Int, balloon: Int = 0) -> Double? {
+        guard payments > 0, annuityPayment(balance: balance, annualRate: 0, payments: payments, balloon: balloon) < Double(payment),
+              annuityPayment(balance: balance, annualRate: 50, payments: payments, balloon: balloon) > Double(payment) else { return nil }
         var low = 0.0, high = 50.0
         for _ in 0..<200 {
             let mid = (low + high) / 2
-            if annuityPayment(balance: balance, annualRate: mid, payments: payments) < Double(payment) { low = mid } else { high = mid }
+            if annuityPayment(balance: balance, annualRate: mid, payments: payments, balloon: balloon) < Double(payment) { low = mid } else { high = mid }
         }
         return (low + high) / 2
-    }
-
-    /// Payments left (counting it) that make a noticed instalment's total the annuity payment
-    /// at its TAN for the balance before it, rounded to whole payments.
-    public static func impliedPayments(balance: Int, annualRate: Double, payment: Int) -> Int? {
-        let r = annualRate / 1200
-        let ratio = 1 - Double(balance) * r / Double(payment)
-        guard r > 0, ratio > 0 else { return nil }
-        return Int((-log(ratio) / log(1 + r)).rounded())
     }
 
     /// Settles every instalment's split in date order from `openingOutstanding` (owed,
     /// positive). A breakdown is used as given (it must add up to the total). The instalments
     /// without one, after the last noticed instalment, have their interest derived: per rate
-    /// period (consecutive instalments of the same total) the annual rate r whose annuity payment
-    /// for the outstanding balance over the remaining payments equals the total — remaining =
-    /// `remainingAfterLastNotice` (else derived from the last notice with a TAN:
-    /// `impliedPayments` − 1) for the first, one fewer each month; interest = balance × r/12,
-    /// rounded half-even to the cent; capital the rest. With `confirmedOutstanding` (owed after
-    /// the last instalment), the difference from the derived balance moves into the last derived
-    /// instalment's interest. Throws when a breakdown doesn't add up, or a rate can't be derived.
-    public static func resolve(_ instalments: [Instalment], openingOutstanding: Int, remainingAfterLastNotice: Int? = nil, confirmedOutstanding: Int? = nil) throws -> Resolution {
+    /// period (consecutive instalments of the same total) the TAN whose `annuityPayment` with
+    /// `balloon`, for the outstanding balance over the payments left after the instalment,
+    /// equals the total — `remainingAfterLastNotice` − 1 for the first, one fewer each month;
+    /// interest = balance × TAN / 12 (30/360, as every notice), rounded half-even to the cent;
+    /// capital the rest. With `confirmedOutstanding` (owed after the last instalment), the
+    /// difference from the derived balance moves into the last derived instalment's interest.
+    /// Throws when a breakdown doesn't add up, or a rate can't be derived.
+    public static func resolve(_ instalments: [Instalment], openingOutstanding: Int, remainingAfterLastNotice: Int? = nil, balloon: Int = 0,
+                               confirmedOutstanding: Int? = nil) throws -> Resolution {
         var outstanding = openingOutstanding
         var result: [ResolvedInstalment] = []
         var periods: [DerivedPeriod] = []
-        var lastNotice: (tan: Double, before: Int, total: Int)?
         var remaining: Int?
-        var remainingAfterNotice: Int?
         var period: (total: Int, rate: Double)?
         for instalment in instalments.sorted(by: { $0.date < $1.date }) {
             if let breakdown = instalment.breakdown {
@@ -330,7 +334,6 @@ public enum BBVAFundMortgageImport {
                     throw ImportError.badInput("instalment \(day(instalment.date)): capital + interest + fees + taxes \(eur(breakdown.totalMinorUnits)) ≠ total \(eur(instalment.totalMinorUnits))")
                 }
                 guard remaining == nil else { throw ImportError.badInput("instalment \(day(instalment.date)) has a breakdown after derived ones") }
-                if let tan = breakdown.tan { lastNotice = (tan, outstanding, instalment.totalMinorUnits) }
                 result.append(ResolvedInstalment(instalment: instalment, capitalMinorUnits: breakdown.capitalMinorUnits, interestMinorUnits: breakdown.interestMinorUnits,
                                                  feesMinorUnits: breakdown.feesMinorUnits, taxesMinorUnits: breakdown.taxesMinorUnits, isEstimated: false,
                                                  tan: breakdown.tan, outstandingBeforeMinorUnits: outstanding, receipt: breakdown.receipt, source: breakdown.source,
@@ -339,18 +342,14 @@ public enum BBVAFundMortgageImport {
                 continue
             }
             if remaining == nil {
-                if let given = remainingAfterLastNotice {
-                    remaining = given
-                } else if let notice = lastNotice, let payments = impliedPayments(balance: notice.before, annualRate: notice.tan, payment: notice.total) {
-                    remaining = payments - 1
-                } else {
-                    throw ImportError.badInput("instalment \(day(instalment.date)) has no breakdown and no notice to count the remaining payments from")
+                guard let given = remainingAfterLastNotice else {
+                    throw ImportError.badInput("instalment \(day(instalment.date)) has no breakdown: give the payments left after the last notice")
                 }
-                remainingAfterNotice = remaining
+                remaining = given
             }
-            let payments = remaining!
+            let payments = remaining! - 1
             if period?.total != instalment.totalMinorUnits {
-                guard let rate = impliedRate(balance: outstanding, payment: instalment.totalMinorUnits, payments: payments) else {
+                guard let rate = impliedRate(balance: outstanding, payment: instalment.totalMinorUnits, payments: payments, balloon: balloon) else {
                     throw ImportError.badInput("instalment \(day(instalment.date)): no rate makes \(eur(instalment.totalMinorUnits)) the payment on \(eur(outstanding)) over \(payments)")
                 }
                 period = (instalment.totalMinorUnits, rate)
@@ -365,7 +364,7 @@ public enum BBVAFundMortgageImport {
                                              feesMinorUnits: 0, taxesMinorUnits: 0, isEstimated: true, tan: period!.rate, outstandingBeforeMinorUnits: outstanding,
                                              receipt: nil, source: derivedNote, remainingPayments: payments, residualMinorUnits: 0))
             outstanding -= instalment.totalMinorUnits - interest
-            remaining = payments - 1
+            remaining = payments
         }
         var residual = 0
         if let confirmed = confirmedOutstanding, confirmed != outstanding {
@@ -380,8 +379,21 @@ public enum BBVAFundMortgageImport {
                                                receipt: nil, source: item.source, remainingPayments: item.remainingPayments, residualMinorUnits: residual)
             outstanding = confirmed
         }
-        return Resolution(instalments: result, periods: periods, remainingAfterLastNotice: remainingAfterNotice, residualMinorUnits: residual,
-                          outstandingAfterMinorUnits: outstanding, remainingAfterLast: remaining)
+        // The model against the notices.
+        var checked = 0, paymentError = 0, interestError = 0
+        let noticed = result.filter { !$0.isEstimated && $0.receipt != nil && $0.tan != nil }
+        if let given = remainingAfterLastNotice, let lastReceipt = noticed.compactMap(\.receipt).max() {
+            for item in noticed {
+                let payments = given + lastReceipt - item.receipt!
+                let payment = Int(annuityPayment(balance: item.outstandingBeforeMinorUnits, annualRate: item.tan!, payments: payments, balloon: balloon).rounded())
+                paymentError = max(paymentError, abs(payment - item.instalment.totalMinorUnits))
+                interestError = max(interestError, abs(Int((Double(item.outstandingBeforeMinorUnits) * item.tan! / 1200).rounded()) - item.interestMinorUnits))
+                checked += 1
+            }
+        }
+        return Resolution(instalments: result, periods: periods, remainingAfterLastNotice: remainingAfterLastNotice, residualMinorUnits: residual,
+                          outstandingAfterMinorUnits: outstanding, remainingAfterLast: remaining, noticesChecked: checked,
+                          noticePaymentMaxError: paymentError, noticeInterestMaxError: interestError)
     }
 
     /// The interest row's note: the split and its source.
@@ -392,7 +404,7 @@ public enum BBVAFundMortgageImport {
             let rate = item.tan.map { String(format: "%.3f%%", $0) } ?? "?"
             let residual = item.residualMinorUnits == 0 ? ""
                 : " Includes a \(eur(item.residualMinorUnits)) residual so the balance matches the outstanding BBVA confirmed."
-            return "\(receipt) \(day(item.instalment.valueDate)): \(split). \(derivedNote.prefix(1).uppercased() + derivedNote.dropFirst()) (rate ≈ \(rate)) on \(eur(item.outstandingBeforeMinorUnits)) outstanding, \(item.remainingPayments.map(String.init) ?? "?") payments left.\(residual)"
+            return "\(receipt) \(day(item.instalment.valueDate)): \(split). Interest derived: TAN ≈ \(rate) (from the instalment amount: annuity with the final balloon on \(eur(item.outstandingBeforeMinorUnits)), \(item.remainingPayments.map(String.init) ?? "?") payments left after it).\(residual)"
         }
         let tan = item.tan.map { String(format: " (TAN %.3f%%)", $0) } ?? ""
         return "\(receipt) \(day(item.instalment.valueDate)): \(split). Source: \(item.source)\(tan)."
@@ -436,6 +448,7 @@ public enum BBVAFundMortgageImport {
         public let instalments: [ResolvedInstalment]
         public let resolution: Resolution
         public let confirmed: ConfirmedOutstanding?
+        public let balloonMinorUnits: Int
         public let ruleChange: String
         public let netWorthBeforeGBP: Int
         public let netWorthAfterGBP: Int
@@ -472,9 +485,12 @@ public enum BBVAFundMortgageImport {
                 lines.append("  \(row.label)  \(pad(eur(row.statementMinorUnits), 13))  \(pad(row.appMinorUnits.map(eur) ?? "—", 13))  \(row.differenceMinorUnits.map(eur) ?? "—")\(row.explanation.map { "  (\($0))" } ?? "")")
             }
             lines.append("  Instalments: \(instalments.count) (\(instalments.filter(\.isEstimated).count) with interest derived from the amount)")
-            if let remaining = resolution.remainingAfterLastNotice { lines.append("    payments left after the last notice: \(remaining)") }
+            if let remaining = resolution.remainingAfterLastNotice {
+                lines.append("    payments left after the last notice: \(remaining); final balloon \(eur(balloonMinorUnits)); interest 30/360 (balance × TAN / 12)")
+                lines.append("    model vs \(resolution.noticesChecked) notices: payment max error \(eur(resolution.noticePaymentMaxError)), interest max error \(eur(resolution.noticeInterestMaxError))")
+            }
             for period in resolution.periods {
-                lines.append("    from \(day(period.firstDate)): \(period.count) × \(eur(period.totalMinorUnits)) on \(eur(period.outstandingMinorUnits)) over \(period.remainingPayments) payments → rate \(String(format: "%.3f%%", period.rate))")
+                lines.append("    from \(day(period.firstDate)): \(period.count) × \(eur(period.totalMinorUnits)) on \(eur(period.outstandingMinorUnits)) over \(period.remainingPayments) payments → TAN \(String(format: "%.3f%%", period.rate))")
             }
             for item in instalments where item.isEstimated {
                 lines.append("    \(day(item.instalment.date)) (value \(day(item.instalment.valueDate))): total \(eur(item.instalment.totalMinorUnits)) = capital \(eur(item.capitalMinorUnits)) + interest \(eur(item.interestMinorUnits))\(item.residualMinorUnits != 0 ? " (includes residual \(eur(item.residualMinorUnits)))" : "")")
@@ -482,8 +498,8 @@ public enum BBVAFundMortgageImport {
             if let confirmed {
                 lines.append("    confirmed outstanding \(eur(confirmed.outstandingMinorUnits)) on \(day(confirmed.date)); residual \(eur(resolution.residualMinorUnits)) (\(confirmed.source))")
                 if let tan = confirmed.nextTAN, let remaining = resolution.remainingAfterLast {
-                    let payments = [remaining, remaining - 1].map { n in "\(n) payments \(eur(Int(annuityPayment(balance: confirmed.outstandingMinorUnits, annualRate: tan, payments: n).rounded())))" }
-                    lines.append("    sanity: annuity on \(eur(confirmed.outstandingMinorUnits)) at TAN \(String(format: "%.3f%%", tan)): \(payments.joined(separator: ", "))"
+                    let payment = Int(annuityPayment(balance: confirmed.outstandingMinorUnits, annualRate: tan, payments: remaining - 1, balloon: balloonMinorUnits).rounded())
+                    lines.append("    next instalment check: on \(eur(confirmed.outstandingMinorUnits)) at TAN \(String(format: "%.3f%%", tan)), \(remaining - 1) payments left after it, balloon \(eur(balloonMinorUnits)): \(eur(payment))"
                                  + (confirmed.nextPaymentMinorUnits.map { " (bank: \(eur($0)))" } ?? ""))
                 }
             }
@@ -532,7 +548,7 @@ public enum BBVAFundMortgageImport {
             throw ImportError.badInput("the confirmed outstanding must be dated after the last instalment")
         }
         let resolution = try resolve(input.instalments, openingOutstanding: input.loanOpening.minorUnits, remainingAfterLastNotice: input.remainingPaymentsAfterLastNotice,
-                                     confirmedOutstanding: input.confirmedOutstanding?.outstandingMinorUnits)
+                                     balloon: input.balloonMinorUnits, confirmedOutstanding: input.confirmedOutstanding?.outstandingMinorUnits)
         let resolved = resolution.instalments
 
         let rate = try ExchangeRateSetting.currentOrDefault(db: db)
@@ -693,7 +709,7 @@ public enum BBVAFundMortgageImport {
         let marketByYear = Dictionary(grouping: fundRows) { MonthRange.calendar.component(.year, from: $0.date) }.mapValues { $0.reduce(0) { $0 + $1.marketMovementMinorUnits } }
         let report = Report(fundAccountId: fundId, loanAccountId: loanId, fundTransferCategory: fundCategory.name, loanTransferCategory: loanCategory.name, fund: fundRows,
                             marketMovementByYear: marketByYear, fundSubscriptions: subscriptionRows.count, loan: loanRows, instalments: resolved, resolution: resolution,
-                            confirmed: input.confirmedOutstanding, ruleChange: ruleChange,
+                            confirmed: input.confirmedOutstanding, balloonMinorUnits: input.balloonMinorUnits, ruleChange: ruleChange,
                             netWorthBeforeGBP: netWorthBefore, netWorthAfterGBP: netWorthAfter, fundBalanceNowMinorUnits: fundNow, loanBalanceNowMinorUnits: loanNow,
                             verification: verification)
         guard failures == 0 else { throw ImportError.verificationFailed(report.text) }
