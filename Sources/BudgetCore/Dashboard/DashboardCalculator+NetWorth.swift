@@ -391,7 +391,7 @@ extension DashboardCalculator {
         // The walk-start month's actuals for the remaining plan: budget-facing transactions of
         // every status (current net worth already holds unreviewed ones, so they count as paid).
         let range = input.payCalendar.range(of: payMonth)
-        let facing = input.accountFilter.map { TransferLinks.budgetFacing(input.transactions, links: input.transferLinks, accountIds: $0.accountIds) } ?? input.budgetTransactions
+        let facing = input.accountFilter.map { input.conversion.toGBP(TransferLinks.budgetFacing(input.transactions, links: input.transferLinks, accountIds: $0.accountIds)) } ?? input.budgetTransactions
         var walkStartActuals: [Int64: Int] = [:]
         var walkStartActualsByAccount: [Int64: [Int64: Int]] = [:]
         for transaction in facing {

@@ -292,7 +292,7 @@ public enum PlannedItemEditing {
             .filter(Column("date") >= payRange.start && Column("date") <= payRange.end && Column("status") == TransactionStatus.confirmed.rawValue)
             .fetchAll(db)
         let confirmed = isConfirmed(entry: entry, occurrence: occurrence, calendar: calendar,
-                                    monthTotals: PayMonthTotals.lookup(transactions: transactions, calendar: calendar),
+                                    monthTotals: PayMonthTotals.lookup(transactions: try CurrencyConversion.current(db: db).toGBP(transactions), calendar: calendar),
                                     entries: try ForecastEntry.budget(db), groups: try ForecastGroup.fetchAll(db),
                                     exceptions: try PlannedOccurrenceException.fetchAll(db), categories: try Category.fetchAll(db))
         if confirmed { throw PlannedItemEditError.occurrenceConfirmed }

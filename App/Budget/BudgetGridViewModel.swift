@@ -20,9 +20,15 @@ final class BudgetGridViewModel: ObservableObject {
     /// limited to `accountFilter`'s accounts when set: cells, notes and the side panel. Rebuilt
     /// with the pay calendar and whenever the filter changes.
     private(set) var budgetTransactions: [Transaction] = []
-    /// `budgetTransactions` with All accounts (what `monthTotals` sums), so clearing the filter
-    /// needs no recomputation.
+    /// `budgetTransactions` with All accounts, so clearing the filter needs no recomputation.
     private var allAccountsBudgetTransactions: [Transaction] = []
+    /// `allAccountsBudgetTransactions` in GBP (`conversion`): what `monthTotals` sums.
+    private var allAccountsGBPTransactions: [Transaction] = []
+    /// Non-GBP accounts at `exchangeRate` (`CurrencyConversion`): every actual the grid sums
+    /// (`monthTotals`, `shownMonthTotals`, the Totals block's transfers) is in GBP, while
+    /// `budgetTransactions` (the side panel's list) stays in each account's currency. Rebuilt
+    /// with the pay calendar; a change of rate or account currency rebuilds it.
+    private(set) var conversion = CurrencyConversion.none
     /// The account panel's selection (spec §7); empty = All accounts. Kept for the app session
     /// (this view model lives as long as the window). Changing it rebuilds the shown actuals once.
     @Published private(set) var accountFilter: Set<Int64> = [] {
@@ -67,6 +73,7 @@ final class BudgetGridViewModel: ObservableObject {
             // The main account decides where items with no account go.
             if accounts.mainAccountId != oldValue.mainAccountId { itemAccountsCache = nil; clearPlanCaches() }
             clearNetWorthCaches()
+            rebuildPayMonthsIfConversionChanged()
             // A deleted account leaves the filter (none left = All accounts).
             let ids = Set(accounts.compactMap(\.id))
             if !accountFilter.isSubset(of: ids) { accountFilter.formIntersection(ids) }
@@ -76,7 +83,7 @@ final class BudgetGridViewModel: ObservableObject {
         didSet { clearNetWorthCaches() }
     }
     @Published var exchangeRate: ExchangeRateSetting = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date()) {
-        didSet { clearNetWorthCaches() }
+        didSet { clearNetWorthCaches(); rebuildPayMonthsIfConversionChanged() }
     }
     /// The years shown, sorted, never empty once loaded: one year shows its twelve months,
     /// several show each year's total with the change from the previous selected year.
@@ -176,23 +183,32 @@ final class BudgetGridViewModel: ObservableObject {
         categories = try dbQueue.read { db in try Category.fetchAll(db) }
         categoryGroups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
         (transferLinks, transferCounterparts) = try dbQueue.read { db in (try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db)) }
+        // Accounts and the rate before `transactions`: the actuals are converted to GBP with them.
+        accounts = try dbQueue.read { db in try Account.fetchAll(db) }.sortedForDisplay()
+        exchangeRate = try dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db) }
         transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
         forecastEntries = try dbQueue.read { db in try ForecastEntry.budget(db) }
         forecastGroups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
         exceptions = try dbQueue.read { db in try PlannedOccurrenceException.fetchAll(db) }
-        accounts = try dbQueue.read { db in try Account.fetchAll(db) }.sortedForDisplay()
         balanceSnapshots = try dbQueue.read { db in try BalanceSnapshot.fetchAll(db) }
-        exchangeRate = try dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db) }
         selectDefaultYearIfNeeded()
     }
 
     /// Rebuilds everything derived from the pay calendar. `load()` sets `manualCloses` and
     /// `categories` before `transactions`, so this runs once per load with all inputs fresh.
+    /// A new rate or account currency changes every converted actual (not on a reload that
+    /// changes neither, so loading stays one rebuild).
+    private func rebuildPayMonthsIfConversionChanged() {
+        if CurrencyConversion(accounts: accounts, rate: exchangeRate) != conversion { rebuildPayMonths() }
+    }
+
     private func rebuildPayMonths() {
+        conversion = CurrencyConversion(accounts: accounts, rate: exchangeRate)
         payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: manualCloses, today: Date())
         allAccountsBudgetTransactions = TransferLinks.budgetFacing(transactions, links: transferLinks)
         itemAccountsCache = nil
-        monthTotals = PayMonthTotals.lookup(transactions: allAccountsBudgetTransactions, calendar: payCalendar)
+        allAccountsGBPTransactions = conversion.toGBP(allAccountsBudgetTransactions)
+        monthTotals = PayMonthTotals.lookup(transactions: allAccountsGBPTransactions, calendar: payCalendar)
         counterpartAccounts = BudgetTotals.counterpartAccounts(transactions: transactions, links: transferLinks)
         transactionCountByAccount = transactions.reduce(into: [:]) { counts, transaction in counts[transaction.accountId, default: 0] += 1 }
         monthClassCache = [:]
@@ -207,15 +223,18 @@ final class BudgetGridViewModel: ObservableObject {
     /// `shownMonthTotals`, `noteMonths`), for the account filter. Runs once per filter change
     /// or load, never per render; the transfer rule with a filter is `TransferLinks.budgetFacing`'s.
     private func rebuildShownActuals() {
+        let shownGBP: [Transaction]
         if accountFilter.isEmpty {
             budgetTransactions = allAccountsBudgetTransactions
+            shownGBP = allAccountsGBPTransactions
             shownMonthTotals = monthTotals
         } else {
             budgetTransactions = TransferLinks.budgetFacing(transactions, links: transferLinks, accountIds: accountFilter)
-            shownMonthTotals = PayMonthTotals.lookup(transactions: budgetTransactions, calendar: payCalendar)
+            shownGBP = conversion.toGBP(budgetTransactions)
+            shownMonthTotals = PayMonthTotals.lookup(transactions: shownGBP, calendar: payCalendar)
         }
         noteMonths = PayMonthTotals.noteMonths(transactions: budgetTransactions, calendar: payCalendar)
-        let counted = BudgetTotals.countedTransfers(budgetTransactions, categories: categories, accountIds: totalsAccountIds, counterpartAccounts: counterpartAccounts)
+        let counted = BudgetTotals.countedTransfers(shownGBP, categories: categories, accountIds: totalsAccountIds, counterpartAccounts: counterpartAccounts)
         countedTransferIds = Set(counted.compactMap(\.id))
         transferFlows = BudgetTotals.transferActuals(counted, calendar: payCalendar)
         reserveRemainingCache = [:]

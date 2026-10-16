@@ -21,6 +21,8 @@ struct DashboardContent {
     let accounts: [AccountSummary]
     /// Selectable years for the year-at-a-glance chart: first data year ... next year.
     let yearRange: ClosedRange<Int>
+    /// The stored EUR→GBP rate (the import card's note for a non-GBP account).
+    let eurToGbpRate: Double
 }
 
 @MainActor
@@ -83,7 +85,8 @@ final class DashboardViewModel: ObservableObject {
                 attention: DashboardCalculator.attentionItems(loaded),
                 bills: DashboardCalculator.upcomingBills(loaded),
                 accounts: DashboardCalculator.accountSummaries(loaded),
-                yearRange: range
+                yearRange: range,
+                eurToGbpRate: loaded.rate.eurToGbpRate
             )
             if !range.contains(selectedYear) { selectedYear = thisYear }
             flows = DashboardCalculator.monthlyFlows(loaded, year: selectedYear)

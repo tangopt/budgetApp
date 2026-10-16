@@ -39,6 +39,7 @@ struct CategoryTransactionsPanel: View {
             title: subject.title,
             transactions: viewModel.transactions(forCategoryIds: subject.categoryIds, year: year),
             transfers: viewModel.transferCounterparts,
+            conversion: viewModel.conversion,
             accessory: AnyView(yearPicker),
             onEdit: { transaction in
                 editingRecentIds = viewModel.recentCategoryIds()

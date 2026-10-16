@@ -8,9 +8,11 @@ public struct DashboardInput {
     public let snapshots: [BalanceSnapshot]
     /// Every transaction: balances, net worth and data freshness.
     public let transactions: [Transaction]
-    /// `transactions` without transfers' incoming legs (`TransferLinks.budgetFacing`): flows,
-    /// month totals, unreviewed and uncategorised counts.
+    /// `transactions` without transfers' incoming legs (`TransferLinks.budgetFacing`), in GBP
+    /// (`conversion`): flows, month totals, unreviewed and uncategorised counts.
     public let budgetTransactions: [Transaction]
+    /// Non-GBP accounts' transactions at `rate`, for the budget figures (`budgetTransactions`).
+    let conversion: CurrencyConversion
     public let categories: [Category]
     public let categoryGroups: [CategoryGroup]
     public let forecastEntries: [ForecastEntry]
@@ -50,7 +52,9 @@ public struct DashboardInput {
         self.accounts = accounts
         self.snapshots = snapshots
         self.transactions = transactions
-        let budgetTransactions = TransferLinks.budgetFacing(transactions, links: transferLinks)
+        let conversion = CurrencyConversion(accounts: accounts, rate: rate)
+        self.conversion = conversion
+        let budgetTransactions = conversion.toGBP(TransferLinks.budgetFacing(transactions, links: transferLinks))
         self.budgetTransactions = budgetTransactions
         self.categories = categories
         self.categoryGroups = categoryGroups
