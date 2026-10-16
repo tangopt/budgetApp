@@ -58,7 +58,8 @@ final class BBVAFundMortgageImportTests: XCTestCase {
             instalments: [Import.Instalment(date: day(2023, 1, 2), valueDate: day(2022, 12, 31), totalMinorUnits: 90_000, breakdown: breakdown(40_000, 50_000, receipt: 10, tan: 2.5)),
                           Import.Instalment(date: day(2023, 1, 31), valueDate: day(2023, 1, 31), totalMinorUnits: 100_000, breakdown: breakdown(50_000, 50_000, receipt: 11, tan: 3.0)),
                           Import.Instalment(date: day(2023, 3, 1), valueDate: day(2023, 2, 28), totalMinorUnits: 100_000, breakdown: breakdown(50_500, 49_500, receipt: 12, tan: 3.0)),
-                          Import.Instalment(date: day(2023, 3, 31), valueDate: day(2023, 3, 31), totalMinorUnits: 100_000, breakdown: nil)])
+                          Import.Instalment(date: day(2023, 3, 31), valueDate: day(2023, 3, 31), totalMinorUnits: 100_000, breakdown: nil)],
+            confirmedOutstanding: Import.ConfirmedOutstanding(date: day(2023, 4, 10), outstandingMinorUnits: 19_809_149, source: "BBVA, 10 Apr 2023"))
     }
 
     private func balance(_ db: Database, _ accountId: Int64, at date: Date? = nil) throws -> Int? {
@@ -68,23 +69,68 @@ final class BBVAFundMortgageImportTests: XCTestCase {
 
     // MARK: Pure parts
 
-    func testResolveEstimatesFromTheLastKnownTAN() throws {
-        let resolved = try Import.resolve(input().instalments, openingOutstanding: 20_000_000)
-        XCTAssertEqual(resolved.map(\.isEstimated), [false, false, false, true])
-        let estimate = resolved[3]
-        XCTAssertEqual(estimate.outstandingBeforeMinorUnits, 19_859_500)
-        XCTAssertEqual(estimate.tan, 3.0)
-        XCTAssertEqual(estimate.interestMinorUnits, 49_649, "198,595.00 × 3% / 12 = 496.4875")
-        XCTAssertEqual(estimate.capitalMinorUnits, 50_351)
-        XCTAssertTrue(Import.note(for: estimate).contains("estimated — confirm with BBVA notice"))
-        XCTAssertTrue(Import.note(for: resolved[1]).contains("Instalment 11, due 2023-01-31: capital €500.00, interest €500.00"))
+    /// A noticed instalment on £100,000 at 3% with 120 payments left (the annuity: €965.61),
+    /// then two more of the same total and one after a rate rise.
+    private var annuityInstalments: [Import.Instalment] {
+        [Import.Instalment(date: day(2025, 10, 31), valueDate: day(2025, 10, 31), totalMinorUnits: 96_561, breakdown: breakdown(71_561, 25_000, receipt: 1, tan: 3.0)),
+         Import.Instalment(date: day(2025, 12, 1), valueDate: day(2025, 11, 30), totalMinorUnits: 96_561, breakdown: nil),
+         Import.Instalment(date: day(2025, 12, 31), valueDate: day(2025, 12, 31), totalMinorUnits: 96_561, breakdown: nil),
+         Import.Instalment(date: day(2026, 2, 2), valueDate: day(2026, 1, 31), totalMinorUnits: 100_000, breakdown: nil)]
+    }
+
+    func testAnnuityHelpers() throws {
+        XCTAssertEqual(Import.annuityPayment(balance: 10_000_000, annualRate: 3.0, payments: 120).rounded(), 96_561)
+        XCTAssertEqual(Import.impliedPayments(balance: 10_000_000, annualRate: 3.0, payment: 96_561), 120)
+        XCTAssertEqual(try XCTUnwrap(Import.impliedRate(balance: 10_000_000, payment: 96_561, payments: 120)), 3.0, accuracy: 0.001)
+        XCTAssertNil(Import.impliedRate(balance: 10_000_000, payment: 1_000, payments: 120), "can't repay")
+    }
+
+    func testResolveDerivesEachRatePeriodFromTheInstalmentAmount() throws {
+        let resolution = try Import.resolve(annuityInstalments, openingOutstanding: 10_000_000)
+        let items = resolution.instalments
+        XCTAssertEqual(items.map(\.isEstimated), [false, true, true, true])
+        XCTAssertEqual(resolution.remainingAfterLastNotice, 119, "from the notice: 120 payments counting it")
+        XCTAssertEqual(items.compactMap(\.remainingPayments), [119, 118, 117])
+        XCTAssertEqual(resolution.periods.map(\.count), [2, 1])
+        XCTAssertEqual(resolution.periods[0].rate, 3.0, accuracy: 0.001, "same payment, same rate")
+        XCTAssertGreaterThan(resolution.periods[1].rate, 3.0)
+        // Interest = balance × r / 12, half-even to the cent; capital the rest.
+        let before = 10_000_000 - 71_561
+        XCTAssertEqual(items[1].outstandingBeforeMinorUnits, before)
+        XCTAssertEqual(items[1].interestMinorUnits, Int((Double(before) * resolution.periods[0].rate / 1200).rounded(.toNearestOrEven)))
+        XCTAssertEqual(items[1].capitalMinorUnits + items[1].interestMinorUnits, 96_561)
+        XCTAssertEqual(items[3].tan, resolution.periods[1].rate)
+        XCTAssertEqual(resolution.residualMinorUnits, 0)
+        XCTAssertEqual(resolution.remainingAfterLast, 116)
+        let note = Import.note(for: items[1])
+        XCTAssertTrue(note.contains("Interest derived from instalment amount (rate ≈ 3.000%)"), note)
+        XCTAssertTrue(Import.note(for: items[0]).contains("Instalment 1, due 2025-10-31: capital €715.61, interest €250.00"))
+
+        // A given count of payments wins over the notice's.
+        let given = try Import.resolve(annuityInstalments, openingOutstanding: 10_000_000, remainingAfterLastNotice: 200)
+        XCTAssertEqual(given.instalments.compactMap(\.remainingPayments), [200, 199, 198])
+        XCTAssertGreaterThan(given.periods[0].rate, 3.0, "the same amount over more payments: a higher rate")
+    }
+
+    func testAConfirmedBalanceMovesTheResidualIntoTheLastDerivedInterest() throws {
+        let plain = try Import.resolve(annuityInstalments, openingOutstanding: 10_000_000)
+        let confirmed = plain.outstandingAfterMinorUnits + 37
+        let resolution = try Import.resolve(annuityInstalments, openingOutstanding: 10_000_000, confirmedOutstanding: confirmed)
+        XCTAssertEqual(resolution.residualMinorUnits, 37)
+        XCTAssertEqual(resolution.outstandingAfterMinorUnits, confirmed)
+        XCTAssertEqual(resolution.instalments[3].interestMinorUnits, plain.instalments[3].interestMinorUnits + 37)
+        XCTAssertEqual(resolution.instalments[3].capitalMinorUnits, plain.instalments[3].capitalMinorUnits - 37)
+        XCTAssertEqual(resolution.instalments[2], plain.instalments[2])
+        XCTAssertTrue(Import.note(for: resolution.instalments[3]).contains("€0.37 residual"))
+        // Nothing derived to absorb it: refused.
+        XCTAssertThrowsError(try Import.resolve(Array(annuityInstalments.prefix(1)), openingOutstanding: 10_000_000, confirmedOutstanding: 1))
     }
 
     func testResolveRefusesABreakdownThatDoesntAddUp() {
         let wrong = Import.Instalment(date: day(2023, 1, 2), valueDate: day(2022, 12, 31), totalMinorUnits: 90_000, breakdown: breakdown(40_000, 49_000, receipt: 10, tan: 2.0))
         XCTAssertThrowsError(try Import.resolve([wrong], openingOutstanding: 1_000_000))
-        let noTAN = Import.Instalment(date: day(2023, 1, 2), valueDate: day(2022, 12, 31), totalMinorUnits: 90_000, breakdown: nil)
-        XCTAssertThrowsError(try Import.resolve([noTAN], openingOutstanding: 1_000_000))
+        let noNotice = Import.Instalment(date: day(2023, 1, 2), valueDate: day(2022, 12, 31), totalMinorUnits: 90_000, breakdown: nil)
+        XCTAssertThrowsError(try Import.resolve([noNotice], openingOutstanding: 1_000_000))
     }
 
     func testUKTaxYears() {
@@ -167,7 +213,11 @@ final class BBVAFundMortgageImportTests: XCTestCase {
             let charges = loanRows.filter { $0.categoryId == interest.id }
             XCTAssertEqual(charges.map(\.amountMinorUnits), [-50_000, -50_000, -49_500, -49_649])
             XCTAssertEqual(charges.map(\.date), [day(2023, 1, 2), day(2023, 1, 31), day(2023, 3, 1), day(2023, 3, 31)])
-            XCTAssertTrue(charges[3].note?.contains("estimated — confirm with BBVA notice") ?? false)
+            XCTAssertTrue(charges[3].note?.contains("Interest derived from instalment amount (rate ≈ ") ?? false)
+            // The confirmed outstanding is recorded with nothing to adjust.
+            XCTAssertEqual(try Account.fetchOne(db, key: loan.id!)?.balanceConfirmedAt, day(2023, 4, 10))
+            XCTAssertEqual(try balance(db, loan.id!, at: BalanceUpdates.endOfDay(day(2023, 4, 10))), -19_809_149)
+            XCTAssertTrue(loanRows.allSatisfy { $0.categoryId != nil && $0.categoryId != (try? BuiltInCategories.category(db: db, role: .balanceAdjustment).id) })
             XCTAssertEqual(loanRows.filter { $0.amountMinorUnits > 0 }.map(\.amountMinorUnits), [90_000, 100_000, 100_000, 100_000])
             XCTAssertEqual(try TransferLink.active.fetchCount(db), 6)
             XCTAssertEqual(try Rule.fetchOne(db)?.categoryId, loanCategory.id)
