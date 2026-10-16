@@ -28,6 +28,7 @@ struct AccountsView: View {
                 HStack(alignment: .top, spacing: 16) {
                     VStack(alignment: .leading, spacing: 8) {
                         AccountsListView(groups: overview.groups, selection: $viewModel.selectedAccountId,
+                                         importedThrough: viewModel.importedThrough,
                                          onAddTransaction: addTransaction(in:), importDisabled: importBusy,
                                          onImport: { id, format in
                                              viewModel.selectedAccountId = id
@@ -109,6 +110,7 @@ struct AccountsView: View {
     private func detailView(importActions: ImportFlowActions?) -> some View {
         AccountDetailView(
             row: viewModel.selectedRow,
+            importedThrough: viewModel.selectedRow.flatMap { viewModel.importedThrough[$0.id] },
             history: viewModel.selectedHistory,
             importActions: importActions,
             importBusy: importBusy,
@@ -274,6 +276,8 @@ private struct Banner<Content: View>: View {
 private struct AccountsListView: View {
     let groups: [AccountGroup]
     @Binding var selection: Int64?
+    /// Each account's latest imported transaction date (absent: nothing imported).
+    let importedThrough: [Int64: Date]
     /// Add transaction… from a row's context menu.
     let onAddTransaction: (Int64) -> Void
     /// True while an import is staging or in review: Import statement is disabled.
@@ -290,7 +294,7 @@ private struct AccountsListView: View {
             ForEach(groups) { group in
                 Section {
                     ForEach(group.rows) { row in
-                        AccountListRow(row: row).tag(row.id)
+                        AccountListRow(row: row, importedThrough: importedThrough[row.id]).tag(row.id)
                             .contextMenu {
                                 Button("Add transaction…") { onAddTransaction(row.id) }
                                 Menu("Import statement") {
@@ -322,6 +326,7 @@ private struct AccountsListView: View {
 
 private struct AccountListRow: View {
     let row: AccountRow
+    let importedThrough: Date?
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
@@ -330,6 +335,10 @@ private struct AccountListRow: View {
                 if row.account.displayName != row.account.name {
                     Text(row.account.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
+                Text(importedThrough.map { "Imported up to \(AccountsFormat.shortDay($0))" } ?? "Not imported yet")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             if row.isStale {
                 Image(systemName: "exclamationmark.circle.fill")
@@ -412,6 +421,8 @@ private struct AccountBankDetails: View {
 
 private struct AccountDetailView: View {
     let row: AccountRow?
+    /// The account's latest imported transaction date; nil: nothing imported.
+    let importedThrough: Date?
     let history: AccountHistory
     /// The import host's actions for this account; nil while an import is staging or in review.
     let importActions: ImportFlowActions?
@@ -454,7 +465,12 @@ private struct AccountDetailView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    updatedLine(row)
+                    VStack(alignment: .leading, spacing: 2) {
+                        updatedLine(row)
+                        Text(importedThrough.map { "Imported up to \(DashboardFormat.day($0))" } ?? "Not imported yet")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
                     if let mismatch = AccountsFormat.statementMismatch(row.account) {
                         Label(mismatch, systemImage: "exclamationmark.triangle.fill")
                             .font(.callout)
@@ -622,6 +638,24 @@ private struct AccountDetailView: View {
 // MARK: - Formatting
 
 enum AccountsFormat {
+    private static func utcFormatter(_ pattern: String) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = pattern
+        return formatter
+    }
+    private static let dayMonthFormatter = utcFormatter("d MMM")
+    private static let dayMonthYearFormatter = utcFormatter("d MMM yyyy")
+    private static let yearFormatter = utcFormatter("yyyy")
+
+    /// "12 Oct" in the current year, "12 Oct 2025" otherwise (dates are UTC days).
+    static func shortDay(_ date: Date, today: Date = Date()) -> String {
+        yearFormatter.string(from: date) == yearFormatter.string(from: today)
+            ? dayMonthFormatter.string(from: date)
+            : dayMonthYearFormatter.string(from: date)
+    }
+
     static func kind(_ kind: AccountKind) -> String {
         switch kind {
         case .cash: return "Cash"

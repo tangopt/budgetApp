@@ -313,6 +313,11 @@ struct ContentView: View {
     /// uncategorised transactions.
     private func importActivityChanged() {
         refreshUncategorizedCount()
+        // A finished (or discarded) import: the screen on show re-reads, so each account's
+        // "Imported up to" date reflects what was just saved.
+        guard !importViewModel.isStaging, !importViewModel.isReviewing else { return }
+        if selection == .dashboard { dashboardViewModel.load() }
+        if selection == .accounts { accountsViewModel.load() }
     }
 
     private func refreshUncategorizedCount() {

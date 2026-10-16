@@ -45,7 +45,7 @@ struct DashboardView: View {
                     .font(.callout)
                 }
                 if let content = viewModel.content {
-                    FreshnessImportCard(freshness: content.freshness, importViewModel: importViewModel, accounts: accounts, selectedAccountId: $selectedImportAccountId, profileStore: profileStore, navigate: navigate)
+                    FreshnessImportCard(freshness: content.freshness, importedThrough: content.importedThrough, importViewModel: importViewModel, accounts: accounts, selectedAccountId: $selectedImportAccountId, profileStore: profileStore, navigate: navigate)
                     NetWorthCard(content: content, navigate: navigate)
                     TwoUpRow {
                         YearChangeCard(changes: content.yearChanges, navigate: navigate)
