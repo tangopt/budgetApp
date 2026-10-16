@@ -218,6 +218,21 @@ final class CategoriesViewModel: ObservableObject {
         return years.sorted(by: >)
     }
 
+    // MARK: Distribution
+
+    /// The Distribution panel's figures for the pay-month `year` (nil = all years): the
+    /// Budget grid's actuals basis (`CategoryDistribution`; `transactions` are budget-facing).
+    func distribution(year: Int?) -> CategoryDistribution {
+        CategoryDistribution.compute(year: year, transactions: transactions, categories: categories, groups: groups, calendar: payCalendar)
+    }
+
+    /// The Distribution panel's year filter: the current year, then any with transactions, newest first.
+    var distributionYears: [Int] {
+        var years = Set(transactions.map(payYear(of:)))
+        years.insert(payCalendar.current.year)
+        return years.sorted(by: >)
+    }
+
     /// The Edit transaction sheet's Save: category and note (or a manual transaction's
     /// fields) and the pending transfer change, in one write via `TransactionEditing.save`
     /// (no rule learned), then reload. A refusal writes nothing.

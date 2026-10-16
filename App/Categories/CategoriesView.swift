@@ -29,7 +29,8 @@ enum CategoryRowID: Hashable {
 /// (Return), Delete… (⌫/⌦); categories also move, change the icon (also by clicking its
 /// badge), exclude from the auto-forecast and set a transfer category's linked account
 /// (shown "↔ <account>" on its row); groups also Add category here…. Selecting one
-/// category or group opens its transactions panel. The toolbar expands or collapses every
+/// category or group opens its transactions panel; otherwise the panel shows the
+/// Distribution charts (spec 2026-10-16 §C). The list's first row expands or collapses every
 /// group; ⌥-click a chevron to toggle its whole section (expansion is remembered).
 struct CategoriesView: View {
     @Environment(\.theme) private var theme
@@ -111,11 +112,16 @@ struct CategoriesView: View {
             HStack(spacing: 0) {
                 list
                     .frame(maxWidth: .infinity)
+                Divider()
                 if let subject = panelSubject {
-                    Divider()
                     CategoryTransactionsPanel(subject: subject, viewModel: viewModel, onClose: { selection = [] })
                         .frame(width: 320)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                        .transition(.opacity)
+                } else {
+                    // Nothing (or several categories) selected: where the money goes.
+                    CategoryDistributionPanel(viewModel: viewModel)
+                        .frame(width: 320)
+                        .transition(.opacity)
                 }
             }
             .animation(.easeOut(duration: 0.2), value: panelSubject == nil)
@@ -123,14 +129,6 @@ struct CategoriesView: View {
         .searchable(text: $search, prompt: "Search categories and groups")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                Button { updateOutline { $0.expandAll() } } label: { Label("Expand all", systemImage: "rectangle.expand.vertical") }
-                    .buttonStyle(.borderless)
-                    .help("Expand all groups")
-                    .disabled(isSearching)
-                Button { updateOutline { $0.collapseAll(allRowKeys) } } label: { Label("Collapse all", systemImage: "rectangle.compress.vertical") }
-                    .buttonStyle(.borderless)
-                    .help("Collapse all groups")
-                    .disabled(isSearching)
                 Button {
                     newGroupDraft = NewGroupDraft(selectedCategoryIds: movableIds(selectedCategoryIds), type: newGroupType)
                 } label: { Label("Group", systemImage: "folder.badge.plus") }
@@ -256,11 +254,30 @@ struct CategoriesView: View {
         return type
     }
 
+    /// The list's first row (not selectable): expand or collapse every group (search shows
+    /// every match expanded, so both are off while searching).
+    private func outlineControls(disabled: Bool) -> some View {
+        HStack(spacing: 12) {
+            Spacer()
+            Button { updateOutline { $0.expandAll() } } label: { Label("Expand all", systemImage: "rectangle.expand.vertical") }
+                .help("Expand all groups")
+            Button { updateOutline { $0.collapseAll(allRowKeys) } } label: { Label("Collapse all", systemImage: "rectangle.compress.vertical") }
+                .help("Collapse all groups")
+        }
+        .buttonStyle(.borderless)
+        .labelStyle(.titleAndIcon)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .disabled(disabled)
+        .selectionDisabled()
+    }
+
     private var list: some View {
         let searching = isSearching
         let reserves = viewModel.reserves(search: search)
         return ScrollViewReader { proxy in
             List(selection: $selection) {
+                outlineControls(disabled: searching)
                 ForEach(viewModel.sections(search: search)) { section in
                     let sectionKeys = rowKeys(section)
                     if section.type == .adjustment {
