@@ -168,6 +168,7 @@ struct ScenarioNetWorthChart: View {
                     Text(value.name).font(.caption2).lineLimit(1)
                     Spacer(minLength: 8)
                     Text(DashboardFormat.pounds(value.minorUnits)).font(.caption.bold()).monospacedDigit()
+                        .lineLimit(1).fixedSize()
                 }
             }
         }
@@ -285,6 +286,7 @@ struct SummaryTable: View {
         if let minorUnits {
             if signed && minorUnits > 0 {
                 Text("+" + Money.format(minorUnits, currency: .gbp)).font(.body.monospacedDigit()).foregroundStyle(theme.income)
+                    .lineLimit(1).fixedSize()
             } else {
                 MoneyText(minorUnits: minorUnits)
             }

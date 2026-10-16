@@ -73,8 +73,11 @@ struct YearDeltaCells: View {
                     Text("—")
                 }
             }
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
             .multiYearValueCell()
             Text(DashboardFormat.percent(delta?.amount == 0 ? nil : delta?.fraction))
+                .lineLimit(1)
                 .multiYearValueCell()
         }
         .font(isSectionHeader ? PlanCellView.captionFont : PlanCellView.bodyFont)

@@ -63,6 +63,8 @@ struct NetWorthLineChart: View {
                             Text(DashboardFormat.monthYear(selected.date)).font(.caption2).foregroundStyle(.secondary)
                             Text(DashboardFormat.pounds(Int(selected.pounds * 100))).font(.caption.bold())
                         }
+                        .lineLimit(1)
+                        .fixedSize()
                         .padding(4)
                         .background(RoundedRectangle(cornerRadius: 6).fill(theme.windowFill))
                     }

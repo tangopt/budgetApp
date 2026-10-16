@@ -30,8 +30,12 @@ struct MissingEvidenceView: View {
             filterBar
             messages
             checklist
+                // The list or empty state takes the rest of the window below the header.
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .padding(12)
+        // Top-aligned and filling the window, padded like Accounts and Budget.
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
         .toolbar {
@@ -312,6 +316,7 @@ struct MissingEvidenceRow: View {
             if let amount = item.expectedAmountMinorUnits, let currency = item.currency {
                 Text(Money.format(amount, currency: currency))
                     .monospacedDigit()
+                    .lineLimit(1)
                     .fixedSize()
             }
             trailingActions

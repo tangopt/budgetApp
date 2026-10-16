@@ -32,6 +32,7 @@ struct CurrentMonthCard: View {
                     Text("of which reserved").font(.caption)
                     Spacer()
                     Text(DashboardFormat.pounds(month.reservedProjected)).font(.caption).monospacedDigit()
+                        .lineLimit(1).fixedSize()
                 }
                 .foregroundStyle(.secondary)
                 .help("Allowance for expected but uncategorised spending (the Budget grid’s reserves). Counted in full every month.")
@@ -41,10 +42,12 @@ struct CurrentMonthCard: View {
                     Text("Net").font(.callout.bold())
                     Spacer()
                     Text("Projected month-end \(DashboardFormat.pounds(month.net.projected))").font(.callout).monospacedDigit()
+                        .lineLimit(1).fixedSize()
                 }
                 if hasActuals {
                     Text("So far \(DashboardFormat.pounds(month.net.actual)) · expected \(DashboardFormat.pounds(month.net.expected))")
                         .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).minimumScaleFactor(0.8)
                 }
             }
             if month.unreviewedCount > 0 {
@@ -68,11 +71,15 @@ struct CurrentMonthCard: View {
             HStack {
                 Text(title).font(.callout.bold())
                 Spacer()
-                if hasActuals {
-                    Text("\(DashboardFormat.pounds(totals.actual)) of \(DashboardFormat.pounds(totals.expected))").font(.callout).monospacedDigit()
-                } else {
-                    Text("expected \(DashboardFormat.pounds(totals.expected))").font(.callout).monospacedDigit()
+                Group {
+                    if hasActuals {
+                        Text("\(DashboardFormat.pounds(totals.actual)) of \(DashboardFormat.pounds(totals.expected))")
+                    } else {
+                        Text("expected \(DashboardFormat.pounds(totals.expected))")
+                    }
                 }
+                .font(.callout).monospacedDigit()
+                .lineLimit(1).fixedSize()
             }
             if hasActuals {
                 PaceMeter(fraction: totals.expected > 0 ? Double(totals.actual) / Double(totals.expected) : (totals.actual > 0 ? 1 : 0), pace: pace, tint: tint)
@@ -80,6 +87,7 @@ struct CurrentMonthCard: View {
             Text("Projected month-end \(DashboardFormat.pounds(totals.projected))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1).minimumScaleFactor(0.8)
         }
     }
 

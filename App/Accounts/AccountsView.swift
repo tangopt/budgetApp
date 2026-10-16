@@ -18,6 +18,12 @@ struct AccountsView: View {
     /// A row's Import statement ▸ CSV…/PDF…: selects the account, then the detail's import
     /// host starts it once it shows that account.
     @State private var pendingImport: PendingImport?
+    /// The account list's width, dragged on its divider and remembered between launches.
+    @AppStorage("accounts.listWidth") private var listWidth: Double = 340
+    /// `listWidth` when a divider drag began; nil when not dragging.
+    @State private var dragStartWidth: Double?
+    /// The list-and-detail row's width, which bounds the list's.
+    @State private var availableWidth: Double = 0
 
     private var importBusy: Bool { importViewModel.isStaging || importViewModel.isReviewing }
 
@@ -26,7 +32,7 @@ struct AccountsView: View {
             if let overview = viewModel.overview, !viewModel.accounts.isEmpty {
                 header(overview)
                 banners(overview)
-                HStack(alignment: .top, spacing: 16) {
+                HStack(alignment: .top, spacing: 0) {
                     VStack(alignment: .leading, spacing: 8) {
                         AccountsListView(groups: overview.groups, selection: $viewModel.selectedAccountId,
                                          importedThrough: viewModel.importedThrough,
@@ -40,14 +46,15 @@ struct AccountsView: View {
                         }
                         footer
                     }
-                    // About a third of the width (at least 260pt); the detail takes the rest.
-                    .containerRelativeFrame(.horizontal, alignment: .leading) { length, _ in
-                        max(260, length * 0.32)
-                    }
+                    // The dragged width, kept between the list's minimum and what leaves the
+                    // detail its own; the detail takes the rest.
+                    .frame(width: effectiveListWidth)
                     .frame(maxHeight: .infinity, alignment: .top)
+                    listDivider
                     detail
-                        .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .frame(minWidth: Self.detailMinWidth, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
+                .onGeometryChange(for: Double.self) { $0.size.width } action: { availableWidth = $0 }
             } else {
                 commonBanners
                 // Only claim "no accounts" once a load has succeeded; a failed first load
@@ -86,6 +93,47 @@ struct AccountsView: View {
                 )
             }
         }
+    }
+
+    // MARK: Resizable list
+
+    private static let listMinWidth: Double = 260
+    private static let listMaxWidth: Double = 640
+    private static let detailMinWidth: Double = 320
+    /// The divider's hit area (the gap between the list and the detail).
+    private static let dividerWidth: Double = 16
+
+    /// The widest the list can be in the current window.
+    private var listUpperBound: Double {
+        let fits = availableWidth > 0 ? availableWidth - Self.dividerWidth - Self.detailMinWidth : Self.listMaxWidth
+        return max(Self.listMinWidth, min(Self.listMaxWidth, fits))
+    }
+
+    private var effectiveListWidth: Double {
+        min(max(listWidth, Self.listMinWidth), listUpperBound)
+    }
+
+    /// The draggable gap between the list and the detail: a column-resize pointer, and an
+    /// accent line while dragged.
+    private var listDivider: some View {
+        Rectangle()
+            .fill(dragStartWidth == nil ? Color.clear : theme.accent.opacity(0.6))
+            .frame(width: 2)
+            .frame(width: Self.dividerWidth)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .pointerStyle(.columnResize)
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { value in
+                        let start = dragStartWidth ?? effectiveListWidth
+                        if dragStartWidth == nil { dragStartWidth = start }
+                        listWidth = min(max(start + value.translation.width, Self.listMinWidth), listUpperBound)
+                    }
+                    .onEnded { _ in dragStartWidth = nil }
+            )
+            .help("Drag to resize the account list")
+            .accessibilityHidden(true)
     }
 
     /// The detail panel, inside the import host for its account (file pickers, mapping and
@@ -161,6 +209,7 @@ struct AccountsView: View {
                 }
                 .font(.callout)
                 .monospacedDigit()
+                .lineLimit(1)
                 .foregroundStyle(change > 0 ? theme.yoyGood : (change < 0 ? theme.yoyBad : Color.secondary))
             }
         }
@@ -346,48 +395,66 @@ private struct AccountListRow: View {
         importedThrough.map { "Imported up to \(AccountsFormat.shortDay($0))" } ?? "Not imported yet"
     }
 
+    /// Every row is two lines, whatever it shows — the name (with its flags and pills) over
+    /// the caption on the left, the native balance over its GBP equivalent on the right — so
+    /// all rows are the same height.
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            // The import date shares a line: under the name with the account's own name when
-            // it has a nickname, else beside the name (no extra row height either way).
+        HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
-                if row.account.displayName != row.account.name {
-                    Text(row.account.displayName)
-                    Text("\(row.account.name) · \(importedCaption)")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(row.account.displayName).lineLimit(1)
+                    flags
+                }
+                Text(caption)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 1) {
+                AccountsFormat.balanceText(row.nativeBalanceMinorUnits, kind: row.account.kind, currency: row.account.currency,
+                                           muted: !row.account.includeInNetWorth)
+                // The GBP equivalent, secondary and without "owed" (said once, above). An
+                // account left out of net worth doesn't need it.
+                if row.account.currency != .gbp, row.account.includeInNetWorth {
+                    AccountsFormat.balanceText(row.gbpBalanceMinorUnits, kind: row.account.kind, currency: .gbp,
+                                               font: .caption.monospacedDigit(), muted: true, saysOwed: false)
                 } else {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(row.account.displayName).lineLimit(1).layoutPriority(1)
-                        Text(importedCaption)
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
+                    // Keeps the second line's height, so every row matches.
+                    Text(" ").font(.caption).accessibilityHidden(true)
                 }
             }
-            if row.isStale {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundStyle(.orange)
-                    .font(.caption)
-                    .help("Not updated in over \(BalanceStaleness.thresholdDays) days")
-            }
-            if let mismatch = AccountsFormat.statementMismatch(row.account) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-                    .font(.caption)
-                    .help(mismatch)
-                    .accessibilityLabel(mismatch)
-            }
-            if !row.account.includeInNetWorth {
-                NotInNetWorthBadge()
-            }
-            Spacer()
-            if row.account.currency != .gbp {
-                AccountsFormat.balanceText(row.nativeBalanceMinorUnits, kind: row.account.kind, currency: row.account.currency, muted: !row.account.includeInNetWorth)
-                    .foregroundStyle(.secondary)
-            }
-            AccountsFormat.balanceText(row.gbpBalanceMinorUnits, kind: row.account.kind, currency: .gbp, muted: !row.account.includeInNetWorth)
+            .fixedSize()
         }
         .font(.body.monospacedDigit())
         .padding(.vertical, 2)
+    }
+
+    /// "Account name · Imported up to 12 Oct" with a nickname; else just the import date.
+    private var caption: String {
+        row.account.displayName != row.account.name ? "\(row.account.name) · \(importedCaption)" : importedCaption
+    }
+
+    /// Stale and mismatch flags, then the Main account and Not in net worth pills.
+    @ViewBuilder
+    private var flags: some View {
+        if row.isStale {
+            Image(systemName: "exclamationmark.circle.fill")
+                .foregroundStyle(.orange)
+                .font(.caption)
+                .help("Not updated in over \(BalanceStaleness.thresholdDays) days")
+        }
+        if let mismatch = AccountsFormat.statementMismatch(row.account) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+                .font(.caption)
+                .help(mismatch)
+                .accessibilityLabel(mismatch)
+        }
+        if row.account.isMain {
+            MainAccountBadge()
+        }
+        if !row.account.includeInNetWorth {
+            NotInNetWorthBadge()
+        }
     }
 }
 
@@ -476,12 +543,7 @@ private struct AccountDetailView: View {
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                             if row.account.isMain {
-                                Text("Main account")
-                                    .font(.caption.weight(.medium))
-                                    .padding(.horizontal, 6).padding(.vertical, 1)
-                                    .background(Capsule().fill(theme.accent.opacity(0.15)))
-                                    .foregroundStyle(theme.accent)
-                                    .help(EditAccountSheet.mainAccountHelp)
+                                MainAccountBadge()
                             }
                             if !row.account.includeInNetWorth {
                                 NotInNetWorthBadge()
@@ -491,8 +553,7 @@ private struct AccountDetailView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         AccountsFormat.balanceText(row.nativeBalanceMinorUnits, kind: row.account.kind, currency: row.account.currency, font: .title.bold().monospacedDigit())
                         if row.account.currency != .gbp {
-                            AccountsFormat.balanceText(row.gbpBalanceMinorUnits, kind: row.account.kind, currency: .gbp)
-                                .foregroundStyle(.secondary)
+                            AccountsFormat.balanceText(row.gbpBalanceMinorUnits, kind: row.account.kind, currency: .gbp, muted: true, saysOwed: false)
                         }
                     }
                     VStack(alignment: .leading, spacing: 2) {
@@ -641,6 +702,7 @@ private struct AccountDetailView: View {
                         AccountsFormat.balanceText(entry.amountMinorUnits, kind: row.account.kind, currency: row.account.currency)
                     case .adjustment:
                         Text(AccountsFormat.signedMoney(entry.amountMinorUnits, currency: row.account.currency))
+                            .lineLimit(1).fixedSize()
                             .foregroundStyle(entry.amountMinorUnits < 0 ? theme.expense : Color.primary)
                     }
                 }
@@ -698,9 +760,12 @@ enum AccountsFormat {
     /// Credit balances are stored signed (negative = owed) and shown as the amount owed,
     /// coloured by the stored sign so debt reads in the theme's expense colour — as the Net
     /// Worth screen did.
-    /// `muted`: in the secondary style (an account left out of net worth).
-    static func balanceText(_ signedMinorUnits: Int, kind: AccountKind, currency: Currency, font: Font = .body.monospacedDigit(), muted: Bool = false) -> some View {
-        AccountBalanceText(signedMinorUnits: signedMinorUnits, kind: kind, currency: currency, font: font, muted: muted)
+    /// `muted`: in the secondary style (an account left out of net worth, or a secondary
+    /// GBP equivalent). `saysOwed`: false leaves "owed" off a debt — for an equivalent shown
+    /// under the native amount, which already says it. Never wraps.
+    static func balanceText(_ signedMinorUnits: Int, kind: AccountKind, currency: Currency, font: Font = .body.monospacedDigit(), muted: Bool = false,
+                            saysOwed: Bool = true) -> some View {
+        AccountBalanceText(signedMinorUnits: signedMinorUnits, kind: kind, currency: currency, font: font, muted: muted, saysOwed: saysOwed)
     }
 
     /// "Statement mismatch on 29 Sep 2026: +£12.00" (statement − computed) — nil when the
@@ -744,6 +809,7 @@ private struct AccountBalanceText: View {
     let currency: Currency
     let font: Font
     var muted = false
+    var saysOwed = true
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -751,11 +817,31 @@ private struct AccountBalanceText: View {
             HStack(spacing: 4) {
                 MoneyText(minorUnits: NetWorthCalculator.enteredBalance(signedMinorUnits: signedMinorUnits, accountKind: .credit), currency: currency, font: font, colorOverride: signedMinorUnits,
                           tint: muted ? .secondary : nil)
-                Text("owed").font(font).foregroundStyle(muted ? Color.secondary : theme.expense)
+                if saysOwed {
+                    Text("owed").font(font).foregroundStyle(muted ? Color.secondary : theme.expense)
+                        .lineLimit(1)
+                }
             }
+            .fixedSize()
         } else {
             MoneyText(minorUnits: signedMinorUnits, currency: currency, font: font, tint: muted ? .secondary : (signedMinorUnits < 0 ? theme.expense : .primary))
         }
+    }
+}
+
+/// "Main account": the account Set as main account marks.
+private struct MainAccountBadge: View {
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Text("Main account")
+            .font(.caption.weight(.medium))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(Capsule().fill(theme.accent.opacity(0.15)))
+            .foregroundStyle(theme.accent)
+            .help(EditAccountSheet.mainAccountHelp)
     }
 }
 

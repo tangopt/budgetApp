@@ -16,8 +16,9 @@ struct TopCategoriesCard: View {
             ForEach(categories) { category in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Text(category.name)
+                        Text(category.name).lineLimit(1)
                         Spacer()
+                        Group {
                         if category.isCoveredByReserve && category.expected == 0 && category.actual > 0 {
                             Text("\(DashboardFormat.pounds(category.actual)) · covered by reserve").foregroundStyle(.secondary)
                         } else if category.isUnplanned {
@@ -29,6 +30,10 @@ struct TopCategoriesCard: View {
                         } else {
                             Text("expected \(DashboardFormat.pounds(category.expected))").foregroundStyle(.secondary)
                         }
+                        }
+                        // Amounts never wrap; the name truncates instead.
+                        .lineLimit(1)
+                        .fixedSize()
                     }
                     .font(.callout)
                     .monospacedDigit()
@@ -93,9 +98,10 @@ struct UpcomingBillsCard: View {
             let visible = Array(bills.prefix(shown).enumerated())
             ForEach(visible, id: \.offset) { index, bill in
                 HStack {
-                    Text("\(DashboardFormat.day(bill.date)) · \(bill.categoryName)")
+                    Text("\(DashboardFormat.day(bill.date)) · \(bill.categoryName)").lineLimit(1)
                     Spacer()
                     Text(DashboardFormat.pounds(abs(bill.amountMinorUnits))).monospacedDigit()
+                        .lineLimit(1).fixedSize()
                 }
                 .font(.callout)
                 if index < visible.count - 1 { Divider() }
@@ -121,9 +127,11 @@ struct AccountsCard: View {
             let visible = Array(accounts.prefix(shown))
             ForEach(visible) { account in
                 HStack {
-                    Text(account.name)
+                    Text(account.name).lineLimit(1)
                     Spacer()
                     balanceText(account)
+                        .lineLimit(1)
+                        .fixedSize()
                 }
                 .font(.callout)
                 .monospacedDigit()

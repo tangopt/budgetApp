@@ -87,6 +87,8 @@ struct YearAtAGlanceChart: View {
             }
             Text("Net \(DashboardFormat.pounds(flow.net))").font(.caption.bold())
         }
+        .lineLimit(1)
+        .fixedSize()
         .padding(4)
         .background(RoundedRectangle(cornerRadius: 6).fill(theme.windowFill))
     }

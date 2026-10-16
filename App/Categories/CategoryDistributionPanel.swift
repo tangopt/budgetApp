@@ -301,8 +301,10 @@ private struct DistributionDonut: View {
             Text(slice.name).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
             Text(Money.format(slice.amountMinorUnits, currency: .gbp)).monospacedDigit()
+                .lineLimit(1).fixedSize()
             Text(percent(slice.amountMinorUnits))
                 .monospacedDigit()
+                .lineLimit(1)
                 .foregroundStyle(.secondary)
                 .frame(width: 38, alignment: .trailing)
             if onSelect != nil {

@@ -58,8 +58,10 @@ struct YearAtAGlanceCard: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(hasForecast ? "\(title) · projected" : title).font(.caption).foregroundStyle(.secondary)
             Text(DashboardFormat.pounds(projected)).font(.headline).monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.7)
             if hasForecast {
                 Text("of which actual \(DashboardFormat.pounds(actual))").font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.8)
             }
         }
         .padding(8)

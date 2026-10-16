@@ -46,7 +46,8 @@ enum AppScreen: String, CaseIterable, Identifiable {
     var sidebarSection: String {
         switch self {
         case .importReview, .uncategorized: return "Workflow"
-        case .dashboard, .search, .budgetGrid, .forecast, .accounts, .documents, .missingEvidence: return "Overview"
+        case .dashboard, .search, .budgetGrid, .forecast, .accounts: return "Overview"
+        case .documents, .missingEvidence: return "Tax"
         case .rules, .categories: return "Settings"
         }
     }
@@ -139,7 +140,7 @@ struct ContentView: View {
 
     /// The visible `AppScreen.allCases` grouped by `sidebarSection`, one entry per distinct
     /// section value in the order that value first appears in `allCases` — not
-    /// alphabetically, so "Workflow" → "Overview" → "Settings" (driven by `.importReview`
+    /// alphabetically, so "Workflow" → "Overview" → "Tax" → "Settings" (driven by `.importReview`
     /// being first in `allCases`, `.dashboard` being the first `.sidebarSection ==
     /// "Overview"` case, etc.) stays stable regardless of where a section's later members
     /// (e.g. `.uncategorized`) happen to sit in `allCases`' own declaration order. A section

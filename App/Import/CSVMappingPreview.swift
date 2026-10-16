@@ -49,6 +49,7 @@ struct CSVMappingPreview: View {
                                 if let balance = transaction.balanceAfterMinorUnits {
                                     Text(Money.format(balance, currency: currency))
                                         .monospacedDigit()
+                                        .lineLimit(1).fixedSize()
                                 } else {
                                     Text("—").foregroundStyle(.secondary)
                                 }

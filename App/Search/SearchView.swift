@@ -121,7 +121,7 @@ struct SearchView: View {
             TableColumn("Amount", value: \Row.amountMinorUnits) { row in
                 MoneyText(minorUnits: row.amountMinorUnits, currency: row.currency, alignment: .trailing)
             }
-            .width(min: 90, ideal: 110, max: 140)
+            .width(min: 110, ideal: 120, max: 150)
             TableColumn(Text("").accessibilityLabel("Edit")) { row in
                 Button { edit(row.id) } label: { Image(systemName: "pencil") }
                     .buttonStyle(.borderless)

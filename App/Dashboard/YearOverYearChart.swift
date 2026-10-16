@@ -62,6 +62,8 @@ struct YearOverYearChart: View {
                                 Text("Forecast \(DashboardFormat.pounds(selected.forecastMinorUnits))").font(.caption2).foregroundStyle(.secondary)
                             }
                         }
+                        .lineLimit(1)
+                        .fixedSize()
                         .padding(4)
                         .background(RoundedRectangle(cornerRadius: 6).fill(theme.windowFill))
                     }
@@ -83,6 +85,8 @@ struct YearOverYearChart: View {
     private func totalLabel(_ change: YearChange) -> some View {
         Text(DashboardFormat.compactPounds(change.totalMinorUnits))
             .font(.caption2)
+            .lineLimit(1)
+            .fixedSize()
             .foregroundStyle(.secondary)
     }
 }

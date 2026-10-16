@@ -402,6 +402,7 @@ struct ReviewView: View {
                         }
                     }
                     .font(.callout.monospacedDigit())
+                    .lineLimit(1)
                     Text("Check for missing or duplicate transactions, or import the statement for the missing period. You can finish anyway — the account shows the mismatch until an import resolves it.")
                         .font(.caption)
                         .foregroundStyle(.secondary)

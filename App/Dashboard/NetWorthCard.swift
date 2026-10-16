@@ -73,7 +73,8 @@ struct NetWorthCard: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).font(large ? .title2.bold() : .headline).monospacedDigit()
-            if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+                .lineLimit(1).minimumScaleFactor(0.7)
+            if let detail { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8) }
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
