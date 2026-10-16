@@ -43,6 +43,13 @@ struct Theme: Identifiable, Equatable, Sendable {
     let yoyGood: Color
     let yoyBad: Color
     let chartSeries: [Color]
+    /// Per chart series: a scenario grid cell's "differs from the budget" fill.
+    let differsFills: [Color]
+    /// Per chart series: a Differences tab cell's fill.
+    let differencesFills: [Color]
+    /// A category badge's glyph by type: black or white, whichever reads on its fill
+    /// (Classic: white).
+    let badgeGlyphs: [CategoryType: Color]
     /// Classic: the accent is the system's, so the root sets no `.tint`.
     let usesSystemAccent: Bool
 
@@ -80,6 +87,19 @@ struct Theme: Identifiable, Equatable, Sendable {
         yoyBad = color(\.yoyBad)
         let count = min(light.chartSeries.count, dark.chartSeries.count)
         chartSeries = (0..<count).map { Theme.color(light: light.chartSeries[$0], dark: dark.chartSeries[$0]) }
+        differsFills = (0..<count).map {
+            Theme.color(light: light.chartSeries[$0].opacity(light.differsFillOpacity), dark: dark.chartSeries[$0].opacity(dark.differsFillOpacity))
+        }
+        differencesFills = (0..<count).map {
+            Theme.color(light: light.chartSeries[$0].opacity(light.differencesCellOpacity), dark: dark.chartSeries[$0].opacity(dark.differencesCellOpacity))
+        }
+        var glyphs: [CategoryType: Color] = [:]
+        for type in CategoryType.allCases {
+            let lightGlyph = light.badgeGlyph(type, .light), darkGlyph = dark.badgeGlyph(type, .dark)
+            glyphs[type] = lightGlyph == .hex(0xFFFFFF) && darkGlyph == .hex(0xFFFFFF)
+                ? Color.white : Theme.color(light: lightGlyph, dark: darkGlyph)
+        }
+        badgeGlyphs = glyphs
         usesSystemAccent = light.accent.system == .accent && dark.accent.system == .accent
     }
 
@@ -100,7 +120,20 @@ struct Theme: Identifiable, Equatable, Sendable {
 
     /// Chart series `index` (wrapping): 0 is the Budget / the main line.
     func series(_ index: Int) -> Color {
-        chartSeries[((index % chartSeries.count) + chartSeries.count) % chartSeries.count]
+        chartSeries[wrapped(index)]
+    }
+
+    /// Series `index`'s differs fill (wrapping like `series`).
+    func differsFill(_ index: Int) -> Color { differsFills[wrapped(index)] }
+
+    /// Series `index`'s Differences cell fill (wrapping like `series`).
+    func differencesFill(_ index: Int) -> Color { differencesFills[wrapped(index)] }
+
+    /// A category badge's glyph colour.
+    func badgeGlyph(_ type: CategoryType) -> Color { badgeGlyphs[type] ?? Color.white }
+
+    private func wrapped(_ index: Int) -> Int {
+        ((index % chartSeries.count) + chartSeries.count) % chartSeries.count
     }
 
     /// A body row's alternating shade.

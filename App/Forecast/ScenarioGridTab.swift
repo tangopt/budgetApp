@@ -568,8 +568,9 @@ struct ScenarioGridTab: View {
     /// blue, when it is selected).
     private var planColor: Color { theme.series(viewModel.colorIndex(of: viewModel.gridSelection)) }
 
-    /// A differing cell's shading: a light tint of the scenario's colour.
-    private var differsFill: Color { planColor.opacity(0.22) }
+    /// A differing cell's shading: a light tint of the scenario's colour (`Theme.differsFill`;
+    /// Classic's 22%).
+    private var differsFill: Color { theme.differsFill(viewModel.colorIndex(of: viewModel.gridSelection)) }
 
     /// Members' cells combined (`PlanStatus.combine`), with the Budget's values summed.
     private func cell(_ categories: [Category], month: Int, year: Int? = nil) -> Cell {

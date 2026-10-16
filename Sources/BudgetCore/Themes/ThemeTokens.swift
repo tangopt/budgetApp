@@ -65,6 +65,12 @@ public struct ThemeTokens: Equatable, Sendable {
     /// net, expenses, …).
     public var chartSeries: [ThemeColor]
 
+    /// The opacity of a plan's chart series colour behind a scenario grid cell that differs
+    /// from the budget (Classic 22%).
+    public var differsFillOpacity: Double
+    /// The opacity of a scenario's colour behind a Differences tab cell (Classic 10%).
+    public var differencesCellOpacity: Double
+
     /// Every single-colour token by name, in declaration order.
     public var named: [(String, ThemeColor)] {
         [
@@ -106,14 +112,50 @@ public struct ThemeTokens: Equatable, Sendable {
         ColorMath.composite(windowBackground, over: .system(.windowBackground, variant))
     }
 
-    /// Every row background money is drawn on, composited over the grid background.
+    /// Every background money is drawn on, composited over the grid background: the row
+    /// tints, the selected cell, cards (`surface`), and the Forecast screen's per-plan fills
+    /// (a differing grid cell at 22% of each chart series colour, a Differences cell at 10%).
     public func moneyRowBackgrounds(_ variant: ThemeVariant) -> [(String, ThemeColor)] {
         let ground = gridBackground(variant)
-        let tints: [(String, ThemeColor)] = [
+        var tints: [(String, ThemeColor)] = [
             ("stripe", rowStripe), ("group", groupRowTint), ("section header", sectionHeaderTint),
             ("totals", totalsTint), ("net", totalsNetTint), ("reserved", reservedTint), ("net worth", netWorthTint),
+            ("selection", selectionFill),
         ]
-        return [("background", ground)] + tints.map { ($0.0, ColorMath.composite($0.1, over: ground)) }
+        for (index, color) in chartSeries.enumerated() {
+            tints.append(("differs fill (series \(index))", color.opacity(differsFillOpacity)))
+            tints.append(("differences cell (series \(index))", color.opacity(differencesCellOpacity)))
+        }
+        return [("background", ground), ("surface", ColorMath.composite(surface, over: ground))]
+            + tints.map { ($0.0, ColorMath.composite($0.1, over: ground)) }
+    }
+
+    /// A category badge's fill: its type's colour at 85%.
+    public static let badgeFillOpacity = 0.85
+
+    /// A grid row's stripe and a category badge's fill colour, by category type.
+    public func stripe(_ type: CategoryType) -> ThemeColor {
+        switch type {
+        case .income: return income
+        case .expense: return expense
+        case .transfer: return transfer
+        case .adjustment: return adjustmentsTint
+        }
+    }
+
+    /// A category badge's glyph: black or white, whichever reads better on the badge's fill
+    /// (`badgeFillOpacity` of the type's colour over the grid background). Classic keeps
+    /// today's white glyphs.
+    public func badgeGlyph(_ type: CategoryType, _ variant: ThemeVariant) -> ThemeColor {
+        if stripe(type).system != nil { return .hex(0xFFFFFF) }
+        let fill = badgeFill(type, variant)
+        let white = ThemeColor.hex(0xFFFFFF), black = ThemeColor.hex(0x000000)
+        return ColorMath.contrastRatio(white, fill) >= ColorMath.contrastRatio(black, fill) ? white : black
+    }
+
+    /// A category badge's fill as drawn on the grid background.
+    public func badgeFill(_ type: CategoryType, _ variant: ThemeVariant) -> ThemeColor {
+        ColorMath.composite(stripe(type).opacity(ThemeTokens.badgeFillOpacity), over: gridBackground(variant))
     }
 }
 
@@ -127,13 +169,14 @@ extension ThemeTokens {
 
     /// A variant from its base colours, the tints derived as Classic derives them: section
     /// headers 8% accent, group rows 10% `group`, totals 17% / 28% `totals`, reserved 8%,
-    /// net worth 10% `reserved`, the selection 12% accent (each times `strength`).
+    /// net worth 10% `reserved`, the selection 12% accent (each times `strength`); the
+    /// Forecast screen's plan fills 22% / 10% of a series colour (times `planFill`).
     public static func make(
         accent: ThemeColor, background: ThemeColor, surface: ThemeColor, header: ThemeColor,
         stripe: ThemeColor, group: ThemeColor, totals: ThemeColor, reserved: ThemeColor,
         transfer: ThemeColor, adjustment: ThemeColor,
         income: ThemeColor, expense: ThemeColor, pending: ThemeColor, neutral: ThemeColor,
-        series: [ThemeColor], strength: TintStrength = .standard
+        series: [ThemeColor], strength: TintStrength = .standard, planFill: Double = 1
     ) -> ThemeTokens {
         let k = strength.scale
         return ThemeTokens(
@@ -147,7 +190,8 @@ extension ThemeTokens {
             reservedTint: reserved.opacity(min(0.08 * k, 1)), netWorthTint: reserved.opacity(min(0.10 * k, 1)),
             adjustmentsTint: adjustment, transfer: transfer,
             income: income, expense: expense, pending: pending, neutralMoney: neutral,
-            yoyGood: income, yoyBad: expense, chartSeries: series
+            yoyGood: income, yoyBad: expense, chartSeries: series,
+            differsFillOpacity: 0.22 * planFill, differencesCellOpacity: 0.10 * planFill
         )
     }
 }

@@ -171,7 +171,7 @@ struct DifferencesTab: View {
                     .padding(8)
                     .frame(width: Self.scenarioWidth, alignment: .topLeading)
                     .frame(maxHeight: .infinity, alignment: .topLeading)
-                    .background(row.cells[scenario.id ?? -1] == nil ? Color.clear : theme.series(viewModel.colorIndex(of: scenario.id)).opacity(0.1))
+                    .background(row.cells[scenario.id ?? -1] == nil ? Color.clear : theme.differencesFill(viewModel.colorIndex(of: scenario.id)))
             }
         }
         .font(.callout)

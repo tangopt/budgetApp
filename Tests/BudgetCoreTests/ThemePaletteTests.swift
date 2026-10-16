@@ -100,6 +100,42 @@ final class ThemePaletteTests: XCTestCase {
         }
     }
 
+    /// The first two chart colours are also used as text (the Dashboard's expenses and net).
+    func testLeadingSeriesColoursReadAsTextOnTheBackground() {
+        eachVariant { palette, variant, tokens in
+            guard palette.id != ThemePalette.defaultID else { return }
+            for index in 0..<2 {
+                let ratio = ColorMath.contrastRatio(tokens.chartSeries[index], tokens.gridBackground(variant))
+                XCTAssertGreaterThanOrEqual(ratio, 3, "\(palette.name) \(variant): series \(index) \(ratio)")
+            }
+        }
+    }
+
+    func testBadgeGlyphsReadOnTheirFill() {
+        eachVariant { palette, variant, tokens in
+            for type in CategoryType.allCases {
+                let glyph = tokens.badgeGlyph(type, variant)
+                if palette.id == ThemePalette.defaultID {
+                    XCTAssertEqual(glyph, .hex(0xFFFFFF), "Classic keeps white glyphs")
+                    continue
+                }
+                let ratio = ColorMath.contrastRatio(glyph, tokens.badgeFill(type, variant))
+                XCTAssertGreaterThanOrEqual(ratio, 3, "\(palette.name) \(variant) \(type) glyph \(ratio)")
+            }
+        }
+        // Light fills take a black glyph, dark ones white.
+        XCTAssertEqual(ThemePalette.named("dracula").dark.badgeGlyph(.income, .dark), .hex(0x000000))
+        XCTAssertEqual(ThemePalette.named("high-contrast").light.badgeGlyph(.expense, .light), .hex(0xFFFFFF))
+    }
+
+    func testMoneyBackgroundsIncludeCardsSelectionAndPlanFills() {
+        let names = ThemePalette.named("nord").dark.moneyRowBackgrounds(.dark).map(\.0)
+        XCTAssertTrue(names.contains("surface"))
+        XCTAssertTrue(names.contains("selection"))
+        XCTAssertTrue(names.contains("differs fill (series 0)"))
+        XCTAssertTrue(names.contains("differences cell (series 7)"))
+    }
+
     func testAccentIsVisibleOnTheGrid() {
         eachVariant { palette, variant, tokens in
             let ratio = ColorMath.contrastRatio(tokens.accent, tokens.gridBackground(variant))
@@ -150,6 +186,8 @@ final class ThemePaletteTests: XCTestCase {
             XCTAssertEqual(tokens.yoyGood.system, .green)
             XCTAssertEqual(tokens.yoyBad.system, .red)
             XCTAssertEqual(tokens.neutralMoney.system, .label)
+            XCTAssertEqual(tokens.differsFillOpacity, 0.22)
+            XCTAssertEqual(tokens.differencesCellOpacity, 0.10)
             XCTAssertEqual(tokens.chartSeries.map(\.system),
                            [.blue, .orange, .green, .purple, .pink, .teal, .brown, .indigo, .mint, .red])
         }

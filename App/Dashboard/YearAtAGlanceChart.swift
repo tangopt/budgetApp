@@ -9,6 +9,7 @@ struct YearAtAGlanceChart: View {
 
     @State private var selectedMonth: String?
     @Environment(\.theme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
 
     private var selected: MonthlyFlow? {
         guard let selectedMonth else { return nil }
@@ -28,7 +29,7 @@ struct YearAtAGlanceChart: View {
                 if flow.incomeRemaining > 0 {
                     BarMark(x: .value("Month", name(flow)), y: .value("Income", pounds(flow.incomeRemaining)))
                         .position(by: .value("Type", "Income"))
-                        .foregroundStyle(HatchPattern.style(theme.income))
+                        .foregroundStyle(HatchPattern.style(theme.income, colorScheme: colorScheme))
                 }
                 BarMark(x: .value("Month", name(flow)), y: .value("Expenses", pounds(flow.expenseActual)))
                     .position(by: .value("Type", "Expenses"))
@@ -37,12 +38,12 @@ struct YearAtAGlanceChart: View {
                 if otherRemaining > 0 {
                     BarMark(x: .value("Month", name(flow)), y: .value("Expenses", pounds(otherRemaining)))
                         .position(by: .value("Type", "Expenses"))
-                        .foregroundStyle(HatchPattern.style(theme.series(1)))
+                        .foregroundStyle(HatchPattern.style(theme.series(1), colorScheme: colorScheme))
                 }
                 if flow.reservedRemaining > 0 {
                     BarMark(x: .value("Month", name(flow)), y: .value("Expenses", pounds(flow.reservedRemaining)))
                         .position(by: .value("Type", "Expenses"))
-                        .foregroundStyle(HatchPattern.style(theme.reserved))
+                        .foregroundStyle(HatchPattern.style(theme.reserved, colorScheme: colorScheme))
                 }
             }
             ForEach(flows) { flow in

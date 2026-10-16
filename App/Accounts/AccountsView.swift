@@ -551,6 +551,7 @@ private struct AccountDetailView: View {
                 ForEach(points, id: \.index) { point in
                     LineMark(x: .value("Date", point.date), y: .value("Balance", point.value))
                         .interpolationMethod(.monotone)
+                        .foregroundStyle(theme.series(0))
                 }
                 if let hovered {
                     RuleMark(x: .value("Selected", hovered.date))
@@ -581,7 +582,7 @@ private struct AccountDetailView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(DashboardFormat.day(date)).font(.caption2).foregroundStyle(.secondary)
             HStack(spacing: 4) {
-                Circle().fill(theme.accent).frame(width: 6, height: 6)
+                Circle().fill(theme.series(0)).frame(width: 6, height: 6)
                 Text(row.account.displayName).font(.caption2).lineLimit(1)
                 Spacer(minLength: 8)
                 AccountsFormat.balanceText(minorUnits, kind: row.account.kind, currency: row.account.currency, font: .caption.bold().monospacedDigit())

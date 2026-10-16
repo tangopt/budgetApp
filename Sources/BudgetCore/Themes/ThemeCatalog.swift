@@ -58,7 +58,7 @@ extension ThemePalette {
             stripe: ink(0x0B3A5C, 0.06), group: c(0x2A7FB0), totals: c(0x0E8A8F), reserved: c(0x6A58A8),
             transfer: c(0x1F64B0), adjustment: c(0x7C8D9A),
             income: c(0x0A7A5A), expense: c(0xC4384A), pending: c(0x9A6400), neutral: .system(.label, .light),
-            series: [c(0x0B6FA4), c(0xE07A3F), c(0x0A7A5A), c(0x6A58A8), c(0xD0457A), c(0x16A3B5), c(0x9C7A50), c(0x2A3A5A), c(0x6DBE8C), c(0xC4384A)]
+            series: [c(0x0B6FA4), c(0xB85A20), c(0x0A7A5A), c(0x6A58A8), c(0xD0457A), c(0x16A3B5), c(0x9C7A50), c(0x2A3A5A), c(0x6DBE8C), c(0xC4384A)]
         ),
         dark: .make(
             accent: c(0x4FB4E8), background: c(0x0E1A24), surface: c(0x14232F), header: c(0x182A38),
@@ -122,15 +122,15 @@ extension ThemePalette {
             stripe: ink(0x2E3440, 0.05), group: c(0xD08770), totals: c(0x5E81AC), reserved: c(0xB48EAD),
             transfer: c(0x5E81AC), adjustment: c(0x4C566A),
             income: c(0x4E7A35), expense: c(0xA8434D), pending: c(0x2F6E85), neutral: .system(.label, .light),
-            series: [c(0x5E81AC), c(0xD08770), c(0x6F9A50), c(0xB48EAD), c(0xBF616A), c(0x5E9C9B), c(0xA88A50), c(0x3B4252), c(0x88C0D0), c(0x8F6A90)]
+            series: [c(0x5E81AC), c(0xB0634A), c(0x6F9A50), c(0xB48EAD), c(0xBF616A), c(0x5E9C9B), c(0xA88A50), c(0x3B4252), c(0x88C0D0), c(0x8F6A90)]
         ),
         dark: .make(
             accent: c(0x88C0D0), background: c(0x2E3440), surface: c(0x3B4252), header: c(0x3B4252),
             stripe: ink(0x242933, 0.35), group: c(0xD08770), totals: c(0x5E81AC), reserved: c(0xB48EAD),
             transfer: c(0x81A1C1), adjustment: c(0x7B88A1),
             income: c(0xA3BE8C), expense: c(0xD57780), pending: c(0x81A1C1), neutral: .system(.label, .dark),
-            series: [c(0x88C0D0), c(0xD08770), c(0xA3BE8C), c(0xB48EAD), c(0xBF616A), c(0xEBCB8B), c(0x5E81AC), c(0xD8DEE9)],
-            strength: .scaled(0.8)
+            series: [c(0x88C0D0), c(0xD08770), c(0xA3BE8C), c(0xB48EAD), c(0xBF616A), c(0xEBCB8B), c(0x5E81AC), c(0x81A1C1)],
+            strength: .scaled(0.8), planFill: 0.5
         )
     )
 
@@ -146,14 +146,16 @@ extension ThemePalette {
             stripe: ink(0x93A1A1, 0.12), group: c(0xCB4B16), totals: c(0x2AA198), reserved: c(0xD33682),
             transfer: c(0x268BD2), adjustment: c(0x93A1A1),
             income: c(0x6B7A00), expense: c(0xDC322F), pending: c(0x6C71C4), neutral: .system(.label, .light),
-            series: [c(0x268BD2), c(0xCB4B16), c(0x859900), c(0x6C71C4), c(0xD33682), c(0x2AA198), c(0xB58900), c(0x586E75), c(0xDC322F), c(0x93A1A1)]
+            series: [c(0x268BD2), c(0xCB4B16), c(0x859900), c(0x6C71C4), c(0xD33682), c(0x2AA198), c(0xB58900), c(0x586E75), c(0xDC322F), c(0x93A1A1)],
+            planFill: 0.85
         ),
         dark: .make(
             accent: c(0x268BD2), background: c(0x002B36), surface: c(0x073642), header: c(0x073642),
             stripe: ink(0x073642, 0.6), group: c(0xCB4B16), totals: c(0x6C71C4), reserved: c(0xD33682),
             transfer: c(0x268BD2), adjustment: c(0x586E75),
             income: c(0x859900), expense: c(0xF0524F), pending: c(0x2AA198), neutral: .system(.label, .dark),
-            series: [c(0x268BD2), c(0xCB4B16), c(0x859900), c(0x6C71C4), c(0xD33682), c(0x2AA198), c(0xB58900), c(0x93A1A1), c(0xDC322F), c(0xEEE8D5)]
+            series: [c(0x268BD2), c(0xCB4B16), c(0x859900), c(0x6C71C4), c(0xD33682), c(0x2AA198), c(0xB58900), c(0x93A1A1), c(0xDC322F)],
+            planFill: 0.7
         )
     )
 
@@ -173,7 +175,8 @@ extension ThemePalette {
             stripe: ink(0x44475A, 0.5), group: c(0xFFB86C), totals: c(0x6272A4), reserved: c(0xFF79C6),
             transfer: c(0x8BE9FD), adjustment: c(0x6272A4),
             income: c(0x50FA7B), expense: c(0xFF5555), pending: c(0xF1FA8C), neutral: .system(.label, .dark),
-            series: [c(0xBD93F9), c(0xFFB86C), c(0x50FA7B), c(0xFF79C6), c(0x8BE9FD), c(0xF1FA8C), c(0xFF5555), c(0x6272A4), c(0xF8F8F2), c(0x44A0B0)]
+            series: [c(0xBD93F9), c(0xFFB86C), c(0x50FA7B), c(0xFF79C6), c(0x8BE9FD), c(0xF1FA8C), c(0xFF5555), c(0x6272A4), c(0x44A0B0)],
+            planFill: 0.6
         )
     )
 
@@ -226,7 +229,7 @@ extension ThemePalette {
             stripe: ink(0x3A2A6A, 0.05), group: c(0x9A7AE0), totals: c(0x7A5AD0), reserved: c(0xB0408A),
             transfer: c(0x3A6AD0), adjustment: c(0x9A94A8),
             income: c(0x1F7A5A), expense: c(0xC0304A), pending: c(0x946000), neutral: .system(.label, .light),
-            series: [c(0x6A48C8), c(0xE0803A), c(0x1F9A6A), c(0xB0408A), c(0x3A6AD0), c(0xC0A030), c(0x40A0B0), c(0x8A6A9A), c(0xA08AE8), c(0xC0304A)]
+            series: [c(0x6A48C8), c(0xB85F1E), c(0x1F9A6A), c(0xB0408A), c(0x3A6AD0), c(0xC0A030), c(0x40A0B0), c(0x8A6A9A), c(0xA08AE8), c(0xC0304A)]
         ),
         dark: .make(
             accent: c(0xB89CF6), background: c(0x19162A), surface: c(0x211D35), header: c(0x252040),
@@ -286,7 +289,7 @@ extension ThemePalette {
             stripe: ink(0x0A3A2A, 0.05), group: c(0x2A9A7A), totals: c(0x14907E), reserved: c(0x7A58C0),
             transfer: c(0x2A72B8), adjustment: c(0x8A9C96),
             income: c(0x157A4A), expense: c(0xC0344A), pending: c(0x9A6200), neutral: .system(.label, .light),
-            series: [c(0x0A8A6C), c(0xE0784A), c(0x2A72B8), c(0x7A58C0), c(0xD04A80), c(0xB8A030), c(0x5AC0A0), c(0x8A6A50), c(0x40A8D0), c(0xC0344A)]
+            series: [c(0x0A8A6C), c(0xB85A2E), c(0x2A72B8), c(0x7A58C0), c(0xD04A80), c(0xB8A030), c(0x5AC0A0), c(0x8A6A50), c(0x40A8D0), c(0xC0344A)]
         ),
         dark: .make(
             accent: c(0x5EE6CC), background: c(0x0F1B18), surface: c(0x152520), header: c(0x182A24),
@@ -306,16 +309,16 @@ extension ThemePalette {
             stripe: ink(0x000000, 0.06), group: c(0x000000), totals: c(0x000000), reserved: c(0x00606A),
             transfer: c(0x0033CC), adjustment: c(0x000000),
             income: c(0x004A14), expense: c(0x8A0000), pending: c(0x6A00A0), neutral: .system(.label, .light),
-            series: [c(0x0033CC), c(0xC04000), c(0x006A1A), c(0x6A00A0), c(0xC0006A), c(0x00707A), c(0x000000), c(0x7A5A00), c(0x5A8AFF), c(0xA00000)],
-            strength: .scaled(0.4)
+            series: [c(0x0033CC), c(0xC04000), c(0x006A1A), c(0x6A00A0), c(0xC0006A), c(0x00707A), c(0x7A5A00), c(0x5A8AFF), c(0xA00000)],
+            strength: .scaled(0.4), planFill: 0.4
         ),
         dark: .make(
             accent: c(0x66B2FF), background: c(0x000000), surface: c(0x0A0A0A), header: c(0x1A1A1A),
             stripe: ink(0xFFFFFF, 0.06), group: c(0xFFFFFF), totals: c(0xFFFFFF), reserved: c(0xD9A3FF),
             transfer: c(0x66B2FF), adjustment: c(0xFFFFFF),
             income: c(0x4CFF7A), expense: c(0xFF8C8C), pending: c(0xFFD84A), neutral: .system(.label, .dark),
-            series: [c(0x66B2FF), c(0xFF9A40), c(0x4CFF7A), c(0xD9A3FF), c(0xFF6EC0), c(0x40F0F0), c(0xFFFFFF), c(0xFFD84A), c(0x3A6AFF), c(0xFF6E6E)],
-            strength: .scaled(0.4)
+            series: [c(0x66B2FF), c(0xFF9A40), c(0x4CFF7A), c(0xD9A3FF), c(0xFF6EC0), c(0x40F0F0), c(0xFFD84A), c(0x3A6AFF), c(0xFF6E6E)],
+            strength: .scaled(0.4), planFill: 0.4
         )
     )
 }

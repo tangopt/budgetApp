@@ -156,6 +156,8 @@ struct ContentView: View {
                     }
                 }
             }
+            // The sidebar's selection keeps the system accent whatever the theme.
+            .tint(nil)
             // The whole column, title bar included: without it the sidebar is the content area's
             // colour in dark mode (see `SidebarMaterial`).
             .background { SidebarMaterial().ignoresSafeArea() }

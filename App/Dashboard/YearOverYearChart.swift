@@ -8,6 +8,7 @@ struct YearOverYearChart: View {
 
     @State private var selectedYear: String?
     @Environment(\.theme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
 
     private var selected: YearChange? {
         guard let selectedYear else { return nil }
@@ -43,7 +44,7 @@ struct YearOverYearChart: View {
                         yStart: .value("From", pounds(change.realisedMinorUnits)),
                         yEnd: .value("To", pounds(change.totalMinorUnits))
                     )
-                    .foregroundStyle(HatchPattern.style(color(change)))
+                    .foregroundStyle(HatchPattern.style(color(change), colorScheme: colorScheme))
                     .annotation(position: change.totalMinorUnits < 0 ? .bottom : .top) { totalLabel(change) }
                 }
             }
