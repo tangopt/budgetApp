@@ -7,7 +7,7 @@ import GRDB
 @MainActor
 final class BudgetGridViewModel: ObservableObject {
     @Published var categories: [Category] = [] {
-        didSet { itemAccountsCache = nil; clearPlanCaches(); clearNetWorthCaches() }
+        didSet { itemAccountsCache = nil; netWorthCategoriesCache = nil; clearPlanCaches(); clearNetWorthCaches() }
     }
     @Published var categoryGroups: [CategoryGroup] = []
     /// Every transaction: balances and net worth. The plan's actuals use `budgetTransactions`.
@@ -72,6 +72,12 @@ final class BudgetGridViewModel: ObservableObject {
         didSet {
             // The main account decides where items with no account go.
             if accounts.mainAccountId != oldValue.mainAccountId { itemAccountsCache = nil; clearPlanCaches() }
+            // Count toward net worth decides which transfers the Totals block counts.
+            if accounts.excludedFromNetWorthIds != oldValue.excludedFromNetWorthIds {
+                netWorthCategoriesCache = nil
+                clearPlanCaches()
+                if !isLoading { rebuildShownActuals() }
+            }
             clearNetWorthCaches()
             rebuildPayMonthsIfConversionChanged()
             // A deleted account leaves the filter (none left = All accounts).
@@ -160,6 +166,9 @@ final class BudgetGridViewModel: ObservableObject {
     private var netWorthActualsCache: NetWorthActuals??
     /// The net-worth figures' input (filter and plan included), built once per change.
     private var netWorthInputCache: DashboardInput?
+    /// `categories` marked for the accounts left out of net worth
+    /// (`markingNetWorthExclusions`), for the Totals block; rebuilt lazily when either changes.
+    private var netWorthCategoriesCache: [Category]?
     /// Planned items' accounts (`PlannedItemAccounts`), rebuilt lazily when categories,
     /// transactions or the main account change.
     private var itemAccountsCache: PlannedItemAccounts?
@@ -241,7 +250,7 @@ final class BudgetGridViewModel: ObservableObject {
             shownMonthTotals = PayMonthTotals.lookup(transactions: shownGBP, calendar: payCalendar)
         }
         noteMonths = PayMonthTotals.noteMonths(transactions: budgetTransactions, calendar: payCalendar)
-        let counted = BudgetTotals.countedTransfers(shownGBP, categories: categories, accountIds: totalsAccountIds, counterpartAccounts: counterpartAccounts)
+        let counted = BudgetTotals.countedTransfers(shownGBP, categories: netWorthCategories, accountIds: totalsAccountIds, counterpartAccounts: counterpartAccounts)
         countedTransferIds = Set(counted.compactMap(\.id))
         transferFlows = BudgetTotals.transferActuals(counted, calendar: payCalendar)
         reserveRemainingCache = [:]
@@ -712,6 +721,15 @@ final class BudgetGridViewModel: ObservableObject {
 
     // MARK: Totals (budget-totals spec §1)
 
+    /// `categories` as the Totals block reads them: transfers to and from accounts left out
+    /// of net worth count (`Category.isTiedToAccountOutsideNetWorth`).
+    private var netWorthCategories: [Category] {
+        if let cached = netWorthCategoriesCache { return cached }
+        let marked = categories.markingNetWorthExclusions(accounts: accounts)
+        netWorthCategoriesCache = marked
+        return marked
+    }
+
     /// The account filter as the Totals block takes it (nil = All accounts).
     private var totalsAccountIds: Set<Int64>? { accountFilter.isEmpty ? nil : accountFilter }
 
@@ -729,7 +747,7 @@ final class BudgetGridViewModel: ObservableObject {
             if let flow = transferFlows[id]?[year]?[month] { flows[id] = flow }
         }
         let plannedTransfers = showForecast ? self.plannedTransfers(year: year, month: month) : (byCategory: [:], incomingElsewhere: 0)
-        let result = BudgetTotals.month(categories: categories, actuals: actuals, transferActuals: flows,
+        let result = BudgetTotals.month(categories: netWorthCategories, actuals: actuals, transferActuals: flows,
                                         planned: showForecast ? plannedTotals(year: year, month: month) : [:],
                                         plannedTransfers: plannedTransfers.byCategory, plannedIncomingElsewhere: plannedTransfers.incomingElsewhere,
                                         reserves: reserveCell(reserves, year: year, month: month),
@@ -743,7 +761,7 @@ final class BudgetGridViewModel: ObservableObject {
         let key = MonthRange.index(year: year, month: month)
         if let cached = plannedTransfersCache[key] { return cached }
         let range = MonthRange.of(year: year, month: month)
-        let result = BudgetTotals.plannedTransfers(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: categories,
+        let result = BudgetTotals.plannedTransfers(period: PayPeriod(startDate: range.start, endDate: range.end, type: .projected), categories: netWorthCategories,
                                                    entries: forecastEntries, groups: forecastGroups, exceptions: exceptions, filter: planFilter)
         plannedTransfersCache[key] = result
         return result
@@ -774,7 +792,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// accounts see them), by date. Reserves are left out: their cells show what's left of the
     /// allowance, which the panel shows as one line (`totalsReserved`).
     func totalsOccurrences(_ row: BudgetTotals.Row, year: Int, month: Int) -> [PlannedRow] {
-        categories.filter { $0.type != .adjustment && !$0.isReserved }
+        netWorthCategories.filter { $0.type != .adjustment && !$0.isReserved }
             .flatMap { category in
                 let counted = BudgetTotals.countsPlannedTransfer(category, accountIds: totalsAccountIds)
                 return occurrences(category: category, year: year, month: month).filter {

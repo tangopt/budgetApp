@@ -85,9 +85,10 @@ final class AccountsViewModel: ObservableObject {
         overview?.groups.flatMap(\.rows).first { $0.id == selectedAccountId }
     }
 
-    func addAccount(name: String, currency: Currency, kind: AccountKind, openingBalanceEntered: Int?, asOf: Date, details: AccountDetails) -> SaveOutcome {
+    func addAccount(name: String, currency: Currency, kind: AccountKind, openingBalanceEntered: Int?, asOf: Date, details: AccountDetails, includeInNetWorth: Bool) -> SaveOutcome {
         perform { db in
-            let account = try AccountEditing.add(db: db, name: name, currency: currency, kind: kind, openingBalanceEntered: openingBalanceEntered, asOf: asOf, details: details)
+            let account = try AccountEditing.add(db: db, name: name, currency: currency, kind: kind, openingBalanceEntered: openingBalanceEntered, asOf: asOf, details: details,
+                                                 includeInNetWorth: includeInNetWorth)
             return account.id
         } onSuccess: { [weak self] id in
             self?.selectedAccountId = id
@@ -96,10 +97,10 @@ final class AccountsViewModel: ObservableObject {
 
     /// Edit…'s Save: the account's fields and, when `isMain` changed, the main account
     /// (`AccountEditing.setMain`), in one write.
-    func updateAccount(id: Int64, name: String, kind: AccountKind, details: AccountDetails, isMain: Bool) -> SaveOutcome {
+    func updateAccount(id: Int64, name: String, kind: AccountKind, details: AccountDetails, isMain: Bool, includeInNetWorth: Bool) -> SaveOutcome {
         let wasMain = accounts.first { $0.id == id }?.isMain ?? false
         return perform { db in
-            try AccountEditing.update(db: db, accountId: id, name: name, kind: kind, details: details)
+            try AccountEditing.update(db: db, accountId: id, name: name, kind: kind, details: details, includeInNetWorth: includeInNetWorth)
             if isMain != wasMain { try AccountEditing.setMain(db: db, accountId: isMain ? id : nil) }
         }
     }
@@ -108,6 +109,14 @@ final class AccountsViewModel: ObservableObject {
     /// a failure shows in the banner.
     func setMain(_ id: Int64?) {
         if case .failed(let message) = perform({ db in try AccountEditing.setMain(db: db, accountId: id) }) {
+            errorMessage = message
+        }
+    }
+
+    /// The row menu's Count toward net worth / Don't count toward net worth
+    /// (`AccountEditing.setIncludeInNetWorth`); a failure shows in the banner.
+    func setIncludeInNetWorth(_ id: Int64, _ include: Bool) {
+        if case .failed(let message) = perform({ db in try AccountEditing.setIncludeInNetWorth(db: db, accountId: id, include) }) {
             errorMessage = message
         }
     }

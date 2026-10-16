@@ -9,7 +9,8 @@ import Foundation
 /// unselected ones. Total out is the Expenses categories, the reserves (their allowance cells as
 /// shown) and transfer money leaving the same way. Transfers between the user's own accounts
 /// are left out with All accounts, and under a filter when both legs are selected (they net to
-/// zero within the selection). Adjustments are never included. Net = in + out (out negative).
+/// zero within the selection) — except money to or from an account left out of net worth,
+/// which always counts, like an external transfer. Adjustments are never included. Net = in + out (out negative).
 ///
 /// Cells follow the plan cell semantics (`PlanStatus`): actual plus whatever the plan still
 /// expects, with the pending part and its state; actuals only with Show forecast off.
@@ -71,7 +72,8 @@ public enum BudgetTotals {
     // MARK: Which transfers count
 
     /// Whether a transfer category's planned money counts for `accountIds` (nil = All
-    /// accounts): an external transfer always; under a filter, a transfer tied to an
+    /// accounts): an external transfer, or one tied to an account left out of net worth,
+    /// always; under a filter, a transfer tied to an
     /// unselected account (a planned incoming leg is filed under its payer's own transfer
     /// category, so it is tied to the unselected payer) — `ForecastCalculator.countsInNetWorth`.
     public static func countsPlannedTransfer(_ category: Category, accountIds: Set<Int64>?) -> Bool {
@@ -91,12 +93,13 @@ public enum BudgetTotals {
     }
 
     /// Whether a shown (budget-facing) transaction's transfer money counts for `accountIds`
-    /// (nil = All accounts): an external transfer always; another transfer only under a
-    /// filter, when its linked other leg is in an unselected account — or, unlinked, when its
-    /// category is tied to an unselected account. Non-transfers: false.
+    /// (nil = All accounts): an external transfer, or one filed under the transfer category of
+    /// an account left out of net worth (`Category.movesMoneyOutsideNetWorth`), always; another
+    /// transfer only under a filter, when its linked other leg is in an unselected account — or,
+    /// unlinked, when its category is tied to an unselected account. Non-transfers: false.
     public static func countsTransfer(_ transaction: Transaction, category: Category?, accountIds: Set<Int64>?, counterpartAccounts: Set<Int64>?) -> Bool {
         guard let category, category.type == .transfer else { return false }
-        if category.isExternalTransfer { return true }
+        if category.movesMoneyOutsideNetWorth { return true }
         guard let accountIds else { return false }
         if let counterparts = counterpartAccounts, !counterparts.isEmpty { return !counterparts.isSubset(of: accountIds) }
         guard let tied = category.transferAccountId else { return false }

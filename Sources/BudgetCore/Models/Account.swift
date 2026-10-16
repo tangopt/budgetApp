@@ -95,12 +95,18 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     /// their own and no category history go to it. At most one account is main
     /// (`AccountEditing.setMain`, enforced by a partial unique index).
     public var isMain: Bool
+    /// Whether the account counts toward net worth (on by default). Off for accounts like a
+    /// mortgage on a property the app doesn't track: the account keeps its balance and its
+    /// transactions count in budget flows, but every net-worth figure leaves it out, and money
+    /// moved between it and a counted account enters or leaves net worth
+    /// (`Category.isTiedToAccountOutsideNetWorth`).
+    public var includeInNetWorth: Bool
 
     public init(id: Int64? = nil, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode,
                 alias: String? = nil, sortCode: String? = nil, accountNumber: String? = nil, iban: String? = nil, sortOrder: Int? = nil,
                 statementMismatchMinorUnits: Int? = nil, statementMismatchDate: Date? = nil,
                 statementMismatchClosingMinorUnits: Int? = nil, statementLastCheckedDate: Date? = nil, balanceConfirmedAt: Date? = nil,
-                bankRegion: BankRegion? = nil, bankName: String? = nil, routingNumber: String? = nil, bic: String? = nil, isMain: Bool = false) {
+                bankRegion: BankRegion? = nil, bankName: String? = nil, routingNumber: String? = nil, bic: String? = nil, isMain: Bool = false, includeInNetWorth: Bool = true) {
         self.id = id
         self.name = name
         self.currency = currency
@@ -121,6 +127,7 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
         self.routingNumber = routingNumber
         self.bic = bic
         self.isMain = isMain
+        self.includeInNetWorth = includeInNetWorth
     }
 
     /// The stored region; else derived from the details set (sort code → UK, IBAN → Europe,
@@ -226,7 +233,25 @@ func registerAccountIsMainMigration(_ migrator: inout DatabaseMigrator) {
     }
 }
 
+func registerAccountIncludeInNetWorthMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addAccountIncludeInNetWorth") { db in
+        try db.alter(table: "account") { t in
+            t.add(column: "includeInNetWorth", .boolean).notNull().defaults(to: true)
+        }
+    }
+}
+
 extension Sequence where Element == Account {
+    /// The accounts that count toward net worth (`Account.includeInNetWorth`).
+    public var countedInNetWorth: [Account] {
+        filter(\.includeInNetWorth)
+    }
+
+    /// The ids of the accounts left out of net worth.
+    public var excludedFromNetWorthIds: Set<Int64> {
+        Set(filter { !$0.includeInNetWorth }.compactMap(\.id))
+    }
+
     /// The main account's id (`Account.isMain`), nil when none is set.
     public var mainAccountId: Int64? {
         first(where: \.isMain)?.id

@@ -98,15 +98,15 @@ public enum NetWorthCalculator {
     }
 
     /// Total GBP net worth as of the end of the given calendar month: the sum of every
-    /// account's `monthlyBalance` (latest snapshot at or before the month end, plus
-    /// transactions after it). `nil` when no account has any data
-    /// at or before that month — distinguishes "no data yet" from "genuinely zero".
+    /// counted account's (`Account.includeInNetWorth`) `monthlyBalance` (latest snapshot at or
+    /// before the month end, plus transactions after it). `nil` when no counted account has any
+    /// data at or before that month — distinguishes "no data yet" from "genuinely zero".
     /// `BudgetGridViewModel.netWorthTotal` delegates here.
     public static func monthEndNetWorth(accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], rate: ExchangeRateSetting, year: Int, month: Int) -> Int? {
         let range = MonthRange.of(year: year, month: month)
         var total = 0
         var hasData = false
-        for account in accounts {
+        for account in accounts where account.includeInNetWorth {
             if let balance = monthlyBalance(account: account, snapshots: snapshots, transactions: transactions, rate: rate, monthStart: range.start, monthEnd: range.end) {
                 total += balance.gbpBalanceMinorUnits
                 hasData = true
@@ -115,10 +115,11 @@ public enum NetWorthCalculator {
         return hasData ? total : nil
     }
 
-    /// Sum of all signed GBP balances. Credit accounts already carry a negative balance
-    /// when money is owed (see the sign convention above), so they reduce net worth
-    /// without any special-casing.
+    /// Sum of the signed GBP balances of the accounts that count toward net worth
+    /// (`Account.includeInNetWorth`). Credit accounts already carry a negative balance when
+    /// money is owed (see the sign convention above), so they reduce net worth without any
+    /// special-casing.
     public static func netWorth(balances: [AccountBalance]) -> Int {
-        balances.reduce(0) { $0 + $1.gbpBalanceMinorUnits }
+        balances.reduce(0) { $1.account.includeInNetWorth ? $0 + $1.gbpBalanceMinorUnits : $0 }
     }
 }

@@ -52,6 +52,7 @@ public struct AccountRow: Equatable, Identifiable {
 
 public struct AccountGroup: Equatable, Identifiable {
     public let kind: AccountKind
+    /// The rows that count toward net worth (`Account.includeInNetWorth`), summed.
     public let subtotalGBP: Int
     /// In `AccountOrdering` order.
     public let rows: [AccountRow]
@@ -59,6 +60,8 @@ public struct AccountGroup: Equatable, Identifiable {
 }
 
 public struct AccountsOverview: Equatable {
+    /// The accounts that count toward net worth (`Account.includeInNetWorth`); the groups still
+    /// list the others, their balances left out of the subtotals.
     public let netWorthGBP: Int
     public let asOf: Date?
     /// Net worth minus the previous calendar month's month-end net worth; nil if unknown.
@@ -78,7 +81,8 @@ public struct AccountsOverview: Equatable {
             let account = balance.account
             guard account.id != nil else { continue }
             let lastUpdated = BalanceStaleness.lastActivity(account: account, snapshots: snapshots, transactions: transactions, today: today)
-            let stale = BalanceStaleness.isStale(account: account, snapshots: snapshots, transactions: transactions, today: today)
+            // An account left out of net worth is never flagged stale.
+            let stale = account.includeInNetWorth && BalanceStaleness.isStale(account: account, snapshots: snapshots, transactions: transactions, today: today)
             if stale {
                 staleCount += 1
                 if let lastUpdated { oldestStale = oldestStale.map { min($0, lastUpdated) } ?? lastUpdated }
@@ -88,7 +92,7 @@ public struct AccountsOverview: Equatable {
         let groups: [AccountGroup] = [AccountKind.cash, .investment, .credit].compactMap { kind in
             guard let rows = rowsByKind[kind], !rows.isEmpty else { return nil }
             let sorted = rows.sorted { AccountOrdering.areInOrder($0.account, $1.account) }
-            return AccountGroup(kind: kind, subtotalGBP: sorted.reduce(0) { $0 + $1.gbpBalanceMinorUnits }, rows: sorted)
+            return AccountGroup(kind: kind, subtotalGBP: sorted.reduce(0) { $1.account.includeInNetWorth ? $0 + $1.gbpBalanceMinorUnits : $0 }, rows: sorted)
         }
         let netWorth = NetWorthCalculator.netWorth(balances: balances)
 
@@ -98,7 +102,7 @@ public struct AccountsOverview: Equatable {
 
         return AccountsOverview(
             netWorthGBP: netWorth,
-            asOf: groups.flatMap(\.rows).compactMap(\.lastUpdated).max(),
+            asOf: groups.flatMap(\.rows).filter(\.account.includeInNetWorth).compactMap(\.lastUpdated).max(),
             changeVsPreviousMonthGBP: previousNetWorth.map { netWorth - $0 },
             groups: groups,
             staleCount: staleCount,

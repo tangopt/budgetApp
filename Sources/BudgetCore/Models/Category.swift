@@ -59,6 +59,17 @@ public struct Category: Codable, Equatable, Identifiable, FetchableRecord, Mutab
     /// a linked transfer's leg is filed under the other account's category. At most one
     /// category per account; never on an external-transfer or built-in category.
     public var transferAccountId: Int64?
+    /// Not stored: whether this transfer category's account (`transferAccountId`) is left out
+    /// of net worth (`Account.includeInNetWorth` off). Money filed under it leaves or enters
+    /// net worth, so the net-worth figures and the Budget's Totals count it like an external
+    /// transfer. Set by `markingNetWorthExclusions(accounts:)` where the calculations' inputs
+    /// are built (`DashboardInput`, `ComparisonData`, the Budget grid); false as loaded.
+    public var isTiedToAccountOutsideNetWorth = false
+
+    /// The stored columns (`isTiedToAccountOutsideNetWorth` is derived, never persisted).
+    private enum CodingKeys: String, CodingKey {
+        case id, name, type, groupId, isReserved, excludeFromAutoForecast, isExternalTransfer, iconName, builtInRole, transferAccountId
+    }
 
     public init(id: Int64? = nil, name: String, type: CategoryType, groupId: Int64? = nil, isReserved: Bool = false, excludeFromAutoForecast: Bool = false, isExternalTransfer: Bool = false, iconName: String? = nil, builtInRole: CategoryBuiltInRole? = nil, transferAccountId: Int64? = nil) {
         self.id = id
@@ -79,11 +90,28 @@ public struct Category: Codable, Equatable, Identifiable, FetchableRecord, Mutab
 
     public var isBuiltIn: Bool { builtInRole != nil }
 
+    /// Whether the net-worth figures count this transfer category's money (money to or from
+    /// outside net worth): an external transfer, or one tied to an account left out of net worth.
+    public var movesMoneyOutsideNetWorth: Bool { isExternalTransfer || isTiedToAccountOutsideNetWorth }
+
     public mutating func didInsert(_ inserted: InsertionSuccess) {
         id = inserted.rowID
     }
 
     public static let databaseTableName = "category"
+}
+
+extension Sequence where Element == Category {
+    /// The categories with `isTiedToAccountOutsideNetWorth` set from `accounts`: on each
+    /// transfer category tied to an account that doesn't count toward net worth, off elsewhere.
+    public func markingNetWorthExclusions(accounts: [Account]) -> [Category] {
+        let excluded = accounts.excludedFromNetWorthIds
+        return map { category in
+            var marked = category
+            marked.isTiedToAccountOutsideNetWorth = category.type == .transfer && (category.transferAccountId.map(excluded.contains) ?? false)
+            return marked
+        }
+    }
 }
 
 func registerCategoryIconMigration(_ migrator: inout DatabaseMigrator) {

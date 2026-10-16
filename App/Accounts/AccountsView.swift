@@ -34,7 +34,8 @@ struct AccountsView: View {
                                          onImport: { id, format in
                                              viewModel.selectedAccountId = id
                                              pendingImport = PendingImport(accountId: id, format: format)
-                                         }, onSetMain: { viewModel.setMain($0) }) { group, from, to in
+                                         }, onSetMain: { viewModel.setMain($0) },
+                                         onSetIncludeInNetWorth: { viewModel.setIncludeInNetWorth($0, $1) }) { group, from, to in
                             viewModel.moveAccounts(ids: group.rows.map(\.id), fromOffsets: from, toOffset: to)
                         }
                         footer
@@ -291,6 +292,8 @@ private struct AccountsListView: View {
     let onImport: (Int64, ImportFormat) -> Void
     /// Set as main account / Unset main account (nil) from a row's context menu.
     let onSetMain: (Int64?) -> Void
+    /// Count toward net worth on or off from a row's context menu.
+    let onSetIncludeInNetWorth: (Int64, Bool) -> Void
     /// A drag within a section (accounts reorder within their kind).
     let onMove: (AccountGroup, IndexSet, Int) -> Void
 
@@ -312,6 +315,12 @@ private struct AccountsListView: View {
                                     Button("Unset main account") { onSetMain(nil) }
                                 } else {
                                     Button("Set as main account") { onSetMain(row.id) }
+                                }
+                                if row.account.includeInNetWorth {
+                                    Button("Don't count toward net worth") { onSetIncludeInNetWorth(row.id, false) }
+                                        .help(NetWorthToggle.help)
+                                } else {
+                                    Button("Count toward net worth") { onSetIncludeInNetWorth(row.id, true) }
                                 }
                             }
                     }
@@ -367,12 +376,15 @@ private struct AccountListRow: View {
                     .help(mismatch)
                     .accessibilityLabel(mismatch)
             }
+            if !row.account.includeInNetWorth {
+                NotInNetWorthBadge()
+            }
             Spacer()
             if row.account.currency != .gbp {
-                AccountsFormat.balanceText(row.nativeBalanceMinorUnits, kind: row.account.kind, currency: row.account.currency)
+                AccountsFormat.balanceText(row.nativeBalanceMinorUnits, kind: row.account.kind, currency: row.account.currency, muted: !row.account.includeInNetWorth)
                     .foregroundStyle(.secondary)
             }
-            AccountsFormat.balanceText(row.gbpBalanceMinorUnits, kind: row.account.kind, currency: .gbp)
+            AccountsFormat.balanceText(row.gbpBalanceMinorUnits, kind: row.account.kind, currency: .gbp, muted: !row.account.includeInNetWorth)
         }
         .font(.body.monospacedDigit())
         .padding(.vertical, 2)
@@ -470,6 +482,9 @@ private struct AccountDetailView: View {
                                     .background(Capsule().fill(theme.accent.opacity(0.15)))
                                     .foregroundStyle(theme.accent)
                                     .help(EditAccountSheet.mainAccountHelp)
+                            }
+                            if !row.account.includeInNetWorth {
+                                NotInNetWorthBadge()
                             }
                         }
                     }
@@ -683,8 +698,9 @@ enum AccountsFormat {
     /// Credit balances are stored signed (negative = owed) and shown as the amount owed,
     /// coloured by the stored sign so debt reads in the theme's expense colour — as the Net
     /// Worth screen did.
-    static func balanceText(_ signedMinorUnits: Int, kind: AccountKind, currency: Currency, font: Font = .body.monospacedDigit()) -> some View {
-        AccountBalanceText(signedMinorUnits: signedMinorUnits, kind: kind, currency: currency, font: font)
+    /// `muted`: in the secondary style (an account left out of net worth).
+    static func balanceText(_ signedMinorUnits: Int, kind: AccountKind, currency: Currency, font: Font = .body.monospacedDigit(), muted: Bool = false) -> some View {
+        AccountBalanceText(signedMinorUnits: signedMinorUnits, kind: kind, currency: currency, font: font, muted: muted)
     }
 
     /// "Statement mismatch on 29 Sep 2026: +£12.00" (statement − computed) — nil when the
@@ -727,16 +743,34 @@ private struct AccountBalanceText: View {
     let kind: AccountKind
     let currency: Currency
     let font: Font
+    var muted = false
     @Environment(\.theme) private var theme
 
     var body: some View {
         if kind == .credit && signedMinorUnits < 0 {
             HStack(spacing: 4) {
-                MoneyText(minorUnits: NetWorthCalculator.enteredBalance(signedMinorUnits: signedMinorUnits, accountKind: .credit), currency: currency, font: font, colorOverride: signedMinorUnits)
-                Text("owed").font(font).foregroundStyle(theme.expense)
+                MoneyText(minorUnits: NetWorthCalculator.enteredBalance(signedMinorUnits: signedMinorUnits, accountKind: .credit), currency: currency, font: font, colorOverride: signedMinorUnits,
+                          tint: muted ? .secondary : nil)
+                Text("owed").font(font).foregroundStyle(muted ? Color.secondary : theme.expense)
             }
         } else {
-            MoneyText(minorUnits: signedMinorUnits, currency: currency, font: font, tint: signedMinorUnits < 0 ? theme.expense : .primary)
+            MoneyText(minorUnits: signedMinorUnits, currency: currency, font: font, tint: muted ? .secondary : (signedMinorUnits < 0 ? theme.expense : .primary))
         }
+    }
+}
+
+/// "Not in net worth": an account with Count toward net worth off.
+private struct NotInNetWorthBadge: View {
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Text("Not in net worth")
+            .font(.caption.weight(.medium))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(Capsule().fill(theme.neutralMoney.opacity(0.15)))
+            .foregroundStyle(.secondary)
+            .help(NetWorthToggle.help)
     }
 }

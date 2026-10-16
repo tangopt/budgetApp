@@ -72,5 +72,6 @@ public final class DatabaseManager {
         registerForecastEntryAccountMigration(&migrator)
         registerAccountIsMainMigration(&migrator)
         registerCategoryGroupTypeMigration(&migrator)
+        registerAccountIncludeInNetWorthMigration(&migrator)
     }
 }

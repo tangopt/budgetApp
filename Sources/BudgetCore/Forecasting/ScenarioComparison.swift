@@ -36,7 +36,7 @@ public struct ComparisonData: Sendable {
         self.snapshots = snapshots
         self.transactions = transactions
         self.transferLinks = transferLinks
-        self.categories = categories
+        self.categories = categories.markingNetWorthExclusions(accounts: accounts)
         self.rate = rate
         self.payCalendar = payCalendar
         self.horizonYear = horizonYear

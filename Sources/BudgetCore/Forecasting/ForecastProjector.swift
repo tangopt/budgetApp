@@ -66,7 +66,9 @@ public enum ForecastProjector {
     }
 
     /// `remainingPlanned` (All accounts) split by account (account-forecast spec §2), the nil key
-    /// holding the items with no effective account; the values sum to `remainingPlanned`. Each
+    /// holding the items with no effective account; the values of the nil key and the accounts
+    /// that count toward net worth sum to `remainingPlanned` (a transfer into an account left out
+    /// of net worth also moves that account's own balance). Each
     /// category's remainder is worked out once over every account (`actuals`, so a payment made
     /// from another account still counts) and shared by its items' accounts in proportion to
     /// what each account still expects on its own (`actualsByAccount`: account id → category id
@@ -105,7 +107,12 @@ public enum ForecastProjector {
                 // Counted once over every account (a payment from another account still
                 // counts), shared by what each account still expects on its own.
                 let pending = PlanStatus.cell(actual: actuals[id] ?? 0, planned: planned, categoryType: category.type, monthClass: .blended).pending
-                for (account, share) in allocate(pending, weights: ownPending(category, id: id), planned: byAccount) { result[account, default: 0] += share }
+                // Into an account left out of net worth: its own balance still moves.
+                let tied = category.isTiedToAccountOutsideNetWorth ? itemAccounts.tiedAccountByCategory[id] : nil
+                for (account, share) in allocate(pending, weights: ownPending(category, id: id), planned: byAccount) {
+                    result[account, default: 0] += share
+                    if let tied, account != tied { result[tied, default: 0] -= share }
+                }
             } else if let tied = itemAccounts.tiedAccountByCategory[id] {
                 // A tied transfer leaves net worth alone: each payer's own pending amount moves
                 // out of it and into the tied account (an unpaid leg stays expected even when

@@ -16,6 +16,7 @@ struct AddAccountSheet: View {
     @State private var balanceText = ""
     @State private var asOf = Date()
     @State private var details = AccountDetailsDraft()
+    @State private var includeInNetWorth = true
     /// Set when Save is pressed with invalid details: every field shows its error.
     @State private var revealErrors = false
     @State private var error: String?
@@ -57,6 +58,7 @@ struct AddAccountSheet: View {
                             .fixedSize()
                     }
                 }
+                NetWorthToggle(isOn: $includeInNetWorth)
                 AccountDetailsFields(draft: $details, revealAll: revealErrors)
             }
         }
@@ -69,7 +71,8 @@ struct AddAccountSheet: View {
             return
         }
         let balance = trimmedBalance.isEmpty ? nil : openingBalance
-        finish(viewModel.addAccount(name: name, currency: currency, kind: kind, openingBalanceEntered: balance, asOf: AccountsFormat.snapshotDay(asOf), details: details.details), error: $error, dismiss: dismiss)
+        finish(viewModel.addAccount(name: name, currency: currency, kind: kind, openingBalanceEntered: balance, asOf: AccountsFormat.snapshotDay(asOf), details: details.details,
+                                      includeInNetWorth: includeInNetWorth), error: $error, dismiss: dismiss)
     }
 }
 
@@ -84,6 +87,7 @@ struct EditAccountSheet: View {
     @State private var kind: AccountKind
     @State private var details: AccountDetailsDraft
     @State private var isMain: Bool
+    @State private var includeInNetWorth: Bool
     @State private var hasHistory = true
     /// Set when Save is pressed with invalid details: every field shows its error.
     @State private var revealErrors = false
@@ -96,6 +100,7 @@ struct EditAccountSheet: View {
         _kind = State(initialValue: account.kind)
         _details = State(initialValue: AccountDetailsDraft(account))
         _isMain = State(initialValue: account.isMain)
+        _includeInNetWorth = State(initialValue: account.includeInNetWorth)
     }
 
     /// Whether switching to `candidate` would cross the credit boundary.
@@ -125,6 +130,7 @@ struct EditAccountSheet: View {
                         .help(Self.mainAccountHelp)
                         .sheetFieldNote(Self.mainAccountHelp)
                 }
+                NetWorthToggle(isOn: $includeInNetWorth)
                 AccountDetailsFields(draft: $details, revealAll: revealErrors)
             }
         }
@@ -139,13 +145,29 @@ struct EditAccountSheet: View {
             return
         }
         guard let id = account.id else { return }
-        finish(viewModel.updateAccount(id: id, name: name, kind: kind, details: details.details, isMain: isMain), error: $error, dismiss: dismiss)
+        finish(viewModel.updateAccount(id: id, name: name, kind: kind, details: details.details, isMain: isMain, includeInNetWorth: includeInNetWorth), error: $error, dismiss: dismiss)
     }
 
     static let mainAccountHelp = "Planned items with no account of their own go to this account"
 }
 
 // MARK: - Shared pieces
+
+/// Count toward net worth (`Account.includeInNetWorth`), as a `SheetForm` row.
+struct NetWorthToggle: View {
+    @Binding var isOn: Bool
+
+    static let help = "Turn off for accounts like a mortgage on a property the app doesn't track"
+
+    var body: some View {
+        LabeledContent("Count toward net worth") {
+            Toggle("Count toward net worth", isOn: $isOn)
+                .labelsHidden()
+                .help(Self.help)
+                .sheetFieldNote(Self.help)
+        }
+    }
+}
 
 /// The alias and bank-detail text fields as typed, with the bank region (spec 2026-10-15 §2).
 /// Each field validates on its own so the sheet can show the error under it; blank fields are

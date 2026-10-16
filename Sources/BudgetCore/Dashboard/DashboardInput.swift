@@ -34,10 +34,20 @@ public struct DashboardInput {
     /// only its accounts, projected with only their planned items. Flows are unaffected.
     public var accountFilter: PlanAccountFilter?
 
-    /// The accounts the net-worth figures cover: `accountFilter`'s, else every account.
+    /// The accounts the net-worth figures cover: `accountFilter`'s, else every account — only
+    /// those that count toward net worth (`Account.includeInNetWorth`).
     var netWorthAccounts: [Account] {
-        guard let filter = accountFilter else { return accounts }
-        return accounts.filter { $0.id.map(filter.accountIds.contains) ?? false }
+        guard let filter = accountFilter else { return accounts.countedInNetWorth }
+        return accounts.filter { $0.includeInNetWorth && ($0.id.map(filter.accountIds.contains) ?? false) }
+    }
+
+    /// `accountFilter` for the net-worth figures: its accounts that count toward net worth (an
+    /// excluded account's planned legs then cross the selection's boundary). Nil = All accounts.
+    var netWorthFilter: PlanAccountFilter? {
+        guard let filter = accountFilter else { return nil }
+        let excluded = accounts.excludedFromNetWorthIds
+        guard !excluded.isDisjoint(with: filter.accountIds) else { return filter }
+        return PlanAccountFilter(accountIds: filter.accountIds.subtracting(excluded), itemAccounts: filter.itemAccounts)
     }
 
     public init(today: Date, accounts: [Account], snapshots: [BalanceSnapshot], transactions: [Transaction], categories: [Category], categoryGroups: [CategoryGroup], forecastEntries: [ForecastEntry], forecastGroups: [ForecastGroup], exceptions: [PlannedOccurrenceException], importBatches: [ImportBatch], rate: ExchangeRateSetting, manualCloses: [PayMonthClose] = [], transferLinks: [TransferLink] = []) {
@@ -56,7 +66,7 @@ public struct DashboardInput {
         self.conversion = conversion
         let budgetTransactions = conversion.toGBP(TransferLinks.budgetFacing(transactions, links: transferLinks))
         self.budgetTransactions = budgetTransactions
-        self.categories = categories
+        self.categories = categories.markingNetWorthExclusions(accounts: accounts)
         self.categoryGroups = categoryGroups
         self.forecastEntries = forecastEntries
         self.forecastGroups = forecastGroups
