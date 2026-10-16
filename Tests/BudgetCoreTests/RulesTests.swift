@@ -168,6 +168,46 @@ final class RulesTests: XCTestCase {
         }) { error in XCTAssertEqual(error as? RuleSaveError, .unassignableCategory) }
     }
 
+    func testApplySkipsPendingRowsFiledInAnUnassignableCategory() throws {
+        let f = try makeFixture()
+        // A pending-review row the app filed in a built-in category isn't re-filed.
+        let pendingId = f.ids["SQ *NANDOS CARD"]!
+        let builtIn = try f.manager.dbQueue.write { db -> Int64 in
+            let id: Int64
+            if let existing = try Category.filter(Column("builtInRole") == CategoryBuiltInRole.balanceAdjustment.rawValue).fetchOne(db) {
+                id = existing.id!
+            } else {
+                var category = Category(name: "Balance adjustment", type: .expense, builtInRole: .balanceAdjustment)
+                try category.insert(db)
+                id = category.id!
+            }
+            try db.execute(sql: "UPDATE transaction_ SET categoryId = ? WHERE id = ?", arguments: [id, pendingId])
+            return id
+        }
+        let preview = try f.manager.dbQueue.read { db in try Rules.preview(db: db, pattern: "NANDOS", matchType: .contains) }
+        XCTAssertEqual(preview.uncategorisedCount, 1)
+        try f.manager.dbQueue.write { db in
+            _ = try Rules.add(db: db, pattern: "NANDOS", matchType: .contains, categoryId: f.eatingOut, applyToUncategorised: true)
+        }
+        let pending = try f.manager.dbQueue.read { db in try Transaction.fetchOne(db, key: pendingId)! }
+        XCTAssertEqual(pending.categoryId, builtIn)
+        XCTAssertEqual(pending.status, .pendingReview)
+        let london = try f.manager.dbQueue.read { db in try Transaction.fetchOne(db, key: f.ids["NANDOS LONDON"]!)! }
+        XCTAssertEqual(london.categoryId, f.eatingOut)
+    }
+
+    func testTheLearnerNeverRepointsAManualRegexRuleWithTheSamePattern() throws {
+        let f = try makeFixture()
+        let regex = try f.manager.dbQueue.write { db in
+            try Rules.add(db: db, pattern: "NANDOS", matchType: .regex, categoryId: f.groceries, applyToUncategorised: false)
+        }
+        try f.manager.dbQueue.write { db in try RuleLearner.learn(description: "NANDOS", categoryId: f.eatingOut, db: db) }
+        let rules = try f.manager.dbQueue.read { db in try Rule.fetchAll(db) }
+        XCTAssertEqual(rules.count, 2)
+        XCTAssertEqual(rules.first { $0.id == regex.id }?.categoryId, f.groceries)
+        XCTAssertEqual(rules.first { $0.matchType == .contains }?.categoryId, f.eatingOut)
+    }
+
     // MARK: - Update
 
     func testUpdateChangesPatternTypeCategoryAndPriority() throws {

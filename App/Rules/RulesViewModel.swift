@@ -44,9 +44,10 @@ final class RulesViewModel: ObservableObject {
         try dbQueue.write { db in try rules[index].update(db) }
     }
 
-    /// The rule sheet's live preview (off the main thread).
-    func preview(pattern: String, matchType: RuleMatchType) async -> RulePreview {
-        (try? await dbQueue.read { db in try Rules.preview(db: db, pattern: pattern, matchType: matchType) }) ?? .empty
+    /// The rule sheet's live preview (off the main thread); a failed read throws so the sheet
+    /// can say so rather than show "Matches 0".
+    func preview(pattern: String, matchType: RuleMatchType) async throws -> RulePreview {
+        try await dbQueue.read { db in try Rules.preview(db: db, pattern: pattern, matchType: matchType) }
     }
 
     /// Saves the rule sheet: adds a rule, or edits `ruleId`'s. Returns the error to show, or

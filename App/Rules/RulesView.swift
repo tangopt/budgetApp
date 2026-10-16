@@ -102,6 +102,9 @@ private struct RuleSheet: View {
     @State private var categoryId: Int64?
     @State private var applyNow = true
     @State private var preview: RulePreview = .empty
+    /// The pattern and type `preview` was computed for; nil until the first one loads.
+    @State private var previewKey: PreviewKey?
+    @State private var previewError: String?
     @State private var error: String?
 
     init(draft: RuleDraft, viewModel: RulesViewModel, dismiss: @escaping () -> Void) {
@@ -168,9 +171,19 @@ private struct RuleSheet: View {
             // A short pause so typing doesn't run a search per keystroke.
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
-            let result = await viewModel.preview(pattern: pattern, matchType: matchType)
-            guard !Task.isCancelled else { return }
-            preview = result
+            let key = PreviewKey(pattern: pattern, matchType: matchType)
+            do {
+                let result = try await viewModel.preview(pattern: pattern, matchType: matchType)
+                guard !Task.isCancelled else { return }
+                preview = result
+                previewKey = key
+                previewError = nil
+            } catch {
+                guard !Task.isCancelled else { return }
+                preview = .empty
+                previewKey = nil
+                previewError = "Couldn't check which transactions match: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -180,6 +193,8 @@ private struct RuleSheet: View {
             if validation != nil {
                 Text("Enter a pattern to see what it matches.")
                     .font(.callout).foregroundStyle(.secondary)
+            } else if let previewError {
+                SheetCaption(previewError, isError: true)
             } else {
                 Text(matchSummary).font(.callout)
                 if !preview.sampleDescriptions.isEmpty {
@@ -200,7 +215,7 @@ private struct RuleSheet: View {
                 }
                 Toggle(applyLabel, isOn: $applyNow)
                     .toggleStyle(.checkbox)
-                    .disabled(preview.uncategorisedCount == 0)
+                    .disabled(preview.uncategorisedCount == 0 || previewKey != PreviewKey(pattern: pattern, matchType: matchType))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -217,10 +232,16 @@ private struct RuleSheet: View {
         return m == 1 ? "Also categorise the 1 uncategorised match now" : "Also categorise the \(m) uncategorised matches now"
     }
 
+    /// Whether saving files the uncategorised matches: only when ticked and the preview on
+    /// show is for this exact pattern and has some (so the checkbox means what it says).
+    private var appliesNow: Bool {
+        applyNow && previewKey == PreviewKey(pattern: pattern, matchType: matchType) && preview.uncategorisedCount > 0
+    }
+
     private func save() {
         guard canSave, let categoryId else { return }
         error = viewModel.save(ruleId: draft.ruleId, pattern: pattern, matchType: matchType, categoryId: categoryId,
-                               applyToUncategorised: applyNow)
+                               applyToUncategorised: appliesNow)
         if error == nil { dismiss() }
     }
 }

@@ -26,7 +26,8 @@ public enum RuleSaveError: Error, Equatable {
 public struct RulePreview: Equatable, Sendable {
     /// Every saved transaction the pattern matches.
     public let matchCount: Int
-    /// Of those, the ones still needing a category (`UncategorizedTransactions`).
+    /// Of those, the ones still needing a category (`UncategorizedTransactions`) that the rule
+    /// may file (not already in a built-in or reserve category).
     public let uncategorisedCount: Int
     /// The first few matching descriptions, newest first.
     public let sampleDescriptions: [String]
@@ -68,8 +69,10 @@ public enum Rules {
             matchedIds.append(row["id"])
             if samples.count < sampleLimit { samples.append(description) }
         }
-        let uncategorised = try uncategorisedIds(db: db, among: matchedIds)
-        return RulePreview(matchCount: matchedIds.count, uncategorisedCount: uncategorised.count, sampleDescriptions: samples)
+        // Intersected in memory: no `IN (…)` over every match.
+        let matched = Set(matchedIds)
+        let uncategorisedCount = try fileableUncategorised(db: db).count { $0.id.map(matched.contains) ?? false }
+        return RulePreview(matchCount: matchedIds.count, uncategorisedCount: uncategorisedCount, sampleDescriptions: samples)
     }
 
     /// Saves a new rule; a rule with the same pattern and type is updated instead (as the
@@ -132,14 +135,19 @@ public enum Rules {
             .first { $0.matchPattern.caseInsensitiveCompare(pattern) == .orderedSame }
     }
 
-    private static func uncategorisedIds(db: Database, among ids: [Int64]) throws -> [Int64] {
-        guard !ids.isEmpty else { return [] }
-        return try UncategorizedTransactions.request.filter(ids.contains(Column("id"))).select(Column("id"), as: Int64.self).fetchAll(db)
+    /// The transactions a rule may file now: those still needing a category
+    /// (`UncategorizedTransactions`), except any the app filed in a category rules can't use
+    /// (built-in or reserve), which stay as they are.
+    private static func fileableUncategorised(db: Database) throws -> [Transaction] {
+        let blocked = Set(try Category.fetchAll(db).filter { !$0.isAssignable }.compactMap(\.id))
+        return try UncategorizedTransactions.request.fetchAll(db).filter { row in
+            row.categoryId.map { !blocked.contains($0) } ?? true
+        }
     }
 
     private static func apply(_ rule: Rule, db: Database) throws {
         let matches = RuleMatcher.predicate(for: rule)
-        var targets = try UncategorizedTransactions.request.fetchAll(db).filter { matches($0.rawDescription) }
+        var targets = try fileableUncategorised(db: db).filter { matches($0.rawDescription) }
         for index in targets.indices {
             targets[index].categoryId = rule.categoryId
             targets[index].status = .confirmed
