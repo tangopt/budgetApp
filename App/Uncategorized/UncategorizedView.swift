@@ -111,7 +111,8 @@ struct UncategorizedView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            MoneyText(minorUnits: ReviewGrouping.total(group.rows.map(\.amountMinorUnits)))
+            let total = viewModel.groupTotal(group.rows)
+            MoneyText(minorUnits: total.minorUnits, currency: total.currency)
             // One source per row, so the checkbox shows mixed when rows differ; clicking it
             // sets them all.
             Toggle("Remember", sources: group.rows.map { row in
@@ -164,7 +165,7 @@ struct UncategorizedView: View {
                 }
             }
             Spacer()
-            MoneyText(minorUnits: transaction.amountMinorUnits)
+            MoneyText(minorUnits: transaction.amountMinorUnits, currency: viewModel.conversion.currency(ofAccount: transaction.accountId))
             NoteButton(note: transaction.note) { viewModel.setNote($0, for: transaction) }
             if let group = singleRowGroup {
                 Toggle("Remember", isOn: Binding(

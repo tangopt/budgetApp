@@ -154,7 +154,7 @@ public enum ScenarioApply {
             let transactions = try Transaction.budgetFacing
                 .filter(Column("date") >= payStart && Column("status") == TransactionStatus.confirmed.rawValue)
                 .fetchAll(db)
-            let monthTotals = PayMonthTotals.lookup(transactions: transactions, calendar: calendar)
+            let monthTotals = PayMonthTotals.lookup(transactions: try CurrencyConversion.current(db: db).toGBP(transactions), calendar: calendar)
             func confirmed(_ occurrence: PlannedOccurrence, of entry: ForecastEntry) -> Bool {
                 PlannedItemEditing.isConfirmed(entry: entry, occurrence: occurrence, calendar: calendar, monthTotals: monthTotals,
                                                entries: budget, groups: groups, exceptions: budgetExceptions, categories: categories)

@@ -95,6 +95,7 @@ public struct ScenarioGridCell: Equatable {
 /// in the Totals block with their flows (`BudgetTotals.countedTransfers` / `transferActuals`).
 /// Computed once per load (`ScenarioComparison.gridActuals`), shared by every plan and year.
 public struct ScenarioGridActuals: Sendable {
+    /// In each account's own currency (the side panel lists them); the totals are in GBP.
     public let budgetFacing: [Transaction]
     /// Category id → year → month → the pay month's confirmed total (`PayMonthTotals.lookup`).
     public let monthTotals: [Int64: [Int: [Int: Int]]]
@@ -186,10 +187,12 @@ public enum ScenarioComparison {
     /// The actuals the grids share (`ScenarioGridActuals`), with All accounts.
     public static func gridActuals(_ data: ComparisonData) -> ScenarioGridActuals {
         let budgetFacing = TransferLinks.budgetFacing(data.transactions, links: data.transferLinks)
-        let counted = BudgetTotals.countedTransfers(budgetFacing, categories: data.categories, accountIds: nil,
+        // The figures in GBP; `budgetFacing` stays native for the side panel's list.
+        let gbp = CurrencyConversion(accounts: data.accounts, rate: data.rate).toGBP(budgetFacing)
+        let counted = BudgetTotals.countedTransfers(gbp, categories: data.categories, accountIds: nil,
                                                     counterpartAccounts: BudgetTotals.counterpartAccounts(transactions: data.transactions, links: data.transferLinks))
         return ScenarioGridActuals(budgetFacing: budgetFacing,
-                                   monthTotals: PayMonthTotals.lookup(transactions: budgetFacing, calendar: data.payCalendar),
+                                   monthTotals: PayMonthTotals.lookup(transactions: gbp, calendar: data.payCalendar),
                                    countedTransferIds: Set(counted.compactMap(\.id)),
                                    transferFlows: BudgetTotals.transferActuals(counted, calendar: data.payCalendar))
     }

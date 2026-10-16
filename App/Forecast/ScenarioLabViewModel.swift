@@ -261,6 +261,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         accounts = loaded.accounts
         snapshots = loaded.snapshots
         rate = loaded.rate
+        conversion = CurrencyConversion(accounts: accounts, rate: rate)
         groups = loaded.groups
         scenarios = loaded.scenarios
         budgetPlan = loaded.budgetPlan
@@ -716,6 +717,8 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         return reserves.compactMap(\.id).reduce(0) { $0 + (cells[$1]?[month]?.value ?? 0) }
     }
 
+    /// Non-GBP accounts at the stored rate, for the side panel; rebuilt on load.
+    private(set) var conversion = CurrencyConversion.none
     /// Categories and account names by id, for the side panel; rebuilt on load.
     private(set) var categoryById: [Int64: Category] = [:]
     private(set) var categoryNameById: [Int64: String] = [:]

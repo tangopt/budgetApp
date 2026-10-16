@@ -31,6 +31,11 @@ final class CategoriesViewModel: ObservableObject {
     /// Confirmed, categorised, budget-facing transactions (the side panel and the averages):
     /// a linked transfer counts once, as sent (`TransferLinks.budgetFacing`).
     @Published private(set) var transactions: [Transaction] = []
+    /// `transactions` in GBP (`CurrencyConversion`): the averages and the distribution. The
+    /// side panel lists `transactions` in each account's own currency.
+    private var gbpTransactions: [Transaction] = []
+    /// Non-GBP accounts at the stored rate, for the side panel's currencies and total.
+    @Published private(set) var conversion = CurrencyConversion.none
     /// Linked transfers' other legs by transaction id, for the side panel and Edit transaction.
     @Published private(set) var transferCounterparts: [Int64: [TransferCounterpart]] = [:]
     /// Average monthly actual over the last 12 pay months (`CategoryStats`); absent = "—".
@@ -51,9 +56,9 @@ final class CategoriesViewModel: ObservableObject {
 
     func load() {
         do {
-            let (categories, groups, all, closes, links, counterparts, accounts) = try dbQueue.read { db in
+            let (categories, groups, all, closes, links, counterparts, accounts, rate) = try dbQueue.read { db in
                 (try Category.fetchAll(db), try CategoryGroup.fetchAll(db), try Transaction.fetchAll(db), try PayMonthClose.fetchAll(db),
-                 try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db), try Account.fetchAll(db))
+                 try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db), try Account.fetchAll(db), try ExchangeRateSetting.currentOrDefault(db: db))
             }
             self.categories = categories
             self.accounts = accounts.sortedForDisplay()
@@ -62,7 +67,9 @@ final class CategoriesViewModel: ObservableObject {
                                       manualCloses: closes, today: Date())
             transferCounterparts = counterparts
             transactions = TransferLinks.budgetFacing(all, links: links).filter { $0.status == .confirmed && $0.categoryId != nil }
-            averages = CategoryStats.monthlyAverages(transactions: transactions, calendar: payCalendar)
+            conversion = CurrencyConversion(accounts: accounts, rate: rate)
+            gbpTransactions = conversion.toGBP(transactions)
+            averages = CategoryStats.monthlyAverages(transactions: gbpTransactions, calendar: payCalendar)
         } catch {
             errorMessage = "Couldn't load categories: \(error.localizedDescription)"
         }
@@ -231,7 +238,7 @@ final class CategoriesViewModel: ObservableObject {
     /// The Distribution panel's figures for the pay-month `year` (nil = all years): the
     /// Budget grid's actuals basis (`CategoryDistribution`; `transactions` are budget-facing).
     func distribution(year: Int?) -> CategoryDistribution {
-        CategoryDistribution.compute(year: year, transactions: transactions, categories: categories, groups: groups, calendar: payCalendar)
+        CategoryDistribution.compute(year: year, transactions: gbpTransactions, categories: categories, groups: groups, calendar: payCalendar)
     }
 
     /// The Distribution panel's year filter: the current year (the default), then any with

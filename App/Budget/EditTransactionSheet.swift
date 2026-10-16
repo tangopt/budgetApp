@@ -128,7 +128,7 @@ struct EditTransactionSheet: View {
                         Text(transaction.rawDescription)
                             .textSelection(.enabled)
                     }
-                    LabeledContent("Amount") { MoneyText(minorUnits: transaction.amountMinorUnits) }
+                    LabeledContent("Amount") { MoneyText(minorUnits: transaction.amountMinorUnits, currency: transactionCurrency) }
                 }
                 if let builtIn = builtInCategory {
                     // Balance adjustments and market movements are the Accounts screen's.
@@ -188,6 +188,11 @@ struct EditTransactionSheet: View {
             return (draft.accountId ?? transaction.accountId, draft.day, draft.signedAmountMinorUnits ?? transaction.amountMinorUnits)
         }
         return (transaction.accountId, transaction.date, transaction.amountMinorUnits)
+    }
+
+    /// The transaction's account's currency (its amount is stored in it); GBP when unknown.
+    private var transactionCurrency: Currency {
+        (transfer?.accounts ?? manual?.accounts ?? []).first { $0.id == transaction.accountId }?.currency ?? .gbp
     }
 
     /// The accounts the other side can be in: every account but this transaction's.

@@ -44,6 +44,8 @@ protocol GridCellPanelModel: ObservableObject {
     var categoryNameById: [Int64: String] { get }
     var accountNameById: [Int64: String] { get }
     var transferCounterparts: [Int64: [TransferCounterpart]] { get }
+    /// Non-GBP accounts at the stored rate: rows in each account's currency, the total in GBP.
+    var conversion: CurrencyConversion { get }
     var planEditActions: PlanEditActions { get }
     var planAccountOptions: PlanAccountOptions { get }
     /// Whether month panels list the plan (the Budget grid: Show forecast).
@@ -96,6 +98,7 @@ struct GridCellPanel<Model: GridCellPanelModel>: View {
             showCategory: target.showCategory,
             accountNameById: model.accountNameById,
             transfers: model.transferCounterparts,
+            conversion: model.conversion,
             showsTransactions: target.showsTransactions,
             onAdd: target.showsTransactions ? onAdd : nil,
             plannedSection: {

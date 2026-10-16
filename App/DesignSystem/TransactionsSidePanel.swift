@@ -21,6 +21,9 @@ struct TransactionsSidePanel<Planned: View>: View {
     var accountNameById: [Int64: String] = [:]
     /// Linked transfers' other legs by transaction id (`TransferLinks.counterparts`).
     var transfers: [Int64: [TransferCounterpart]] = [:]
+    /// Each row's account currency and the total's GBP equivalent: rows show each account's
+    /// own currency, the total is in GBP like the cell it opened from.
+    var conversion: CurrencyConversion = .none
     /// False for a reserve (planned items only): no transactions list or count.
     var showsTransactions = true
     /// Shown above the list (e.g. an error banner or a filter), when given.
@@ -36,7 +39,8 @@ struct TransactionsSidePanel<Planned: View>: View {
 
     init(title: String, transactions: [Transaction], categoryById: [Int64: Category] = [:], showCategory: Bool = false,
          accountNameById: [Int64: String] = [:],
-         transfers: [Int64: [TransferCounterpart]] = [:], showsTransactions: Bool = true, accessory: AnyView? = nil,
+         transfers: [Int64: [TransferCounterpart]] = [:], conversion: CurrencyConversion = .none,
+         showsTransactions: Bool = true, accessory: AnyView? = nil,
          onAdd: (() -> Void)? = nil,
          @ViewBuilder plannedSection: @escaping () -> Planned,
          onEdit: ((Transaction) -> Void)?, onClose: @escaping () -> Void) {
@@ -46,6 +50,7 @@ struct TransactionsSidePanel<Planned: View>: View {
         self.showCategory = showCategory
         self.accountNameById = accountNameById
         self.transfers = transfers
+        self.conversion = conversion
         self.showsTransactions = showsTransactions
         self.accessory = accessory
         self.onAdd = onAdd
@@ -53,6 +58,14 @@ struct TransactionsSidePanel<Planned: View>: View {
         self.onEdit = onEdit
         self.onClose = onClose
     }
+
+    /// "Total in GBP at <rate>" when any row is in another currency (the total converts it).
+    private var convertedTotalNote: String? {
+        guard transactions.contains(where: { conversion.currency(ofAccount: $0.accountId) != .gbp }) else { return nil }
+        return "Total in GBP at \(String(format: "%.4f", conversion.eurToGbpRate))"
+    }
+
+    private static var convertedTotalHelp: String { "Each transaction shows its account's own currency; the total converts them to GBP at the stored rate." }
 
     private var sorted: [Transaction] {
         transactions.sorted { $0.date > $1.date }
@@ -82,10 +95,18 @@ struct TransactionsSidePanel<Planned: View>: View {
                 HStack {
                     Text(transactions.count == 1 ? "1 transaction" : "\(transactions.count) transactions")
                     Spacer()
-                    MoneyText(minorUnits: transactions.reduce(0) { $0 + $1.amountMinorUnits })
+                    MoneyText(minorUnits: transactions.reduce(0) { $0 + conversion.gbp($1) })
+                        .help(convertedTotalNote.map { _ in Self.convertedTotalHelp } ?? "")
                 }
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                if let note = convertedTotalNote {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .help(Self.convertedTotalHelp)
+                }
             }
             if let accessory { accessory }
             List {
@@ -112,7 +133,7 @@ struct TransactionsSidePanel<Planned: View>: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(transaction.rawDescription).lineLimit(2)
                 Spacer()
-                MoneyText(minorUnits: transaction.amountMinorUnits)
+                MoneyText(minorUnits: transaction.amountMinorUnits, currency: conversion.currency(ofAccount: transaction.accountId))
                     .fixedSize()
             }
             if let note = transaction.note, !note.isEmpty {
@@ -171,9 +192,9 @@ struct TransactionsSidePanel<Planned: View>: View {
 extension TransactionsSidePanel where Planned == EmptyView {
     /// No planned section (e.g. a Year Total, or the Categories screen).
     init(title: String, transactions: [Transaction], categoryById: [Int64: Category] = [:], showCategory: Bool = false,
-         transfers: [Int64: [TransferCounterpart]] = [:], accessory: AnyView? = nil,
+         transfers: [Int64: [TransferCounterpart]] = [:], conversion: CurrencyConversion = .none, accessory: AnyView? = nil,
          onEdit: @escaping (Transaction) -> Void, onClose: @escaping () -> Void) {
         self.init(title: title, transactions: transactions, categoryById: categoryById, showCategory: showCategory,
-                  transfers: transfers, accessory: accessory, plannedSection: { EmptyView() }, onEdit: onEdit, onClose: onClose)
+                  transfers: transfers, conversion: conversion, accessory: accessory, plannedSection: { EmptyView() }, onEdit: onEdit, onClose: onClose)
     }
 }

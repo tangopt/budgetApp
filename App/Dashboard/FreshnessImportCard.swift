@@ -6,6 +6,8 @@ struct FreshnessImportCard: View {
     let freshness: DataFreshness
     /// Each account's latest imported transaction date, shown for the picked account.
     let importedThrough: [Int64: Date]
+    /// The stored EUR→GBP rate, for a non-GBP account's note (`NonGBPImportCaption`).
+    let eurToGbpRate: Double
     @ObservedObject var importViewModel: ImportViewModel
     let accounts: [Account]
     @Binding var selectedAccountId: Int64?
@@ -164,7 +166,7 @@ struct FreshnessImportCard: View {
             }
             // Capped so a long caption wraps instead of widening the controls (which would
             // tip the card into its stacked layout earlier than the buttons need).
-            NonGBPImportCaption(account: selectedAccount)
+            NonGBPImportCaption(account: selectedAccount, eurToGbpRate: eurToGbpRate)
                 .frame(maxWidth: 320, alignment: .leading)
         }
     }

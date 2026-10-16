@@ -70,9 +70,14 @@ public enum NetWorthCalculator {
     }
 
     static func gbp(_ native: Int, currency: Currency, rate: ExchangeRateSetting) -> Int {
+        gbp(native, currency: currency, eurToGbpRate: rate.eurToGbpRate)
+    }
+
+    /// The one native → GBP formula: balances here, budget figures through `CurrencyConversion`.
+    static func gbp(_ native: Int, currency: Currency, eurToGbpRate: Double) -> Int {
         switch currency {
         case .gbp: return native
-        case .eur: return Int((Double(native) * rate.eurToGbpRate).rounded())
+        case .eur: return Int((Double(native) * eurToGbpRate).rounded())
         }
     }
 

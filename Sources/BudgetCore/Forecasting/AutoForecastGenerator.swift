@@ -54,6 +54,7 @@ public enum AutoForecastGenerator {
         let group = try ensureDetectedRecurringGroup(db: db)
         let sortedPeriods = actualPeriods.sorted { $0.startDate < $1.startDate }
         let categories = try Category.fetchAll(db)
+        let conversion = try CurrencyConversion.current(db: db)
         let plannedCategoryIds = Set(try Int64.fetchAll(db, sql: """
             SELECT DISTINCT categoryId FROM forecastEntry WHERE status != ? AND scenarioId IS NULL
             """, arguments: [ForecastEntryStatus.hypothetical.rawValue]))
@@ -66,10 +67,11 @@ public enum AutoForecastGenerator {
             if plannedCategoryIds.contains(categoryId) { continue }
             var perPeriodSums: [Int] = []
             for period in sortedPeriods {
-                let sum = try Int.fetchOne(db, sql: """
-                    SELECT COALESCE(SUM(amountMinorUnits), 0) FROM transaction_
+                // In GBP: a non-GBP account's transactions at the stored rate.
+                let sum = try Row.fetchAll(db, sql: """
+                    SELECT accountId, amountMinorUnits FROM transaction_
                     WHERE categoryId = ? AND status = 'confirmed' AND date >= ? AND date <= ? AND \(Transaction.budgetFacingCondition())
-                    """, arguments: [categoryId, period.startDate, period.endDate]) ?? 0
+                    """, arguments: [categoryId, period.startDate, period.endDate]).reduce(0) { $0 + conversion.gbp($1["amountMinorUnits"], accountId: $1["accountId"]) }
                 perPeriodSums.append(sum)
             }
             guard let recurrence = detectRecurrence(perPeriodSums: perPeriodSums) else { continue }
