@@ -46,8 +46,11 @@ New **Property** area (sidebar), one page per property (Lisbon today):
 3. **Tax years + attribution + rental accounts** (per person, GBP, drill-down) + accountant template export; regression on rental accounts 2023/24, 2024/25.
 4. **Personal income imports (P60/P45/P11D) + SA computation + box values + filing checklist**; full regression on both SA302s; 2025/26 live.
 
-## 6. Open questions
-1. Rent receipts: can the portal export them (CSV/XLS), or only PDFs?
-2. HMRC average rate: enter yearly by hand, or fetch from HMRC's published rates?
-3. Any other personal income or reliefs for either person (UK interest, dividends, pension outside payroll, Gift Aid, student loan, child benefit, capital gains)?
-4. Should utilities recharged to the tenant be netted against the tenant's transfers in the property view (rent vs recharges)?
+## 6. Answers (2026-10-16)
+1. **Rent receipts**: the portal exports all receipts for all four tenancies as one XLSX ("ListaRecibos": Referência, Nº de Contrato, Nº de Recibo, Locador, Locatário, Data de Início/Fim, Data de Rec., Valor, Retenção IRS, Importância recebida, Imóvel, Estado — 118 receipts so far). Import that file; individual receipt PDFs are optional evidence the user downloads one by one and links later (the app lists which receipts still lack a PDF).
+2. **FX**: follow HMRC guidance as the accountant does — HMRC's published **average rate for the year** for each currency; stored per tax year (pre-filled for past years from the filed returns; the app offers to fetch HMRC's published rates for new years, with manual override).
+3. **Other income**: eToro (≈ USD 12.6k) and Trading 212 (≈ GBP 700) stock and crypto accounts, never withdrawn. Implications: no disposals so far → no CGT yet, but **dividends (and any staking/interest) credited inside those accounts are taxable in the year received** even if not withdrawn, and disposals inside the accounts (switching holdings) are CGT events. Needs: USD currency support, the two accounts as investment accounts (net worth), and import of their annual statements (dividends, disposals) — added to phase 4.
+4. **Tenant utility recharges**: confirmed — a new feature (phase 5): each month the user emails the tenant the utility charges with the invoices attached (downloaded manually from each provider); the tenant adds them to the rent transfer. Tracker today: `Lisboa/Aluguer/4to Aluguer/Despesas/Despesas-novo.numbers` plus the invoices in that folder. The app will: collect each utility invoice (document + amount + period) against its BBVA debit, compute the monthly recharge, draft the email with attachments for the user to send, and split each tenant transfer into rent (matched to the rent receipt) and recharge (netted against Utilities) in the property view and tax.
+
+## 7. Phase 5 — Tenant utility recharges
+See answer 4. Its own spec/plan after phase 2.
