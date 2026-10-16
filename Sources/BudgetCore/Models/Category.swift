@@ -61,9 +61,9 @@ public struct Category: Codable, Equatable, Identifiable, FetchableRecord, Mutab
     public var transferAccountId: Int64?
     /// Not stored: whether this transfer category's account (`transferAccountId`) is left out
     /// of net worth (`Account.includeInNetWorth` off). Money filed under it leaves or enters
-    /// net worth, so the net-worth figures and the Budget's Totals count it like an external
-    /// transfer. Set by `markingNetWorthExclusions(accounts:)` where the calculations' inputs
-    /// are built (`DashboardInput`, `ComparisonData`, the Budget grid); false as loaded.
+    /// net worth, so the net-worth figures count it like an external transfer (the Budget's
+    /// Totals don't: there it's a transfer). Set by `markingNetWorthExclusions(accounts:)` where
+    /// the net-worth calculations' inputs are built (`DashboardInput`, `ComparisonData`); false as loaded.
     public var isTiedToAccountOutsideNetWorth = false
 
     /// The stored columns (`isTiedToAccountOutsideNetWorth` is derived, never persisted).

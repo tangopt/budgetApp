@@ -103,7 +103,10 @@ final class NetWorthExclusionTests: XCTestCase {
         XCTAssertTrue(ForecastCalculator.countsInNetWorth(mortgageTransfer, accountIds: nil))
         XCTAssertTrue(ForecastCalculator.countsInNetWorth(mortgageTransfer, accountIds: [current, mortgage]))
         XCTAssertFalse(ForecastCalculator.countsInNetWorth(marked.first { $0.id == toCurrent }!, accountIds: nil))
-        XCTAssertTrue(BudgetTotals.countsPlannedTransfer(mortgageTransfer, accountIds: nil))
+        // The Totals block: a transfer like any other.
+        XCTAssertFalse(BudgetTotals.countsPlannedTransfer(mortgageTransfer, accountIds: nil))
+        XCTAssertFalse(BudgetTotals.countsPlannedTransfer(mortgageTransfer, accountIds: [current, mortgage]))
+        XCTAssertTrue(BudgetTotals.countsPlannedTransfer(mortgageTransfer, accountIds: [current]))
     }
 
     // MARK: Balances
@@ -213,13 +216,45 @@ final class NetWorthExclusionTests: XCTestCase {
 
     // MARK: Budget
 
-    func testTheBudgetTotalsCountMoneyToAnExcludedAccount() {
+    func testTheBudgetTotalsTreatMoneyToAnExcludedAccountAsATransfer() {
         let marked = categories.markingNetWorthExclusions(accounts: accounts())
         let counterparts = BudgetTotals.counterpartAccounts(transactions: transactions, links: links)
         let facing = TransferLinks.budgetFacing(transactions, links: links)
-        XCTAssertEqual(BudgetTotals.countedTransfers(facing, categories: marked, accountIds: nil, counterpartAccounts: counterparts).compactMap(\.id), [1])
-        XCTAssertEqual(BudgetTotals.countedTransfers(facing, categories: marked, accountIds: [current, mortgage], counterpartAccounts: counterparts).compactMap(\.id), [1])
-        XCTAssertEqual(BudgetTotals.countedTransfers(facing, categories: categories, accountIds: nil, counterpartAccounts: counterparts).compactMap(\.id), [])
+        XCTAssertEqual(BudgetTotals.countedTransfers(facing, categories: marked, accountIds: nil, counterpartAccounts: counterparts).compactMap(\.id), [])
+        XCTAssertEqual(BudgetTotals.countedTransfers(facing, categories: marked, accountIds: [current, mortgage], counterpartAccounts: counterparts).compactMap(\.id), [])
+        // October: the £300 interest on the mortgage is out; the £1,000 payment isn't.
+        let totals = BudgetTotals.month(categories: marked, actuals: [interest: -30_000, toMortgage: -100_000], transferActuals: [:], planned: [:],
+                                        reserves: (0, 0, .none), monthClass: .actual, includeForecast: false, accountIds: nil)
+        XCTAssertEqual(totals.totalOut.value, -30_000)
+        XCTAssertEqual(totals.totalIn.value, 0)
+    }
+
+    func testPlannedItemsOnAnExcludedAccountLeaveTheNetWorthForecastAlone() {
+        // −£200 interest planned on the mortgage itself on the 1st of every month.
+        let interestEntry = ForecastEntry(id: 2, groupId: 1, categoryId: interest, amountMinorUnits: -20_000, frequency: .monthly, interval: 1, startDate: utc(2026, 1, 1),
+                                          endDate: nil, isEnabled: true, status: .confirmed, note: nil, accountId: mortgage)
+        let withInterest = DashboardInput(today: utc(2026, 10, 15), accounts: accounts(), snapshots: snapshots, transactions: transactions, categories: categories,
+                                          categoryGroups: [], forecastEntries: entries + [interestEntry], forecastGroups: groups, exceptions: [], importBatches: [], rate: rate,
+                                          transferLinks: links)
+        XCTAssertEqual(withInterest.netWorthEntries.compactMap(\.id), [1])
+        XCTAssertEqual(DashboardCalculator.budgetNetWorthMonths(withInterest, year: 2026, includeForecast: true)[9...11].map { $0 }, [900_000, 800_000, 700_000])
+        XCTAssertEqual(DashboardCalculator.netWorthSeries(withInterest).yearEnds.first?.valueMinorUnits, 700_000)
+        // The mortgage's own row still forecasts it: +£1,000 paid in, −£200 interest a month.
+        let itemAccounts = PlannedItemAccounts(inferredByCategory: [:], categories: withInterest.categories)
+        let forecast = DashboardCalculator.budgetAccountForecast(withInterest, actuals: DashboardCalculator.netWorthActuals(withInterest), itemAccounts: itemAccounts, year: 2026, includeForecast: true)
+        XCTAssertEqual(forecast.balance(accountId: mortgage, month: 11)?.gbpMinorUnits, -19_930_000 + 100_000 - 20_000)
+        XCTAssertEqual(forecast.balance(accountId: current, month: 12)!.gbpMinorUnits + forecast.unassigned[12]!, 700_000)
+        // Counted, the mortgage's interest is a cost to net worth.
+        let counted = DashboardInput(today: utc(2026, 10, 15), accounts: accounts(mortgageIncluded: true), snapshots: snapshots, transactions: transactions, categories: categories,
+                                     categoryGroups: [], forecastEntries: entries + [interestEntry], forecastGroups: groups, exceptions: [], importBatches: [], rate: rate,
+                                     transferLinks: links)
+        XCTAssertEqual(counted.netWorthEntries.count, 2)
+        // The scenario comparison leaves it out too.
+        let data = ComparisonData(today: utc(2026, 10, 15), accounts: accounts(), snapshots: snapshots, transactions: transactions, transferLinks: links, categories: categories,
+                                  rate: rate, payCalendar: withInterest.payCalendar, horizonYear: 2026, horizonMonth: 12)
+        let plan = PlanInput(entries: entries + [interestEntry], exceptions: [], groups: groups)
+        XCTAssertEqual(ScenarioComparison.netWorthSeries(data, plan: plan, actuals: ScenarioComparison.actuals(data)).forecast.last?.valueMinorUnits, 700_000)
+        XCTAssertEqual(ScenarioComparison.netWorthSeries(data, plan: plan).forecast.last?.valueMinorUnits, 700_000)
     }
 
     func testTransactionsOnAnExcludedAccountCountInBudgetFlows() {
@@ -232,6 +267,6 @@ final class NetWorthExclusionTests: XCTestCase {
                                   rate: rate, payCalendar: input().payCalendar, horizonYear: 2026, horizonMonth: 12)
         let series = ScenarioComparison.netWorthSeries(data, plan: PlanInput(entries: entries, exceptions: [], groups: groups))
         XCTAssertEqual(series.forecast.last?.valueMinorUnits, 700_000)
-        XCTAssertEqual(ScenarioComparison.gridActuals(data).countedTransferIds, [1])
+        XCTAssertEqual(ScenarioComparison.gridActuals(data).countedTransferIds, [])
     }
 }

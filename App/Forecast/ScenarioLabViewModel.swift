@@ -700,8 +700,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     /// The plan's occurrences in the calendar month a Totals row includes, by date (reserves
     /// left out: `totalsReserved` shows them as one line).
     func totalsOccurrences(_ row: BudgetTotals.Row, year: Int, month: Int) -> [PlannedRow] {
-        // Marked: money to or from an account left out of net worth counts.
-        categories.markingNetWorthExclusions(accounts: accounts).filter { $0.type != .adjustment && !$0.isReserved }
+        categories.filter { $0.type != .adjustment && !$0.isReserved }
             .flatMap { category in
                 let counted = BudgetTotals.countsPlannedTransfer(category, accountIds: nil)
                 return occurrences(category: category, year: year, month: month).filter {

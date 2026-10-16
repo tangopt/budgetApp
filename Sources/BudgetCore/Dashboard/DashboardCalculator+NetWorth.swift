@@ -159,13 +159,13 @@ extension DashboardCalculator {
         let actual = actuals.actual
         let dataMonth = input.dataThrough.map { MonthRange.components(of: $0) }
         let thisYear = MonthRange.components(of: input.today).year
-        let start = actuals.projectionStart(categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions, filter: input.netWorthFilter)
-        let forecast = netWorthForecast(actuals, start: start, throughYear: forecastThroughYear ?? thisYear + 1, categories: input.categories, entries: input.forecastEntries,
+        let start = actuals.projectionStart(categories: input.categories, entries: input.netWorthEntries, groups: input.forecastGroups, exceptions: input.exceptions, filter: input.netWorthFilter)
+        let forecast = netWorthForecast(actuals, start: start, throughYear: forecastThroughYear ?? thisYear + 1, categories: input.categories, entries: input.netWorthEntries,
                                         groups: input.forecastGroups, exceptions: input.exceptions, filter: input.netWorthFilter)
         var yearEnds: [YearEndForecast] = []
         if actuals.walkStartYear != nil {
             func forecastValue(atEndOf year: Int) -> Int {
-                actuals.forecastYearEnd(year, start: start, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups,
+                actuals.forecastYearEnd(year, start: start, categories: input.categories, entries: input.netWorthEntries, groups: input.forecastGroups,
                                         exceptions: input.exceptions, filter: input.netWorthFilter) ?? current
             }
             for year in [thisYear, thisYear + 1] {
@@ -233,8 +233,8 @@ extension DashboardCalculator {
             return YearEndNetWorth(valueMinorUnits: actuals.currentNetWorthMinorUnits, isForecast: false)
         }
         guard let actuals = netWorthActuals() else { return nil }
-        let start = actuals.projectionStart(categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions, filter: input.netWorthFilter)
-        return actuals.forecastYearEnd(year, start: start, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups,
+        let start = actuals.projectionStart(categories: input.categories, entries: input.netWorthEntries, groups: input.forecastGroups, exceptions: input.exceptions, filter: input.netWorthFilter)
+        return actuals.forecastYearEnd(year, start: start, categories: input.categories, entries: input.netWorthEntries, groups: input.forecastGroups,
                                        exceptions: input.exceptions, filter: input.netWorthFilter)
             .map { YearEndNetWorth(valueMinorUnits: $0, isForecast: true) }
     }
@@ -262,8 +262,8 @@ extension DashboardCalculator {
         var forecast: [Int: Int] = [:]
         var walkStart: (index: Int, value: Int)?
         if includeForecast, MonthRange.index(year: year, month: 12) >= todayIndex, let actuals = netWorthActuals() {
-            let start = actuals.projectionStart(categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups, exceptions: input.exceptions, filter: input.netWorthFilter)
-            for point in netWorthForecast(actuals, start: start, throughYear: year, categories: input.categories, entries: input.forecastEntries, groups: input.forecastGroups,
+            let start = actuals.projectionStart(categories: input.categories, entries: input.netWorthEntries, groups: input.forecastGroups, exceptions: input.exceptions, filter: input.netWorthFilter)
+            for point in netWorthForecast(actuals, start: start, throughYear: year, categories: input.categories, entries: input.netWorthEntries, groups: input.forecastGroups,
                                           exceptions: input.exceptions, filter: input.netWorthFilter) {
                 forecast[point.id] = point.valueMinorUnits
             }

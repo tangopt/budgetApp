@@ -28,6 +28,19 @@ public enum ForecastCalculator {
         return !accountIds.contains(tied)
     }
 
+    /// The plan entries the net-worth forecast counts: every one but an income or expense item
+    /// whose effective account (`PlannedItemAccounts.effectiveAccount`) is left out of net worth
+    /// (`excludedAccountIds`) — its money never reaches a counted account. `entries` unchanged
+    /// when nothing is excluded.
+    public static func netWorthEntries(_ entries: [ForecastEntry], categories: [Category], excludedAccountIds: Set<Int64>, itemAccounts: PlannedItemAccounts) -> [ForecastEntry] {
+        guard !excludedAccountIds.isEmpty else { return entries }
+        let flows = Set(categories.filter(\.type.isFlow).compactMap(\.id))
+        return entries.filter { entry in
+            guard flows.contains(entry.categoryId), let account = itemAccounts.effectiveAccount(of: entry) else { return true }
+            return !excludedAccountIds.contains(account)
+        }
+    }
+
     /// The sum of `totals` (per category id) over the categories that count in net worth.
     public static func netWorthImpact(totals: [Int64: Int], categories: [Category], accountIds: Set<Int64>?) -> Int {
         categories.reduce(0) { sum, category in
