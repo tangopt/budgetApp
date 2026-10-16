@@ -54,6 +54,21 @@ final class AutoForecastGeneratorTests: XCTestCase {
         XCTAssertEqual(entries[0].frequency, .monthly)
     }
 
+    /// A non-GBP account's history is summed in GBP at the stored rate.
+    func testEuroHistoryForecastsInGBPAtTheStoredRate() throws {
+        let (manager, rentId, account, periods) = try seededManagerWithRentHistory()
+        try manager.dbQueue.write { db in
+            var euro = account
+            euro.currency = .eur
+            try euro.update(db)
+            var rate = ExchangeRateSetting(eurToGbpRate: 0.85, updatedAt: Date())
+            try rate.insert(db)
+            try AutoForecastGenerator.regenerate(db: db, actualPeriods: periods)
+        }
+        let entries = try manager.dbQueue.read { db in try ForecastEntry.filter(Column("categoryId") == rentId).fetchAll(db) }
+        XCTAssertEqual(entries.map(\.amountMinorUnits), [-238000])
+    }
+
     /// Detection only adds: an existing entry (whatever its status) is never updated.
     func testRegenerateNeverUpdatesAnExistingEntry() throws {
         let (manager, rentId, _, periods) = try seededManagerWithRentHistory()

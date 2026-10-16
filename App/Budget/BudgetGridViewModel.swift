@@ -101,6 +101,8 @@ final class BudgetGridViewModel: ObservableObject {
     var onTransactionEdited: (() -> Void)?
 
     private let dbQueue: DatabaseQueue
+    /// Inside `load()`: an account or rate change waits for the `transactions` rebuild.
+    private var isLoading = false
     private var manualCloses: [PayMonthClose] = []
     private var lastHorizon: Date?
     /// Confirmed totals per category per pay month (`PayMonthTotals.lookup`) over every account:
@@ -179,6 +181,9 @@ final class BudgetGridViewModel: ObservableObject {
 
     func load(horizon: Date) throws {
         lastHorizon = horizon
+        // Setting `transactions` rebuilds everything once with the fresh accounts and rate.
+        isLoading = true
+        defer { isLoading = false }
         manualCloses = try dbQueue.read { db in try PayMonthClose.fetchAll(db) }
         categories = try dbQueue.read { db in try Category.fetchAll(db) }
         categoryGroups = try dbQueue.read { db in try CategoryGroup.fetchAll(db) }
@@ -194,14 +199,16 @@ final class BudgetGridViewModel: ObservableObject {
         selectDefaultYearIfNeeded()
     }
 
-    /// Rebuilds everything derived from the pay calendar. `load()` sets `manualCloses` and
-    /// `categories` before `transactions`, so this runs once per load with all inputs fresh.
-    /// A new rate or account currency changes every converted actual (not on a reload that
-    /// changes neither, so loading stays one rebuild).
+    /// A new rate or account currency outside `load()` changes every converted actual (a load
+    /// rebuilds once, when it sets `transactions`).
     private func rebuildPayMonthsIfConversionChanged() {
+        guard !isLoading else { return }
         if CurrencyConversion(accounts: accounts, rate: exchangeRate) != conversion { rebuildPayMonths() }
     }
 
+    /// Rebuilds everything derived from the pay calendar. `load()` sets `manualCloses`,
+    /// `categories`, the accounts and the rate before `transactions`, so this runs once per
+    /// load with all inputs fresh.
     private func rebuildPayMonths() {
         conversion = CurrencyConversion(accounts: accounts, rate: exchangeRate)
         payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: manualCloses, today: Date())

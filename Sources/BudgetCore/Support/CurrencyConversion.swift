@@ -10,13 +10,16 @@ import GRDB
 public struct CurrencyConversion: Equatable, Sendable {
     /// The non-GBP accounts' currencies by id; an account not listed is GBP.
     public let currencyByAccount: [Int64: Currency]
+    /// The stored rate; 1 when no account is non-GBP, so a new rate then changes nothing
+    /// (two conversions compare equal exactly when they convert alike).
     public let eurToGbpRate: Double
 
     public init(accounts: [Account], rate: ExchangeRateSetting) {
-        self.currencyByAccount = Dictionary(accounts.compactMap { account in
+        let currencyByAccount = Dictionary(accounts.compactMap { account in
             account.id.flatMap { account.currency == .gbp ? nil : ($0, account.currency) }
         }, uniquingKeysWith: { first, _ in first })
-        self.eurToGbpRate = rate.eurToGbpRate
+        self.currencyByAccount = currencyByAccount
+        self.eurToGbpRate = currencyByAccount.isEmpty ? 1 : rate.eurToGbpRate
     }
 
     /// No conversion: every account counts as GBP.
@@ -39,10 +42,7 @@ public struct CurrencyConversion: Equatable, Sendable {
 
     /// `amountMinorUnits` of a transaction in `accountId`, in GBP minor units.
     public func gbp(_ amountMinorUnits: Int, accountId: Int64) -> Int {
-        switch currency(ofAccount: accountId) {
-        case .gbp: return amountMinorUnits
-        case .eur: return Int((Double(amountMinorUnits) * eurToGbpRate).rounded())
-        }
+        NetWorthCalculator.gbp(amountMinorUnits, currency: currency(ofAccount: accountId), eurToGbpRate: eurToGbpRate)
     }
 
     /// The transaction's amount in GBP minor units.

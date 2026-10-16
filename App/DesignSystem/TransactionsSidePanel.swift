@@ -59,6 +59,14 @@ struct TransactionsSidePanel<Planned: View>: View {
         self.onClose = onClose
     }
 
+    /// "Total in GBP at <rate>" when any row is in another currency (the total converts it).
+    private var convertedTotalNote: String? {
+        guard transactions.contains(where: { conversion.currency(ofAccount: $0.accountId) != .gbp }) else { return nil }
+        return "Total in GBP at \(String(format: "%.4f", conversion.eurToGbpRate))"
+    }
+
+    private static var convertedTotalHelp: String { "Each transaction shows its account's own currency; the total converts them to GBP at the stored rate." }
+
     private var sorted: [Transaction] {
         transactions.sorted { $0.date > $1.date }
     }
@@ -88,9 +96,17 @@ struct TransactionsSidePanel<Planned: View>: View {
                     Text(transactions.count == 1 ? "1 transaction" : "\(transactions.count) transactions")
                     Spacer()
                     MoneyText(minorUnits: transactions.reduce(0) { $0 + conversion.gbp($1) })
+                        .help(convertedTotalNote.map { _ in Self.convertedTotalHelp } ?? "")
                 }
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                if let note = convertedTotalNote {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .help(Self.convertedTotalHelp)
+                }
             }
             if let accessory { accessory }
             List {

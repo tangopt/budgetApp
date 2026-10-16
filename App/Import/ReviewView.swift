@@ -118,7 +118,7 @@ struct ReviewView: View {
                                             Text(duplicate.date.formatted(date: .abbreviated, time: .omitted))
                                             Text(duplicate.rawDescription)
                                             Spacer()
-                                            MoneyText(minorUnits: duplicate.amountMinorUnits, font: .caption)
+                                            MoneyText(minorUnits: duplicate.amountMinorUnits, currency: viewModel.currency, font: .caption)
                                         }
                                         .font(.caption)
                                     }
@@ -474,7 +474,7 @@ struct ReviewView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            MoneyText(minorUnits: ReviewGrouping.total(amounts))
+            MoneyText(minorUnits: ReviewGrouping.total(amounts), currency: viewModel.currency)
             // One source per row, so the checkbox shows mixed when rows differ (e.g. after one
             // row was changed on its own); clicking it sets them all.
             Toggle("Remember", sources: group.rows.map { row in
@@ -586,7 +586,7 @@ struct ReviewView: View {
                     Text(group.key)
                     Text("× \(group.rows.count)").foregroundStyle(.secondary)
                     Spacer()
-                    MoneyText(minorUnits: ReviewGrouping.total(group.rows.map(\.staged.parsed.amountMinorUnits)))
+                    MoneyText(minorUnits: ReviewGrouping.total(group.rows.map(\.staged.parsed.amountMinorUnits)), currency: viewModel.currency)
                     Text(categoryText(ReviewGrouping.categoryState(of: group.rows.map(\.chosenCategoryId))))
                         .frame(width: 200, alignment: .leading)
                     Button("Undo") { viewModel.unconfirmRows(group.rows) }
@@ -606,7 +606,7 @@ struct ReviewView: View {
                 Text(row.staged.parsed.date.formatted(date: .abbreviated, time: .omitted)).font(.caption)
             }
             Spacer()
-            MoneyText(minorUnits: row.staged.parsed.amountMinorUnits)
+            MoneyText(minorUnits: row.staged.parsed.amountMinorUnits, currency: viewModel.currency)
             Text(categoryText(.uniform(row.chosenCategoryId)))
                 .frame(width: 200, alignment: .leading)
             Button("Undo") { viewModel.unconfirmRows([row]) }
@@ -636,7 +636,7 @@ struct ReviewView: View {
                 if let replacement = row.staged.replacesManual { manualReplacementBadge(replacement) }
             }
             Spacer()
-            MoneyText(minorUnits: row.staged.parsed.amountMinorUnits)
+            MoneyText(minorUnits: row.staged.parsed.amountMinorUnits, currency: viewModel.currency)
             NoteButton(note: row.note) { viewModel.setNote($0, forRowId: row.id) }
             if let group = singleRowGroup {
                 Toggle("Remember", isOn: Binding(

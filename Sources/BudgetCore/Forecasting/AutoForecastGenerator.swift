@@ -68,10 +68,10 @@ public enum AutoForecastGenerator {
             var perPeriodSums: [Int] = []
             for period in sortedPeriods {
                 // In GBP: a non-GBP account's transactions at the stored rate.
-                let sum = try Transaction.fetchAll(db, sql: """
-                    SELECT * FROM transaction_
+                let sum = try Row.fetchAll(db, sql: """
+                    SELECT accountId, amountMinorUnits FROM transaction_
                     WHERE categoryId = ? AND status = 'confirmed' AND date >= ? AND date <= ? AND \(Transaction.budgetFacingCondition())
-                    """, arguments: [categoryId, period.startDate, period.endDate]).reduce(0) { $0 + conversion.gbp($1) }
+                    """, arguments: [categoryId, period.startDate, period.endDate]).reduce(0) { $0 + conversion.gbp($1["amountMinorUnits"], accountId: $1["accountId"]) }
                 perPeriodSums.append(sum)
             }
             guard let recurrence = detectRecurrence(perPeriodSums: perPeriodSums) else { continue }

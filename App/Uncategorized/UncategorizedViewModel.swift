@@ -15,6 +15,9 @@ final class UncategorizedViewModel: ObservableObject {
     @Published var categoryGroups: [CategoryGroup] = []
     @Published var recentCategoryIds: [Int64] = []
     @Published var errorMessage: String?
+    /// Each account's currency (rows show their own) and the stored rate (a group mixing
+    /// currencies totals in GBP).
+    @Published private(set) var conversion = CurrencyConversion.none
 
     /// Per-row Remember choices made through a group's checkbox (absent = group default).
     @Published private var rememberChoices: [Int64: Bool] = [:]
@@ -32,14 +35,26 @@ final class UncategorizedViewModel: ObservableObject {
 
     func load() throws {
         let since = Self.recentSince()
-        (transactions, categories, categoryGroups, recentCategoryIds) = try dbQueue.read { db in
+        let loadedConversion: CurrencyConversion
+        (transactions, categories, categoryGroups, recentCategoryIds, loadedConversion) = try dbQueue.read { db in
             (
                 try UncategorizedTransactions.fetch(db: db),
                 try Category.fetchAll(db),
                 try CategoryGroup.fetchAll(db),
-                try CategoryShortlist.recent(db: db, since: since, limit: 5)
+                try CategoryShortlist.recent(db: db, since: since, limit: 5),
+                try CurrencyConversion.current(db: db)
             )
         }
+        if loadedConversion != conversion { conversion = loadedConversion }
+    }
+
+    /// A group's total: in its rows' currency when they share one, else in GBP at the stored rate.
+    func groupTotal(_ rows: [Transaction]) -> (minorUnits: Int, currency: Currency) {
+        let currencies = Set(rows.map { conversion.currency(ofAccount: $0.accountId) })
+        if currencies.count == 1, let currency = currencies.first {
+            return (ReviewGrouping.total(rows.map(\.amountMinorUnits)), currency)
+        }
+        return (ReviewGrouping.total(rows.map { conversion.gbp($0) }), .gbp)
     }
 
     /// The picker's Recent section covers the last 90 days.

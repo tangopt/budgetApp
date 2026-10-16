@@ -84,6 +84,20 @@ final class CurrencyConversionTests: XCTestCase {
         XCTAssertEqual(CurrencyConversion.none.toGBP(all), all)
     }
 
+    func testWithNoNonGBPAccountARateChangeChangesNothing() {
+        let other = ExchangeRateSetting(eurToGbpRate: 0.9, updatedAt: Date(timeIntervalSince1970: 0))
+        XCTAssertEqual(CurrencyConversion(accounts: [accounts[0]], rate: rate), CurrencyConversion(accounts: [accounts[0]], rate: other))
+        XCTAssertEqual(CurrencyConversion(accounts: [accounts[0]], rate: rate), .none)
+        XCTAssertNotEqual(CurrencyConversion(accounts: accounts, rate: rate), CurrencyConversion(accounts: accounts, rate: other))
+    }
+
+    func testUsesTheBalancesFormula() {
+        let conversion = CurrencyConversion(accounts: accounts, rate: rate)
+        for amount in [-10_001, -5, 1, 333, 99_999] {
+            XCTAssertEqual(conversion.gbp(amount, accountId: eurId), NetWorthCalculator.gbp(amount, currency: .eur, rate: rate))
+        }
+    }
+
     func testReadsTheAccountsAndStoredRateFromTheDatabase() throws {
         let manager = try DatabaseManager(path: nil)
         try manager.migrate()
