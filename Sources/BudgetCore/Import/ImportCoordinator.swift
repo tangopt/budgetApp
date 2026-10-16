@@ -125,19 +125,7 @@ public final class ImportCoordinator {
 
         var duplicates: [ParsedTransaction] = []
         var nonDuplicates: [(parsed: ParsedTransaction, fingerprint: String)] = []
-        var occurrencesSeen: [String: Int] = [:]
-        for parsedTransaction in parsed {
-            let baseFingerprint = TransactionFingerprint.compute(
-                accountId: accountId, date: parsedTransaction.date,
-                amountMinorUnits: parsedTransaction.amountMinorUnits, description: parsedTransaction.rawDescription
-            )
-            let occurrence = occurrencesSeen[baseFingerprint, default: 0]
-            occurrencesSeen[baseFingerprint] = occurrence + 1
-            let fingerprint = TransactionFingerprint.compute(
-                accountId: accountId, date: parsedTransaction.date,
-                amountMinorUnits: parsedTransaction.amountMinorUnits, description: parsedTransaction.rawDescription,
-                occurrence: occurrence
-            )
+        for (parsedTransaction, fingerprint) in zip(parsed, TransactionFingerprint.computeAll(accountId: accountId, transactions: parsed)) {
             if existingFingerprints.contains(fingerprint) {
                 duplicates.append(parsedTransaction)
                 continue
@@ -277,11 +265,19 @@ public final class ImportCoordinator {
     @discardableResult
     public func commit(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statement: StatementFinish? = nil) throws -> StatementFinishOutcome? {
         try dbQueue.write { db in
-            try commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions, statement: statement)
+            try Self.commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions, statement: statement)
         }
     }
 
-    private func commitRows(db: Database, accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statement: StatementFinish?) throws -> StatementFinishOutcome? {
+    /// `commit` in the caller's write transaction (one-off tools that do more in the same
+    /// transaction): the same rows, rule learning, transfer matching and forecast refresh.
+    @discardableResult
+    public static func commit(db: Database, accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision],
+                              statement: StatementFinish? = nil) throws -> StatementFinishOutcome? {
+        try commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions, statement: statement)
+    }
+
+    private static func commitRows(db: Database, accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statement: StatementFinish?) throws -> StatementFinishOutcome? {
         let decisionById = Dictionary(decisions.map { ($0.stagedId, $0.finalCategoryId) }, uniquingKeysWith: { _, last in last })
         let learnById = Dictionary(decisions.map { ($0.stagedId, $0.learnRule) }, uniquingKeysWith: { _, last in last })
         let noteById = Dictionary(decisions.map { ($0.stagedId, $0.note) }, uniquingKeysWith: { _, last in last })
@@ -349,7 +345,7 @@ public final class ImportCoordinator {
             let filled = try accountFill.flatMap { try StatementAccountCheck.fill(db: db, accountId: accountId, with: $0) }
             let outcome: StatementFinishOutcome?
             if !staged.isEmpty {
-                outcome = try commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions, statement: statement)
+                outcome = try Self.commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions, statement: statement)
             } else {
                 outcome = try statement.map { try Self.finishStatementOnly(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: $0) }
             }
