@@ -153,11 +153,14 @@ struct FreshnessImportCard: View {
                         Button("Import PDF…") { actions.startPDF() }.fixedSize()
                     }
                 }
-            }
-            if let account = selectedAccount, let id = account.id {
-                Text(importedThrough[id].map { "Imported up to \(DashboardFormat.day($0))" } ?? "Not imported yet")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                // On the controls' line, so it adds no height to the card.
+                if let account = selectedAccount, let id = account.id {
+                    Text(importedThrough[id].map { "Imported up to \(DashboardFormat.day($0))" } ?? "Not imported yet")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .layoutPriority(-1)
+                }
             }
             // Capped so a long caption wraps instead of widening the controls (which would
             // tip the card into its stacked layout earlier than the buttons need).
