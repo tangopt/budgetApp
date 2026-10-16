@@ -16,6 +16,14 @@ extension CategorySection {
     }
 }
 
+/// A Distribution donut, for its colour slots (`CategoriesViewModel.distributionColorSlots`).
+enum DistributionDonutKind: Equatable {
+    case expenseGroups
+    /// One expense group's categories; nil = Ungrouped.
+    case expenseCategories(groupId: Int64?)
+    case income
+}
+
 @MainActor
 final class CategoriesViewModel: ObservableObject {
     @Published private(set) var categories: [Category] = []
@@ -216,6 +224,44 @@ final class CategoriesViewModel: ObservableObject {
         var years = Set(transactions.filter { $0.categoryId.map(ids.contains) == true }.map(payYear(of:)))
         years.insert(payCalendar.current.year)
         return years.sorted(by: >)
+    }
+
+    // MARK: Distribution
+
+    /// The Distribution panel's figures for the pay-month `year` (nil = all years): the
+    /// Budget grid's actuals basis (`CategoryDistribution`; `transactions` are budget-facing).
+    func distribution(year: Int?) -> CategoryDistribution {
+        CategoryDistribution.compute(year: year, transactions: transactions, categories: categories, groups: groups, calendar: payCalendar)
+    }
+
+    /// The Distribution panel's year filter: the current year (the default), then any with
+    /// income or expense actuals, newest first.
+    var distributionYears: [Int] {
+        let flowIds = Set(categories.filter { $0.type.isFlow }.compactMap(\.id))
+        var years = Set(transactions.filter { $0.categoryId.map(flowIds.contains) == true }.map(payYear(of:)))
+        years.insert(payCalendar.current.year)
+        return years.sorted(by: >)
+    }
+
+    /// Each possible slice's palette slot in a Distribution donut, by slice id, so an entity
+    /// keeps its colour whatever the year or its rank: the groups donut slots Ungrouped
+    /// first, then every group by id; a group's donut (`groupId`, nil = Ungrouped) every
+    /// expense category of that group by id; the income donut every income category by id.
+    func distributionColorSlots(_ donut: DistributionDonutKind) -> [String: Int] {
+        let ids: [String]
+        let groupIds = Set(groups.compactMap(\.id))
+        let assignable = categories.filter { !$0.isReserved }
+        switch donut {
+        case .expenseGroups:
+            ids = ["g-ungrouped"] + groups.compactMap(\.id).sorted().map { "g-\($0)" }
+        case .expenseCategories(let groupId):
+            ids = assignable.filter { category in
+                category.type == .expense && (category.groupId.flatMap { groupIds.contains($0) ? $0 : nil }) == groupId
+            }.compactMap(\.id).sorted().map { "c-\($0)" }
+        case .income:
+            ids = assignable.filter { $0.type == .income }.compactMap(\.id).sorted().map { "c-\($0)" }
+        }
+        return Dictionary(ids.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
     }
 
     /// The Edit transaction sheet's Save: category and note (or a manual transaction's
