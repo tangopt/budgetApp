@@ -8,15 +8,18 @@
 //
 // The settings and history are personal data files kept outside the repository.
 //
-// Usage: swift run TaxRegression <db-copy> --history <history.csv> --settings <settings.json> [--report <out.txt>]
+// Usage: swift run TaxRegression <db-copy> --history <history.csv> --settings <settings.json> [--report <out.txt>] [--no-apply]
 //   The database is written (settings applied): never pass the real one.
+//   --no-apply  compares what the stored records give (the app's own settings), writing nothing but the
+//               rule-alternatives savepoints (rolled back): only the settings' property, personAliases and
+//               years[].startYear are read (eurGbpPerUnit may be left out).
 
 import Foundation
 import BudgetCore
 import GRDB
 
 func usage() -> Never {
-    FileHandle.standardError.write("Usage: TaxRegression <db-copy> --history <csv> --settings <json> [--report <out.txt>]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("Usage: TaxRegression <db-copy> --history <csv> --settings <json> [--report <out.txt>] [--no-apply]\n".data(using: .utf8)!)
     exit(2)
 }
 
@@ -26,6 +29,7 @@ func fail(_ message: String) -> Never {
 }
 
 var historyPath: String?, settingsPath: String?, reportPath: String?
+var applySettings = true
 var paths: [String] = []
 var remaining = Array(CommandLine.arguments.dropFirst())[...]
 while let argument = remaining.popFirst() {
@@ -33,6 +37,7 @@ while let argument = remaining.popFirst() {
     case "--history": historyPath = remaining.popFirst() ?? { usage() }()
     case "--settings": settingsPath = remaining.popFirst() ?? { usage() }()
     case "--report": reportPath = remaining.popFirst() ?? { usage() }()
+    case "--no-apply": applySettings = false
     default:
         if argument.hasPrefix("--") { usage() }
         paths.append(argument)
@@ -52,9 +57,9 @@ do {
     let filed = TaxRegression.parseHistory(try String(contentsOfFile: historyPath, encoding: .utf8))
     let manager = try DatabaseManager(path: dbPath)
     try manager.migrate()
-    var out = "Rental accounts regression · \(dbPath)\n"
+    var out = "Rental accounts regression · \(dbPath)\(applySettings ? "" : " (stored settings only)")\n"
     try manager.dbQueue.write { db in
-        for line in try TaxRegression.apply(db: db, settings: settings) { out += line + "\n" }
+        if applySettings { for line in try TaxRegression.apply(db: db, settings: settings) { out += line + "\n" } }
         let (accounts, comparisons) = try TaxRegression.compare(db: db, settings: settings, filed: filed)
         out += TaxRegression.report(comparisons, accounts: accounts)
 

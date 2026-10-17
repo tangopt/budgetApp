@@ -43,8 +43,9 @@ public enum TaxRegression {
 
         public struct Year: Codable, Equatable, Sendable {
             public var startYear: Int
-            /// Pounds per euro implied by the filed return.
-            public var eurGbpPerUnit: Double
+            /// Pounds per euro implied by the filed return (required by `apply`; a comparison
+            /// against the stored settings only doesn't need it).
+            public var eurGbpPerUnit: Double?
             public var rateNote: String?
             public var splits: [Split]?
             public var manualItems: [Item]?
@@ -112,6 +113,8 @@ public enum TaxRegression {
         case badDate(String)
         case transactionNotFound(String)
         case categoryNotFound(String)
+        /// A year to apply without its `eurGbpPerUnit`.
+        case missingRate(Int)
     }
 
     /// One filed figure.
@@ -202,9 +205,10 @@ public enum TaxRegression {
             }
         }
         for year in settings.years {
-            try HMRCRates.set(db: db, startYear: year.startYear, currencyCode: "EUR", gbpPerUnit: year.eurGbpPerUnit,
+            guard let rate = year.eurGbpPerUnit else { throw RegressionError.missingRate(year.startYear) }
+            try HMRCRates.set(db: db, startYear: year.startYear, currencyCode: "EUR", gbpPerUnit: rate,
                               source: .filedReturn, notes: year.rateNote ?? "Implied by the filed return")
-            log.append("\(UKTaxYear(startYear: year.startYear).label): EUR rate £\(year.eurGbpPerUnit)")
+            log.append("\(UKTaxYear(startYear: year.startYear).label): EUR rate £\(rate)")
             for split in year.splits ?? [] {
                 let person = try personRecord(db: db, settings.personName(split.person))
                 let type = try split.expenseType.map(expenseType)
