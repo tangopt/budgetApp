@@ -345,6 +345,8 @@ public enum TaxEvidence {
             guard let item = try TaxManualItem.fetchOne(db, key: entity.id) else { return nil }
             let person = try Person.fetchOne(db, key: item.personId)?.displayShortName
             return [item.label, UKTaxYear(startYear: item.startYear).label, person].compactMap { $0 }.joined(separator: " · ")
+        case .employment, .employmentIncome, .hmrcPayment, .otherIncome, .pensionContribution:
+            return try PersonalIncomeEvidence.title(db: db, entity: entity)
         default:
             return nil
         }

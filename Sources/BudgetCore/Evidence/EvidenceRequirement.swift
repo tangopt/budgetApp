@@ -44,12 +44,16 @@ public enum EvidenceRequirementScope: Codable, Equatable, Hashable, Sendable {
     /// (its PDF) whose rent period meets the checklist's period, each tenancy (its contract)
     /// running in it (`PropertyEvidence`). New records are covered as they arrive.
     case recordsOfProperty(propertyId: Int64, recordType: EvidenceEntityType)
+    /// One document per personal-income record of every person (`PersonalIncomeEvidence`):
+    /// the P60 of each employment held to the year's end, the P45 of each that ended, the
+    /// P11D of each with benefits, the proof of each HMRC payment.
+    case personalIncomeRecords(record: PersonalIncomeRecordKind)
 
     /// Whether the scope targets transactions (one item per transaction).
     public var isTransactionScope: Bool {
         switch self {
         case .transactionsInCategory, .transactionsInCategoryGroup, .transactionsMatching: return true
-        case .periodic, .single, .recordsOfProperty: return false
+        case .periodic, .single, .recordsOfProperty, .personalIncomeRecords: return false
         }
     }
 }

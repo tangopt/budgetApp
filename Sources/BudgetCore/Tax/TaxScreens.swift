@@ -29,6 +29,7 @@ public enum TaxOverview {
         let people = try People.all(db: db)
         let owners = try PropertyOwner.fetchAll(db)
         let records = try TaxYear.fetchAll(db)
+        let employmentYears = Dictionary(grouping: try Employment.fetchAll(db), by: \.personId).mapValues { $0.map(\.startYear) }
         let properties = Dictionary(uniqueKeysWithValues: try Property.fetchAll(db).compactMap { p in p.id.map { ($0, p) } })
         let tenancyStarts = Dictionary(grouping: try Tenancy.fetchAll(db), by: \.propertyId).mapValues { $0.map(\.startDate).min() }
         var rows: [YearRow] = []
@@ -36,7 +37,8 @@ public enum TaxOverview {
             guard let personId = person.id else { continue }
             let owned = owners.filter { $0.personId == personId }
             let personRecords = records.filter { $0.personId == personId }
-            guard !owned.isEmpty || !personRecords.isEmpty else { continue }
+            let employed = employmentYears[personId] ?? []
+            guard !owned.isEmpty || !personRecords.isEmpty || !employed.isEmpty else { continue }
             // From ownership (or the first tenancy, or the purchase) — whichever is later — to now.
             let firstOwned = owned.compactMap { owner -> Int? in
                 let property = properties[owner.propertyId]
@@ -44,7 +46,7 @@ public enum TaxOverview {
                 return starts.max().map { UKTaxYear.containing($0).startYear }
             }.min()
             let firstRecord = personRecords.map(\.startYear).min()
-            let first = [firstOwned, firstRecord, current.startYear].compactMap { $0 }.min()!
+            let first = [firstOwned, firstRecord, employed.min(), current.startYear].compactMap { $0 }.min()!
             let last = max(current.startYear, personRecords.map(\.startYear).max() ?? current.startYear)
             for startYear in stride(from: last, through: first, by: -1) {
                 let year = UKTaxYear(startYear: startYear)
@@ -105,12 +107,18 @@ public enum TaxOverview {
         public var categoryTypes: [TaxExpenseTypeMap.Entry]
         public var manualItems: [TaxManualItem]
         public var manualItemDocumentCounts: [Int64: Int]
+        /// The Self Assessment tabs (phase 4).
+        public var income = SelfAssessmentOverview.IncomePage()
+        public var selfAssessment: SelfAssessment.Result?
+        public var selfAssessmentError: String?
+        public var filing: [SelfAssessmentFiling.Step] = []
     }
 
     /// The page of `personId`'s year for `propertyId` (default: the first property they own in
-    /// it). `rows` (already read) saves reading the list again.
+    /// it). `rows` (already read) saves reading the list again. `includeSelfAssessment` false
+    /// leaves the return and the filing steps out (they compute every earlier year too).
     public static func page(db: Database, personId: Int64, startYear: Int, propertyId: Int64? = nil, rows known: [YearRow]? = nil,
-                            now: Date = Date()) throws -> YearPage? {
+                            includeSelfAssessment: Bool = true, now: Date = Date()) throws -> YearPage? {
         guard let row = try (known ?? rows(db: db, now: now)).first(where: { $0.person.id == personId && $0.year.startYear == startYear })
                 ?? (try Person.fetchOne(db, key: personId)).map({ person in
                     YearRow(person: person, year: UKTaxYear(startYear: startYear), status: .preparing, taxYearId: nil, eurRate: nil, properties: [])
@@ -134,10 +142,16 @@ public enum TaxOverview {
         }
         var items = try TaxManualItems.items(db: db, startYear: startYear, personId: personId)
         if let propertyId = property?.id { items = items.filter { $0.propertyId == nil || $0.propertyId == propertyId } }
-        return YearPage(row: row, property: property, accounts: accounts,
-                        rates: try HMRCRate.filter(Column("startYear") == startYear).order(Column("currencyCode")).fetchAll(db),
-                        splits: splits, ownershipShareBasisPoints: ownership, rules: rules, categoryTypes: categoryTypes,
-                        manualItems: items, manualItemDocumentCounts: try EvidenceLinks.linkCounts(db: db, .taxManualItem))
+        var page = YearPage(row: row, property: property, accounts: accounts,
+                            rates: try HMRCRate.filter(Column("startYear") == startYear).order(Column("currencyCode")).fetchAll(db),
+                            splits: splits, ownershipShareBasisPoints: ownership, rules: rules, categoryTypes: categoryTypes,
+                            manualItems: items, manualItemDocumentCounts: try EvidenceLinks.linkCounts(db: db, .taxManualItem))
+        page.income = try SelfAssessmentOverview.incomePage(db: db, startYear: startYear, personId: personId)
+        if includeSelfAssessment {
+            (page.selfAssessment, page.selfAssessmentError) = SelfAssessmentOverview.selfAssessment(db: db, startYear: startYear, personId: personId)
+            page.filing = page.selfAssessment.map(SelfAssessmentFiling.steps) ?? []
+        }
+        return page
     }
 }
 

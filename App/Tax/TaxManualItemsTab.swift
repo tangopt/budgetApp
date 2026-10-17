@@ -142,9 +142,6 @@ struct TaxManualItemSheet: View {
     @State private var isWholeProperty: Bool
     @State private var notes: String
     @State private var error: String?
-    @State private var picking = false
-    @State private var dropTargeted = false
-    @Environment(\.theme) private var theme
 
     init(viewModel: TaxYearsViewModel, draft: ManualItemDraft) {
         self.viewModel = viewModel
@@ -210,16 +207,36 @@ struct TaxManualItemSheet: View {
                     TextField("Note", text: $notes)
                 }
                 LabeledContent("Documents") {
-                    documentsList
+                    StagedDocumentsField(documents: documents)
                 }
             }
         }
-        .fileImporter(isPresented: $picking, allowedContentTypes: EvidenceFiles.contentTypes, allowsMultipleSelection: true) { result in
-            if case let .success(urls) = result { documents.addFiles(urls) }
-        }
     }
 
-    private var documentsList: some View {
+    private func save() {
+        guard let amount else { error = MoneyField.invalidAmountMessage(amountText); return }
+        var item = draft.item
+        item.label = label
+        item.expenseType = expenseType
+        item.currency = currency
+        item.amountMinorUnits = amount
+        item.date = hasDate ? date : nil
+        item.isWholeProperty = draft.item.propertyId != nil && isWholeProperty
+        item.notes = notes
+        error = viewModel.saveManualItem(item, documents: documents.staging.changes)
+        if error == nil { dismiss() }
+    }
+}
+
+/// A sheet's Documents row: the record's documents with staged links and unlinks, "Add
+/// document…" and a drop target (`StagedDocumentsModel`; Save applies the changes).
+struct StagedDocumentsField: View {
+    @ObservedObject var documents: StagedDocumentsModel
+    @State private var picking = false
+    @State private var dropTargeted = false
+    @Environment(\.theme) private var theme
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(documents.shown) { document in
                 let id = document.id ?? -1
@@ -255,19 +272,8 @@ struct TaxManualItemSheet: View {
             documents.addFiles(urls)
             return !urls.isEmpty
         } isTargeted: { dropTargeted = $0 }
-    }
-
-    private func save() {
-        guard let amount else { error = MoneyField.invalidAmountMessage(amountText); return }
-        var item = draft.item
-        item.label = label
-        item.expenseType = expenseType
-        item.currency = currency
-        item.amountMinorUnits = amount
-        item.date = hasDate ? date : nil
-        item.isWholeProperty = draft.item.propertyId != nil && isWholeProperty
-        item.notes = notes
-        error = viewModel.saveManualItem(item, documents: documents.staging.changes)
-        if error == nil { dismiss() }
+        .fileImporter(isPresented: $picking, allowedContentTypes: EvidenceFiles.contentTypes, allowsMultipleSelection: true) { result in
+            if case let .success(urls) = result { documents.addFiles(urls) }
+        }
     }
 }

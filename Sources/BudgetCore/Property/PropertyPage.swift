@@ -137,7 +137,8 @@ extension PropertyEvidence {
             case .account: return accountIds.contains(entity.id)
             case .category: return categoryIds.contains(entity.id)
             case .person: return ownerIds.contains(entity.id)
-            case .transaction, .taxYear, .taxManualItem, .other: return false
+            case .transaction, .taxYear, .taxManualItem, .employment, .employmentIncome, .hmrcPayment, .otherIncome,
+                 .pensionContribution, .other: return false
             }
         }
         var ids: Set<Int64> = []
@@ -145,6 +146,7 @@ extension PropertyEvidence {
             let isRelated: Bool
             switch requirement.scope {
             case let .recordsOfProperty(id, _): isRelated = id == propertyId
+            case .personalIncomeRecords: isRelated = false
             case let .transactionsInCategoryGroup(groupId): isRelated = groupIds.contains(groupId)
             case let .transactionsInCategory(categoryId): isRelated = categoryIds.contains(categoryId)
             case let .transactionsMatching(categories, accounts, _):
@@ -173,6 +175,11 @@ extension EvidenceEntityType {
         case .tenancy: return "Tenancy"
         case .rentReceipt: return "Rent receipt"
         case .taxManualItem: return "Tax item"
+        case .employment: return "Employment"
+        case .employmentIncome: return "Pay and tax"
+        case .hmrcPayment: return "HMRC payment"
+        case .otherIncome: return "Other income"
+        case .pensionContribution: return "Pension contribution"
         }
     }
 }

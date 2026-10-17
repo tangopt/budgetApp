@@ -14,12 +14,19 @@ import GRDB
 @MainActor
 final class TaxYearsViewModel: ObservableObject {
     enum Tab: String, CaseIterable, Identifiable {
+        case income = "Income"
         case accounts = "Rental accounts"
+        case taxReturn = "Return"
+        case calculation = "Calculation"
+        case filing = "Filing"
         case settings = "Settings"
         case manualItems = "Manual items"
         case missingEvidence = "Missing evidence"
         case export = "Export"
         var id: String { rawValue }
+
+        /// The tabs that show the computed return (computed only while one of them shows).
+        var needsSelfAssessment: Bool { [.taxReturn, .calculation, .filing].contains(self) }
     }
 
     /// The year on show.
@@ -44,7 +51,21 @@ final class TaxYearsViewModel: ObservableObject {
     @Published var propertyId: Int64? {
         didSet { if propertyId != oldValue { restartObservation() } }
     }
-    @Published var tab: Tab = .accounts
+    @Published var tab: Tab = .accounts {
+        didSet {
+            if tab != .calculation { focusedStep = nil }
+            if tab.needsSelfAssessment != oldValue.needsSelfAssessment { restartObservation() }
+        }
+    }
+
+    /// A Return box's drill-down: the calculation step to highlight and scroll to. Each
+    /// request is new, so asking for the same step again scrolls again.
+    struct StepRequest: Equatable {
+        let title: String
+        let id = UUID()
+    }
+
+    @Published var focusedStep: StepRequest?
     @Published private(set) var snapshot = Snapshot()
     @Published private(set) var isLoading = true
     @Published private(set) var isFetchingRate = false
@@ -81,9 +102,9 @@ final class TaxYearsViewModel: ObservableObject {
         observationTask = nil
         guard isActive else { return }
         isLoading = true
-        let selection = selection, propertyId = propertyId
+        let selection = selection, propertyId = propertyId, includeSelfAssessment = tab.needsSelfAssessment
         let values = ValueObservation
-            .tracking { db in try Self.read(db: db, selection: selection, propertyId: propertyId) }
+            .tracking { db in try Self.read(db: db, selection: selection, propertyId: propertyId, includeSelfAssessment: includeSelfAssessment) }
             .removeDuplicates()
             .values(in: dbQueue)
         observationTask = Task { [weak self] in
@@ -105,12 +126,12 @@ final class TaxYearsViewModel: ObservableObject {
         }
     }
 
-    nonisolated static func read(db: Database, selection: Selection?, propertyId: Int64?) throws -> Snapshot {
+    nonisolated static func read(db: Database, selection: Selection?, propertyId: Int64?, includeSelfAssessment: Bool) throws -> Snapshot {
         var snapshot = Snapshot()
         snapshot.rows = try TaxOverview.rows(db: db)
         if let selection {
             snapshot.page = try TaxOverview.page(db: db, personId: selection.personId, startYear: selection.startYear, propertyId: propertyId,
-                                                 rows: snapshot.rows)
+                                                 rows: snapshot.rows, includeSelfAssessment: includeSelfAssessment)
         }
         return snapshot
     }

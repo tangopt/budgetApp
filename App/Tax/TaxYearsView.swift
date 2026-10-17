@@ -3,9 +3,10 @@ import SwiftUI
 import BudgetCore
 import struct BudgetCore.Transaction
 
-/// Tax years (plan phase 3 Task 4): the people's UK tax years on the left (status, deadlines,
-/// whether the HMRC rate is in), and the chosen year's page on the right — Rental accounts,
-/// Settings, Manual items, Missing evidence and Export tabs over `TaxYearsViewModel`.
+/// Tax years (plan phase 3 Task 4, phase 4 Task 4): the people's UK tax years on the left
+/// (status, deadlines, whether the HMRC rate is in), and the chosen year's page on the right —
+/// Income, Rental accounts, Return, Calculation, Filing, Settings, Manual items, Missing
+/// evidence and Export tabs over `TaxYearsViewModel`.
 struct TaxYearsView: View {
     @ObservedObject var viewModel: TaxYearsViewModel
     /// The shared Missing evidence model: its tab shows the year's checklist.
@@ -107,10 +108,14 @@ struct TaxYearPage: View {
             if viewModel.tab == .missingEvidence {
                 TaxMissingEvidenceTab(viewModel: missingEvidenceViewModel, page: page, openTransaction: openTransaction)
             } else {
-                ScrollView {
-                    content
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .padding(.bottom, 12)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        content
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .padding(.bottom, 12)
+                    }
+                    .onChange(of: viewModel.focusedStep) { scroll(proxy) }
+                    .onChange(of: page.selfAssessment != nil) { scroll(proxy) }
                 }
             }
         }
@@ -150,10 +155,20 @@ struct TaxYearPage: View {
         }
     }
 
+    /// Scrolls to the requested step on the next run loop, once the Calculation tab's rows exist.
+    private func scroll(_ proxy: ScrollViewProxy) {
+        guard let step = viewModel.focusedStep?.title, viewModel.tab == .calculation else { return }
+        DispatchQueue.main.async { withAnimation { proxy.scrollTo(step, anchor: .top) } }
+    }
+
     @ViewBuilder
     private var content: some View {
         switch viewModel.tab {
+        case .income: TaxIncomeTab(viewModel: viewModel, page: page)
         case .accounts: TaxAccountsTab(viewModel: viewModel, page: page, openTransaction: openTransaction)
+        case .taxReturn: TaxReturnTab(viewModel: viewModel, page: page)
+        case .calculation: TaxCalculationTab(viewModel: viewModel, page: page)
+        case .filing: TaxFilingTab(viewModel: viewModel, page: page)
         case .settings: TaxSettingsTab(viewModel: viewModel, page: page)
         case .manualItems: TaxManualItemsTab(viewModel: viewModel, page: page)
         case .missingEvidence: EmptyView()

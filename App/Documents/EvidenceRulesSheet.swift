@@ -275,7 +275,7 @@ struct EvidenceRuleDraft {
             case .matching: return "Transactions matching…"
             case .periodic: return "A document every period"
             case .single: return "A single document"
-            case .propertyRecords: return "Each record of a property"
+            case .propertyRecords: return "Each record (property, income)"
             }
         }
 
@@ -306,8 +306,11 @@ struct EvidenceRuleDraft {
 
     /// What a property-records scope covers, for the editor.
     var propertyRecordsDescription: String {
-        guard case let .recordsOfProperty(_, recordType) = propertyRecordsScope else { return "" }
-        return recordType == .tenancy ? "Each tenancy's contract" : "Each issued rent receipt"
+        switch propertyRecordsScope {
+        case let .recordsOfProperty(_, recordType)?: return recordType == .tenancy ? "Each tenancy's contract" : "Each issued rent receipt"
+        case let .personalIncomeRecords(record)?: return record.ruleDescription
+        default: return ""
+        }
     }
 
     /// The kinds offered: property records only when the rule already is one.
@@ -337,7 +340,7 @@ struct EvidenceRuleDraft {
         case let .single(entity):
             scopeKind = .single
             self.entity = entity
-        case .recordsOfProperty:
+        case .recordsOfProperty, .personalIncomeRecords:
             scopeKind = .propertyRecords
             propertyRecordsScope = requirement.scope
         }

@@ -345,7 +345,8 @@ final class MissingEvidenceViewModel: ObservableObject {
         case .transaction: return "Transaction #\(entity.id)"
         case .property, .person, .tenancy, .rentReceipt:
             return entityTitles[entity] ?? "\(entity.type.displayName) #\(entity.id)"
-        case .taxYear, .taxManualItem, .other: return "\(entity.type.displayName) #\(entity.id)"
+        case .taxYear, .taxManualItem, .employment, .employmentIncome, .hmrcPayment, .otherIncome, .pensionContribution, .other:
+            return "\(entity.type.displayName) #\(entity.id)"
         }
     }
 
@@ -375,6 +376,8 @@ final class MissingEvidenceViewModel: ObservableObject {
             text = "One document for \(entityName(entity))"
         case let .recordsOfProperty(_, recordType):
             text = recordType == .tenancy ? "One contract per tenancy" : "One document per rent receipt"
+        case let .personalIncomeRecords(record):
+            text = record.ruleDescription
         }
         if requirement.scope.isTransactionScope, !requirement.excludedAccountIds.isEmpty {
             text += ", except on " + requirement.excludedAccountIds.map(accountName).joined(separator: " or ")

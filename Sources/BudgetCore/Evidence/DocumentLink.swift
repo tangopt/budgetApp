@@ -13,6 +13,11 @@ public enum EvidenceEntityType: String, Codable, CaseIterable, Sendable {
     case tenancy
     case rentReceipt
     case taxManualItem
+    case employment
+    case employmentIncome
+    case hmrcPayment
+    case otherIncome
+    case pensionContribution
 }
 
 /// A record a document links to.
@@ -107,6 +112,11 @@ public enum EvidenceLinks {
         case .rentReceipt: return try RentReceipt.exists(db, key: entity.id)
         case .taxYear: return try TaxYear.exists(db, key: entity.id)
         case .taxManualItem: return try TaxManualItem.exists(db, key: entity.id)
+        case .employment: return try Employment.exists(db, key: entity.id)
+        case .employmentIncome: return try EmploymentIncome.exists(db, key: entity.id)
+        case .hmrcPayment: return try HMRCPayment.exists(db, key: entity.id)
+        case .otherIncome: return try OtherIncome.exists(db, key: entity.id)
+        case .pensionContribution: return try PensionContribution.exists(db, key: entity.id)
         case .other: return true
         }
     }

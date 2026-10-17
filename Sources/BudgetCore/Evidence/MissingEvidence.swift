@@ -174,6 +174,20 @@ public enum MissingEvidence {
                 result.append(item(requirement: requirement, target: target, documents: documents, waiver: waiver(target),
                                    date: nil, amount: nil, currency: nil, period: nil, title: requirement.name,
                                    categoryName: nil, accountName: nil))
+            case let .personalIncomeRecords(record):
+                let records = try PersonalIncomeEvidence.records(db: db, kind: record, overlapping: DateInterval(start: window.start, end: window.end))
+                for record in records {
+                    let target = Target(entity: record.entity)
+                    var documents: [EvidenceDocumentSummary] = []
+                    for entity in record.documentEntities {
+                        for document in try linked.documents(for: entity) where requirement.accepts(document.kind) && !documents.contains(where: { $0.id == document.id }) {
+                            documents.append(document)
+                        }
+                    }
+                    result.append(item(requirement: requirement, target: target, documents: documents, waiver: waiver(target),
+                                       date: record.date, amount: record.amountMinorUnits, currency: record.amountMinorUnits == nil ? nil : .gbp,
+                                       period: record.period, title: record.title, categoryName: nil, accountName: nil))
+                }
             case let .recordsOfProperty(propertyId, recordType):
                 let records = try PropertyEvidence.records(db: db, propertyId: propertyId, type: recordType,
                                                            overlapping: DateInterval(start: window.start, end: window.end))
@@ -343,7 +357,7 @@ public enum MissingEvidence {
                 clauses.append("rawDescription LIKE ? ESCAPE '\\'")
                 arguments.append("%\(escaped)%")
             }
-        case .periodic, .single, .recordsOfProperty:
+        case .periodic, .single, .recordsOfProperty, .personalIncomeRecords:
             return []
         }
         switch requirement.direction {
