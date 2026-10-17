@@ -5,7 +5,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-16-property-and-uk-tax-design.md` (§0, §2, §3, §7) — read it first.
 
 ## Global Constraints
-- Tests: `swift test --scratch-path /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/build-ev`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/dd-ev.noindex build` and a Release build; then `lsregister -u` both built apps. Never tests and builds at once; no warnings.
+- Tests: `swift test --scratch-path <scratchpad>/build-ev`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath <scratchpad>/dd-ev.noindex build` and a Release build; then `lsregister -u` both built apps. Never tests and builds at once; no warnings.
 - Migrations appended last. TDD for BudgetCore; all logic in BudgetCore (future iOS). Theme tokens for colours; SheetScaffold for sheets.
 - Evidence files are personal: never commit real documents or their contents; tests use synthetic PDFs generated in tests.
 - Never write `~/Library/Application Support/Budget` from tests or tools without the controller's go; never launch the app; never drive the screen; never push. Stage only App/Sources/Tests/project.yml/Package.swift; trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.

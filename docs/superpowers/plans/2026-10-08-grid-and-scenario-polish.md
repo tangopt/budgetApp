@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Tests: XCTest, in-memory DB. `swift test --scratch-path /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/build-gp`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/dd-gp build 2>&1 | tail -5`. Never run both at once.
+- Tests: XCTest, in-memory DB. `swift test --scratch-path <scratchpad>/build-gp`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath <scratchpad>/dd-gp build 2>&1 | tail -5`. Never run both at once.
 - Horizontal grid scrolling must stay smooth: the scroll offset is observed only by `HorizontalOffsetFollower` (`App/DesignSystem/FrozenHeaderScroll.swift`), never by the grid body.
 - Pending styling: `Color.pending`, italic, icons `circle.fill` (all expected) / `circle.lefthalf.filled` (partial) via `PlanCellView`.
 - Money inputs use `MoneyField`; dates in UTC calendar like `FrequencyExpander`.

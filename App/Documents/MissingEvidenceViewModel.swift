@@ -345,7 +345,7 @@ final class MissingEvidenceViewModel: ObservableObject {
         case .transaction: return "Transaction #\(entity.id)"
         case .property, .person, .tenancy, .rentReceipt:
             return entityTitles[entity] ?? "\(entity.type.displayName) #\(entity.id)"
-        case .taxYear, .taxManualItem, .employment, .employmentIncome, .hmrcPayment, .otherIncome, .pensionContribution, .other:
+        case .taxYear, .taxManualItem, .employment, .employmentIncome, .hmrcPayment, .otherIncome, .pensionContribution, .taxPolicyReceipt, .other:
             return "\(entity.type.displayName) #\(entity.id)"
         }
     }

@@ -5,7 +5,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-15-forecast-by-account-design.md` — read it before any task.
 
 ## Global Constraints
-- Tests: `swift test --scratch-path /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/build-fa`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/dd-fa build 2>&1 | grep -E "warning:|error:|BUILD" | grep -v appintents | sort -u`. Never both at once; no warnings.
+- Tests: `swift test --scratch-path <scratchpad>/build-fa`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath <scratchpad>/dd-fa build 2>&1 | grep -E "warning:|error:|BUILD" | grep -v appintents | sort -u`. Never both at once; no warnings.
 - Migrations appended last. TDD for BudgetCore. Grid smooth scroll: offset only via HorizontalOffsetFollower, widths only via BodyWidthFollower.
 - Stage only App/Sources/Tests; commit trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; confirm `git log -1`. Never push; never touch `~/Library/Application Support/Budget`; never launch the app on the real DB; never drive the screen.
 

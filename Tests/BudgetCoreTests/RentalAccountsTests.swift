@@ -54,7 +54,7 @@ final class RentalAccountsTests: XCTestCase {
                                       ("condo", "Condomínio", .expense), ("insurance", "Building insurance", .expense),
                                       ("life", "Life insurance", .expense), ("imi", "IMI", .expense), ("ptTax", "PT tax", .expense),
                                       ("accountant", "PT accountant", .expense), ("repairs", "Repairs", .expense),
-                                      ("utilities", "Utilities", .expense), ("fees", "Bank fees", .expense)] {
+                                      ("utilities", "Utilities", .expense), ("fees", "Sundry fees", .expense)] {
                 var category = Category(name: name, type: type, groupId: group.id)
                 try category.insert(db)
                 ids[key] = category.id!
@@ -62,6 +62,9 @@ final class RentalAccountsTests: XCTestCase {
             try TaxExpenseTypeMap.seed(db: db, propertyId: p)
             try HMRCRates.set(db: db, startYear: 2024, currencyCode: "EUR", gbpPerUnit: 0.8, source: .manual)
             try TaxAttributionRules.set(db: db, expenseType: .insurance, startYear: nil, rule: .apportionByCover, defaultCoverMonths: 6)
+            // The PT tax tests below use the whole-previous-year basis (the time-apportioned
+            // default has its own tests in TaxPolicyReceiptTests).
+            try TaxAttributionRules.set(db: db, expenseType: .foreignTax, startYear: nil, rule: .previousCalendarYear)
 
             // Rent: Mar 2024 (before the year), Apr 2024 – Feb 2025 monthly, Mar – May 2025 in one receipt, one cancelled.
             var tenancy = Tenancy(propertyId: p, referenceLabel: "Room Contract AB", contractNumber: "3001", startDate: Self.date(2024, 3, 1))
@@ -126,9 +129,9 @@ final class RentalAccountsTests: XCTestCase {
         try transaction("bank", "accountant", (2025, 4, 6), -5_000, "Contabilista next year")
         // Repairs paid in pounds: GBP-native.
         try transaction("pounds", "repairs", (2024, 9, 1), -10_000, "PLUMBER")
-        // Utilities: recharged, not deductible. Bank fees: other expense.
+        // Utilities: recharged, not deductible. Sundry fees: other expense.
         try transaction("bank", "utilities", (2024, 7, 1), -8_000, "EDP")
-        try transaction("bank", "fees", (2024, 7, 1), -433, "COMISSAO")
+        try transaction("bank", "fees", (2024, 7, 1), -433, "SUNDRY FEE")
         // Manual items: A's UK accountant in GBP; a whole-property EUR item entered under B.
         try db.write { db in
             var uk = TaxManualItem(startYear: 2024, personId: id("A"), propertyId: id("property"), expenseType: .accountancy,
@@ -276,7 +279,7 @@ final class RentalAccountsTests: XCTestCase {
     func testGBPNativeTransactionsAndWholePropertyManualItems() throws {
         let a = try compute("A")
         XCTAssertEqual(a.line(.repairs)?.amount, RentalAccounts.Amount(native: 0, gbpNative: 5_000, gbp: 5_000))
-        // Bank fee 4.33 + postage 100 (whole property, entered under B), halved together.
+        // Sundry fee 4.33 + postage 100 (whole property, entered under B), halved together.
         XCTAssertEqual(a.line(.otherExpense)?.amount.native, 5_217)
         XCTAssertEqual(a.line(.otherExpense)?.amount.gbp, 4_174)
     }
@@ -634,7 +637,7 @@ extension RentalAccountsTests {
     func testAGBPPropertyTemplateUsesPoundTotals() throws {
         var accounts = try compute()
         accounts.currency = .gbp
-        let sheets = AccountantTemplate.sheets(accounts: accounts, personName: "Person A", calendarYearRent: 0)
+        let sheets = AccountantTemplate.sheets(accounts: accounts, personName: "Person A", foreignTaxBasisRent: 0)
         let styles = Dictionary(uniqueKeysWithValues: sheets[0].cells.map { ($0.reference, $0.style) })
         XCTAssertEqual(styles["D24"], .poundSubtotal)
         XCTAssertEqual(styles["D47"], .poundSubtotal)

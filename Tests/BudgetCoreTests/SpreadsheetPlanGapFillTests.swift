@@ -188,4 +188,17 @@ final class SpreadsheetPlanGapFillTests: XCTestCase {
             XCTAssertEqual(try ForecastEntry.fetchCount(db), before)
         }
     }
+
+    func testCategoryNamesMapToTheUsersOwn() throws {
+        let manager = try fixture()
+        try manager.dbQueue.write { db in
+            try db.execute(sql: "UPDATE category SET name = 'Phone of Person A' WHERE name = 'Mobile 1'")
+            XCTAssertThrowsError(try SpreadsheetPlanGapFill.plan(db: db)) {
+                XCTAssertEqual($0 as? SpreadsheetPlanGapFillError, .missingCategories(["Mobile 1"]))
+            }
+            let plan = try SpreadsheetPlanGapFill.plan(db: db, categoryNames: ["Mobile 1": "Phone of Person A"])
+            XCTAssertTrue(plan.runs.contains { $0.name == "Phone of Person A" && $0.amountMinorUnits == -2_500 })
+            XCTAssertFalse(plan.runs.contains { $0.name == "Mobile 1" })
+        }
+    }
 }

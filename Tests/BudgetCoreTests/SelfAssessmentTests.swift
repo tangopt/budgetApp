@@ -264,7 +264,7 @@ final class SelfAssessmentTests: XCTestCase {
         XCTAssertEqual(result.box(.sa100, "Q5")?.label, "Foreign: Yes")
         let allowance = result.steps.first { $0.title == "Personal Allowance" }!.detail
         XCTAssertTrue(allowance.hasPrefix("Total income £111,000.00 − gross pension contributions £10,000.00 = adjusted net income £101,000.00."), allowance)
-        XCTAssertTrue(result.steps.contains { $0.title == "Foreign tax basis" && $0.detail.contains("calendar year 2024") })
+        XCTAssertTrue(result.steps.contains { $0.title == "Foreign tax basis" && $0.detail.contains("INTM161220") })
     }
 
     func testLossOnOnePropertyIsSetOffInColumnFLowestForeignRateFirst() {

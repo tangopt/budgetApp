@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Tests: XCTest, in-memory DB. `swift test --scratch-path /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/build-lt`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/dd-lt build 2>&1 | tail -5`. Never both at once.
+- Tests: XCTest, in-memory DB. `swift test --scratch-path <scratchpad>/build-lt`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath <scratchpad>/dd-lt build 2>&1 | tail -5`. Never both at once.
 - Budget entries have `scenarioId IS NULL` and load via `ForecastEntry.budget(db)`; scenario entries via `ForecastEntry.inScenario`. Scenario copies: `sourceEntryId` set, `scenarioChange` NULL; markers added/changed/removed.
 - Plan colours: `PlanPalette.color(index)`, Budget = index 0; scenarios keep their current colour assignment.
 - Horizontal grid scrolling must stay smooth: the scroll offset is observed only by `HorizontalOffsetFollower`, widths only by `BodyWidthFollower`; shared sizes in `GridMetrics` (App/DesignSystem/FrozenHeaderScroll.swift).

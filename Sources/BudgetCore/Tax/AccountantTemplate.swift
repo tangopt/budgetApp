@@ -63,7 +63,7 @@ public enum AccountantTemplate {
             (31, "Gas Safety Certificate", nil),
             (32, "Service charge", .serviceCharge),
             (33, "Insurance (Building insurance)", .insurance),
-            (34, "Letting fee", nil),
+            (34, "Letting fee", .lettingFees),
             (35, "Legal Fees", .legalFees),
             (36, "Check in Check Out", nil),
             (37, "Inventory", nil),
@@ -91,11 +91,12 @@ public enum AccountantTemplate {
         TaxFileNames.fileName("Template - \(taxYear.fileLabel) - \(personName)", ext: "xlsx")
     }
 
-    /// The two sheets for `accounts`. `calendarYearRent` is the person's rent for the calendar
-    /// year the UK year starts in (the PT return's year). D7 and D9 share that basis: the rent
-    /// by rent period in calendar year N, and the PT tax for year N — the IRS payments for N
-    /// and the tenants' withholding on the rent of N's rent periods (`RentalAccounts`).
-    public static func sheets(accounts: RentalAccounts.Result, personName: String, calendarYearRent: Int,
+    /// The two sheets for `accounts`. `foreignTaxBasisRent` is the person's rent on the basis
+    /// of their foreign tax line (`RentalAccounts.foreignTaxBasisRent`), so D7 (rent) and D9
+    /// (PT tax) match: under "Previous calendar year" both are calendar year N's (the PT
+    /// return's year); under the time-apportioned rule both are calendar years N and N + 1
+    /// apportioned to the UK year by days.
+    public static func sheets(accounts: RentalAccounts.Result, personName: String, foreignTaxBasisRent calendarYearRent: Int,
                               other: OtherInformation = OtherInformation(), notes: [String] = []) -> [XLSXSheetContent] {
         let year = accounts.taxYear
         let code = accounts.currency.rawValue.uppercased()
@@ -173,7 +174,8 @@ public enum AccountantTemplate {
             XLSXCell("A1", .text(personName), style: .bold),
             XLSXCell("A2", .text("Tax year: \(year.label)"), style: .bold),
             XLSXCell("D4", .text(code), style: .underline),
-            XLSXCell("D5", .text("Year \(calendarYear)"), style: .underline),
+            XLSXCell("D5", .text(accounts.foreignTax.rule == .apportionCalendarYear ? "\(year.label) (by days)" : "Year \(calendarYear)"),
+                     style: .underline),
             XLSXCell("A6", .number(1)),
             XLSXCell("B6", .text("FTCR"), style: .boldUnderline),
             XLSXCell("B7", .text("Offshore rental income")),
@@ -212,8 +214,8 @@ public enum AccountantTemplate {
                             other: OtherInformation = OtherInformation(), notes: [String] = []) throws -> Data {
         let accounts = try RentalAccounts.compute(db: db, taxYear: taxYear, personId: personId, propertyId: propertyId)
         guard let person = try Person.fetchOne(db, key: personId) else { throw TaxError.personNotFound }
-        let rent = try RentalAccounts.calendarYearRent(db: db, calendarYear: taxYear.startYear, personId: personId, propertyId: propertyId)
-        return try XLSXWriter.data(sheets: sheets(accounts: accounts, personName: person.name, calendarYearRent: rent, other: other, notes: notes))
+        let rent = try RentalAccounts.foreignTaxBasisRent(db: db, accounts: accounts)
+        return try XLSXWriter.data(sheets: sheets(accounts: accounts, personName: person.name, foreignTaxBasisRent: rent, other: other, notes: notes))
     }
 }
 

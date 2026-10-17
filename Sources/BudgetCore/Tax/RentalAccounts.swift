@@ -39,6 +39,8 @@ public enum RentalAccounts {
         case transaction(Int64)
         case rentReceipt(Int64)
         case manualItem(Int64)
+        /// An insurer's receipt paid outside the bank history (`TaxPolicyReceipt`).
+        case policyReceipt(Int64)
 
         var isManualItem: Bool {
             if case .manualItem = self { return true }
@@ -50,6 +52,7 @@ public enum RentalAccounts {
             case let .transaction(id): return .transaction(id)
             case let .rentReceipt(id): return .rentReceipt(id)
             case let .manualItem(id): return .taxManualItem(id)
+            case let .policyReceipt(id): return .taxPolicyReceipt(id)
             }
         }
     }
@@ -216,6 +219,11 @@ public enum RentalAccounts {
             .order(Column("date"), Column("id")).fetchAll(db)
         let currencies = Dictionary(uniqueKeysWithValues: try Account.fetchAll(db).compactMap { a in a.id.map { ($0, a.currency) } })
         let documents = try linkedDocuments(db: db, type: .transaction, ids: transactions.compactMap(\.id))
+        // Insurers' receipts (cover periods, policy years) and per-person assignments.
+        let policyReceipts = try TaxPolicyReceipts.receipts(db: db, propertyId: propertyId)
+        let receiptByTransaction = Dictionary(policyReceipts.compactMap { r in r.transactionId.map { ($0, r) } }, uniquingKeysWith: { a, _ in a })
+        let assignedOwners = try TaxTransactionOwners.all(db: db)
+        let ownerNames = Dictionary(uniqueKeysWithValues: try Person.fetchAll(db).compactMap { p in p.id.map { ($0, p.name) } })
 
         var sourcesByType: [TaxExpenseType: [Source]] = [:]
         var rules: [TaxExpenseType: TaxAttributionRule] = [:]
@@ -235,6 +243,14 @@ public enum RentalAccounts {
         // before phase 5, so filed figures don't move; an open year nets once it has recharges.
         let yearStatus = try TaxYears.year(db: db, startYear: taxYear.startYear, personId: personId)?.status
         let isFiled = yearStatus == .filed || yearStatus == .paid
+        // Foreign tax: a year's own rule wins; otherwise a filed (or paid) year keeps the basis
+        // it was filed on (the whole previous calendar year, before the time-apportioned
+        // default), so filed figures don't move when the default changes.
+        if isFiled, rules[.foreignTax]!.startYear == nil, rules[.foreignTax]!.rule == .apportionCalendarYear {
+            rules[.foreignTax] = TaxAttributionRule(expenseType: .foreignTax, startYear: taxYear.startYear, rule: .previousCalendarYear,
+                                                    notes: "Kept for a filed year")
+            warnings.append("\(taxYear.label) is \(yearStatus!.displayName.lowercased()): foreign tax stays on the previous-calendar-year basis it was filed on; set the year's rule to apportion it by days (HMRC INTM161220).")
+        }
         let nettingMode = storedNetting ?? (isFiled || rechargesReceived.isEmpty ? nil : .netOfRecharges)
         // Statement-linked recharge parts of credits: not rent when the rent comes from credits.
         let rechargedByCredit = nettingMode == nil ? [:] : try RentReceiptMatching.rechargedByCredit(db: db)
@@ -284,25 +300,39 @@ public enum RentalAccounts {
 
         // PT tax withheld by the tenant on the receipts (retenção IRS): PT tax on the rent of
         // calendar year N by rent period — the same basis as the rent the FTCR compares it
-        // with (`calendarYearRent`) — so, like the PT IRS payments for N, it feeds UK year
-        // N/N+1. A receipt spanning two years is spread by days. At the rent share.
-        let calendarYear = DateInterval(start: calendar.date(from: DateComponents(year: taxYear.startYear, month: 1, day: 1))!,
-                                        end: calendar.date(from: DateComponents(year: taxYear.startYear + 1, month: 1, day: 1))!)
-        let withheld = try RentReceipts.receipts(db: db, propertyId: propertyId, overlapping: calendarYear).filter { $0.withholdingMinorUnits > 0 }
-        let withheldDocs = try linkedDocumentIds(db: db, type: .rentReceipt, ids: withheld.compactMap(\.id))
-        for receipt in withheld {
-            let attributed = PropertyFinance.apportioned(receipt.withholdingMinorUnits, start: receipt.periodStart, lastDay: receipt.periodEnd, to: calendarYear)
-            guard attributed != 0 else { continue }
-            let total = PropertyFinance.days(receipt.periodStart, PropertyDates.nextDay(receipt.periodEnd))
-            let inside = PropertyFinance.days(max(receipt.periodStart, calendarYear.start), min(PropertyDates.nextDay(receipt.periodEnd), calendarYear.end))
-            sourcesByType[.foreignTax, default: []].append(Source(
-                reference: .rentReceipt(receipt.id!), date: receipt.receiptDate,
-                description: "Withheld by the tenant, rent receipt \(receipt.receiptNumber)", currency: property.currency,
-                amountMinorUnits: receipt.withholdingMinorUnits, attributedMinorUnits: attributed,
-                shareBasisPoints: shares[.rentalIncome]!.shareBasisPoints,
-                explanation: "Rent period \(day(receipt.periodStart)) – \(day(receipt.periodEnd)): \(inside) of \(total) days in \(taxYear.startYear), PT tax for \(taxYear.startYear) → \(taxYear.label); at the rent share",
-                documentIds: withheldDocs[receipt.id!] ?? []))
+        // with (`calendarYearRent`). Under the time-apportioned rule each calendar year's
+        // withholding goes to the UK years by days, like the PT IRS payments; otherwise the
+        // calendar year the UK year starts in counts whole. A receipt spanning two calendar
+        // years is spread by days. At the rent share.
+        let foreignRule = rules[.foreignTax]!.rule
+        let withholdingYears = foreignRule == .apportionCalendarYear ? [taxYear.startYear, taxYear.startYear + 1] : [taxYear.startYear]
+        for year in withholdingYears {
+            let calendarYear = Self.calendarYearInterval(year)
+            let withheld = try RentReceipts.receipts(db: db, propertyId: propertyId, overlapping: calendarYear).filter { $0.withholdingMinorUnits > 0 }
+            let withheldDocs = try linkedDocumentIds(db: db, type: .rentReceipt, ids: withheld.compactMap(\.id))
+            for receipt in withheld {
+                let inYear = PropertyFinance.apportioned(receipt.withholdingMinorUnits, start: receipt.periodStart, lastDay: receipt.periodEnd, to: calendarYear)
+                guard inYear != 0 else { continue }
+                var attributed = inYear
+                var basis = "PT tax for \(year) → \(taxYear.label)"
+                if foreignRule == .apportionCalendarYear {
+                    guard let (part, days) = Self.timeApportioned(inYear, calendarYear: year, to: taxYear), part != 0 else { continue }
+                    attributed = part
+                    basis = "PT tax for \(year): \(days) in \(taxYear.label)"
+                }
+                let total = PropertyFinance.days(receipt.periodStart, PropertyDates.nextDay(receipt.periodEnd))
+                let inside = PropertyFinance.days(max(receipt.periodStart, calendarYear.start), min(PropertyDates.nextDay(receipt.periodEnd), calendarYear.end))
+                sourcesByType[.foreignTax, default: []].append(Source(
+                    reference: .rentReceipt(receipt.id!), date: receipt.receiptDate,
+                    description: "Withheld by the tenant, rent receipt \(receipt.receiptNumber)", currency: property.currency,
+                    amountMinorUnits: receipt.withholdingMinorUnits, attributedMinorUnits: attributed,
+                    shareBasisPoints: shares[.rentalIncome]!.shareBasisPoints,
+                    explanation: "Rent period \(day(receipt.periodStart)) – \(day(receipt.periodEnd)): \(inside) of \(total) days in \(year), \(basis); at the rent share",
+                    documentIds: withheldDocs[receipt.id!] ?? []))
+            }
         }
+        var foreignTaxYears: Set<Int> = []
+        var splitConflicts: Set<TaxExpenseType> = []
 
         // Transactions through their type's rule.
         for transaction in transactions {
@@ -324,13 +354,25 @@ public enum RentalAccounts {
                 natural -= rechargePart
             }
             let docs = documents[transaction.id!] ?? []
-            guard let (attributed, explanation) = context.attribute(transaction: transaction, amount: natural, rule: rule, documents: docs) else { continue }
+            // A payment (not a refund) says that calendar year's tax is recorded.
+            if type == .foreignTax, rule.rule == .apportionCalendarYear, natural > 0 {
+                foreignTaxYears.insert(context.liabilityYear(item: Item(transaction), documents: docs).0)
+            }
+            guard let (attributed, explanation) = context.attribute(item: Item(transaction), amount: natural, rule: rule, documents: docs,
+                                                                   receipt: receiptByTransaction[transaction.id!]) else { continue }
             var share = shares[type]!.shareBasisPoints
             var explained = explanation
             if rechargePart > 0 {
                 explained += "; less \(Money.format(rechargePart, currency: currencies[transaction.accountId] ?? .gbp)) of utilities recharged (its recharge statement links)"
             }
-            if type == .foreignTax {
+            if let owner = assignedOwners[transaction.id!] {
+                // Assigned to one person (their own PT IRS from the joint account): all theirs.
+                if shares[type]!.origin != .ownership {
+                    splitConflicts.insert(type)
+                }
+                share = owner == personId ? PropertyOwner.wholeShare : 0
+                explained += owner == personId ? "; \(person.name)'s (assigned)" : "; \(ownerNames[owner] ?? "another person")'s (assigned)"
+            } else if type == .foreignTax {
                 switch named(person: person.name, others: otherNames, note: transaction.note, documents: docs) {
                 case .this:
                     share = PropertyOwner.wholeShare
@@ -352,6 +394,33 @@ public enum RentalAccounts {
                 if type == .notDeductible { utilityNotDeductibleSources += 1 }
                 if let value = context.nativeValue(attributed, currency: currency) { utilityNetting.utilitiesPaid += value }
             }
+        }
+
+        for type in TaxExpenseType.allCases where splitConflicts.contains(type) {
+            warnings.append("\(type.displayName): payments assigned to one person override the \(taxYear.label) split (\(shares[type]!.explanation(year: taxYear))) for those payments — check which one is meant.")
+        }
+
+        // Insurers' receipts paid outside the bank history: sources of their own.
+        let unlinkedReceipts = policyReceipts.filter { $0.transactionId == nil }
+        let unlinkedDocs = try linkedDocuments(db: db, type: .taxPolicyReceipt, ids: unlinkedReceipts.compactMap(\.id))
+        for receipt in unlinkedReceipts {
+            let type = receipt.expenseType
+            let docs = unlinkedDocs[receipt.id!] ?? []
+            let description = "\(type == .insurance ? "Insurance" : type.displayName) receipt (\(receipt.label)), paid outside the bank history"
+            // Its cover is the period; without one, the user's notes may give it. The generated
+            // description is never read for a period (it names the policy year).
+            if let match = transactions.first(where: { t in
+                t.categoryId.flatMap { typeByCategory[$0] } == type && -t.amountMinorUnits == receipt.amountMinorUnits
+                    && abs(t.date.timeIntervalSince(receipt.date)) <= 30 * 86_400 }) {
+                warnings.append("The \(type.displayName.lowercased()) receipt of \(day(receipt.date)) (\(Money.format(receipt.amountMinorUnits, currency: receipt.currency)), kept on its own) matches the debit of \(day(match.date)) “\(match.rawDescription)”: link the receipt to it, or it counts twice.")
+            }
+            guard let (attributed, explanation) = context.attribute(item: Item(date: receipt.date, note: receipt.cover == nil ? receipt.notes : nil, description: ""),
+                                                                   amount: receipt.amountMinorUnits, rule: rules[type]!, documents: docs,
+                                                                   receipt: receipt) else { continue }
+            sourcesByType[type, default: []].append(Source(
+                reference: .policyReceipt(receipt.id!), date: receipt.date, description: description, currency: receipt.currency,
+                amountMinorUnits: receipt.amountMinorUnits, attributedMinorUnits: attributed, shareBasisPoints: shares[type]!.shareBasisPoints,
+                explanation: explanation, documentIds: docs.compactMap(\.id)))
         }
 
         // Manual items: the person's own, and whole-property ones entered under anyone.
@@ -417,6 +486,17 @@ public enum RentalAccounts {
             warnings.append("No utility recharges received in \(taxYear.label): utilities stay on their own tax lines (recharged utilities are not deductible). Record the recharge statements and their payments to deduct the unrecovered part, or set the year's netting.")
         }
 
+        // Time-apportioned foreign tax needs next calendar year's tax too, which is assessed
+        // after the return is due: say so while it's missing.
+        if foreignRule == .apportionCalendarYear, !foreignTaxYears.isEmpty || sourcesByType[.foreignTax]?.isEmpty == false,
+           !foreignTaxYears.contains(taxYear.startYear + 1),
+           !(sourcesByType[.foreignTax] ?? []).contains(where: { $0.reference.isManualItem }) {
+            let next = taxYear.startYear + 1
+            let days = PropertyFinance.days(Self.calendarYearInterval(next).start, taxYear.end)
+            let total = PropertyFinance.days(Self.calendarYearInterval(next).start, Self.calendarYearInterval(next).end)
+            warnings.append("No PT tax for \(next) recorded yet: \(days) of its \(total) days belong to \(taxYear.label) (HMRC INTM161220, time apportionment). It is usually assessed and paid in the summer of \(next + 1): until then enter an estimate as a foreign-tax manual item and amend the return when it's known, or set the year's rule to Previous calendar year.")
+        }
+
         let missingRates = Set(sourcesByType.values.joined().map(\.currency).filter { $0 != .gbp && rates[$0] == nil })
         for currency in missingRates.sorted(by: { $0.rawValue < $1.rawValue }) {
             warnings.append("No HMRC average rate for \(currency.rawValue.uppercased()) \(taxYear.label): GBP figures are missing.")
@@ -459,7 +539,8 @@ public enum RentalAccounts {
         let rates: [Currency: HMRCRate]
 
         /// The part of `amount` the rule gives this year, with why; `nil` when none.
-        func attribute(transaction: Transaction, amount: Int, rule: TaxAttributionRule, documents: [EvidenceDocument]) -> (Int, String)? {
+        func attribute(item transaction: Item, amount: Int, rule: TaxAttributionRule, documents: [EvidenceDocument],
+                       receipt: TaxPolicyReceipt? = nil) -> (Int, String)? {
             let date = transaction.date
             switch rule.rule {
             case .byDate, .byRentPeriod:
@@ -476,37 +557,70 @@ public enum RentalAccounts {
                 guard within(date, taxYear.monthsInterval) else { return nil }
                 return (amount, "Debit month \(month(date)), in \(monthsLabel(taxYear.monthsInterval))")
             case .previousCalendarYear:
-                let liability: Int
-                let origin: String
-                // Only a whole calendar year says which year a payment is for.
-                if let (period, from) = hint(transaction: transaction, documents: documents, useDescription: false),
-                   let year = RentalAccounts.calendarYear(of: period) {
-                    liability = year
-                    origin = "for \(liability) (\(from))"
-                } else {
-                    liability = MonthRange.calendar.component(.year, from: date) - 1
-                    origin = "for \(liability), the year before payment"
-                }
+                let (liability, origin) = liabilityYear(item: transaction, documents: documents)
                 guard liability == taxYear.startYear else { return nil }
                 return (amount, "Paid \(day(date)) \(origin) → \(taxYear.label)")
+            case .apportionCalendarYear:
+                let (liability, origin) = liabilityYear(item: transaction, documents: documents)
+                guard let (part, days) = RentalAccounts.timeApportioned(amount, calendarYear: liability, to: taxYear) else { return nil }
+                return (part, "Paid \(day(date)) \(origin): \(days) in \(taxYear.label) (time-apportioned)")
             case .byQuotaMonth:
-                let (period, from) = hint(transaction: transaction, documents: documents, useDescription: true)
+                // The note first, then the receipt's period, then a document or the description.
+                let receiptPeriod = TaxPeriodHint.period(in: transaction.note) == nil
+                    ? receipt?.cover.map { ($0, "from the receipt") } : nil
+                let (period, from) = receiptPeriod ?? hint(transaction: transaction, documents: documents, useDescription: true)
                     ?? (monthOf(date), "the debit month")
                 return apportionByMonths(amount, period: period, from: from, noun: "quota months")
             case .apportionByCover:
                 let months = rule.defaultCoverMonths ?? TaxAttributionRules.defaultCoverMonths
+                // The note first, then the insurer's receipt, then a linked document.
+                if let period = TaxPeriodHint.period(in: transaction.note) {
+                    return apportionByMonths(amount, period: period, from: "from the note", noun: "cover months")
+                }
+                if let receipt, let cover = receipt.cover {
+                    return apportionByMonths(amount, period: cover, from: "from the receipt, \(receipt.label)", noun: "cover months")
+                }
                 if let (period, from) = hint(transaction: transaction, documents: documents, useDescription: false) {
                     return apportionByMonths(amount, period: period, from: from, noun: "cover months")
                 }
                 let start = MonthRange.calendar.date(byAdding: .month, value: 1, to: monthOf(date).start)!
                 let assumed = DateInterval(start: start, end: MonthRange.calendar.date(byAdding: .month, value: months, to: start)!)
                 return apportionByMonths(amount, period: assumed, from: "assumed: \(months) months from the month after the debit", noun: "cover months")
+            case .apportionPolicyYear:
+                let calendar = MonthRange.calendar
+                let year: Int
+                let from: String
+                if let receipt {
+                    year = receipt.effectivePolicyYear
+                    from = receipt.policyYear != nil ? "from the receipt, \(receipt.label)" : "\(receipt.label), from its cover"
+                } else if let (period, origin) = hint(transaction: transaction, documents: documents, useDescription: false),
+                          let first = RentalAccounts.monthSpan(period).first {
+                    year = calendar.component(.year, from: first)
+                    from = "policy year \(year), the cover's first month (\(origin))"
+                } else {
+                    year = TaxPolicyReceipts.policyYear(afterDebit: date)
+                    from = "assumed: policy year \(year), the year of the month after the debit"
+                }
+                let policy = DateInterval(start: calendar.date(from: DateComponents(year: year, month: 1, day: 1))!,
+                                          end: calendar.date(from: DateComponents(year: year + 1, month: 1, day: 1))!)
+                return apportionByMonths(amount, period: policy, from: from, noun: "months of policy year \(year)")
             }
+        }
+
+        /// The calendar year a payment is the tax of, with why: a whole calendar year in the
+        /// note or a linked document's period, else the year before payment.
+        func liabilityYear(item transaction: Item, documents: [EvidenceDocument]) -> (Int, String) {
+            if let (period, from) = hint(transaction: transaction, documents: documents, useDescription: false),
+               let year = RentalAccounts.calendarYear(of: period) {
+                return (year, "for \(year) (\(from))")
+            }
+            let year = MonthRange.calendar.component(.year, from: transaction.date) - 1
+            return (year, "for \(year), the year before payment")
         }
 
         /// The period a transaction covers: its note, else a linked document's period, else
         /// (quota) a year in its description.
-        func hint(transaction: Transaction, documents: [EvidenceDocument], useDescription: Bool) -> (DateInterval, String)? {
+        func hint(transaction: Item, documents: [EvidenceDocument], useDescription: Bool) -> (DateInterval, String)? {
             if let period = TaxPeriodHint.period(in: transaction.note) { return (period, "from the note") }
             if let document = documents.first(where: { $0.periodStart != nil && $0.periodEnd != nil }),
                let start = document.periodStart, let end = document.periodEnd, start <= end {
@@ -592,9 +706,13 @@ public enum RentalAccounts {
             return "By quota month: the months each payment covers (from the note, a linked document or a year in the description; else the debit month), apportioned to April–March."
         case .apportionByCover:
             let months = rule.defaultCoverMonths ?? TaxAttributionRules.defaultCoverMonths
-            return "Apportioned by months of cover (from the note or a linked document; else \(months) months from the month after the debit)."
+            return "Apportioned by months of cover (from the note, the insurer's receipt or a linked document; else \(months) months from the month after the debit)."
+        case .apportionPolicyYear:
+            return "Apportioned by policy year: each policy year's receipts spread evenly over January–December of that year (from the insurer's receipt; else the cover's first month, else the month after the debit), April–March."
         case .previousCalendarYear:
             return "Previous calendar year: a payment in year Y is for Y − 1 (unless the note or a document says otherwise) and counts, whole, in the UK year starting in that year."
+        case .apportionCalendarYear:
+            return "Calendar year, time-apportioned (HMRC INTM161220): a payment in year Y is the tax of Y − 1 (unless the note or a document says otherwise); each calendar year's tax goes to the UK years it straddles by days — 6 April – 31 December to the UK year starting in it, 1 January – 5 April to the one before."
         case .byDate:
             return type == .financeCost
                 ? "By payment date (cash basis): the interest paid 6 April – 5 April."
@@ -603,6 +721,24 @@ public enum RentalAccounts {
     }
 
     // MARK: - Helpers
+
+    /// What a rule reads of a source: its date, note and description (a transaction's, or an
+    /// insurer's receipt paid outside the bank history).
+    struct Item {
+        var date: Date
+        var note: String?
+        var rawDescription: String
+
+        init(date: Date, note: String?, description: String) {
+            self.date = date
+            self.note = note
+            self.rawDescription = description
+        }
+
+        init(_ transaction: Transaction) {
+            self.init(date: transaction.date, note: transaction.note, description: transaction.rawDescription)
+        }
+    }
 
     enum Named { case this, other, none }
 
@@ -631,6 +767,41 @@ public enum RentalAccounts {
 
     /// Kinds whose document date is an invoice date (the by-date rule prefers it).
     static let invoiceKinds: Set<DocumentKind> = [.accountantInvoice, .legalInvoice, .utilityInvoice, .courtFee, .lettingAgentFee]
+
+    /// The person's rent on the basis their foreign tax line uses, for the FTCR rate check: the
+    /// calendar year the UK year starts in (previous-calendar-year basis), or calendar years N
+    /// and N + 1 apportioned to the UK year by days, as the tax is (time-apportioned basis).
+    public static func foreignTaxBasisRent(db: Database, accounts: Result) throws -> Int {
+        let year = accounts.taxYear
+        func rent(_ calendarYear: Int) throws -> Int {
+            try calendarYearRent(db: db, calendarYear: calendarYear, personId: accounts.personId, propertyId: accounts.propertyId)
+        }
+        guard accounts.foreignTax.rule == .apportionCalendarYear else { return try rent(year.startYear) }
+        return try [year.startYear, year.startYear + 1].reduce(0) { total, calendarYear in
+            total + (timeApportioned(try rent(calendarYear), calendarYear: calendarYear, to: year)?.0 ?? 0)
+        }
+    }
+
+    /// 1 January of `year` to 1 January of the next.
+    static func calendarYearInterval(_ year: Int) -> DateInterval {
+        let calendar = MonthRange.calendar
+        return DateInterval(start: calendar.date(from: DateComponents(year: year, month: 1, day: 1))!,
+                            end: calendar.date(from: DateComponents(year: year + 1, month: 1, day: 1))!)
+    }
+
+    /// The part of calendar year `calendarYear`'s `amount` that falls in `taxYear` by days,
+    /// with "270 of 365 days"; `nil` when the years don't overlap. Rounded cumulatively, so
+    /// the two UK years' parts add up to the amount.
+    static func timeApportioned(_ amount: Int, calendarYear: Int, to taxYear: UKTaxYear) -> (Int, String)? {
+        let year = calendarYearInterval(calendarYear)
+        let from = max(year.start, taxYear.start), to = min(year.end, taxYear.end)
+        guard from < to else { return nil }
+        let total = PropertyFinance.days(year.start, year.end)
+        let before = PropertyFinance.days(year.start, from)
+        let inside = PropertyFinance.days(from, to)
+        func upTo(_ days: Int) -> Int { Int((Double(amount) * Double(days) / Double(total)).rounded()) }
+        return (upTo(before + inside) - upTo(before), "\(inside) of \(total) days")
+    }
 
     /// The year of a period that is exactly one calendar year (1 Jan – 31 Dec), else `nil`.
     static func calendarYear(of period: DateInterval) -> Int? {

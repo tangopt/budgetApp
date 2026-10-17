@@ -18,7 +18,7 @@
 - Confirmed occurrence: its pay month is closed, or its category's actual that month covers the category's planned total (expense spend ≥ plan; income ≥ plan; transfers by the sign of the plan). Only unconfirmed occurrences can be edited; moves into a closed month are refused.
 - Detection never updates or deletes; `.auto` is no longer produced (migration turns existing `.auto` into `.manual`).
 - Money is signed `Int` minor units; money inputs use `MoneyField` / `Money.formatInput`.
-- Tests: XCTest, in-memory DB `let m = try DatabaseManager(path: nil); try m.migrate()`; bare `Category`. Run `swift test --scratch-path /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/build-bp` (`--filter` while iterating). App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/dd-bp build 2>&1 | tail -5`. Never both at once.
+- Tests: XCTest, in-memory DB `let m = try DatabaseManager(path: nil); try m.migrate()`; bare `Category`. Run `swift test --scratch-path <scratchpad>/build-bp` (`--filter` while iterating). App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath <scratchpad>/dd-bp build 2>&1 | tail -5`. Never both at once.
 - New migrations appended last. Commit per task (author's Co-Authored-By). Never push. Never touch `~/Library/Application Support/Budget`.
 
 ---

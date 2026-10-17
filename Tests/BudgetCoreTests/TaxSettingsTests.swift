@@ -139,7 +139,7 @@ final class TaxSettingsTests: XCTestCase {
             XCTAssertEqual(try TaxAttributionRules.effective(db: db, expenseType: .financeCost, startYear: 2024).rule, .byDate)
             XCTAssertEqual(try TaxAttributionRules.effective(db: db, expenseType: .serviceCharge, startYear: 2024).rule, .byQuotaMonth)
             XCTAssertEqual(try TaxAttributionRules.effective(db: db, expenseType: .insurance, startYear: 2024).rule, .apportionByCover)
-            XCTAssertEqual(try TaxAttributionRules.effective(db: db, expenseType: .foreignTax, startYear: 2024).rule, .previousCalendarYear)
+            XCTAssertEqual(try TaxAttributionRules.effective(db: db, expenseType: .foreignTax, startYear: 2024).rule, .apportionCalendarYear)
             XCTAssertEqual(try TaxAttributionRules.effective(db: db, expenseType: .accountancy, startYear: 2024).rule, .byDate)
 
             XCTAssertEqual(try TaxAttributionRules.seedDefaults(db: db).count, TaxExpenseType.allCases.count)
@@ -166,7 +166,7 @@ final class TaxSettingsTests: XCTestCase {
             ("Mortgage interest", .expense, .financeCost),
             ("Condomínio", .expense, .serviceCharge),
             ("Building insurance", .expense, .insurance),
-            ("Contents insurance", .expense, .insurance),
+            ("Contents insurance", .expense, .otherExpense),
             ("Life insurance", .expense, .notDeductible),
             ("Seguro de vida", .expense, .notDeductible),
             ("IMI", .expense, .councilTax),
@@ -176,7 +176,14 @@ final class TaxSettingsTests: XCTestCase {
             ("Legal fees", .expense, .legalFees),
             ("Repairs", .expense, .repairs),
             ("Utilities", .expense, .notDeductible),
-            ("Bank fees", .expense, .otherExpense),
+            ("Bank fees", .expense, .notDeductible),
+            ("BBVA fees", .expense, .notDeductible),
+            ("Bank charges", .expense, .notDeductible),
+            ("Comissões bancárias", .expense, .notDeductible),
+            ("Account maintenance", .expense, .notDeductible),
+            ("Letting fees", .expense, .lettingFees),
+            ("Agency fees", .expense, .lettingFees),
+            ("Sundry fees", .expense, .otherExpense),
             ("Mortgage capital", .expense, .notDeductible),
             ("IRS refund", .income, .foreignTax),
             ("Mortgage instalments", .expense, .notDeductible),

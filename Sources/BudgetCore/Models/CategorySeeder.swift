@@ -2,7 +2,7 @@ import GRDB
 
 public enum CategorySeeder {
     public static let expenseNames: [String] = [
-        "Rent", "Internet", "Gas/Electricity", "Mobile Patricia", "Mobile Pablo",
+        "Rent", "Internet", "Gas/Electricity", "Mobile 1", "Mobile 2",
         "Apple iCloud / Subscriptions", "Microsoft 365", "Apple Arcade", "NOW",
         "Apple One", "Netflix", "Spotify", "Disney+", "Council Tax",
         "HP Instant Ink", "TV License", "Amazon Prime", "PlayStation Plus / Games",
@@ -19,7 +19,7 @@ public enum CategorySeeder {
     public static let transferNames: [String] = [
         "Business Expenses (credit) / AMEX Travel (debit)",
         "Investments (Stocks + Crypto)", "Trading tools & training",
-        "Transfer: Santander Patricia", "Transfer: Lloyds Joint",
+        "Transfer: Savings account", "Transfer: Lloyds Joint",
         "Transfer: Lloyds International EUR", "Transfer: Lloyds Investment ISA",
         "Transfer: BBVA Portugal", "Accountant", "UK Taxes"
     ]

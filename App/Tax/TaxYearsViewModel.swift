@@ -387,6 +387,10 @@ enum TaxMessages {
         case .invalidRate: return "Enter a rate above zero."
         case .invalidCurrencyCode: return "Use a three-letter currency code, e.g. EUR."
         case .invalidCoverMonths: return "Cover months must be 1 or more."
+        case .transactionNotFound: return "That transaction no longer exists."
+        case .invalidInstalment: return "The instalment number must be between 1 and the number of instalments."
+        case .invalidCoverPeriod: return "The cover must end after it starts."
+        case .notAnOwner: return "That person doesn't own the property on the payment's date."
         }
     }
 }

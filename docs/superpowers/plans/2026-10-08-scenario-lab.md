@@ -18,7 +18,7 @@
 - Apply boundary: the current pay month (`payCalendar.current`); applied items are ordinary unconfirmed planned items; only the latest un-undone application per scenario can be undone.
 - Horizon options: end of this year, 2, 5, 10 years (default 2).
 - Money inputs use `MoneyField`; money signed minor units.
-- Tests: XCTest, in-memory DB, bare `Category`. `swift test --scratch-path /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/build-sl`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/dd-sl build 2>&1 | tail -5`. Never both at once.
+- Tests: XCTest, in-memory DB, bare `Category`. `swift test --scratch-path <scratchpad>/build-sl`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath <scratchpad>/dd-sl build 2>&1 | tail -5`. Never both at once.
 - Migrations appended last. Commit per task (author's Co-Authored-By). Never push. Never touch `~/Library/Application Support/Budget`.
 
 ---

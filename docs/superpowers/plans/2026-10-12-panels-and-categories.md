@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Tests: `swift test --scratch-path /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/build-pc`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/dd-pc build 2>&1 | tail -5`. Never both at once.
+- Tests: `swift test --scratch-path <scratchpad>/build-pc`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath <scratchpad>/dd-pc build 2>&1 | tail -5`. Never both at once.
 - Grid smooth scrolling: scroll offset observed only by HorizontalOffsetFollower, widths only by BodyWidthFollower; sizes from GridMetrics.
 - `.superpowers/` is gitignored: stage only App/Sources/Tests/docs; confirm `git log -1`.
 - Commit per task with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never push. Never touch `~/Library/Application Support/Budget`.

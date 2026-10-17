@@ -31,7 +31,7 @@ On the user's database (after they quit Budget, with a timestamped backup), via 
 - New expense groups: **Home & Bills** (Rent, Council Tax, Gas/Electricity, Thames Water, Internet, TV License, House Decor / Move Expenses), **Food & Drink** (Groceries, Eating Out, Delivery), **Commute** (Commute / Public Transport, Meals/Drinks), **Leisure & Health** (Holidays / Travel / Events, Sport, Optician), **Admin & Taxes** (Accountant, UK Taxes), **Other** (Confirmed other expenses, Confirmed other SIGNIFICANT expenses).
 - Existing: **Car** unchanged; **Subscriptions** gains HP Instant Ink; **Mobile Phones** unchanged.
 - Income group **Earnings** (Income, Bonus); Other income/refunds stays ungrouped.
-- Transfer groups **Own accounts** (Transfer: BBVA Portugal, Transfer: Lloyds International EUR, Transfer: Lloyds Joint, Transfer: Santander Patricia) and **Investing** (Investments (Stocks + Crypto), Transfer: Lloyds Investment ISA, Trading tools & training); Business Expenses / AMEX stays ungrouped.
+- Transfer groups **Own accounts** (Transfer: BBVA Portugal, Transfer: Lloyds International EUR, Transfer: Lloyds Joint, Transfer: Savings account) and **Investing** (Investments (Stocks + Crypto), Transfer: Lloyds Investment ISA, Trading tools & training); Business Expenses / AMEX stays ungrouped.
 - Remaining for expenses (reserve) stays ungrouped.
 
 ## Testing

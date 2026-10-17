@@ -31,6 +31,16 @@ public enum TaxRegression {
             public var wholeProperty: Bool?
         }
 
+        /// A year's attribution rule override (as the year was filed).
+        public struct Rule: Codable, Equatable, Sendable {
+            /// A `TaxExpenseType` raw value.
+            public var expenseType: String
+            /// A `TaxAttributionRuleKind` raw value.
+            public var rule: String
+            public var coverMonths: Int?
+            public var note: String?
+        }
+
         public struct Year: Codable, Equatable, Sendable {
             public var startYear: Int
             /// Pounds per euro implied by the filed return.
@@ -38,12 +48,56 @@ public enum TaxRegression {
             public var rateNote: String?
             public var splits: [Split]?
             public var manualItems: [Item]?
+            public var rules: [Rule]?
+        }
+
+        /// An insurer's receipt (`TaxPolicyReceipt`): linked to the bank debit of its amount
+        /// within a week of `debitDate` (else `date`), or kept on its own when there is none.
+        public struct PolicyReceipt: Codable, Equatable, Sendable {
+            /// A `TaxExpenseType` raw value; `nil` = insurance.
+            public var expenseType: String?
+            /// "YYYY-MM-DD".
+            public var date: String
+            public var debitDate: String?
+            /// Decimal text.
+            public var amount: String
+            /// "EUR" (default) or "GBP".
+            public var currency: String?
+            public var policyYear: Int?
+            public var instalment: Int?
+            public var of: Int?
+            public var coverFrom: String?
+            public var coverTo: String?
+            public var note: String?
+        }
+
+        /// Whose a payment is (`TaxTransactionOwner`): the transaction whose description holds
+        /// `reference`, else the one of `amount` within 3 days of `date`.
+        public struct Owner: Codable, Equatable, Sendable {
+            public var person: String
+            public var reference: String?
+            public var date: String?
+            public var amount: String?
+            public var note: String?
         }
 
         public var property: String
         /// The history's person names → the database's, where they differ.
         public var personAliases: [String: String]?
         public var years: [Year]
+        public var policyReceipts: [PolicyReceipt]?
+        public var transactionOwners: [Owner]?
+        /// Uncategorised debits to file under a property category before the rest applies.
+        public var categorize: [Categorize]?
+
+        /// The transaction of `amount` on `date` (± 3 days) whose description contains
+        /// `description` (when given) → `category` (a category name).
+        public struct Categorize: Codable, Equatable, Sendable {
+            public var date: String
+            public var amount: String
+            public var description: String?
+            public var category: String
+        }
 
         public func personName(_ historyName: String) -> String { personAliases?[historyName] ?? historyName }
     }
@@ -54,6 +108,10 @@ public enum TaxRegression {
         case badExpenseType(String)
         case badAmount(String)
         case badCurrency(String)
+        case badRule(String)
+        case badDate(String)
+        case transactionNotFound(String)
+        case categoryNotFound(String)
     }
 
     /// One filed figure.
@@ -71,10 +129,11 @@ public enum TaxRegression {
     public static let comparedFields: [String] = [
         "rental_income", "rental_exp_mortgage_interest", "rental_exp_service_charge", "rental_exp_insurance_building_insurance",
         "rental_exp_council_tax_if_paid_by_landlord", "rental_exp_accountancy_fee", "rental_exp_any_other_expense",
-        "rental_exp_legal_fees", "rental_exp_repairs_and_maintenance", "rental_total_expenses", "rental_adjusted_profit",
+        "rental_exp_legal_fees", "rental_exp_letting_fee", "rental_exp_repairs_and_maintenance", "rental_total_expenses", "rental_adjusted_profit",
         "rental_profit_before_finance_addback", "residential_finance_costs", "foreign_tax_paid_confirmed_letter",
         "template_eur_total_rental_receivable_income", "template_eur_mortgage_interest", "template_eur_service_charge",
         "template_eur_insurance_building_insurance", "template_eur_council_tax_if_paid_by_landlord", "template_eur_accountancy_fee",
+        "template_eur_letting_fee", "template_eur_legal_fees", "template_eur_repairs_and_maintenance",
         "template_eur_any_other_expense", "template_eur_total_expenses", "template_eur_profit_loss_from_rental_income"
     ]
 
@@ -122,6 +181,26 @@ public enum TaxRegression {
     public static func apply(db: Database, settings: Settings) throws -> [String] {
         let property = try propertyRecord(db: db, settings.property)
         var log: [String] = []
+        if let entries = settings.categorize, !entries.isEmpty {
+            log.append("Categorised:")
+            let groupIds = try Properties.categoryGroupIds(db: db, propertyId: property.id!)
+            for entry in entries {
+                guard let category = try Category.filter(groupIds.contains(Column("groupId")))
+                    .filter(sql: "name = ? COLLATE NOCASE", arguments: [entry.category]).fetchOne(db) else {
+                    throw RegressionError.categoryNotFound(entry.category)
+                }
+                guard let amount = Money.parseMinorUnits(entry.amount) else { throw RegressionError.badAmount(entry.amount) }
+                let date = try day(entry.date)
+                var matches = try Transaction.filter(Column("amountMinorUnits") == -amount && Column("date") >= date.addingTimeInterval(-3 * 86_400)
+                                                     && Column("date") <= date.addingTimeInterval(3 * 86_400)).fetchAll(db)
+                if let text = entry.description { matches = matches.filter { $0.rawDescription.localizedCaseInsensitiveContains(text) } }
+                guard matches.count == 1, var transaction = matches.first else { throw RegressionError.transactionNotFound("\(entry.date) \(entry.amount)") }
+                transaction.categoryId = category.id
+                transaction.categorizedBy = .manual
+                try transaction.update(db)
+                log.append("  \(entry.date) \(transaction.rawDescription) \(entry.amount) → \(category.name)")
+            }
+        }
         for year in settings.years {
             try HMRCRates.set(db: db, startYear: year.startYear, currencyCode: "EUR", gbpPerUnit: year.eurGbpPerUnit,
                               source: .filedReturn, notes: year.rateNote ?? "Implied by the filed return")
@@ -145,8 +224,80 @@ public enum TaxRegression {
                 try TaxManualItems.save(db: db, &record)
                 log.append("  manual item \(person.name): \(item.label) \(Money.format(amount, currency: currency))")
             }
+            for override in year.rules ?? [] {
+                guard let rule = TaxAttributionRuleKind(rawValue: override.rule) else { throw RegressionError.badRule(override.rule) }
+                let type = try expenseType(override.expenseType)
+                try TaxAttributionRules.set(db: db, expenseType: type, startYear: year.startYear, rule: rule,
+                                            defaultCoverMonths: override.coverMonths, notes: override.note ?? "Regression setting (as filed)")
+                log.append("  rule \(type.rawValue): \(rule.displayName)" + (override.coverMonths.map { " (\($0) months)" } ?? ""))
+            }
+        }
+        if let receipts = settings.policyReceipts, !receipts.isEmpty {
+            log.append("Insurers' receipts:")
+            log += try applyPolicyReceipts(db: db, propertyId: property.id!, receipts)
+        }
+        if let owners = settings.transactionOwners, !owners.isEmpty {
+            log.append("Payments assigned to a person:")
+            for owner in owners {
+                let person = try personRecord(db: db, settings.personName(owner.person))
+                let transaction = try ownerTransaction(db: db, owner)
+                try TaxTransactionOwners.set(db: db, transactionId: transaction.id!, personId: person.id!, notes: owner.note ?? "Regression setting")
+                log.append("  \(MissingEvidence.day(transaction.date)) \(transaction.rawDescription) \(Money.format(-transaction.amountMinorUnits, currency: .eur)) → \(person.name)")
+            }
         }
         return log
+    }
+
+    /// Replaces the property's insurers' receipts with `receipts`, each linked to its debit
+    /// when the bank history has it.
+    static func applyPolicyReceipts(db: Database, propertyId: Int64, _ receipts: [Settings.PolicyReceipt]) throws -> [String] {
+        try TaxPolicyReceipt.filter(Column("propertyId") == propertyId).deleteAll(db)
+        let accountIds = try Properties.accounts(db: db, propertyId: propertyId).map(\.accountId)
+        var used: Set<Int64> = []
+        var log: [String] = []
+        for entry in receipts {
+            guard let amount = Money.parseMinorUnits(entry.amount) else { throw RegressionError.badAmount(entry.amount) }
+            guard let currency = Currency(rawValue: (entry.currency ?? "EUR").lowercased()) else { throw RegressionError.badCurrency(entry.currency ?? "") }
+            let date = try day(entry.date)
+            let debit = try entry.debitDate.map(day) ?? date
+            let window = 7 * 86_400.0
+            let candidates = try Transaction
+                .filter(accountIds.contains(Column("accountId")) && Column("amountMinorUnits") == -amount
+                        && Column("date") >= debit.addingTimeInterval(-window) && Column("date") <= debit.addingTimeInterval(window))
+                .fetchAll(db).filter { !used.contains($0.id!) }
+                .sorted { abs($0.date.timeIntervalSince(debit)) < abs($1.date.timeIntervalSince(debit)) }
+            let transaction = candidates.first
+            if let id = transaction?.id { used.insert(id) }
+            var receipt = TaxPolicyReceipt(propertyId: propertyId, expenseType: try entry.expenseType.map(expenseType) ?? .insurance,
+                                           transactionId: transaction?.id, date: transaction?.date ?? date, amountMinorUnits: amount,
+                                           currency: currency, policyYear: entry.policyYear, instalment: entry.instalment,
+                                           instalmentCount: entry.of, coverStart: try entry.coverFrom.map(day),
+                                           coverEnd: try entry.coverTo.map(day), notes: entry.note ?? "Regression setting")
+            try TaxPolicyReceipts.save(db: db, &receipt)
+            log.append("  \(entry.date) \(Money.format(amount, currency: currency)) \(receipt.label)"
+                       + (receipt.cover.map { ", cover \(MissingEvidence.day($0.start)) – \(MissingEvidence.day($0.end))" } ?? "")
+                       + (transaction.map { " → debit \(MissingEvidence.day($0.date)) \($0.rawDescription)" } ?? " → no debit (receipt kept on its own)"))
+        }
+        return log
+    }
+
+    static func ownerTransaction(db: Database, _ owner: Settings.Owner) throws -> Transaction {
+        if let reference = owner.reference {
+            let matches = try Transaction.filter(Column("rawDescription").like("%\(reference)%")).fetchAll(db)
+            if matches.count == 1 { return matches[0] }
+        }
+        if let text = owner.amount, let amount = Money.parseMinorUnits(text), let dateText = owner.date {
+            let date = try day(dateText)
+            let matches = try Transaction.filter(Column("amountMinorUnits") == -amount && Column("date") >= date.addingTimeInterval(-3 * 86_400)
+                                                 && Column("date") <= date.addingTimeInterval(3 * 86_400)).fetchAll(db)
+            if matches.count == 1 { return matches[0] }
+        }
+        throw RegressionError.transactionNotFound(owner.reference ?? owner.date ?? owner.person)
+    }
+
+    static func day(_ text: String) throws -> Date {
+        guard let date = RentReceiptsExport.parseDate(text) else { throw RegressionError.badDate(text) }
+        return PropertyDates.day(date)
     }
 
     // MARK: Comparing
@@ -178,6 +329,7 @@ public enum TaxRegression {
         case "rental_exp_accountancy_fee": return line(.accountancy)
         case "rental_exp_any_other_expense": return line(.otherExpense)
         case "rental_exp_legal_fees": return line(.legalFees)
+        case "rental_exp_letting_fee": return line(.lettingFees)
         case "rental_exp_repairs_and_maintenance": return line(.repairs)
         // The filed totals include the mortgage interest; the engine reports it apart.
         case "rental_total_expenses", "rental_exp_total_expenses": return (value(total), nil)

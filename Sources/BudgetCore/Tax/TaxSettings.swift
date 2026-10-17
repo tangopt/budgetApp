@@ -135,16 +135,20 @@ public enum TaxAttributionRules {
     /// interest by payment date (cash basis: the interest paid 6 April – 5 April, as the filed
     /// 2023/24 and 2024/25 returns did — the bank dates the interest rows by value date, 31st
     /// or 1st, so month buckets would shift an instalment across years), service charge by
-    /// quota month, insurance by months of cover, IMI and PT IRS for the previous calendar
-    /// year, everything else by date.
+    /// quota month, insurance by months of cover, IMI for the previous calendar year, PT IRS
+    /// for the calendar year it's charged for, time-apportioned to the UK years by days
+    /// (HMRC INTM161220), everything else by date.
     public static func defaultRule(for type: TaxExpenseType) -> TaxAttributionRuleKind {
         switch type {
         case .rentalIncome: return .byRentPeriod
         case .financeCost: return .byDate
         case .serviceCharge: return .byQuotaMonth
         case .insurance: return .apportionByCover
-        case .councilTax, .foreignTax: return .previousCalendarYear
-        case .accountancy, .legalFees, .repairs, .utilities, .otherExpense, .notDeductible: return .byDate
+        case .councilTax: return .previousCalendarYear
+        // HMRC INTM161220: foreign tax of a calendar year is time-apportioned (by days) to
+        // the UK years it straddles, matching the foreign tax to the UK year's income.
+        case .foreignTax: return .apportionCalendarYear
+        case .lettingFees, .accountancy, .legalFees, .repairs, .utilities, .otherExpense, .notDeductible: return .byDate
         }
     }
 
@@ -211,10 +215,12 @@ public enum TaxExpenseTypeMap {
     /// imposto/tax refund → foreign tax (a refund);
     /// mortgage/interest/juros → finance cost; condomínio/service charge → service charge; IMI/
     /// council tax → council tax; PT tax/IRS/imposto → foreign tax; accountant/contabil →
-    /// accountancy; legal/advogado/court → legal fees; repair/maintenance/obras → repairs;
+    /// accountancy; legal/advogado/court → legal fees; letting/agency/imobiliária → letting fee; repair/maintenance/obras → repairs;
     /// utilities/electricity/gas/water → not deductible (recharged to the tenant; the engine
-    /// nets them against the recharges received, `RechargeNetting`); anything else (fees,
-    /// other) → any other expense.
+    /// nets them against the recharges received, `RechargeNetting`); bank fees and charges
+    /// (account maintenance, card fees, stamp duty on them) → not deductible (none were
+    /// claimed on the filed returns: a user decision, 2026-10-17); contents insurance → any
+    /// other expense (the accountant's line for it); anything else → any other expense.
     public static func suggestedType(forCategoryName name: String, type: CategoryType) -> TaxExpenseType {
         let folded = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
         let words = Set(folded.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
@@ -227,6 +233,8 @@ public enum TaxExpenseTypeMap {
         }
         guard type == .expense else { return .notDeductible }
         if words.contains("life") || words.contains("vida") { return .notDeductible }
+        if isBankFeeName(folded, words: words) { return .notDeductible }
+        if has("contents", "recheio", "conteudo") { return .otherExpense }
         if has("insurance", "seguro") { return .insurance }
         // Capital repaid is not a cost: check it before the mortgage guess. Instalments mix
         // capital and interest: not deductible until the user splits them (`needsReview`).
@@ -237,10 +245,20 @@ public enum TaxExpenseTypeMap {
         if has("pt tax", "imposto") || words.contains("irs") { return .foreignTax }
         if has("accountan", "contabil") { return .accountancy }
         if has("legal", "advogad", "solicitador", "court") { return .legalFees }
+        if has("letting", "lettings", "agency fee", "agent fee", "imobiliaria", "mediacao") { return .lettingFees }
         if has("repair", "maintenance", "obras", "reparac") { return .repairs }
         // Recharged to the tenant: `RechargeNetting` nets them against the recharges received.
         if RechargeNetting.isUtilityName(name) { return .notDeductible }
         return .otherExpense
+    }
+
+    /// A bank's own charges: "BBVA fees", "Bank charges", "Comissões bancárias", "Account
+    /// maintenance". Other fees (letting, legal, accountancy) are not.
+    static func isBankFeeName(_ folded: String, words: Set<String>) -> Bool {
+        let bank = ["bank", "banco", "bancaria", "bancarias", "bbva", "account", "conta", "card", "cartao"].contains(where: words.contains)
+        let fee = ["fee", "fees", "charge", "charges", "comissao", "comissoes", "comissions"].contains(where: words.contains)
+            || folded.contains("manutencao") || folded.contains("maintenance fee")
+        return bank && fee || folded.contains("bank charge") || folded.contains("account maintenance")
     }
 
     /// Names whose guess must be confirmed by hand (loan instalments: capital and interest):
@@ -349,6 +367,9 @@ public enum TaxEvidence {
             return [item.label, UKTaxYear(startYear: item.startYear).label, person].compactMap { $0 }.joined(separator: " · ")
         case .employment, .employmentIncome, .hmrcPayment, .otherIncome, .pensionContribution:
             return try PersonalIncomeEvidence.title(db: db, entity: entity)
+        case .taxPolicyReceipt:
+            guard let receipt = try TaxPolicyReceipt.fetchOne(db, key: entity.id) else { return nil }
+            return "\(receipt.expenseType.displayName) receipt · \(receipt.label)"
         default:
             return nil
         }

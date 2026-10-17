@@ -482,7 +482,7 @@ public enum SelfAssessment {
 
         if foreignTax > 0 {
             steps.append(Step(title: "Foreign tax basis",
-                              detail: "Foreign tax is the tax paid abroad for calendar year \(inputs.startYear) (the year \(UKTaxYear(startYear: inputs.startYear).label) starts in), set against this UK year's rent, as the rental accounts attribute it: \(money(foreignTax)).",
+                              detail: "Foreign tax set against this UK year's rent as the rental accounts attribute it (by default each calendar year's tax time-apportioned to the UK years it straddles, HMRC INTM161220; the Foreign tax line shows the rule and its sources): \(money(foreignTax)).",
                               amount: foreignTax))
         }
         // Foreign Tax Credit Relief, per source: the highest foreign rate is the top slice.

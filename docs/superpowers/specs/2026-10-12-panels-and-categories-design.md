@@ -49,10 +49,10 @@ User decisions: a matched pair counts **once, as sent** (the outgoing leg, in it
 
 ### External transfer categories (added 2026-10-12)
 
-Some transfer categories move money to or from accounts that are never imported (e.g. "Transfer: Santander Patricia" — the user's wife's Santander account: the user sends money there monthly and some comes back into Lloyds International). Those must never be matched, and both directions count normally in the budget (out as spending, back as a positive amount in the same category, so the category nets them).
+Some transfer categories move money to or from accounts that are never imported (e.g. "Transfer: Savings account" — the user's wife's Santander account: the user sends money there monthly and some comes back into Lloyds International). Those must never be matched, and both directions count normally in the budget (out as spending, back as a positive amount in the same category, so the category nets them).
 - `category.isExternalTransfer` (bool, default false; migration appended last; only meaningful for transfer categories). Toggle on the Categories screen (right-click / row menu on transfer categories): "Money goes to an account you don't import — never match".
 - The matcher skips any transaction whose category (or, for staged rows, suggested/chosen category) is an external-transfer category, on either leg.
-- One-off data step after merge (controller, with backup, user's go-ahead): set it on "Transfer: Santander Patricia".
+- One-off data step after merge (controller, with backup, user's go-ahead): set it on "Transfer: Savings account".
 
 ## 7. Budget account filter (added 2026-10-12)
 

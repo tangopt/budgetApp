@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Tests: XCTest, in-memory DB. `swift test --scratch-path /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/build-fc`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/dd-fc build 2>&1 | tail -5`. Never both at once.
+- Tests: XCTest, in-memory DB. `swift test --scratch-path <scratchpad>/build-fc`. App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath <scratchpad>/dd-fc build 2>&1 | tail -5`. Never both at once.
 - Reserves (`!isAssignable`) never offered or suggested. Existing rules and stored `categorizedBy` values keep working.
 - Commit per task with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never push. Never touch `~/Library/Application Support/Budget`.
 

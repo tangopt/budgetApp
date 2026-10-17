@@ -19,13 +19,14 @@ public enum SpreadsheetPlanGapFill {
     static let months = Array(3...12)
 
     /// Signed minor units per month, Mar…Dec 2026 (nil = empty in the sheet). Income is
-    /// positive, everything else negative. Source: the spreadsheet's 2026 plan.
+    /// positive, everything else negative. Source: the spreadsheet's 2026 plan. Names are the
+    /// seeded defaults; `plan(db:categoryNames:)` maps them to the user's own categories.
     static let sheet: [(name: String, amounts: [Int?])] = [
         ("Rent", [-280000, -280000, -280000, -280000, -280000, -290000, -290000, -290000, -290000, -290000]),
         ("Internet", [-4500, -4500, -4500, -4500, -4500, -4500, -4500, -4500, -4500, -4500]),
         ("Gas/Electricity", [-10000, -10000, -10000, -10000, -10000, -10000, -10000, -10000, -10000, -10000]),
-        ("Mobile Patricia", [-2500, -2500, -2500, -2500, -2500, -2500, -2500, -2500, -2500, -2500]),
-        ("Mobile Pablo", [-2200, -2200, -2200, -2200, -2200, -2200, -2200, -2200, -2200, -2200]),
+        ("Mobile 1", [-2500, -2500, -2500, -2500, -2500, -2500, -2500, -2500, -2500, -2500]),
+        ("Mobile 2", [-2200, -2200, -2200, -2200, -2200, -2200, -2200, -2200, -2200, -2200]),
         ("NOW", [-898, -898, -898, -898, -898, -898, -898, -898, -898, -898]),
         ("Apple One", [-3695, -3695, -3695, -3695, -3695, -3695, -3695, -3695, -3695, -3695]),
         ("Netflix", [-1299, -1299, -1299, -1299, -1299, -1299, -1299, -1299, -1299, -1299]),
@@ -38,7 +39,7 @@ public enum SpreadsheetPlanGapFill {
         ("Car Insurance", [nil, nil, -120000, nil, nil, nil, nil, nil, nil, nil]),
         ("Car Service", [nil, nil, -100000, nil, nil, nil, nil, nil, nil, nil]),
         ("Confirmed other SIGNIFICANT expenses", [-250000, nil, nil, nil, nil, nil, nil, nil, nil, nil]),
-        ("Transfer: Santander Patricia", [-125000, -125000, -125000, -125000, -125000, -125000, -125000, -125000, -125000, -125000]),
+        ("Transfer: Savings account", [-125000, -125000, -125000, -125000, -125000, -125000, -125000, -125000, -125000, -125000]),
         ("Transfer: Lloyds Joint", [-200000, -200000, -200000, -200000, -200000, -200000, -200000, -200000, -200000, -200000]),
         ("Accountant", [nil, nil, nil, nil, nil, nil, nil, nil, nil, -72000]),
         ("UK Taxes", [nil, nil, nil, nil, nil, nil, nil, nil, nil, -320000]),
@@ -80,10 +81,14 @@ public enum SpreadsheetPlanGapFill {
     // Unoptimised on purpose: the Release optimiser (BoundsCheckOpts) crashes the Swift
     // compiler on this function. It only runs once, from a one-off tool, so speed doesn't matter.
     @_optimize(none)
-    public static func plan(db: Database) throws -> GapFillPlan {
+    /// `categoryNames` maps a sheet name (`requiredCategoryNames`) to the database's category
+    /// when the user's is named differently (personal names stay in the caller's data file).
+    public static func plan(db: Database, categoryNames: [String: String] = [:]) throws -> GapFillPlan {
+        var byName: [String: Category] = [:]
+        for category in try Category.fetchAll(db) { byName[category.name] = category }
         var categories: [String: Category] = [:]
-        for category in try Category.fetchAll(db) { categories[category.name] = category }
-        let missing = requiredCategoryNames.filter { categories[$0] == nil }
+        for name in requiredCategoryNames { categories[name] = byName[categoryNames[name] ?? name] }
+        let missing = requiredCategoryNames.filter { categories[$0] == nil }.map { categoryNames[$0] ?? $0 }
         guard missing.isEmpty else { throw SpreadsheetPlanGapFillError.missingCategories(missing) }
 
         let entries = try ForecastEntry.budget(db)
@@ -108,7 +113,7 @@ public enum SpreadsheetPlanGapFill {
                 guard let run = current else { return }
                 let single = run.first == run.last
                 let continues = !single && run.last == 12 && !hasJanuaryPlan
-                runs.append(Run(categoryId: id, name: row.name, amountMinorUnits: run.amount, frequency: single ? .once : .monthly, firstMonth: run.first, lastMonth: run.last, continues: continues, isReserve: category.isReserved))
+                runs.append(Run(categoryId: id, name: category.name, amountMinorUnits: run.amount, frequency: single ? .once : .monthly, firstMonth: run.first, lastMonth: run.last, continues: continues, isReserve: category.isReserved))
                 current = nil
             }
             for (index, month) in months.enumerated() {
@@ -131,7 +136,7 @@ public enum SpreadsheetPlanGapFill {
                 guard let g = group else { return }
                 let span = g.first == g.last ? label(g.first) : "\(label(g.first))…\(label(g.last))"
                 let sheetText = g.sheet.map { Money.format($0, currency: .gbp) } ?? "none"
-                mismatches.append("\(row.name): plan \(Money.format(g.app, currency: .gbp)) vs spreadsheet \(sheetText) (\(span)) — not changed")
+                mismatches.append("\(category.name): plan \(Money.format(g.app, currency: .gbp)) vs spreadsheet \(sheetText) (\(span)) — not changed")
                 group = nil
             }
             for (index, month) in months.enumerated() {

@@ -18,6 +18,7 @@ public enum EvidenceEntityType: String, Codable, CaseIterable, Sendable {
     case hmrcPayment
     case otherIncome
     case pensionContribution
+    case taxPolicyReceipt
 }
 
 /// A record a document links to.
@@ -117,6 +118,7 @@ public enum EvidenceLinks {
         case .hmrcPayment: return try HMRCPayment.exists(db, key: entity.id)
         case .otherIncome: return try OtherIncome.exists(db, key: entity.id)
         case .pensionContribution: return try PensionContribution.exists(db, key: entity.id)
+        case .taxPolicyReceipt: return try TaxPolicyReceipt.exists(db, key: entity.id)
         case .other: return true
         }
     }

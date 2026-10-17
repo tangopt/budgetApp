@@ -17,7 +17,7 @@
 - Stale rule: `.imported` accounts are never stale; others are stale when they have no snapshot or the latest is more than 45 days before today (start of day, UTC) — one implementation, `BalanceStaleness`, also used by `DashboardCalculator.attentionItems`.
 - Kind change to/from `.credit` is refused when the account has any snapshot or transaction; currency never changes after creation.
 - Account names: trimmed, non-empty, unique.
-- Tests: XCTest in `Tests/BudgetCoreTests/`; in-memory DB `let m = try DatabaseManager(path: nil); try m.migrate()`. Run `swift test --scratch-path /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/build-acc` (`--filter X` while iterating). App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath /private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/dd-acc build 2>&1 | tail -5`. Never both at once.
+- Tests: XCTest in `Tests/BudgetCoreTests/`; in-memory DB `let m = try DatabaseManager(path: nil); try m.migrate()`. Run `swift test --scratch-path <scratchpad>/build-acc` (`--filter X` while iterating). App: `xcodegen generate && xcodebuild -project Budget.xcodeproj -scheme Budget -destination 'platform=macOS' -derivedDataPath <scratchpad>/dd-acc build 2>&1 | tail -5`. Never both at once.
 - Commit after each task (author's Co-Authored-By line). Never push. Never touch `~/Library/Application Support/Budget`.
 
 ---

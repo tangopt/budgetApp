@@ -90,6 +90,8 @@ public enum TaxExpenseType: String, Codable, CaseIterable, Sendable {
     case insurance
     /// IMI.
     case councilTax
+    /// Letting agent's fees (finding a tenant, the contract).
+    case lettingFees
     case accountancy
     case legalFees
     case repairs
@@ -107,6 +109,7 @@ public enum TaxExpenseType: String, Codable, CaseIterable, Sendable {
         case .serviceCharge: return "Service charge"
         case .insurance: return "Insurance (building insurance)"
         case .councilTax: return "Council tax (if paid by landlord)"
+        case .lettingFees: return "Letting fee"
         case .accountancy: return "Accountancy fee"
         case .legalFees: return "Legal fees"
         case .repairs: return "Repairs and maintenance"
@@ -120,13 +123,13 @@ public enum TaxExpenseType: String, Codable, CaseIterable, Sendable {
     /// Expenses deducted from the rent (finance costs are relieved separately).
     public var isDeductibleExpense: Bool {
         switch self {
-        case .serviceCharge, .insurance, .councilTax, .accountancy, .legalFees, .repairs, .utilities, .otherExpense: return true
+        case .serviceCharge, .insurance, .councilTax, .lettingFees, .accountancy, .legalFees, .repairs, .utilities, .otherExpense: return true
         case .rentalIncome, .financeCost, .foreignTax, .notDeductible: return false
         }
     }
 
     /// The deductible expenses in the template's order.
-    public static let expenseLines: [TaxExpenseType] = [.serviceCharge, .insurance, .councilTax, .accountancy, .legalFees,
+    public static let expenseLines: [TaxExpenseType] = [.serviceCharge, .insurance, .councilTax, .lettingFees, .accountancy, .legalFees,
                                                          .repairs, .utilities, .otherExpense]
 }
 
@@ -138,11 +141,21 @@ public enum TaxAttributionRuleKind: String, Codable, CaseIterable, Sendable {
     case byDebitMonth
     /// By the quota months the payment covers (condomínio), apportioned by month.
     case byQuotaMonth
-    /// Apportioned by the months of cover (insurance).
+    /// Apportioned by the months of cover (insurance): each receipt's cover period (its
+    /// policy receipt, the note or a linked document), else the default cover months.
     case apportionByCover
+    /// The policy year's premium (every receipt of that year) spread evenly over its calendar
+    /// months, January–December, whatever the instalment dates: April–December to the UK
+    /// year starting in it, January–March to the one before.
+    case apportionPolicyYear
     /// The payment is the previous calendar year's (IMI, PT IRS): a payment in calendar year
     /// Y is for Y − 1 and goes, whole, to the UK year starting in Y − 1.
     case previousCalendarYear
+    /// Foreign tax charged for a calendar year, time-apportioned by days to the UK years the
+    /// calendar year straddles (HMRC INTM161220): 270/365 of year Y's tax and 95/365 of
+    /// year Y + 1's go to UK year Y/Y+1. The liability year is found as for
+    /// `previousCalendarYear` (a payment in Y is for Y − 1 unless the note or a document says).
+    case apportionCalendarYear
     /// By the transaction's date, 6 April – 5 April.
     case byDate
 
@@ -152,7 +165,9 @@ public enum TaxAttributionRuleKind: String, Codable, CaseIterable, Sendable {
         case .byDebitMonth: return "By debit month"
         case .byQuotaMonth: return "By quota month"
         case .apportionByCover: return "Apportioned by months of cover"
+        case .apportionPolicyYear: return "Apportioned by policy year"
         case .previousCalendarYear: return "Previous calendar year"
+        case .apportionCalendarYear: return "Calendar year, time-apportioned"
         case .byDate: return "By date"
         }
     }
@@ -338,6 +353,13 @@ public enum TaxError: Error, Equatable {
     case invalidCurrencyCode
     /// Cover months must be 1 or more.
     case invalidCoverMonths
+    case transactionNotFound
+    /// An instalment number outside 1…count.
+    case invalidInstalment
+    /// A cover period that ends before it starts.
+    case invalidCoverPeriod
+    /// The person doesn't own the property the payment is for (on its date).
+    case notAnOwner
 }
 
 func registerTaxMigration(_ migrator: inout DatabaseMigrator) {
@@ -421,5 +443,18 @@ func registerTaxMigration(_ migrator: inout DatabaseMigrator) {
                 END
                 """)
         }
+    }
+}
+
+/// HMRC (INTM161220): foreign tax charged for a calendar year is time-apportioned to the UK
+/// years it straddles. The seeded default for foreign tax (the whole previous calendar year)
+/// moves to the apportioned basis; a default the user chose and every year override stay.
+func registerForeignTaxApportionedMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("foreignTaxTimeApportionedByDefault") { db in
+        try db.execute(sql: """
+            UPDATE taxAttributionRule SET rule = ?
+            WHERE expenseType = ? AND startYear IS NULL AND rule = ? AND notes = ?
+            """, arguments: [TaxAttributionRuleKind.apportionCalendarYear.rawValue, TaxExpenseType.foreignTax.rawValue,
+                             TaxAttributionRuleKind.previousCalendarYear.rawValue, TaxAttributionRules.seededNote])
     }
 }

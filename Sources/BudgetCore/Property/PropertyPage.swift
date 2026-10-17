@@ -138,7 +138,7 @@ extension PropertyEvidence {
             case .category: return categoryIds.contains(entity.id)
             case .person: return ownerIds.contains(entity.id)
             case .transaction, .taxYear, .taxManualItem, .employment, .employmentIncome, .hmrcPayment, .otherIncome,
-                 .pensionContribution, .other: return false
+                 .pensionContribution, .taxPolicyReceipt, .other: return false
             }
         }
         var ids: Set<Int64> = []
@@ -180,6 +180,7 @@ extension EvidenceEntityType {
         case .hmrcPayment: return "HMRC payment"
         case .otherIncome: return "Other income"
         case .pensionContribution: return "Pension contribution"
+        case .taxPolicyReceipt: return "Insurance receipt"
         }
     }
 }
