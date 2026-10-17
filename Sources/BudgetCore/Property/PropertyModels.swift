@@ -186,9 +186,13 @@ public struct Tenancy: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     /// Months of rent held as deposit (caução).
     public var depositMonths: Int
     public var notes: String?
+    /// Where the monthly utility recharge statement is emailed (several separated by commas).
+    public var tenantEmail: String?
 
     public init(id: Int64? = nil, propertyId: Int64, referenceLabel: String, contractNumber: String? = nil, tenantName: String? = nil,
-                startDate: Date, endDate: Date? = nil, advanceRentMonths: Int = 0, depositMonths: Int = 0, notes: String? = nil) {
+                startDate: Date, endDate: Date? = nil, advanceRentMonths: Int = 0, depositMonths: Int = 0, notes: String? = nil,
+                tenantEmail: String? = nil) {
+        self.tenantEmail = tenantEmail
         self.id = id
         self.propertyId = propertyId
         self.referenceLabel = referenceLabel

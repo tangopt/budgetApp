@@ -16,7 +16,7 @@ public enum EvidenceRequirementDefaults {
     /// or policy, Mortgage interest → mortgage notice or interest statement, IMI → notice or
     /// payment, Condomínio → receipt, PT tax → IRS liquidação or payment, PT accountant →
     /// accountant invoice, Legal fees → legal invoice or court fee, Repairs → any document
-    /// (invoices classify as `other`), Utilities → utility invoice, bank fees → bank
+    /// (invoices classify as `other`), Utilities (electricity, gas, water) → utility invoice, bank fees → bank
     /// statement; any other name → any document, no usual source.
     public static func rule(forCategoryName name: String) -> CategoryRule {
         let folded = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
@@ -31,7 +31,8 @@ public enum EvidenceRequirementDefaults {
         if folded.contains("accountant") { return CategoryRule(kinds: [.accountantInvoice], usualSource: "Accountant") }
         if folded.contains("legal") { return CategoryRule(kinds: [.legalInvoice, .courtFee], usualSource: "Lawyer / court") }
         if folded.contains("repair") { return CategoryRule(kinds: [], usualSource: "Supplier") }
-        if folded.contains("utilit") { return CategoryRule(kinds: [.utilityInvoice], usualSource: "Utility provider") }
+        // One utility invoice per utility debit (electricity, gas, water too).
+        if RechargeNetting.isUtilityName(name) { return CategoryRule(kinds: [.utilityInvoice], usualSource: "Utility provider") }
         if words.contains("fees") || words.contains("fee") { return CategoryRule(kinds: [.bankStatement], usualSource: "BBVA app") }
         return CategoryRule(kinds: [], usualSource: nil)
     }

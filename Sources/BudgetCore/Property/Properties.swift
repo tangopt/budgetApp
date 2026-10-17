@@ -29,6 +29,8 @@ public enum PropertyError: Error, Equatable {
     case duplicateReceiptNumber
     /// Withholding larger than the rent.
     case invalidWithholding
+    /// A tenant email that isn't an address.
+    case invalidEmail(String)
 }
 
 /// Day-granularity dates for the property records: 00:00 UTC of the day.
@@ -275,6 +277,17 @@ public enum Tenancies {
         tenancy.contractNumber = Transaction.normalizedNote(tenancy.contractNumber)
         tenancy.tenantName = Transaction.normalizedNote(tenancy.tenantName)
         tenancy.notes = Transaction.normalizedNote(tenancy.notes)
+        // Addresses separated by commas or semicolons, "Name <address>" accepted, stored plain.
+        if let text = Transaction.normalizedNote(tenancy.tenantEmail) {
+            var addresses: [String] = []
+            for part in Tenancies.emailParts(text) {
+                guard Tenancies.isEmailAddress(part) else { throw PropertyError.invalidEmail(part) }
+                addresses.append(part)
+            }
+            tenancy.tenantEmail = addresses.isEmpty ? nil : addresses.joined(separator: ", ")
+        } else {
+            tenancy.tenantEmail = nil
+        }
         tenancy.startDate = PropertyDates.day(tenancy.startDate)
         tenancy.endDate = tenancy.endDate.map(PropertyDates.day)
         if let end = tenancy.endDate, end < tenancy.startDate { throw PropertyError.invalidDateRange }
@@ -285,6 +298,29 @@ public enum Tenancies {
             guard try clash.fetchCount(db) == 0 else { throw PropertyError.duplicateContractNumber }
         }
         try tenancy.save(db)
+    }
+
+    /// The parts of an email list: split on commas and semicolons, "Name <address>" read as the
+    /// address, angle brackets dropped, blanks left out.
+    public static func emailParts(_ text: String) -> [String] {
+        text.split(whereSeparator: { $0 == "," || $0 == ";" }).compactMap { part -> String? in
+            var item = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let open = item.lastIndex(of: "<"), let close = item.lastIndex(of: ">"), open < close {
+                item = String(item[item.index(after: open)..<close])
+            }
+            item = item.trimmingCharacters(in: CharacterSet(charactersIn: "<> ").union(.whitespacesAndNewlines))
+            return item.isEmpty ? nil : item
+        }
+    }
+
+    /// One `local@domain.tld`, no spaces.
+    public static func isEmailAddress(_ text: String) -> Bool {
+        text.range(of: #"^[^@\s<>,;]+@[^@\s<>,;]+\.[^@\s<>,;]+$"#, options: .regularExpression) != nil
+    }
+
+    /// The tenancy's valid email addresses.
+    public static func emailAddresses(_ tenancy: Tenancy) -> [String] {
+        emailParts(tenancy.tenantEmail ?? "").filter(isEmailAddress)
     }
 
     /// The property's tenancies, oldest start first.

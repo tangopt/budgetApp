@@ -212,8 +212,9 @@ public enum TaxExpenseTypeMap {
     /// mortgage/interest/juros → finance cost; condomínio/service charge → service charge; IMI/
     /// council tax → council tax; PT tax/IRS/imposto → foreign tax; accountant/contabil →
     /// accountancy; legal/advogado/court → legal fees; repair/maintenance/obras → repairs;
-    /// utilities/electricity/gas/water → not deductible (recharged to the tenant until
-    /// recharges are netted, phase 5); anything else (fees, other) → any other expense.
+    /// utilities/electricity/gas/water → not deductible (recharged to the tenant; the engine
+    /// nets them against the recharges received, `RechargeNetting`); anything else (fees,
+    /// other) → any other expense.
     public static func suggestedType(forCategoryName name: String, type: CategoryType) -> TaxExpenseType {
         let folded = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
         let words = Set(folded.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
@@ -237,7 +238,8 @@ public enum TaxExpenseTypeMap {
         if has("accountan", "contabil") { return .accountancy }
         if has("legal", "advogad", "solicitador", "court") { return .legalFees }
         if has("repair", "maintenance", "obras", "reparac") { return .repairs }
-        if has("utilit", "electric", "water") || !words.isDisjoint(with: ["gas", "agua", "luz"]) { return .notDeductible }
+        // Recharged to the tenant: `RechargeNetting` nets them against the recharges received.
+        if RechargeNetting.isUtilityName(name) { return .notDeductible }
         return .otherExpense
     }
 

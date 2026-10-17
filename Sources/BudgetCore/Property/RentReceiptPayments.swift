@@ -111,7 +111,13 @@ public enum RentReceiptMatching {
     /// `windowDays`. Existing and dismissed links are left alone, so re-running is idempotent.
     @discardableResult
     public static func match(db: Database, propertyId: Int64, options: Options = Options()) throws -> Result {
-        let credits = try candidateCredits(db: db, propertyId: propertyId, options: options)
+        // What utility recharge links already take of a credit isn't rent: match the rest.
+        let recharged = try rechargedByCredit(db: db)
+        let credits = try candidateCredits(db: db, propertyId: propertyId, options: options).compactMap { credit -> Transaction? in
+            var rest = credit
+            rest.amountMinorUnits -= recharged[credit.id!] ?? 0
+            return rest.amountMinorUnits > 0 ? rest : nil
+        }
         let active = try RentReceiptPayment.active.fetchAll(db)
         let linkedTransactionIds = Set(active.map(\.transactionId))
         let linkedReceiptIds = Set(active.map(\.rentReceiptId))
@@ -323,10 +329,20 @@ public enum RentReceiptMatching {
         return try issuedReceipts(db: db, propertyId: propertyId).filter { (covered[$0.id!] ?? 0) < $0.amountReceivedMinorUnits }
     }
 
-    /// Rent credits of the property with no active link, oldest first.
+    /// Rent credits of the property with no active link, oldest first (credits wholly taken by
+    /// utility recharge links aren't rent).
     public static func unmatchedCredits(db: Database, propertyId: Int64, options: Options = Options()) throws -> [Transaction] {
         let linked = Set(try Int64.fetchAll(db, sql: "SELECT transactionId FROM rentReceiptPayment WHERE isDismissed = 0"))
-        return try candidateCredits(db: db, propertyId: propertyId, options: options).filter { !linked.contains($0.id!) }
+        let recharged = try rechargedByCredit(db: db)
+        return try candidateCredits(db: db, propertyId: propertyId, options: options)
+            .filter { !linked.contains($0.id!) && (recharged[$0.id!] ?? 0) < $0.amountMinorUnits }
+    }
+
+    /// The recharge statement links' total per credit.
+    static func rechargedByCredit(db: Database) throws -> [Int64: Int] {
+        Dictionary(uniqueKeysWithValues: try Row.fetchAll(db, sql: """
+            SELECT transactionId, SUM(amountMinorUnits) FROM rechargePayment WHERE isDismissed = 0 GROUP BY transactionId
+            """).map { ($0[0] as Int64, $0[1] as Int) })
     }
 
     /// The receipt's active payment links, oldest credit first.
@@ -367,7 +383,10 @@ public enum RentReceiptMatching {
             SELECT COALESCE(SUM(rentMinorUnits), 0) FROM rentReceiptPayment
             WHERE rentReceiptId = ? AND isDismissed = 0 AND transactionId != ?
             """, arguments: [receiptId, transactionId]) ?? 0
-        let creditLeft = credit.amountMinorUnits - othersOnCredit
+        let rechargedOnCredit = try Int.fetchOne(db, sql: """
+            SELECT COALESCE(SUM(amountMinorUnits), 0) FROM rechargePayment WHERE transactionId = ? AND isDismissed = 0
+            """, arguments: [transactionId]) ?? 0
+        let creditLeft = credit.amountMinorUnits - othersOnCredit - rechargedOnCredit
         let rent = rentMinorUnits ?? max(0, min(receipt.amountReceivedMinorUnits - coveredOnReceipt, creditLeft - otherMinorUnits))
         guard rent >= 0, otherMinorUnits >= 0 else { throw RentPaymentError.negativeAmount }
         guard rent + otherMinorUnits > 0 else { throw RentPaymentError.nothingAllocated }

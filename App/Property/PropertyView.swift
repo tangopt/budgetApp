@@ -85,6 +85,7 @@ struct PropertyView: View {
         switch viewModel.tab {
         case .overview: PropertyOverviewTab(viewModel: viewModel)
         case .tenancies: PropertyTenanciesTab(viewModel: viewModel, openTransaction: openTransaction)
+        case .recharges: PropertyRechargesTab(viewModel: viewModel)
         case .money: PropertyMoneyTab(viewModel: viewModel, openTransaction: openTransaction)
         case .calendar: PropertyCalendarTab(viewModel: viewModel)
         case .checks: PropertyChecksTab(viewModel: viewModel, openTransaction: openTransaction, openMissingEvidence: openMissingEvidence)

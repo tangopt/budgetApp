@@ -272,6 +272,7 @@ struct TenancyDraft: Identifiable {
     var reference = ""
     var contract = ""
     var tenant = ""
+    var email = ""
     var start = PropertyDays.utcToday(Date())
     var end: Date? = nil
     var advanceMonths = 0
@@ -292,6 +293,7 @@ struct TenancyDraft: Identifiable {
         reference = tenancy.referenceLabel
         contract = tenancy.contractNumber ?? ""
         tenant = tenancy.tenantName ?? ""
+        email = tenancy.tenantEmail ?? ""
         start = tenancy.startDate
         end = tenancy.endDate
         advanceMonths = tenancy.advanceRentMonths
@@ -314,6 +316,9 @@ struct TenancyFormSheet: View {
                 LabeledContent("Reference") { TextField("Reference", text: $draft.reference, prompt: Text("The portal's Referência")) }
                 LabeledContent("Contract no.") { TextField("Contract no.", text: $draft.contract) }
                 LabeledContent("Tenant") { TextField("Tenant", text: $draft.tenant) }
+                LabeledContent("Email") {
+                    TextField("Email", text: $draft.email, prompt: Text("For the monthly utilities statement; several separated by commas"))
+                }
                 LabeledContent("Start") { DatePicker("Start", selection: utcDay($draft.start), displayedComponents: .date) }
                 LabeledContent("End") {
                     HStack {
@@ -361,6 +366,7 @@ struct TenancyFormSheet: View {
         tenancy.referenceLabel = draft.reference
         tenancy.contractNumber = draft.contract
         tenancy.tenantName = draft.tenant
+        tenancy.tenantEmail = draft.email
         tenancy.startDate = draft.start
         tenancy.endDate = draft.end
         tenancy.advanceRentMonths = draft.advanceMonths

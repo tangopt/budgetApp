@@ -81,5 +81,8 @@ public final class DatabaseManager {
         registerPropertyEvidenceRequirementMigration(&migrator)
         registerTaxMigration(&migrator)
         registerPersonalIncomeMigration(&migrator)
+        registerRechargeMigration(&migrator)
+        registerUtilityInvoiceRulesMigration(&migrator)
+        registerRechargeEmailMigration(&migrator)
     }
 }

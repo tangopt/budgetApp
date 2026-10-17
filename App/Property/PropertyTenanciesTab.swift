@@ -13,6 +13,7 @@ struct PropertyTenanciesTab: View {
 
     @State private var editing: TenancyDraft?
     @State private var importing = false
+    @State private var intakingInvoices = false
     @State private var deleting: Tenancy?
     /// The record Add document… adds to (kept until the importer completes).
     @State private var documentTarget: (entity: EvidenceEntity, role: String)?
@@ -45,6 +46,8 @@ struct PropertyTenanciesTab: View {
                     .help("Import the Portal das Finanças receipts export (ListaRecibos .xlsx)")
                 Button("Match credits") { viewModel.matchCredits() }
                     .help("Link rent credits on the current account to the receipts they paid")
+                Button("Utility invoices…") { intakingInvoices = true }
+                    .help("Add utility invoices (to recharge to the tenant) and match them to their debits")
             }
             if let tenancy = viewModel.selectedTenancy {
                 terms(tenancy)
@@ -59,6 +62,12 @@ struct PropertyTenanciesTab: View {
         }
         .sheet(isPresented: $importing) {
             ImportReceiptsSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $intakingInvoices) {
+            if let propertyId = viewModel.propertyId {
+                UtilityInvoiceIntakeSheet(dbQueue: viewModel.dbQueue, library: viewModel.library, propertyId: propertyId,
+                                          currency: viewModel.property?.currency ?? .eur)
+            }
         }
         .sheet(item: $documentsOf) { target in
             PropertyDocumentsSheet(viewModel: viewModel, entity: target.entity, title: target.title)

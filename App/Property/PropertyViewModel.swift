@@ -15,6 +15,7 @@ final class PropertyViewModel: ObservableObject {
     enum Tab: String, CaseIterable, Identifiable {
         case overview = "Overview"
         case tenancies = "Tenancies"
+        case recharges = "Recharges"
         case money = "Money"
         case calendar = "Calendar"
         case checks = "Checks"
@@ -497,6 +498,7 @@ enum PropertyMessages {
         case .blankReceiptNumber: return "Enter the receipt number."
         case .duplicateReceiptNumber: return "That receipt number is already used for this tenancy."
         case .invalidWithholding: return "The withholding can't be more than the rent."
+        case let .invalidEmail(text): return "“\(text)” isn't an email address."
         }
     }
 

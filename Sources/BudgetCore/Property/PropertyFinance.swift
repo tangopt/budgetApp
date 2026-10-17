@@ -66,9 +66,16 @@ public struct PropertyFigures: Equatable, Sendable {
     public var rentPerReceipts = PropertyAmount.zero
     /// The rent credits (property's current account, rent categories) dated in the period.
     public var rentCredits = PropertyAmount.zero
-    /// The part of those credits that isn't rent: `otherMinorUnits` of their receipt links
-    /// (utility recharges and the like).
+    /// The part of those credits that isn't rent: per credit, the larger of the `otherMinorUnits`
+    /// of its receipt links and its recharge statement links (utility recharges and the like).
     public var recharges = PropertyAmount.zero
+    /// The utility costs: transactions in the property's utility categories
+    /// (`RechargeNetting.utilityCategoryIds`), as a positive cost. Part of `costs`.
+    public var utilities = PropertyAmount.zero
+    /// Utilities recharged and received: the statement-linked parts of credits dated in the period.
+    public var utilityRecharges = PropertyAmount.zero
+    /// `utilities − utilityRecharges`, never below zero: what the utilities cost the landlord.
+    public var netUtilities = PropertyAmount.zero
     /// `rentCredits − recharges`.
     public var rentReceived = PropertyAmount.zero
     /// Every transaction in the property's income categories (rent credits included).
@@ -258,6 +265,11 @@ public enum PropertyFinance {
         let rentCredits: [Transaction]
         let otherByCredit: [Int64: Int]
         let receipts: [RentReceipt]
+        let utilityCategoryIds: Set<Int64>
+        /// Recharge statement links by credit.
+        let rechargeByCredit: [Int64: Int]
+        /// The recharge statement links on credits dated in the interval.
+        let rechargesReceived: [Recharges.Received]
 
         init(db: Database, property: Property, conversion: CurrencyConversion, interval: DateInterval) throws {
             let propertyId = property.id!
@@ -288,6 +300,10 @@ public enum PropertyFinance {
                 """)
             otherByCredit = Dictionary(uniqueKeysWithValues: rows.map { ($0[0] as Int64, $0[1] as Int) })
             receipts = try RentReceipts.receipts(db: db, propertyId: propertyId, overlapping: interval)
+            utilityCategoryIds = try RechargeNetting.utilityCategoryIds(db: db, propertyId: propertyId)
+            rechargesReceived = try Recharges.received(db: db, propertyId: propertyId, in: interval)
+            let rechargeRows = try Row.fetchAll(db, sql: "SELECT transactionId, SUM(amountMinorUnits) FROM rechargePayment WHERE isDismissed = 0 GROUP BY transactionId")
+            rechargeByCredit = Dictionary(uniqueKeysWithValues: rechargeRows.map { ($0[0] as Int64, $0[1] as Int) })
         }
 
         /// A transaction's amount in the property's currency and GBP.
@@ -308,14 +324,22 @@ public enum PropertyFinance {
             }
             for credit in rentCredits where within(credit) {
                 figures.rentCredits += amount(credit)
-                figures.recharges += amount(otherByCredit[credit.id!] ?? 0, currency: accounts[credit.accountId]?.currency ?? property.currency)
+                let nonRent = max(otherByCredit[credit.id!] ?? 0, rechargeByCredit[credit.id!] ?? 0)
+                figures.recharges += amount(nonRent, currency: accounts[credit.accountId]?.currency ?? property.currency)
             }
             figures.rentReceived = figures.rentCredits - figures.recharges
             for transaction in transactions where within(transaction) {
                 guard let category = transaction.categoryId else { continue }
                 if incomeCategoryIds.contains(category) { figures.income += amount(transaction) }
                 if expenseCategoryIds.contains(category) { figures.costs += -amount(transaction) }
+                if utilityCategoryIds.contains(category) { figures.utilities += -amount(transaction) }
             }
+            for recharge in rechargesReceived where within(recharge.transaction) {
+                figures.utilityRecharges += amount(recharge.payment.amountMinorUnits,
+                                                   currency: accounts[recharge.transaction.accountId]?.currency ?? property.currency)
+            }
+            let net = figures.utilities - figures.utilityRecharges
+            figures.netUtilities = PropertyAmount(native: max(0, net.native), gbp: max(0, net.gbp))
             var legs = PropertyAmount.zero
             for row in loanRows where within(row) {
                 guard let category = row.categoryId else { continue }

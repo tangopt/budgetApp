@@ -40,6 +40,11 @@ public enum RentalAccounts {
         case rentReceipt(Int64)
         case manualItem(Int64)
 
+        var isManualItem: Bool {
+            if case .manualItem = self { return true }
+            return false
+        }
+
         public var entity: EvidenceEntity {
             switch self {
             case let .transaction(id): return .transaction(id)
@@ -104,6 +109,35 @@ public enum RentalAccounts {
         public var foreignTax: Amount
     }
 
+    /// How the year's utilities met the recharges received (`RechargeNetting`), in the
+    /// property's currency for the whole property.
+    public struct UtilityNetting: Equatable, Sendable {
+        /// The mode applied: `nil` = none (no stored mode, and a filed or paid year or no
+        /// recharges: each utility category on its own line, as before phase 5).
+        public var mode: RechargeNettingMode?
+        /// Whether the mode came from the data (no stored mode).
+        public var isAutomatic: Bool
+        /// Utility costs attributed to the year (under `netOfRecharges`: before the recharges).
+        public var utilitiesPaid: Int
+        /// Statement-linked parts of tenant credits received in the year.
+        public var rechargesReceived: Int
+        /// The part of them deducted from the utilities (at most `utilitiesPaid`).
+        public var rechargesApplied: Int
+        /// `rechargesReceived − rechargesApplied`: on the rental income line ("Recharges above
+        /// utilities paid").
+        public var excess: Int
+
+        public init(mode: RechargeNettingMode? = nil, isAutomatic: Bool = true, utilitiesPaid: Int = 0, rechargesReceived: Int = 0,
+                    rechargesApplied: Int = 0, excess: Int = 0) {
+            self.mode = mode
+            self.isAutomatic = isAutomatic
+            self.utilitiesPaid = utilitiesPaid
+            self.rechargesReceived = rechargesReceived
+            self.rechargesApplied = rechargesApplied
+            self.excess = excess
+        }
+    }
+
     public struct Result: Equatable, Sendable {
         public var taxYear: UKTaxYear
         public var personId: Int64
@@ -120,6 +154,7 @@ public enum RentalAccounts {
         public var notDeductible: Line
         public var rentMonths: [RentMonth]
         public var totals: Totals
+        public var utilityNetting: UtilityNetting
         public var warnings: [String]
 
         /// Every line: income, expenses, finance costs, foreign tax, not deductible.
@@ -190,6 +225,23 @@ public enum RentalAccounts {
             shares[type] = try TaxSplits.share(db: db, startYear: taxYear.startYear, personId: personId, propertyId: propertyId, expenseType: type)
         }
 
+        // Utilities and the recharges received for them (phase 5): the mode decides each
+        // utility category's line. Recharges count in the window the Utilities rule uses.
+        let utilityCategoryIds = try RechargeNetting.utilityCategoryIds(db: db, propertyId: propertyId)
+        let rechargeWindow = rules[.utilities]!.rule == .byDebitMonth ? taxYear.monthsInterval : taxYear.interval
+        let rechargesReceived = try Recharges.received(db: db, propertyId: propertyId, in: rechargeWindow)
+        let storedNetting = try RechargeNetting.mode(db: db, startYear: taxYear.startYear)
+        // Automatic: a filed (or paid) year keeps every category on its own line, exactly as
+        // before phase 5, so filed figures don't move; an open year nets once it has recharges.
+        let yearStatus = try TaxYears.year(db: db, startYear: taxYear.startYear, personId: personId)?.status
+        let isFiled = yearStatus == .filed || yearStatus == .paid
+        let nettingMode = storedNetting ?? (isFiled || rechargesReceived.isEmpty ? nil : .netOfRecharges)
+        // Statement-linked recharge parts of credits: not rent when the rent comes from credits.
+        let rechargedByCredit = nettingMode == nil ? [:] : try RentReceiptMatching.rechargedByCredit(db: db)
+        var utilityNotDeductibleSources = 0
+        var utilityNetting = UtilityNetting(mode: nettingMode, isAutomatic: storedNetting == nil)
+        var utilitySources = 0
+
         // Rent by rent period: the receipts.
         let incomeRule = rules[.rentalIncome]!
         var rentMonths: [RentMonth] = []
@@ -254,18 +306,30 @@ public enum RentalAccounts {
 
         // Transactions through their type's rule.
         for transaction in transactions {
-            guard let categoryId = transaction.categoryId, let type = typeByCategory[categoryId] else { continue }
+            guard let categoryId = transaction.categoryId, var type = typeByCategory[categoryId] else { continue }
+            let isUtility = utilityCategoryIds.contains(categoryId)
+            if isUtility, let nettingMode { type = nettingMode == .netOfRecharges ? .utilities : .notDeductible }
             let rule = rules[type]!
             // Under byRentPeriod the receipts are the rent; the credits are their payments.
             if type == .rentalIncome && rule.rule == .byRentPeriod { continue }
             // Rent (and not-deductible income) counts credits up; every other line counts costs
             // up, so a credit filed under it (a refund) reduces it.
             let isIncome = categoryType[categoryId] == .income
-            let natural = (type == .rentalIncome || type == .notDeductible) && isIncome ? transaction.amountMinorUnits : -transaction.amountMinorUnits
+            var natural = (type == .rentalIncome || type == .notDeductible) && isIncome ? transaction.amountMinorUnits : -transaction.amountMinorUnits
+            // A rent credit's recharge part is netted against the utilities (or left out with
+            // them), so it isn't rent as well.
+            var rechargePart = 0
+            if type == .rentalIncome, isIncome, let part = rechargedByCredit[transaction.id!], part > 0 {
+                rechargePart = min(part, natural)
+                natural -= rechargePart
+            }
             let docs = documents[transaction.id!] ?? []
             guard let (attributed, explanation) = context.attribute(transaction: transaction, amount: natural, rule: rule, documents: docs) else { continue }
             var share = shares[type]!.shareBasisPoints
             var explained = explanation
+            if rechargePart > 0 {
+                explained += "; less \(Money.format(rechargePart, currency: currencies[transaction.accountId] ?? .gbp)) of utilities recharged (its recharge statement links)"
+            }
             if type == .foreignTax {
                 switch named(person: person.name, others: otherNames, note: transaction.note, documents: docs) {
                 case .this:
@@ -283,6 +347,11 @@ public enum RentalAccounts {
                 reference: .transaction(transaction.id!), date: transaction.date, description: transaction.rawDescription,
                 currency: currency, amountMinorUnits: natural, attributedMinorUnits: attributed, shareBasisPoints: share,
                 explanation: explained, documentIds: docs.compactMap(\.id)))
+            if isUtility {
+                utilitySources += 1
+                if type == .notDeductible { utilityNotDeductibleSources += 1 }
+                if let value = context.nativeValue(attributed, currency: currency) { utilityNetting.utilitiesPaid += value }
+            }
         }
 
         // Manual items: the person's own, and whole-property ones entered under anyone.
@@ -300,6 +369,54 @@ public enum RentalAccounts {
                 documentIds: itemDocs[item.id!] ?? []))
         }
 
+        // Net the recharges received against the Utilities line (manual utility items count as
+        // paid too), never below zero: each recharge is a negative source, capped by what's
+        // left; the part above the utilities paid is rental income.
+        if nettingMode == .netOfRecharges {
+            for source in sourcesByType[.utilities] ?? [] where source.reference.isManualItem {
+                if let value = context.nativeValue(source.attributedMinorUnits, currency: source.currency) { utilityNetting.utilitiesPaid += value }
+            }
+            var room = max(0, utilityNetting.utilitiesPaid)
+            let share = shares[.utilities]!.shareBasisPoints
+            for recharge in rechargesReceived {
+                let currency = currencies[recharge.transaction.accountId] ?? property.currency
+                let amount = recharge.payment.amountMinorUnits
+                var applied = amount
+                let received = "Recharge received \(day(recharge.transaction.date)), in \(day(rechargeWindow.start)) – \(day(rechargeWindow.end.addingTimeInterval(-1)))"
+                var explanation = received
+                if let value = context.nativeValue(amount, currency: currency) {
+                    let appliedValue = min(max(value, 0), room)
+                    room -= appliedValue
+                    utilityNetting.rechargesReceived += value
+                    utilityNetting.rechargesApplied += appliedValue
+                    if appliedValue < value {
+                        applied = value == 0 ? 0 : Int((Double(amount) * Double(appliedValue) / Double(value)).rounded())
+                        explanation += "; capped at the utilities left to offset, the rest is rental income"
+                        sourcesByType[.rentalIncome, default: []].append(Source(
+                            reference: .transaction(recharge.transaction.id!), date: recharge.transaction.date,
+                            description: "Recharges above utilities paid, \(month(recharge.statement.month)) statement",
+                            currency: currency, amountMinorUnits: amount, attributedMinorUnits: amount - applied,
+                            shareBasisPoints: shares[.rentalIncome]!.shareBasisPoints,
+                            explanation: "\(received); the part above the utilities paid in \(taxYear.label) (utilities offset first)",
+                            documentIds: []))
+                    }
+                }
+                sourcesByType[.utilities, default: []].append(Source(
+                    reference: .transaction(recharge.transaction.id!), date: recharge.transaction.date,
+                    description: "Utilities recharged to the tenant, \(month(recharge.statement.month)) statement",
+                    currency: currency, amountMinorUnits: -amount, attributedMinorUnits: -applied, shareBasisPoints: share,
+                    explanation: explanation, documentIds: try statementDocumentIds(db: db, statementId: recharge.statement.id!)))
+            }
+            utilityNetting.excess = utilityNetting.rechargesReceived - utilityNetting.rechargesApplied
+            if utilityNetting.excess > 0 {
+                warnings.append("Recharges received in \(taxYear.label) exceed the utilities paid by \(Money.format(utilityNetting.excess, currency: property.currency)): the excess is rental income (“Recharges above utilities paid”). An invoice paid in another year?")
+            }
+        } else if storedNetting == nil && isFiled && !rechargesReceived.isEmpty {
+            warnings.append("\(taxYear.label) is \(yearStatus!.displayName.lowercased()): utilities stay on their own tax lines, as filed, although recharges were received. Set the year's netting to net them.")
+        } else if nettingMode == nil && !isFiled && utilityNotDeductibleSources > 0 {
+            warnings.append("No utility recharges received in \(taxYear.label): utilities stay on their own tax lines (recharged utilities are not deductible). Record the recharge statements and their payments to deduct the unrecovered part, or set the year's netting.")
+        }
+
         let missingRates = Set(sourcesByType.values.joined().map(\.currency).filter { $0 != .gbp && rates[$0] == nil })
         for currency in missingRates.sorted(by: { $0.rawValue < $1.rawValue }) {
             warnings.append("No HMRC average rate for \(currency.rawValue.uppercased()) \(taxYear.label): GBP figures are missing.")
@@ -314,7 +431,10 @@ public enum RentalAccounts {
                         whole: whole, amount: amount, sources: sources)
         }
         let income = line(.rentalIncome)
-        let expenses = TaxExpenseType.expenseLines.map(line)
+        var expenses = TaxExpenseType.expenseLines.map(line)
+        if nettingMode == .netOfRecharges, let index = expenses.firstIndex(where: { $0.expenseType == .utilities }) {
+            expenses[index].ruleExplanation += " Net of the utilities recharged to the tenant (the statement-linked parts of tenant credits received), never below zero."
+        }
         let financeCosts = line(.financeCost)
         let foreignTax = line(.foreignTax)
         let notDeductible = line(.notDeductible)
@@ -323,7 +443,8 @@ public enum RentalAccounts {
                             financeCosts: financeCosts.amount, foreignTax: foreignTax.amount)
         return Result(taxYear: taxYear, personId: personId, propertyId: propertyId, currency: property.currency, rate: rate,
                       income: income, expenses: expenses, financeCosts: financeCosts, foreignTax: foreignTax,
-                      notDeductible: notDeductible, rentMonths: rentMonths, totals: totals, warnings: warnings)
+                      notDeductible: notDeductible, rentMonths: rentMonths, totals: totals, utilityNetting: utilityNetting,
+                      warnings: warnings)
     }
 
     // MARK: - Rules
@@ -435,6 +556,15 @@ public enum RentalAccounts {
             return (whole, share)
         }
 
+        /// An amount in `currency` as the property's currency (through the HMRC rate when it
+        /// differs), `nil` without the rate.
+        func nativeValue(_ value: Int, currency: Currency) -> Int? {
+            if currency == property.currency { return value }
+            if property.currency == .gbp { return rates[currency].map { $0.gbp(value) } }
+            guard currency == .gbp, let rate = rates[property.currency], rate.gbpPerUnit > 0 else { return nil }
+            return Int((Double(value) / rate.gbpPerUnit).rounded())
+        }
+
         /// A source's amount as (property currency, already GBP); `nil` when it needs a rate
         /// that's missing (a EUR source of a GBP property).
         func split(_ value: Int, currency: Currency) -> (Int, Int)? {
@@ -527,6 +657,16 @@ public enum RentalAccounts {
             result[entityId, default: []].append(try EvidenceDocument(row: row))
         }
         return result
+    }
+
+    /// The documents of a recharge statement: its invoices' and its manual lines'.
+    static func statementDocumentIds(db: Database, statementId: Int64) throws -> [Int64] {
+        try Int64.fetchAll(db, sql: """
+            SELECT COALESCE(utilityInvoice.documentId, rechargeLine.documentId) AS documentId FROM rechargeLine
+            LEFT JOIN utilityInvoice ON utilityInvoice.id = rechargeLine.invoiceId
+            WHERE rechargeLine.statementId = ? AND COALESCE(utilityInvoice.documentId, rechargeLine.documentId) IS NOT NULL
+            ORDER BY rechargeLine.id
+            """, arguments: [statementId])
     }
 
     static func linkedDocumentIds(db: Database, type: EvidenceEntityType, ids: [Int64]) throws -> [Int64: [Int64]] {
