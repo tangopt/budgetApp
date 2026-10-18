@@ -10,19 +10,19 @@ struct SearchFilterBar: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            FilterButton(title: dateTitle, isActive: viewModel.criteria.date != .allTime) {
+            FilterChip(dateTitle, isActive: viewModel.criteria.date != .allTime) {
                 DateFilterPopover(filter: $viewModel.criteria.date)
             }
-            FilterButton(title: amountTitle, isActive: amountIsActive) {
+            FilterChip(amountTitle, isActive: amountIsActive) {
                 AmountFilterPopover(criteria: $viewModel.criteria)
             }
-            FilterButton(title: accountsTitle, isActive: !viewModel.criteria.accountIds.isEmpty) {
+            FilterChip(accountsTitle, isActive: !viewModel.criteria.accountIds.isEmpty) {
                 AccountsFilterPopover(accounts: viewModel.accounts, selection: $viewModel.criteria.accountIds)
             }
-            FilterButton(title: categoriesTitle, isActive: viewModel.criteria.filtersCategories) {
+            FilterChip(categoriesTitle, isActive: viewModel.criteria.filtersCategories) {
                 CategoriesFilterPopover(viewModel: viewModel)
             }
-            FilterButton(title: flagsTitle, isActive: !viewModel.criteria.flags.isEmpty) {
+            FilterChip(flagsTitle, isActive: !viewModel.criteria.flags.isEmpty) {
                 FlagsFilterPopover(flags: $viewModel.criteria.flags)
             }
             if viewModel.criteria != TransactionSearch.Criteria(text: viewModel.criteria.text) {
@@ -96,34 +96,6 @@ struct SearchFilterBar: View {
     }
 }
 
-/// A filter's button: its current value, accented while the filter is on; opens `content` in a popover.
-private struct FilterButton<Content: View>: View {
-    @Environment(\.theme) private var theme
-    let title: String
-    let isActive: Bool
-    @ViewBuilder let content: Content
-    @State private var isPresented = false
-
-    var body: some View {
-        Button { isPresented = true } label: {
-            HStack(spacing: 4) {
-                Text(title).lineLimit(1)
-                Image(systemName: "chevron.down").font(.caption2)
-                    .accessibilityHidden(true)
-            }
-            .foregroundStyle(isActive ? theme.accent : Color.primary)
-        }
-        .accessibilityLabel(title)
-        .accessibilityValue(isActive ? "On" : "Off")
-        .accessibilityHint("Opens the filter")
-        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            content
-                .padding(SheetMetrics.popoverPadding)
-                .controlSize(.regular)
-        }
-    }
-}
-
 extension TransactionSearch.Flag {
     var title: String {
         switch self {
@@ -154,7 +126,7 @@ private struct DateFilterPopover: View {
 
     init(filter: Binding<TransactionSearch.DateFilter>) {
         _filter = filter
-        let today = Calendar.current.startOfDay(for: Date())
+        let today = Calendar.current.startOfDay(for: AppClock.now)
         if case .custom(let from, let to) = filter.wrappedValue {
             _from = State(initialValue: PayCalendar.localDay(sameDayAs: min(from, to), in: .current))
             _to = State(initialValue: PayCalendar.localDay(sameDayAs: max(from, to), in: .current))
@@ -235,7 +207,7 @@ private struct AmountFilterPopover: View {
                 Text("Money in").tag(TransactionSearch.Direction.moneyIn)
                 Text("Money out").tag(TransactionSearch.Direction.moneyOut)
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.segmented).prominentTint()
             .labelsHidden()
         }
         .frame(minWidth: 240, alignment: .leading)

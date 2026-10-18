@@ -82,7 +82,7 @@ final class BudgetGridViewModel: ObservableObject {
     @Published var balanceSnapshots: [BalanceSnapshot] = [] {
         didSet { clearNetWorthCaches() }
     }
-    @Published var exchangeRate: ExchangeRateSetting = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date()) {
+    @Published var exchangeRate: ExchangeRateSetting = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: AppClock.now) {
         didSet { clearNetWorthCaches(); rebuildPayMonthsIfConversionChanged() }
     }
     /// The years shown, sorted, never empty once loaded: one year shows its twelve months,
@@ -94,7 +94,7 @@ final class BudgetGridViewModel: ObservableObject {
     @Published private(set) var availableYears: [Int] = []
     /// Pay-month boundaries (salaries + manual closes). Rebuilt with `monthTotals` whenever
     /// transactions change (an edited category can add or remove a salary).
-    @Published private(set) var payCalendar = PayCalendar(salaryDates: [], manualCloses: [], today: Date())
+    @Published private(set) var payCalendar = PayCalendar(salaryDates: [], manualCloses: [], today: AppClock.now)
 
     /// Runs after an Edit transaction save, so ContentView can refresh the sidebar's
     /// uncategorised count (an edit can add or clear one).
@@ -211,7 +211,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// load with all inputs fresh.
     private func rebuildPayMonths() {
         conversion = CurrencyConversion(accounts: accounts, rate: exchangeRate)
-        payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: manualCloses, today: Date())
+        payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: transactions, categories: categories), manualCloses: manualCloses, today: AppClock.now)
         allAccountsBudgetTransactions = TransferLinks.budgetFacing(transactions, links: transferLinks)
         itemAccountsCache = nil
         allAccountsGBPTransactions = conversion.toGBP(allAccountsBudgetTransactions)
@@ -222,7 +222,7 @@ final class BudgetGridViewModel: ObservableObject {
         rebuildShownActuals()
         // The current year is always offered (calendar and pay-month year, which differ late in
         // December), so the plan for it shows even before any transaction lands in it.
-        let currentYears = [MonthRange.components(of: Date()).year, payCalendar.current.year]
+        let currentYears = [MonthRange.components(of: AppClock.now).year, payCalendar.current.year]
         availableYears = Array(Set(BudgetGridCalculator.yearsWithData(transactions: transactions, calendar: payCalendar) + currentYears)).sorted()
     }
 
@@ -371,7 +371,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// the account filter (spec 2026-10-15 §4).
     private var netWorthInput: DashboardInput {
         if let cached = netWorthInputCache { return cached }
-        var input = DashboardInput(today: Date(), accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, categories: categories, categoryGroups: categoryGroups,
+        var input = DashboardInput(today: AppClock.now, accounts: accounts, snapshots: balanceSnapshots, transactions: transactions, categories: categories, categoryGroups: categoryGroups,
                                    forecastEntries: forecastEntries, forecastGroups: forecastGroups, exceptions: exceptions, importBatches: [], rate: exchangeRate, payCalendar: payCalendar,
                                    transferLinks: transferLinks, itemAccounts: itemAccounts)
         input.accountFilter = planFilter
@@ -421,7 +421,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// An account row's Year Total, like the Net Worth row's (`yearEndNetWorth`): December's
     /// cell, except this year with Show forecast off, which is today's actual balance.
     func accountYearEnd(_ account: Account, year: Int) -> AccountCell {
-        guard !showForecast, year == MonthRange.components(of: Date()).year, let id = account.id else { return accountCell(account, year: year, month: 12) }
+        guard !showForecast, year == MonthRange.components(of: AppClock.now).year, let id = account.id else { return accountCell(account, year: year, month: 12) }
         if let cached = todayBalanceCache[id] { return .today(nativeMinorUnits: cached, currency: account.currency) }
         guard let native = NetWorthCalculator.balance(accountId: id, at: nil, snapshots: balanceSnapshots, transactions: transactions)?.native else { return .actual(nil) }
         todayBalanceCache[id] = native
@@ -607,7 +607,7 @@ final class BudgetGridViewModel: ObservableObject {
     func closeMonth(_ month: PayMonth, on date: Date) -> Bool {
         errorMessage = nil
         do {
-            try dbQueue.write { db in try PayCalendar.close(db: db, month: month, on: date, today: Date()) }
+            try dbQueue.write { db in try PayCalendar.close(db: db, month: month, on: date, today: AppClock.now) }
         } catch PayCalendarError.invalidCloseDate {
             errorMessage = PayMonthFormat.invalidCloseDateMessage(month, calendar: payCalendar)
             return false
@@ -635,7 +635,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// leaves the grid stale: say so (returning false keeps the sheet up to show it).
     private func reload() -> Bool {
         do {
-            try load(horizon: lastHorizon ?? Date())
+            try load(horizon: lastHorizon ?? AppClock.now)
             return true
         } catch {
             errorMessage = "Saved, but couldn't reload the grid: \(error.localizedDescription)"
@@ -988,7 +988,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// The Edit transaction picker's Recent section: the last 90 days' most used
     /// categories. A failed read only costs the section.
     func recentCategoryIds() -> [Int64] {
-        let since = Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
+        let since = Calendar.current.date(byAdding: .day, value: -90, to: AppClock.now) ?? AppClock.now
         return (try? dbQueue.read { db in try CategoryShortlist.recent(db: db, since: since, limit: 5) }) ?? []
     }
 }

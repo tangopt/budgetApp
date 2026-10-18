@@ -21,6 +21,23 @@ public enum ColorMath {
         channel <= 0.04045 ? channel / 12.92 : pow((channel + 0.055) / 1.055, 2.4)
     }
 
+    /// Linear light (0…1) to an sRGB channel.
+    static func encoded(_ linear: Double) -> Double {
+        linear <= 0.0031308 ? linear * 12.92 : 1.055 * pow(linear, 1 / 2.4) - 0.055
+    }
+
+    /// The colour with its light scaled so its relative luminance is `luminance` (a shade of
+    /// it: same chromaticity, less light), opaque and not a system colour. Only darkens.
+    public static func shaded(_ color: ThemeColor, toLuminance luminance: Double) -> ThemeColor {
+        let current = relativeLuminance(color)
+        guard current > luminance, current > 0 else { return color }
+        let k = luminance / current
+        func channel(_ value: Double) -> UInt32 {
+            UInt32((min(max(encoded(linear(value) * k), 0), 1) * 255).rounded())
+        }
+        return ThemeColor(hexValue: (channel(color.red) << 16) | (channel(color.green) << 8) | channel(color.blue))
+    }
+
     /// WCAG 2 relative luminance of the colour's RGB (opacity ignored: composite first).
     public static func relativeLuminance(_ color: ThemeColor) -> Double {
         0.2126 * linear(color.red) + 0.7152 * linear(color.green) + 0.0722 * linear(color.blue)

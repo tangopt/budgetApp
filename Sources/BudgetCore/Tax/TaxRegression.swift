@@ -444,21 +444,42 @@ public enum TaxRegression {
         return folders
     }
 
+    /// The same folders under `home`: `Library/Application Support/Budget` and each app
+    /// container's. With `realHomeDirectory`, it covers the account's own folders even when
+    /// the process's home is redirected (`CFFIXED_USER_HOME`, a sandbox).
+    public static func appDataFolders(home: URL, fileManager: FileManager = .default) -> [URL] {
+        var folders = [home.appendingPathComponent("Library/Application Support/Budget", isDirectory: true)]
+        let containers = home.appendingPathComponent("Library/Containers", isDirectory: true)
+        for container in (try? fileManager.contentsOfDirectory(at: containers, includingPropertiesForKeys: nil)) ?? [] {
+            folders.append(container.appendingPathComponent("Data/Library/Application Support/Budget", isDirectory: true))
+        }
+        return folders
+    }
+
+    /// The account's home folder from the user database, whatever the environment says.
+    public static var realHomeDirectory: URL? {
+        guard let entry = getpwuid(getuid()), let directory = entry.pointee.pw_dir else { return nil }
+        return URL(fileURLWithPath: String(cString: directory), isDirectory: true)
+    }
+
+    /// `isAppDatabase` against both the process's data folders and the real home's.
+    public static func isAppData(_ path: String, fileManager: FileManager = .default) -> Bool {
+        let folders = appDataFolders(fileManager: fileManager) + (realHomeDirectory.map { appDataFolders(home: $0, fileManager: fileManager) } ?? [])
+        return isAppDatabase(path, folders: folders, fileManager: fileManager)
+    }
+
     /// Whether `path` is (or would write into) the app's own database: inside one of
     /// `folders` once symlinks are resolved (compared case-insensitively, as APFS is), or the
     /// same file as one of their `budget.sqlite` (a hard link elsewhere). The regression tool
     /// refuses such a database path and such a report path.
     public static func isAppDatabase(_ path: String, folders: [URL]? = nil, fileManager: FileManager = .default) -> Bool {
         let folders = folders ?? appDataFolders(fileManager: fileManager)
-        func resolved(_ url: URL) -> String {
-            url.standardizedFileURL.resolvingSymlinksInPath().path.lowercased()
-        }
         let target = URL(fileURLWithPath: path)
-        // A file that doesn't exist yet (a report): resolve its folder.
-        let resolvedTarget = fileManager.fileExists(atPath: target.path) ? resolved(target)
-            : resolved(target.deletingLastPathComponent()) + "/" + target.lastPathComponent.lowercased()
+        // Paths that don't exist yet (a report, a new folder) resolve through their deepest
+        // existing folder, so a symbolic link anywhere above them is followed.
+        let resolvedTarget = resolvedPath(path, fileManager: fileManager).lowercased()
         for folder in folders {
-            let root = resolved(folder)
+            let root = resolvedPath(folder.path, fileManager: fileManager).lowercased()
             if resolvedTarget == root || resolvedTarget.hasPrefix(root + "/") { return true }
         }
         guard let identity = fileIdentity(target, fileManager: fileManager) else { return false }
@@ -469,6 +490,44 @@ public enum TaxRegression {
         }
         return false
     }
+
+    /// `path` made absolute (from the working directory) with every symbolic link resolved, as
+    /// the system would open it: component by component, each looked at with `lstat` — a
+    /// symbolic link is replaced by its target (read with `readlink`, so a dangling link is
+    /// followed too, into the parts that don't exist yet; a relative target from the link's
+    /// folder), anything else appended as written, `..` taking the resolved parent. So a path
+    /// that doesn't exist yet still resolves through the links above it. At most
+    /// `maxLinkHops` links are followed (a loop stops there). Not lowercased.
+    public static func resolvedPath(_ path: String, fileManager: FileManager = .default) -> String {
+        var pending = URL(fileURLWithPath: path).path.split(separator: "/").map(String.init)
+        var resolved = "/"
+        var hops = 0
+        while !pending.isEmpty {
+            let component = pending.removeFirst()
+            switch component {
+            case "", ".":
+                continue
+            case "..":
+                resolved = (resolved as NSString).deletingLastPathComponent
+                if resolved.isEmpty { resolved = "/" }
+            default:
+                let candidate = (resolved as NSString).appendingPathComponent(component)
+                var info = stat()
+                if hops < maxLinkHops, lstat(candidate, &info) == 0, info.st_mode & S_IFMT == S_IFLNK,
+                   let target = try? fileManager.destinationOfSymbolicLink(atPath: candidate) {
+                    hops += 1
+                    if target.hasPrefix("/") { resolved = "/" }
+                    pending = target.split(separator: "/").map(String.init) + pending
+                } else {
+                    resolved = candidate
+                }
+            }
+        }
+        return resolved
+    }
+
+    /// The most symbolic links `resolvedPath` follows (the system's own limit, `MAXSYMLINKS`).
+    public static let maxLinkHops = 32
 
     /// Device and inode of an existing file.
     static func fileIdentity(_ url: URL, fileManager: FileManager) -> [UInt64]? {

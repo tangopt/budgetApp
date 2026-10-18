@@ -559,6 +559,119 @@ final class RechargeTests: XCTestCase {
         XCTAssertTrue(english.body.contains("€27.00"), english.body)
     }
 
+    func testThePreviewFromPendingLinesSaysWhatTheSavedStatementWill() throws {
+        try seedInvoices()
+        let april = Self.date(2024, 4, 1)
+        // The statement sheet before anything is saved: the month's pending lines, as lines.
+        let preview = try db.read { db -> RechargeEmail.Draft in
+            let tenancy = try XCTUnwrap(try Tenancy.fetchOne(db, key: id("tenancy")))
+            let property = try XCTUnwrap(try Property.fetchOne(db, key: id("property")))
+            let pending = try Recharges.pendingLines(db: db, tenancyId: id("tenancy"), through: Self.date(2024, 4, 30))
+            XCTAssertTrue(pending.contains { $0.daysInTenancy != nil }, "a prorated line")
+            let details = try pending.map { line -> Recharges.LineDetail in
+                var record = RechargeLine(statementId: 0, invoiceId: line.invoice.id!, amountMinorUnits: line.amountMinorUnits, note: line.note)
+                record.daysInTenancy = line.daysInTenancy
+                record.daysInPeriod = line.daysInPeriod
+                return Recharges.LineDetail(line: record, invoice: line.invoice, provider: try UtilityProvider.fetchOne(db, key: line.invoice.providerId))
+            }
+            return RechargeEmail.draft(details: details, totalMinorUnits: pending.reduce(0) { $0 + $1.amountMinorUnits }, month: april,
+                                       tenancy: tenancy, propertyName: property.name, currency: property.currency, language: .english,
+                                       template: try RechargeEmail.template(db: db, propertyId: id("property"), language: .english))
+        }
+        // The same month once its statement is drafted with every pending line.
+        let statementId = try db.write { db in try Recharges.draftStatement(db: db, tenancyId: id("tenancy"), month: april, addPending: true).id! }
+        let saved = try db.read { db in try RechargeEmail.draft(db: db, statementId: statementId, language: .english) }
+        XCTAssertEqual(preview, saved)
+        XCTAssertTrue(saved.body.contains("(17 of 60 days in the tenancy)"), saved.body)
+    }
+
+    func testACappedPendingLineSaysTheSameInThePreviewAndTheSavedStatement() throws {
+        // Feb–Mar electricity, 17 of its 60 days in the tenancy (17.00 of 60.00); another
+        // tenancy's statement already recharged 50.00 of it, so 10.00 is left: the line is
+        // capped, not the prorated share, and carries no proration days.
+        let invoiceId = try invoice("power", "P-1", issued: Self.date(2024, 4, 3), amount: 6_000,
+                                    period: (Self.date(2024, 2, 1), Self.date(2024, 3, 31)))
+        let april = Self.date(2024, 4, 1)
+        try db.write { db in
+            var other = Tenancy(propertyId: id("property"), referenceLabel: "Other", startDate: Self.date(2024, 1, 1))
+            try Tenancies.save(db: db, &other)
+            let theirs = try Recharges.draftStatement(db: db, tenancyId: other.id!, month: april, addPending: false)
+            try Recharges.setLine(db: db, statementId: theirs.id!, invoiceId: invoiceId, amountMinorUnits: 5_000)
+        }
+        // The statement sheet before anything is saved: the month's pending lines, as lines.
+        let preview = try db.read { db -> RechargeEmail.Draft in
+            let tenancy = try XCTUnwrap(try Tenancy.fetchOne(db, key: id("tenancy")))
+            let property = try XCTUnwrap(try Property.fetchOne(db, key: id("property")))
+            let pending = try Recharges.pendingLines(db: db, tenancyId: id("tenancy"), through: Self.date(2024, 4, 30))
+            XCTAssertEqual(pending.map(\.amountMinorUnits), [1_000])
+            XCTAssertEqual(pending.map(\.daysInTenancy), [nil])
+            XCTAssertEqual(pending.map(\.daysInPeriod), [nil])
+            XCTAssertEqual(pending.map(\.note), [nil], "no proration note on a capped line")
+            let details = try pending.map { line -> Recharges.LineDetail in
+                var record = RechargeLine(statementId: 0, invoiceId: line.invoice.id!, amountMinorUnits: line.amountMinorUnits, note: line.note)
+                record.daysInTenancy = line.daysInTenancy
+                record.daysInPeriod = line.daysInPeriod
+                return Recharges.LineDetail(line: record, invoice: line.invoice, provider: try UtilityProvider.fetchOne(db, key: line.invoice.providerId))
+            }
+            return RechargeEmail.draft(details: details, totalMinorUnits: pending.reduce(0) { $0 + $1.amountMinorUnits }, month: april,
+                                       tenancy: tenancy, propertyName: property.name, currency: property.currency, language: .english,
+                                       template: try RechargeEmail.template(db: db, propertyId: id("property"), language: .english))
+        }
+        // The same month once its statement is drafted with every pending line.
+        let statementId = try db.write { db in try Recharges.draftStatement(db: db, tenancyId: id("tenancy"), month: april, addPending: true).id! }
+        let (saved, lines) = try db.read { db in
+            (try RechargeEmail.draft(db: db, statementId: statementId, language: .english), try Recharges.lines(db: db, statementId: statementId))
+        }
+        XCTAssertEqual(lines.map(\.amountMinorUnits), [1_000])
+        XCTAssertEqual(lines.map(\.daysInTenancy), [nil])
+        XCTAssertEqual(lines.map(\.note), [nil])
+        XCTAssertEqual(preview, saved)
+        XCTAssertTrue(saved.body.contains("• Electricity (Example Power) — invoice of 03/04/2024, 01/02/2024 – 31/03/2024: €10.00"), saved.body)
+        XCTAssertFalse(saved.body.contains("days in the tenancy"), saved.body)
+        // Nor, in English, inside the Portuguese email.
+        let portuguese = try db.read { db in try RechargeEmail.draft(db: db, statementId: statementId, language: .portuguese) }
+        XCTAssertTrue(portuguese.body.contains("31/03/2024: 10,00"), portuguese.body)
+        XCTAssertFalse(portuguese.body.contains("days in the tenancy") || portuguese.body.contains("dias no contrato"), portuguese.body)
+    }
+
+    func testAnInvoiceEditCappingADraftLineDropsItsProration() throws {
+        // The draft takes the prorated share (17.00 of 60.00, 17 of 60 days); another
+        // tenancy's draft takes the 43.00 left; the invoice is then corrected to 50.00: the
+        // share would be 14.17, but only 7.00 is left, so the line is capped and no longer
+        // the prorated share.
+        let invoiceId = try invoice("power", "P-1", issued: Self.date(2024, 4, 3), amount: 6_000,
+                                    period: (Self.date(2024, 2, 1), Self.date(2024, 3, 31)))
+        let april = Self.date(2024, 4, 1)
+        let statementId = try db.write { db in try Recharges.draftStatement(db: db, tenancyId: id("tenancy"), month: april).id! }
+        var lines = try db.read { db in try Recharges.lines(db: db, statementId: statementId) }
+        XCTAssertEqual(lines.map(\.amountMinorUnits), [1_700])
+        XCTAssertEqual(lines.map(\.daysInTenancy), [17])
+        XCTAssertEqual(lines.map(\.note), ["17 of 60 days in the tenancy"])
+        try db.write { db in
+            var other = Tenancy(propertyId: id("property"), referenceLabel: "Other", startDate: Self.date(2024, 1, 1))
+            try Tenancies.save(db: db, &other)
+            let theirs = try Recharges.draftStatement(db: db, tenancyId: other.id!, month: april, addPending: false)
+            try Recharges.setLine(db: db, statementId: theirs.id!, invoiceId: invoiceId, amountMinorUnits: 4_300)
+            var invoice = try XCTUnwrap(try UtilityInvoice.fetchOne(db, key: invoiceId))
+            invoice.amountMinorUnits = 5_000
+            try Recharges.saveInvoice(db: db, &invoice)
+        }
+        lines = try db.read { db in try Recharges.lines(db: db, statementId: statementId) }
+        XCTAssertEqual(lines.map(\.amountMinorUnits), [700])
+        XCTAssertEqual(lines.map(\.daysInTenancy), [nil])
+        XCTAssertEqual(lines.map(\.daysInPeriod), [nil])
+        XCTAssertEqual(lines.map(\.note), [nil])
+        // The emails say the amount without a proration that isn't this line's.
+        let (english, portuguese) = try db.read { db in
+            (try RechargeEmail.draft(db: db, statementId: statementId, language: .english),
+             try RechargeEmail.draft(db: db, statementId: statementId, language: .portuguese))
+        }
+        XCTAssertTrue(english.body.contains("• Electricity (Example Power) — invoice of 03/04/2024, 01/02/2024 – 31/03/2024: €7.00"), english.body)
+        XCTAssertTrue(portuguese.body.contains("• Luz (Example Power) — fatura de 03/04/2024, 01/02/2024 – 31/03/2024: 7,00"), portuguese.body)
+        XCTAssertFalse(english.body.contains("days in the tenancy"), english.body)
+        XCTAssertFalse(portuguese.body.contains("days in the tenancy") || portuguese.body.contains("dias no contrato"), portuguese.body)
+    }
+
     func testOverviewAndNextMonth() throws {
         _ = try payAprilWithMayRent()
         try db.read { db in

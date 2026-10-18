@@ -44,7 +44,7 @@ struct ScenarioLabView: View {
                 Picker("View", selection: $viewModel.tab) {
                     ForEach(Tab.allCases) { tab in Text(tab.rawValue).tag(tab) }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.segmented).prominentTint()
                 .labelsHidden()
                 .frame(width: 280)
             }

@@ -70,7 +70,7 @@ struct NewCategorySheet: View {
                         Text("Income").tag(CategoryType.income)
                         Text("Transfer").tag(CategoryType.transfer)
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.segmented).prominentTint()
                     .fixedSize()
                 }
                 LabeledContent("Group") {

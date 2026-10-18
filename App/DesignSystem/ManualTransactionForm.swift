@@ -37,7 +37,7 @@ struct ManualTransactionDraft: Equatable {
     /// A new transaction: today, money out unless the preselected category is income.
     init(accountId: Int64?, category: Category?) {
         self.accountId = accountId
-        day = Calendar.current.startOfDay(for: Date())
+        day = Calendar.current.startOfDay(for: AppClock.now)
         description = ""
         isMoneyIn = category?.type == .income
         amountText = ""
@@ -120,7 +120,7 @@ struct ManualTransactionFields: View {
                 Text("Money out").tag(false)
                 Text("Money in").tag(true)
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.segmented).prominentTint()
             .fixedSize()
         }
         LabeledContent("Amount") {

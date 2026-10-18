@@ -208,6 +208,28 @@ public enum PropertyFinance {
         return total
     }
 
+    /// `balance` for many days at once (a loan's history): what `accountIds` owe or hold at
+    /// the end of each of `days`, in entered terms, in the property's currency and GBP. Each
+    /// account's snapshots and transactions are read once and its balance worked out per day
+    /// in memory, by the same rule as `balance` (`NetWorthCalculator.balance`). In `days`' order.
+    public static func loanBalances(db: Database, property: Property, accountIds: [Int64], days: [Date]) throws -> [PropertyAmount] {
+        guard !days.isEmpty else { return [] }
+        let conversion = try CurrencyConversion.current(db: db)
+        var totals = Array(repeating: PropertyAmount.zero, count: days.count)
+        for id in accountIds {
+            guard let account = try Account.fetchOne(db, key: id) else { continue }
+            let snapshots = try BalanceSnapshot.filter(Column("accountId") == id).fetchAll(db)
+            let transactions = try Transaction.filter(Column("accountId") == id).fetchAll(db)
+            for (index, day) in days.enumerated() {
+                let signed = NetWorthCalculator.balance(accountId: id, at: BalanceUpdates.endOfDay(day), snapshots: snapshots,
+                                                        transactions: transactions)?.native ?? 0
+                let entered = NetWorthCalculator.enteredBalance(signedMinorUnits: signed, accountKind: account.kind)
+                totals[index] += convert(entered, currency: account.currency, property: property, conversion: conversion)
+            }
+        }
+        return totals
+    }
+
     /// An amount in `currency` as the property's currency and GBP.
     static func convert(_ value: Int, currency: Currency, property: Property, conversion: CurrencyConversion) -> PropertyAmount {
         let gbp = NetWorthCalculator.gbp(value, currency: currency, eurToGbpRate: conversion.eurToGbpRate)

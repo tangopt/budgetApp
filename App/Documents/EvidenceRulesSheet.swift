@@ -16,7 +16,7 @@ struct EvidenceRulesSheet: View {
     var body: some View {
         SheetScaffold(title: "Evidence rules",
                       subtitle: "What each period's checklist expects. Rules are kept as data, so new tax years get their list automatically.",
-                      error: viewModel.errorMessage, width: 680, cancelTitle: "Done", onCancel: { dismiss() }) {
+                      error: viewModel.errorMessage, width: SheetMetrics.listWidth, cancelTitle: "Done", onCancel: { dismiss() }) {
             List {
                 if viewModel.requirements.isEmpty {
                     Text("No rules yet. Add one, or set up the property rules for a category group.")
@@ -26,7 +26,8 @@ struct EvidenceRulesSheet: View {
                     row(requirement)
                 }
             }
-            .frame(height: 360)
+            .frame(height: 420)
+            .sheetListFrame()
             HStack(spacing: 8) {
                 Button("Add rule…") { editing = RuleEditTarget(requirement: nil) }
                 Button("Set up property rules…") { seeding = true }
@@ -42,33 +43,36 @@ struct EvidenceRulesSheet: View {
         }
         .confirmationDialog("Delete “\(deleting?.name ?? "")”?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
                             presenting: deleting) { requirement in
-            Button("Delete Rule", role: .destructive) {
+            Button("Delete rule", role: .destructive) {
                 if let id = requirement.id { viewModel.deleteRequirement(id) }
             }
         } message: { _ in
-            Text("Its items leave the checklist and their “not available” marks are deleted. Linked documents stay.")
+            Text("Its items leave the checklist and their “not available” marks are deleted. Linked documents stay. This can't be undone.")
         }
     }
 
+    /// A rule: its name over what it covers, then what it needs, from where and when; edit and
+    /// delete as icons.
     private func row(_ requirement: EvidenceRequirement) -> some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(requirement.name).fontWeight(.medium)
+                Text(requirement.name).font(.body.weight(.semibold)).lineLimit(1)
                 Text(viewModel.scopeSummary(requirement))
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.callout).foregroundStyle(.secondary).lineLimit(2)
                 Text(details(requirement))
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             .accessibilityElement(children: .combine)
             Spacer(minLength: 8)
-            Button("Edit…") { editing = RuleEditTarget(requirement: requirement) }
+            Button { editing = RuleEditTarget(requirement: requirement) } label: { Image(systemName: "pencil") }
+                .help("Edit the rule…")
                 .accessibilityLabel("Edit \(requirement.name)")
             Button(role: .destructive) { deleting = requirement } label: { Image(systemName: "trash") }
-                .help("Delete the rule")
+                .help("Delete the rule…")
                 .accessibilityLabel("Delete \(requirement.name)")
         }
-        .controlSize(.small)
-        .padding(.vertical, 2)
+        .buttonStyle(.borderless)
+        .padding(.vertical, 3)
     }
 
     private func details(_ requirement: EvidenceRequirement) -> String {
@@ -103,7 +107,7 @@ struct EvidenceRuleEditorSheet: View {
     }
 
     var body: some View {
-        SheetScaffold(title: requirement == nil ? "New evidence rule" : "Edit evidence rule", error: error, width: 600,
+        SheetScaffold(title: requirement == nil ? "New evidence rule" : "Edit evidence rule", error: error, width: SheetMetrics.listWidth,
                       onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: draft.isComplete) {
                           error = viewModel.save(draft.requirement(base: requirement))
@@ -118,6 +122,7 @@ struct EvidenceRuleEditorSheet: View {
                         Picker("Covers", selection: $draft.scopeKind) {
                             ForEach(draft.availableScopeKinds, id: \.self) { Text($0.title).tag($0) }
                         }
+                        .fixedSize()
                     }
                     scopeRows
                     LabeledContent("Satisfied by") {
@@ -146,13 +151,14 @@ struct EvidenceRuleEditorSheet: View {
                     LabeledContent("Applies") {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 6) {
-                                Toggle("From", isOn: $draft.hasFrom).toggleStyle(.checkbox)
+                                // Named beside the tick: a SheetForm row hides its controls' own labels.
+                                NamedCheckbox(title: "From", isOn: $draft.hasFrom)
                                 DatePicker("From", selection: $draft.from, displayedComponents: .date)
                                     .labelsHidden()
                                     .disabled(!draft.hasFrom)
                             }
                             HStack(spacing: 6) {
-                                Toggle("Until", isOn: $draft.hasUntil).toggleStyle(.checkbox)
+                                NamedCheckbox(title: "Until", isOn: $draft.hasUntil)
                                 DatePicker("Until", selection: $draft.until, displayedComponents: .date)
                                     .labelsHidden()
                                     .disabled(!draft.hasUntil)
@@ -161,13 +167,17 @@ struct EvidenceRuleEditorSheet: View {
                         .sheetFieldNote("Until is the last day it applies. Unticked: no limit.")
                     }
                     LabeledContent("Notes") {
-                        TextField("Notes", text: $draft.notes, axis: .vertical)
+                        TextField("Notes", text: $draft.notes, prompt: Text("Optional"), axis: .vertical)
                             .lineLimit(1...3)
                     }
                 }
+                // Room for the fields' borders and focus rings inside the scroll view's clip.
+                .padding(.vertical, 3)
                 .padding(.trailing, 4)
             }
+            .scrollBounceBehavior(.basedOnSize)
             .frame(maxHeight: 520)
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -182,6 +192,7 @@ struct EvidenceRuleEditorSheet: View {
                         Text(category.name).tag(category.id)
                     }
                 }
+                .fixedSize()
             }
         case .categoryGroup:
             LabeledContent("Group") {
@@ -191,6 +202,7 @@ struct EvidenceRuleEditorSheet: View {
                         Text(group.name).tag(group.id)
                     }
                 }
+                .fixedSize()
             }
         case .matching:
             LabeledContent("Categories") {
@@ -224,6 +236,7 @@ struct EvidenceRuleEditorSheet: View {
                         }
                     }
                 }
+                .fixedSize()
                 .sheetFieldNote("Documents dropped on its items are linked to this record.")
             }
             if draft.scopeKind == .periodic {
@@ -233,7 +246,7 @@ struct EvidenceRuleEditorSheet: View {
                         Text("Quarter").tag(EvidencePeriodicity.quarter)
                         Text("Year").tag(EvidencePeriodicity.year)
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.segmented).prominentTint()
                     .fixedSize()
                 }
             }
@@ -245,7 +258,7 @@ struct EvidenceRuleEditorSheet: View {
                     Text("Money in").tag(EvidenceTransactionDirection.inflows)
                     Text("Both").tag(EvidenceTransactionDirection.any)
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.segmented).prominentTint()
                 .fixedSize()
             }
             LabeledContent("Leave out") {
@@ -297,9 +310,9 @@ struct EvidenceRuleDraft {
     var usualSource = ""
     var hasFrom = false
     /// Local midnights (what a `DatePicker` holds).
-    var from = Calendar.current.startOfDay(for: Date())
+    var from = Calendar.current.startOfDay(for: AppClock.now)
     var hasUntil = false
-    var until = Calendar.current.startOfDay(for: Date())
+    var until = Calendar.current.startOfDay(for: AppClock.now)
     var notes = ""
     /// A `recordsOfProperty` scope being edited (not built from the fields).
     var propertyRecordsScope: EvidenceRequirementScope?
@@ -399,7 +412,9 @@ struct EvidenceRuleDraft {
     }
 }
 
-/// Ticks for a few options, in a scrolling box.
+/// Ticks for a few options, in a scrolling box. Each tick shows its name even inside a
+/// `SheetForm` (whose rows hide their controls' labels), and the row's label lines up with
+/// the first line of ticks.
 struct CheckboxList<Value: Hashable>: View {
     let options: [(Value, String)]
     @Binding var selection: Set<Value>
@@ -411,11 +426,9 @@ struct CheckboxList<Value: Hashable>: View {
                       alignment: .leading, spacing: 4) {
                 ForEach(options.indices, id: \.self) { index in
                     let (value, title) = options[index]
-                    Toggle(title, isOn: Binding(
+                    NamedCheckbox(title: title, isOn: Binding(
                         get: { selection.contains(value) },
                         set: { isOn in if isOn { selection.insert(value) } else { selection.remove(value) } }))
-                    .toggleStyle(.checkbox)
-                    .lineLimit(1)
                     .help(title)
                 }
             }
@@ -431,6 +444,7 @@ struct CheckboxList<Value: Hashable>: View {
                     .padding(4)
             }
         }
+        .alignmentGuide(.firstTextBaseline) { $0[.top] + 18 }
     }
 }
 
@@ -447,10 +461,16 @@ struct PropertyRulesSheet: View {
     @State private var preview: [EvidenceRequirement] = []
     @State private var error: String?
 
+    /// `groupId`: the category group to start on (the snapshot harness); normally none.
+    init(viewModel: MissingEvidenceViewModel, groupId: Int64? = nil) {
+        self.viewModel = viewModel
+        _groupId = State(initialValue: groupId)
+    }
+
     var body: some View {
         SheetScaffold(title: "Set up property rules",
                       subtitle: "Every payment in the group's expense categories needs a document of the kind its category implies; every instalment paid into a mortgage account needs the bank's notice.",
-                      error: error, width: 620, onCancel: { dismiss() },
+                      error: error, width: SheetMetrics.listWidth, onCancel: { dismiss() },
                       primary: SheetAction(preview.isEmpty ? "Add rules" : "Add \(preview.count) rule\(preview.count == 1 ? "" : "s")",
                                            isEnabled: groupId != nil && !preview.isEmpty) { add() }) {
             SheetForm {
@@ -461,6 +481,7 @@ struct PropertyRulesSheet: View {
                             Text(group.name).tag(group.id)
                         }
                     }
+                    .fixedSize()
                 }
                 LabeledContent("Mortgage accounts") {
                     CheckboxList(options: viewModel.accounts.compactMap { a in a.id.map { ($0, a.displayName) } },
@@ -468,20 +489,23 @@ struct PropertyRulesSheet: View {
                         .sheetFieldNote("Their interest rows are left out of the mortgage categories' rules, so each instalment is asked for once.")
                 }
             }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(groupId == nil ? "Choose a group to see the rules." : preview.isEmpty ? "Nothing to add: these rules already exist." : "Will add")
-                    .font(.callout).foregroundStyle(.secondary)
-                List(preview.indices, id: \.self) { index in
-                    let rule = preview[index]
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(rule.name)
-                        Text([viewModel.scopeSummary(rule), "Needs " + MissingEvidenceViewModel.kindsText(rule.kinds),
-                              rule.usualSource.map { "From \($0)" }].compactMap { $0 }.joined(separator: " · "))
-                            .font(.caption).foregroundStyle(.secondary)
+            if groupId == nil {
+                SheetEmptyState(systemImage: "checklist", title: "Choose a category group",
+                                message: "The rules it would add are listed here before anything is saved.", minHeight: 200)
+            } else if preview.isEmpty {
+                SheetEmptyState(systemImage: "checkmark.circle", title: "Nothing to add",
+                                message: "This group's rules already exist.", minHeight: 200)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Will add").font(.headline)
+                    ScrollView {
+                        DataTable(columns: previewColumns, rows: preview.indices.map(PreviewRow.init))
                     }
-                    .accessibilityElement(children: .combine)
+                    .scrollBounceBehavior(.basedOnSize)
+                    .frame(maxHeight: 220)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .sheetListFrame()
                 }
-                .frame(height: 200)
             }
         }
         .onAppear {
@@ -492,6 +516,23 @@ struct PropertyRulesSheet: View {
         }
         .onChange(of: groupId) { refreshPreview() }
         .onChange(of: mortgageAccountIds) { refreshPreview() }
+    }
+
+    /// A previewed rule, by its place in the preview.
+    private struct PreviewRow: Identifiable {
+        let id: Int
+    }
+
+    /// The rules to add: the rule and what it covers, what it needs, and where from.
+    private var previewColumns: [DataTableColumn<PreviewRow>] {
+        [
+            .text("Rule", { preview[$0.id].name }, detail: { viewModel.scopeSummary(preview[$0.id]) }),
+            .text("Needs", width: .fit, { MissingEvidenceViewModel.kindsText(preview[$0.id].kinds) }),
+            // "—" on screen for no usual source; nothing to VoiceOver.
+            DataTableColumn("From", accessibilityValue: { preview[$0.id].usualSource }) { row, _ in
+                Text(preview[row.id].usualSource ?? "—").lineLimit(1)
+            }
+        ]
     }
 
     private func refreshPreview() {

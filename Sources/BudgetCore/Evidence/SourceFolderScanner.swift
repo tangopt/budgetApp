@@ -182,6 +182,22 @@ public struct SourceFolderScanner: Sendable {
         public var analysis: EvidenceAnalysis?
         /// …and the transactions it may be evidence for, best first.
         public var suggestions: [EvidenceMatcher.Suggestion]
+
+        public init(relativePath: String, url: URL, size: Int64, modifiedAt: Date, sha256: String, documentId: Int64? = nil,
+                    previousSha256: String? = nil, previousDocumentId: Int64? = nil, changeDetectedAt: Date? = nil,
+                    analysis: EvidenceAnalysis? = nil, suggestions: [EvidenceMatcher.Suggestion] = []) {
+            self.relativePath = relativePath
+            self.url = url
+            self.size = size
+            self.modifiedAt = modifiedAt
+            self.sha256 = sha256
+            self.documentId = documentId
+            self.previousSha256 = previousSha256
+            self.previousDocumentId = previousDocumentId
+            self.changeDetectedAt = changeDetectedAt
+            self.analysis = analysis
+            self.suggestions = suggestions
+        }
     }
 
     public struct IgnoredFile: Equatable, Sendable {
@@ -225,6 +241,19 @@ public struct SourceFolderScanner: Sendable {
         /// reading would download them, which is the user's call.
         public var notDownloaded: [String]
         public var unreadable: [UnreadableFile]
+
+        public init(folder: SourceFolder, scannedAt: Date, new: [ScannedFile] = [], changed: [ScannedFile] = [], missing: [SourceFile] = [],
+                    inLibrary: [ScannedFile] = [], ignored: [IgnoredFile] = [], notDownloaded: [String] = [], unreadable: [UnreadableFile] = []) {
+            self.folder = folder
+            self.scannedAt = scannedAt
+            self.new = new
+            self.changed = changed
+            self.missing = missing
+            self.inLibrary = inLibrary
+            self.ignored = ignored
+            self.notDownloaded = notDownloaded
+            self.unreadable = unreadable
+        }
     }
 
     /// Scans `folder` (registered): lists its files, hashes those that are new or whose size

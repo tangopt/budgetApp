@@ -58,7 +58,7 @@ struct UpdateBalanceSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var amountText: String
-    @State private var asOf = Date()
+    @State private var asOf = AppClock.now
     @State private var note = ""
     @State private var error: String?
     @State private var baselines = BalanceBaselineCache()
@@ -85,7 +85,7 @@ struct UpdateBalanceSheet: View {
                         .sheetFieldNote(row.account.kind == .credit ? "Enter what you owe on the card as a positive number." : nil)
                 }
                 LabeledContent("As of") {
-                    DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
+                    DatePicker("As of", selection: $asOf, in: ...AppClock.now, displayedComponents: .date)
                         .fixedSize()
                         .onChange(of: asOf) { _, _ in error = nil }
                 }
@@ -123,7 +123,7 @@ struct UpdateBalancesSheet: View {
 
     @State private var included: [Int64: Bool]
     @State private var texts: [Int64: String]
-    @State private var asOf = Date()
+    @State private var asOf = AppClock.now
     @State private var error: String?
     @State private var baselines = BalanceBaselineCache()
 
@@ -192,7 +192,7 @@ struct UpdateBalancesSheet: View {
             .frame(maxHeight: 360)
             SheetForm {
                 LabeledContent("As of") {
-                    DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
+                    DatePicker("As of", selection: $asOf, in: ...AppClock.now, displayedComponents: .date)
                         .fixedSize()
                         .onChange(of: asOf) { _, _ in error = nil }
                 }

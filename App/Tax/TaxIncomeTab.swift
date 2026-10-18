@@ -3,10 +3,12 @@ import SwiftUI
 import UniformTypeIdentifiers
 import BudgetCore
 
-/// The person's income for the year (plan phase 4 Task 4): employments with their pay and tax
-/// (P60 / P45 / payslips) and P11D benefits, other income, pension contributions and HMRC
-/// payments, each with its documents. A P60, P45 or P11D PDF is read and shown in a confirm
-/// sheet, editable before Save. Changes in sheets are written by Save.
+/// The person's income for the year (plan phase 4 Task 4, UI polish §4.2): the employments —
+/// each with the figures the return uses (pay, tax, benefits) and its sources as a table (the
+/// P60 / P45 / payslip rows and the P11D benefits, a pill for where each came from) — then
+/// other income and pension contributions side by side, and the HMRC payments with their
+/// proofs. A P60, P45 or P11D PDF is read and shown in a confirm sheet, editable before Save.
+/// Changes in sheets are written by Save.
 struct TaxIncomeTab: View {
     @ObservedObject var viewModel: TaxYearsViewModel
     let page: TaxOverview.YearPage
@@ -33,20 +35,21 @@ struct TaxIncomeTab: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
             if !income.hasEvidenceRules {
-                HStack(spacing: 8) {
-                    Image(systemName: "checklist").foregroundStyle(.secondary).accessibilityHidden(true)
-                    Text("Missing evidence can ask for each P60, P45, P11D and HMRC payment proof.").foregroundStyle(.secondary)
-                    Spacer(minLength: 6)
+                InlineBanner(.info) {
                     Button("Set up evidence rules") { viewModel.seedIncomeEvidenceRules() }
+                        .controlSize(.small)
+                } content: {
+                    Text("Missing evidence can ask for each P60, P45, P11D and HMRC payment proof.")
                 }
-                .font(.callout)
             }
-            employmentsSection
-            otherIncomeSection
-            pensionsSection
-            paymentsSection
+            employmentsPanel
+            SplitRow(ratio: 0.56, stackBelow: 940) {
+                otherIncomePanel
+                pensionsPanel
+            }
+            paymentsPanel
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .image], allowsMultipleSelection: false) { result in
             guard case let .success(urls) = result, let url = urls.first else { return }
@@ -75,195 +78,406 @@ struct TaxIncomeTab: View {
                 deleting = nil
             }
         } message: {
-            Text(deleting?.detail ?? "")
+            Text((deleting?.detail ?? "") + " This can't be undone.")
         }
     }
 
-    // MARK: Sections
+    // MARK: Employment
 
-    private var employmentsSection: some View {
-        PropertySection("Employment · \(page.row.year.label)", accessory: {
-            HStack(spacing: 10) {
-                if reading { ProgressView().controlSize(.small) }
-                Button("Import P60, P45 or P11D…") { importing = true }.disabled(reading)
-                Button("Add employment…") { editingEmployment = Identified(Employment(startYear: startYear, personId: personId, employerName: "")) }
-            }
-            .buttonStyle(.borderless)
-        }) {
-            if income.employments.isEmpty {
-                Text("None. Import the P60 (or P45) and P11D, or add the employment by hand.").foregroundStyle(.secondary)
-            }
-            ForEach(income.employments) { row in
-                employmentRow(row)
-                if row.id != income.employments.last?.id { Divider() }
-            }
-        }
-    }
-
-    private func employmentRow(_ row: SelfAssessmentOverview.EmploymentRow) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private var employmentsPanel: some View {
+        Panel("Employment", subtitle: "SA102: pay and tax from the P60, P45 or payslips; benefits from the P11D") {
             HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(row.employment.employerName).font(.body.weight(.semibold)).lineLimit(1)
-                    Text([row.employment.payeReference, row.employment.endDate.map { "left \(DocumentFormat.day($0))" }].compactMap { $0 }.joined(separator: " · "))
-                        .font(.caption).foregroundStyle(.secondary)
+                if reading {
+                    ProgressView().controlSize(.small)
+                    Text("Reading…").font(.callout).foregroundStyle(.secondary)
                 }
-                DocumentCountBadge(count: row.documentCount)
-                Spacer(minLength: 6)
-                HStack(spacing: 8) {
-                    Button("Add pay and tax…") {
-                        editingIncome = Identified(EmploymentIncome(employmentId: row.id, source: row.incomes.isEmpty ? .p60 : .payslip, payMinorUnits: 0,
-                                                         taxDeductedMinorUnits: 0))
-                    }
-                    .accessibilityLabel("Add pay and tax for \(row.employment.employerName)")
-                    Button("Add benefit…") { editingBenefit = Identified(BenefitInKind(employmentId: row.id, kind: .medical, cashEquivalentMinorUnits: 0)) }
-                        .accessibilityLabel("Add a benefit for \(row.employment.employerName)")
-                    Button("Edit…") { editingEmployment = Identified(row.employment) }
-                        .accessibilityLabel("Edit \(row.employment.employerName)")
-                    Button("Delete…", role: .destructive) {
-                        deleting = Deletion(title: "Delete “\(row.employment.employerName)”?",
-                                            detail: "Its pay and tax, benefits and document links go too; the documents stay in the library.") {
-                            viewModel.deleteEmployment(row.id)
-                        }
-                    }
-                    .accessibilityLabel("Delete \(row.employment.employerName)")
+                Button("Add employment…") {
+                    editingEmployment = Identified(Employment(startYear: startYear, personId: personId, employerName: ""))
                 }
-                .buttonStyle(.borderless)
+                Button("Import P60, P45 or P11D…") { importing = true }
+                    .buttonStyle(.borderedProminent).prominentTint()
+                    .disabled(reading)
+                    .help("Read a P60, P45 or P11D (PDF or image) and confirm its figures before saving")
             }
-            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
-                ForEach(row.incomes, id: \.id) { income in
-                    GridRow {
-                        Text(income.source.displayName).lineLimit(1)
-                        Text("Pay").foregroundStyle(.secondary)
-                        PropertyMoney(minorUnits: income.payMinorUnits, currency: .gbp, neutral: true).gridColumnAlignment(.trailing)
-                        Text("Tax").foregroundStyle(.secondary)
-                        PropertyMoney(minorUnits: income.taxDeductedMinorUnits, currency: .gbp, neutral: true).gridColumnAlignment(.trailing)
-                        Text([income.taxCode, income.entryMethod.displayName].compactMap { $0 }.joined(separator: " · "))
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        rowButtons(edit: { editingIncome = Identified(income) }, name: "\(income.source.displayName) pay and tax") {
-                            viewModel.deleteIncome(income.id ?? 0)
-                        }
-                    }
-                }
-                ForEach(row.benefits, id: \.id) { benefit in
-                    GridRow {
-                        Text("Box \(benefit.sa102Box)").lineLimit(1)
-                        Text(benefit.kind.displayName).foregroundStyle(.secondary).lineLimit(1).gridCellColumns(3)
-                        PropertyMoney(minorUnits: benefit.cashEquivalentMinorUnits, currency: .gbp, neutral: true).gridColumnAlignment(.trailing)
-                        Text(benefit.isFromP11DImport ? "From the P11D" : "Entered by hand").font(.caption).foregroundStyle(.secondary)
-                        rowButtons(edit: { editingBenefit = Identified(benefit) }, name: benefit.kind.displayName) { viewModel.deleteBenefit(benefit.id ?? 0) }
-                    }
-                }
-            }
-        }
-    }
-
-    private var otherIncomeSection: some View {
-        PropertySection("Other income", accessory: {
-            Button("Add income…") { editingOther = Identified(OtherIncome(startYear: startYear, personId: personId, kind: .ukInterest, amountMinorUnits: 0)) }
-                .buttonStyle(.borderless)
-        }) {
-            if income.otherIncomes.isEmpty {
-                Text("None: UK and foreign interest, dividends or other taxable income go here.").foregroundStyle(.secondary)
+            .controlSize(.small)
+        } content: {
+            if income.employments.isEmpty {
+                // The panel's corner has Add employment… and Import P60, P45 or P11D….
+                EmptyState(systemImage: "briefcase", title: "No employment for \(page.row.year.label)",
+                           message: "Import the P60 (or P45) and the P11D, or add the employment by hand.")
+                    .inPanel()
             } else {
-                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
-                    ForEach(income.otherIncomes, id: \.id) { item in
-                        GridRow {
-                            Text(item.kind.displayName).lineLimit(1)
-                            Text(item.payer ?? "—").foregroundStyle(.secondary).lineLimit(1)
-                            PropertyMoney(minorUnits: item.amountMinorUnits, currency: item.currency, neutral: true).gridColumnAlignment(.trailing)
-                            DocumentCountBadge(count: income.documentCounts[.otherIncome(item.id ?? 0)] ?? 0)
-                            rowButtons(edit: { editingOther = Identified(item) }, name: item.kind.displayName) { viewModel.deleteOtherIncome(item.id ?? 0) }
-                        }
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(Array(income.employments.enumerated()), id: \.element.id) { index, row in
+                        if index > 0 { Divider() }
+                        employmentBlock(row, number: index + 1)
                     }
                 }
             }
         }
     }
 
-    private var pensionsSection: some View {
-        PropertySection("Pension contributions", accessory: {
+    /// One employer: its name and reference with its documents and actions, the figures the
+    /// return uses, then the rows they come from.
+    private func employmentBlock(_ row: SelfAssessmentOverview.EmploymentRow, number: Int) -> some View {
+        let employment = row.employment
+        let name = employment.employerName
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(name).font(.subheadline.bold()).lineLimit(1)
+                        .accessibilityAddTraits(.isHeader)
+                    Text(TaxIncomeFormat.employmentCaption(employment, number: number, of: income.employments.count))
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if row.documentCount > 0 {
+                    DocumentCountBadge(count: row.documentCount, keepsPlace: false)
+                        .help("\(row.documentCount) document\(row.documentCount == 1 ? "" : "s") linked: the P11D on the employment, a P60 or P45 with its pay and tax")
+                }
+                HStack(spacing: 10) {
+                    Button { editingEmployment = Identified(employment) } label: { Image(systemName: "pencil") }
+                        .help("Edit the employment")
+                        .accessibilityLabel("Edit \(name)")
+                    Menu {
+                        Button("Add pay and tax…") { addIncome(row) }
+                        Button("Add benefit…") { addBenefit(row) }
+                        Divider()
+                        Button("Edit employment…") { editingEmployment = Identified(employment) }
+                        Button("Delete employment…", role: .destructive) {
+                            deleting = Deletion(title: "Delete “\(name)”?",
+                                                detail: "Its pay and tax, benefits and document links go too; the documents stay in the library.") {
+                                viewModel.deleteEmployment(row.id)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .menuStyle(.button)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Add pay and tax…, Add benefit…, Edit, Delete")
+                    .accessibilityLabel("More actions for \(name)")
+                }
+                .buttonStyle(.borderless)
+            }
+            FigureStrip(TaxIncomeFormat.figures(row))
+            if row.incomes.isEmpty {
+                InlineBanner(.warning) {
+                    Button("Add pay and tax…") { addIncome(row) }.controlSize(.small)
+                } content: {
+                    Text("No pay and tax yet: import the P60 or P45, or add it (or the payslips) by hand.")
+                }
+            }
+            if !row.incomes.isEmpty || !row.benefits.isEmpty {
+                DataTable(columns: sourceColumns, sections: sourceSections(row))
+            }
+        }
+    }
+
+    private func addIncome(_ row: SelfAssessmentOverview.EmploymentRow) {
+        editingIncome = Identified(EmploymentIncome(employmentId: row.id, source: row.incomes.isEmpty ? .p60 : .payslip, payMinorUnits: 0,
+                                                    taxDeductedMinorUnits: 0))
+    }
+
+    private func addBenefit(_ row: SelfAssessmentOverview.EmploymentRow) {
+        editingBenefit = Identified(BenefitInKind(employmentId: row.id, kind: .medical, cashEquivalentMinorUnits: 0))
+    }
+
+    /// A row of an employment's sources: a pay-and-tax row or a benefit.
+    private struct SourceRow: Identifiable {
+        let id: String
+        var income: EmploymentIncome?
+        var benefit: BenefitInKind?
+    }
+
+    private func sourceSections(_ row: SelfAssessmentOverview.EmploymentRow) -> [DataTableSection<SourceRow>] {
+        var sections: [DataTableSection<SourceRow>] = []
+        if !row.incomes.isEmpty {
+            sections.append(DataTableSection("Pay and tax", rows: row.incomes.map { SourceRow(id: "income-\($0.id ?? 0)", income: $0) }))
+        }
+        if !row.benefits.isEmpty {
+            sections.append(DataTableSection("Benefits in kind", rows: row.benefits.map { SourceRow(id: "benefit-\($0.id ?? 0)", benefit: $0) }))
+        }
+        return sections
+    }
+
+    private var sourceColumns: [DataTableColumn<SourceRow>] {
+        [
+            DataTableColumn("From", width: .fixed(84), accessibilityValue: { TaxIncomeFormat.sourcePill($0.income, $0.benefit).title }) { row, _ in
+                TaxIncomeFormat.sourcePill(row.income, row.benefit)
+            },
+            .text("Details", width: .fill(min: 180), { row in
+                if let income = row.income { return [income.taxCode.map { "Tax code \($0)" }, income.entryMethod.displayName].compactMap { $0 }.joined(separator: " · ") }
+                guard let benefit = row.benefit else { return "" }
+                return "Box \(benefit.sa102Box) · \(benefit.kind.displayName)"
+            }, detail: { row in
+                let note = row.income?.notes ?? row.benefit?.description
+                return note?.isEmpty == false ? note : nil
+            }),
+            .date("Date") { $0.income?.periodEnd },
+            .money("Amount", role: .neutral, currency: { _ in .gbp }) { $0.income?.payMinorUnits ?? $0.benefit?.cashEquivalentMinorUnits },
+            .money("Tax taken off", role: .neutral, currency: { _ in .gbp }) { $0.income?.taxDeductedMinorUnits },
+            .actions { row in
+                if let income = row.income {
+                    let name = "\(income.source.displayName) pay and tax"
+                    return [
+                        DataTableAction("Edit \(name)", systemImage: "pencil", inline: true) { editingIncome = Identified(income) },
+                        DataTableAction("Delete \(name)…", systemImage: "trash", role: .destructive, inline: true) {
+                            deleting = Deletion(title: "Delete the \(name)?", detail: "Its document links go too; the documents stay in the library.") {
+                                viewModel.deleteIncome(income.id ?? 0)
+                            }
+                        }
+                    ]
+                }
+                guard let benefit = row.benefit else { return [] }
+                return [
+                    DataTableAction("Edit \(benefit.kind.displayName)", systemImage: "pencil", inline: true) { editingBenefit = Identified(benefit) },
+                    DataTableAction("Delete \(benefit.kind.displayName)…", systemImage: "trash", role: .destructive, inline: true) {
+                        deleting = Deletion(title: "Delete \(benefit.kind.displayName)?", detail: "It comes off box \(benefit.sa102Box) of the return.") {
+                            viewModel.deleteBenefit(benefit.id ?? 0)
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+
+    // MARK: Other income and pensions
+
+    private var otherIncomePanel: some View {
+        Panel("Other income", subtitle: "Interest, dividends and other taxable income", fillsHeight: true) {
+            Button("Add income…") {
+                editingOther = Identified(OtherIncome(startYear: startYear, personId: personId, kind: .ukInterest, amountMinorUnits: 0))
+            }
+            .controlSize(.small)
+        } content: {
+            if income.otherIncomes.isEmpty {
+                Text("No other income yet: UK and foreign interest, dividends and other taxable income go here.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                DataTable(columns: [
+                    .text("Income", width: .fill(min: 130), { $0.kind.displayName }, detail: { $0.payer.flatMap { $0.isEmpty ? nil : $0 } }),
+                    .money("Amount", role: .neutral, minWidth: 90, currency: { $0.currency }) { $0.amountMinorUnits },
+                    .money("Tax off", role: .neutral, minWidth: 80, currency: { $0.currency }) { $0.taxDeductedMinorUnits == 0 ? nil : $0.taxDeductedMinorUnits },
+                    .documents { income.documentCounts[.otherIncome($0.id)] ?? 0 },
+                    .actions { item in recordActions(item.kind.displayName, edit: { editingOther = Identified(item.record) }) {
+                        viewModel.deleteOtherIncome(item.id)
+                    } }
+                ], rows: income.otherIncomes.map(IdentifiedRecord.init))
+            }
+        }
+    }
+
+    private var pensionsPanel: some View {
+        Panel("Pension contributions", subtitle: "Relief at source and others you claim on the return", fillsHeight: true) {
             Button("Add contribution…") {
                 editingPension = Identified(PensionContribution(startYear: startYear, personId: personId, kind: .reliefAtSource, paidMinorUnits: 0))
             }
-            .buttonStyle(.borderless)
-        }) {
+            .controlSize(.small)
+        } content: {
             if income.pensions.isEmpty {
-                Text("None. Contributions taken from pay before tax (net pay) don't go on the return.").foregroundStyle(.secondary)
+                Text("No contributions yet. Those taken from pay before tax (net pay) don't go on the return.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
-                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
-                    ForEach(income.pensions, id: \.id) { item in
-                        GridRow {
-                            Text(item.kind.displayName).lineLimit(1)
-                            Text(item.provider ?? "—").foregroundStyle(.secondary).lineLimit(1)
-                            PropertyMoney(minorUnits: item.paidMinorUnits, currency: .gbp, neutral: true).gridColumnAlignment(.trailing)
-                            DocumentCountBadge(count: income.documentCounts[.pensionContribution(item.id ?? 0)] ?? 0)
-                            rowButtons(edit: { editingPension = Identified(item) }, name: item.kind.displayName) { viewModel.deletePension(item.id ?? 0) }
-                        }
-                    }
-                }
+                DataTable(columns: [
+                    .text("Contribution", width: .fill(min: 130), { $0.kind.displayName }, detail: { $0.provider.flatMap { $0.isEmpty ? nil : $0 } }),
+                    .money("You paid", role: .neutral, minWidth: 90, currency: { _ in .gbp }) { $0.paidMinorUnits },
+                    .documents { income.documentCounts[.pensionContribution($0.id)] ?? 0 },
+                    .actions { item in recordActions(item.kind.displayName, edit: { editingPension = Identified(item.record) }) {
+                        viewModel.deletePension(item.id)
+                    } }
+                ], rows: income.pensions.map(IdentifiedRecord.init))
             }
         }
     }
 
-    private var paymentsSection: some View {
-        PropertySection("HMRC payments", accessory: {
+    // MARK: Payments
+
+    private var paymentsPanel: some View {
+        Panel("HMRC payments", subtitle: "For \(page.row.year.label) and towards \(UKTaxYear(startYear: startYear + 1).label), with their proofs") {
             Button("Record payment…") {
-                editingPayment = Identified(HMRCPayment(personId: personId, startYear: startYear, date: PayCalendar.utcDay(sameDayAs: Date(), in: .current), amountMinorUnits: 0,
-                                             kind: .balancingPayment))
+                editingPayment = Identified(HMRCPayment(personId: personId, startYear: startYear, date: PayCalendar.utcDay(sameDayAs: AppClock.now, in: .current),
+                                                        amountMinorUnits: 0, kind: .balancingPayment))
             }
-            .buttonStyle(.borderless)
-        }) {
+            .controlSize(.small)
+        } content: {
             if income.payments.isEmpty {
-                Text("None recorded for \(page.row.year.label) (or towards \(UKTaxYear(startYear: startYear + 1).label)).").foregroundStyle(.secondary)
+                Text("No payments for \(page.row.year.label) yet (or towards \(UKTaxYear(startYear: startYear + 1).label)): record each one with its proof.")
+                    .font(.callout).foregroundStyle(.secondary)
             } else {
-                HMRCPaymentsGrid(payments: income.payments, counts: income.documentCounts,
-                                 edit: { editingPayment = Identified($0) },
-                                 delete: { payment in
-                                     deleting = Deletion(title: "Delete this \(payment.kind.displayName.lowercased())?",
-                                                         detail: "Its document links go too; the documents stay in the library.") {
-                                         viewModel.deletePayment(payment.id ?? 0)
-                                     }
-                                 })
+                HMRCPaymentsTable(payments: income.payments, counts: income.documentCounts, startYear: startYear,
+                                  edit: { editingPayment = Identified($0) },
+                                  delete: { payment in
+                                      deleting = Deletion(title: "Delete this \(payment.kind.displayName.lowercased())?",
+                                                          detail: "Its document links go too; the documents stay in the library.") {
+                                          viewModel.deletePayment(payment.id ?? 0)
+                                      }
+                                  })
             }
         }
     }
 
-    private func rowButtons(edit: @escaping () -> Void, name: String, delete: @escaping () -> Void) -> some View {
-        HStack(spacing: 8) {
-            Button("Edit…", action: edit).accessibilityLabel("Edit \(name)")
-            Button("Delete…", role: .destructive) {
+    /// A record's edit and delete icons (delete asks first).
+    private func recordActions(_ name: String, edit: @escaping () -> Void, delete: @escaping () -> Void) -> [DataTableAction] {
+        [
+            DataTableAction("Edit \(name)", systemImage: "pencil", inline: true, action: edit),
+            DataTableAction("Delete \(name)…", systemImage: "trash", role: .destructive, inline: true) {
                 deleting = Deletion(title: "Delete \(name)?", detail: "Its document links go too; the documents stay in the library.", action: delete)
             }
-            .accessibilityLabel("Delete \(name)")
-        }
-        .buttonStyle(.borderless)
+        ]
     }
 }
 
-/// HMRC payments with their proofs.
-struct HMRCPaymentsGrid: View {
+/// A stored record as a table row, by its id (the records' own `id` is optional while new).
+@dynamicMemberLookup
+struct IdentifiedRecord<Record>: Identifiable {
+    let record: Record
+    let id: Int64
+
+    init(_ record: Record) where Record: Identifiable, Record.ID == Int64? {
+        self.record = record
+        id = record.id ?? 0
+    }
+
+    subscript<Value>(dynamicMember keyPath: KeyPath<Record, Value>) -> Value { record[keyPath: keyPath] }
+}
+
+/// HMRC payments with their proofs (Income and Filing): the day, the payment and the year it's
+/// for (its reference beneath), the amount (a refund negative), the proof — a paperclip, or a
+/// "No proof" pill — and edit and delete icons; by year with a total when they span two.
+struct HMRCPaymentsTable: View {
     let payments: [HMRCPayment]
     let counts: [EvidenceEntity: Int]
+    /// The page's year (its payments first; the payments on account towards the next after).
+    let startYear: Int
     let edit: (HMRCPayment) -> Void
     let delete: (HMRCPayment) -> Void
 
+    private struct Row: Identifiable {
+        let id: String
+        var payment: HMRCPayment?
+        var amount: Int
+        var proofs = 0
+    }
+
+    private var sections: [DataTableSection<Row>] {
+        let years = Array(Set(payments.map(\.startYear))).sorted { ($0 == startYear ? 0 : 1, $0) < ($1 == startYear ? 0 : 1, $1) }
+        return years.map { year in
+            let rows = payments.filter { $0.startYear == year }.sorted { ($0.date, $0.id ?? 0) < ($1.date, $1.id ?? 0) }.map {
+                Row(id: "\($0.id ?? 0)", payment: $0, amount: $0.signedMinorUnits, proofs: counts[.hmrcPayment($0.id ?? 0)] ?? 0)
+            }
+            let label = UKTaxYear(startYear: year).label
+            return DataTableSection(years.count > 1 ? (year == startYear ? "For \(label)" : "Towards \(label)") : nil, rows: rows,
+                                    total: rows.count > 1 ? Row(id: "total-\(year)", amount: rows.reduce(0) { $0 + $1.amount }) : nil)
+        }
+    }
+
     var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
-            ForEach(payments, id: \.id) { payment in
-                GridRow {
-                    Text(DocumentFormat.day(payment.date)).monospacedDigit().lineLimit(1).fixedSize()
-                    Text("\(payment.kind.displayName) · \(UKTaxYear(startYear: payment.startYear).label)").lineLimit(1)
-                    PropertyMoney(minorUnits: payment.signedMinorUnits, currency: .gbp, neutral: true).gridColumnAlignment(.trailing)
-                    DocumentCountBadge(count: counts[.hmrcPayment(payment.id ?? 0)] ?? 0)
-                    HStack(spacing: 8) {
-                        Button("Edit…") { edit(payment) }.accessibilityLabel("Edit \(payment.kind.displayName)")
-                        Button("Delete…", role: .destructive) { delete(payment) }.accessibilityLabel("Delete \(payment.kind.displayName)")
+        DataTable(columns: [
+            .date("Date") { $0.payment?.date },
+            DataTableColumn("Payment", width: .fill(min: 180), accessibilityValue: { row in
+                row.payment.map { "\($0.kind.displayName) for \(UKTaxYear(startYear: $0.startYear).label)" }
+            }) { row, kind in
+                if let payment = row.payment {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("\(payment.kind.displayName) · \(UKTaxYear(startYear: payment.startYear).label)").lineLimit(1)
+                        if let reference = payment.reference, !reference.isEmpty {
+                            Text("Ref. \(reference)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                        }
                     }
-                    .buttonStyle(.borderless)
+                } else {
+                    Text("Total").fontWeight(.semibold)
                 }
+            },
+            // What was paid to HMRC (a refund negative): figures from the proofs, uncoloured.
+            DataTableColumn("Amount", alignment: .trailing, width: .min(104),
+                            accessibilityValue: { Money.format($0.amount, currency: .gbp) }) { row, kind in
+                MoneyText(minorUnits: row.amount, currency: .gbp,
+                          font: kind == .total ? .body.monospacedDigit().weight(.semibold) : .body.monospacedDigit(), role: .neutral)
+            },
+            DataTableColumn("Proof", alignment: .center, width: .fit, accessibilityValue: { row in
+                guard row.payment != nil else { return nil }
+                return row.proofs == 0 ? "no proof" : (row.proofs == 1 ? "1 document" : "\(row.proofs) documents")
+            }) { row, kind in
+                if kind == .row {
+                    if row.proofs > 0 {
+                        DocumentCountBadge(count: row.proofs)
+                    } else {
+                        StatusPill("No proof", tone: .warning, help: "Edit the payment to add its proof (the bank's confirmation)")
+                    }
+                }
+            },
+            .actions { row in
+                guard let payment = row.payment else { return [] }
+                return [
+                    DataTableAction("Edit \(payment.kind.displayName)", systemImage: "pencil", inline: true) { edit(payment) },
+                    DataTableAction("Delete \(payment.kind.displayName)…", systemImage: "trash", role: .destructive, inline: true) { delete(payment) }
+                ]
+            }
+        ], sections: sections)
+    }
+}
+
+/// How the Income tab presents an employment.
+enum TaxIncomeFormat {
+    /// "PAYE 123/AB45678 · from 6 Apr 2025 · left 5 Jan 2026" ("Employment 2 of 3 · …" when several).
+    static func employmentCaption(_ employment: Employment, number: Int, of count: Int) -> String {
+        var parts: [String] = []
+        if count > 1 { parts.append("Employment \(number) of \(count)") }
+        if let reference = employment.payeReference, !reference.isEmpty { parts.append("PAYE \(reference)") }
+        if let start = employment.startDate { parts.append("from \(DocumentFormat.day(start))") }
+        if let end = employment.endDate { parts.append("left \(DocumentFormat.day(end))") }
+        return parts.isEmpty ? "No PAYE reference" : parts.joined(separator: " · ")
+    }
+
+    /// The figures the return uses (`Employments.effectiveIncome`): pay and tax from the
+    /// highest source, the benefits, and the total that goes in as employment income.
+    static func figures(_ row: SelfAssessmentOverview.EmploymentRow) -> [FigureTile] {
+        let benefits = row.benefits.reduce(0) { $0 + $1.cashEquivalentMinorUnits }
+        let boxes = Array(Set(row.benefits.map(\.sa102Box))).sorted().map(String.init)
+        let benefitTile = FigureTile(title: "Benefits", value: .money(benefits, .gbp, .neutral),
+                                     caption: boxes.isEmpty ? "None" : "SA102 box\(boxes.count == 1 ? "" : "es") \(boxes.joined(separator: ", "))")
+        guard let effective = Employments.effectiveIncome(row.incomes) else {
+            return [
+                FigureTile(title: "Pay", value: .text("—"), caption: "No pay and tax yet", captionIsWarning: true),
+                FigureTile(title: "Tax taken off", value: .text("—")),
+                benefitTile,
+                FigureTile(title: "Employment income", value: .money(benefits, .gbp, .neutral), caption: "Benefits only so far")
+            ]
+        }
+        let used = row.incomes.filter { $0.source == effective.source }
+        let from: String
+        switch effective.source {
+        case .p60, .p45: from = "From the \(effective.source.displayName)"
+        case .payslip: from = used.count == 1 ? "From 1 payslip" : "From \(used.count) payslips"
+        case .other: from = used.count == 1 ? "From 1 other record" : "From \(used.count) other records"
+        }
+        let codes = Array(Set(used.compactMap(\.taxCode))).sorted()
+        return [
+            FigureTile(title: "Pay", value: .money(effective.payMinorUnits, .gbp, .neutral), caption: from),
+            FigureTile(title: "Tax taken off", value: .money(effective.taxDeductedMinorUnits, .gbp, .neutral),
+                       caption: codes.isEmpty ? nil : "Tax code \(codes.joined(separator: ", "))"),
+            benefitTile,
+            FigureTile(title: "Employment income", value: .money(effective.payMinorUnits + benefits, .gbp, .neutral), caption: "Pay and benefits, on the return")
+        ]
+    }
+
+    /// Where a row came from: the form for pay and tax (P60, P45, payslip), the P11D or by hand
+    /// for a benefit.
+    static func sourcePill(_ income: EmploymentIncome?, _ benefit: BenefitInKind?) -> StatusPill {
+        if let income {
+            switch income.source {
+            case .p60, .p45: return StatusPill(income.source.displayName, tone: .accent, systemImage: "doc.text", help: income.entryMethod.displayName)
+            case .payslip, .other: return StatusPill(income.source.displayName, tone: .neutral, help: income.entryMethod.displayName)
             }
         }
+        if benefit?.isFromP11DImport == true {
+            return StatusPill("P11D", tone: .accent, systemImage: "doc.text", help: "Read from the P11D")
+        }
+        return StatusPill("By hand", tone: .neutral, help: "Entered by hand")
     }
 }
 
@@ -310,24 +524,24 @@ struct EmploymentSheet: View {
 
     var body: some View {
         SheetScaffold(title: employment.id == nil ? "Add employment" : "Edit employment", subtitle: employment.ukTaxYear.label, error: error,
-                      width: 520, onCancel: { dismiss() },
+                      width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: !name.trimmingCharacters(in: .whitespaces).isEmpty && documents.addingCount == 0) { save() }) {
             SheetForm {
                 LabeledContent("Employer") { TextField("Employer", text: $name, prompt: Text("e.g. Example Ltd")) }
                 LabeledContent("PAYE reference") { TextField("PAYE reference", text: $reference, prompt: Text("123/AB456")) }
-                LabeledContent("Started in the year") {
-                    HStack {
-                        Toggle("Started in the year", isOn: $hasStart).labelsHidden()
-                        if hasStart { DatePicker("Start", selection: utcDay($start), displayedComponents: .date).labelsHidden() }
+                LabeledContent("Started") {
+                    HStack(spacing: 10) {
+                        NamedCheckbox(title: "During \(employment.ukTaxYear.label)", isOn: $hasStart)
+                        if hasStart { DatePicker("Start", selection: utcDay($start), displayedComponents: .date).labelsHidden().fixedSize() }
                     }
                 }
-                LabeledContent("Left in the year") {
-                    HStack {
-                        Toggle("Left in the year", isOn: $hasEnd).labelsHidden()
-                        if hasEnd { DatePicker("Leaving date", selection: utcDay($end), displayedComponents: .date).labelsHidden() }
+                LabeledContent("Left") {
+                    HStack(spacing: 10) {
+                        NamedCheckbox(title: "During \(employment.ukTaxYear.label)", isOn: $hasEnd)
+                        if hasEnd { DatePicker("Leaving date", selection: utcDay($end), displayedComponents: .date).labelsHidden().fixedSize() }
                     }
                 }
-                LabeledContent("Note") { TextField("Note", text: $notes) }
+                LabeledContent("Note") { TextField("Note", text: $notes, prompt: Text("Optional")) }
                 LabeledContent("Documents") { StagedDocumentsField(documents: documents) }
                 SheetFormNote("Link the P11D here; a P60 or P45 goes with its pay and tax.")
             }
@@ -370,12 +584,12 @@ struct EmploymentIncomeSheet: View {
         _taxText = State(initialValue: text(income.taxDeductedMinorUnits, isNew: isNew))
         _taxCode = State(initialValue: income.taxCode ?? "")
         _hasDate = State(initialValue: income.periodEnd != nil)
-        _date = State(initialValue: income.periodEnd ?? PayCalendar.utcDay(sameDayAs: Date(), in: .current))
+        _date = State(initialValue: income.periodEnd ?? PayCalendar.utcDay(sameDayAs: AppClock.now, in: .current))
         _notes = State(initialValue: income.notes ?? "")
     }
 
     var body: some View {
-        SheetScaffold(title: income.id == nil ? "Add pay and tax" : "Edit pay and tax", subtitle: "SA102 boxes 1 and 2", error: error, width: 520,
+        SheetScaffold(title: income.id == nil ? "Add pay and tax" : "Edit pay and tax", subtitle: "SA102 boxes 1 and 2", error: error, width: SheetMetrics.formWidth,
                       onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: pence(payText) != nil && pence(taxText) != nil && documents.addingCount == 0) { save() }) {
             SheetForm {
@@ -390,13 +604,13 @@ struct EmploymentIncomeSheet: View {
                 SheetFormNote("A refund (marked R on the P60) is a negative amount.")
                 LabeledContent("Tax code") { TextField("Tax code", text: $taxCode, prompt: Text("e.g. 1257L")).frame(width: 120) }
                 LabeledContent("Date") {
-                    HStack {
-                        Toggle("Dated", isOn: $hasDate).labelsHidden()
-                        if hasDate { DatePicker("Date", selection: utcDay($date), displayedComponents: .date).labelsHidden() }
+                    HStack(spacing: 10) {
+                        NamedCheckbox(title: "Dated", isOn: $hasDate)
+                        if hasDate { DatePicker("Date", selection: utcDay($date), displayedComponents: .date).labelsHidden().fixedSize() }
                     }
                 }
                 SheetFormNote("The leaving date of a P45, or a payslip's date.")
-                LabeledContent("Note") { TextField("Note", text: $notes) }
+                LabeledContent("Note") { TextField("Note", text: $notes, prompt: Text("Optional")) }
                 LabeledContent("Documents") { StagedDocumentsField(documents: documents) }
             }
         }
@@ -435,7 +649,7 @@ struct BenefitSheet: View {
 
     var body: some View {
         SheetScaffold(title: benefit.id == nil ? "Add benefit" : "Edit benefit", subtitle: "P11D cash equivalent, SA102 box \(kind.sa102Box)",
-                      error: error, onCancel: { dismiss() },
+                      error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: (pence(amountText) ?? -1) >= 0) { save() }) {
             SheetForm {
                 LabeledContent("Benefit") {
@@ -445,7 +659,8 @@ struct BenefitSheet: View {
                     .fixedSize()
                 }
                 LabeledContent("Cash equivalent") { MoneyField("Cash equivalent", text: $amountText, currency: .gbp, width: 140) }
-                LabeledContent("Description") { TextField("Description", text: $details) }
+                LabeledContent("Description") { TextField("Description", text: $details, prompt: Text("As on the P11D")) }
+                SheetFormNote(benefit.isFromP11DImport ? "Read from the P11D: a new P11D import replaces it." : "Entered by hand: a P11D import leaves it as it is.")
             }
         }
     }
@@ -490,7 +705,7 @@ struct OtherIncomeSheet: View {
 
     var body: some View {
         SheetScaffold(title: income.id == nil ? "Add other income" : "Edit other income", subtitle: UKTaxYear(startYear: income.startYear).label,
-                      error: error, width: 520, onCancel: { dismiss() },
+                      error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: (pence(amountText) ?? -1) >= 0 && (taxText.isEmpty || (pence(taxText) ?? -1) >= 0)
                                            && documents.addingCount == 0) { save() }) {
             SheetForm {
@@ -500,7 +715,8 @@ struct OtherIncomeSheet: View {
                 LabeledContent("From") { TextField("From", text: $payer, prompt: Text("Bank, company or fund")) }
                 LabeledContent("Amount") {
                     HStack {
-                        MoneyField("Amount", text: $amountText, currency: currency, width: 140)
+                        // The picker beside it names the currency: the field doesn't repeat it.
+                        MoneyField("Amount", text: $amountText, currency: currency, width: 140, showsCurrency: false)
                         Picker("Currency", selection: $currency) {
                             ForEach(Currency.allCases, id: \.self) { Text($0.rawValue.uppercased()).tag($0) }
                         }
@@ -508,7 +724,7 @@ struct OtherIncomeSheet: View {
                     }
                 }
                 LabeledContent("Tax taken off") { MoneyField("Tax taken off", text: $taxText, currency: currency, width: 140) }
-                LabeledContent("Note") { TextField("Note", text: $notes) }
+                LabeledContent("Note") { TextField("Note", text: $notes, prompt: Text("Optional")) }
                 LabeledContent("Documents") { StagedDocumentsField(documents: documents) }
             }
         }
@@ -551,7 +767,7 @@ struct PensionSheet: View {
 
     var body: some View {
         SheetScaffold(title: contribution.id == nil ? "Add pension contribution" : "Edit pension contribution",
-                      subtitle: UKTaxYear(startYear: contribution.startYear).label, error: error, width: 520, onCancel: { dismiss() },
+                      subtitle: UKTaxYear(startYear: contribution.startYear).label, error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: (pence(paidText) ?? -1) >= 0 && documents.addingCount == 0) { save() }) {
             SheetForm {
                 LabeledContent("Kind") {
@@ -560,7 +776,7 @@ struct PensionSheet: View {
                 LabeledContent("Provider") { TextField("Provider", text: $provider) }
                 LabeledContent("You paid") { MoneyField("You paid", text: $paidText, currency: .gbp, width: 140) }
                 SheetFormNote("For relief at source, what you paid: the provider's 20% is added to it.")
-                LabeledContent("Note") { TextField("Note", text: $notes) }
+                LabeledContent("Note") { TextField("Note", text: $notes, prompt: Text("Optional")) }
                 LabeledContent("Documents") { StagedDocumentsField(documents: documents) }
             }
         }
@@ -609,7 +825,8 @@ struct HMRCPaymentSheet: View {
     }
 
     var body: some View {
-        SheetScaffold(title: payment.id == nil ? "Record HMRC payment" : "Edit HMRC payment", error: error, width: 520, onCancel: { dismiss() },
+        SheetScaffold(title: payment.id == nil ? "Record HMRC payment" : "Edit HMRC payment",
+                      subtitle: "A payment to HMRC, or a refund from it, with its proof", error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: (pence(amountText) ?? 0) > 0 && documents.addingCount == 0) { save() }) {
             SheetForm {
                 LabeledContent("Kind") {
@@ -625,10 +842,10 @@ struct HMRCPaymentSheet: View {
                 LabeledContent("Date") { DatePicker("Date", selection: utcDay($date), displayedComponents: .date).labelsHidden() }
                 LabeledContent("Amount") { MoneyField("Amount", text: $amountText, currency: .gbp, width: 140) }
                 LabeledContent("Reference") { TextField("Reference", text: $reference, prompt: Text("UTR followed by K")) }
-                LabeledContent("Note") { TextField("Note", text: $notes) }
+                LabeledContent("Note") { TextField("Note", text: $notes, prompt: Text("Optional")) }
                 if kind == .balancingPayment {
                     if yearStatus == .filed || yearStatus == .paid || startYear != payment.startYear {
-                        LabeledContent("Status") { Toggle("Mark \(UKTaxYear(startYear: startYear).label) as paid", isOn: $markPaid) }
+                        LabeledContent("Status") { NamedCheckbox(title: "Mark \(UKTaxYear(startYear: startYear).label) as paid", isOn: $markPaid) }
                     } else {
                         SheetFormNote("Mark the return as filed first; then a balancing payment can mark the year as paid.")
                     }
@@ -714,13 +931,26 @@ struct PayrollFormConfirmSheet: View {
     }
 
     private var sheet: some View {
-        SheetScaffold(title: "Confirm \(kind.displayName)", subtitle: "\(draft.fileName) · \(draft.extraction.entryMethod.displayName)", error: error,
-                      width: 600, onCancel: { dismiss() },
+        SheetScaffold(title: "Confirm \(kind.displayName)",
+                      subtitle: "Check what was read, then Save." + (draft.isNewDocument ? " Cancel takes the file out of the library again." : ""),
+                      error: error, width: SheetMetrics.listWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: problems.isEmpty && !hasInvalidBenefit) { save() }) {
+            // The form's file, and how it was read (text recognition: check every figure).
+            HStack(spacing: 8) {
+                Label(draft.fileName, systemImage: "doc.text")
+                    .lineLimit(1).truncationMode(.middle)
+                    .help(draft.fileName)
+                StatusPill(draft.extraction.entryMethod.displayName, tone: draft.extraction.entryMethod == .ocr ? .warning : .neutral,
+                           help: draft.extraction.entryMethod == .ocr ? "Read by text recognition: check every figure" : nil)
+                Spacer(minLength: 0)
+            }
+            .font(.callout)
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8).fill(theme.sectionHeaderTint))
             SheetForm {
                 LabeledContent("Form") {
                     Picker("Form", selection: $kind) { ForEach(PayrollFormKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }
-                        .pickerStyle(.segmented).fixedSize()
+                        .pickerStyle(.segmented).prominentTint().fixedSize()
                 }
                 LabeledContent("Tax year") {
                     Picker("Tax year", selection: $startYear) {
@@ -736,7 +966,7 @@ struct PayrollFormConfirmSheet: View {
                     LabeledContent("Tax code") { TextField("Tax code", text: $taxCode).frame(width: 120) }
                 }
                 if kind == .p45 {
-                    LabeledContent("Leaving date") { DatePicker("Leaving date", selection: utcDay($leaving), displayedComponents: .date).labelsHidden() }
+                    LabeledContent("Leaving date") { DatePicker("Leaving date", selection: utcDay($leaving), displayedComponents: .date).labelsHidden().fixedSize() }
                 }
                 if kind == .p11d {
                     LabeledContent("Benefits") { benefitsEditor }
@@ -749,42 +979,57 @@ struct PayrollFormConfirmSheet: View {
         }
     }
 
+    /// The P11D's benefits as a small table: the benefit (with its SA102 box), its cash
+    /// equivalent and a remove icon per row, then Add benefit.
     private var benefitsEditor: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach($benefits) { $benefit in
-                HStack(spacing: 6) {
-                    Picker("Benefit", selection: $benefit.kind) {
-                        ForEach(BenefitKind.allCases, id: \.self) { Text("Box \($0.sa102Box) · \($0.displayName)").tag($0) }
+        VStack(alignment: .leading, spacing: 6) {
+            if benefits.isEmpty {
+                Text("None read: add each benefit the P11D lists.").font(.callout).foregroundStyle(.secondary)
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
+                    GridRow {
+                        Text("Benefit")
+                        Text("Cash equivalent").gridColumnAlignment(.trailing)
+                        Text(verbatim: "")
                     }
-                    .labelsHidden().frame(width: 280)
-                    MoneyField("Cash equivalent", text: $benefit.amountText, currency: .gbp, width: 110)
-                    Button { benefits.removeAll { $0.id == benefit.id } } label: { Image(systemName: "minus.circle") }
-                        .buttonStyle(.borderless).accessibilityLabel("Remove \(benefit.kind.displayName)")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                    ForEach($benefits) { $benefit in
+                        GridRow {
+                            Picker("Benefit", selection: $benefit.kind) {
+                                ForEach(BenefitKind.allCases, id: \.self) { Text("Box \($0.sa102Box) · \($0.displayName)").tag($0) }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            MoneyField("Cash equivalent", text: $benefit.amountText, currency: .gbp, width: 100)
+                            Button { benefits.removeAll { $0.id == benefit.id } } label: { Image(systemName: "minus.circle") }
+                                .buttonStyle(.borderless)
+                                .help("Remove this benefit")
+                                .accessibilityLabel("Remove \(benefit.kind.displayName)")
+                        }
+                    }
                 }
             }
-            Button("Add benefit") { benefits.append(BenefitDraft(kind: .medical, amountText: "")) }.controlSize(.small)
-            Text("Saving replaces the benefits of an earlier P11D import; benefits typed in by hand stay.")
-                .font(.caption).foregroundStyle(.secondary)
+            Button { benefits.append(BenefitDraft(kind: .medical, amountText: "")) } label: { Label("Add benefit", systemImage: "plus") }
+                .controlSize(.small)
+            SheetCaption("Saving replaces the benefits of an earlier P11D import; benefits typed in by hand stay.")
         }
     }
 
+    /// What stops Save (red), then the reader's warnings (amber), each as one banner.
     @ViewBuilder
     private var messages: some View {
         let warnings = draft.personWarnings + draft.extraction.warnings
-        if !warnings.isEmpty || !problems.isEmpty || hasInvalidBenefit {
-            VStack(alignment: .leading, spacing: 3) {
-                if hasInvalidBenefit {
-                    Label("Enter each benefit's cash equivalent (or remove the row).", systemImage: "xmark.octagon").foregroundStyle(theme.expense)
-                }
-                ForEach(problems, id: \.self) { problem in
-                    Label(TaxIncomeMessages.text(problem), systemImage: "xmark.octagon").foregroundStyle(theme.expense)
-                }
-                ForEach(warnings, id: \.self) { warning in
-                    Label(warning, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
-                }
+        let blocking = (hasInvalidBenefit ? ["Enter each benefit's cash equivalent (or remove the row)."] : []) + problems.map(TaxIncomeMessages.text)
+        if !blocking.isEmpty {
+            InlineBanner(.error) {
+                VStack(alignment: .leading, spacing: 3) { ForEach(blocking, id: \.self) { Text($0) } }
             }
-            .font(.callout)
-            .fixedSize(horizontal: false, vertical: true)
+        }
+        if !warnings.isEmpty {
+            InlineBanner(.warning) {
+                VStack(alignment: .leading, spacing: 3) { ForEach(warnings, id: \.self) { Text($0) } }
+            }
         }
     }
 

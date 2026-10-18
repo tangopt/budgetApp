@@ -182,7 +182,7 @@ struct ReviewView: View {
                     }
                 }
                 .keyboardShortcut(.return, modifiers: .command)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.borderedProminent).prominentTint()
                 .confirmationDialog(finishChoiceTitle, isPresented: $showFinishChoice) {
                     Button("Save \(viewModel.unconfirmedCount) unconfirmed as Uncategorized") {
                         if viewModel.finish(unconfirmed: .saveAsUncategorized) { onCommitted() }
@@ -244,7 +244,7 @@ struct ReviewView: View {
                     Text("\(Self.title(of: tab)) (\(sections.rowCounts[tab] ?? 0))").tag(tab)
                 }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.segmented).prominentTint()
             .labelsHidden()
 
             HStack {

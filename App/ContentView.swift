@@ -117,9 +117,16 @@ struct ContentView: View {
     @StateObject private var taxYearsViewModel: TaxYearsViewModel
 
     private let profileStore: ImportProfileStore
+    /// The snapshot harness only: the screen to open on and the state to set up on it.
+    private let snapshotSetup: SnapshotSetup?
 
-    init(environment: AppEnvironment) {
+    init(environment: AppEnvironment, snapshotSetup: SnapshotSetup? = nil) {
         self.environment = environment
+        self.snapshotSetup = snapshotSetup
+        if let screen = snapshotSetup?.screen {
+            _selection = State(initialValue: screen)
+            _sidebarSelection = State(initialValue: .screen(screen))
+        }
         let profileStore = ImportProfileStore(dbQueue: environment.dbQueue)
         self.profileStore = profileStore
         let categorizationService = CategorizationService(categorizer: OnDeviceCategorizer.systemDefault())
@@ -145,9 +152,9 @@ struct ContentView: View {
     private var forecastHorizon: Date {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
-        let year = calendar.component(.year, from: Date())
+        let year = calendar.component(.year, from: AppClock.now)
         var components = DateComponents(); components.year = year; components.month = 12; components.day = 31
-        return calendar.date(from: components) ?? Date()
+        return calendar.date(from: components) ?? AppClock.now
     }
 
     /// Whether the screen has a sidebar row right now (spec §6): Import only while an
@@ -307,6 +314,11 @@ struct ContentView: View {
             rulesViewModel.onTransactionsCategorised = { refreshUncategorizedCount() }
             propertyViewModel.onPropertiesChanged = { id in refreshProperties(select: id) }
             refreshSharedState()
+            snapshotSetup?.prepare(SnapshotScreenModels(
+                dashboard: dashboardViewModel, budgetGrid: budgetGridViewModel, scenarioLab: scenarioLabViewModel,
+                accounts: accountsViewModel, categories: categoriesViewModel, search: searchViewModel,
+                documents: documentsViewModel, missingEvidence: missingEvidenceViewModel, property: propertyViewModel,
+                taxYears: taxYearsViewModel, rules: rulesViewModel, uncategorized: uncategorizedViewModel))
         }
         .onChange(of: importViewModel.isStaging) { _, staging in
             // Staging starts from the Dashboard's import card or the Accounts screen: follow

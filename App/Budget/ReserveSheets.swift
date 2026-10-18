@@ -53,10 +53,10 @@ struct ReserveFormView: View {
     @State private var frequency: ForecastFrequency = .monthly
     @State private var interval = 1
     /// Local midnight of the picked days (a `DatePicker` works in the local time zone).
-    @State private var startDay = PayCalendar.localDay(sameDayAs: PayCalendar.utcDay(sameDayAs: Date(), in: .current), in: .current)
+    @State private var startDay = PayCalendar.localDay(sameDayAs: PayCalendar.utcDay(sameDayAs: AppClock.now, in: .current), in: .current)
     @State private var endMode: RecurrenceEndMode = .never
     @State private var occurrenceCount = 12
-    @State private var endDay = PayCalendar.localDay(sameDayAs: PayCalendar.utcDay(sameDayAs: Date(), in: .current), in: .current)
+    @State private var endDay = PayCalendar.localDay(sameDayAs: PayCalendar.utcDay(sameDayAs: AppClock.now, in: .current), in: .current)
 
     private var parsedAmount: Int? {
         guard let minorUnits = Money.parseMinorUnits(amountPounds), minorUnits != 0 else { return nil }

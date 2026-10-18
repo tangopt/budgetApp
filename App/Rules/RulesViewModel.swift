@@ -22,7 +22,7 @@ final class RulesViewModel: ObservableObject {
     }
 
     func load() throws {
-        let since = Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
+        let since = Calendar.current.date(byAdding: .day, value: -90, to: AppClock.now) ?? AppClock.now
         (rules, categories, categoryGroups, recentCategoryIds) = try dbQueue.read { db in
             (
                 try Rule.fetchAll(db).sorted { $0.priority > $1.priority },

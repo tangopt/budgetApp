@@ -138,10 +138,10 @@ extension TaxYearsViewModel {
 
     // MARK: Return and filing
 
+    /// Puts a box's value on the clipboard as HMRC online takes it (`copyText`); the row's copy
+    /// icon confirms it in place (`CopyValueButton`), so no banner moves the page.
     func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        infoMessage = "Copied “\(text)”."
+        CopyValueButton.toPasteboard(text)
     }
 
     /// Shows the calculation step behind a box.

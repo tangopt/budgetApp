@@ -16,6 +16,10 @@ struct Theme: Identifiable, Equatable, Sendable {
     var name: String { palette.name }
 
     let accent: Color
+    /// The accent as a fill under white text (`prominentTint()`: prominent buttons, the chosen
+    /// segment): the accent, shaded where white text wouldn't read on it
+    /// (`ThemeTokens.controlAccent`; dark variants' light accents).
+    let controlAccent: Color
     let selectionOutline: Color
     let selectionFill: Color
     let noteMarker: Color
@@ -43,6 +47,10 @@ struct Theme: Identifiable, Equatable, Sendable {
     let yoyGood: Color
     let yoyBad: Color
     let chartSeries: [Color]
+    /// What a chart draws beside the money colours (a net line, a waterfall's totals): the
+    /// accent, or another theme colour where the accent is too close to income or expense
+    /// (`ThemeTokens.chartAccent`).
+    let chartAccent: Color
     /// Per chart series: a scenario grid cell's "differs from the budget" fill.
     let differsFills: [Color]
     /// Per chart series: a Differences tab cell's fill.
@@ -60,6 +68,7 @@ struct Theme: Identifiable, Equatable, Sendable {
             Theme.color(light: light[keyPath: token], dark: dark[keyPath: token])
         }
         accent = color(\.accent)
+        controlAccent = color(\.controlAccent)
         selectionOutline = color(\.selectionOutline)
         selectionFill = color(\.selectionFill)
         noteMarker = color(\.noteMarker)
@@ -85,6 +94,7 @@ struct Theme: Identifiable, Equatable, Sendable {
         neutralMoney = color(\.neutralMoney)
         yoyGood = color(\.yoyGood)
         yoyBad = color(\.yoyBad)
+        chartAccent = color(\.chartAccent)
         let count = min(light.chartSeries.count, dark.chartSeries.count)
         chartSeries = (0..<count).map { Theme.color(light: light.chartSeries[$0], dark: dark.chartSeries[$0]) }
         differsFills = (0..<count).map {
@@ -236,9 +246,9 @@ extension EnvironmentValues {
     @Entry var theme: Theme = .classic
 }
 
-/// A window's root: the chosen theme in the environment (and as the controls' tint), and
-/// the chosen appearance applied app-wide, at launch and whenever it changes. Changing
-/// either re-renders in place; nothing reloads.
+/// A window's root: the chosen theme in the environment (and its accent as the controls'
+/// tint), and the chosen appearance applied app-wide, at launch and whenever it changes.
+/// Changing either re-renders in place; nothing reloads.
 struct ThemedRoot: ViewModifier {
     @AppStorage(Theme.storageKey) private var themeID = ThemePalette.defaultID
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .system
@@ -256,4 +266,20 @@ struct ThemedRoot: ViewModifier {
 extension View {
     /// `ThemedRoot`: the chosen theme and appearance, for a window's root view.
     func themedRoot() -> some View { modifier(ThemedRoot()) }
+
+    /// The theme's control accent as the tint, for a control that puts white text on the
+    /// accent fill: a `.borderedProminent` button, a segmented picker (`ScreenTabs` too). The
+    /// root's tint stays the accent, so tinted labels — bordered buttons, toolbar and row
+    /// icons — keep their contrast on the window.
+    func prominentTint() -> some View { modifier(ProminentTint()) }
+}
+
+/// `prominentTint()`: `ThemeTokens.controlAccent` (the accent shaded where white text wouldn't
+/// read on it); nothing for Classic, whose accent is the system's.
+private struct ProminentTint: ViewModifier {
+    @Environment(\.theme) private var theme
+
+    func body(content: Content) -> some View {
+        content.tint(theme.usesSystemAccent ? nil : theme.controlAccent)
+    }
 }

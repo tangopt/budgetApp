@@ -1,7 +1,25 @@
 import SwiftUI
 import AppKit
 
+/// The entry point. A snapshot build (`SNAPSHOTS`, made only by `scripts/render-snapshots.sh`)
+/// runs the snapshot harness and nothing else — it refuses to start as the app, so a stray
+/// snapshot build can never open the real database; every other build is just the app.
 @main
+enum BudgetMain {
+    @MainActor
+    static func main() {
+        #if SNAPSHOTS
+        guard SnapshotMode.isActive else {
+            FileHandle.standardError.write(Data("This is a snapshot build of Budget: it only runs \(SnapshotMode.argument) (scripts/render-snapshots.sh).\n".utf8))
+            exit(2)
+        }
+        SnapshotRunner.main()
+        #else
+        BudgetApp.main()
+        #endif
+    }
+}
+
 struct BudgetApp: App {
     var body: some Scene {
         WindowGroup {

@@ -37,22 +37,28 @@ final class TransactionDocumentCounts: ObservableObject {
     }
 }
 
-/// A transaction's paperclip: shown only when it has documents, with their count.
+/// A record's paperclip with its document count, visible only when it has documents. In a
+/// grid row it takes its place even then, so the row keeps every cell and its columns line up
+/// (spec C4); inline in a line of text (`keepsPlace: false`) it takes none.
 struct DocumentCountBadge: View {
     let count: Int
+    var keepsPlace = true
 
     var body: some View {
+        let badge = HStack(spacing: 1) {
+            Image(systemName: "paperclip")
+            if count > 1 { Text("\(count)").monospacedDigit() }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize()
         if count > 0 {
-            HStack(spacing: 1) {
-                Image(systemName: "paperclip")
-                if count > 1 { Text("\(count)").monospacedDigit() }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize()
-            .help(count == 1 ? "1 document" : "\(count) documents")
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(count == 1 ? "1 document" : "\(count) documents")
+            badge
+                .help(count == 1 ? "1 document" : "\(count) documents")
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(count == 1 ? "1 document" : "\(count) documents")
+        } else if keepsPlace {
+            badge.hidden().accessibilityHidden(true)
         }
     }
 }
@@ -63,7 +69,7 @@ struct TransactionDocumentBadge: View {
     @ObservedObject private var counts = TransactionDocumentCounts.shared
 
     var body: some View {
-        DocumentCountBadge(count: counts.count(transactionId))
+        DocumentCountBadge(count: counts.count(transactionId), keepsPlace: false)
     }
 }
 
@@ -150,12 +156,13 @@ struct TransactionCatalog: Sendable {
 
     /// Transactions matching `text` (descriptions, notes, categories, an amount), newest first.
     func search(_ text: String, limit: Int = 100) -> [EvidenceTransactionInfo] {
-        let rows = TransactionSearch.rows(searchIndex, criteria: TransactionSearch.Criteria(text: text))
+        let rows = TransactionSearch.rows(searchIndex, criteria: TransactionSearch.Criteria(text: text), now: AppClock.now)
         return rows.prefix(limit).compactMap { info($0.id) }
     }
 }
 
-/// One transaction in a picker or list: date · account, description, amount.
+/// One transaction in a picker or list: its description, then date · account · category (and
+/// why it's suggested, on one line — all of it in the tooltip), the amount trailing.
 struct EvidenceTransactionRow: View {
     let info: EvidenceTransactionInfo
     var reasons: [String] = []
@@ -170,9 +177,10 @@ struct EvidenceTransactionRow: View {
                 if !reasons.isEmpty {
                     Text(reasons.joined(separator: " · "))
                         .font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(1)
                 }
             }
+            .help(([info.transaction.rawDescription, caption] + reasons).joined(separator: "\n"))
             Spacer(minLength: 8)
             MoneyText(minorUnits: info.transaction.amountMinorUnits, currency: info.currency)
                 .fixedSize()
@@ -183,6 +191,68 @@ struct EvidenceTransactionRow: View {
         var parts = [info.transaction.date.formatted(date: .abbreviated, time: .omitted), info.accountName]
         if let category = info.categoryName { parts.append(category) }
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+}
+
+/// A picker row's Link: an icon button (the sheets' rows all link, so a word on each would
+/// only repeat itself).
+struct PickerLinkButton: View {
+    /// What VoiceOver says: "Link to …".
+    let accessibilityTitle: String
+    var help = "Link"
+    let action: () -> Void
+
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "link.badge.plus").imageScale(.large).foregroundStyle(theme.accent)
+        }
+        .buttonStyle(.borderless)
+        .help(help)
+        .accessibilityLabel(accessibilityTitle)
+    }
+}
+
+/// In place of a picker row's Link once it is linked (or will be on Save).
+struct PickerLinkedMark: View {
+    var title = "Linked"
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(theme.income).accessibilityHidden(true)
+            Text(title).foregroundStyle(.secondary)
+        }
+        .font(.callout)
+        .fixedSize()
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// A library document in a picker: its type glyph and name, then kind · date · amount, and
+/// why it's suggested (one line; all of it in the tooltip).
+struct EvidenceDocumentPickRow: View {
+    let summary: EvidenceDocumentSummary
+    var reasons: [String] = []
+
+    var body: some View {
+        let caption = DocumentFormat.caption(kind: summary.kind, date: summary.docDate, amountMinorUnits: summary.amountMinorUnits,
+                                             currency: summary.currency)
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: DocumentFormat.icon(summary.textStatus))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(summary.displayName).lineLimit(1).truncationMode(.middle)
+                Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if !reasons.isEmpty {
+                    Text(reasons.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+        .help(([summary.displayName, caption] + reasons).joined(separator: "\n"))
     }
 }
 
@@ -206,6 +276,15 @@ enum DocumentFormat {
         if let date { parts.append(day(date)) }
         if let amount = amountMinorUnits, let currency { parts.append(Money.format(amount, currency: currency)) }
         return parts.joined(separator: " · ")
+    }
+
+    /// The glyph for a document by what Budget could read of it: text, an image, or nothing.
+    static func icon(_ status: DocumentTextStatus) -> String {
+        switch status {
+        case .image: return "photo"
+        case .noText: return "doc"
+        default: return "doc.text"
+        }
     }
 
     static func period(start: Date?, end: Date?) -> String? {

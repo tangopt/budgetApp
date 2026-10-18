@@ -43,9 +43,8 @@ final class TaxYearsViewModel: ObservableObject {
     let dbQueue: DatabaseQueue
     let library: EvidenceLibrary
     private let rateFetcher: HMRCRateFetching
-    /// Fetches the ended years' missing HMRC rates when the screen first appears.
+    /// Fetches the ended years' missing HMRC rates whenever the screen appears.
     private let rateAutoFetch: HMRCRateAutoFetch?
-    private var hasAutoFetched = false
 
     @Published var selection: Selection? {
         didSet { if selection != oldValue { propertyId = nil; restartObservation() } }
@@ -94,11 +93,9 @@ final class TaxYearsViewModel: ObservableObject {
     func start() {
         isActive = true
         restartObservation()
-        // In the background, once: the rates the ended years lack (throttled per year).
-        if !hasAutoFetched {
-            hasAutoFetched = true
-            rateAutoFetch?.run()
-        }
+        // In the background, each time the screen appears: the rates the ended years lack. Cheap
+        // when there's nothing to do — one run at a time, each year asked for at most once a day.
+        rateAutoFetch?.run()
     }
 
     /// The year's rates HMRCRates.fetchMissing stored, for the page's note.
@@ -141,10 +138,10 @@ final class TaxYearsViewModel: ObservableObject {
 
     nonisolated static func read(db: Database, selection: Selection?, propertyId: Int64?, includeSelfAssessment: Bool) throws -> Snapshot {
         var snapshot = Snapshot()
-        snapshot.rows = try TaxOverview.rows(db: db)
+        snapshot.rows = try TaxOverview.rows(db: db, now: AppClock.now)
         if let selection {
             snapshot.page = try TaxOverview.page(db: db, personId: selection.personId, startYear: selection.startYear, propertyId: propertyId,
-                                                 rows: snapshot.rows, includeSelfAssessment: includeSelfAssessment)
+                                                 rows: snapshot.rows, includeSelfAssessment: includeSelfAssessment, now: AppClock.now)
         }
         return snapshot
     }
@@ -185,7 +182,7 @@ final class TaxYearsViewModel: ObservableObject {
     /// Fetches HMRC's published average for the year; a manual or filed-return rate stays
     /// unless `replace`.
     func fetchRate(replace: Bool) {
-        guard let selection else { return }
+        guard let selection, !SnapshotMode.isActive else { return }
         let year = UKTaxYear(startYear: selection.startYear)
         isFetchingRate = true
         Task {
@@ -418,6 +415,45 @@ enum TaxFormat {
         case .ready: return "checkmark.circle"
         case .filed: return "paperplane.circle"
         case .paid: return "checkmark.seal"
+        }
+    }
+
+    /// The status pill's tone: preparing not started, ready under way, filed and paid done.
+    static func statusTone(_ status: TaxYearStatus) -> StatusPill.Tone {
+        switch status {
+        case .preparing: return .neutral
+        case .ready: return .accent
+        case .filed, .paid: return .positive
+        }
+    }
+
+    /// Every deadline of the year, for a tooltip.
+    static func deadlines(_ year: UKTaxYear) -> String {
+        let d = year.deadlines
+        return "\(year.label): online return and balancing payment by \(DocumentFormat.day(d.onlineReturnAndBalancingPayment)), "
+            + "second payment on account by \(DocumentFormat.day(d.secondPaymentOnAccount)), "
+            + "paper return by \(DocumentFormat.day(d.paperReturn))."
+    }
+
+    /// "1.1655 EUR per £1".
+    static func unitsPerPound(_ rate: HMRCRate) -> String {
+        String(format: "%.4f %@ per £1", rate.unitsPerPound ?? 1 / rate.gbpPerUnit, rate.currencyCode)
+    }
+
+    /// "£0.8580 per euro".
+    static func poundsPerUnit(_ rate: HMRCRate) -> String {
+        let unit = rate.currencyCode == "EUR" ? "euro" : rate.currencyCode
+        return String(format: "£%.4f per %@", rate.gbpPerUnit, unit)
+    }
+
+    /// The rate's source as a pill's title and tone: a filed return's rate done, HMRC's
+    /// published one (fetched by hand or automatically) under way, one entered by hand neutral.
+    static func sourcePill(_ rate: HMRCRate) -> (title: String, tone: StatusPill.Tone, systemImage: String?) {
+        if rate.isFetchedAutomatically { return ("Fetched automatically", .accent, "arrow.down.circle") }
+        switch rate.source {
+        case .filedReturn: return ("Filed return", .positive, nil)
+        case .hmrcPublished: return ("HMRC published", .accent, nil)
+        case .manual: return ("Entered by hand", .neutral, nil)
         }
     }
 

@@ -549,7 +549,12 @@ public enum Employments {
     /// The pay and tax the return uses for the employment: the P60's, else the P45's (the
     /// latest), else the payslips' summed, else the other rows' summed; `nil` without any.
     public static func effectiveIncome(db: Database, employmentId: Int64) throws -> (payMinorUnits: Int, taxDeductedMinorUnits: Int, source: EmploymentIncomeSource)? {
-        let rows = try incomes(db: db, employmentId: employmentId)
+        effectiveIncome(try incomes(db: db, employmentId: employmentId))
+    }
+
+    /// `effectiveIncome(db:employmentId:)` of rows already read, in `incomes(db:employmentId:)`'s
+    /// order (the Income tab's figures, from `SelfAssessmentOverview.EmploymentRow.incomes`).
+    public static func effectiveIncome(_ rows: [EmploymentIncome]) -> (payMinorUnits: Int, taxDeductedMinorUnits: Int, source: EmploymentIncomeSource)? {
         guard let best = rows.first?.source else { return nil }
         let chosen = rows.filter { $0.source == best }
         switch best {

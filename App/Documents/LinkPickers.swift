@@ -16,11 +16,10 @@ struct LinkTransactionSheet: View {
     @State private var results: [EvidenceTransactionInfo] = []
 
     var body: some View {
-        SheetScaffold(title: "Link to transaction", subtitle: documentName, error: viewModel.errorMessage, width: 560,
+        SheetScaffold(title: "Link to transaction", subtitle: documentName, error: viewModel.errorMessage, width: SheetMetrics.listWidth,
                       cancelTitle: "Done", onCancel: { dismiss() }) {
             HStack(spacing: 8) {
-                TextField("Search descriptions, notes, categories or an amount", text: $query)
-                    .textFieldStyle(.roundedBorder)
+                SearchField("Search descriptions, categories or an amount", text: $query)
                 Picker("Role", selection: $role) {
                     Text("No role").tag(String?.none)
                     Divider()
@@ -45,6 +44,10 @@ struct LinkTransactionSheet: View {
                         }
                     }
                 }
+                if viewModel.catalog != nil, viewModel.suggestions.isEmpty, query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Text("No suggestions for this document: search for its transaction above.")
+                        .foregroundStyle(.secondary)
+                }
                 if !query.trimmingCharacters(in: .whitespaces).isEmpty {
                     Section("Search results") {
                         if results.isEmpty, viewModel.catalog != nil {
@@ -55,6 +58,7 @@ struct LinkTransactionSheet: View {
                 }
             }
             .frame(height: 380)
+            .sheetListFrame()
         }
         .task(id: SearchKey(text: query, isReady: viewModel.catalog != nil)) {
             let text = query.trimmingCharacters(in: .whitespaces)
@@ -67,20 +71,17 @@ struct LinkTransactionSheet: View {
     }
 
     private func pickRow(_ info: EvidenceTransactionInfo, reasons: [String] = []) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             EvidenceTransactionRow(info: info, reasons: reasons)
             if viewModel.linkedTransactionIds.contains(info.id) {
-                Label("Linked", systemImage: "checkmark")
-                    .labelStyle(.titleAndIcon)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
+                PickerLinkedMark()
             } else {
-                Button("Link") { viewModel.link(transactionId: info.id, role: role) }
-                    .controlSize(.small)
-                    .accessibilityLabel("Link to \(info.transaction.rawDescription)")
+                PickerLinkButton(accessibilityTitle: "Link to \(info.transaction.rawDescription)", help: "Link to this transaction") {
+                    viewModel.link(transactionId: info.id, role: role)
+                }
             }
         }
+        .padding(.vertical, 2)
     }
 }
 
@@ -97,11 +98,10 @@ struct LinkDocumentSheet: View {
     @State private var results: [EvidenceDocumentSearch.Entry] = []
 
     var body: some View {
-        SheetScaffold(title: "Link document", subtitle: transactionName, error: model.errorMessage, width: 560,
+        SheetScaffold(title: "Link document", subtitle: transactionName, error: model.errorMessage, width: SheetMetrics.listWidth,
                       cancelTitle: "Done", onCancel: { dismiss() }) {
             HStack(spacing: 8) {
-                TextField("Search names, kinds, notes, text or an amount", text: $query)
-                    .textFieldStyle(.roundedBorder)
+                SearchField("Search names, kinds, notes, text or an amount", text: $query)
                 Button("Add file…") { importing = true }
                     .help("Add a file to the library and link it to this transaction")
             }
@@ -129,6 +129,7 @@ struct LinkDocumentSheet: View {
                 }
             }
             .frame(height: 380)
+            .sheetListFrame()
         }
         .onAppear { model.loadPicker() }
         .task(id: SearchKey(text: query, isReady: model.pickerIndex != nil)) {
@@ -152,29 +153,18 @@ struct LinkDocumentSheet: View {
 
     private func pickRow(_ entry: EvidenceDocumentSearch.Entry, reasons: [String] = []) -> some View {
         let summary = entry.summary
-        return HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(summary.displayName).lineLimit(1)
-                Text(DocumentFormat.caption(kind: summary.kind, date: summary.docDate, amountMinorUnits: summary.amountMinorUnits,
-                                            currency: summary.currency))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                if !reasons.isEmpty {
-                    Text(reasons.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                }
-            }
+        return HStack(spacing: 10) {
+            EvidenceDocumentPickRow(summary: summary, reasons: reasons)
             Spacer(minLength: 8)
             if model.staging.isLinked(summary.id) {
-                Label(model.staging.willLink(summary.id) ? "Will be linked" : "Linked", systemImage: "checkmark")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
+                PickerLinkedMark(title: model.staging.willLink(summary.id) ? "Will be linked" : "Linked")
             } else {
-                Button("Link") { model.stageLink(summary.id) }
-                    .controlSize(.small)
-                    .help("Link on Save")
-                    .accessibilityLabel("Link \(summary.displayName)")
+                PickerLinkButton(accessibilityTitle: "Link \(summary.displayName)", help: "Link on Save") {
+                    model.stageLink(summary.id)
+                }
             }
         }
+        .padding(.vertical, 2)
     }
 }
 

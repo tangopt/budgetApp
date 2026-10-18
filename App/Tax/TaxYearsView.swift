@@ -12,7 +12,6 @@ struct TaxYearsView: View {
     /// The shared Missing evidence model: its tab shows the year's checklist.
     @ObservedObject var missingEvidenceViewModel: MissingEvidenceViewModel
     let openTransaction: (Transaction) -> Void
-    @Environment(\.theme) private var theme
 
     var body: some View {
         HStack(spacing: 0) {
@@ -36,61 +35,115 @@ struct TaxYearsView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "doc.text").font(.largeTitle).foregroundStyle(.secondary).accessibilityHidden(true)
-            Text("No tax years yet").font(.title3.weight(.semibold))
-            Text("Add a property and its owners: each owner's UK tax years show here from the first year they own it.")
-                .foregroundStyle(.secondary).multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: 420)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        EmptyState(systemImage: "doc.text", title: "No tax years yet",
+                   message: "Add a property and its owners: each owner's UK tax years show here from the first year they own it.")
+            .fillingScreen()
     }
 }
 
-/// The list of tax years, latest first.
+/// The list of tax years, latest first: one section per year (its label, the online return
+/// and balancing payment deadline, a pill when the year has no HMRC EUR rate), one row per
+/// person with their status as a pill.
 struct TaxYearsList: View {
     @ObservedObject var viewModel: TaxYearsViewModel
-    @Environment(\.theme) private var theme
+
+    /// The rows by year, in the list's order.
+    private var years: [(year: UKTaxYear, rows: [TaxOverview.YearRow])] {
+        var groups: [(year: UKTaxYear, rows: [TaxOverview.YearRow])] = []
+        for row in viewModel.snapshot.rows {
+            if let last = groups.indices.last, groups[last].year == row.year {
+                groups[last].rows.append(row)
+            } else {
+                groups.append((row.year, [row]))
+            }
+        }
+        return groups
+    }
 
     var body: some View {
         List(selection: $viewModel.selection) {
-            ForEach(viewModel.snapshot.rows) { row in
-                if let personId = row.person.id {
-                    TaxYearRowView(row: row)
-                        .tag(TaxYearsViewModel.Selection(personId: personId, startYear: row.year.startYear))
+            ForEach(Array(years.enumerated()), id: \.element.year.startYear) { index, group in
+                // The year as a row of its own (not a section header, whose inset adds a gap
+                // between the year and its people); it can't be selected.
+                TaxYearHeaderView(year: group.year, rateMissing: group.rows.contains { $0.eurRate == nil })
+                    .padding(.top, index == 0 ? 0 : 8)
+                    .selectionDisabled()
+                ForEach(group.rows) { row in
+                    if let personId = row.person.id {
+                        TaxYearRowView(row: row)
+                            .tag(TaxYearsViewModel.Selection(personId: personId, startYear: row.year.startYear))
+                    }
                 }
             }
         }
         .listStyle(.inset)
+        // On the window's colour like the page beside it (the list's own white or grey would
+        // be a stripe of system colour in a theme with a background of its own).
+        .scrollContentBackground(.hidden)
         .accessibilityLabel("Tax years")
     }
 }
 
-struct TaxYearRowView: View {
-    let row: TaxOverview.YearRow
-    @Environment(\.theme) private var theme
+/// A year's strip in the list: the year, "No EUR rate" when HMRC's average is missing, and
+/// the online return and balancing payment deadline (every deadline in its tooltip).
+struct TaxYearHeaderView: View {
+    let year: UKTaxYear
+    let rateMissing: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Text(row.year.label).font(.headline).monospacedDigit()
-                Text(row.person.name).lineLimit(1)
-                Spacer(minLength: 4)
-                Label(TaxFormat.status(row.status), systemImage: TaxFormat.statusImage(row.status))
-                    .labelStyle(.titleAndIcon)
-                    .font(.caption)
-                    .foregroundStyle(row.status == .preparing ? .secondary : theme.income)
-                    .lineLimit(1).fixedSize()
+        HStack(spacing: 5) {
+            // The year never wraps: the pill and the deadline beside it are fixed too.
+            Text(year.label).font(.subheadline.bold()).monospacedDigit().foregroundStyle(.primary)
+                .lineLimit(1).fixedSize()
+            Spacer(minLength: 0)
+            if rateMissing {
+                // HMRC's average is for the year to 31 March: missing only once the year is over.
+                if AppClock.now >= year.end {
+                    StatusPill("No EUR rate", tone: .warning,
+                               help: "No HMRC average EUR rate for \(year.label) yet: fetch it or enter it in the year's Settings.")
+                } else {
+                    StatusPill("Rate after 31 Mar", tone: .neutral,
+                               help: "HMRC's average EUR rate for \(year.label) is for the year to 31 March: it's fetched once the year is over.")
+                }
             }
-            Text("Return and payment \(DocumentFormat.day(row.deadlines.onlineReturnAndBalancingPayment)) · 2nd payment \(DocumentFormat.day(row.deadlines.secondPaymentOnAccount))")
-                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            if row.eurRate == nil {
-                Label("No HMRC EUR rate", systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(theme.expense)
+            // Beside a pill the row has no room for "Due" too: the day stays (every deadline on hover).
+            if !rateMissing {
+                Text("Due").font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                    .accessibilityHidden(true)
             }
+            DateText(date: year.deadlines.onlineReturnAndBalancingPayment, font: .caption, alignment: .trailing)
+                .accessibilityLabel("Due \(DocumentFormat.day(year.deadlines.onlineReturnAndBalancingPayment))")
+        }
+        .help(TaxFormat.deadlines(year))
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// A person's year: their name (and properties when several) and the year's status.
+struct TaxYearRowView: View {
+    let row: TaxOverview.YearRow
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(row.person.name).lineLimit(1)
+            if row.properties.count > 1 {
+                Text("\(row.properties.count) properties").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            TaxStatusPill(status: row.status)
         }
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// A tax year's status as a pill: preparing neutral, ready under way, filed and paid done.
+struct TaxStatusPill: View {
+    let status: TaxYearStatus
+
+    var body: some View {
+        StatusPill(TaxFormat.status(status), tone: TaxFormat.statusTone(status))
     }
 }
 
@@ -102,13 +155,8 @@ struct TaxYearPage: View {
     let openTransaction: (Transaction) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
             header
-            ForEach(viewModel.automaticallyFetchedRates, id: \.currencyCode) { rate in
-                Label("HMRC average rate fetched automatically: \(rate.bothWaysText)", systemImage: "arrow.down.circle")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .help(rate.notes ?? "HMRC's average for the year to 31 March")
-            }
             TaxBanners(viewModel: viewModel)
             if viewModel.tab == .missingEvidence {
                 TaxMissingEvidenceTab(viewModel: missingEvidenceViewModel, page: page, openTransaction: openTransaction)
@@ -117,20 +165,24 @@ struct TaxYearPage: View {
                     ScrollView {
                         content
                             .frame(maxWidth: .infinity, alignment: .topLeading)
-                            .padding(.bottom, 12)
+                            .padding(.bottom, ScreenMetrics.padding)
                     }
                     .onChange(of: viewModel.focusedStep) { scroll(proxy) }
                     .onChange(of: page.selfAssessment != nil) { scroll(proxy) }
                 }
             }
         }
-        .padding(12)
+        .padding([.horizontal, .top], ScreenMetrics.padding)
     }
 
+    /// The year, person and property with the year's status on one line (a rate fetched
+    /// automatically noted between them), the sections beneath.
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                Text("\(page.row.year.label) · \(page.row.person.name)").font(.title3.weight(.semibold)).lineLimit(1)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                Text("\(page.row.year.label) · \(page.row.person.name)")
+                    .font(.title3.weight(.semibold)).monospacedDigit()
+                    .lineLimit(1).fixedSize()
                 if page.row.properties.count > 1 {
                     Picker("Property", selection: Binding(get: { page.property?.id }, set: { viewModel.propertyId = $0 })) {
                         ForEach(page.row.properties) { Text($0.name).tag($0.id) }
@@ -138,25 +190,30 @@ struct TaxYearPage: View {
                     .labelsHidden().fixedSize()
                     .accessibilityLabel("Property")
                 } else if let property = page.property {
-                    Text(property.name).foregroundStyle(.secondary)
+                    Label(property.name, systemImage: "house")
+                        .foregroundStyle(.secondary).lineLimit(1)
+                }
+                ForEach(viewModel.automaticallyFetchedRates, id: \.currencyCode) { rate in
+                    Label("\(rate.bothWaysText), fetched automatically", systemImage: "arrow.down.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.tail)
+                        .help("HMRC average rate fetched automatically. \(rate.notes ?? "HMRC's average for the year to 31 March")")
                 }
                 Spacer(minLength: 8)
+                Text("Status").foregroundStyle(.secondary)
                 Picker("Status", selection: Binding(get: { page.row.status }, set: { viewModel.setStatus($0) })) {
                     ForEach(TaxYearStatus.allCases, id: \.self) { status in
                         Label(TaxFormat.status(status), systemImage: TaxFormat.statusImage(status)).tag(status)
                     }
                 }
+                .labelsHidden()
                 .fixedSize()
                 .help("Preparing → Ready → Filed → Paid")
                 .accessibilityLabel("Status")
             }
-            Picker("Section", selection: $viewModel.tab) {
-                ForEach(TaxYearsViewModel.Tab.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .accessibilityLabel("Tax year section")
+            .frame(minHeight: 24)
+            // Never wider than the page (C6): the sections that fit, then a More menu.
+            ScreenTabs("Tax year section", selection: $viewModel.tab, tabs: TaxYearsViewModel.Tab.allCases, label: \.rawValue)
         }
     }
 
@@ -193,7 +250,7 @@ struct TaxMissingEvidenceTab: View {
     private var key: String { "\(page.row.year.startYear)-\(page.property?.id ?? 0)" }
 
     var body: some View {
-        MissingEvidenceView(viewModel: viewModel, openTransaction: openTransaction)
+        MissingEvidenceView(viewModel: viewModel, openTransaction: openTransaction, embedded: true)
             .onAppear {
                 if saved == nil { saved = (viewModel.periodChoice, viewModel.propertyFilter) }
                 follow()
@@ -219,62 +276,98 @@ struct TaxMissingEvidenceTab: View {
 /// Error and info lines under the header.
 struct TaxBanners: View {
     @ObservedObject var viewModel: TaxYearsViewModel
-    @Environment(\.theme) private var theme
 
     var body: some View {
         if let error = viewModel.errorMessage {
-            banner(error, systemImage: "exclamationmark.triangle.fill", color: theme.expense) { viewModel.errorMessage = nil }
+            InlineBanner(.error, error) { viewModel.errorMessage = nil }
         }
         if let info = viewModel.infoMessage {
-            banner(info, systemImage: "info.circle", color: .secondary) { viewModel.infoMessage = nil }
+            InlineBanner(.info, info) { viewModel.infoMessage = nil }
         }
-    }
-
-    private func banner(_ text: String, systemImage: String, color: Color, dismiss: @escaping () -> Void) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Image(systemName: systemImage).foregroundStyle(color).accessibilityHidden(true)
-            Text(text).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            Button(action: dismiss) { Image(systemName: "xmark") }
-                .buttonStyle(.borderless)
-                .help("Dismiss")
-                .accessibilityLabel("Dismiss")
-        }
-        .font(.callout)
     }
 }
 
 // MARK: - Export
 
+/// The year's exports as cards — the accountant's template, the rental accounts PDF and the
+/// evidence pack — each saying what it holds and the name it's saved under, with one button.
 struct TaxExportTab: View {
     @ObservedObject var viewModel: TaxYearsViewModel
     let page: TaxOverview.YearPage
 
+    private var personName: String { page.row.person.name }
+
+    /// The documents behind the lines the pack copies (not-deductible items stay out).
+    private var documentCount: Int {
+        guard let accounts = page.accounts else { return 0 }
+        return Set(accounts.allLines.filter { $0.expenseType != .notDeductible }.flatMap(\.sources).flatMap(\.documentIds)).count
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            PropertySection("Accountant") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("The accountant's template for \(page.row.person.name): rental accounts by month and expense line in the property's currency, and the FTCR figures.")
-                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    HStack {
-                        Button("Accountant template (.xlsx)…") { viewModel.exportTemplate() }
-                        Button("Rental accounts (PDF)…") { viewModel.exportPDF() }
-                    }
-                    .disabled(page.accounts == nil)
-                }
-            }
-            PropertySection("Evidence pack") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("A folder with every document behind this year's figures, one subfolder per line, under their canonical names.")
-                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    Button("Export evidence folder…") { viewModel.exportEvidencePack() }
-                        .disabled(page.accounts == nil)
-                }
-            }
+        VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
             if page.accounts == nil {
-                Text("\(page.row.person.name) owns no property in \(page.row.year.label): there are no rental accounts to export.")
-                    .foregroundStyle(.secondary)
+                InlineBanner(.info, "\(personName) owns no property in \(page.row.year.label): there are no rental accounts to export.")
             }
+            PanelGrid(minColumnWidth: 250) {
+                TaxExportCard(title: "Accountant template", systemImage: "tablecells",
+                              text: "The accountant's workbook for \(personName): rental accounts by month and expense line in the property's currency, and the FTCR figures.",
+                              fileName: AccountantTemplate.fileName(taxYear: page.row.year, personName: personName),
+                              button: "Export workbook…", isEnabled: page.accounts != nil) { viewModel.exportTemplate() }
+                TaxExportCard(title: "Rental accounts", systemImage: "doc.richtext",
+                              text: "The year's rental accounts as a PDF: each line with its rule and share, in the property's currency and in GBP at HMRC's rate.",
+                              fileName: TaxFileNames.rentalAccountsPDF(year: page.row.year, personName: personName),
+                              button: "Export PDF…", isEnabled: page.accounts != nil) { viewModel.exportPDF() }
+                TaxExportCard(title: "Evidence pack", systemImage: "folder",
+                              text: "A folder with every document behind this year's figures, one subfolder per line, under their canonical names.",
+                              detail: page.accounts == nil ? nil
+                                  : documentCount == 0 ? "No documents linked to the lines yet"
+                                  : "\(documentCount) document\(documentCount == 1 ? "" : "s") behind the lines",
+                              fileName: TaxEvidencePack.folderName(year: page.row.year, personName: personName),
+                              button: "Export folder…", isEnabled: page.accounts != nil) { viewModel.exportEvidencePack() }
+            }
+        }
+    }
+}
+
+/// One export: an icon and title, what it holds, the name it's saved under, and its button.
+struct TaxExportCard: View {
+    let title: String
+    let systemImage: String
+    let text: String
+    var detail: String? = nil
+    let fileName: String
+    let button: String
+    let isEnabled: Bool
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Panel(fillsHeight: true) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: systemImage)
+                        .font(.title3).foregroundStyle(theme.accent)
+                        .frame(width: 24).accessibilityHidden(true)
+                    Text(title).font(.headline).accessibilityAddTraits(.isHeader)
+                }
+                Text(text)
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 3) {
+                    if let detail {
+                        Label(detail, systemImage: "paperclip").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            .help("\(detail), plus any linked to the tax year itself")
+                    }
+                    Label(fileName, systemImage: "doc")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                        .help("Saved as “\(fileName)”")
+                }
+                Spacer(minLength: 0)
+                Button(button, action: action)
+                    .disabled(!isEnabled)
+            }
+            .frame(maxHeight: .infinity, alignment: .topLeading)
         }
     }
 }

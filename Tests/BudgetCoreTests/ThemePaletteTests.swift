@@ -157,6 +157,89 @@ final class ThemePaletteTests: XCTestCase {
         }
     }
 
+    func testControlTextReadsOnTheControlAccent() {
+        // White text on the accent fill reads, or the accent is light enough for dark text;
+        // an accent that already does is kept, and a shaded one keeps its hue.
+        let white = ThemeColor.hex(0xFFFFFF)
+        eachVariant { palette, variant, tokens in
+            let control = tokens.controlAccent
+            let contrast = ColorMath.contrastRatio(control, white)
+            let luminance = ColorMath.relativeLuminance(control)
+            XCTAssertTrue(contrast >= ThemeRules.minimumControlTextContrast || luminance >= ThemeRules.darkControlTextLuminance,
+                          "\(palette.name) \(variant): control accent \(control.hexString) white contrast \(contrast)")
+            if control != tokens.accent {
+                XCTAssertLessThan(ColorMath.relativeLuminance(control), ColorMath.relativeLuminance(tokens.accent))
+                let a = ColorMath.lab(control), b = ColorMath.lab(tokens.accent)
+                let hue = { (lab: ColorMath.Lab) in atan2(lab.b, lab.a) * 180 / .pi }
+                var difference = abs(hue(a) - hue(b))
+                if difference > 180 { difference = 360 - difference }
+                XCTAssertLessThan(difference, 20, "\(palette.name) \(variant): shading moved the hue \(difference)°")
+            }
+        }
+        // Classic keeps the system accent; Nord's dark frost is shaded; Midnight's gold isn't.
+        XCTAssertEqual(ThemePalette.named("classic").dark.controlAccent, ThemePalette.named("classic").dark.accent)
+        XCTAssertNotEqual(ThemePalette.named("nord").dark.controlAccent, ThemePalette.named("nord").dark.accent)
+        XCTAssertEqual(ThemePalette.named("midnight").dark.controlAccent, ThemePalette.named("midnight").dark.accent)
+    }
+
+    func testLightVariantsKeepTheirAccentForControls() {
+        // Light variants' accents already carry white text; only dark variants' are shaded.
+        for palette in ThemePalette.all {
+            XCTAssertEqual(palette.light.controlAccent, palette.light.accent, "\(palette.name) light")
+        }
+    }
+
+    func testShadingReachesItsLuminanceAndOnlyDarkens() {
+        // 8-bit channels: the luminance within rounding of the target (0.004), no channel lighter.
+        let step = 0.5 / 255
+        for color in [ThemeColor.hex(0x88C0D0), .hex(0xB4B8C2), .hex(0xFF8A4C), .hex(0x66B2FF), .hex(0xE8B84A), .hex(0xFFFFFF)] {
+            for target in [0.05, 0.15, 0.30] {
+                let shaded = ColorMath.shaded(color, toLuminance: target)
+                let luminance = ColorMath.relativeLuminance(shaded)
+                XCTAssertEqual(luminance, target, accuracy: 0.004, "\(color.hexString) → \(target): \(shaded.hexString) at \(luminance)")
+                XCTAssertLessThanOrEqual(luminance, ColorMath.relativeLuminance(color))
+                XCTAssertLessThanOrEqual(shaded.red, color.red + step)
+                XCTAssertLessThanOrEqual(shaded.green, color.green + step)
+                XCTAssertLessThanOrEqual(shaded.blue, color.blue + step)
+            }
+        }
+        // Already darker than the target: unchanged.
+        XCTAssertEqual(ColorMath.shaded(.hex(0x2C4F7C), toLuminance: 0.30), .hex(0x2C4F7C))
+    }
+
+    func testAccentReadsOnCardsAndTheWindow() {
+        // The accent stays the tint of labels (bordered buttons, icons, links): 3:1 on the
+        // window and on cards in every theme. No theme fails today; one that does is a palette
+        // to fix, not to shade here.
+        eachVariant { palette, variant, tokens in
+            let ground = tokens.gridBackground(variant)
+            let surface = ColorMath.composite(tokens.surface, over: ground)
+            for (name, background) in [("window", ground), ("surface", surface)] {
+                let ratio = ColorMath.contrastRatio(tokens.accent, background)
+                XCTAssertGreaterThanOrEqual(ratio, 3, "\(palette.name) \(variant): accent on \(name) \(ratio)")
+            }
+        }
+    }
+
+    func testTheChartAccentStandsApartFromTheMoneyColours() {
+        // A net line over income and expense bars, a waterfall's totals beside its changes:
+        // the accent where it's apart from both, else the first colour that is.
+        eachVariant { palette, variant, tokens in
+            let chartAccent = tokens.chartAccent
+            for (name, money) in [("income", tokens.income), ("expense", tokens.expense)] {
+                let difference = ColorMath.deltaE2000(chartAccent, money)
+                XCTAssertGreaterThanOrEqual(difference, ThemeRules.minimumMoneyDeltaE,
+                                            "\(palette.name) \(variant): chart accent vs \(name) ΔE \(difference)")
+            }
+        }
+        for variant in ThemeVariant.allCases {
+            let classic = ThemePalette.named("classic").tokens(variant)
+            XCTAssertEqual(classic.chartAccent, classic.accent, "Classic's charts keep the accent")
+        }
+        // Forest's accent is a green: its net lines and totals take another colour.
+        XCTAssertNotEqual(ThemePalette.named("forest").light.chartAccent, ThemePalette.named("forest").light.accent)
+    }
+
     // MARK: Classic is today's look
 
     func testClassicIsTodaysSystemColours() {

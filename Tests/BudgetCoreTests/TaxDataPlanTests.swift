@@ -316,6 +316,48 @@ final class TaxDataPlanTests: XCTestCase {
         XCTAssertEqual(try apply(plan()).count(.added, in: "Policy receipts"), 0)
     }
 
+    func testAFiledReturnRateReplacesAnAutomaticallyFetchedOne() throws {
+        try db.write { db in
+            try HMRCRates.set(db: db, startYear: 2021, currencyCode: "EUR", gbpPerUnit: 0.85, unitsPerPound: 1 / 0.85, source: .hmrcPublished,
+                              fetchedAt: Self.date(2022, 4, 10), notes: "\(HMRCRates.autoFetchedNotePrefix): HMRC average for the year to 31 March 2022")
+        }
+        let outcome = try apply(plan())
+        XCTAssertEqual(outcome.count(.added, in: "HMRC rates"), 1)
+        XCTAssertTrue(TaxDataPlan.report(outcome).contains("2021/22 EUR £0.8 (filed return) replaces the automatically fetched £0.85"),
+                      TaxDataPlan.report(outcome))
+        try db.read { db in
+            let rate = try XCTUnwrap(try HMRCRates.rate(db: db, startYear: 2021, currencyCode: "EUR"))
+            XCTAssertEqual(rate.gbpPerUnit, 0.8)
+            XCTAssertEqual(rate.source, .filedReturn)
+            XCTAssertNil(rate.fetchedAt)
+            XCTAssertFalse(rate.isFetchedAutomatically)
+        }
+        // Then it is the filed rate, unchanged on a second run.
+        XCTAssertEqual(try apply(plan()).count(.unchanged, in: "HMRC rates"), 1)
+    }
+
+    func testAFiledReturnRateEqualToTheFetchedOneIsAlreadyThere() throws {
+        _ = try db.write { db in
+            try HMRCRates.set(db: db, startYear: 2021, currencyCode: "EUR", gbpPerUnit: 0.8, unitsPerPound: 1.25, source: .hmrcPublished,
+                              fetchedAt: Self.date(2022, 4, 10), notes: "\(HMRCRates.autoFetchedNotePrefix): HMRC average for the year to 31 March 2022")
+        }
+        let outcome = try apply(plan())
+        XCTAssertEqual(outcome.count(.added, in: "HMRC rates"), 0)
+        XCTAssertEqual(outcome.count(.unchanged, in: "HMRC rates"), 1)
+        XCTAssertTrue(TaxDataPlan.report(outcome).contains("the same as filed; now marked as the filed return's"), TaxDataPlan.report(outcome))
+        // The figure stays; it is the filed return's now, so an automatic fetch won't replace it.
+        try db.read { db in
+            let rate = try XCTUnwrap(try HMRCRates.rate(db: db, startYear: 2021, currencyCode: "EUR"))
+            XCTAssertEqual(rate.gbpPerUnit, 0.8)
+            XCTAssertEqual(rate.unitsPerPound, 1.25)
+            XCTAssertEqual(rate.source, .filedReturn)
+            XCTAssertFalse(rate.isFetchedAutomatically)
+        }
+        let again = try apply(plan())
+        XCTAssertEqual(again.count(.unchanged, in: "HMRC rates"), 1)
+        XCTAssertTrue(TaxDataPlan.report(again).contains("already stored (filed return)"), TaxDataPlan.report(again))
+    }
+
     func testAStoredFiledReturnRateThatDiffersIsRefused() throws {
         try db.write { db in try HMRCRates.set(db: db, startYear: 2021, currencyCode: "EUR", gbpPerUnit: 0.85, source: .filedReturn) }
         XCTAssertEqual(refusal(plan()), ["HMRC rates: 2021/22 EUR has the filed-return rate £0.85 stored, the plan says £0.8"])

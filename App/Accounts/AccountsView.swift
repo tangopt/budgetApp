@@ -188,7 +188,7 @@ struct AccountsView: View {
             Spacer()
             Button("Update balances…") { activeSheet = .updateAll(overview.groups) }
             Button("+ Add account") { activeSheet = .add }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.borderedProminent).prominentTint()
         }
     }
 
@@ -269,7 +269,7 @@ struct AccountsView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Button("+ Add account") { activeSheet = .add }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.borderedProminent).prominentTint()
                 .padding(.top, 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -743,7 +743,7 @@ enum AccountsFormat {
     private static let yearFormatter = utcFormatter("yyyy")
 
     /// "12 Oct" in the current year, "12 Oct 2025" otherwise (dates are UTC days).
-    static func shortDay(_ date: Date, today: Date = Date()) -> String {
+    static func shortDay(_ date: Date, today: Date = AppClock.now) -> String {
         yearFormatter.string(from: date) == yearFormatter.string(from: today)
             ? dayMonthFormatter.string(from: date)
             : dayMonthYearFormatter.string(from: date)
@@ -792,7 +792,7 @@ enum AccountsFormat {
     }
 
     /// "today", "3 days ago", "2 months ago" — whole UTC days / calendar months.
-    static func age(of date: Date, today: Date = Date()) -> String {
+    static func age(of date: Date, today: Date = AppClock.now) -> String {
         let calendar = MonthRange.calendar
         let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: today)).day ?? 0
         if days <= 0 { return "today" }

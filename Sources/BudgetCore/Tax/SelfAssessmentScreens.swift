@@ -120,13 +120,17 @@ extension SelfAssessment.BoxValue {
 }
 
 extension SelfAssessment.Box {
+    /// Whether the box takes whole pounds: every form but SA110, which keeps pence.
+    public var isWholePounds: Bool { form != .sa110 }
     /// Whole pounds, but SA110 keeps pence.
-    public var copyText: String { value.copyText(wholePounds: form != .sa110) }
+    public var copyText: String { value.copyText(wholePounds: isWholePounds) }
 }
 
 extension SelfAssessmentFiling.Value {
+    /// Whether the value is a return box in whole pounds (SA110 aside); the other figures keep pence.
+    public var isWholePounds: Bool { box.map { !$0.hasPrefix("SA110") } ?? false }
     /// Whole pounds for a return box (SA110 aside); pounds and pence for the other figures.
-    public var copyText: String { value.copyText(wholePounds: box.map { !$0.hasPrefix("SA110") } ?? false) }
+    public var copyText: String { value.copyText(wholePounds: isWholePounds) }
 }
 
 extension SelfAssessment.Result {

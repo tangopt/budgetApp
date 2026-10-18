@@ -12,15 +12,19 @@ struct MoneyField: View {
     @Binding var text: String
     let currency: Currency
     var width: CGFloat?
+    /// Whether the currency code follows the field (off where a currency picker beside it
+    /// already names it).
+    var showsCurrency = true
 
     @FocusState private var focused: Bool
     @Environment(\.isEnabled) private var isEnabled
 
-    init(_ label: String, text: Binding<String>, currency: Currency, width: CGFloat? = nil) {
+    init(_ label: String, text: Binding<String>, currency: Currency, width: CGFloat? = nil, showsCurrency: Bool = true) {
         self.label = label
         self._text = text
         self.currency = currency
         self.width = width
+        self.showsCurrency = showsCurrency
     }
 
     private var isEmpty: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -39,9 +43,11 @@ struct MoneyField: View {
                 .frame(width: width)
                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(isInvalid && !focused ? Color.red : Color.clear))
                 .help(isInvalid ? Self.invalidAmountMessage(text) : "")
-            Text(currency.rawValue.uppercased())
-                .foregroundStyle(.secondary)
-                .frame(width: 34, alignment: .leading)
+            if showsCurrency {
+                Text(currency.rawValue.uppercased())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 34, alignment: .leading)
+            }
         }
         .onChange(of: focused) { _, isFocused in
             guard !isFocused, let value = Money.parseMinorUnits(text) else { return }

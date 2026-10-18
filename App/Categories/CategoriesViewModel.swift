@@ -43,7 +43,7 @@ final class CategoriesViewModel: ObservableObject {
     /// Every account in the order the app lists them (Edit transaction's account picker and
     /// Add the other side…).
     @Published private(set) var accounts: [Account] = []
-    @Published private(set) var payCalendar = PayCalendar(salaryDates: [], manualCloses: [], today: Date())
+    @Published private(set) var payCalendar = PayCalendar(salaryDates: [], manualCloses: [], today: AppClock.now)
     /// The screen's banner error (load failures, a failed move or rename, a refused delete).
     @Published var errorMessage: String?
     /// Runs after an Edit transaction save (the uncategorised count may change).
@@ -64,7 +64,7 @@ final class CategoriesViewModel: ObservableObject {
             self.accounts = accounts.sortedForDisplay()
             self.groups = groups
             payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: all, categories: categories),
-                                      manualCloses: closes, today: Date())
+                                      manualCloses: closes, today: AppClock.now)
             transferCounterparts = counterparts
             transactions = TransferLinks.budgetFacing(all, links: links).filter { $0.status == .confirmed && $0.categoryId != nil }
             conversion = CurrencyConversion(accounts: accounts, rate: rate)
@@ -307,7 +307,7 @@ final class CategoriesViewModel: ObservableObject {
     /// The Edit transaction picker's Recent section: the last 90 days' most used
     /// categories. A failed read only costs the section.
     func recentCategoryIds() -> [Int64] {
-        let since = Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
+        let since = Calendar.current.date(byAdding: .day, value: -90, to: AppClock.now) ?? AppClock.now
         return (try? dbQueue.read { db in try CategoryShortlist.recent(db: db, since: since, limit: 5) }) ?? []
     }
 

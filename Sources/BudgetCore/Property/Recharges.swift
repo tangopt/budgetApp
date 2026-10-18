@@ -62,6 +62,12 @@ public enum RechargeError: Error, Equatable {
 /// - The tenant pays it with the next transfer: the credit's rent part is its rent receipt
 ///   links, the rest (up to the statement's outstanding amount) its recharge part.
 public enum Recharges {
+    /// How many days after a statement is sent (else after its month) a tenant credit is looked
+    /// for to pay it — by `matchPayments` and `paymentSuggestions` — and after which a statement
+    /// still owed shows as overdue. A run of consecutive statements is matched from the last
+    /// one's day, so an older statement in a run can still be paid after its own window.
+    public static let paymentWindowDays = 45
+
     // MARK: Providers
 
     /// Inserts or updates the provider (trimmed name, unique per property; blank optionals cleared).
@@ -156,9 +162,11 @@ public enum Recharges {
                     // Never more than other statements leave of it.
                     let left = invoice.amountMinorUnits - (try Self.recharged(db: db, invoiceId: id, excludingStatement: line.statementId))
                     line.amountMinorUnits = invoice.amountMinorUnits >= 0 ? min(share.amount, max(0, left)) : max(share.amount, min(0, left))
-                    line.daysInTenancy = share.days?.inside
-                    line.daysInPeriod = share.days?.total
-                    line.note = share.note
+                    // The proration only when the line is the whole prorated share (as `pendingLines`).
+                    let prorated = line.amountMinorUnits == share.amount
+                    line.daysInTenancy = prorated ? share.days?.inside : nil
+                    line.daysInPeriod = prorated ? share.days?.total : nil
+                    line.note = prorated ? share.note : nil
                     try line.update(db)
                 } else {
                     try line.delete(db)
@@ -241,8 +249,11 @@ public enum Recharges {
             let left = invoice.amountMinorUnits - (try recharged(db: db, invoiceId: invoice.id!, excludingStatement: -1))
             let amount = invoice.amountMinorUnits >= 0 ? min(share.amount, max(0, left)) : max(share.amount, min(0, left))
             guard amount != 0 || invoice.amountMinorUnits == 0 else { continue }
-            lines.append(PendingLine(invoice: invoice, rechargeDate: date, amountMinorUnits: amount, note: share.note,
-                                     daysInTenancy: share.days?.inside, daysInPeriod: share.days?.total))
+            // The proration (days and their note) only when the line is the tenancy's whole
+            // prorated share (as `setLine`); a capped line isn't "17 of 60 days".
+            let prorated = amount == share.amount
+            lines.append(PendingLine(invoice: invoice, rechargeDate: date, amountMinorUnits: amount, note: prorated ? share.note : nil,
+                                     daysInTenancy: prorated ? share.days?.inside : nil, daysInPeriod: prorated ? share.days?.total : nil))
         }
         return lines.sorted { ($0.rechargeDate, $0.invoice.id!) < ($1.rechargeDate, $1.invoice.id!) }
     }
@@ -512,7 +523,7 @@ public enum Recharges {
     /// after rent matching (the remainder is what the rent links leave). Idempotent; returns
     /// the links made.
     @discardableResult
-    public static func matchPayments(db: Database, propertyId: Int64, windowDays: Int = 45) throws -> [RechargePayment] {
+    public static func matchPayments(db: Database, propertyId: Int64, windowDays: Int = paymentWindowDays) throws -> [RechargePayment] {
         let statements = try RechargeStatement.fetchAll(db, sql: """
             SELECT rechargeStatement.* FROM rechargeStatement JOIN tenancy ON tenancy.id = rechargeStatement.tenancyId
             WHERE tenancy.propertyId = ? AND rechargeStatement.status = ? ORDER BY rechargeStatement.month, rechargeStatement.id

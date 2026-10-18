@@ -13,7 +13,7 @@ final class AppEnvironment: ObservableObject {
     /// last saved one at 2 decimal places. `AccountsView` displays and dismisses it.
     @Published var exchangeRateBanner: String?
     /// HMRC's average rates the ended tax years lack, fetched in the background (after
-    /// launch, and when the Tax years screen first appears).
+    /// launch, and whenever the Tax years screen appears).
     let hmrcRateAutoFetch: HMRCRateAutoFetch
 
     private init(dbQueue: DatabaseQueue, evidenceRoot: URL) {
@@ -21,6 +21,9 @@ final class AppEnvironment: ObservableObject {
         self.evidenceRoot = evidenceRoot
         self.hmrcRateAutoFetch = HMRCRateAutoFetch(dbQueue: dbQueue)
 
+        // The snapshot harness never touches the network (and renders from its own data);
+        // `HMRCRateAutoFetch.run` refuses in that mode too (the Tax years screen calls it).
+        guard !SnapshotMode.isActive else { return }
         Task { [weak self] in
             await self?.refreshExchangeRate()
             self?.hmrcRateAutoFetch.run()
@@ -55,7 +58,7 @@ final class AppEnvironment: ObservableObject {
             do {
                 _ = try manager.dbQueue.write { db in
                     try TransferCategories.ensure(db: db)
-                    return try TransferMatcher.match(db: db)
+                    return try TransferMatcher.match(db: db, today: AppClock.now)
                 }
             } catch {
                 Logger(subsystem: "com.personal.budget", category: "Transfers").error("Transfer matching at launch failed: \(error.localizedDescription, privacy: .public)")
@@ -96,7 +99,7 @@ final class AppEnvironment: ObservableObject {
             }
             guard ExchangeRateFetcher.hasChanged(fetchedRate: fetchedRate, previousRate: previousRate.eurToGbpRate) else { return }
 
-            let newRate = ExchangeRateSetting(eurToGbpRate: fetchedRate, updatedAt: Date())
+            let newRate = ExchangeRateSetting(eurToGbpRate: fetchedRate, updatedAt: AppClock.now)
             let impact = ExchangeRateFetcher.netWorthImpact(accounts: accounts, snapshots: snapshots, transactions: transactions, oldRate: previousRate, newRate: newRate)
 
             try await dbQueue.write { db in

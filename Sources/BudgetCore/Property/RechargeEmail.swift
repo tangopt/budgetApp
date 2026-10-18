@@ -114,16 +114,24 @@ public enum RechargeEmail {
         guard let tenancy = try Tenancy.fetchOne(db, key: statement.tenancyId),
               let property = try Property.fetchOne(db, key: tenancy.propertyId) else { throw RechargeError.tenancyNotFound }
         let template = try template ?? self.template(db: db, propertyId: property.id!, language: language)
-        let details = try Recharges.lineDetails(db: db, statementId: statementId)
-        let total = statement.totalMinorUnits
+        return draft(details: try Recharges.lineDetails(db: db, statementId: statementId), totalMinorUnits: statement.totalMinorUnits,
+                     month: statement.month, tenancy: tenancy, propertyName: property.name, currency: property.currency,
+                     language: language, template: template)
+    }
+
+    /// The email for lines not saved yet (the statement sheet's preview): the same text as
+    /// `draft(db:…)` gives once they're saved with that total.
+    public static func draft(details: [Recharges.LineDetail], totalMinorUnits total: Int, month: Date, tenancy: Tenancy,
+                             propertyName: String, currency: Currency, language: RechargeEmailLanguage,
+                             template: RechargeEmailTemplate) -> Draft {
         let values = [
             "tenant": tenancy.tenantName ?? "",
-            "month": monthName(statement.month, language: language),
-            "property": property.name,
+            "month": monthName(month, language: language),
+            "property": propertyName,
             "utilities": utilities(details, language: language),
-            "table": table(details, currency: property.currency, language: language),
+            "table": table(details, currency: currency, language: language),
             "total_label": totalLabel(total, language: language),
-            "total": money(abs(total), currency: property.currency, language: language)
+            "total": money(abs(total), currency: currency, language: language)
         ]
         var ids: [Int64] = []
         for id in details.compactMap(\.documentId) where !ids.contains(id) { ids.append(id) }
@@ -236,6 +244,12 @@ extension Recharges {
         public var invoice: UtilityInvoice?
         public var provider: UtilityProvider?
         public var documentId: Int64? { invoice?.documentId ?? line.documentId }
+
+        public init(line: RechargeLine, invoice: UtilityInvoice? = nil, provider: UtilityProvider? = nil) {
+            self.line = line
+            self.invoice = invoice
+            self.provider = provider
+        }
     }
 
     public static func lineDetails(db: Database, statementId: Int64) throws -> [LineDetail] {
@@ -290,7 +304,7 @@ extension Recharges {
     /// rent and recharge links — the tenancy's own credits first, then the closest remainder,
     /// then the earliest; at most `limit` per statement. Exact ones are what `matchPayments`
     /// links by itself.
-    public static func paymentSuggestions(db: Database, propertyId: Int64, windowDays: Int = 45, limit: Int = 3) throws -> [PaymentSuggestion] {
+    public static func paymentSuggestions(db: Database, propertyId: Int64, windowDays: Int = Recharges.paymentWindowDays, limit: Int = 3) throws -> [PaymentSuggestion] {
         let statements = try RechargeStatement.fetchAll(db, sql: """
             SELECT rechargeStatement.* FROM rechargeStatement JOIN tenancy ON tenancy.id = rechargeStatement.tenancyId
             WHERE tenancy.propertyId = ? AND rechargeStatement.status = ? ORDER BY rechargeStatement.month, rechargeStatement.id

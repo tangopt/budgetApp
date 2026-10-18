@@ -25,11 +25,10 @@ struct LinkEvidenceSheet: View {
     @State private var generation = 0
 
     var body: some View {
-        SheetScaffold(title: "Link existing document", subtitle: subtitle, error: errorMessage, width: 600,
+        SheetScaffold(title: "Link existing document", subtitle: subtitle, error: errorMessage, width: SheetMetrics.listWidth,
                       cancelTitle: "Done", onCancel: { dismiss() }) {
             HStack(spacing: 8) {
-                TextField("Search names, kinds, notes, text or an amount", text: $query)
-                    .textFieldStyle(.roundedBorder)
+                SearchField("Search names, kinds, notes, text or an amount", text: $query)
                 if !item.expectedKinds.isEmpty {
                     Toggle("Any kind", isOn: $anyKind)
                         .toggleStyle(.checkbox)
@@ -61,6 +60,7 @@ struct LinkEvidenceSheet: View {
                 }
             }
             .frame(height: 380)
+            .sheetListFrame()
             if let info = infoMessage {
                 SheetCaption(info)
                     .fixedSize(horizontal: false, vertical: true)
@@ -134,24 +134,13 @@ struct LinkEvidenceSheet: View {
 
     private func pickRow(_ entry: EvidenceDocumentSearch.Entry, reasons: [String] = []) -> some View {
         let summary = entry.summary
-        return HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(summary.displayName).lineLimit(1)
-                Text(DocumentFormat.caption(kind: summary.kind, date: summary.docDate, amountMinorUnits: summary.amountMinorUnits,
-                                            currency: summary.currency))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                if !reasons.isEmpty {
-                    Text(reasons.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                }
-            }
+        return HStack(spacing: 10) {
+            EvidenceDocumentPickRow(summary: summary, reasons: reasons)
             Spacer(minLength: 8)
             if linkedIds.contains(summary.id) {
-                Label("Linked", systemImage: "checkmark")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
+                PickerLinkedMark()
             } else {
-                Button("Link") {
+                PickerLinkButton(accessibilityTitle: "Link \(summary.displayName)", help: "Link to this item") {
                     switch viewModel.link(documentId: summary.id, to: item) {
                     case .success(let note):
                         infoMessage = note
@@ -163,10 +152,9 @@ struct LinkEvidenceSheet: View {
                         errorMessage = error.localizedDescription
                     }
                 }
-                .controlSize(.small)
-                .accessibilityLabel("Link \(summary.displayName)")
             }
         }
+        .padding(.vertical, 2)
     }
 
     private struct SearchKey: Equatable {
@@ -195,8 +183,8 @@ struct WaiveEvidenceSheet: View {
 
     var body: some View {
         SheetScaffold(title: item.waiver == nil ? "Mark not available" : "Edit waiver", subtitle: item.title,
-                      error: errorMessage, width: 460, onCancel: { dismiss() },
-                      primary: SheetAction(item.waiver == nil ? "Mark" : "Save") {
+                      error: errorMessage, width: SheetMetrics.formWidth, onCancel: { dismiss() },
+                      primary: SheetAction(item.waiver == nil ? "Mark not available" : "Save") {
                           errorMessage = viewModel.waive(item, reason: reason, note: note)
                           if errorMessage == nil { dismiss() }
                       }) {

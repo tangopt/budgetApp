@@ -51,7 +51,7 @@ final class SearchViewModel: ObservableObject {
     /// Re-reads everything (on appear, and after every save here).
     func load() {
         do {
-            let since = Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
+            let since = Calendar.current.date(byAdding: .day, value: -90, to: AppClock.now) ?? AppClock.now
             let (transactions, categories, groups, accounts, links, counterparts, rate, recent) = try dbQueue.read { db in
                 (try Transaction.fetchAll(db), try Category.fetchAll(db), try CategoryGroup.fetchAll(db), try Account.fetchAll(db),
                  try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db),
@@ -89,7 +89,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     private func refreshResults() {
-        let matches = TransactionSearch.rows(index, criteria: criteria)
+        let matches = TransactionSearch.rows(index, criteria: criteria, now: AppClock.now)
         let (key, ascending) = Self.sort(sortOrder)
         rows = key == .date && !ascending ? matches : TransactionSearch.sorted(matches, by: key, ascending: ascending)
         // Without an account filter a linked transfer counts once, as on the Budget grid.

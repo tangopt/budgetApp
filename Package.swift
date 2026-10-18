@@ -14,7 +14,9 @@ let package = Package(
         .target(name: "BudgetCore", dependencies: [
             .product(name: "GRDB", package: "GRDB.swift")
         ]),
-        .testTarget(name: "BudgetCoreTests", dependencies: ["BudgetCore"]),
+        // The synthetic demo database (UI snapshots, manual testing): never in the app.
+        .target(name: "BudgetDemo", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
+        .testTarget(name: "BudgetCoreTests", dependencies: ["BudgetCore", "BudgetDemo"]),
         .executableTarget(name: "MigrateHistory", dependencies: ["BudgetCore"]),
         .executableTarget(name: "MigrateAccountBalances", dependencies: ["BudgetCore"]),
         .executableTarget(name: "ConvertBalances", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
@@ -30,6 +32,7 @@ let package = Package(
         .executableTarget(name: "TaxRegression", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
         .executableTarget(name: "SelfAssessmentRegression", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
         .executableTarget(name: "BackfillRecharges", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "ApplyTaxData", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")])
+        .executableTarget(name: "ApplyTaxData", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
+        .executableTarget(name: "MakeDemoDatabase", dependencies: ["BudgetCore", "BudgetDemo"])
     ]
 )

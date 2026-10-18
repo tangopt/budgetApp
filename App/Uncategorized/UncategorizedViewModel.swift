@@ -59,7 +59,7 @@ final class UncategorizedViewModel: ObservableObject {
 
     /// The picker's Recent section covers the last 90 days.
     private static func recentSince() -> Date {
-        Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
+        Calendar.current.date(byAdding: .day, value: -90, to: AppClock.now) ?? AppClock.now
     }
 
     /// Merchant groups of the given transactions (the search-filtered list), in order of

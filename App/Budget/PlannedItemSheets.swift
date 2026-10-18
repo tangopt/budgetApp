@@ -572,10 +572,10 @@ struct AddPlannedItemSheet: View {
     @State private var isRecurring = true
     @State private var frequency: ForecastFrequency = .monthly
     @State private var interval = 1
-    @State private var startDay = PayCalendar.localDay(sameDayAs: PayCalendar.utcDay(sameDayAs: Date(), in: .current), in: .current)
+    @State private var startDay = PayCalendar.localDay(sameDayAs: PayCalendar.utcDay(sameDayAs: AppClock.now, in: .current), in: .current)
     @State private var endMode: RecurrenceEndMode = .never
     @State private var occurrenceCount = 12
-    @State private var endDay = PayCalendar.localDay(sameDayAs: PayCalendar.utcDay(sameDayAs: Date(), in: .current), in: .current)
+    @State private var endDay = PayCalendar.localDay(sameDayAs: PayCalendar.utcDay(sameDayAs: AppClock.now, in: .current), in: .current)
     @State private var errorMessage: String?
 
     /// The date of the Nth occurrence for "After N", from the picked start.
@@ -655,7 +655,7 @@ struct AddPlannedItemSheet: View {
                         Text("One-off").tag(false)
                         Text("Recurring").tag(true)
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.segmented).prominentTint()
                     .fixedSize()
                 }
                 if isRecurring {
@@ -715,7 +715,7 @@ struct IntervalStepper: View {
 /// The date an empty grid cell's add sheet opens on: today if the cell's calendar month is the
 /// current one, else the 1st of it (a UTC day, like the rest of the plan code).
 enum CellAddDate {
-    static func date(year: Int, month: Int, now: Date = Date()) -> Date {
+    static func date(year: Int, month: Int, now: Date = AppClock.now) -> Date {
         let today = PayCalendar.utcDay(sameDayAs: now, in: .current)
         let current = MonthRange.components(of: today)
         return current.year == year && current.month == month ? today : MonthRange.of(year: year, month: month).start

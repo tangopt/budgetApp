@@ -33,7 +33,7 @@ struct NoteButton: View {
                 HStack {
                     Spacer()
                     Button("Done") { isPresented = false }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.borderedProminent).prominentTint()
                         .keyboardShortcut(.defaultAction)
                 }
             }

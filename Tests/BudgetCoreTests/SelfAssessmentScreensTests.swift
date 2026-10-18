@@ -66,5 +66,13 @@ final class SelfAssessmentScreensTests: XCTestCase {
         XCTAssertEqual(SelfAssessmentFiling.Value(label: "Pay", box: "1", value: .amount(12_345)).copyText, "123")
         XCTAssertEqual(SelfAssessment.BoxValue.text("PRT").copyText, "PRT")
         XCTAssertEqual(SelfAssessment.BoxValue.cross.copyText, "X")
+        // Whether the figure shows in whole pounds follows the copy: SA110 and HMRC's calculation keep pence.
+        XCTAssertTrue(SelfAssessment.Box(form: .sa106, section: "Land and property abroad", number: "14", label: "Rents", value: .amount(12_345)).isWholePounds)
+        let sa110 = SelfAssessment.Box(form: .sa110, section: "Self Assessment", number: "1", label: "Total tax due", value: .amount(12_345))
+        XCTAssertFalse(sa110.isWholePounds)
+        XCTAssertEqual(sa110.copyText, "123.45")
+        XCTAssertFalse(SelfAssessmentFiling.Value(label: "Total tax due", box: "SA110 1", value: .amount(12_345)).isWholePounds)
+        XCTAssertFalse(SelfAssessmentFiling.Value(label: "Balancing payment", box: nil, value: .amount(12_345)).isWholePounds)
+        XCTAssertTrue(SelfAssessmentFiling.Value(label: "Pay", box: "1", value: .amount(12_345)).isWholePounds)
     }
 }

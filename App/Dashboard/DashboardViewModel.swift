@@ -40,7 +40,7 @@ final class DashboardViewModel: ObservableObject {
     private let todayProvider: () -> Date
     private var input: DashboardInput?
 
-    init(dbQueue: DatabaseQueue, today: @escaping () -> Date = { Date() }) {
+    init(dbQueue: DatabaseQueue, today: @escaping () -> Date = { AppClock.now }) {
         self.dbQueue = dbQueue
         self.todayProvider = today
         self.selectedYear = MonthRange.components(of: today()).year

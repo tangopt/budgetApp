@@ -4,12 +4,16 @@ import UniformTypeIdentifiers
 import BudgetCore
 import struct BudgetCore.Transaction
 
-/// The Tenancies tab (spec 2026-10-16 §1, §2): each tenancy's terms, rent history, contract
-/// documents and receipts — status, the credits that paid each one, its PDF — with New
-/// tenancy…, Edit…, Import receipts… and Match credits.
+/// The Tenancies tab (spec 2026-10-16 §1, §2, UI polish §4.2): the tenancy picker with
+/// Import receipts… (the main action) and More (New tenancy…, Match credits, Utility
+/// invoices…); the tenancy's panel — tenant, dates, rent, what's held (and whether the
+/// deposit account matches), its rent history and contract; then its receipts as a table by
+/// year with totals — period, amounts, status, the credits that paid them, the PDF, and one
+/// actions menu per row.
 struct PropertyTenanciesTab: View {
     @ObservedObject var viewModel: PropertyViewModel
     let openTransaction: (Transaction) -> Void
+    @Environment(\.theme) private var theme
 
     @State private var editing: TenancyDraft?
     @State private var importing = false
@@ -28,7 +32,7 @@ struct PropertyTenanciesTab: View {
 
     var body: some View {
         let tenancies = viewModel.snapshot.tenancies
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
             HStack(spacing: 8) {
                 if !tenancies.isEmpty {
                     Picker("Tenancy", selection: Binding(get: { viewModel.selectedTenancy?.id }, set: { viewModel.selectedTenancyId = $0 })) {
@@ -40,21 +44,35 @@ struct PropertyTenanciesTab: View {
                     .fixedSize()
                     .accessibilityLabel("Tenancy")
                 }
-                Spacer()
-                Button("New tenancy…") { editing = TenancyDraft(nil, rents: [], propertyId: viewModel.propertyId ?? 0) }
+                Spacer(minLength: 8)
+                Menu {
+                    Button("New tenancy…") { editing = TenancyDraft(nil, rents: [], propertyId: viewModel.propertyId ?? 0) }
+                    Divider()
+                    Button("Match credits") { viewModel.matchCredits() }
+                        .help("Link rent credits on the current account to the receipts they paid")
+                    Button("Utility invoices…") { intakingInvoices = true }
+                        .help("Add utility invoices (to recharge to the tenant) and match them to their debits")
+                } label: {
+                    Text("More")
+                }
+                .fixedSize()
+                .help("New tenancy…, Match credits, Utility invoices…")
                 Button("Import receipts…") { importing = true }
-                    .help("Import the Portal das Finanças receipts export (ListaRecibos .xlsx)")
-                Button("Match credits") { viewModel.matchCredits() }
-                    .help("Link rent credits on the current account to the receipts they paid")
-                Button("Utility invoices…") { intakingInvoices = true }
-                    .help("Add utility invoices (to recharge to the tenant) and match them to their debits")
+                    .buttonStyle(.borderedProminent).prominentTint()
+                    .help("Import the Portal das Finanças receipts export (ListaRecibos .xlsx); credits are matched after")
             }
             if let tenancy = viewModel.selectedTenancy {
-                terms(tenancy)
-                receipts(tenancy)
+                tenancyPanel(tenancy)
+                receiptsPanel(tenancy)
             } else {
-                Text("No tenancies yet. Import the portal's receipts export to create them, or add one by hand.")
-                    .foregroundStyle(.secondary)
+                Panel {
+                    EmptyState(systemImage: "person.2", title: "No tenancies yet",
+                               message: "Import the portal's receipts export to create them, or add one by hand.") {
+                        Button("New tenancy…") { editing = TenancyDraft(nil, rents: [], propertyId: viewModel.propertyId ?? 0) }
+                        Button("Import receipts…") { importing = true }.buttonStyle(.borderedProminent).prominentTint()
+                    }
+                    .inPanel()
+                }
             }
         }
         .sheet(item: $editing) { draft in
@@ -72,13 +90,13 @@ struct PropertyTenanciesTab: View {
         .sheet(item: $documentsOf) { target in
             PropertyDocumentsSheet(viewModel: viewModel, entity: target.entity, title: target.title)
         }
-        .confirmationDialog("Delete this tenancy?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+        .confirmationDialog(deleting.map { "Delete “\($0.referenceLabel)”?" } ?? "Delete this tenancy?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
                             presenting: deleting) { tenancy in
             Button("Delete tenancy and its receipts", role: .destructive) {
                 viewModel.errorMessage = viewModel.deleteTenancy(tenancy.id!)
             }
         } message: { _ in
-            Text("Its rent history, receipts and their credit links go too. Linked documents stay in the library.")
+            Text("Its rent history, receipts and their credit links go too. Linked documents stay in the library. This can't be undone.")
         }
         .fileImporter(isPresented: $pickingDocument, allowedContentTypes: EvidenceFiles.contentTypes, allowsMultipleSelection: true) { result in
             guard let target = documentTarget else { return }
@@ -95,164 +113,294 @@ struct PropertyTenanciesTab: View {
         pickingDocument = true
     }
 
-    // MARK: Terms
+    // MARK: Tenancy
 
-    private func terms(_ tenancy: Tenancy) -> some View {
-        let rents = viewModel.snapshot.rents[tenancy.id!] ?? []
-        let contracts = viewModel.snapshot.tenancyDocumentCounts[tenancy.id!] ?? 0
-        return PropertySection(tenancy.referenceLabel, accessory: {
-            HStack(spacing: 8) {
-                Button("Edit…") { editing = TenancyDraft(tenancy, rents: rents, propertyId: tenancy.propertyId) }
-                Button("Delete…", role: .destructive) { deleting = tenancy }
+    private func tenancyPanel(_ tenancy: Tenancy) -> some View {
+        let id = tenancy.id!
+        let rents = viewModel.snapshot.rents[id] ?? []
+        let contracts = viewModel.snapshot.tenancyDocumentCounts[id] ?? 0
+        let currency = viewModel.currency
+        let inForce = viewModel.rentInForce(tenancy)
+        // The deposit check is for the tenancies running on its day: shown on the current one.
+        let deposit = viewModel.currentTenancy?.id == id ? viewModel.snapshot.checks?.deposit : nil
+        return Panel(tenancy.referenceLabel, subtitle: tenancy.contractNumber.map { "Contract \($0)" }) {
+            HStack(spacing: 10) {
+                Button { editing = TenancyDraft(tenancy, rents: rents, propertyId: tenancy.propertyId) } label: {
+                    Image(systemName: "pencil")
+                }
+                .help("Edit the tenancy: terms and rent history")
+                .accessibilityLabel("Edit \(tenancy.referenceLabel)")
+                Menu {
+                    Button("Edit…") { editing = TenancyDraft(tenancy, rents: rents, propertyId: tenancy.propertyId) }
+                    Button("Add contract…") { addDocument(.tenancy(id), role: "Contract") }
+                    if contracts > 0 {
+                        Button("Contract documents…") {
+                            documentsOf = DocumentsTarget(entity: .tenancy(id), title: "\(tenancy.referenceLabel): documents")
+                        }
+                    }
+                    Divider()
+                    Button("Delete tenancy…", role: .destructive) { deleting = tenancy }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.button)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More actions")
+                .accessibilityLabel("More actions for \(tenancy.referenceLabel)")
             }
             .buttonStyle(.borderless)
-        }) {
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 6) {
-                row("Tenant", tenancy.tenantName ?? "—")
-                row("Contract no.", tenancy.contractNumber ?? "—")
-                row("Runs", PropertyFormat.period(tenancy.startDate, tenancy.endDate))
-                row("Held", "\(tenancy.depositMonths) month\(tenancy.depositMonths == 1 ? "" : "s") deposit, "
-                    + "\(tenancy.advanceRentMonths) month\(tenancy.advanceRentMonths == 1 ? "" : "s") advance rent")
-                GridRow {
-                    Text("Rent").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                    if rents.isEmpty {
-                        Text("No rent history — add it with Edit…").foregroundStyle(.secondary)
-                    } else {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(rents) { rent in
-                                HStack(spacing: 4) {
-                                    Text("From \(DocumentFormat.day(rent.fromDate))")
-                                    PropertyMoney(minorUnits: rent.monthlyAmountMinorUnits, currency: viewModel.currency, neutral: true)
-                                    Text("a month").foregroundStyle(.secondary)
+        } content: {
+            VStack(alignment: .leading, spacing: 14) {
+                FigureStrip([
+                    FigureTile(title: "Tenant", value: .text(tenancy.tenantName ?? "—"),
+                               caption: tenancy.tenantEmail.flatMap { $0.isEmpty ? nil : $0 }),
+                    FigureTile(title: "From", value: .text(DocumentFormat.day(tenancy.startDate)),
+                               caption: tenancy.endDate.map { "Until \(DocumentFormat.day($0))" } ?? "Ongoing"),
+                    inForce.map {
+                        FigureTile(title: "Rent", value: .money($0.monthlyAmountMinorUnits, currency, .neutral),
+                                   caption: "A month, since \(DocumentFormat.day($0.fromDate))")
+                    } ?? FigureTile(title: "Rent", value: .text("—"), caption: "No rent history"),
+                    FigureTile(title: "Deposit", value: .text(PropertyFormat.months(tenancy.depositMonths)),
+                               caption: "+ \(PropertyFormat.months(tenancy.advanceRentMonths)) advance rent",
+                               pill: deposit.map { PropertyCheckSummary.depositPill($0, currency: currency) })
+                ])
+                Divider()
+                HStack(alignment: .top, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Rent history").font(.subheadline.bold())
+                        if rents.isEmpty {
+                            Text("No rent history yet: add it with Edit.").font(.callout).foregroundStyle(.secondary)
+                        } else {
+                            DataTable(columns: [
+                                .date("From") { $0.fromDate },
+                                .money("Monthly rent", role: .neutral, currency: { _ in currency }) { $0.monthlyAmountMinorUnits },
+                                .status("") { $0.id == inForce?.id ? StatusPill("In force", tone: .accent) : nil }
+                            ], rows: rents, zebra: false)
+                        }
+                    }
+                    .frame(width: 340, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Contract").font(.subheadline.bold())
+                        PropertyFacts {
+                            PropertyFact("Number") { Text(tenancy.contractNumber ?? "—") }
+                            PropertyFact("Document") {
+                                HStack(spacing: 8) {
+                                    if contracts == 0 {
+                                        StatusPill("None yet", tone: .warning, systemImage: "circle.dashed")
+                                        Button("Add contract…") { addDocument(.tenancy(id), role: "Contract") }
+                                            .controlSize(.small)
+                                    } else {
+                                        Button {
+                                            documentsOf = DocumentsTarget(entity: .tenancy(id), title: "\(tenancy.referenceLabel): documents")
+                                        } label: {
+                                            Label(contracts == 1 ? "1 document" : "\(contracts) documents", systemImage: "paperclip")
+                                        }
+                                        .buttonStyle(.link)
+                                        .help("The contract's documents: open or unlink")
+                                    }
                                 }
                             }
-                        }
-                    }
-                }
-                GridRow {
-                    Text("Contract").foregroundStyle(.secondary)
-                    HStack(spacing: 8) {
-                        DocumentCountBadge(count: contracts)
-                        if contracts == 0 { Text("No document").foregroundStyle(.secondary) }
-                        Button("Add contract…") { addDocument(.tenancy(tenancy.id!), role: "Contract") }.buttonStyle(.borderless)
-                        if contracts > 0 {
-                            Button("Documents…") {
-                                documentsOf = DocumentsTarget(entity: .tenancy(tenancy.id!), title: "\(tenancy.referenceLabel): documents")
+                            if let notes = tenancy.notes, !notes.isEmpty {
+                                PropertyFact("Notes") { Text(notes).lineLimit(2).help(notes) }
                             }
-                            .buttonStyle(.borderless)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if let notes = tenancy.notes { row("Notes", notes) }
             }
-        }
-    }
-
-    private func row(_ label: String, _ value: String) -> some View {
-        GridRow {
-            Text(label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-            Text(value).fixedSize(horizontal: false, vertical: true)
         }
     }
 
     // MARK: Receipts
 
-    private func receipts(_ tenancy: Tenancy) -> some View {
+    /// A receipt (or a year's total) as a table row.
+    private struct ReceiptLine: Identifiable {
+        let id: String
+        /// Nil for a total.
+        let row: TenancyReceiptRow?
+        let rent: Int
+        let withheld: Int
+        let received: Int
+
+        var isCancelled: Bool { row?.receipt.status == .cancelled }
+    }
+
+    private func receiptSections(_ rows: [TenancyReceiptRow]) -> [DataTableSection<ReceiptLine>] {
+        let byYear = Dictionary(grouping: rows) { MonthRange.components(of: $0.receipt.periodStart).year }
+        return byYear.keys.sorted(by: >).map { year in
+            let receipts = byYear[year]!.sorted { $0.receipt.periodStart > $1.receipt.periodStart }
+            let lines = receipts.map { row in
+                ReceiptLine(id: "\(row.id)", row: row, rent: row.receipt.amountMinorUnits, withheld: row.receipt.withholdingMinorUnits,
+                            received: row.receipt.amountReceivedMinorUnits)
+            }
+            // Issued receipts only: a cancelled one charged nothing.
+            let issued = lines.filter { !$0.isCancelled }
+            let total = ReceiptLine(id: "total-\(year)", row: nil, rent: issued.reduce(0) { $0 + $1.rent },
+                                    withheld: issued.reduce(0) { $0 + $1.withheld }, received: issued.reduce(0) { $0 + $1.received })
+            return DataTableSection(String(year), rows: lines, total: total)
+        }
+    }
+
+    private func receiptsPanel(_ tenancy: Tenancy) -> some View {
         let rows = viewModel.snapshot.receipts[tenancy.id!] ?? []
         let paid = rows.filter(\.isPaid).count, issued = rows.filter { $0.receipt.status == .issued }.count
-        return PropertySection("Receipts", accessory: {
-            Text("\(rows.count) · \(paid) of \(issued) issued paid").font(.callout).foregroundStyle(.secondary)
-        }) {
+        return Panel("Receipts", subtitle: rows.isEmpty ? nil
+                     : "\(rows.count) receipt\(rows.count == 1 ? "" : "s") · \(paid) of \(issued) issued paid by their credits") {
+            if issued > 0 {
+                if paid == issued {
+                    StatusPill("All paid", tone: .positive, systemImage: "checkmark")
+                } else {
+                    StatusPill("\(issued - paid) not matched", tone: .warning)
+                }
+            }
+        } content: {
             if rows.isEmpty {
-                Text("No receipts yet. Use Import receipts… with the portal's export.").foregroundStyle(.secondary)
+                Text("No receipts yet: import the portal's export with Import receipts….").font(.callout).foregroundStyle(.secondary)
             } else {
-                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 6) {
-                    GridRow {
-                        Text("No.")
-                        Text("Rent period")
-                        Text("Received on")
-                        Text("Rent").gridColumnAlignment(.trailing)
-                        Text("Withheld").gridColumnAlignment(.trailing)
-                        Text("Received").gridColumnAlignment(.trailing)
-                        Text("Status")
-                        Text("Paid by")
-                        Text("PDF")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    Divider().gridCellUnsizedAxes(.horizontal)
-                    ForEach(rows) { row in receiptRow(row) }
-                }
+                DataTable(columns: receiptColumns(withholding: rows.contains { $0.receipt.withholdingMinorUnits != 0 }),
+                          sections: receiptSections(rows))
             }
         }
     }
 
-    private func receiptRow(_ row: TenancyReceiptRow) -> some View {
-        let receipt = row.receipt
-        let cancelled = receipt.status == .cancelled
-        return GridRow {
-            Text(receipt.receiptNumber).monospacedDigit()
-            Text(PropertyFormat.period(receipt.periodStart, receipt.periodEnd)).lineLimit(1).fixedSize()
-            Text(receipt.receiptDate.map(DocumentFormat.day) ?? "—").lineLimit(1).fixedSize()
-            PropertyMoney(minorUnits: receipt.amountMinorUnits, currency: viewModel.currency, neutral: true)
-            PropertyMoney(minorUnits: receipt.withholdingMinorUnits, currency: viewModel.currency, neutral: true)
-            PropertyMoney(minorUnits: receipt.amountReceivedMinorUnits, currency: viewModel.currency, neutral: true)
-            Text(cancelled ? "Cancelled" : "Issued").foregroundStyle(cancelled ? .secondary : .primary)
-            payments(row)
-            HStack(spacing: 4) {
-                DocumentCountBadge(count: row.documentCount)
-                Menu {
-                    Button("Add PDF…") { addDocument(.rentReceipt(receipt.id!), role: "Receipt") }
+    private func receiptColumns(withholding: Bool) -> [DataTableColumn<ReceiptLine>] {
+        var columns: [DataTableColumn<ReceiptLine>] = [
+            DataTableColumn("No.", accessibilityValue: { $0.row?.receipt.receiptNumber }) { line, kind in
+                Text(kind == .total ? "Total" : line.row?.receipt.receiptNumber ?? "")
+                    .monospacedDigit()
+                    .fontWeight(kind == .total ? .semibold : .regular)
+                    .foregroundStyle(line.isCancelled ? Color.secondary : Color.primary)
+            },
+            PropertyReceiptColumns.period { $0.row.map { ($0.receipt.periodStart, $0.receipt.periodEnd) } },
+            .date("Received on") { $0.row?.receipt.receiptDate },
+            amountColumn("Rent") { $0.rent }
+        ]
+        if withholding {
+            columns.append(amountColumn("Withheld") { $0.withheld })
+            columns.append(amountColumn("Received") { $0.received })
+        }
+        columns += [
+            .status("Status") { line in line.row.map(Self.status) },
+            DataTableColumn("Paid by", width: .fill(min: 170), accessibilityValue: paidByDescription) { line, _ in
+                if let row = line.row { paidBy(row) }
+            },
+            // The PDF: its paperclip, or a dashed to-do circle that adds it (none for a
+            // cancelled receipt). No accessibility value: the button stays reachable.
+            DataTableColumn("", alignment: .center, width: .fixed(36)) { line, kind in
+                if kind == .row, let row = line.row {
                     if row.documentCount > 0 {
-                        Button("Documents…") {
-                            documentsOf = DocumentsTarget(entity: .rentReceipt(receipt.id!), title: "Receipt \(receipt.receiptNumber): documents")
+                        DocumentCountBadge(count: row.documentCount)
+                    } else if row.receipt.status != .cancelled {
+                        Button { addDocument(.rentReceipt(row.receipt.id!), role: "Receipt") } label: {
+                            Image(systemName: "circle.dashed").foregroundStyle(theme.pending)
                         }
+                        .buttonStyle(.borderless)
+                        .help("No PDF yet: add the receipt PDF…")
+                        .accessibilityLabel("Add the PDF of receipt \(row.receipt.receiptNumber)")
                     }
-                } label: {
-                    Image(systemName: row.documentCount == 0 ? "paperclip.badge.ellipsis" : "ellipsis.circle")
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help(row.documentCount == 0 ? "Add the receipt PDF" : "The receipt's documents")
-                .accessibilityLabel("Receipt \(receipt.receiptNumber) documents")
-            }
-        }
-        .opacity(cancelled ? 0.6 : 1)
+            },
+            .actions { line in line.row.map(actions) ?? [] }
+        ]
+        return columns
     }
 
+    /// A receipt's amount (as on the receipt: neutral), muted when it's cancelled.
+    private func amountColumn(_ title: String, _ value: @escaping (ReceiptLine) -> Int) -> DataTableColumn<ReceiptLine> {
+        let currency = viewModel.currency
+        return DataTableColumn(title, alignment: .trailing, width: .min(96),
+                               accessibilityValue: { Money.format(value($0), currency: currency) }) { line, kind in
+            MoneyText(minorUnits: value(line), currency: currency,
+                      font: kind == .total ? .body.monospacedDigit().weight(.semibold) : .body.monospacedDigit(),
+                      role: .neutral, tint: line.isCancelled ? .secondary : nil)
+        }
+    }
+
+    private static func status(_ row: TenancyReceiptRow) -> StatusPill {
+        if row.receipt.status == .cancelled { return StatusPill("Cancelled") }
+        if row.isPaid { return StatusPill("Paid", tone: .positive, systemImage: "checkmark") }
+        return row.payments.isEmpty ? StatusPill("Not matched", tone: .warning) : StatusPill("Part paid", tone: .warning)
+    }
+
+    /// The credits that paid it: the day and the credit, the part that isn't rent beneath.
     @ViewBuilder
-    private func payments(_ row: TenancyReceiptRow) -> some View {
+    private func paidBy(_ row: TenancyReceiptRow) -> some View {
         if row.payments.isEmpty {
-            Text(row.receipt.status == .cancelled ? "" : "Not matched").foregroundStyle(.secondary)
+            Text("—").foregroundStyle(.tertiary)
         } else {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 ForEach(row.payments, id: \.payment.id) { info in
-                    HStack(spacing: 4) {
-                        Text(DocumentFormat.day(info.transaction.date)).lineLimit(1).fixedSize()
-                        PropertyMoney(minorUnits: info.transaction.amountMinorUnits, currency: viewModel.currency)
-                        if info.payment.otherMinorUnits > 0 {
-                            Text("incl.").foregroundStyle(.secondary)
-                            PropertyMoney(minorUnits: info.payment.otherMinorUnits, currency: viewModel.currency, neutral: true)
-                            Text("other").foregroundStyle(.secondary)
-                        }
-                        Menu {
-                            Button("Show transaction") { openTransaction(info.transaction) }
-                            Button("Unlink") { viewModel.unlinkPayment(info.payment) }
-                        } label: { Image(systemName: "chevron.down.circle") }
-                            .menuStyle(.borderlessButton)
-                            .menuIndicator(.hidden)
-                            .fixedSize()
-                            .accessibilityLabel("Credit of \(DocumentFormat.day(info.transaction.date)) actions")
+                    HStack(spacing: 8) {
+                        DateText(date: info.transaction.date)
+                        MoneyText(minorUnits: info.transaction.amountMinorUnits, currency: viewModel.currency)
                     }
-                    .font(.callout)
+                    if info.payment.otherMinorUnits > 0 {
+                        Text("incl. \(Money.format(info.payment.otherMinorUnits, currency: viewModel.currency)) other")
+                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                            .help("The part of the credit that isn't rent (utility recharges and the like)")
+                    }
+                }
+            }
+        }
+    }
+
+    private func paidByDescription(_ line: ReceiptLine) -> String? {
+        guard let row = line.row, !row.payments.isEmpty else { return nil }
+        return row.payments.map { info in
+            var text = "\(DocumentFormat.day(info.transaction.date)) \(Money.format(info.transaction.amountMinorUnits, currency: viewModel.currency))"
+            if info.payment.otherMinorUnits > 0 {
+                text += " including \(Money.format(info.payment.otherMinorUnits, currency: viewModel.currency)) other"
+            }
+            return text
+        }.joined(separator: "; ")
+    }
+
+    /// One ••• menu per receipt: its credits (show, unlink), its PDF (add, documents).
+    private func actions(_ row: TenancyReceiptRow) -> [DataTableAction] {
+        let receipt = row.receipt
+        var actions: [DataTableAction] = []
+        let single = row.payments.count == 1
+        for info in row.payments {
+            let day = DocumentFormat.day(info.transaction.date)
+            actions.append(DataTableAction(single ? "Show the credit" : "Show the credit of \(day)", systemImage: "arrow.right.circle") {
+                openTransaction(info.transaction)
+            })
+            actions.append(DataTableAction(single ? "Unlink the credit" : "Unlink the credit of \(day)", systemImage: "xmark.circle") {
+                viewModel.unlinkPayment(info.payment)
+            })
+        }
+        actions.append(DataTableAction(row.documentCount == 0 ? "Add the receipt PDF…" : "Add a PDF…", systemImage: "paperclip") {
+            addDocument(.rentReceipt(receipt.id!), role: "Receipt")
+        })
+        if row.documentCount > 0 {
+            actions.append(DataTableAction("Documents…", systemImage: "doc.on.doc") {
+                documentsOf = DocumentsTarget(entity: .rentReceipt(receipt.id!), title: "Receipt \(receipt.receiptNumber): documents")
+            })
+        }
+        return actions
+    }
+}
+
+/// A rent period as two aligned days, "1 Aug 2025 – 31 Aug 2025" (`DateText`).
+enum PropertyReceiptColumns {
+    static func period<Row>(_ title: String = "Rent period", _ value: @escaping (Row) -> (Date, Date)?) -> DataTableColumn<Row> {
+        DataTableColumn(title, accessibilityValue: { row in
+            value(row).map { "\(DocumentFormat.day($0.0)) to \(DocumentFormat.day($0.1))" }
+        }) { row, _ in
+            if let period = value(row) {
+                HStack(spacing: 4) {
+                    DateText(date: period.0, alignment: .trailing)
+                    Text("–").foregroundStyle(.secondary)
+                    DateText(date: period.1)
                 }
             }
         }
     }
 }
 
-/// The documents linked to a property record: open or unlink each.
+/// The documents linked to a property record as a table (name over kind, day, amount), with
+/// open and unlink as icons.
 struct PropertyDocumentsSheet: View {
     @ObservedObject var viewModel: PropertyViewModel
     let entity: EvidenceEntity
@@ -261,32 +409,47 @@ struct PropertyDocumentsSheet: View {
     @State private var documents: [EvidenceDocument] = []
 
     var body: some View {
-        SheetScaffold(title: title, width: 520, cancelTitle: "Done", onCancel: { dismiss() }) {
+        SheetScaffold(title: title, subtitle: documents.isEmpty ? nil : "\(documents.count) document\(documents.count == 1 ? "" : "s")",
+                      width: SheetMetrics.listWidth, cancelTitle: "Done", onCancel: { dismiss() }) {
             if documents.isEmpty {
-                Text("No documents.").foregroundStyle(.secondary)
+                SheetEmptyState(systemImage: "doc", title: "No documents",
+                                message: "Nothing is linked to this record yet. Unlinked documents stay in the library.", minHeight: 130)
             } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(documents) { document in
-                        HStack {
-                            Image(systemName: "doc").foregroundStyle(.secondary).accessibilityHidden(true)
-                            VStack(alignment: .leading) {
-                                Text(document.displayName).lineLimit(1)
-                                Text(DocumentFormat.caption(kind: document.kind, date: document.docDate, amountMinorUnits: document.amountMinorUnits,
-                                                            currency: document.currency))
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("Open") { viewModel.open(document) }.buttonStyle(.borderless)
-                            Button("Unlink") {
-                                viewModel.unlinkDocument(document, from: entity)
-                                documents = viewModel.documents(for: entity)
-                            }
-                            .buttonStyle(.borderless)
-                        }
-                    }
+                ScrollView {
+                    DataTable(columns: columns, rows: documents)
                 }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(maxHeight: 360)
+                .fixedSize(horizontal: false, vertical: true)
+                .sheetListFrame()
             }
         }
         .onAppear { documents = viewModel.documents(for: entity) }
+    }
+
+    private var columns: [DataTableColumn<EvidenceDocument>] {
+        [
+            DataTableColumn("Document", width: .fill(min: 200),
+                            accessibilityValue: { [$0.displayName, $0.kind.displayName].joined(separator: ", ") }) { document, _ in
+                HStack(spacing: 8) {
+                    Image(systemName: "doc").foregroundStyle(.secondary).accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(document.displayName).lineLimit(1).help(document.displayName)
+                        Text(document.kind.displayName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            },
+            .date("Date") { $0.docDate },
+            .money("Amount", role: .neutral, currency: { $0.currency ?? .eur }) { $0.currency == nil ? nil : $0.amountMinorUnits },
+            .actions { document in
+                [DataTableAction("Open \(document.displayName) in its default app", systemImage: "arrow.up.forward.square", inline: true) {
+                    viewModel.open(document)
+                 },
+                 DataTableAction("Unlink \(document.displayName): it stays in the library", systemImage: "xmark.circle", inline: true) {
+                    viewModel.unlinkDocument(document, from: entity)
+                    documents = viewModel.documents(for: entity)
+                 }]
+            }
+        ]
     }
 }

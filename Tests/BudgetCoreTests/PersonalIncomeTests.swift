@@ -92,6 +92,12 @@ final class PersonalIncomeTests: XCTestCase {
             XCTAssertEqual(effective?.source, .p60)
             XCTAssertEqual(effective?.payMinorUnits, 400_000)
             XCTAssertEqual(try Employments.incomes(db: db, employmentId: id).map(\.source), [.p60, .p45, .payslip, .payslip])
+            // The rows already read (the Income tab's) give the same figures.
+            let rows = try Employments.incomes(db: db, employmentId: id)
+            XCTAssertEqual(Employments.effectiveIncome(rows)?.payMinorUnits, 400_000)
+            XCTAssertEqual(Employments.effectiveIncome(Array(rows.dropFirst()))?.source, .p45)
+            XCTAssertEqual(Employments.effectiveIncome(Array(rows.dropFirst(2)))?.payMinorUnits, 250_000)
+            XCTAssertNil(Employments.effectiveIncome([]))
 
             var negative = EmploymentIncome(employmentId: id, source: .other, payMinorUnits: -1, taxDeductedMinorUnits: 0)
             XCTAssertThrowsError(try Employments.save(db: db, &negative)) { XCTAssertEqual($0 as? PersonalIncomeError, .negativeAmount) }

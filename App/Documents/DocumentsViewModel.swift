@@ -33,8 +33,16 @@ final class DocumentsViewModel: ObservableObject {
     @Published var queryText = "" {
         didSet { if queryText != oldValue { scheduleQuery() } }
     }
-    @Published private(set) var index = EvidenceDocumentSearch.Index(entries: [])
-    @Published private(set) var entries: [EvidenceDocumentSearch.Entry] = []
+    @Published private(set) var index = EvidenceDocumentSearch.Index(entries: []) {
+        didSet { overview = LibrarySummary(index.entries) }
+    }
+    @Published private(set) var entries: [EvidenceDocumentSearch.Entry] = [] {
+        didSet { sections = YearSection.sections(entries) }
+    }
+    /// The matching documents by the year they're dated in, for the list.
+    @Published private(set) var sections: [YearSection] = []
+    /// The whole library at a glance (whatever the filters show), for the overview.
+    @Published private(set) var overview = LibrarySummary([])
     @Published var selectedId: Int64? {
         didSet { if selectedId != oldValue { loadSelection() } }
     }
@@ -159,6 +167,12 @@ final class DocumentsViewModel: ObservableObject {
     }
 
     // MARK: Selection
+
+    /// A library document in full, read now (the list's context menu acts on any row).
+    func document(_ id: Int64) -> EvidenceDocument? {
+        if let selected, selected.id == id { return selected }
+        return try? library.document(id: id)
+    }
 
     func entry(_ id: Int64?) -> EvidenceDocumentSearch.Entry? {
         guard let id else { return nil }
@@ -349,5 +363,74 @@ final class DocumentsViewModel: ObservableObject {
     func sourceFolder(_ id: Int64?) -> SourceFolder? {
         guard let id else { return nil }
         return sourceFolders.first { $0.id == id }
+    }
+}
+
+// MARK: - Presentation
+
+extension DocumentsViewModel {
+    /// The documents dated in one year (`Entry.year`: the document's date, else its period's),
+    /// latest first; undated ones in a section of their own, last.
+    struct YearSection: Identifiable, Equatable {
+        let year: Int?
+        let entries: [EvidenceDocumentSearch.Entry]
+
+        var id: Int { year ?? Int.min }
+        var title: String { year.map(String.init) ?? "No date" }
+
+        /// `entries` by year, latest first; within a year by date, latest first (the index's
+        /// order — newest added first — between documents of the same day).
+        static func sections(_ entries: [EvidenceDocumentSearch.Entry]) -> [YearSection] {
+            var order: [Int?] = []
+            var grouped: [Int?: [(offset: Int, entry: EvidenceDocumentSearch.Entry)]] = [:]
+            for (offset, entry) in entries.enumerated() {
+                if grouped[entry.year] == nil { order.append(entry.year) }
+                grouped[entry.year, default: []].append((offset, entry))
+            }
+            func day(_ entry: EvidenceDocumentSearch.Entry) -> Date {
+                let summary = entry.summary
+                return summary.docDate ?? summary.periodEnd ?? summary.periodStart ?? .distantPast
+            }
+            return order
+                .sorted { ($0 ?? Int.min) > ($1 ?? Int.min) }
+                .map { year in
+                    let rows = (grouped[year] ?? []).sorted { a, b in
+                        let (dayA, dayB) = (day(a.entry), day(b.entry))
+                        return dayA != dayB ? dayA > dayB : a.offset < b.offset
+                    }
+                    return YearSection(year: year, entries: rows.map(\.entry))
+                }
+        }
+    }
+
+    /// The library's figures for the overview shown while nothing is selected.
+    struct LibrarySummary: Equatable {
+        var total = 0
+        var linked = 0
+        var unlinked = 0
+        /// Scans and photos: no text to search or match.
+        var imageOnly = 0
+        /// Documents per kind, most first.
+        var byKind: [(kind: DocumentKind, count: Int)] = []
+        /// The newest-added documents not linked to anything yet.
+        var recentUnlinked: [EvidenceDocumentSearch.Entry] = []
+
+        init(_ entries: [EvidenceDocumentSearch.Entry], unlinkedShown: Int = 8) {
+            total = entries.count
+            linked = entries.filter { $0.linkCount > 0 }.count
+            unlinked = total - linked
+            imageOnly = entries.filter { $0.summary.textStatus == .image }.count
+            var counts: [DocumentKind: Int] = [:]
+            for entry in entries { counts[entry.summary.kind, default: 0] += 1 }
+            byKind = counts.map { (kind: $0.key, count: $0.value) }
+                .sorted { ($0.count, $1.kind.displayName) > ($1.count, $0.kind.displayName) }
+            recentUnlinked = Array(entries.filter { $0.linkCount == 0 }.prefix(unlinkedShown))
+        }
+
+        static func == (lhs: LibrarySummary, rhs: LibrarySummary) -> Bool {
+            lhs.total == rhs.total && lhs.linked == rhs.linked && lhs.imageOnly == rhs.imageOnly
+                && lhs.byKind.map(\.kind) == rhs.byKind.map(\.kind) && lhs.byKind.map(\.count) == rhs.byKind.map(\.count)
+                && lhs.recentUnlinked == rhs.recentUnlinked
+        }
     }
 }

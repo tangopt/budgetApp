@@ -171,17 +171,37 @@ final class FolderReviewModel: ObservableObject {
     }
 }
 
+#if SNAPSHOTS
+extension FolderReviewModel {
+    /// Shows `result` as a finished scan would (the snapshot harness; nothing is read or written).
+    func showForSnapshot(_ result: SourceFolderScanner.ScanResult, catalog: TransactionCatalog?) {
+        // A finished task, so the sheet's `start()` doesn't scan.
+        scanTask = Task {}
+        self.catalog = catalog
+        show(result)
+    }
+}
+#endif
+
 struct FolderReviewSheet: View {
     @StateObject private var model: FolderReviewModel
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.theme) private var theme
 
     init(folder: SourceFolder, scanner: SourceFolderScanner, dbQueue: DatabaseQueue) {
         _model = StateObject(wrappedValue: FolderReviewModel(folder: folder, scanner: scanner, dbQueue: dbQueue))
     }
 
+    #if SNAPSHOTS
+    /// A review already under way (the snapshot harness: a scan's result shown without reading
+    /// a folder).
+    init(model: FolderReviewModel) {
+        _model = StateObject(wrappedValue: model)
+    }
+    #endif
+
     var body: some View {
-        SheetScaffold(title: "Review “\(model.folder.name)”", subtitle: subtitle, error: model.errorMessage, width: 760,
+        SheetScaffold(title: "Review “\(model.folder.name)”", subtitle: model.folder.path, error: model.errorMessage,
+                      width: SheetMetrics.tableWidth,
                       cancelTitle: model.phase == .ready ? "Close" : "Cancel",
                       onCancel: {
                           model.cancel()
@@ -190,16 +210,16 @@ struct FolderReviewSheet: View {
                       primary: SheetAction("Add & link selected (\(model.selectedCount))",
                                            isEnabled: model.phase == .ready && model.selectedCount > 0,
                                            action: model.addSelected)) {
+            if let summary = model.summary {
+                InlineBanner(.success, summary)
+            }
             content
-                .frame(height: 460)
+                .frame(height: 440)
+            if let result = model.result, model.phase == .ready || model.phase == .applying {
+                SheetCaption(otherCounts(result))
+            }
         }
         .onAppear { model.start() }
-    }
-
-    private var subtitle: String {
-        var parts = [model.folder.path]
-        if let summary = model.summary { parts.append(summary) }
-        return parts.joined(separator: " · ")
     }
 
     @ViewBuilder
@@ -223,11 +243,12 @@ struct FolderReviewSheet: View {
             }
         case .failed(let message):
             VStack(alignment: .leading) {
-                Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(theme.expense)
+                InlineBanner(.error, message)
                 Spacer()
             }
         case .ready, .applying:
             lists
+                .sheetListFrame()
                 .disabled(model.phase == .applying)
                 .overlay {
                     if model.phase == .applying { ProgressView("Adding…") }
@@ -271,11 +292,6 @@ struct FolderReviewSheet: View {
                         }
                         .help(file.documentId == nil ? "Not in the library" : "Its library copy is kept")
                     }
-                }
-            }
-            if let result = model.result {
-                Section {
-                    Text(otherCounts(result)).font(.caption).foregroundStyle(.secondary)
                 }
             }
         }

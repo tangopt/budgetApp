@@ -1,32 +1,23 @@
 // App/Dashboard/DashboardCard.swift
 import SwiftUI
 
+/// A Dashboard card: a `Panel` with an optional "Name ›" link, stretching to its row
+/// partner's height (`TwoUpRow`); in the dashboard's scroll view it otherwise takes just its
+/// own height.
 struct DashboardCard<Content: View>: View {
     let title: String
     var linkTitle: String? = nil
     var onLink: (() -> Void)? = nil
     @ViewBuilder let content: Content
-    @Environment(\.theme) private var theme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title).font(.headline)
-                Spacer()
-                if let linkTitle, let onLink {
-                    Button("\(linkTitle) ›", action: onLink)
-                        .buttonStyle(.link)
-                        .font(.caption)
-                }
+        Panel(title, fillsHeight: true) {
+            if let linkTitle, let onLink {
+                PanelLink(title: linkTitle, action: onLink)
             }
+        } content: {
             content
         }
-        .padding(14)
-        // maxHeight lets a card stretch to its row partner's height (`TwoUpRow`); in the
-        // dashboard's scroll view it otherwise takes just its own height.
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(theme.surface))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(nsColor: .separatorColor)))
     }
 }
 

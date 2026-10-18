@@ -17,7 +17,7 @@ enum SaveOutcome: Equatable {
 final class AccountsViewModel: ObservableObject {
     @Published private(set) var overview: AccountsOverview?
     @Published private(set) var accounts: [Account] = []
-    @Published private(set) var rate: ExchangeRateSetting = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
+    @Published private(set) var rate: ExchangeRateSetting = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: AppClock.now)
     /// Defaults to the first row after a load; kept across loads while it still exists.
     @Published var selectedAccountId: Int64? {
         didSet { if selectedAccountId != oldValue { updateSelectedHistory() } }
@@ -67,7 +67,7 @@ final class AccountsViewModel: ObservableObject {
             self.rate = rate
             // Only the built-in categories matter here: they're the ones excluded.
             importedThrough = ImportCoverage.importedThroughByAccount(transactions: transactions, batches: batches, categories: builtIns)
-            let overview = AccountsOverview.make(accounts: accounts, snapshots: snapshots, transactions: transactions, rate: rate, today: Date())
+            let overview = AccountsOverview.make(accounts: accounts, snapshots: snapshots, transactions: transactions, rate: rate, today: AppClock.now)
             self.overview = overview
             let rowIds = overview.groups.flatMap(\.rows).map(\.id)
             if selectedAccountId.map(rowIds.contains) != true { selectedAccountId = rowIds.first }
@@ -200,7 +200,7 @@ final class AccountsViewModel: ObservableObject {
     /// Reads the categories, groups and recent categories for Add transaction…'s picker;
     /// a failed read leaves the picker with what it had.
     func prepareAddTransaction() {
-        let since = Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
+        let since = Calendar.current.date(byAdding: .day, value: -90, to: AppClock.now) ?? AppClock.now
         if let (categories, groups) = try? dbQueue.read({ db in (try Category.fetchAll(db), try CategoryGroup.fetchAll(db)) }) {
             self.categories = categories
             categoryGroups = groups
@@ -245,7 +245,7 @@ final class AccountsViewModel: ObservableObject {
             return
         }
         selectedHistory = AccountHistory.make(accountId: selectedAccountId, snapshots: snapshots, transactions: transactions,
-                                              adjustmentCategoryNames: adjustmentCategoryNames, today: Date())
+                                              adjustmentCategoryNames: adjustmentCategoryNames, today: AppClock.now)
     }
 
     static func message(for error: Error) -> String {

@@ -141,6 +141,27 @@ final class PropertyFinanceTests: XCTestCase {
         XCTAssertEqual(summary.months[1].figures.recharges.native, 15_000)
     }
 
+    /// The loan's history, read for many days at once, matches `balance` day by day (before the
+    /// opening snapshot, on it, mid-year, at the year's end; the loan and the deposit together).
+    func testLoanBalancesMatchBalanceDayByDay() throws {
+        let days = [Self.date(2024, 12, 30), Self.date(2024, 12, 31), Self.date(2025, 2, 14), Self.date(2025, 3, 31),
+                    Self.date(2025, 7, 1), Self.date(2025, 12, 31)]
+        for accountIds in [[ids["loan"]!], [ids["loan"]!, ids["deposit"]!], []] {
+            let (many, one) = try db.read { db -> ([PropertyAmount], [PropertyAmount]) in
+                let property = try Property.fetchOne(db, key: propertyId)!
+                let conversion = try CurrencyConversion.current(db: db)
+                return (try PropertyFinance.loanBalances(db: db, property: property, accountIds: accountIds, days: days),
+                        try days.map { try PropertyFinance.balance(db: db, property: property, conversion: conversion, accountIds: accountIds, asOf: $0) })
+            }
+            XCTAssertEqual(many, one, "accounts \(accountIds)")
+        }
+        let owed = try db.read { db in
+            try PropertyFinance.loanBalances(db: db, property: try Property.fetchOne(db, key: propertyId)!, accountIds: [ids["loan"]!],
+                                             days: [Self.date(2025, 12, 31)])
+        }
+        XCTAssertEqual(owed.first?.native, 10_000_000 - (306_000 - 120_000))
+    }
+
     func testCustomAndTaxYearPeriods() throws {
         let custom = DateInterval(start: Self.date(2025, 1, 1), end: Self.date(2025, 5, 1))
         let summary = try db.read { db in try PropertyFinance.summary(db: db, propertyId: propertyId, period: .custom(custom)) }

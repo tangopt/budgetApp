@@ -78,24 +78,7 @@ struct SearchView: View {
     // MARK: Search field
 
     private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search descriptions, notes, categories or an amount", text: $viewModel.queryText)
-                .textFieldStyle(.plain)
-                .focused($searchFocused)
-            if !viewModel.queryText.isEmpty {
-                Button { viewModel.queryText = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("Clear the search")
-                .accessibilityLabel("Clear the search")
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor)))
+        SearchField("Search descriptions, notes, categories or an amount", text: $viewModel.queryText, focus: $searchFocused)
     }
 
     // MARK: Table

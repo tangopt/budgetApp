@@ -1,9 +1,11 @@
 // App/Tax/TaxSettingsTab.swift
 import SwiftUI
 import BudgetCore
+import struct BudgetCore.Category
 
-/// The year's settings: the HMRC average rate (fetch, or enter by hand), the person's splits,
-/// the attribution rules (every year, or this year only) and the category → tax type map.
+/// The year's settings (UI polish §4.2): the HMRC average rate (with where it came from as a
+/// pill; fetch, or enter by hand) beside the person's share and splits; the attribution rules
+/// and the category → tax line map as tables, an edit icon or a picker per row.
 struct TaxSettingsTab: View {
     @ObservedObject var viewModel: TaxYearsViewModel
     let page: TaxOverview.YearPage
@@ -18,14 +20,19 @@ struct TaxSettingsTab: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            rateSection
+        VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
             if page.property != nil {
-                splitsSection
+                // Side by side while the rate's two buttons fit beside its title.
+                SplitRow(ratio: 0.5, stackBelow: 900) {
+                    ratePanel
+                    splitsPanel
+                }
+            } else {
+                ratePanel
             }
-            rulesSection
+            rulesPanel
             if page.property != nil {
-                typesSection
+                typesPanel
             }
         }
         .sheet(isPresented: $editingRate) {
@@ -39,99 +46,203 @@ struct TaxSettingsTab: View {
         }
     }
 
-    private var rateSection: some View {
-        PropertySection("HMRC average rate") {
-            VStack(alignment: .leading, spacing: 8) {
-                if page.rates.isEmpty {
-                    Text("No rate for \(page.row.year.label) yet.").foregroundStyle(.secondary)
-                }
-                ForEach(page.rates, id: \.currencyCode) { rate in
-                    HStack {
-                        Text(TaxFormat.rate(rate)).monospacedDigit()
-                        Text(TaxFormat.source(of: rate)).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Remove") { viewModel.removeRate(currencyCode: rate.currencyCode) }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("Remove the \(rate.currencyCode) rate")
+    // MARK: Rate
+
+    private var ratePanel: some View {
+        Panel("HMRC average rate", subtitle: "For the year to 31 March \(String(page.row.year.startYear + 1))", fillsHeight: true) {
+            HStack(spacing: 6) {
+                if viewModel.isFetchingRate { ProgressView().controlSize(.small) }
+                Button("Fetch from HMRC") { viewModel.fetchRate(replace: false) }
+                    .help("HMRC's average for the year to 31 March; keeps a rate entered by hand or from a filed return")
+                Button("Enter by hand…") { editingRate = true }
+            }
+            .controlSize(.small)
+        } content: {
+            if page.rates.isEmpty {
+                Text("No rate for \(page.row.year.label) yet: fetch HMRC's average, or enter it by hand.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(page.rates.enumerated()), id: \.element.currencyCode) { index, rate in
+                        if index > 0 { Divider() }
+                        rateFacts(rate)
                     }
-                }
-                HStack {
-                    Button("Fetch from HMRC") { viewModel.fetchRate(replace: false) }
-                        .help("HMRC's average for the year to 31 March; keeps a rate entered by hand or from a filed return")
-                    Button("Enter by hand…") { editingRate = true }
-                    if viewModel.isFetchingRate { ProgressView().controlSize(.small) }
                 }
             }
         }
     }
 
-    private var splitsSection: some View {
-        PropertySection("\(page.row.person.name)'s share", accessory: {
+    private func rateFacts(_ rate: HMRCRate) -> some View {
+        let pill = TaxFormat.sourcePill(rate)
+        return PropertyFacts {
+            PropertyFact(page.rates.count > 1 ? "Rate (\(rate.currencyCode))" : "Rate") {
+                HStack(spacing: 8) {
+                    Text(TaxFormat.unitsPerPound(rate)).monospacedDigit().fontWeight(.semibold).lineLimit(1)
+                    Spacer(minLength: 8)
+                    // The same remove icon as the splits beside it.
+                    Button(role: .destructive) { viewModel.removeRate(currencyCode: rate.currencyCode) } label: {
+                        Image(systemName: "xmark.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Remove the \(rate.currencyCode) rate")
+                    .accessibilityLabel("Remove the \(rate.currencyCode) rate")
+                }
+            }
+            PropertyFact("In pounds") {
+                Text(TaxFormat.poundsPerUnit(rate)).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+            }
+            PropertyFact("Source") {
+                HStack(spacing: 6) {
+                    StatusPill(pill.title, tone: pill.tone, systemImage: pill.systemImage, help: rate.notes)
+                    if let fetched = rate.fetchedAt {
+                        Text("on \(DocumentFormat.day(fetched))").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Share and splits
+
+    private var splitsPanel: some View {
+        Panel("\(page.row.person.name)'s share", subtitle: "A split overrides the ownership share for this year", fillsHeight: true) {
             Button("Add split…") { editingSplit = SplitDraft(expenseType: nil, shareBasisPoints: nil) }
-                .buttonStyle(.borderless)
-        }) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Ownership over the year (weighted by days owned): \(PropertyFormat.percent(page.ownershipShareBasisPoints)). A split overrides it for this year.")
-                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                ForEach(page.splits, id: \.id) { split in
-                    HStack {
-                        Text(split.expenseType?.displayName ?? "Every type")
-                        Text(PropertyFormat.percent(split.shareBasisPoints)).monospacedDigit()
-                        Spacer()
-                        Button("Edit…") { editingSplit = SplitDraft(expenseType: split.expenseType, shareBasisPoints: split.shareBasisPoints) }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("Edit the split for \(split.expenseType?.displayName ?? "every type")")
-                        Button("Remove") {
-                            viewModel.errorMessage = viewModel.setSplit(expenseType: split.expenseType, shareBasisPoints: nil)
+                .controlSize(.small)
+        } content: {
+            VStack(alignment: .leading, spacing: 10) {
+                PropertyFacts {
+                    PropertyFact("Ownership") {
+                        HStack(spacing: 6) {
+                            Text(PropertyFormat.percent(page.ownershipShareBasisPoints)).monospacedDigit().fontWeight(.semibold)
+                            Text("over the year, weighted by days owned").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Remove the split for \(split.expenseType?.displayName ?? "every type")")
                     }
+                }
+                if page.splits.isEmpty {
+                    Text("No splits: every line takes the ownership share.").font(.callout).foregroundStyle(.secondary)
+                } else {
+                    DataTable(columns: [
+                        .text("Applies to", { $0.expenseType?.displayName ?? "Every type" }),
+                        DataTableColumn("Share", alignment: .trailing, width: .min(56),
+                                        accessibilityValue: { PropertyFormat.percent($0.shareBasisPoints) }) { split, _ in
+                            Text(PropertyFormat.percent(split.shareBasisPoints)).monospacedDigit()
+                        },
+                        .actions { split in
+                            let name = split.expenseType?.displayName ?? "every type"
+                            return [
+                                DataTableAction("Edit the split for \(name)", systemImage: "pencil", inline: true) {
+                                    editingSplit = SplitDraft(expenseType: split.expenseType, shareBasisPoints: split.shareBasisPoints)
+                                },
+                                DataTableAction("Remove the split for \(name)", systemImage: "xmark.circle", inline: true) {
+                                    viewModel.errorMessage = viewModel.setSplit(expenseType: split.expenseType, shareBasisPoints: nil)
+                                }
+                            ]
+                        }
+                    ], rows: page.splits.map(SplitEntry.init), zebra: false)
                 }
             }
         }
     }
 
-    private var rulesSection: some View {
-        PropertySection("Attribution rules") {
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                ForEach(page.rules) { row in
-                    GridRow {
-                        Text(row.expenseType.displayName).lineLimit(1)
-                        Text(ruleText(row)).lineLimit(1)
-                        Text(scopeText(row.scope)).foregroundStyle(.secondary).lineLimit(1)
-                        Button("Change…") { editingRule = row }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("Change the rule for \(row.expenseType.displayName)")
-                    }
-                }
-            }
+    /// A split as a table row.
+    private struct SplitEntry: Identifiable {
+        let id: String
+        let expenseType: TaxExpenseType?
+        let shareBasisPoints: Int
+
+        init(_ split: TaxYearSplit) {
+            id = split.expenseType?.rawValue ?? "all"
+            expenseType = split.expenseType
+            shareBasisPoints = split.shareBasisPoints
         }
     }
 
-    private var typesSection: some View {
-        PropertySection("Categories → tax lines", accessory: {
+    // MARK: Rules
+
+    private var rulesPanel: some View {
+        Panel("Attribution rules", subtitle: "How each tax line's payments are attributed to a tax year") {
+            DataTable(columns: [
+                .text("Tax line", width: .fit, { $0.expenseType.displayName }),
+                DataTableColumn("Rule", width: .fill(min: 200), accessibilityValue: { ruleText($0) }) { row, _ in
+                    HStack(spacing: 4) {
+                        Text(row.rule.displayName).lineLimit(1)
+                        if row.rule == .apportionByCover {
+                            Text("· \(row.defaultCoverMonths ?? TaxAttributionRules.defaultCoverMonths) months if the cover is unknown")
+                                .foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                },
+                // The exception (this year only) as a pill; the usual scopes as plain words.
+                DataTableColumn("Applies", accessibilityValue: { scopeText($0.scope) }) { row, _ in
+                    if row.scope == .thisYear {
+                        StatusPill(scopeText(row.scope), tone: .accent, help: "Changed for this year only: other years keep their rule")
+                    } else {
+                        Text(scopeText(row.scope)).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                            .help(row.scope == .builtIn ? "The built-in rule" : "Changed for every year")
+                    }
+                },
+                .actions { row in
+                    [DataTableAction("Change the rule for \(row.expenseType.displayName)", systemImage: "pencil", inline: true) { editingRule = row }]
+                }
+            ], rows: page.rules)
+        }
+    }
+
+    // MARK: Categories → tax lines
+
+    private var typesPanel: some View {
+        Panel("Categories → tax lines", subtitle: "The tax line each of the property's categories feeds") {
             if page.categoryTypes.contains(where: { !$0.isStored && !TaxExpenseTypeMap.needsReview($0.category.name) }) {
                 Button("Confirm suggestions") { viewModel.confirmSuggestedTypes() }
-                    .buttonStyle(.borderless)
+                    .controlSize(.small)
                     .help("Store the types suggested from the category names")
             }
-        }) {
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                ForEach(page.categoryTypes, id: \.category.id) { entry in
-                    GridRow {
-                        Text(entry.category.name).lineLimit(1)
+        } content: {
+            if page.categoryTypes.isEmpty {
+                Text("No categories yet: link the property's category groups in Property › Profile.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else {
+                DataTable(columns: [
+                    .text("Category", width: .min(170), { $0.category.name }),
+                    // No accessibility value: the picker stays its own element, so VoiceOver reaches it.
+                    DataTableColumn("Tax line", width: .fill(min: 240)) { entry, _ in
                         Picker("Tax line for \(entry.category.name)", selection: Binding(
                             get: { entry.expenseType },
                             set: { viewModel.setCategoryType(categoryId: entry.category.id!, $0) })) {
                             ForEach(TaxExpenseType.allCases, id: \.self) { Text($0.displayName).tag($0) }
                         }
                         .labelsHidden().fixedSize()
-                        Text(entry.isStored ? "" : TaxExpenseTypeMap.needsReview(entry.category.name) ? "check: capital and interest" : "suggested")
-                            .font(.caption).foregroundStyle(.secondary)
+                    },
+                    .status("") { entry -> StatusPill? in
+                        if entry.isStored { return nil }
+                        if TaxExpenseTypeMap.needsReview(entry.category.name) {
+                            return StatusPill("Check: capital and interest", tone: .warning,
+                                              help: "A loan instalment mixes capital and interest: only the interest is a finance cost")
+                        }
+                        return StatusPill("Suggested", help: "Suggested from the category's name; Confirm suggestions stores it")
                     }
-                }
+                ], rows: page.categoryTypes.map(TypeRow.init))
             }
+        }
+    }
+
+    /// A category's entry as a table row.
+    private struct TypeRow: Identifiable {
+        let entry: TaxExpenseTypeMap.Entry
+        var id: Int64 { entry.category.id ?? 0 }
+        var category: Category { entry.category }
+        var expenseType: TaxExpenseType { entry.expenseType }
+        var isStored: Bool { entry.isStored }
+
+        init(_ entry: TaxExpenseTypeMap.Entry) { self.entry = entry }
+    }
+
+    private func scopeText(_ scope: TaxOverview.RuleScope) -> String {
+        switch scope {
+        case .builtIn: return "Default"
+        case .allYears: return "Every year"
+        case .thisYear: return "\(page.row.year.label) only"
         }
     }
 
@@ -140,14 +251,6 @@ struct TaxSettingsTab: View {
             return "\(row.rule.displayName) (\(row.defaultCoverMonths ?? TaxAttributionRules.defaultCoverMonths) months if unknown)"
         }
         return row.rule.displayName
-    }
-
-    private func scopeText(_ scope: TaxOverview.RuleScope) -> String {
-        switch scope {
-        case .builtIn: return "default"
-        case .allYears: return "every year"
-        case .thisYear: return "this year only"
-        }
     }
 }
 
@@ -163,8 +266,8 @@ struct TaxRateSheet: View {
     private var value: Double? { Double(text.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespaces)) }
 
     var body: some View {
-        SheetScaffold(title: "HMRC average rate · \(year.label)", subtitle: "Euros per £1, as HMRC publishes it (e.g. 1.1880). It replaces a fetched or filed-return rate.",
-                      error: error, onCancel: { dismiss() },
+        SheetScaffold(title: "HMRC average rate · \(year.label)", subtitle: "Euros per £1, as HMRC publishes it. It replaces the rate fetched or taken from a filed return.",
+                      error: error, width: SheetMetrics.compactWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: (value ?? 0) > 0) {
                           guard let value else { return }
                           error = viewModel.setRate(currencyCode: "EUR", unitsPerPound: value)
@@ -172,7 +275,10 @@ struct TaxRateSheet: View {
                       }) {
             SheetForm {
                 LabeledContent("EUR per £1") {
-                    TextField("EUR per £1", text: $text).frame(width: 120)
+                    TextField("EUR per £1", text: $text, prompt: Text("1.1880"))
+                        .multilineTextAlignment(.trailing)
+                        .monospacedDigit()
+                        .frame(width: 120)
                 }
                 if let value, value > 0 {
                     SheetFormNote(String(format: "£%.6f per euro", 1 / value))
@@ -206,7 +312,8 @@ struct TaxSplitSheet: View {
     }
 
     var body: some View {
-        SheetScaffold(title: "Split · \(page.row.year.label)", subtitle: page.row.person.name, error: error, onCancel: { dismiss() },
+        SheetScaffold(title: "Split · \(page.row.year.label)", subtitle: page.row.person.name, error: error, width: SheetMetrics.compactWidth,
+                      onCancel: { dismiss() },
                       primary: SheetAction(existing == nil ? "Save" : "Replace", isEnabled: basisPoints != nil) {
                           error = viewModel.setSplit(expenseType: expenseType, shareBasisPoints: basisPoints)
                           if error == nil { dismiss() }
@@ -220,13 +327,20 @@ struct TaxSplitSheet: View {
                     .fixedSize()
                     .disabled(draft.shareBasisPoints != nil)
                 }
-                LabeledContent("Share (%)") {
-                    TextField("Share", text: $percent).frame(width: 80)
+                LabeledContent("Share") {
+                    HStack(spacing: 4) {
+                        TextField("Share", text: $percent, prompt: Text("50"))
+                            .multilineTextAlignment(.trailing)
+                            .monospacedDigit()
+                            .frame(width: 80)
+                            .accessibilityLabel("Share percent")
+                        Text("%").foregroundStyle(.secondary).accessibilityHidden(true)
+                    }
+                    .sheetFieldNote("Ownership is \(PropertyFormat.percent(page.ownershipShareBasisPoints)) over the year.")
                 }
-                if let existing {
-                    SheetFormNote("There's already a \(PropertyFormat.percent(existing.shareBasisPoints)) split for this: Replace changes it.", isError: true)
-                }
-                SheetFormNote("Ownership is \(PropertyFormat.percent(page.ownershipShareBasisPoints)) over the year.")
+            }
+            if let existing {
+                InlineBanner(.warning, "There's already a \(PropertyFormat.percent(existing.shareBasisPoints)) split for this: Replace changes it.")
             }
         }
         .onAppear {
@@ -248,8 +362,8 @@ struct TaxRuleSheet: View {
     @State private var error: String?
 
     var body: some View {
-        SheetScaffold(title: row.expenseType.displayName, subtitle: "How its payments are attributed to a tax year.", error: error,
-                      onCancel: { dismiss() },
+        SheetScaffold(title: row.expenseType.displayName, subtitle: "Its attribution rule: how its payments count towards a tax year.",
+                      error: error, width: SheetMetrics.compactWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save") {
                           error = viewModel.setRule(row.expenseType, rule: rule, thisYearOnly: thisYearOnly,
                                                     coverMonths: rule == .apportionByCover ? coverMonths : nil)
@@ -268,7 +382,7 @@ struct TaxRuleSheet: View {
                 }
                 if rule == .apportionByCover {
                     LabeledContent("Cover if unknown") {
-                        Stepper("\(coverMonths) months", value: $coverMonths, in: 1...36)
+                        ValueStepper("Cover if unknown", value: $coverMonths, in: 1...36, text: ValueStepper.months)
                     }
                 }
                 LabeledContent("Applies to") {

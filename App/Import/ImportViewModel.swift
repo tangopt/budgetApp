@@ -286,7 +286,7 @@ final class ImportViewModel: ObservableObject {
     /// Loads what the category picker needs once per review. Failing here only costs the
     /// picker its group headings and Recent section, so it's logged rather than shown.
     private func loadPickerContext() {
-        let since = Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date()
+        let since = Calendar.current.date(byAdding: .day, value: -90, to: AppClock.now) ?? AppClock.now
         do {
             (categories, categoryGroups, recentCategoryIds) = try dbQueue.read { db in
                 (try Category.fetchAll(db), try CategoryGroup.fetchAll(db), try CategoryShortlist.recent(db: db, since: since, limit: 5))

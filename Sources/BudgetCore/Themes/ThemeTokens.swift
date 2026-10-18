@@ -10,6 +10,12 @@ public enum ThemeRules {
     public static let minimumMoneyContrast = 3.0
     /// CIEDE2000 ΔE between any two chart series colours.
     public static let minimumSeriesDeltaE = 10.0
+    /// WCAG contrast of white text on the controls' accent fill (a prominent button, the
+    /// chosen segment).
+    public static let minimumControlTextContrast = 3.0
+    /// From this relative luminance up, the system draws a control's text on the accent dark,
+    /// not white (Midnight's gold, Mint's aqua in dark mode).
+    public static let darkControlTextLuminance = 0.5
 }
 
 /// One variant's colours: the roles the app draws with. Tints carry their opacity; role
@@ -128,6 +134,32 @@ public struct ThemeTokens: Equatable, Sendable {
         }
         return [("background", ground), ("surface", ColorMath.composite(surface, over: ground))]
             + tints.map { ($0.0, ColorMath.composite($0.1, over: ground)) }
+    }
+
+    /// The accent as the controls' fill under their text (`.tint`: a prominent button, the
+    /// chosen segment, a ticked box): the accent where white text reads on it, or where it's
+    /// light enough for the system to draw the text dark; else the accent shaded down (same
+    /// hue, less light) until white text reads (`ThemeRules.minimumControlTextContrast`).
+    /// Dark variants' light accents (Nord's frost, Graphite's grey) need it.
+    public var controlAccent: ThemeColor {
+        let white = ThemeColor.hex(0xFFFFFF)
+        guard accent.system == nil,
+              ColorMath.contrastRatio(accent, white) < ThemeRules.minimumControlTextContrast,
+              ColorMath.relativeLuminance(accent) < ThemeRules.darkControlTextLuminance else { return accent }
+        // A little past the minimum, so rounding to 8 bits can't land below it.
+        return ColorMath.shaded(accent, toLuminance: 1.05 / (ThemeRules.minimumControlTextContrast + 0.1) - 0.05)
+    }
+
+    /// The colour a chart draws beside the money colours — a net line over income and expense
+    /// bars, a waterfall's totals between its rises and falls: the accent, unless it sits too
+    /// close to income or expense (a green or red accent), then the transfer colour or the
+    /// first chart series that stands apart from both (`ThemeRules.minimumMoneyDeltaE`).
+    public var chartAccent: ThemeColor {
+        func standsApart(_ color: ThemeColor) -> Bool {
+            ColorMath.deltaE2000(color, income) >= ThemeRules.minimumMoneyDeltaE
+                && ColorMath.deltaE2000(color, expense) >= ThemeRules.minimumMoneyDeltaE
+        }
+        return ([accent, transfer] + chartSeries).first(where: standsApart) ?? accent
     }
 
     /// A category badge's fill: its type's colour at 85%.

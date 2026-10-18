@@ -527,7 +527,7 @@ struct BudgetGridView: View {
         let yearEnd = viewModel.yearEndNetWorth(year)
         let caption: String? = if yearEnd?.isForecast == true {
             " forecast"
-        } else if yearEnd != nil, !viewModel.showForecast, year == MonthRange.components(of: Date()).year {
+        } else if yearEnd != nil, !viewModel.showForecast, year == MonthRange.components(of: AppClock.now).year {
             " today"
         } else {
             nil

@@ -22,7 +22,7 @@ struct TransferLinkActions {
     static func make(dbQueue: DatabaseQueue, accounts: [Account], counterparts: @escaping (Int64) -> [TransferCounterpart]) -> TransferLinkActions {
         return TransferLinkActions(
             counterparts: counterparts,
-            candidates: { id in try dbQueue.read { db in try TransferLinks.candidates(db: db, for: id) } },
+            candidates: { id in try dbQueue.read { db in try TransferLinks.candidates(db: db, for: id, today: AppClock.now) } },
             accounts: accounts,
             eurToGbpRate: { try? dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db).eurToGbpRate } }
         )

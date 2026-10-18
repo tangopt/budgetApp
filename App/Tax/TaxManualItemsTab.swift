@@ -6,44 +6,130 @@ import GRDB
 
 /// Things for the return that aren't bank movements (a UK accountant's invoice in GBP, postage),
 /// each with its documents. Added and edited in a sheet whose changes — documents included —
-/// are written by Save, like Edit transaction.
+/// are written by Save, like Edit transaction. Shown as a table (UI polish §4.2): day, item
+/// and tax line, the amount in its currency and in GBP at the year's HMRC rate, documents, and
+/// edit/delete icons; grouped by currency with a total each, and a total in GBP.
 struct TaxManualItemsTab: View {
     @ObservedObject var viewModel: TaxYearsViewModel
     let page: TaxOverview.YearPage
     @State private var editing: ManualItemDraft?
     @State private var deleting: TaxManualItem?
 
-    var body: some View {
-        PropertySection("Manual items · \(page.row.year.label)", accessory: {
-            Button("Add item…") { editing = ManualItemDraft(new: page) }
-                .buttonStyle(.borderless)
-        }) {
-            if page.manualItems.isEmpty {
-                Text("None. Add what isn't in the bank movements, e.g. the UK accountant's fee paid in pounds.")
-                    .foregroundStyle(.secondary)
-            } else {
-                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
-                    ForEach(page.manualItems, id: \.id) { item in
-                        GridRow {
-                            Text(item.date.map(DocumentFormat.day) ?? "—").monospacedDigit().lineLimit(1).fixedSize()
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(item.label).lineLimit(1)
-                                Text("\(item.expenseType.displayName)\(item.isWholeProperty ? " · whole property" : "")")
-                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            }
-                            PropertyMoney(minorUnits: item.amountMinorUnits, currency: item.currency, neutral: true)
-                                .gridColumnAlignment(.trailing)
-                            DocumentCountBadge(count: page.manualItemDocumentCounts[item.id ?? -1] ?? 0)
-                            HStack(spacing: 8) {
-                                Button("Edit…") { editing = ManualItemDraft(item) }
-                                    .accessibilityLabel("Edit \(item.label)")
-                                Button("Delete…", role: .destructive) { deleting = item }
-                                    .accessibilityLabel("Delete \(item.label)")
-                            }
-                            .buttonStyle(.borderless)
-                        }
+    /// A row of the table: an item, a currency's total, or the total in GBP.
+    private struct Row: Identifiable {
+        let id: String
+        var item: TaxManualItem?
+        var title: String
+        var currency: Currency?
+        var amount: Int?
+        var gbp: Int?
+        var documentCount = 0
+        /// A total that adds whole-property items at 100% (as entered, not the person's part).
+        var isAsEntered = false
+    }
+
+    /// Whether any item is the whole property's amount (the totals then add it as entered).
+    private var hasWholePropertyItems: Bool { page.manualItems.contains(where: \.isWholeProperty) }
+
+    /// An amount in GBP at the year's HMRC rate (`nil` when there's no rate for its currency).
+    private func gbp(_ minorUnits: Int, _ currency: Currency) -> Int? {
+        guard currency != .gbp else { return minorUnits }
+        return page.rates.first { $0.currencyCode == currency.rawValue.uppercased() }?.gbp(minorUnits)
+    }
+
+    private func row(_ item: TaxManualItem) -> Row {
+        Row(id: "item-\(item.id ?? 0)", item: item, title: item.label, currency: item.currency, amount: item.amountMinorUnits,
+            gbp: gbp(item.amountMinorUnits, item.currency), documentCount: page.manualItemDocumentCounts[item.id ?? -1] ?? 0)
+    }
+
+    /// The items by currency (the property's first), each with its total; a total in GBP when
+    /// there's more than one currency.
+    private var sections: [DataTableSection<Row>] {
+        let first = page.property?.currency ?? .gbp
+        let currencies = Currency.allCases.filter { currency in page.manualItems.contains { $0.currency == currency } }
+            .sorted { ($0 == first ? 0 : 1) < ($1 == first ? 0 : 1) }
+        func sum(_ values: [Int?]) -> Int? { values.reduce(Optional(0)) { total, value in total.flatMap { a in value.map { a + $0 } } } }
+        var sections = currencies.map { currency -> DataTableSection<Row> in
+            let rows = page.manualItems.filter { $0.currency == currency }.map(row)
+            let total = Row(id: "total-\(currency.rawValue)", title: "Total",
+                            currency: currency, amount: rows.reduce(0) { $0 + ($1.amount ?? 0) }, gbp: sum(rows.map(\.gbp)),
+                            isAsEntered: rows.contains { $0.item?.isWholeProperty == true })
+            return DataTableSection(currencies.count > 1 ? "In \(currency.rawValue.uppercased())" : nil, rows: rows, total: total)
+        }
+        if currencies.count > 1 {
+            let all = page.manualItems.map(row)
+            sections.append(DataTableSection(nil, rows: [], total: Row(id: "total", title: "All items, in GBP", gbp: sum(all.map(\.gbp)),
+                                                                         isAsEntered: hasWholePropertyItems)))
+        }
+        return sections
+    }
+
+    private var rateNote: String {
+        let foreign = Set(page.manualItems.map(\.currency)).subtracting([.gbp])
+        guard !foreign.isEmpty else { return "Amounts in GBP." }
+        let rates = foreign.compactMap { currency in page.rates.first { $0.currencyCode == currency.rawValue.uppercased() } }
+        guard rates.count == foreign.count else { return "No HMRC average rate for \(page.row.year.label) yet: GBP shows once it's set in Settings." }
+        return "GBP at HMRC's average rate, " + rates.map(TaxFormat.unitsPerPound).joined(separator: ", ") + "."
+    }
+
+    private var columns: [DataTableColumn<Row>] {
+        [
+            .date("Date") { $0.item?.date },
+            DataTableColumn("Item", width: .fill(min: 200), accessibilityValue: { row in
+                [row.title, row.item.map { $0.isWholeProperty ? "the whole property's amount" : "" },
+                 row.isAsEntered ? "as entered, whole-property items at 100%" : nil].compactMap { $0 }.filter { !$0.isEmpty }
+                    .joined(separator: ", ")
+            }) { row, kind in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(row.title).fontWeight(kind == .total ? .semibold : .regular).lineLimit(1)
+                    if row.item?.isWholeProperty == true {
+                        Text("The whole property's amount").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            .help("The person's split applies to it")
+                    }
+                    if row.isAsEntered {
+                        Text("As entered (whole-property items at 100%)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            .help("The rental accounts apply the person's split to the whole-property items")
                     }
                 }
+                .help([row.title, row.item?.notes].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n"))
+            },
+            DataTableColumn("Tax line", accessibilityValue: { $0.item?.expenseType.displayName }) { row, _ in
+                if let item = row.item {
+                    Text(item.expenseType.displayName).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                }
+            },
+            // Every item is a cost or income named for the return: as given, uncoloured (spec §1.4).
+            DataTableColumn("Amount", alignment: .trailing, width: .min(104), accessibilityValue: { row in
+                guard let amount = row.amount, let currency = row.currency else { return nil }
+                return Money.format(amount, currency: currency)
+            }) { row, kind in
+                if let amount = row.amount, let currency = row.currency {
+                    MoneyText(minorUnits: amount, currency: currency,
+                              font: kind == .total ? .body.monospacedDigit().weight(.semibold) : .body.monospacedDigit(), role: .neutral)
+                }
+            },
+            .money("GBP", role: .neutral, minWidth: 104, currency: { _ in .gbp }) { $0.gbp },
+            .documents { $0.documentCount },
+            .actions { row in
+                guard let item = row.item else { return [] }
+                return [
+                    DataTableAction("Edit \(item.label)", systemImage: "pencil", inline: true) { editing = ManualItemDraft(item) },
+                    DataTableAction("Delete \(item.label)…", systemImage: "trash", role: .destructive, inline: true) { deleting = item }
+                ]
+            }
+        ]
+    }
+
+    var body: some View {
+        Panel("Manual items", subtitle: page.manualItems.isEmpty ? nil : "What isn't in the bank movements, for \(page.row.year.label). \(rateNote)") {
+            Button("Add item…") { editing = ManualItemDraft(new: page) }
+                .controlSize(.small)
+        } content: {
+            if page.manualItems.isEmpty {
+                Text("No manual items yet: add what isn't in the bank movements, e.g. the UK accountant's fee paid in pounds.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else {
+                DataTable(columns: columns, sections: sections)
             }
         }
         .sheet(item: $editing) { draft in
@@ -55,7 +141,7 @@ struct TaxManualItemsTab: View {
                 deleting = nil
             }
         } message: {
-            Text("Its document links go too; the documents stay in the library.")
+            Text("Its document links go too; the documents stay in the library. This can't be undone.")
         }
     }
 }
@@ -165,7 +251,7 @@ struct TaxManualItemSheet: View {
 
     var body: some View {
         SheetScaffold(title: draft.item.id == nil ? "Add manual item" : "Edit manual item",
-                      subtitle: UKTaxYear(startYear: draft.item.startYear).label, error: error, width: 520, onCancel: { dismiss() },
+                      subtitle: UKTaxYear(startYear: draft.item.startYear).label, error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: isValid) { save() }) {
             SheetForm {
                 LabeledContent("Description") {
@@ -179,7 +265,8 @@ struct TaxManualItemSheet: View {
                 }
                 LabeledContent("Amount") {
                     HStack {
-                        MoneyField("Amount", text: $amountText, currency: currency, width: 120)
+                        // The picker beside it names the currency: the field doesn't repeat it.
+                        MoneyField("Amount", text: $amountText, currency: currency, width: 120, showsCurrency: false)
                         Picker("Currency", selection: $currency) {
                             ForEach(Currency.allCases, id: \.self) { Text($0.rawValue.uppercased()).tag($0) }
                         }
@@ -187,10 +274,11 @@ struct TaxManualItemSheet: View {
                     }
                 }
                 LabeledContent("Date") {
-                    HStack {
-                        Toggle("Dated", isOn: $hasDate).labelsHidden()
+                    HStack(spacing: 10) {
+                        // Named beside the tick: a SheetForm row hides its controls' own labels.
+                        NamedCheckbox(title: "Dated", isOn: $hasDate)
                         if hasDate {
-                            DatePicker("Date", selection: utcDay($date), displayedComponents: .date).labelsHidden()
+                            DatePicker("Date", selection: utcDay($date), displayedComponents: .date).labelsHidden().fixedSize()
                         }
                     }
                 }
@@ -204,7 +292,7 @@ struct TaxManualItemSheet: View {
                     }
                 }
                 LabeledContent("Note") {
-                    TextField("Note", text: $notes)
+                    TextField("Note", text: $notes, prompt: Text("Optional"))
                 }
                 LabeledContent("Documents") {
                     StagedDocumentsField(documents: documents)
@@ -245,13 +333,21 @@ struct StagedDocumentsField: View {
                     Image(systemName: unlinking ? "minus.circle" : linking ? "plus.circle" : "paperclip")
                         .foregroundStyle(.secondary).accessibilityHidden(true)
                     Text(document.displayName).lineLimit(1).truncationMode(.middle).strikethrough(unlinking)
-                    Text(unlinking ? "will be unlinked" : linking ? "will be linked" : "").font(.caption).foregroundStyle(.secondary)
+                        .help(document.displayName)
+                    if unlinking || linking {
+                        Text(unlinking ? "will be unlinked" : "will be linked").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                     Spacer(minLength: 6)
-                    Button("Open") { documents.open(document) }
-                    Button(unlinking || linking ? "Undo" : "Unlink") { documents.toggleUnlink(id) }
-                        .accessibilityLabel(unlinking || linking ? "Undo for \(document.displayName)" : "Unlink \(document.displayName)")
+                    Button { documents.open(document) } label: { Image(systemName: "arrow.up.forward.square") }
+                        .help("Open \(document.displayName)")
+                        .accessibilityLabel("Open \(document.displayName)")
+                    Button { documents.toggleUnlink(id) } label: {
+                        Image(systemName: unlinking || linking ? "arrow.uturn.backward.circle" : "xmark.circle")
+                    }
+                    .help(unlinking || linking ? "Undo" : "Unlink (the document stays in the library)")
+                    .accessibilityLabel(unlinking || linking ? "Undo for \(document.displayName)" : "Unlink \(document.displayName)")
                 }
-                .controlSize(.small)
+                .buttonStyle(.borderless)
             }
             HStack(spacing: 8) {
                 Button("Add document…") { picking = true }.controlSize(.small)

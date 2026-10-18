@@ -50,7 +50,7 @@ struct NewGroupSheet: View {
                         Text("Income").tag(CategoryType.income)
                         Text("Transfers").tag(CategoryType.transfer)
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.segmented).prominentTint()
                     .labelsHidden()
                     .fixedSize()
                 }

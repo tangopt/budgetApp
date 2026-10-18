@@ -48,10 +48,15 @@ final class MissingEvidenceViewModel: ObservableObject {
     @Published private(set) var requirements: [EvidenceRequirement] = []
     /// The whole checklist for the period (the filters don't change it).
     @Published private(set) var items: [MissingEvidence.Item] = [] {
-        didSet { refreshShown() }
+        didSet {
+            sources = MissingEvidence.bySource(items)
+            refreshShown()
+        }
     }
     /// The items shown, by source.
     @Published private(set) var groups: [MissingEvidence.SourceGroup] = []
+    /// Every item of the period by source (whatever the filters show): each source's progress.
+    @Published private(set) var sources: [MissingEvidence.SourceGroup] = []
     @Published private(set) var isLoading = true
     @Published var missingOnly = true {
         didSet { if missingOnly != oldValue { refreshShown() } }
@@ -78,7 +83,7 @@ final class MissingEvidenceViewModel: ObservableObject {
     private var observationTask: Task<Void, Never>?
     private var isActive = false
 
-    init(dbQueue: DatabaseQueue, library: EvidenceLibrary, now: Date = Date()) {
+    init(dbQueue: DatabaseQueue, library: EvidenceLibrary, now: Date = AppClock.now) {
         self.dbQueue = dbQueue
         self.library = library
         let current = UKTaxYear.containing(now)
@@ -116,7 +121,7 @@ final class MissingEvidenceViewModel: ObservableObject {
             self.categories = categories
             categoryGroups = groups
             let first = min(UKTaxYear(startYear: 2023), earliest.map(UKTaxYear.containing) ?? UKTaxYear(startYear: 2023))
-            years = UKTaxYear.pickerYears(earliest: first)
+            years = UKTaxYear.pickerYears(earliest: first, now: AppClock.now)
         } catch {
             errorMessage = "Couldn't load accounts and categories: \(error.localizedDescription)"
         }
@@ -139,6 +144,12 @@ final class MissingEvidenceViewModel: ObservableObject {
     }
 
     var progress: MissingEvidence.Progress { MissingEvidence.progress(items) }
+
+    /// A source's progress over the whole period (a group shown under a filter holds only
+    /// some of its items).
+    func progress(source: String) -> MissingEvidence.Progress {
+        sources.first { $0.source == source }?.progress ?? MissingEvidence.Progress()
+    }
 
     private func restartObservation() {
         observationTask?.cancel()

@@ -151,7 +151,7 @@ private struct RuleSheet: View {
                     Picker("Match", selection: $matchType) {
                         ForEach(RuleMatchType.allCases, id: \.self) { type in Text(type.title).tag(type) }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.segmented).prominentTint()
                     .fixedSize()
                 }
                 LabeledContent("Category") {

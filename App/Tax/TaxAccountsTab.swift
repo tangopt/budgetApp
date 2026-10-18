@@ -1,127 +1,415 @@
 // App/Tax/TaxAccountsTab.swift
 import SwiftUI
+import Charts
 import BudgetCore
 import struct BudgetCore.Transaction
 
-/// The year's rental accounts: rent and expense lines in the property's currency, pound items
-/// and GBP at the HMRC rate; finance costs and the FTCR input apart; warnings; each line opens
-/// its sources (transactions, receipts, manual items) with the rule and share explained.
+/// The year's rental accounts (UI polish §4.2): what to look at as a banner; the headline
+/// figures in the property's currency and GBP; every line as one table in groups (income,
+/// expenses with their total, the profit, the lines reported apart) — the rule beside each, the
+/// share when lines differ, pound items noted under their GBP figure, the sources a chevron
+/// away; then the expenses by line and the rent by month as charts (the months' table folded
+/// away), and the HMRC rate as a caption.
 struct TaxAccountsTab: View {
     @ObservedObject var viewModel: TaxYearsViewModel
     let page: TaxOverview.YearPage
     let openTransaction: (Transaction) -> Void
     @State private var drillDown: RentalAccounts.Line?
+    @State private var showsRentTable = false
+    @Environment(\.theme) private var theme
 
     var body: some View {
         if let accounts = page.accounts {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
                 if !accounts.warnings.isEmpty {
-                    PropertySection("To look at") {
+                    InlineBanner(.warning) {
                         VStack(alignment: .leading, spacing: 4) {
-                            ForEach(accounts.warnings, id: \.self) { warning in
-                                Label(warning, systemImage: "exclamationmark.triangle")
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
+                            ForEach(accounts.warnings, id: \.self) { Text($0) }
                         }
                     }
                 }
-                PropertySection("Rental accounts") {
-                    linesGrid(accounts, lines: [accounts.income] + accounts.expenses, totals: true)
-                }
-                PropertySection("Reported apart") {
-                    linesGrid(accounts, lines: [accounts.financeCosts, accounts.foreignTax, accounts.notDeductible], totals: false)
-                    Text("Finance costs get relief at the basic rate; the PT tax (calendar year \(String(accounts.taxYear.startYear))) is the foreign tax credit relief input; not-deductible items are listed for information.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                if !accounts.rentMonths.isEmpty {
-                    PropertySection("Rent by month") {
-                        Grid(alignment: .trailing, horizontalSpacing: 16, verticalSpacing: 4) {
-                            GridRow {
-                                Text("Month").gridColumnAlignment(.leading)
-                                Text("Property")
-                                Text(page.row.person.name).lineLimit(1)
-                            }
-                            .font(.caption).foregroundStyle(.secondary)
-                            ForEach(accounts.rentMonths, id: \.start) { month in
-                                GridRow {
-                                    Text(month.start.formatted(Date.FormatStyle(timeZone: TimeZone(identifier: "UTC")!).month(.abbreviated).year()))
-                                        .lineLimit(1).fixedSize()
-                                    PropertyMoney(minorUnits: month.whole, currency: accounts.currency, neutral: true)
-                                    PropertyMoney(minorUnits: month.amount, currency: accounts.currency)
-                                }
-                            }
+                Panel("Summary", subtitle: shareNote(accounts)) {
+                    // The figures of the accounts, then the two reported apart (not part of the
+                    // profit) in a tinted group of their own.
+                    SplitRow(ratio: 0.6, spacing: 14, stackBelow: 700) {
+                        FigureStrip(headline(accounts))
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Reported apart").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                .accessibilityAddTraits(.isHeader)
+                            FigureStrip(reportedApart(accounts))
                         }
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(theme.sectionHeaderTint))
                     }
+                }
+                Panel("Lines", subtitle: linesNote(accounts)) {
+                    DataTable(columns: lineColumns(accounts), sections: lineSections(accounts), zebra: false)
+                }
+                SplitRow(ratio: 0.5, stackBelow: 720) {
+                    expensesPanel(accounts)
+                    rentPanel(accounts)
                 }
                 Text(rateCaption(accounts)).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .sheet(item: $drillDown) { line in
                 TaxLineSourcesSheet(viewModel: viewModel, line: line, currency: accounts.currency, openTransaction: openTransaction)
             }
         } else {
-            Text("\(page.row.person.name) owns no property in \(page.row.year.label).").foregroundStyle(.secondary)
+            Panel {
+                EmptyState(systemImage: "house", title: "No rental accounts",
+                           message: "\(page.row.person.name) owns no property in \(page.row.year.label).")
+                    .inPanel()
+            }
         }
+    }
+
+    // MARK: Notes
+
+    /// Whether every line takes the same share (then it's said once, not on each line).
+    private func commonShare(_ accounts: RentalAccounts.Result) -> RentalAccounts.Line? {
+        let lines = accounts.allLines
+        return lines.allSatisfy { $0.share == accounts.income.share } ? accounts.income : nil
+    }
+
+    private func shareNote(_ accounts: RentalAccounts.Result) -> String {
+        let property = page.property?.name ?? "the property"
+        if let line = commonShare(accounts) {
+            return "Share of \(property): \(line.shareExplanation)"
+        }
+        return "Shares of \(property) by line, as the table shows"
+    }
+
+    private func linesNote(_ accounts: RentalAccounts.Result) -> String {
+        accounts.currency == .gbp ? "In GBP. A chevron lists a line's sources."
+            : "In \(accounts.currency.rawValue.uppercased()) and in GBP at HMRC's average rate. A chevron lists a line's sources."
     }
 
     private func rateCaption(_ accounts: RentalAccounts.Result) -> String {
-        guard accounts.currency != .gbp else { return "Amounts in GBP." }
-        guard let rate = accounts.rate else { return "No HMRC average rate for \(accounts.taxYear.label): set or fetch it in Settings." }
-        return "GBP at HMRC's average rate: \(TaxFormat.rate(rate)), \(TaxFormat.source(rate.source))."
+        let apart = "Finance costs get relief at the basic rate; the PT tax (calendar year \(String(accounts.taxYear.startYear))) is the foreign tax credit relief input; not-deductible items are listed for information."
+        guard accounts.currency != .gbp else { return apart }
+        guard let rate = accounts.rate else { return "No HMRC average rate for \(accounts.taxYear.label): set or fetch it in Settings. " + apart }
+        return "GBP at HMRC's average rate: \(TaxFormat.rate(rate)), \(TaxFormat.source(of: rate)). Pound items are added as they are, never converted. " + apart
     }
 
-    private func linesGrid(_ accounts: RentalAccounts.Result, lines: [RentalAccounts.Line], totals: Bool) -> some View {
-        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-            GridRow {
-                Text("")
-                Text(accounts.currency.rawValue.uppercased()).gridColumnAlignment(.trailing)
-                Text("Pound items").gridColumnAlignment(.trailing)
-                Text("GBP").gridColumnAlignment(.trailing)
-                Text("")
-            }
-            .font(.caption).foregroundStyle(.secondary)
-            ForEach(lines, id: \.expenseType) { line in
-                GridRow {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(line.label).lineLimit(1)
-                        Text("\(line.rule.displayName) · \(line.shareExplanation)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    .help(line.ruleExplanation)
-                    PropertyMoney(minorUnits: line.amount.native, currency: accounts.currency, neutral: true)
-                    PropertyMoney(minorUnits: line.amount.gbpNative, currency: .gbp, neutral: true)
-                    gbp(line.amount)
-                    Button(line.sources.isEmpty ? "No sources" : "\(line.sources.count) source\(line.sources.count == 1 ? "" : "s")…") {
-                        drillDown = line
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(line.sources.isEmpty)
-                    .accessibilityLabel("Sources of \(line.label)")
+    // MARK: Headline
+
+    private func headline(_ accounts: RentalAccounts.Result) -> [FigureTile] {
+        let t = accounts.totals, currency = accounts.currency
+        func gbp(_ amount: RentalAccounts.Amount) -> Int? { currency == .gbp ? nil : amount.gbp }
+        return [
+            FigureTile(title: "Rental income", value: .money(t.income.native, currency, .signed), gbp: gbp(t.income)),
+            FigureTile(title: "Expenses", value: .money(t.expenses.native, currency, .cost), gbp: gbp(t.expenses),
+                       caption: t.expenses.gbpNative == 0 ? nil : "incl. \(Money.format(abs(t.expenses.gbpNative), currency: .gbp)) paid in GBP"),
+            FigureTile(title: "Profit before finance costs", value: .money(t.profit.native, currency, .signed), gbp: gbp(t.profit))
+        ]
+    }
+
+    /// The figures reported apart from the profit: finance costs and the foreign tax.
+    private func reportedApart(_ accounts: RentalAccounts.Result) -> [FigureTile] {
+        let t = accounts.totals, currency = accounts.currency
+        func gbp(_ amount: RentalAccounts.Amount) -> Int? { currency == .gbp ? nil : amount.gbp }
+        return [
+            // Reported apart: neither gain nor loss on this page (spec §1.4).
+            FigureTile(title: "Finance costs", value: .money(t.financeCosts.native, currency, .neutral), gbp: gbp(t.financeCosts),
+                       caption: "Basic-rate relief"),
+            FigureTile(title: "Foreign tax", value: .money(t.foreignTax.native, currency, .neutral), gbp: gbp(t.foreignTax),
+                       caption: "PT \(String(accounts.taxYear.startYear)) · FTCR input")
+        ]
+    }
+
+    // MARK: Lines
+
+    /// A row of the lines table: a line, or a total.
+    private struct LineRow: Identifiable {
+        let id: String
+        let title: String
+        var line: RentalAccounts.Line?
+        let amount: RentalAccounts.Amount
+        let role: MoneyRole
+    }
+
+    private func lineSections(_ accounts: RentalAccounts.Result) -> [DataTableSection<LineRow>] {
+        func row(_ line: RentalAccounts.Line, _ role: MoneyRole) -> LineRow {
+            LineRow(id: line.expenseType.rawValue, title: line.label, line: line, amount: line.amount, role: role)
+        }
+        let t = accounts.totals
+        return [
+            // Rent reads as income; expense lines are costs, shown negative beside it.
+            DataTableSection("Income", rows: [row(accounts.income, .signed)]),
+            DataTableSection("Expenses", rows: accounts.expenses.map { row($0, .cost) },
+                             total: LineRow(id: "expenses", title: "Total expenses", amount: t.expenses, role: .cost)),
+            DataTableSection(nil, rows: [],
+                             total: LineRow(id: "profit", title: "Profit before finance costs", amount: t.profit, role: .signed)),
+            // Every line apart is a cost: magnitudes, neutral (spec §1.4).
+            DataTableSection("Reported apart", rows: [accounts.financeCosts, accounts.foreignTax, accounts.notDeductible].map { row($0, .neutral) })
+        ]
+    }
+
+    private func lineColumns(_ accounts: RentalAccounts.Result) -> [DataTableColumn<LineRow>] {
+        let currency = accounts.currency
+        var columns: [DataTableColumn<LineRow>] = [
+            DataTableColumn("Line", width: .fill(min: 190), accessibilityValue: { $0.title }) { row, kind in
+                Text(row.title)
+                    .fontWeight(kind == .total ? .semibold : .regular)
+                    .lineLimit(1)
+                    .help(row.line.map { "\($0.ruleExplanation) Share: \($0.shareExplanation)." } ?? row.title)
+            },
+            DataTableColumn("Rule", accessibilityValue: { $0.line?.rule.displayName }) { row, _ in
+                if let line = row.line {
+                    Text(line.rule.displayName).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                        .help(line.ruleExplanation)
                 }
             }
-            if totals {
-                Divider().gridCellUnsizedAxes(.horizontal)
-                totalRow("Total expenses", accounts.totals.expenses, accounts.currency)
-                totalRow("Profit before finance costs", accounts.totals.profit, accounts.currency)
+        ]
+        if commonShare(accounts) == nil {
+            columns.append(DataTableColumn("Share", alignment: .trailing, width: .min(52),
+                                           accessibilityValue: { $0.line.map { PropertyFormat.percent($0.share.shareBasisPoints) } }) { row, _ in
+                if let line = row.line {
+                    Text(PropertyFormat.percent(line.share.shareBasisPoints)).monospacedDigit()
+                        .help(line.shareExplanation)
+                }
+            })
+        }
+        columns.append(.money(currency.rawValue.uppercased(), role: { $0.role }, minWidth: 104, currency: { _ in currency }) { $0.amount.native })
+        if currency != .gbp {
+            columns.append(gbpColumn)
+        }
+        columns.append(DataTableColumn("", alignment: .trailing) { row, kind in
+            if kind == .row, let line = row.line, !line.sources.isEmpty {
+                TaxSourcesButton(count: line.sources.count, label: line.label) { drillDown = line }
+            }
+        })
+        return columns
+    }
+
+    /// The GBP figure, with the part already paid in pounds (not converted) noted beneath — on
+    /// the lines and Total expenses, not on the profit (where it would read as part of it).
+    private var gbpColumn: DataTableColumn<LineRow> {
+        DataTableColumn("GBP", alignment: .trailing, width: .min(104), accessibilityValue: { row in
+            guard let gbp = row.amount.gbp else { return "no GBP figure" }
+            let text = Money.format(row.role.displayed(gbp), currency: .gbp)
+            guard let paid = Self.paidInGBP(row) else { return text }
+            return "\(text), including \(paid) paid in GBP"
+        }) { row, kind in
+            VStack(alignment: .trailing, spacing: 0) {
+                if let gbp = row.amount.gbp {
+                    MoneyText(minorUnits: gbp, currency: .gbp,
+                              font: kind == .total ? .body.monospacedDigit().weight(.semibold) : .body.monospacedDigit(), role: row.role)
+                } else {
+                    Text("—").foregroundStyle(.secondary).help("No HMRC rate for the year")
+                }
+                if let paid = Self.paidInGBP(row) {
+                    Text("incl. \(paid) paid in GBP")
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                        .help("Items paid in pounds, added as they are (never converted)")
+                }
             }
         }
     }
 
-    private func totalRow(_ title: String, _ amount: RentalAccounts.Amount, _ currency: Currency) -> some View {
-        GridRow {
-            Text(title).fontWeight(.semibold)
-            PropertyMoney(minorUnits: amount.native, currency: currency, font: .body.monospacedDigit().weight(.semibold))
-            PropertyMoney(minorUnits: amount.gbpNative, currency: .gbp, neutral: true)
-            gbp(amount).fontWeight(.semibold)
-            Text("")
+    /// "£450.00": the part of a row paid in pounds, when there is one (none on the profit).
+    private static func paidInGBP(_ row: LineRow) -> String? {
+        guard row.amount.gbpNative != 0, row.id != "profit" else { return nil }
+        return Money.format(abs(row.amount.gbpNative), currency: .gbp)
+    }
+
+    // MARK: Expenses by line
+
+    private func expensesPanel(_ accounts: RentalAccounts.Result) -> some View {
+        // In GBP when every line has it (pound items included); else in the property's currency.
+        let inGBP = accounts.currency == .gbp || accounts.expenses.allSatisfy { $0.amount.gbp != nil }
+        let items = accounts.expenses.map { line in
+            BreakdownItem(line.label, minorUnits: inGBP ? (line.amount.gbp ?? 0) : line.amount.native, id: line.expenseType.rawValue)
+        }
+        let total = items.reduce(0) { $0 + max(0, $1.value) }
+        let currency: Currency = inGBP ? .gbp : accounts.currency
+        return Panel("Expenses by line", subtitle: total > 0 ? "Total \(Money.format(total, currency: currency))" : nil,
+                     fillsHeight: true) {
+            if total <= 0 {
+                Text("No deductible expenses this year.").font(.callout).foregroundStyle(.secondary)
+            } else {
+                // Every row is a cost: magnitudes, neutral (spec §1.4).
+                BreakdownBars(items: items, currency: currency, maxItems: max(items.count, 1),
+                              selectTitle: { "Sources of \($0.label)" }) { item in
+                    drillDown = accounts.expenses.first { $0.expenseType.rawValue == item.id && !$0.sources.isEmpty }
+                }
+            }
         }
     }
 
-    @ViewBuilder
-    private func gbp(_ amount: RentalAccounts.Amount) -> some View {
-        if let value = amount.gbp {
-            PropertyMoney(minorUnits: value, currency: .gbp)
-        } else {
-            Text("—").foregroundStyle(.secondary).help("No HMRC rate for the year").accessibilityLabel("No GBP figure")
+    // MARK: Rent by month
+
+    /// A month (or the year's total) as a table row.
+    private struct RentRow: Identifiable {
+        let id: String
+        let title: String
+        let whole: Int
+        let amount: Int
+    }
+
+    private func rentPanel(_ accounts: RentalAccounts.Result) -> some View {
+        let months = accounts.rentMonths
+        let format = Date.FormatStyle(timeZone: TimeZone(identifier: "UTC")!).month(.abbreviated).year()
+        return Panel("Rent by month", subtitle: months.isEmpty ? nil : "By rent period, April to March", fillsHeight: true) {
+            if !months.isEmpty {
+                Button { withAnimation(.snappy) { showsRentTable.toggle() } } label: {
+                    Label(showsRentTable ? "Hide table" : "Show table", systemImage: showsRentTable ? "chevron.up" : "chevron.down")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+            }
+        } content: {
+            if months.isEmpty {
+                Text("No rent in this year.").font(.callout).foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    TaxRentMonthsChart(months: months, currency: accounts.currency, personName: page.row.person.name)
+                    if showsRentTable {
+                        DataTable(columns: [
+                            .text("Month", width: .fill(min: 90), { $0.title }),
+                            .money("Property", role: .neutral, currency: { _ in accounts.currency }) { $0.whole },
+                            .money(page.row.person.name, role: .signed, currency: { _ in accounts.currency }) { $0.amount }
+                        ], rows: months.map { RentRow(id: "\($0.start.timeIntervalSince1970)", title: $0.start.formatted(format),
+                                                      whole: $0.whole, amount: $0.amount) },
+                           total: RentRow(id: "total", title: "Total", whole: months.reduce(0) { $0 + $1.whole },
+                                          amount: months.reduce(0) { $0 + $1.amount }))
+                    }
+                }
+            }
         }
+    }
+}
+
+/// A line's drill-down: its number of sources and a chevron.
+struct TaxSourcesButton: View {
+    let count: Int
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Text("\(count)").font(.callout).monospacedDigit()
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+            }
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .fixedSize()
+        .help("\(count) source\(count == 1 ? "" : "s") of \(label)")
+        .accessibilityLabel("Sources of \(label): \(count)")
+    }
+}
+
+/// The rent by month: the person's share at the foot of each bar in the income colour, the
+/// rest of the property's rent above it, lighter; hover for the month's figures.
+struct TaxRentMonthsChart: View {
+    let months: [RentalAccounts.RentMonth]
+    let currency: Currency
+    let personName: String
+    var height: CGFloat = 200
+    @Environment(\.theme) private var theme
+    @State private var selectedDate: Date?
+
+    private static let utc = TimeZone(identifier: "UTC")!
+
+    private var othersLabel: String { "Rest of the property" }
+
+    /// Whether the person owns all of it (then there's no rest of the property to show).
+    private var ownsAll: Bool { months.allSatisfy { $0.whole == $0.amount } }
+
+    private var selected: RentalAccounts.RentMonth? {
+        guard let selectedDate else { return nil }
+        return months.min { abs($0.start.timeIntervalSince(selectedDate)) < abs($1.start.timeIntervalSince(selectedDate)) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            chart
+            HStack(spacing: 14) {
+                legend(personName, theme.income, months.reduce(0) { $0 + $1.amount })
+                if !ownsAll {
+                    legend(othersLabel, theme.income.opacity(0.3), months.reduce(0) { $0 + $1.whole - $1.amount })
+                }
+            }
+        }
+    }
+
+    private var chart: some View {
+        Chart {
+            ForEach(months, id: \.start) { month in
+                BarMark(x: .value("Month", month.start, unit: .month), y: .value("Amount", Double(month.amount) / 100))
+                    .foregroundStyle(by: .value("Part", personName))
+                BarMark(x: .value("Month", month.start, unit: .month), y: .value("Amount", Double(month.whole - month.amount) / 100))
+                    .foregroundStyle(by: .value("Part", othersLabel))
+            }
+            if let selected {
+                RuleMark(x: .value("Selected", selected.start, unit: .month))
+                    .foregroundStyle(Color.secondary.opacity(0.4))
+                    .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                        readout(selected)
+                    }
+            }
+        }
+        .chartForegroundStyleScale([personName: theme.income, othersLabel: theme.income.opacity(0.3)])
+        .chartLegend(.hidden)
+        .chartXAxis {
+            AxisMarks(values: .stride(by: .month)) { _ in
+                AxisValueLabel(format: Date.FormatStyle(timeZone: Self.utc).month(.abbreviated), centered: true)
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let amount = value.as(Double.self) { Text(MoneyAxis.compact(amount, currency: currency)) }
+                }
+            }
+        }
+        .chartXSelection(value: $selectedDate)
+        .environment(\.calendar, MonthRange.calendar)
+        .environment(\.timeZone, Self.utc)
+        .frame(height: height)
+        .accessibilityLabel("Rent by month: \(personName)'s share and the rest of the property's")
+    }
+
+    private func legend(_ title: String, _ color: Color, _ minorUnits: Int) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(color).frame(width: 8, height: 8).accessibilityHidden(true)
+            Text(title).foregroundStyle(.secondary)
+            MoneyText(minorUnits: minorUnits, currency: currency, font: .callout.monospacedDigit(), role: .neutral)
+        }
+        .font(.callout)
+        .lineLimit(1)
+        .fixedSize()
+        .accessibilityElement(children: .combine)
+    }
+
+    private func readout(_ month: RentalAccounts.RentMonth) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(month.start.formatted(Date.FormatStyle(timeZone: Self.utc).month(.wide).year())).font(.caption2).foregroundStyle(.secondary)
+            // Each series under its own name and colour, then the whole property's rent.
+            readoutLine(personName, month.amount, theme.income)
+            if !ownsAll {
+                readoutLine(othersLabel, month.whole - month.amount, theme.income.opacity(0.3))
+                readoutLine("Whole property", month.whole, .clear)
+            }
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(theme.windowFill))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+    }
+
+    private func readoutLine(_ label: String, _ minorUnits: Int, _ color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(label).font(.caption2)
+            Spacer(minLength: 8)
+            MoneyText(minorUnits: minorUnits, currency: currency, font: .caption.bold().monospacedDigit(), role: .neutral)
+        }
+        .frame(minWidth: 150)
     }
 }
 
@@ -129,8 +417,11 @@ extension RentalAccounts.Line: @retroactive Identifiable {
     public var id: TaxExpenseType { expenseType }
 }
 
-/// A line's sources: each transaction, receipt or manual item with the part attributed, why,
-/// its share, and its documents; Show opens a transaction where it lives.
+/// A line's sources (UI polish §4.2): the line's figures — the whole property's, the share and
+/// the person's — then each transaction, receipt or manual item as a table row: its day, what
+/// it is with how the rule attributed it, the whole amount and the part attributed to the
+/// year, the share where it differs from the line's, its documents, and Show for a
+/// transaction; a total when the sources share a currency.
 struct TaxLineSourcesSheet: View {
     @ObservedObject var viewModel: TaxYearsViewModel
     let line: RentalAccounts.Line
@@ -140,13 +431,38 @@ struct TaxLineSourcesSheet: View {
     /// The sources' documents, read once when the sheet opens.
     @State private var documents: [Int64: EvidenceDocument] = [:]
 
+    /// A source as a table row (or the total).
+    private struct SourceRow: Identifiable {
+        let id: Int
+        var source: RentalAccounts.Source?
+    }
+
+    /// The person on show, whose share the line is.
+    private var personName: String? { viewModel.page?.row.person.name }
+
+    private var rows: [SourceRow] { line.sources.indices.map { SourceRow(id: $0, source: line.sources[$0]) } }
+
+    /// The sources' one currency, when they share one (then they have a total).
+    private var sourcesCurrency: Currency? {
+        let currencies = Set(line.sources.map(\.currency))
+        return currencies.count == 1 ? currencies.first : nil
+    }
+
     var body: some View {
-        SheetScaffold(title: line.label, subtitle: "\(line.ruleExplanation) Share: \(line.shareExplanation).", width: 720,
+        SheetScaffold(title: line.label, subtitle: line.ruleExplanation, width: SheetMetrics.tableWidth,
                       cancelTitle: "Done", onCancel: { dismiss() }) {
-            List(Array(line.sources.enumerated()), id: \.offset) { _, source in
-                row(source)
+            FigureStrip(figures)
+            if line.sources.isEmpty {
+                SheetEmptyState(systemImage: "list.bullet.rectangle", title: "No sources",
+                                message: "Nothing feeds this line this year.", minHeight: 130)
+            } else {
+                let table = DataTable(columns: columns, rows: rows, total: sourcesCurrency == nil ? nil : SourceRow(id: -1, source: nil))
+                if line.sources.count > 9 {
+                    ScrollView { table }.frame(height: 380).sheetListFrame()
+                } else {
+                    table
+                }
             }
-            .frame(minHeight: 360)
         }
         .onAppear {
             let ids = Array(Set(line.sources.flatMap(\.documentIds)))
@@ -154,46 +470,112 @@ struct TaxLineSourcesSheet: View {
         }
     }
 
-    private func row(_ source: RentalAccounts.Source) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(source.date.map(DocumentFormat.day) ?? "—").monospacedDigit().lineLimit(1).fixedSize()
-            VStack(alignment: .leading, spacing: 2) {
-                Text(source.description).lineLimit(1)
-                Text(source.explanation).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if source.shareBasisPoints != line.share.shareBasisPoints {
-                    Text("Share \(PropertyFormat.percent(source.shareBasisPoints))").font(.caption).foregroundStyle(.secondary)
-                }
-                ForEach(source.documentIds.compactMap { documents[$0] }) { document in
-                    Button {
-                        viewModel.open(document)
-                    } label: {
-                        Label(document.displayName, systemImage: "paperclip").lineLimit(1)
-                    }
-                    .buttonStyle(.link)
-                    .font(.caption)
-                    .help("Open in its default app")
-                }
-            }
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 2) {
-                PropertyMoney(minorUnits: source.attributedMinorUnits, currency: source.currency)
-                if source.attributedMinorUnits != source.amountMinorUnits {
-                    HStack(spacing: 2) {
-                        Text("of").font(.caption).foregroundStyle(.secondary)
-                        PropertyMoney(minorUnits: source.amountMinorUnits, currency: source.currency, font: .caption.monospacedDigit(), neutral: true)
-                    }
-                }
-            }
-            if case let .transaction(id) = source.reference {
-                Button("Show") {
-                    guard let info = viewModel.transaction(id) else { return }
-                    dismiss()
-                    openTransaction(info.transaction)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Show \(source.description)")
-            }
+    private var figures: [FigureTile] {
+        let person = personName ?? "Share"
+        // A line's figures read as what they are: values for a form (spec §1.4).
+        return [
+            FigureTile(title: "Whole property", value: .money(line.whole.native, currency, .neutral),
+                       gbp: currency == .gbp ? nil : line.whole.gbp),
+            FigureTile(title: "Share", value: .text(PropertyFormat.percent(line.share.shareBasisPoints)),
+                       caption: shareOrigin),
+            FigureTile(title: personName == nil ? "The person's share" : "\(person)'s share", value: .money(line.amount.native, currency, .neutral),
+                       gbp: currency == .gbp ? nil : line.amount.gbp),
+            FigureTile(title: "Sources", value: .text("\(line.sources.count)"),
+                       caption: line.rule.displayName)
+        ]
+    }
+
+    private var shareOrigin: String {
+        switch line.share.origin {
+        case .ownership: return "Ownership, by days owned"
+        case .splitForType: return "Split for this type"
+        case .splitForAllTypes: return "Split for the year"
         }
-        .accessibilityElement(children: .contain)
+    }
+
+    private var columns: [DataTableColumn<SourceRow>] {
+        var columns: [DataTableColumn<SourceRow>] = [
+            DataTableColumn("Date", accessibilityValue: { $0.source?.date.map(DocumentFormat.day) }) { row, kind in
+                if kind == .row { DateText(date: row.source?.date) }
+            },
+            // The total row is read as "Total" already (DataTable): nothing more here.
+            DataTableColumn("Source", width: .fill(min: 240), accessibilityValue: { row in
+                row.source.map { "\($0.description), \($0.explanation)" }
+            }) { row, kind in
+                if let source = row.source {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(source.description).lineLimit(1)
+                        Text(source.explanation).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    }
+                    .help("\(source.description)\n\(source.explanation)")
+                } else {
+                    Text("Total").fontWeight(.semibold)
+                }
+            },
+            // The parts of one line: magnitudes, not coloured (MoneyRole.neutral).
+            .money("Amount", role: .neutral, currency: { $0.source?.currency ?? sourcesCurrency ?? currency }) { row in
+                row.source?.amountMinorUnits ?? line.sources.reduce(0) { $0 + $1.amountMinorUnits }
+            },
+            .money("Attributed", role: .neutral, currency: { $0.source?.currency ?? sourcesCurrency ?? currency }) { row in
+                row.source?.attributedMinorUnits ?? line.sources.reduce(0) { $0 + $1.attributedMinorUnits }
+            }
+        ]
+        if line.sources.contains(where: { $0.shareBasisPoints != line.share.shareBasisPoints }) {
+            columns.append(DataTableColumn("Share", alignment: .trailing, width: .min(52),
+                                           accessibilityValue: { $0.source.map { PropertyFormat.percent($0.shareBasisPoints) } }) { row, _ in
+                if let source = row.source {
+                    Text(PropertyFormat.percent(source.shareBasisPoints)).monospacedDigit()
+                        .foregroundStyle(source.shareBasisPoints == line.share.shareBasisPoints ? .secondary : .primary)
+                }
+            })
+        }
+        // Not described: the paperclip is a button (or a menu) VoiceOver has to reach.
+        columns.append(DataTableColumn("", alignment: .center, width: .fixed(44)) { row, _ in
+            if let source = row.source {
+                SourceDocumentsButton(documents: source.documentIds.compactMap { documents[$0] }) { viewModel.open($0) }
+            }
+        })
+        columns.append(.actions { row in
+            guard let source = row.source, case let .transaction(id) = source.reference else { return [] }
+            return [DataTableAction("Show \(source.description) where it lives", systemImage: "arrow.right.circle", inline: true) {
+                guard let info = viewModel.transaction(id) else { return }
+                dismiss()
+                openTransaction(info.transaction)
+            }]
+        })
+        return columns
+    }
+}
+
+/// A source's documents: a paperclip that opens the one document, or a menu of them.
+private struct SourceDocumentsButton: View {
+    let documents: [EvidenceDocument]
+    let open: (EvidenceDocument) -> Void
+
+    var body: some View {
+        if documents.count == 1, let document = documents.first {
+            Button { open(document) } label: { Image(systemName: "paperclip") }
+                .buttonStyle(.borderless)
+                .help("Open \(document.displayName)")
+                .accessibilityLabel("Open \(document.displayName)")
+        } else if documents.count > 1 {
+            Menu {
+                ForEach(documents) { document in
+                    Button(document.displayName) { open(document) }
+                }
+            } label: {
+                HStack(spacing: 1) {
+                    Image(systemName: "paperclip")
+                    Text("\(documents.count)").monospacedDigit()
+                }
+                .font(.caption)
+            }
+            .menuStyle(.button)
+            .buttonStyle(.borderless)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("\(documents.count) documents")
+            .accessibilityLabel("Open one of \(documents.count) documents")
+        }
     }
 }

@@ -221,12 +221,13 @@ extension HMRCRates {
 }
 
 extension HMRCRate {
-    /// Stored by `HMRCRates.fetchMissing` (not by a Fetch the user asked for).
+    /// Stored by `HMRCRates.fetchMissing` or a tax data plan's `fetchHMRCRates` (not by a
+    /// Fetch the user asked for).
     public var isFetchedAutomatically: Bool {
         source == .hmrcPublished && (notes?.hasPrefix(HMRCRates.autoFetchedNotePrefix) ?? false)
     }
 
-    /// "€1 = £0.8467 (1.1811 per £1)": the rate both ways, as the year page notes it.
+    /// "€1 = £0.8000 (1.2500 per £1)": the rate both ways, as the year page notes it.
     public var bothWaysText: String {
         let symbol = Currency(rawValue: currencyCode.lowercased())?.symbol ?? "\(currencyCode) "
         let units = unitsPerPound ?? 1 / gbpPerUnit

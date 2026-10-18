@@ -34,7 +34,7 @@ struct RecurrenceEndFields: View {
                 Text("On a date").tag(RecurrenceEndMode.onDate)
                 Text("After").tag(RecurrenceEndMode.after)
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.segmented).prominentTint()
             .fixedSize()
         }
         switch mode {

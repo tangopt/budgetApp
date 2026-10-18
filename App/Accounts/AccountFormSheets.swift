@@ -14,7 +14,7 @@ struct AddAccountSheet: View {
     @State private var currency: Currency = .gbp
     @State private var kind: AccountKind = .cash
     @State private var balanceText = ""
-    @State private var asOf = Date()
+    @State private var asOf = AppClock.now
     @State private var details = AccountDetailsDraft()
     @State private var includeInNetWorth = true
     /// Set when Save is pressed with invalid details: every field shows its error.
@@ -54,7 +54,7 @@ struct AddAccountSheet: View {
                 }
                 if !trimmedBalance.isEmpty {
                     LabeledContent("As of") {
-                        DatePicker("As of", selection: $asOf, in: ...Date(), displayedComponents: .date)
+                        DatePicker("As of", selection: $asOf, in: ...AppClock.now, displayedComponents: .date)
                             .fixedSize()
                     }
                 }
@@ -274,7 +274,7 @@ struct AccountDetailsFields: View {
             Picker("Region", selection: region) {
                 ForEach(BankRegion.allCases, id: \.self) { Text($0.title).tag($0) }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.segmented).prominentTint()
             .fixedSize()
         }
         LabeledContent("Bank name") { field(.bankName) }

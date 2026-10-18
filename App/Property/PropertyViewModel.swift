@@ -35,6 +35,12 @@ final class PropertyViewModel: ObservableObject {
         let name: String
     }
 
+    /// What the mortgage accounts owe at the end of a day, in the property's currency.
+    struct LoanPoint: Equatable, Sendable {
+        let date: Date
+        let owedMinorUnits: Int
+    }
+
     /// What one observation reads.
     struct Snapshot: Equatable, Sendable {
         var property: Property?
@@ -56,6 +62,9 @@ final class PropertyViewModel: ObservableObject {
         var documents: [EvidenceDocument] = []
         var categoryNames: [Int64: String] = [:]
         var hasEvidenceRules = false
+        /// The loan at each month end since the mortgage accounts' first record, then today
+        /// (Overview's loan chart).
+        var loanHistory: [LoanPoint] = []
     }
 
     let dbQueue: DatabaseQueue
@@ -90,7 +99,7 @@ final class PropertyViewModel: ObservableObject {
     private var isActive = false
     private let now: () -> Date
 
-    init(dbQueue: DatabaseQueue, library: EvidenceLibrary, now: @escaping () -> Date = Date.init) {
+    init(dbQueue: DatabaseQueue, library: EvidenceLibrary, now: @escaping () -> Date = { AppClock.now }) {
         self.dbQueue = dbQueue
         self.library = library
         self.now = now
@@ -149,6 +158,11 @@ final class PropertyViewModel: ObservableObject {
         let today = PropertyDays.utcToday(now())
         let rents = snapshot.rents[tenancy.id ?? -1] ?? []
         return rents.last { $0.fromDate <= today } ?? rents.last
+    }
+
+    /// Whether the tenancy runs today.
+    func isRunning(_ tenancy: Tenancy) -> Bool {
+        tenancy.covers(PropertyDays.utcToday(now()))
     }
 
     /// The tenancy running today, else the latest.
@@ -213,13 +227,46 @@ final class PropertyViewModel: ObservableObject {
             snapshot.summary = try PropertyFinance.summary(db: db, propertyId: propertyId, period: period, today: today)
             snapshot.checks = try PropertyChecks.run(db: db, propertyId: propertyId, period: period.interval, today: today)
         }
-        let start = PropertyDays.utcToday(today)
-        let end = MonthRange.calendar.date(byAdding: .month, value: 12, to: start)!
-        snapshot.obligations = try PropertyCalendar.obligations(db: db, propertyId: propertyId, from: start, to: end, today: today)
+        // `today` is already the stored (UTC) day.
+        let end = MonthRange.calendar.date(byAdding: .month, value: 12, to: today)!
+        snapshot.obligations = try PropertyCalendar.obligations(db: db, propertyId: propertyId, from: today, to: end, today: today)
         snapshot.documents = try EvidenceLinks.documents(db: db, for: .property(propertyId))
         snapshot.categoryNames = Dictionary(uniqueKeysWithValues: try Category.fetchAll(db).compactMap { c in c.id.map { ($0, c.name) } })
         snapshot.hasEvidenceRules = try PropertyEvidence.defaultRules(db: db, propertyId: propertyId).isEmpty
+        let mortgageIds = snapshot.propertyAccounts.filter { $0.role == .mortgage }.map(\.accountId)
+        snapshot.loanHistory = try loanHistory(db: db, property: property, accountIds: mortgageIds, today: today)
         return snapshot
+    }
+
+    /// The most month ends the loan chart reads (ten years).
+    nonisolated static let loanHistoryMonths = 120
+
+    /// What `accountIds` (the mortgage) owe at the end of each month from their first record
+    /// (at most `loanHistoryMonths` back) and at the end of `today`, read by
+    /// `PropertyFinance.loanBalances` (the rule of `PropertyFinance.balance`, which gives the
+    /// summary's outstanding loan).
+    nonisolated static func loanHistory(db: Database, property: Property, accountIds: [Int64], today: Date) throws -> [LoanPoint] {
+        guard !accountIds.isEmpty else { return [] }
+        let firstSnapshot = try BalanceSnapshot.filter(accountIds.contains(Column("accountId")))
+            .select(GRDB.min(Column("date")), as: Date.self).fetchOne(db)
+        let firstTransaction = try Transaction.filter(accountIds.contains(Column("accountId")))
+            .select(GRDB.min(Column("date")), as: Date.self).fetchOne(db)
+        guard let first = [firstSnapshot, firstTransaction].compactMap({ $0 }).min() else { return [] }
+        let calendar = MonthRange.calendar
+        let earliest = calendar.date(byAdding: .month, value: -loanHistoryMonths, to: today)!
+        let start = max(calendar.startOfDay(for: first), earliest)
+        guard start <= today else { return [] }
+        var days = [start]
+        var month = MonthRange.components(of: start)
+        while true {
+            let lastDay = calendar.startOfDay(for: MonthRange.of(year: month.year, month: month.month).end)
+            if lastDay >= today { break }
+            if lastDay > start { days.append(lastDay) }
+            month = MonthRange.components(of: calendar.date(byAdding: .month, value: 1, to: MonthRange.of(year: month.year, month: month.month).start)!)
+        }
+        if today > start { days.append(today) }
+        let balances = try PropertyFinance.loanBalances(db: db, property: property, accountIds: accountIds, days: days)
+        return zip(days, balances).map { LoanPoint(date: $0, owedMinorUnits: $1.native) }
     }
 
     // MARK: Editing
@@ -536,6 +583,14 @@ enum PropertyFormat {
     static func yield(_ value: Double?) -> String {
         value.map { String(format: "%.2f%%", $0 * 100) } ?? "—"
     }
+
+    /// "2 months deposit, 1 month advance rent".
+    static func held(_ tenancy: Tenancy) -> String {
+        "\(months(tenancy.depositMonths)) deposit, \(months(tenancy.advanceRentMonths)) advance rent"
+    }
+
+    /// "1 month", "2 months".
+    static func months(_ count: Int) -> String { "\(count) month\(count == 1 ? "" : "s")" }
 
     static func period(_ start: Date, _ end: Date?) -> String {
         end.map { "\(DocumentFormat.day(start)) – \(DocumentFormat.day($0))" } ?? "From \(DocumentFormat.day(start))"

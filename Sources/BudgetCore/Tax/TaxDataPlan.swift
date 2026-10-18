@@ -58,8 +58,9 @@ public enum TaxDataPlan {
             public var note: String?
         }
 
-        /// An HMRC rate implied by a filed return, stored only when the year has none (a stored
-        /// filed-return rate that differs is refused; another source's is left as it is).
+        /// An HMRC rate implied by a filed return, stored when the year has none, and replacing a
+        /// rate fetched automatically (the same figure is left as it is); a stored filed-return
+        /// rate that differs is refused, and another source's (typed in) is left as it is.
         public struct Rate: Codable, Equatable, Sendable {
             public var startYear: Int
             /// ISO code; `nil` = "EUR".
@@ -495,6 +496,30 @@ public enum TaxDataPlan {
             for entry in entries {
                 let code = (entry.currency ?? "EUR").uppercased()
                 let year = UKTaxYear(startYear: entry.startYear).label
+                if let existing = try HMRCRates.rate(db: db, startYear: entry.startYear, currencyCode: code), existing.isFetchedAutomatically {
+                    // The filed return's rate is what was filed: it replaces a rate fetched
+                    // automatically. The same figure stays as it is, now marked as the filed
+                    // return's, so a later automatic fetch leaves it alone.
+                    if abs(existing.gbpPerUnit - entry.gbpPerUnit) < 1e-9 {
+                        do {
+                            try HMRCRates.set(db: db, startYear: entry.startYear, currencyCode: code, gbpPerUnit: existing.gbpPerUnit,
+                                              unitsPerPound: existing.unitsPerPound, source: .filedReturn,
+                                              notes: entry.note ?? "Implied by the filed return")
+                            note(section, .unchanged, "\(year) \(code) £\(entry.gbpPerUnit) the same as filed; now marked as the filed return's")
+                        } catch {
+                            problems.append("\(section): \(year) \(code) £\(entry.gbpPerUnit): \(error)")
+                        }
+                        continue
+                    }
+                    do {
+                        try HMRCRates.set(db: db, startYear: entry.startYear, currencyCode: code, gbpPerUnit: entry.gbpPerUnit, source: .filedReturn,
+                                          notes: entry.note ?? "Implied by the filed return")
+                        note(section, .added, "\(year) \(code) £\(entry.gbpPerUnit) (filed return) replaces the automatically fetched £\(existing.gbpPerUnit)")
+                    } catch {
+                        problems.append("\(section): \(year) \(code) £\(entry.gbpPerUnit): \(error)")
+                    }
+                    continue
+                }
                 if let existing = try HMRCRates.rate(db: db, startYear: entry.startYear, currencyCode: code) {
                     if abs(existing.gbpPerUnit - entry.gbpPerUnit) < 1e-9 && existing.source == .filedReturn {
                         note(section, .unchanged, "\(year) \(code) £\(entry.gbpPerUnit) already stored (filed return)")

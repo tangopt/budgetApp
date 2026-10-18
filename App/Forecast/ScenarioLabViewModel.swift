@@ -98,8 +98,8 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
 
     @Published private(set) var categories: [Category] = []
     @Published private(set) var categoryGroups: [CategoryGroup] = []
-    @Published private(set) var payCalendar = PayCalendar(salaryDates: [], manualCloses: [], today: Date())
-    @Published private(set) var today = Date()
+    @Published private(set) var payCalendar = PayCalendar(salaryDates: [], manualCloses: [], today: AppClock.now)
+    @Published private(set) var today = AppClock.now
     /// Every transaction (net worth); `transferLinks` keeps the actuals budget-facing.
     private var transactions: [Transaction] = []
     private var transferLinks: [TransferLink] = []
@@ -107,7 +107,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
     /// The planned item sheets' Account picker; rebuilt on load.
     private(set) var accountOptions: PlanAccountOptions = .none
     private var snapshots: [BalanceSnapshot] = []
-    private var rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: Date())
+    private var rate = ExchangeRateSetting(eurToGbpRate: 0.87, updatedAt: AppClock.now)
     private var groups: [ForecastGroup] = []
     private var budgetPlan = PlanInput(entries: [], exceptions: [], groups: [])
     private var scenarioPlans: [Int64: PlanInput] = [:]
@@ -173,7 +173,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
 
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
-        _gridSelectedYears = Published(initialValue: [MonthRange.components(of: Date()).year])
+        _gridSelectedYears = Published(initialValue: [MonthRange.components(of: AppClock.now).year])
     }
 
     /// A comparison still computing when the lab goes away is cancelled.
@@ -266,7 +266,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         scenarios = loaded.scenarios
         budgetPlan = loaded.budgetPlan
         scenarioPlans = loaded.scenarioPlans
-        today = Date()
+        today = AppClock.now
         // As the Dashboard builds it: today never earlier than the latest transaction.
         payCalendar = PayCalendar.forData(transactions: transactions, categories: categories, manualCloses: loaded.manualCloses, today: today)
         gridActuals = ScenarioComparison.gridActuals(comparisonData)
@@ -591,7 +591,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
             let fresh = try dbQueue.read { db in
                 (closes: try PayMonthClose.fetchAll(db), transactions: try Transaction.fetchAll(db), categories: try Category.fetchAll(db))
             }
-            calendar = PayCalendar.forData(transactions: fresh.transactions, categories: fresh.categories, manualCloses: fresh.closes, today: Date())
+            calendar = PayCalendar.forData(transactions: fresh.transactions, categories: fresh.categories, manualCloses: fresh.closes, today: AppClock.now)
         } catch {
             errorMessage = "Couldn't reload the forecast before applying: \(error.localizedDescription)"
             return
