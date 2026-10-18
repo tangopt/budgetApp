@@ -2,10 +2,13 @@
 //
 // One-off tax data for a property (`TaxDataPlan`): categorises the plan's uncategorised
 // debits, stores the category → expense type map, records insurers' and condomínio receipts
-// (linked to their debits), assigns payments to one person, and adds HMRC filed-return rates
-// and manual items the years don't have yet. Idempotent; anything contradicting the stored
-// data is refused and nothing is written. Tax year statuses are never changed. Then reports
-// each owner's rental accounts for the plan's `summaryYears`, as the app computes them.
+// (linked to their debits), assigns payments to one person, adds HMRC filed-return rates and
+// manual items the years don't have yet, stores attribution rules, and fetches HMRC's
+// published average rates (`fetchHMRCRates`, the Trade Tariff file for the year to 31 March;
+// only for a year lacking a rate, before the write). Idempotent; anything contradicting the
+// stored data, or a rate that couldn't be fetched, is refused and nothing is written. Tax year
+// statuses are never changed. Then reports each owner's rental accounts for the plan's
+// `summaryYears`, as the app computes them.
 //
 // The plan is a personal data file kept outside the repository.
 //
@@ -80,6 +83,23 @@ let backupPath: String? = {
     return path
 }()
 
+/// Holds an async step's value for the synchronous run.
+final class AsyncBox<T>: @unchecked Sendable {
+    var value: T?
+}
+
+/// Runs an async step from the synchronous run, waiting for it.
+func awaitResult<T>(_ body: @escaping @Sendable () async -> T) -> T {
+    let semaphore = DispatchSemaphore(value: 0)
+    let box = AsyncBox<T>()
+    Task.detached {
+        box.value = await body()
+        semaphore.signal()
+    }
+    semaphore.wait()
+    return box.value!
+}
+
 /// Temporary copies, removed whatever happens (nothing exits inside the run).
 var temporary: [URL] = []
 
@@ -105,8 +125,12 @@ let result = Result<String, Error> {
     let manager = try DatabaseManager(path: dbPath)
     try manager.migrate()
 
+    // HMRC's files, fetched before the write (only the years still lacking a rate).
+    let years = try manager.dbQueue.read { db in try TaxDataPlan.yearsToFetch(db: db, plan: plan) }
+    let fetched = awaitResult { await TaxDataPlan.fetchRates(years: years, fetcher: HMRCTradeTariffRateFetcher()) }
+
     // One transaction: a refusal rolls everything back.
-    let outcome = try manager.dbQueue.write { db in try TaxDataPlan.apply(db: db, plan: plan) }
+    let outcome = try manager.dbQueue.write { db in try TaxDataPlan.apply(db: db, plan: plan, fetched: fetched) }
     var out = "Tax data\(dryRun ? " (dry run: nothing kept)" : "") · \(plan.property)\n"
     out += "Added \(outcome.count(.added)), already there \(outcome.count(.unchanged)), left as stored \(outcome.count(.kept))\n\n"
     out += TaxDataPlan.report(outcome)

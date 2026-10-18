@@ -68,6 +68,172 @@ public enum HMRCRates {
     }
 }
 
+// MARK: - Fetched automatically
+
+/// Remembers when each tax year's HMRC file was last asked for, so a rate that isn't there
+/// yet (offline, not published) is asked for again at most once a day.
+public protocol HMRCRateFetchLog: AnyObject {
+    func lastAttempt(startYear: Int) -> Date?
+    func recordAttempt(startYear: Int, at date: Date)
+}
+
+/// The attempts of this run of the app (or tool) only.
+public final class HMRCRateFetchMemoryLog: HMRCRateFetchLog, @unchecked Sendable {
+    /// One log for the process: the default of `HMRCRates.fetchMissing`.
+    public static let shared = HMRCRateFetchMemoryLog()
+    private let lock = NSLock()
+    private var attempts: [Int: Date] = [:]
+
+    public init() {}
+
+    public func lastAttempt(startYear: Int) -> Date? {
+        lock.lock(); defer { lock.unlock() }
+        return attempts[startYear]
+    }
+
+    public func recordAttempt(startYear: Int, at date: Date) {
+        lock.lock(); defer { lock.unlock() }
+        attempts[startYear] = date
+    }
+}
+
+/// The attempts kept in `UserDefaults` (across launches): one dictionary, start year → time.
+public final class HMRCRateFetchDefaultsLog: HMRCRateFetchLog, @unchecked Sendable {
+    public static let defaultKey = "hmrcRateFetchAttempts"
+    private let defaults: UserDefaults
+    private let key: String
+    private let lock = NSLock()
+
+    public init(defaults: UserDefaults = .standard, key: String = HMRCRateFetchDefaultsLog.defaultKey) {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    public func lastAttempt(startYear: Int) -> Date? {
+        lock.lock(); defer { lock.unlock() }
+        return (defaults.dictionary(forKey: key)?[String(startYear)] as? Double).map(Date.init(timeIntervalSince1970:))
+    }
+
+    public func recordAttempt(startYear: Int, at date: Date) {
+        lock.lock(); defer { lock.unlock() }
+        var attempts = defaults.dictionary(forKey: key) ?? [:]
+        attempts[String(startYear)] = date.timeIntervalSince1970
+        defaults.set(attempts, forKey: key)
+    }
+}
+
+extension HMRCRates {
+    /// What an automatic fetch did.
+    public struct AutoFetchOutcome: Equatable, Sendable {
+        /// The rates stored, by year then currency.
+        public var fetched: [HMRCRate] = []
+        /// Years whose file couldn't be read, or lacked a currency wanted: asked again on a later day.
+        public var failedYears: [Int] = []
+        /// Years with a rate missing that were asked for less than a day ago: left for now.
+        public var throttledYears: [Int] = []
+
+        public init(fetched: [HMRCRate] = [], failedYears: [Int] = [], throttledYears: [Int] = []) {
+            self.fetched = fetched
+            self.failedYears = failedYears
+            self.throttledYears = throttledYears
+        }
+    }
+
+    /// The start of an automatically fetched rate's notes (`HMRCRate.isFetchedAutomatically`).
+    public static let autoFetchedNotePrefix = "Fetched automatically"
+    /// A year is asked for at most once in this long.
+    public static let retryInterval: TimeInterval = 86_400
+
+    /// The rates the years need and don't have: for each UK tax year that has ended by
+    /// `today` (6 April after it), from the first year of the Tax years list (the first year
+    /// anyone owns a property, or has a tax year or employment record) to the last ended one,
+    /// the codes of the non-GBP currencies its people's properties and sources use (each
+    /// property's currency and its accounts', the year's manual items and other income),
+    /// without a stored rate. Start year → codes; years with nothing missing are left out.
+    public static func missing(db: Database, today: Date) throws -> [Int: Set<String>] {
+        let rows = try TaxOverview.rows(db: db, now: today).filter { $0.year.end <= today }
+        let currencies = Dictionary(uniqueKeysWithValues: try Account.fetchAll(db).compactMap { a in a.id.map { ($0, a.currency) } })
+        var propertyCurrencies: [Int64: Set<Currency>] = [:]
+        func used(by property: Property) throws -> Set<Currency> {
+            guard let id = property.id else { return [property.currency] }
+            if let known = propertyCurrencies[id] { return known }
+            let accounts = try Properties.accounts(db: db, propertyId: id).compactMap { currencies[$0.accountId] }
+            let set = Set([property.currency] + accounts)
+            propertyCurrencies[id] = set
+            return set
+        }
+        var wanted: [Int: Set<Currency>] = [:]
+        for row in rows {
+            guard let personId = row.person.id else { continue }
+            let startYear = row.year.startYear
+            var set = wanted[startYear] ?? []
+            for property in row.properties { set.formUnion(try used(by: property)) }
+            set.formUnion(try TaxManualItems.items(db: db, startYear: startYear, personId: personId).map(\.currency))
+            set.formUnion(try OtherIncomes.incomes(db: db, startYear: startYear, personId: personId).map(\.currency))
+            wanted[startYear] = set
+        }
+        var missing: [Int: Set<String>] = [:]
+        for (startYear, set) in wanted {
+            let codes = Set(try set.filter { $0 != .gbp }.map { $0.rawValue.uppercased() }
+                .filter { try rate(db: db, startYear: startYear, currencyCode: $0) == nil })
+            if !codes.isEmpty { missing[startYear] = codes }
+        }
+        return missing
+    }
+
+    /// Fetches HMRC's published average (the year to 31 March) for every rate `missing`
+    /// finds, and stores it (`hmrcPublished`, noted as fetched automatically). Never replaces
+    /// a stored rate of any source: a rate entered meanwhile is kept. A failure (offline, the
+    /// file not published yet, a currency not in it) is quiet: the year is asked for again
+    /// once `retryInterval` has passed since its last attempt (`log`), as is every year.
+    @discardableResult
+    public static func fetchMissing(db: some DatabaseWriter, today: Date = Date(), fetcher: HMRCRateFetching,
+                                    log: HMRCRateFetchLog = HMRCRateFetchMemoryLog.shared) async throws -> AutoFetchOutcome {
+        let missing = try await db.read { db in try Self.missing(db: db, today: today) }
+        var outcome = AutoFetchOutcome()
+        for startYear in missing.keys.sorted() {
+            let codes = missing[startYear]!
+            if let last = log.lastAttempt(startYear: startYear), abs(today.timeIntervalSince(last)) < retryInterval {
+                outcome.throttledYears.append(startYear)
+                continue
+            }
+            // Recorded before asking, so a second run meanwhile leaves the year alone.
+            log.recordAttempt(startYear: startYear, at: today)
+            guard let published = await fetcher.fetchAverageRates(for: UKTaxYear(startYear: startYear)) else {
+                outcome.failedYears.append(startYear)
+                continue
+            }
+            let stored = try await db.write { db -> [HMRCRate] in
+                var stored: [HMRCRate] = []
+                for rate in published where codes.contains(rate.currencyCode) {
+                    guard try Self.rate(db: db, startYear: startYear, currencyCode: rate.currencyCode) == nil else { continue }
+                    stored.append(try set(db: db, startYear: startYear, currencyCode: rate.currencyCode, gbpPerUnit: rate.gbpPerUnit,
+                                          unitsPerPound: rate.unitsPerPound, source: .hmrcPublished, fetchedAt: today,
+                                          notes: "\(autoFetchedNotePrefix): HMRC average for the year to 31 March \(startYear + 1)"))
+                }
+                return stored
+            }
+            outcome.fetched += stored.sorted { $0.currencyCode < $1.currencyCode }
+            if !Set(published.map(\.currencyCode)).isSuperset(of: codes) { outcome.failedYears.append(startYear) }
+        }
+        return outcome
+    }
+}
+
+extension HMRCRate {
+    /// Stored by `HMRCRates.fetchMissing` (not by a Fetch the user asked for).
+    public var isFetchedAutomatically: Bool {
+        source == .hmrcPublished && (notes?.hasPrefix(HMRCRates.autoFetchedNotePrefix) ?? false)
+    }
+
+    /// "€1 = £0.8467 (1.1811 per £1)": the rate both ways, as the year page notes it.
+    public var bothWaysText: String {
+        let symbol = Currency(rawValue: currencyCode.lowercased())?.symbol ?? "\(currencyCode) "
+        let units = unitsPerPound ?? 1 / gbpPerUnit
+        return String(format: "%@1 = £%.4f (%.4f per £1)", symbol, gbpPerUnit, units)
+    }
+}
+
 extension HMRCRate {
     /// `minorUnits` of the currency in pence: divided by the published units per £1 when
     /// stored (as HMRC and the accountant convert), else times `gbpPerUnit`; rounded.

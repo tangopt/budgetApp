@@ -104,6 +104,11 @@ struct TaxYearPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
+            ForEach(viewModel.automaticallyFetchedRates, id: \.currencyCode) { rate in
+                Label("HMRC average rate fetched automatically: \(rate.bothWaysText)", systemImage: "arrow.down.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help(rate.notes ?? "HMRC's average for the year to 31 March")
+            }
             TaxBanners(viewModel: viewModel)
             if viewModel.tab == .missingEvidence {
                 TaxMissingEvidenceTab(viewModel: missingEvidenceViewModel, page: page, openTransaction: openTransaction)

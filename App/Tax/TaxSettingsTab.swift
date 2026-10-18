@@ -48,7 +48,7 @@ struct TaxSettingsTab: View {
                 ForEach(page.rates, id: \.currencyCode) { rate in
                     HStack {
                         Text(TaxFormat.rate(rate)).monospacedDigit()
-                        Text(TaxFormat.source(rate.source)).foregroundStyle(.secondary)
+                        Text(TaxFormat.source(of: rate)).foregroundStyle(.secondary)
                         Spacer()
                         Button("Remove") { viewModel.removeRate(currencyCode: rate.currencyCode) }
                             .buttonStyle(.borderless)

@@ -12,13 +12,18 @@ final class AppEnvironment: ObservableObject {
     /// Set once, right after launch, only if the fetched rate actually differs from the
     /// last saved one at 2 decimal places. `AccountsView` displays and dismisses it.
     @Published var exchangeRateBanner: String?
+    /// HMRC's average rates the ended tax years lack, fetched in the background (after
+    /// launch, and when the Tax years screen first appears).
+    let hmrcRateAutoFetch: HMRCRateAutoFetch
 
     private init(dbQueue: DatabaseQueue, evidenceRoot: URL) {
         self.dbQueue = dbQueue
         self.evidenceRoot = evidenceRoot
+        self.hmrcRateAutoFetch = HMRCRateAutoFetch(dbQueue: dbQueue)
 
         Task { [weak self] in
             await self?.refreshExchangeRate()
+            self?.hmrcRateAutoFetch.run()
         }
     }
 

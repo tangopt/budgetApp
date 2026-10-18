@@ -43,6 +43,9 @@ final class TaxYearsViewModel: ObservableObject {
     let dbQueue: DatabaseQueue
     let library: EvidenceLibrary
     private let rateFetcher: HMRCRateFetching
+    /// Fetches the ended years' missing HMRC rates when the screen first appears.
+    private let rateAutoFetch: HMRCRateAutoFetch?
+    private var hasAutoFetched = false
 
     @Published var selection: Selection? {
         didSet { if selection != oldValue { propertyId = nil; restartObservation() } }
@@ -75,10 +78,12 @@ final class TaxYearsViewModel: ObservableObject {
     private var observationTask: Task<Void, Never>?
     private var isActive = false
 
-    init(dbQueue: DatabaseQueue, library: EvidenceLibrary, rateFetcher: HMRCRateFetching = HMRCTradeTariffRateFetcher()) {
+    init(dbQueue: DatabaseQueue, library: EvidenceLibrary, rateFetcher: HMRCRateFetching = HMRCTradeTariffRateFetcher(),
+         rateAutoFetch: HMRCRateAutoFetch? = nil) {
         self.dbQueue = dbQueue
         self.library = library
         self.rateFetcher = rateFetcher
+        self.rateAutoFetch = rateAutoFetch
     }
 
     var page: TaxOverview.YearPage? { snapshot.page }
@@ -89,7 +94,15 @@ final class TaxYearsViewModel: ObservableObject {
     func start() {
         isActive = true
         restartObservation()
+        // In the background, once: the rates the ended years lack (throttled per year).
+        if !hasAutoFetched {
+            hasAutoFetched = true
+            rateAutoFetch?.run()
+        }
     }
+
+    /// The year's rates HMRCRates.fetchMissing stored, for the page's note.
+    var automaticallyFetchedRates: [HMRCRate] { page?.rates.filter(\.isFetchedAutomatically) ?? [] }
 
     func stop() {
         isActive = false
@@ -411,6 +424,11 @@ enum TaxFormat {
     static func rate(_ rate: HMRCRate) -> String {
         let units = rate.unitsPerPound ?? 1 / rate.gbpPerUnit
         return String(format: "%.4f %@ per £1 (£%.4f)", units, rate.currencyCode, rate.gbpPerUnit)
+    }
+
+    /// The rate's source, noting one fetched automatically.
+    static func source(of rate: HMRCRate) -> String {
+        rate.isFetchedAutomatically ? "HMRC published, fetched automatically" : source(rate.source)
     }
 
     static func source(_ source: HMRCRateSource) -> String {

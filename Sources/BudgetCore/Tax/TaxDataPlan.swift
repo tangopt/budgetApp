@@ -4,7 +4,8 @@ import Foundation
 /// One-off tax data for a property, from a plan (a personal JSON data file kept outside the
 /// repository; this code only knows its shape): debits to categorise, the category → expense
 /// type map, insurers' and condomínio receipts, payments that are one person's, HMRC rates
-/// implied by filed returns and GBP manual items. `apply` runs inside the caller's write and
+/// implied by filed returns, GBP manual items, attribution rules and HMRC's published rates
+/// (fetched before the write, `fetchRates`). `apply` runs inside the caller's write and
 /// is idempotent: what is already there is left alone (reported unchanged), and anything that
 /// contradicts the stored data is refused — nothing is written then (the caller's transaction
 /// rolls back). Tax year statuses are never touched.
@@ -84,6 +85,28 @@ public enum TaxDataPlan {
             public var note: String?
         }
 
+        /// An attribution rule, stored only when the scope has none, or has the seeded default
+        /// (a rule the user set that differs is refused).
+        public struct AttributionRule: Codable, Equatable, Sendable {
+            /// A `TaxExpenseType` raw value.
+            public var expenseType: String
+            /// A `TaxAttributionRuleKind` raw value.
+            public var rule: String
+            /// `nil` = every year (the stored default); else that year's override.
+            public var startYear: Int?
+            /// For `apportionByCover`: the cover months assumed without a period.
+            public var coverMonths: Int?
+        }
+
+        /// HMRC's published averages to fetch (the year to 31 March) and store where the year
+        /// has no rate for the currency.
+        public struct FetchRates: Codable, Equatable, Sendable {
+            /// UK tax years (start years).
+            public var years: [Int]
+            /// ISO codes; `nil` = ["EUR"].
+            public var currencies: [String]?
+        }
+
         public var property: String
         public var categorize: [Categorize]?
         /// Category name → `TaxExpenseType` raw value.
@@ -94,6 +117,8 @@ public enum TaxDataPlan {
         public var manualItems: [ManualItem]?
         /// The UK tax years (start years) whose figures the tool reports after applying.
         public var summaryYears: [Int]?
+        public var attributionRules: [AttributionRule]?
+        public var fetchHMRCRates: FetchRates?
     }
 
     public enum PlanError: Error, Equatable, CustomStringConvertible {
@@ -112,19 +137,25 @@ public enum TaxDataPlan {
     }
 
     static let keys: [String: Set<String>] = [
-        "": ["property", "categorize", "expenseTypes", "policyReceipts", "transactionOwners", "rates", "manualItems", "summaryYears"],
+        "": ["property", "categorize", "expenseTypes", "policyReceipts", "transactionOwners", "rates", "manualItems", "summaryYears",
+             "attributionRules", "fetchHMRCRates"],
         "categorize": ["account", "date", "amount", "description", "category", "createCategory"],
         "policyReceipts": ["expenseType", "date", "debitDate", "amount", "currency", "policyYear", "instalment", "of", "coverFrom", "coverTo", "note"],
         "transactionOwners": ["person", "reference", "date", "amount", "note"],
         "rates": ["startYear", "currency", "gbpPerUnit", "note"],
-        "manualItems": ["startYear", "person", "expenseType", "label", "amount", "currency", "date", "wholeProperty", "note"]
+        "manualItems": ["startYear", "person", "expenseType", "label", "amount", "currency", "date", "wholeProperty", "note"],
+        "attributionRules": ["expenseType", "rule", "startYear", "coverMonths"],
+        "fetchHMRCRates": ["years", "currencies"]
     ]
 
     /// Decodes the plan, refusing unknown keys (a typo would silently drop data).
     public static func decodePlan(_ data: Data) throws -> Plan {
         let root = (try JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         var unknown = root.keys.filter { !keys[""]!.contains($0) }.sorted()
-        for (list, allowed) in keys where !list.isEmpty {
+        for (list, allowed) in keys.sorted(by: { $0.key < $1.key }) where !list.isEmpty {
+            if let object = root[list] as? [String: Any] {
+                unknown += object.keys.filter { !allowed.contains($0) }.sorted().map { "\(list).\($0)" }
+            }
             for (index, item) in ((root[list] as? [Any]) ?? []).enumerated() {
                 unknown += ((item as? [String: Any]) ?? [:]).keys.filter { !allowed.contains($0) }.sorted().map { "\(list)[\(index)].\($0)" }
             }
@@ -159,23 +190,64 @@ public enum TaxDataPlan {
         }
     }
 
-    public static let sections = ["Categorised debits", "Expense types", "Policy receipts", "Payment owners", "HMRC rates", "Manual items"]
+    public static let sections = ["Categorised debits", "Expense types", "Policy receipts", "Payment owners", "HMRC rates", "Manual items",
+                                  "Attribution rules", "HMRC rates fetched"]
+
+    // MARK: Fetching HMRC's rates (before the write)
+
+    /// HMRC's average-rates files fetched for the plan's `fetchHMRCRates`: start year → the
+    /// file's rates, `nil` when it couldn't be fetched (offline, not published yet).
+    public struct FetchedRates: Equatable, Sendable {
+        public var byYear: [Int: [HMRCPublishedRate]?]
+
+        public init(byYear: [Int: [HMRCPublishedRate]?] = [:]) {
+            self.byYear = byYear
+        }
+    }
+
+    /// The plan's `fetchHMRCRates` currencies (upper case; bad codes left for `apply` to refuse).
+    static func fetchCodes(_ request: Plan.FetchRates) -> [String] {
+        (request.currencies ?? ["EUR"]).compactMap { try? HMRCRates.normalizedCode($0) }
+    }
+
+    /// The `fetchHMRCRates` years that lack a stored rate for one of its currencies: the files
+    /// to fetch (a year with every rate stored is skipped, not fetched).
+    public static func yearsToFetch(db: Database, plan: Plan) throws -> [Int] {
+        guard let request = plan.fetchHMRCRates else { return [] }
+        let codes = fetchCodes(request)
+        var years: [Int] = []
+        for startYear in request.years where !years.contains(startYear) {
+            if try codes.contains(where: { try HMRCRates.rate(db: db, startYear: startYear, currencyCode: $0) == nil }) { years.append(startYear) }
+        }
+        return years
+    }
+
+    /// Fetches each year's file once (HMRC's average for the year to 31 March).
+    public static func fetchRates(years: [Int], fetcher: HMRCRateFetching) async -> FetchedRates {
+        var fetched = FetchedRates()
+        for startYear in years where fetched.byYear[startYear] == nil {
+            fetched.byYear[startYear] = .some(await fetcher.fetchAverageRates(for: UKTaxYear(startYear: startYear)))
+        }
+        return fetched
+    }
 
     /// Applies the plan inside the caller's write. Throws `PlanError.refused` with every
     /// problem found (the caller rolls back); otherwise returns what was added and what was
-    /// already there.
-    public static func apply(db: Database, plan: Plan) throws -> Outcome {
+    /// already there. `fetched` holds the files `fetchRates` read for `fetchHMRCRates`.
+    public static func apply(db: Database, plan: Plan, fetched: FetchedRates = FetchedRates(), now: Date = Date()) throws -> Outcome {
         guard let property = try Property.filter(sql: "name = ? COLLATE NOCASE", arguments: [plan.property]).fetchOne(db) else {
             throw PlanError.propertyNotFound(plan.property)
         }
         let propertyId = property.id!
-        var state = State(db: db, propertyId: propertyId)
+        var state = State(db: db, propertyId: propertyId, now: now)
         try state.categorize(plan.categorize ?? [])
         try state.expenseTypes(plan.expenseTypes ?? [:])
         try state.policyReceipts(plan.policyReceipts ?? [])
         try state.owners(plan.transactionOwners ?? [])
         try state.rates(plan.rates ?? [])
         try state.manualItems(plan.manualItems ?? [])
+        try state.attributionRules(plan.attributionRules ?? [])
+        try state.fetchedRates(plan.fetchHMRCRates, fetched: fetched)
         guard state.problems.isEmpty else { throw PlanError.refused(state.problems) }
         return Outcome(propertyId: propertyId, changes: state.changes, createdCategories: state.created)
     }
@@ -183,13 +255,15 @@ public enum TaxDataPlan {
     private struct State {
         let db: Database
         let propertyId: Int64
+        let now: Date
         var changes: [Change] = []
         var problems: [String] = []
         var created: [String] = []
 
-        init(db: Database, propertyId: Int64) {
+        init(db: Database, propertyId: Int64, now: Date) {
             self.db = db
             self.propertyId = propertyId
+            self.now = now
         }
 
         mutating func note(_ section: String, _ kind: ChangeKind, _ text: String) {
@@ -475,6 +549,95 @@ public enum TaxDataPlan {
                 }
             }
         }
+
+        // 6. Attribution rules.
+        mutating func attributionRules(_ entries: [Plan.AttributionRule]) throws {
+            let section = TaxDataPlan.sections[6]
+            func text(_ rule: TaxAttributionRuleKind, _ months: Int?) -> String {
+                rule.displayName + (months.map { ", \($0) months of cover assumed" } ?? "")
+            }
+            func scope(_ startYear: Int?) -> String { startYear.map { UKTaxYear(startYear: $0).label } ?? "every year" }
+            var seen: Set<String> = []
+            for entry in entries {
+                guard let type = TaxExpenseType(rawValue: entry.expenseType) else { problems.append("\(section): unknown type \(entry.expenseType)"); continue }
+                guard let rule = TaxAttributionRuleKind(rawValue: entry.rule) else {
+                    problems.append("\(section): unknown rule \(entry.rule) for \(type.displayName)"); continue
+                }
+                let what = "\(type.displayName), \(scope(entry.startYear))"
+                if let months = entry.coverMonths, months < 1 { problems.append("\(section): \(what): cover months must be 1 or more"); continue }
+                guard seen.insert("\(type.rawValue):\(entry.startYear.map(String.init) ?? "-")").inserted else {
+                    problems.append("\(section): \(what) is in the plan more than once"); continue
+                }
+                let planned = text(rule, entry.coverMonths)
+                var request = TaxAttributionRule.filter(Column("expenseType") == type.rawValue)
+                request = entry.startYear.map { request.filter(Column("startYear") == $0) } ?? request.filter(Column("startYear") == nil)
+                if let existing = try request.fetchOne(db) {
+                    let stored = text(existing.rule, existing.defaultCoverMonths)
+                    if existing.rule == rule && existing.defaultCoverMonths == entry.coverMonths {
+                        note(section, .unchanged, "\(what): already \(planned)")
+                    } else if existing.notes == TaxAttributionRules.seededNote {
+                        // The seeded default isn't the user's choice: the plan's replaces it.
+                        try TaxAttributionRules.set(db: db, expenseType: type, startYear: entry.startYear, rule: rule,
+                                                    defaultCoverMonths: entry.coverMonths, notes: "Tax data plan")
+                        note(section, .added, "\(what): \(planned) (replaces the seeded default, \(stored))")
+                    } else {
+                        problems.append("\(section): \(what) is set to \(stored), the plan says \(planned)")
+                        continue
+                    }
+                } else {
+                    let before = try TaxAttributionRules.effective(db: db, expenseType: type, startYear: entry.startYear ?? Int.min)
+                    let origin = before.id == nil ? "the built-in default" : "the every-year rule"
+                    try TaxAttributionRules.set(db: db, expenseType: type, startYear: entry.startYear, rule: rule,
+                                                defaultCoverMonths: entry.coverMonths, notes: "Tax data plan")
+                    note(section, .added, "\(what): \(planned) (was \(origin), \(text(before.rule, before.defaultCoverMonths)))")
+                }
+                // An every-year rule: a year with its own (different) rule keeps it.
+                if entry.startYear == nil {
+                    let overrides = try TaxAttributionRule.filter(Column("expenseType") == type.rawValue && Column("startYear") != nil)
+                        .order(Column("startYear")).fetchAll(db)
+                    for override in overrides where override.rule != rule || override.defaultCoverMonths != entry.coverMonths {
+                        note(section, .kept, "\(type.displayName), \(scope(override.startYear)): its own rule, \(text(override.rule, override.defaultCoverMonths)), still applies")
+                    }
+                }
+            }
+        }
+
+        // 7. HMRC's published averages, fetched before the write.
+        mutating func fetchedRates(_ request: Plan.FetchRates?, fetched: FetchedRates) throws {
+            guard let request else { return }
+            let section = TaxDataPlan.sections[7]
+            for raw in request.currencies ?? [] where (try? HMRCRates.normalizedCode(raw)) == nil {
+                problems.append("\(section): bad currency \(raw)")
+            }
+            let codes = TaxDataPlan.fetchCodes(request)
+            var years: [Int] = []
+            for startYear in request.years where !years.contains(startYear) { years.append(startYear) }
+            for startYear in years {
+                let year = UKTaxYear(startYear: startYear)
+                let url = HMRCRateFile.averageURL(for: year).absoluteString
+                let average = "HMRC average for the year to 31 March \(startYear + 1)"
+                for code in codes {
+                    if let existing = try HMRCRates.rate(db: db, startYear: startYear, currencyCode: code) {
+                        note(section, .unchanged, "\(year.label) \(code): already stored, \(existing.bothWaysText) (\(existing.source.rawValue)) — not fetched")
+                        continue
+                    }
+                    guard let file = fetched.byYear[startYear] else {
+                        problems.append("\(section): \(year.label) wasn't fetched"); continue
+                    }
+                    guard let rates = file else {
+                        problems.append("\(section): couldn't fetch HMRC's average rates for \(year.label) from \(url) (offline, or not published yet)")
+                        continue
+                    }
+                    guard let published = rates.first(where: { $0.currencyCode == code }) else {
+                        problems.append("\(section): HMRC's average rates for \(year.label) (\(url)) have no \(code) rate"); continue
+                    }
+                    let rate = try HMRCRates.set(db: db, startYear: startYear, currencyCode: code, gbpPerUnit: published.gbpPerUnit,
+                                                 unitsPerPound: published.unitsPerPound, source: .hmrcPublished, fetchedAt: now,
+                                                 notes: "\(HMRCRates.autoFetchedNotePrefix) (tax data plan): \(average), \(url)")
+                    note(section, .added, "\(year.label) \(code): \(rate.bothWaysText), \(average) — \(url)")
+                }
+            }
+        }
     }
 
     static func day(_ text: String) throws -> Date {
@@ -531,7 +694,12 @@ public enum TaxDataPlan {
                     Money.format(amount.native, currency: currency) + (amount.gbp.map { " (\(Money.format($0, currency: .gbp)))" } ?? "")
                 }
                 out += "\n== \(UKTaxYear(startYear: startYear).label) · \(name) ==\n"
-                out += "Rate: " + (result.rate.map { "£\($0.gbpPerUnit) per \(currency.rawValue.uppercased()) (\($0.source.rawValue))" } ?? "none stored") + "\n"
+                // A published rate (units per £1) shows both forms, the pounds to 4 places.
+                out += "Rate: " + (result.rate.map { rate in
+                    let pounds = rate.unitsPerPound == nil ? "\(rate.gbpPerUnit)" : String(format: "%.4f", rate.gbpPerUnit)
+                    return "£\(pounds) per \(currency.rawValue.uppercased()) (\(rate.source.rawValue))"
+                        + (rate.unitsPerPound.map { " = \($0) per £1" } ?? "")
+                } ?? "none stored") + "\n"
                 for line in result.allLines where line.amount.native != 0 || line.amount.gbpNative != 0 || line.expenseType == .rentalIncome {
                     let padded = line.label.padding(toLength: 34, withPad: " ", startingAt: 0)
                     out += "  \(padded) \(money(line.amount))  [\(line.rule.displayName); \(line.shareExplanation)]\n"

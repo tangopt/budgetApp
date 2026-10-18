@@ -269,6 +269,30 @@ final class TaxPolicyReceiptTests: XCTestCase {
         XCTAssertEqual(try compute(2024, "A").foreignTax.whole.native, apportioned)
     }
 
+    func testAStoredPreviousCalendarYearDefaultNeedsNoFiledPinOrNextYearWarning() throws {
+        // The accountant's basis kept for every year (a user decision): PT tax for calendar
+        // year N in full against UK year N/N+1.
+        try ptDebits()
+        try db.write { db in
+            try TaxAttributionRules.set(db: db, expenseType: .foreignTax, startYear: nil, rule: .previousCalendarYear, notes: "Tax data plan")
+            var year = try TaxYears.ensure(db: db, startYear: 2024, personId: id("A"))
+            year.status = .filed
+            try TaxYears.save(db: db, &year)
+        }
+        let filed = try compute(2024, "A")
+        XCTAssertEqual(filed.foreignTax.rule, .previousCalendarYear)
+        XCTAssertEqual(filed.foreignTax.whole.native, 36_500)
+        XCTAssertFalse(filed.warnings.contains { $0.contains("foreign tax stays on") }, "\(filed.warnings)")
+        XCTAssertFalse(filed.warnings.contains { $0.hasPrefix("No PT tax for") })
+        // Open years: the same basis, and nothing asks for next year's tax.
+        XCTAssertEqual(try compute(2024, "B").foreignTax.whole.native, 36_500)
+        let open = try compute(2025, "A")
+        XCTAssertEqual(open.foreignTax.rule, .previousCalendarYear)
+        XCTAssertEqual(open.foreignTax.whole.native, 73_000)
+        XCTAssertEqual(open.foreignTax.amount.native, 36_500)
+        XCTAssertFalse(open.warnings.contains { $0.hasPrefix("No PT tax for") || $0.contains("foreign tax stays on") }, "\(open.warnings)")
+    }
+
     func testARefundDoesNotCountAsNextYearsTax() throws {
         try ptDebits()
         try debit("refund2026", (2027, 9, 1), 5_000, category: "ptTax", description: "REEMBOLSO IRS")

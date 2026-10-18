@@ -105,13 +105,14 @@ final class TaxDataPlanTests: XCTestCase {
         return plan
     }
 
-    private func apply(_ plan: TaxDataPlan.Plan) throws -> TaxDataPlan.Outcome {
-        try db.write { db in try TaxDataPlan.apply(db: db, plan: plan) }
+    private func apply(_ plan: TaxDataPlan.Plan, fetched: TaxDataPlan.FetchedRates = .init()) throws -> TaxDataPlan.Outcome {
+        try db.write { db in try TaxDataPlan.apply(db: db, plan: plan, fetched: fetched) }
     }
 
-    private func refusal(_ plan: TaxDataPlan.Plan, file: StaticString = #filePath, line: UInt = #line) -> [String] {
+    private func refusal(_ plan: TaxDataPlan.Plan, fetched: TaxDataPlan.FetchedRates = .init(),
+                         file: StaticString = #filePath, line: UInt = #line) -> [String] {
         do {
-            _ = try apply(plan)
+            _ = try apply(plan, fetched: fetched)
             XCTFail("Expected a refusal", file: file, line: line)
         } catch TaxDataPlan.PlanError.refused(let problems) {
             return problems
@@ -334,5 +335,128 @@ final class TaxDataPlanTests: XCTestCase {
     func testAPaymentReferenceIsMatchedLiterallyOnThePropertysAccounts() throws {
         let problems = refusal(plan { $0.transactionOwners![1].reference = "9002_2" })
         XCTAssertEqual(problems, ["Payment owners: 0 transactions match 9002_2, expected exactly one"])
+    }
+
+    // MARK: Attribution rules
+
+    private func ruleOnly(_ rules: [TaxDataPlan.Plan.AttributionRule]) -> TaxDataPlan.Plan {
+        TaxDataPlan.Plan(property: "Property A", attributionRules: rules)
+    }
+
+    private static let previousYear = TaxDataPlan.Plan.AttributionRule(expenseType: "foreignTax", rule: "previousCalendarYear",
+                                                                        startYear: nil, coverMonths: nil)
+
+    func testAnAttributionRuleReplacesTheSeededDefaultThenIsUnchanged() throws {
+        try db.write { db in _ = try TaxAttributionRules.seedDefaults(db: db) }
+        let first = try apply(ruleOnly([Self.previousYear]))
+        XCTAssertEqual(first.changes, [TaxDataPlan.Change(section: "Attribution rules", kind: .added,
+            text: "Foreign tax paid (PT IRS), every year: Previous calendar year (replaces the seeded default, Calendar year, time-apportioned)")])
+        try db.read { db in
+            let rule = try TaxAttributionRules.effective(db: db, expenseType: .foreignTax, startYear: 2025)
+            XCTAssertEqual(rule.rule, .previousCalendarYear)
+            XCTAssertNil(rule.startYear)
+            XCTAssertEqual(rule.notes, "Tax data plan")
+        }
+        let second = try apply(ruleOnly([Self.previousYear]))
+        XCTAssertEqual(second.count(.unchanged, in: "Attribution rules"), 1)
+        XCTAssertEqual(second.count(.added), 0)
+    }
+
+    func testAnAttributionRuleIsAddedWhereNoneIsStoredAndYearsWithTheirOwnRuleAreReported() throws {
+        try db.write { db in
+            try TaxAttributionRules.set(db: db, expenseType: .foreignTax, startYear: 2023, rule: .apportionCalendarYear, notes: "Chosen")
+        }
+        let outcome = try apply(ruleOnly([Self.previousYear,
+                                          .init(expenseType: "insurance", rule: "apportionByCover", startYear: 2024, coverMonths: 6)]))
+        XCTAssertEqual(outcome.changes.map(\.text), [
+            "Foreign tax paid (PT IRS), every year: Previous calendar year (was the built-in default, Calendar year, time-apportioned)",
+            "Foreign tax paid (PT IRS), 2023/24: its own rule, Calendar year, time-apportioned, still applies",
+            "Insurance (building insurance), 2024/25: Apportioned by months of cover, 6 months of cover assumed (was the built-in default, Apportioned by months of cover)"
+        ])
+        XCTAssertEqual(outcome.changes.map(\.kind), [.added, .kept, .added])
+        try db.read { db in
+            XCTAssertEqual(try TaxAttributionRules.effective(db: db, expenseType: .insurance, startYear: 2024).defaultCoverMonths, 6)
+            XCTAssertEqual(try TaxAttributionRules.effective(db: db, expenseType: .foreignTax, startYear: 2023).rule, .apportionCalendarYear)
+        }
+    }
+
+    func testAnAttributionRuleContradictingTheUsersIsRefusedUnlessIdentical() throws {
+        try db.write { db in try TaxAttributionRules.set(db: db, expenseType: .foreignTax, startYear: nil, rule: .apportionCalendarYear) }
+        XCTAssertEqual(refusal(ruleOnly([Self.previousYear])),
+                       ["Attribution rules: Foreign tax paid (PT IRS), every year is set to Calendar year, time-apportioned, the plan says Previous calendar year"])
+        try db.write { db in try TaxAttributionRules.set(db: db, expenseType: .foreignTax, startYear: nil, rule: .previousCalendarYear) }
+        XCTAssertEqual(try apply(ruleOnly([Self.previousYear])).count(.unchanged), 1)
+
+        let problems = refusal(ruleOnly([.init(expenseType: "foreignTax", rule: "byWhim", startYear: nil, coverMonths: nil),
+                                         .init(expenseType: "pension", rule: "byDate", startYear: nil, coverMonths: nil),
+                                         .init(expenseType: "insurance", rule: "apportionByCover", startYear: nil, coverMonths: 0),
+                                         Self.previousYear, Self.previousYear]))
+        XCTAssertEqual(problems, ["Attribution rules: unknown rule byWhim for Foreign tax paid (PT IRS)",
+                                  "Attribution rules: unknown type pension",
+                                  "Attribution rules: Insurance (building insurance), every year: cover months must be 1 or more",
+                                  "Attribution rules: Foreign tax paid (PT IRS), every year is in the plan more than once"])
+    }
+
+    // MARK: HMRC rates fetched
+
+    private func fetchOnly(_ years: [Int], _ currencies: [String]? = nil) -> TaxDataPlan.Plan {
+        TaxDataPlan.Plan(property: "Property A", fetchHMRCRates: .init(years: years, currencies: currencies))
+    }
+
+    func testFetchesOnlyTheMissingRatesAndReportsTheSource() async throws {
+        try await db.write { db in try HMRCRates.set(db: db, startYear: 2021, currencyCode: "EUR", gbpPerUnit: 0.8, source: .filedReturn) }
+        let plan = fetchOnly([2021, 2022, 2022])
+        let years = try await db.read { db in try TaxDataPlan.yearsToFetch(db: db, plan: plan) }
+        XCTAssertEqual(years, [2022])
+        let fetcher = StubHMRCRateFetcher()
+        fetcher.files[2022] = [HMRCPublishedRate(currencyCode: "EUR", unitsPerPound: 1.25)]
+        let fetched = await TaxDataPlan.fetchRates(years: years, fetcher: fetcher)
+        XCTAssertEqual(fetcher.requested, [2022])
+        let now = Self.date(2026, 10, 18)
+        let outcome = try await db.write { db in try TaxDataPlan.apply(db: db, plan: plan, fetched: fetched, now: now) }
+        XCTAssertEqual(outcome.changes.map(\.text), [
+            "2021/22 EUR: already stored, €1 = £0.8000 (1.2500 per £1) (filedReturn) — not fetched",
+            "2022/23 EUR: €1 = £0.8000 (1.2500 per £1), HMRC average for the year to 31 March 2023 — https://www.trade-tariff.service.gov.uk/api/v2/exchange_rates/files/average_csv_2023-3.csv"
+        ])
+        XCTAssertEqual(outcome.changes.map(\.kind), [.unchanged, .added])
+        try await db.read { db in
+            let rate = try HMRCRates.rate(db: db, startYear: 2022, currencyCode: "EUR")
+            XCTAssertEqual(rate?.source, .hmrcPublished)
+            XCTAssertEqual(rate?.unitsPerPound, 1.25)
+            XCTAssertEqual(rate?.fetchedAt, now)
+            XCTAssertEqual(rate?.isFetchedAutomatically, true)
+            XCTAssertTrue(rate?.notes?.contains("average_csv_2023-3.csv") ?? false)
+        }
+        // Stored now: nothing to fetch, unchanged.
+        let none = try await db.read { db in try TaxDataPlan.yearsToFetch(db: db, plan: plan) }
+        XCTAssertEqual(none, [])
+        let figures = try await db.read { db in try TaxDataPlan.figures(db: db, propertyId: self.id("property"), years: [2022]) }
+        XCTAssertTrue(figures.contains("Rate: £0.8000 per EUR (hmrcPublished) = 1.25 per £1"), figures)
+        let again = try await db.write { db in try TaxDataPlan.apply(db: db, plan: plan) }
+        XCTAssertEqual(again.count(.unchanged), 2)
+        XCTAssertTrue(TaxDataPlan.report(again).contains("== HMRC rates fetched: 0 added, 2 already there =="))
+    }
+
+    func testARateThatCouldNotBeFetchedIsRefused() throws {
+        let unreadable: [HMRCPublishedRate]? = nil
+        let offline = TaxDataPlan.FetchedRates(byYear: [2022: unreadable])
+        var problems = refusal(fetchOnly([2022]), fetched: offline)
+        XCTAssertEqual(problems, ["HMRC rates fetched: couldn't fetch HMRC's average rates for 2022/23 from https://www.trade-tariff.service.gov.uk/api/v2/exchange_rates/files/average_csv_2023-3.csv (offline, or not published yet)"])
+        let noEuro = TaxDataPlan.FetchedRates(byYear: [2022: [HMRCPublishedRate(currencyCode: "USD", unitsPerPound: 1.3)]])
+        problems = refusal(fetchOnly([2022], ["EUR", "EURO"]), fetched: noEuro)
+        XCTAssertEqual(problems, ["HMRC rates fetched: bad currency EURO",
+                                  "HMRC rates fetched: HMRC's average rates for 2022/23 (https://www.trade-tariff.service.gov.uk/api/v2/exchange_rates/files/average_csv_2023-3.csv) have no EUR rate"])
+        try db.read { db in XCTAssertEqual(try HMRCRate.fetchCount(db), 0) }
+    }
+
+    func testDecodingKnowsTheRuleAndFetchKeys() throws {
+        let bad = #"{"property": "P", "attributionRules": [{"expenseType": "foreignTax", "rule": "previousCalendarYear", "year": 2024}], "fetchHMRCRates": {"years": [2025], "currency": "EUR"}}"#
+        XCTAssertThrowsError(try TaxDataPlan.decodePlan(Data(bad.utf8))) { error in
+            XCTAssertEqual(error as? TaxDataPlan.PlanError, .unknownKeys(["attributionRules[0].year", "fetchHMRCRates.currency"]))
+        }
+        let good = #"{"property": "P", "attributionRules": [{"expenseType": "foreignTax", "rule": "previousCalendarYear"}], "fetchHMRCRates": {"years": [2025], "currencies": ["EUR"]}}"#
+        let plan = try TaxDataPlan.decodePlan(Data(good.utf8))
+        XCTAssertEqual(plan.attributionRules, [Self.previousYear])
+        XCTAssertEqual(plan.fetchHMRCRates, .init(years: [2025], currencies: ["EUR"]))
     }
 }
