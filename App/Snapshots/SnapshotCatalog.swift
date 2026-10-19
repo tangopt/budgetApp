@@ -288,6 +288,13 @@ enum SnapshotCatalog {
                 }
                 return AnyView(TaxLineSourcesSheet(viewModel: model, line: line, currency: accounts.currency, openTransaction: { _ in }))
             },
+            sheet("tax_line_sources_not_claimed", "Rental accounts: line sources with one not claimed (2024/25, filed)") { context in
+                let model = await context.taxModel(year: 2024)
+                guard let accounts = model.accounts, let line = accounts.notClaimedLines.first else {
+                    throw SnapshotMissing("a line with a source not claimed")
+                }
+                return AnyView(TaxLineSourcesSheet(viewModel: model, line: line, currency: accounts.currency, openTransaction: { _ in }))
+            },
             sheet("tax_manual_item", "Manual item") { context in
                 let model = await context.taxModel()
                 guard let item = model.page?.manualItems.first else { throw SnapshotMissing("a manual item") }
@@ -515,10 +522,10 @@ extension SnapshotContext {
         return model
     }
 
-    /// Person A's 2025/26 page, loaded.
-    func taxModel(tab: TaxYearsViewModel.Tab = .accounts) async -> TaxYearsViewModel {
+    /// Person A's 2025/26 page (or `year`'s), loaded.
+    func taxModel(tab: TaxYearsViewModel.Tab = .accounts, year: Int = 2025) async -> TaxYearsViewModel {
         let model = TaxYearsViewModel(dbQueue: dbQueue, library: library)
-        model.selection = taxYear("Person A", 2025)
+        model.selection = taxYear("Person A", year)
         model.tab = tab
         model.start()
         await settle(0.8)

@@ -3,12 +3,14 @@
 // One-off tax data for a property (`TaxDataPlan`): categorises the plan's uncategorised
 // debits, stores the category → expense type map, records insurers' and condomínio receipts
 // (linked to their debits), assigns payments to one person, adds HMRC filed-return rates and
-// manual items the years don't have yet, stores attribution rules, and fetches HMRC's
-// published average rates (`fetchHMRCRates`, the Trade Tariff file for the year to 31 March;
-// only for a year lacking a rate, before the write). Idempotent; anything contradicting the
-// stored data, or a rate that couldn't be fetched, is refused and nothing is written. Tax year
-// statuses are never changed. Then reports each owner's rental accounts for the plan's
-// `summaryYears`, as the app computes them.
+// manual items the years don't have yet, stores attribution rules, fetches HMRC's published
+// average rates (`fetchHMRCRates`, the Trade Tariff file for the year to 31 March; only for a
+// year lacking a rate, before the write), and sets a year up from its filed return (splits,
+// employments, HMRC payments, statuses from Preparing and notes, sources the return left out:
+// "deductible, not claimed"). Idempotent; anything contradicting the stored data, or a rate
+// that couldn't be fetched, is refused and nothing is written. Then reports every tax figure
+// the run moved (before → after, with the years' statuses), and each owner's rental accounts
+// for the plan's `summaryYears`, as the app computes them.
 //
 // The plan is a personal data file kept outside the repository.
 //
@@ -61,13 +63,21 @@ let sourcePath = normalized(paths[0])
 reportPath = reportPath.map(normalized)
 guard FileManager.default.fileExists(atPath: sourcePath) else { fail("No database at \(sourcePath)") }
 
-/// Every path written is checked against the app's data folder.
+/// Every path written is checked against the app's data folder (the process's and the real
+/// home's: `TaxDataPlan.writeRefusal`).
 func guardWrite(_ path: String, _ what: String) {
-    if TaxRegression.isAppDatabase(path) && !allowAppData {
-        fail("Refusing to write \(what) in the app's data folder (\(path)): pass a copy, or --allow-app-data for the real run.")
+    if let refusal = TaxDataPlan.writeRefusal(path: path, what: what, allowAppData: allowAppData) { fail(refusal) }
+}
+if !dryRun {
+    guardWrite(sourcePath, "the database")
+    // A real run on the app's database writes one the installed app has already migrated to
+    // this build (a copy is migrated here).
+    do {
+        if let refusal = try TaxDataPlan.migrationRefusal(path: sourcePath) { fail(refusal) }
+    } catch {
+        fail("Can't read the database: \(error)")
     }
 }
-if !dryRun { guardWrite(sourcePath, "the database") }
 if let reportPath {
     guardWrite(reportPath, "the report")
     if TaxRegression.isSameFile(reportPath, sourcePath) { fail("The report path is the database: pick another file.") }
@@ -129,11 +139,42 @@ let result = Result<String, Error> {
     let years = try manager.dbQueue.read { db in try TaxDataPlan.yearsToFetch(db: db, plan: plan) }
     let fetched = awaitResult { await TaxDataPlan.fetchRates(years: years, fetcher: HMRCTradeTariffRateFetcher()) }
 
-    // One transaction: a refusal rolls everything back.
-    let outcome = try manager.dbQueue.write { db in try TaxDataPlan.apply(db: db, plan: plan, fetched: fetched) }
+    // One transaction: a refusal rolls everything back. The tax figures before and after, in it.
+    let planYears = TaxDataPlan.years(plan)
+    let (outcome, before, after) = try manager.dbQueue.write { db -> (TaxDataPlan.Outcome, TaxFigures.Snapshot, TaxFigures.Snapshot) in
+        let before = try TaxFigures.snapshot(db: db, years: planYears)
+        let outcome = try TaxDataPlan.apply(db: db, plan: plan, fetched: fetched)
+        return (outcome, before, try TaxFigures.snapshot(db: db, years: planYears))
+    }
+    let changes = TaxFigures.changes(from: before, to: after)
     var out = "Tax data\(dryRun ? " (dry run: nothing kept)" : "") · \(plan.property)\n"
     out += "Added \(outcome.count(.added)), already there \(outcome.count(.unchanged)), left as stored \(outcome.count(.kept))\n\n"
     out += TaxDataPlan.report(outcome)
+    /// Each person's status for the year, before → after when the run changed it.
+    func statusText(_ year: Int) -> String {
+        let old = before.statuses[year] ?? [:], new = after.statuses[year] ?? [:]
+        let names = Set(old.keys).union(new.keys).sorted()
+        guard !names.isEmpty else { return "no tax year" }
+        return names.map { name in
+            let a = old[name]?.rawValue ?? "none", b = new[name]?.rawValue ?? "none"
+            return a == b ? "\(name) \(a)" : "\(name) \(a) → \(b)"
+        }.joined(separator: ", ")
+    }
+    out += "== Tax figures the run moved (before → after) ==\n"
+    if changes.isEmpty { out += "  none\n" }
+    let statusYears = Set(before.statuses.keys).union(after.statuses.keys).filter { before.statuses[$0] != after.statuses[$0] }
+    for year in statusYears.sorted() where !changes.contains(where: { $0.key.startYear == year }) {
+        out += "  \(UKTaxYear(startYear: year).label) [\(statusText(year))]: statuses only\n"
+    }
+    var lastYear: Int?
+    for change in changes {
+        if change.key.startYear != lastYear {
+            lastYear = change.key.startYear
+            out += "  \(UKTaxYear(startYear: change.key.startYear).label) [\(statusText(change.key.startYear))]\n"
+        }
+        out += "    \(change.key.person.padding(toLength: 9, withPad: " ", startingAt: 0)) \(change.key.field): \(change.before?.description ?? "—") → \(change.after?.description ?? "—")\n"
+    }
+    out += "\n"
     if let years = plan.summaryYears, !years.isEmpty {
         out += "== Rental accounts after applying (the app's own settings) ==\n"
         out += try manager.dbQueue.read { db in try TaxDataPlan.figures(db: db, propertyId: outcome.propertyId, years: years) }

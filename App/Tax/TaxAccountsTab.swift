@@ -8,8 +8,9 @@ import struct BudgetCore.Transaction
 /// figures in the property's currency and GBP; every line as one table in groups (income,
 /// expenses with their total, the profit, the lines reported apart) — the rule beside each, the
 /// share when lines differ, pound items noted under their GBP figure, the sources a chevron
-/// away; then the expenses by line and the rent by month as charts (the months' table folded
-/// away), and the HMRC rate as a caption.
+/// away; the costs the return left out ("Deductible, not claimed", for information); then the
+/// expenses by line and the rent by month as charts (the months' table folded away), and the
+/// HMRC rate as a caption.
 struct TaxAccountsTab: View {
     @ObservedObject var viewModel: TaxYearsViewModel
     let page: TaxOverview.YearPage
@@ -82,8 +83,10 @@ struct TaxAccountsTab: View {
     }
 
     private func linesNote(_ accounts: RentalAccounts.Result) -> String {
-        accounts.currency == .gbp ? "In GBP. A chevron lists a line's sources."
-            : "In \(accounts.currency.rawValue.uppercased()) and in GBP at HMRC's average rate. A chevron lists a line's sources."
+        let notClaimed = accounts.notClaimedLines.isEmpty ? ""
+            : " Deductible costs left off the \(accounts.taxYear.label) return are listed apart, not in the totals."
+        return (accounts.currency == .gbp ? "In GBP. A chevron lists a line's sources."
+            : "In \(accounts.currency.rawValue.uppercased()) and in GBP at HMRC's average rate. A chevron lists a line's sources.") + notClaimed
     }
 
     private func rateCaption(_ accounts: RentalAccounts.Result) -> String {
@@ -128,6 +131,8 @@ struct TaxAccountsTab: View {
         var line: RentalAccounts.Line?
         let amount: RentalAccounts.Amount
         let role: MoneyRole
+        /// A line's sources left off the return ("Deductible, not claimed").
+        var isNotClaimed = false
     }
 
     private func lineSections(_ accounts: RentalAccounts.Result) -> [DataTableSection<LineRow>] {
@@ -144,7 +149,21 @@ struct TaxAccountsTab: View {
                              total: LineRow(id: "profit", title: "Profit before finance costs", amount: t.profit, role: .signed)),
             // Every line apart is a cost: magnitudes, neutral (spec §1.4).
             DataTableSection("Reported apart", rows: [accounts.financeCosts, accounts.foreignTax, accounts.notDeductible].map { row($0, .neutral) })
-        ]
+        ] + notClaimedSection(accounts)
+    }
+
+    /// The costs the return left out, by line, with their total: for information, never in the
+    /// figures above.
+    private func notClaimedSection(_ accounts: RentalAccounts.Result) -> [DataTableSection<LineRow>] {
+        let lines = accounts.notClaimedLines
+        guard !lines.isEmpty else { return [] }
+        let rows = lines.map { line in
+            LineRow(id: "notClaimed-" + line.expenseType.rawValue, title: line.label, line: line, amount: line.notClaimed, role: .neutral,
+                    isNotClaimed: true)
+        }
+        return [DataTableSection("Deductible, not claimed", rows: rows,
+                                 total: lines.count > 1 ? LineRow(id: "notClaimed", title: "Total not claimed", amount: accounts.notClaimedTotal,
+                                                                  role: .neutral) : nil)]
     }
 
     private func lineColumns(_ accounts: RentalAccounts.Result) -> [DataTableColumn<LineRow>] {
@@ -157,8 +176,13 @@ struct TaxAccountsTab: View {
                     .help(row.line.map { "\($0.ruleExplanation) Share: \($0.shareExplanation)." } ?? row.title)
             },
             // A label that truncates (whole on hover) so the figures keep their room.
-            DataTableColumn("Rule", width: .fill(min: 90), accessibilityValue: { $0.line?.rule.displayName }) { row, _ in
-                if let line = row.line {
+            DataTableColumn("Rule", width: .fill(min: 90), accessibilityValue: { row in
+                row.isNotClaimed ? "Left off the \(accounts.taxYear.label) return" : row.line?.rule.displayName
+            }) { row, _ in
+                if row.isNotClaimed {
+                    Text("Left off the return").font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                        .help("Deductible, but not claimed on the \(accounts.taxYear.label) return: listed for information, not in the figures.")
+                } else if let line = row.line {
                     Text(line.rule.displayName).font(.callout).foregroundStyle(.secondary).lineLimit(1)
                         .help(line.ruleExplanation)
                 }
@@ -178,8 +202,12 @@ struct TaxAccountsTab: View {
             columns.append(gbpColumn)
         }
         columns.append(DataTableColumn("", alignment: .trailing) { row, kind in
-            if kind == .row, let line = row.line, !line.sources.isEmpty {
-                TaxSourcesButton(count: line.sources.count, label: line.label) { drillDown = line }
+            if kind == .row, let line = row.line {
+                if row.isNotClaimed {
+                    TaxSourcesButton(count: line.notClaimedSources.count, label: "\(line.label), not claimed") { drillDown = line }
+                } else if !line.sources.isEmpty || !line.notClaimedSources.isEmpty {
+                    TaxSourcesButton(count: line.sources.count, label: line.label) { drillDown = line }
+                }
             }
         })
         return columns
@@ -424,15 +452,20 @@ extension RentalAccounts.Line: @retroactive Identifiable {
 /// the person's — then each transaction, receipt or manual item as a table row: its day, what
 /// it is with how the rule attributed it, the whole amount and the part attributed to the
 /// year, the share where it differs from the line's, its documents, and Show for a
-/// transaction; a total when the sources share a currency.
+/// transaction; a total when the sources share a currency. A deductible line's sources can be
+/// marked "not claimed" for the year (after a confirmation): they move to their own table
+/// below, "Deductible, not claimed", with the person's figure, and can be claimed again.
 struct TaxLineSourcesSheet: View {
     @ObservedObject var viewModel: TaxYearsViewModel
     let line: RentalAccounts.Line
     let currency: Currency
     let openTransaction: (Transaction) -> Void
     @Environment(\.dismiss) private var dismiss
-    /// The sources' documents, read once when the sheet opens.
+    /// The sources' documents, read when the sheet opens and when its sources change.
     @State private var documents: [Int64: EvidenceDocument] = [:]
+    /// A not-claimed mark (or its removal) waiting for its confirmation.
+    @State private var pendingMark: PendingMark?
+    @State private var error: String?
 
     /// A source as a table row (or the total).
     private struct SourceRow: Identifiable {
@@ -440,43 +473,104 @@ struct TaxLineSourcesSheet: View {
         var source: RentalAccounts.Source?
     }
 
+    private struct PendingMark: Identifiable {
+        let source: RentalAccounts.Source
+        let notClaimed: Bool
+        var id: String { "\(source.reference)-\(notClaimed)" }
+    }
+
+    /// The line as the year now computes it (a mark moves sources while the sheet is open).
+    private var current: RentalAccounts.Line { viewModel.accounts?.line(line.expenseType) ?? line }
+
     /// The person on show, whose share the line is.
     private var personName: String? { viewModel.page?.row.person.name }
 
-    private var rows: [SourceRow] { line.sources.indices.map { SourceRow(id: $0, source: line.sources[$0]) } }
+    private var yearLabel: String { viewModel.accounts?.taxYear.label ?? "the year" }
+
+    private var rows: [SourceRow] { current.sources.indices.map { SourceRow(id: $0, source: current.sources[$0]) } }
+
+    private var notClaimedRows: [SourceRow] {
+        current.notClaimedSources.indices.map { SourceRow(id: $0, source: current.notClaimedSources[$0]) }
+    }
 
     /// The sources' one currency, when they share one (then they have a total).
-    private var sourcesCurrency: Currency? {
-        let currencies = Set(line.sources.map(\.currency))
+    private func sharedCurrency(_ sources: [RentalAccounts.Source]) -> Currency? {
+        let currencies = Set(sources.map(\.currency))
         return currencies.count == 1 ? currencies.first : nil
     }
 
     var body: some View {
-        SheetScaffold(title: line.label, subtitle: line.ruleExplanation, width: SheetMetrics.tableWidth,
+        SheetScaffold(title: current.label, subtitle: current.ruleExplanation, error: error, width: SheetMetrics.tableWidth,
                       cancelTitle: "Done", onCancel: { dismiss() }) {
             FigureStrip(figures)
-            if line.sources.isEmpty {
+            if current.sources.isEmpty {
                 SheetEmptyState(systemImage: "list.bullet.rectangle", title: "No sources",
-                                message: "Nothing feeds this line this year.", minHeight: 130)
+                                message: current.notClaimedSources.isEmpty ? "Nothing feeds this line this year."
+                                    : "Nothing feeds this line this year: its sources were left off the return.", minHeight: 130)
             } else {
-                let table = DataTable(columns: columns, rows: rows, total: sourcesCurrency == nil ? nil : SourceRow(id: -1, source: nil))
-                if line.sources.count > 9 {
-                    ScrollView { table }.frame(height: 380).sheetListFrame()
+                let sources = current.sources
+                let table = DataTable(columns: columns(sources, notClaimed: false), rows: rows,
+                                      total: sharedCurrency(sources) == nil ? nil : SourceRow(id: -1, source: nil))
+                if sources.count > 9 {
+                    ScrollView { table }.frame(height: current.notClaimedSources.isEmpty ? 380 : 280).sheetListFrame()
                 } else {
                     table
                 }
             }
+            if !current.notClaimedSources.isEmpty {
+                notClaimedTable
+            }
         }
-        .onAppear {
-            let ids = Array(Set(line.sources.flatMap(\.documentIds)))
-            documents = Dictionary(uniqueKeysWithValues: viewModel.documents(ids).compactMap { d in d.id.map { ($0, d) } })
+        .onAppear(perform: loadDocuments)
+        // A mark moves a source between the two tables: the documents follow the references.
+        .onChange(of: current.sources.map(\.reference) + current.notClaimedSources.map(\.reference)) { _, _ in loadDocuments() }
+        .confirmationDialog(confirmationTitle, isPresented: Binding(get: { pendingMark != nil }, set: { if !$0 { pendingMark = nil } }),
+                            titleVisibility: .visible, presenting: pendingMark) { pending in
+            Button(pending.notClaimed ? "Mark not claimed" : "Claim it again") {
+                error = viewModel.setNotClaimed(pending.source.reference, notClaimed: pending.notClaimed)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { pending in
+            Text(pending.notClaimed
+                 ? "It leaves \(yearLabel)'s \(current.label.lowercased()) and every figure built on it, and is listed apart as deductible, not claimed — as when the return was filed without it."
+                 : "It goes back on \(yearLabel)'s \(current.label.lowercased()) and the figures built on it.")
+        }
+    }
+
+    private var confirmationTitle: String {
+        guard let pending = pendingMark else { return "" }
+        return pending.notClaimed ? "Leave “\(pending.source.description)” off the \(yearLabel) return?"
+            : "Claim “\(pending.source.description)” in \(yearLabel) again?"
+    }
+
+    private func loadDocuments() {
+        let ids = Array(Set((current.sources + current.notClaimedSources).flatMap(\.documentIds)))
+        documents = Dictionary(uniqueKeysWithValues: viewModel.documents(ids).compactMap { d in d.id.map { ($0, d) } })
+    }
+
+    /// The sources left off the return, with the person's figure.
+    private var notClaimedTable: some View {
+        let sources = current.notClaimedSources
+        let gbp = currency == .gbp ? "" : current.notClaimed.gbp.map { " (\(Money.format($0, currency: .gbp)))" } ?? ""
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Deductible, not claimed in \(yearLabel)").font(.headline).accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 12)
+                Text("\(personName.map { "\($0)'s share" } ?? "Share") \(Money.format(current.notClaimed.native, currency: currency))\(gbp)")
+                    .font(.callout.monospacedDigit()).foregroundStyle(.secondary).figureText()
+            }
+            Text("Left off the return: not in the line or the totals above.")
+                .font(.caption).foregroundStyle(.secondary)
+            DataTable(columns: columns(sources, notClaimed: true), rows: notClaimedRows,
+                      total: sources.count > 1 && sharedCurrency(sources) != nil ? SourceRow(id: -1, source: nil) : nil)
         }
     }
 
     private var figures: [FigureTile] {
         let person = personName ?? "Share"
+        let line = current
         // A line's figures read as what they are: values for a form (spec §1.4).
-        return [
+        var tiles = [
             FigureTile(title: "Whole property", value: .money(line.whole.native, currency, .neutral),
                        gbp: currency == .gbp ? nil : line.whole.gbp),
             FigureTile(title: "Share", value: .text(PropertyFormat.percent(line.share.shareBasisPoints)),
@@ -486,17 +580,24 @@ struct TaxLineSourcesSheet: View {
             FigureTile(title: "Sources", value: .text("\(line.sources.count)"),
                        caption: line.rule.displayName)
         ]
+        if !line.notClaimedSources.isEmpty {
+            tiles.append(FigureTile(title: "Not claimed", value: .money(line.notClaimed.native, currency, .neutral),
+                                    gbp: currency == .gbp ? nil : line.notClaimed.gbp, caption: "\(person)'s share, left off the return"))
+        }
+        return tiles
     }
 
     private var shareOrigin: String {
-        switch line.share.origin {
+        switch current.share.origin {
         case .ownership: return "Ownership, by days owned"
         case .splitForType: return "Split for this type"
         case .splitForAllTypes: return "Split for the year"
         }
     }
 
-    private var columns: [DataTableColumn<SourceRow>] {
+    private func columns(_ sources: [RentalAccounts.Source], notClaimed: Bool) -> [DataTableColumn<SourceRow>] {
+        let line = current
+        let sourcesCurrency = sharedCurrency(sources)
         var columns: [DataTableColumn<SourceRow>] = [
             DataTableColumn("Date", accessibilityValue: { $0.source?.date.map(DocumentFormat.day) }) { row, kind in
                 if kind == .row { DateText(date: row.source?.date) }
@@ -517,13 +618,13 @@ struct TaxLineSourcesSheet: View {
             },
             // The parts of one line: magnitudes, not coloured (MoneyRole.neutral).
             .money("Amount", role: .neutral, currency: { $0.source?.currency ?? sourcesCurrency ?? currency }) { row in
-                row.source?.amountMinorUnits ?? line.sources.reduce(0) { $0 + $1.amountMinorUnits }
+                row.source?.amountMinorUnits ?? sources.reduce(0) { $0 + $1.amountMinorUnits }
             },
             .money("Attributed", role: .neutral, currency: { $0.source?.currency ?? sourcesCurrency ?? currency }) { row in
-                row.source?.attributedMinorUnits ?? line.sources.reduce(0) { $0 + $1.attributedMinorUnits }
+                row.source?.attributedMinorUnits ?? sources.reduce(0) { $0 + $1.attributedMinorUnits }
             }
         ]
-        if line.sources.contains(where: { $0.shareBasisPoints != line.share.shareBasisPoints }) {
+        if sources.contains(where: { $0.shareBasisPoints != line.share.shareBasisPoints }) {
             columns.append(DataTableColumn("Share", alignment: .trailing, width: .min(52),
                                            accessibilityValue: { $0.source.map { PropertyFormat.percent($0.shareBasisPoints) } }) { row, _ in
                 if let source = row.source {
@@ -538,15 +639,35 @@ struct TaxLineSourcesSheet: View {
                 SourceDocumentsButton(documents: source.documentIds.compactMap { documents[$0] }) { viewModel.open($0) }
             }
         })
+        let claimable = TaxNotClaimedSources.isClaimable(line.expenseType)
         columns.append(.actions { row in
-            guard let source = row.source, case let .transaction(id) = source.reference else { return [] }
-            return [DataTableAction("Show \(source.description) in Search", systemImage: "arrow.right.circle", inline: true) {
-                guard let info = viewModel.transaction(id) else { return }
-                dismiss()
-                openTransaction(info.transaction)
-            }]
+            guard let source = row.source else { return [] }
+            var actions: [DataTableAction] = []
+            if case let .transaction(id) = source.reference {
+                actions.append(DataTableAction("Show \(source.description) in Search", systemImage: "arrow.right.circle", inline: true) {
+                    guard let info = viewModel.transaction(id) else { return }
+                    dismiss()
+                    openTransaction(info.transaction)
+                })
+            }
+            // A cost of a deductible line (not a rent receipt, not a recharge netted against it).
+            if notClaimed {
+                actions.append(DataTableAction("Claim in \(yearLabel) again…", systemImage: "arrow.uturn.backward") {
+                    pendingMark = PendingMark(source: source, notClaimed: false)
+                })
+            } else if claimable, source.amountMinorUnits > 0, !Self.isRentReceipt(source.reference) {
+                actions.append(DataTableAction("Mark not claimed in \(yearLabel)…", systemImage: "minus.circle") {
+                    pendingMark = PendingMark(source: source, notClaimed: true)
+                })
+            }
+            return actions
         })
         return columns
+    }
+
+    private static func isRentReceipt(_ reference: RentalAccounts.SourceReference) -> Bool {
+        if case .rentReceipt = reference { return true }
+        return false
     }
 }
 

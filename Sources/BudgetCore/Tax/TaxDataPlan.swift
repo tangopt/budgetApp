@@ -5,10 +5,12 @@ import Foundation
 /// repository; this code only knows its shape): debits to categorise, the category → expense
 /// type map, insurers' and condomínio receipts, payments that are one person's, HMRC rates
 /// implied by filed returns, GBP manual items, attribution rules and HMRC's published rates
-/// (fetched before the write, `fetchRates`). `apply` runs inside the caller's write and
-/// is idempotent: what is already there is left alone (reported unchanged), and anything that
-/// contradicts the stored data is refused — nothing is written then (the caller's transaction
-/// rolls back). Tax year statuses are never touched.
+/// (fetched before the write, `fetchRates`), and a year's set-up from its filed return: splits,
+/// employments, HMRC payments, statuses and notes, and the sources the return left out
+/// ("deductible, not claimed"). `apply` runs inside the caller's write and is idempotent: what
+/// is already there is left alone (reported unchanged), and anything that contradicts the
+/// stored data is refused — nothing is written then (the caller's transaction rolls back). A
+/// tax year's status changes only through `taxYears`, and only from Preparing.
 public enum TaxDataPlan {
     // MARK: The plan
 
@@ -84,6 +86,75 @@ public enum TaxDataPlan {
             public var date: String?
             public var wholeProperty: Bool?
             public var note: String?
+            /// Deductible but not claimed in the year (`TaxNotClaimed`): recorded for information,
+            /// left out of the figures.
+            public var notClaimed: Bool?
+        }
+
+        /// A debit the year's return left out ("deductible, not claimed"): the one of `amount`
+        /// on `date` on the account (optionally with `description` in its text).
+        public struct NotClaimed: Codable, Equatable, Sendable {
+            public var account: String
+            public var date: String
+            /// The debit, positive decimal text.
+            public var amount: String
+            public var description: String?
+            public var startYear: Int
+            public var note: String?
+        }
+
+        /// A person's share of the property for a year (all types, or one), when the return
+        /// split it otherwise than the ownership.
+        public struct Split: Codable, Equatable, Sendable {
+            public var startYear: Int
+            public var person: String
+            /// A `TaxExpenseType` raw value; `nil` = every type.
+            public var expenseType: String?
+            public var percent: Double
+        }
+
+        /// An employment as the filed return's SA102 has it (pay and tax as filed).
+        public struct EmploymentEntry: Codable, Equatable, Sendable {
+            public struct Benefit: Codable, Equatable, Sendable {
+                /// A `BenefitKind` raw value.
+                public var kind: String
+                public var amount: String
+                public var description: String?
+            }
+
+            public var startYear: Int
+            public var person: String
+            public var employer: String
+            public var payeReference: String?
+            /// An `EmploymentIncomeSource` raw value ("p60", "p45"…).
+            public var source: String
+            public var pay: String
+            public var tax: String
+            public var benefits: [Benefit]?
+            public var note: String?
+        }
+
+        /// A payment to HMRC for a year.
+        public struct Payment: Codable, Equatable, Sendable {
+            public var person: String
+            public var startYear: Int
+            public var date: String
+            public var amount: String
+            /// An `HMRCPaymentKind` raw value.
+            public var kind: String
+            public var reference: String?
+            public var note: String?
+        }
+
+        /// A person's tax year: its status (set only from Preparing) and its note.
+        public struct TaxYearEntry: Codable, Equatable, Sendable {
+            public var startYear: Int
+            public var person: String
+            /// A `TaxYearStatus` raw value.
+            public var status: String?
+            public var note: String?
+            /// The return entered the foreign tax in pounds and pence (`TaxYear.foreignTaxInPence`).
+            public var foreignTaxInPence: Bool?
         }
 
         /// An attribution rule, stored only when the scope has none, or has the seeded default
@@ -120,6 +191,11 @@ public enum TaxDataPlan {
         public var summaryYears: [Int]?
         public var attributionRules: [AttributionRule]?
         public var fetchHMRCRates: FetchRates?
+        public var notClaimed: [NotClaimed]?
+        public var splits: [Split]?
+        public var employments: [EmploymentEntry]?
+        public var hmrcPayments: [Payment]?
+        public var taxYears: [TaxYearEntry]?
     }
 
     public enum PlanError: Error, Equatable, CustomStringConvertible {
@@ -139,12 +215,18 @@ public enum TaxDataPlan {
 
     static let keys: [String: Set<String>] = [
         "": ["property", "categorize", "expenseTypes", "policyReceipts", "transactionOwners", "rates", "manualItems", "summaryYears",
-             "attributionRules", "fetchHMRCRates"],
+             "attributionRules", "fetchHMRCRates", "notClaimed", "splits", "employments", "hmrcPayments", "taxYears"],
         "categorize": ["account", "date", "amount", "description", "category", "createCategory"],
         "policyReceipts": ["expenseType", "date", "debitDate", "amount", "currency", "policyYear", "instalment", "of", "coverFrom", "coverTo", "note"],
         "transactionOwners": ["person", "reference", "date", "amount", "note"],
         "rates": ["startYear", "currency", "gbpPerUnit", "note"],
-        "manualItems": ["startYear", "person", "expenseType", "label", "amount", "currency", "date", "wholeProperty", "note"],
+        "manualItems": ["startYear", "person", "expenseType", "label", "amount", "currency", "date", "wholeProperty", "note", "notClaimed"],
+        "notClaimed": ["account", "date", "amount", "description", "startYear", "note"],
+        "splits": ["startYear", "person", "expenseType", "percent"],
+        "employments": ["startYear", "person", "employer", "payeReference", "source", "pay", "tax", "benefits", "note"],
+        "employments.benefits": ["kind", "amount", "description"],
+        "hmrcPayments": ["person", "startYear", "date", "amount", "kind", "reference", "note"],
+        "taxYears": ["startYear", "person", "status", "note", "foreignTaxInPence"],
         "attributionRules": ["expenseType", "rule", "startYear", "coverMonths"],
         "fetchHMRCRates": ["years", "currencies"]
     ]
@@ -153,7 +235,7 @@ public enum TaxDataPlan {
     public static func decodePlan(_ data: Data) throws -> Plan {
         let root = (try JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         var unknown = root.keys.filter { !keys[""]!.contains($0) }.sorted()
-        for (list, allowed) in keys.sorted(by: { $0.key < $1.key }) where !list.isEmpty {
+        for (list, allowed) in keys.sorted(by: { $0.key < $1.key }) where !list.isEmpty && !list.contains(".") {
             if let object = root[list] as? [String: Any] {
                 unknown += object.keys.filter { !allowed.contains($0) }.sorted().map { "\(list).\($0)" }
             }
@@ -161,8 +243,52 @@ public enum TaxDataPlan {
                 unknown += ((item as? [String: Any]) ?? [:]).keys.filter { !allowed.contains($0) }.sorted().map { "\(list)[\(index)].\($0)" }
             }
         }
+        // Lists inside a list's items ("employments.benefits").
+        for (path, allowed) in keys.sorted(by: { $0.key < $1.key }) where path.contains(".") {
+            let parts = path.split(separator: ".").map(String.init)
+            for (index, item) in ((root[parts[0]] as? [Any]) ?? []).enumerated() {
+                for (inner, entry) in (((item as? [String: Any])?[parts[1]] as? [Any]) ?? []).enumerated() {
+                    unknown += ((entry as? [String: Any]) ?? [:]).keys.filter { !allowed.contains($0) }.sorted()
+                        .map { "\(parts[0])[\(index)].\(parts[1])[\(inner)].\($0)" }
+                }
+            }
+        }
         guard unknown.isEmpty else { throw PlanError.unknownKeys(unknown) }
         return try JSONDecoder().decode(Plan.self, from: data)
+    }
+
+    // MARK: The tool's guards
+
+    /// Why a one-off tool must not write `path` (`what`: "the database", "the report"…): it is
+    /// in the app's data folder — the process's and the real home's (`TaxRegression.isAppData`,
+    /// so a redirected HOME doesn't hide it) — and the run wasn't given `allowAppData`. `nil`:
+    /// writing is fine.
+    public static func writeRefusal(path: String, what: String, allowAppData: Bool,
+                                    isAppData: (String) -> Bool = { TaxRegression.isAppData($0) }) -> String? {
+        guard isAppData(path), !allowAppData else { return nil }
+        return "Refusing to write \(what) in the app's data folder (\(path)): pass a copy, or --allow-app-data for the real run."
+    }
+
+    /// Why a real run must not write the app's database at `path`: the installed app hasn't
+    /// migrated it to this build (or a newer build has). A copy (not app data) is migrated by
+    /// the tool and passes. `nil`: fine.
+    public static func migrationRefusal(path: String, isAppData: (String) -> Bool = { TaxRegression.isAppData($0) }) throws -> String? {
+        guard isAppData(path) else { return nil }
+        let status = try DatabaseManager(path: path).migrationStatus()
+        guard !status.pending.isEmpty || !status.unknown.isEmpty else { return nil }
+        return "The database isn't at this build's version (pending: \(status.pending.joined(separator: ", ")); unknown: \(status.unknown.joined(separator: ", "))). "
+            + "Merge, install the app (scripts/install-app.sh) and open it once, then run again."
+    }
+
+    /// The tax years a plan's records touch (the figures compared before and after a run).
+    public static func years(_ plan: Plan) -> [Int] {
+        var years = plan.summaryYears ?? []
+        years += (plan.manualItems ?? []).map(\.startYear) + (plan.notClaimed ?? []).map(\.startYear)
+        years += (plan.taxYears ?? []).map(\.startYear) + (plan.employments ?? []).map(\.startYear)
+        years += (plan.splits ?? []).map(\.startYear) + (plan.hmrcPayments ?? []).map(\.startYear)
+        years += (plan.rates ?? []).map(\.startYear) + (plan.attributionRules ?? []).compactMap(\.startYear)
+        years += plan.fetchHMRCRates?.years ?? []
+        return Array(Set(years)).sorted()
     }
 
     // MARK: Applying
@@ -192,7 +318,8 @@ public enum TaxDataPlan {
     }
 
     public static let sections = ["Categorised debits", "Expense types", "Policy receipts", "Payment owners", "HMRC rates", "Manual items",
-                                  "Attribution rules", "HMRC rates fetched"]
+                                  "Attribution rules", "HMRC rates fetched", "Splits", "Employments", "HMRC payments", "Tax years",
+                                  "Not claimed"]
 
     // MARK: Fetching HMRC's rates (before the write)
 
@@ -249,6 +376,11 @@ public enum TaxDataPlan {
         try state.manualItems(plan.manualItems ?? [])
         try state.attributionRules(plan.attributionRules ?? [])
         try state.fetchedRates(plan.fetchHMRCRates, fetched: fetched)
+        try state.splits(plan.splits ?? [])
+        try state.employments(plan.employments ?? [])
+        try state.payments(plan.hmrcPayments ?? [])
+        try state.taxYears(plan.taxYears ?? [])
+        try state.notClaimed(plan.notClaimed ?? [])
         guard state.problems.isEmpty else { throw PlanError.refused(state.problems) }
         return Outcome(propertyId: propertyId, changes: state.changes, createdCategories: state.created)
     }
@@ -557,10 +689,17 @@ public enum TaxDataPlan {
                     let identical = same.amountMinorUnits == amount && same.currency == currency && same.expenseType == type
                     note(section, identical ? .unchanged : .kept,
                          identical ? "\(what) already present" : "\(what): kept the stored item of that label (\(eur(same.amountMinorUnits, same.currency)), \(same.expenseType.displayName))")
+                    if identical, entry.notClaimed == true { try markNotClaimed(.manualItem(same.id!), startYear: entry.startYear, what: what, note: entry.note) }
+                    if !identical, entry.notClaimed == true { problems.append("\(section): \(what) is to be marked not claimed, but the stored item of that label differs") }
                     continue
                 }
                 if let same = theirs.first(where: { $0.expenseType == type && $0.currency == currency && $0.amountMinorUnits == amount }) {
-                    note(section, .kept, "\(what): the year already has \"\(same.label)\" of that type and amount — not added")
+                    if entry.notClaimed == true {
+                        // Which record to mark would be a guess: the plan must name the stored item.
+                        problems.append("\(section): \(what) is to be marked not claimed, but the year has it as \"\(same.label)\": use that label")
+                    } else {
+                        note(section, .kept, "\(what): the year already has \"\(same.label)\" of that type and amount — not added")
+                    }
                     continue
                 }
                 var item = TaxManualItem(startYear: entry.startYear, personId: person.id!, propertyId: propertyId, expenseType: type, label: label,
@@ -569,6 +708,7 @@ public enum TaxDataPlan {
                 do {
                     try TaxManualItems.save(db: db, &item)
                     note(section, .added, what + (item.isWholeProperty ? " (whole property)" : ""))
+                    if entry.notClaimed == true { try markNotClaimed(.manualItem(item.id!), startYear: entry.startYear, what: what, note: entry.note) }
                 } catch {
                     problems.append("\(section): \(what): \(error)")
                 }
@@ -663,6 +803,196 @@ public enum TaxDataPlan {
                 }
             }
         }
+
+        // 8. Splits as filed.
+        mutating func splits(_ entries: [Plan.Split]) throws {
+            let section = TaxDataPlan.sections[8]
+            for entry in entries {
+                let year = UKTaxYear(startYear: entry.startYear).label
+                guard let person = try person(entry.person) else { problems.append("\(section): no person named \(entry.person)"); continue }
+                let type = entry.expenseType.flatMap(TaxExpenseType.init(rawValue:))
+                if entry.expenseType != nil && type == nil { problems.append("\(section): unknown type \(entry.expenseType!)"); continue }
+                let points = Int((entry.percent * 100).rounded())
+                guard (0...PropertyOwner.wholeShare).contains(points) else { problems.append("\(section): \(year) \(person.name): bad percent \(entry.percent)"); continue }
+                let what = "\(year) \(person.name) \(type?.displayName ?? "every type"): \(TaxShare.percent(points))"
+                if let existing = try TaxSplits.splits(db: db, startYear: entry.startYear, propertyId: propertyId)
+                    .first(where: { $0.personId == person.id && $0.expenseType == type }) {
+                    if existing.shareBasisPoints == points {
+                        note(section, .unchanged, "\(what) already set")
+                    } else {
+                        problems.append("\(section): \(what): the year has \(TaxShare.percent(existing.shareBasisPoints)) stored")
+                    }
+                    continue
+                }
+                try TaxSplits.set(db: db, startYear: entry.startYear, personId: person.id!, propertyId: propertyId, expenseType: type,
+                                  shareBasisPoints: points)
+                note(section, .added, what)
+            }
+        }
+
+        // 9. Employments as filed (SA102).
+        mutating func employments(_ entries: [Plan.EmploymentEntry]) throws {
+            let section = TaxDataPlan.sections[9]
+            for entry in entries {
+                let year = UKTaxYear(startYear: entry.startYear).label
+                guard let person = try person(entry.person) else { problems.append("\(section): no person named \(entry.person)"); continue }
+                guard let source = EmploymentIncomeSource(rawValue: entry.source) else { problems.append("\(section): unknown source \(entry.source)"); continue }
+                guard let pay = Money.parseMinorUnits(entry.pay), let tax = Money.parseMinorUnits(entry.tax), pay >= 0, tax >= 0 else {
+                    problems.append("\(section): bad pay or tax for \(entry.employer)"); continue
+                }
+                var benefits: [(BenefitKind, Int, String?)] = []
+                for benefit in entry.benefits ?? [] {
+                    guard let kind = BenefitKind(rawValue: benefit.kind), let value = Money.parseMinorUnits(benefit.amount), value >= 0 else {
+                        problems.append("\(section): bad benefit \(benefit.kind) \(benefit.amount) for \(entry.employer)"); continue
+                    }
+                    benefits.append((kind, value, benefit.description))
+                }
+                let paye: String?
+                do { paye = try Employments.normalizedPAYEReference(entry.payeReference) } catch {
+                    problems.append("\(section): bad PAYE reference \(entry.payeReference ?? "")"); continue
+                }
+                var what = "\(year) \(person.name): \(entry.employer) (\(paye ?? "no PAYE ref")) pay \(Money.format(pay, currency: .gbp)), tax \(Money.format(tax, currency: .gbp))"
+                for (kind, value, _) in benefits { what += ", \(kind.displayName) \(Money.format(value, currency: .gbp))" }
+                if let existing = try Employments.employments(db: db, startYear: entry.startYear, personId: person.id!).first(where: {
+                    $0.employerName.caseInsensitiveCompare(entry.employer) == .orderedSame || (paye != nil && $0.payeReference == paye) }) {
+                    let income = try Employments.effectiveIncome(db: db, employmentId: existing.id!)
+                    let stored = try Employments.benefits(db: db, employmentId: existing.id!).map { ($0.kind, $0.cashEquivalentMinorUnits) }
+                    let same = income?.payMinorUnits == pay && income?.taxDeductedMinorUnits == tax
+                        && stored.map { "\($0.0.rawValue):\($0.1)" }.sorted() == benefits.map { "\($0.0.rawValue):\($0.1)" }.sorted()
+                    if same {
+                        note(section, .unchanged, "\(what) already recorded")
+                    } else {
+                        problems.append("\(section): \(what): the year already has \(existing.employerName) with other figures")
+                    }
+                    continue
+                }
+                var employment = Employment(startYear: entry.startYear, personId: person.id!, employerName: entry.employer, payeReference: paye,
+                                            notes: entry.note ?? "Tax data plan")
+                try Employments.save(db: db, &employment)
+                var income = EmploymentIncome(employmentId: employment.id!, source: source, payMinorUnits: pay, taxDeductedMinorUnits: tax,
+                                              entryMethod: .manual, notes: entry.note ?? "Tax data plan")
+                try Employments.save(db: db, &income)
+                for (kind, value, description) in benefits {
+                    var row = BenefitInKind(employmentId: employment.id!, kind: kind, description: description, cashEquivalentMinorUnits: value,
+                                            entryMethod: .manual, notes: entry.note ?? "Tax data plan")
+                    try Employments.save(db: db, &row)
+                }
+                note(section, .added, what)
+            }
+        }
+
+        // 10. Payments to HMRC.
+        mutating func payments(_ entries: [Plan.Payment]) throws {
+            let section = TaxDataPlan.sections[10]
+            for entry in entries {
+                guard let person = try person(entry.person) else { problems.append("\(section): no person named \(entry.person)"); continue }
+                guard let kind = HMRCPaymentKind(rawValue: entry.kind) else { problems.append("\(section): unknown kind \(entry.kind)"); continue }
+                guard let amount = Money.parseMinorUnits(entry.amount), amount > 0 else { problems.append("\(section): bad amount \(entry.amount)"); continue }
+                guard let date = try? TaxDataPlan.day(entry.date) else { problems.append("\(section): bad date \(entry.date)"); continue }
+                let what = "\(UKTaxYear(startYear: entry.startYear).label) \(person.name): \(kind.displayName) \(entry.date) \(Money.format(amount, currency: .gbp))"
+                let stored = try HMRCPayments.payments(db: db, personId: person.id!, startYear: entry.startYear)
+                    .filter { $0.kind == kind && PropertyDates.day($0.date) == date }
+                if let existing = stored.first {
+                    if existing.amountMinorUnits == amount {
+                        note(section, .unchanged, "\(what) already recorded")
+                    } else {
+                        problems.append("\(section): \(what): \(Money.format(existing.amountMinorUnits, currency: .gbp)) is recorded for that day")
+                    }
+                    continue
+                }
+                var payment = HMRCPayment(personId: person.id!, startYear: entry.startYear, date: date, amountMinorUnits: amount, kind: kind,
+                                          reference: entry.reference, notes: entry.note ?? "Tax data plan")
+                try HMRCPayments.save(db: db, &payment)
+                note(section, .added, what)
+            }
+        }
+
+        // 11. Tax years: status (only from Preparing) and note.
+        mutating func taxYears(_ entries: [Plan.TaxYearEntry]) throws {
+            let section = TaxDataPlan.sections[11]
+            for entry in entries {
+                let label = UKTaxYear(startYear: entry.startYear).label
+                guard let person = try person(entry.person) else { problems.append("\(section): no person named \(entry.person)"); continue }
+                let status = entry.status.flatMap(TaxYearStatus.init(rawValue:))
+                if entry.status != nil && status == nil { problems.append("\(section): unknown status \(entry.status!)"); continue }
+                let isNew = try TaxYears.year(db: db, startYear: entry.startYear, personId: person.id!) == nil
+                var year = try TaxYears.ensure(db: db, startYear: entry.startYear, personId: person.id!)
+                var changed: [String] = [], same: [String] = []
+                if let status {
+                    if year.status == status {
+                        same.append(status.displayName)
+                    } else if year.status == .preparing {
+                        changed.append("\(year.status.displayName) → \(status.displayName)")
+                        year.status = status
+                    } else {
+                        problems.append("\(section): \(label) \(person.name) is \(year.status.displayName), the plan says \(status.displayName)"); continue
+                    }
+                }
+                if let text = Transaction.normalizedNote(entry.note) {
+                    if year.notes == text {
+                        same.append("note")
+                    } else if (year.notes ?? "").isEmpty {
+                        changed.append("note “\(text)”")
+                        year.notes = text
+                    } else {
+                        problems.append("\(section): \(label) \(person.name) has another note stored (“\(year.notes!)”)"); continue
+                    }
+                }
+                if let inPence = entry.foreignTaxInPence {
+                    if year.foreignTaxInPence == inPence {
+                        same.append(inPence ? "foreign tax in pence" : "foreign tax in whole pounds")
+                    } else {
+                        changed.append(inPence ? "foreign tax in pence (as the return entered it)" : "foreign tax in whole pounds")
+                        year.foreignTaxInPence = inPence
+                    }
+                }
+                if changed.isEmpty {
+                    note(section, .unchanged, "\(label) \(person.name): already \(same.joined(separator: ", "))")
+                } else {
+                    try TaxYears.save(db: db, &year)
+                    note(section, .added, "\(label) \(person.name)\(isNew ? " (new)" : ""): " + changed.joined(separator: ", "))
+                }
+            }
+        }
+
+        // 12. Debits the year's return left out.
+        mutating func notClaimed(_ entries: [Plan.NotClaimed]) throws {
+            let section = TaxDataPlan.sections[12]
+            let accountIds = Set(try Properties.accounts(db: db, propertyId: propertyId).map(\.accountId))
+            for entry in entries {
+                let what = "\(entry.date) \(entry.amount) (\(entry.account))"
+                guard let amount = Money.parseMinorUnits(entry.amount), amount > 0 else { problems.append("\(section): bad amount \(entry.amount)"); continue }
+                guard let date = try? TaxDataPlan.day(entry.date) else { problems.append("\(section): bad date \(entry.date)"); continue }
+                guard let account = try Account.filter(sql: "name = ? COLLATE NOCASE", arguments: [entry.account]).fetchOne(db),
+                      accountIds.contains(account.id!) else {
+                    problems.append("\(section): \(entry.account) is not an account of the property (for \(what))"); continue
+                }
+                let (from, to) = dayRange(date, days: 0)
+                var matches = try Transaction.filter(Column("accountId") == account.id! && Column("amountMinorUnits") == -amount
+                                                     && Column("date") >= from && Column("date") <= to).fetchAll(db)
+                if let text = entry.description { matches = matches.filter { $0.rawDescription.localizedCaseInsensitiveContains(text) } }
+                guard matches.count == 1, let transaction = matches.first else {
+                    problems.append("\(section): \(matches.count) debits match \(what), expected exactly one"); continue
+                }
+                try markNotClaimed(.transaction(transaction.id!), startYear: entry.startYear, what: describe(transaction), note: entry.note)
+            }
+        }
+
+        /// Marks the source not claimed in the year (reported under "Not claimed").
+        mutating func markNotClaimed(_ reference: RentalAccounts.SourceReference, startYear: Int, what: String, note text: String?) throws {
+            let section = TaxDataPlan.sections[12]
+            let label = "\(what) → not claimed in \(UKTaxYear(startYear: startYear).label)"
+            if try TaxNotClaimedSources.isMarked(db: db, startYear: startYear, reference: reference) {
+                note(section, .unchanged, label + " (already marked)")
+                return
+            }
+            do {
+                try TaxNotClaimedSources.set(db: db, startYear: startYear, reference: reference, notClaimed: true, notes: text ?? "Tax data plan")
+                note(section, .added, label + (text.map { ": \($0)" } ?? ""))
+            } catch {
+                problems.append("\(section): \(what): \(error)")
+            }
+        }
     }
 
     static func day(_ text: String) throws -> Date {
@@ -731,6 +1061,10 @@ public enum TaxDataPlan {
                 }
                 out += "  Total expenses \(money(result.totals.expenses)) · finance costs \(money(result.totals.financeCosts))"
                     + " · profit \(money(result.totals.profit)) · foreign tax \(money(result.totals.foreignTax))\n"
+                for line in result.notClaimedLines {
+                    out += "  Deductible, not claimed: \(line.label) \(money(line.notClaimed)) — "
+                        + line.notClaimedSources.map { "\($0.date.map(MissingEvidence.day) ?? "—") \($0.description)" }.joined(separator: "; ") + "\n"
+                }
                 for warning in result.warnings { out += "  ! \(warning)\n" }
             }
         }

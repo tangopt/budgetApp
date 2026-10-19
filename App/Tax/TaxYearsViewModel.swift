@@ -250,6 +250,15 @@ final class TaxYearsViewModel: ObservableObject {
         errorMessage = write { db in _ = try TaxManualItems.delete(db: db, id: id) }
     }
 
+    /// Marks a source "deductible, not claimed" in the year on show (or claims it again).
+    func setNotClaimed(_ reference: RentalAccounts.SourceReference, notClaimed: Bool) -> String? {
+        guard let selection else { return nil }
+        return write { db in
+            try TaxNotClaimedSources.set(db: db, startYear: selection.startYear, reference: reference, notClaimed: notClaimed,
+                                         notes: notClaimed ? "Marked in the app" : nil)
+        }
+    }
+
     // MARK: Drill-down
 
     /// A source's record, for Show.
@@ -401,6 +410,9 @@ enum TaxMessages {
         case .invalidInstalment: return "The instalment number must be between 1 and the number of instalments."
         case .invalidCoverPeriod: return "The cover must end after it starts."
         case .notAnOwner: return "That person doesn't own the property on the payment's date."
+        case .notClaimable: return "Only a cost of a deductible line (an expense or the mortgage interest) can be marked not claimed."
+        case .sourceNotFound: return "That source no longer exists."
+        case .notASourceOfTheYear: return "That source doesn't feed this year's rental accounts."
         }
     }
 }

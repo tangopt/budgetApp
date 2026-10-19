@@ -31,13 +31,19 @@ public struct TaxYear: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     public var personId: Int64
     public var status: TaxYearStatus
     public var notes: String?
+    /// The return entered the foreign tax paid in pounds and pence (2020/21 as filed), so the
+    /// calculation takes it as it is; otherwise it's rounded up to whole pounds like the other
+    /// tax paid (the SA100 notes, the later returns).
+    public var foreignTaxInPence: Bool
 
-    public init(id: Int64? = nil, startYear: Int, personId: Int64, status: TaxYearStatus = .preparing, notes: String? = nil) {
+    public init(id: Int64? = nil, startYear: Int, personId: Int64, status: TaxYearStatus = .preparing, notes: String? = nil,
+                foreignTaxInPence: Bool = false) {
         self.id = id
         self.startYear = startYear
         self.personId = personId
         self.status = status
         self.notes = notes
+        self.foreignTaxInPence = foreignTaxInPence
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -360,6 +366,13 @@ public enum TaxError: Error, Equatable {
     case invalidCoverPeriod
     /// The person doesn't own the property the payment is for (on its date).
     case notAnOwner
+    /// Only a cost of a deductible line (an expense or the finance costs) can be marked
+    /// "deductible, not claimed".
+    case notClaimable
+    /// The manual item or receipt is gone.
+    case sourceNotFound
+    /// The source feeds none of the year's rental-account lines.
+    case notASourceOfTheYear
 }
 
 func registerTaxMigration(_ migrator: inout DatabaseMigrator) {
@@ -456,5 +469,14 @@ func registerForeignTaxApportionedMigration(_ migrator: inout DatabaseMigrator) 
             WHERE expenseType = ? AND startYear IS NULL AND rule = ? AND notes = ?
             """, arguments: [TaxAttributionRuleKind.apportionCalendarYear.rawValue, TaxExpenseType.foreignTax.rawValue,
                              TaxAttributionRuleKind.previousCalendarYear.rawValue, TaxAttributionRules.seededNote])
+    }
+}
+
+/// A return that entered the foreign tax in pounds and pence (`TaxYear.foreignTaxInPence`).
+func registerTaxYearForeignTaxInPenceMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addTaxYearForeignTaxInPence") { db in
+        try db.alter(table: "taxYear") { t in
+            t.add(column: "foreignTaxInPence", .boolean).notNull().defaults(to: false)
+        }
     }
 }

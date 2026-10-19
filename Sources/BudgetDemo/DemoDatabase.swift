@@ -877,6 +877,13 @@ extension DemoDatabase {
                 try TaxManualItems.save(db: db, &item)
                 count("tax manual items")
             }
+            // The filed 2024/25 return left the PT accountant's fee out: deductible, not claimed.
+            if let fee = try Transaction.filter(Column("rawDescription") == "CONTABILIDADE EXEMPLO" && Column("date") >= date(2024, 4, 6)
+                                                && Column("date") < date(2025, 4, 6)).fetchOne(db) {
+                try TaxNotClaimedSources.set(db: db, startYear: 2024, reference: .transaction(fee.id!), notClaimed: true,
+                                             notes: "Not on the filed return")
+                count("tax sources not claimed")
+            }
             // Employments: P60s (and P11D benefits) for Person A, a smaller job for Person B.
             func employment(_ person: Int64, _ year: Int, _ employer: String, _ paye: String, pay: Int, tax: Int, medical: Int?, p60PDF: Bool) throws {
                 var job = Employment(startYear: year, personId: person, employerName: employer, payeReference: paye)

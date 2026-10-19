@@ -89,6 +89,12 @@ public enum RentalAccounts {
         /// The person's figure.
         public var amount: Amount
         public var sources: [Source]
+        /// Sources marked "deductible, not claimed" for the year (`TaxNotClaimed`): left out
+        /// of `whole` and `amount`, listed apart.
+        public var notClaimedSources: [Source] = []
+        /// The not-claimed sources' figures: the whole property's and the person's.
+        public var notClaimedWhole: Amount = .zero
+        public var notClaimed: Amount = .zero
     }
 
     /// Rent by rent period, one month April–March.
@@ -163,6 +169,13 @@ public enum RentalAccounts {
         /// Every line: income, expenses, finance costs, foreign tax, not deductible.
         public var allLines: [Line] { [income] + expenses + [financeCosts, foreignTax, notDeductible] }
 
+        /// The lines with sources marked "deductible, not claimed" for the year (expenses, then
+        /// the finance costs).
+        public var notClaimedLines: [Line] { (expenses + [financeCosts]).filter { !$0.notClaimedSources.isEmpty } }
+
+        /// The person's deductible costs not claimed in the year (finance costs included).
+        public var notClaimedTotal: Amount { notClaimedLines.reduce(Amount.zero) { $0 + $1.notClaimed } }
+
         public func line(_ type: TaxExpenseType) -> Line? { allLines.first { $0.expenseType == type } }
     }
 
@@ -223,6 +236,22 @@ public enum RentalAccounts {
         let policyReceipts = try TaxPolicyReceipts.receipts(db: db, propertyId: propertyId)
         let receiptByTransaction = Dictionary(policyReceipts.compactMap { r in r.transactionId.map { ($0, r) } }, uniquingKeysWith: { a, _ in a })
         let assignedOwners = try TaxTransactionOwners.all(db: db)
+        // Sources left off this year's return ("deductible, not claimed"): listed apart.
+        let notClaimedMarks = try TaxNotClaimedSources.marks(db: db, startYear: taxYear.startYear)
+        var notClaimedByType: [TaxExpenseType: [Source]] = [:]
+        /// Whether a source of `type` is left off the line (a mark on a line that can't be
+        /// left off — rent, PT tax — is reported and ignored).
+        func isNotClaimed(_ reference: SourceReference, type: TaxExpenseType, description: String) -> Bool {
+            guard notClaimedMarks[reference] != nil else { return false }
+            guard TaxNotClaimedSources.isClaimable(type) else {
+                warnings.append("“\(description)” is marked not claimed in \(taxYear.label), but it's on the \(type.displayName.lowercased()) line, which can't be left off: the mark is ignored.")
+                return false
+            }
+            return true
+        }
+        func notClaimedNote(_ reference: SourceReference) -> String {
+            "; deductible, not claimed in \(taxYear.label)" + (notClaimedMarks[reference]?.notes.map { " (\($0))" } ?? "")
+        }
         let ownerNames = Dictionary(uniqueKeysWithValues: try Person.fetchAll(db).compactMap { p in p.id.map { ($0, p.name) } })
 
         var sourcesByType: [TaxExpenseType: [Source]] = [:]
@@ -392,8 +421,18 @@ public enum RentalAccounts {
                 }
             }
             let currency = currencies[transaction.accountId] ?? .gbp
+            let reference = SourceReference.transaction(transaction.id!)
+            // Left off the return: listed apart, and (a utility) not counted as paid when the
+            // recharges are netted (`utilityNetting.utilitiesPaid`), as the return didn't deduct it.
+            if isNotClaimed(reference, type: type, description: transaction.rawDescription) {
+                notClaimedByType[type, default: []].append(Source(
+                    reference: reference, date: transaction.date, description: transaction.rawDescription,
+                    currency: currency, amountMinorUnits: natural, attributedMinorUnits: attributed, shareBasisPoints: share,
+                    explanation: explained + notClaimedNote(reference), documentIds: docs.compactMap(\.id)))
+                continue
+            }
             sourcesByType[type, default: []].append(Source(
-                reference: .transaction(transaction.id!), date: transaction.date, description: transaction.rawDescription,
+                reference: reference, date: transaction.date, description: transaction.rawDescription,
                 currency: currency, amountMinorUnits: natural, attributedMinorUnits: attributed, shareBasisPoints: share,
                 explanation: explained, documentIds: docs.compactMap(\.id)))
             if isUtility {
@@ -424,10 +463,13 @@ public enum RentalAccounts {
             guard let (attributed, explanation) = context.attribute(item: Item(date: receipt.date, note: receipt.cover == nil ? receipt.notes : nil, description: ""),
                                                                    amount: receipt.amountMinorUnits, rule: rules[type]!, documents: docs,
                                                                    receipt: receipt) else { continue }
+            let reference = SourceReference.policyReceipt(receipt.id!)
+            let notClaimed = isNotClaimed(reference, type: type, description: description)
             sourcesByType[type, default: []].append(Source(
-                reference: .policyReceipt(receipt.id!), date: receipt.date, description: description, currency: receipt.currency,
+                reference: reference, date: receipt.date, description: description, currency: receipt.currency,
                 amountMinorUnits: receipt.amountMinorUnits, attributedMinorUnits: attributed, shareBasisPoints: shares[type]!.shareBasisPoints,
-                explanation: explanation, documentIds: docs.compactMap(\.id)))
+                explanation: explanation + (notClaimed ? notClaimedNote(reference) : ""), documentIds: docs.compactMap(\.id)))
+            if notClaimed { notClaimedByType[type, default: []].append(sourcesByType[type]!.removeLast()) }
         }
 
         // Manual items: the person's own, and whole-property ones entered under anyone.
@@ -438,11 +480,18 @@ public enum RentalAccounts {
         let itemDocs = try linkedDocumentIds(db: db, type: .taxManualItem, ids: items.compactMap(\.id))
         for item in items {
             let share = item.isWholeProperty ? shares[item.expenseType]!.shareBasisPoints : PropertyOwner.wholeShare
-            sourcesByType[item.expenseType, default: []].append(Source(
-                reference: .manualItem(item.id!), date: item.date, description: item.label, currency: item.currency,
+            let reference = SourceReference.manualItem(item.id!)
+            let notClaimed = isNotClaimed(reference, type: item.expenseType, description: item.label)
+            let explanation = item.isWholeProperty ? "Entered for \(taxYear.label), whole property" : "Entered for \(taxYear.label), \(person.name)'s own"
+            let source = Source(
+                reference: reference, date: item.date, description: item.label, currency: item.currency,
                 amountMinorUnits: item.amountMinorUnits, attributedMinorUnits: item.amountMinorUnits, shareBasisPoints: share,
-                explanation: item.isWholeProperty ? "Entered for \(taxYear.label), whole property" : "Entered for \(taxYear.label), \(person.name)'s own",
-                documentIds: itemDocs[item.id!] ?? []))
+                explanation: explanation + (notClaimed ? notClaimedNote(reference) : ""), documentIds: itemDocs[item.id!] ?? [])
+            if notClaimed {
+                notClaimedByType[item.expenseType, default: []].append(source)
+            } else {
+                sourcesByType[item.expenseType, default: []].append(source)
+            }
         }
 
         // Net the recharges received against the Utilities line (manual utility items count as
@@ -512,10 +561,13 @@ public enum RentalAccounts {
         func line(_ type: TaxExpenseType) -> Line {
             let sources = sourcesByType[type] ?? []
             let (whole, amount) = context.amounts(sources)
+            let notClaimedSources = notClaimedByType[type] ?? []
+            let (notClaimedWhole, notClaimed) = context.amounts(notClaimedSources)
             return Line(expenseType: type, label: type.displayName, rule: rules[type]!.rule,
                         ruleExplanation: ruleExplanation(rules[type]!, type: type),
                         share: shares[type]!, shareExplanation: shares[type]!.explanation(year: taxYear),
-                        whole: whole, amount: amount, sources: sources)
+                        whole: whole, amount: amount, sources: sources, notClaimedSources: notClaimedSources,
+                        notClaimedWhole: notClaimedWhole, notClaimed: notClaimed)
         }
         let income = line(.rentalIncome)
         var expenses = TaxExpenseType.expenseLines.map(line)

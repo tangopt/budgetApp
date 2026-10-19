@@ -94,11 +94,14 @@ public enum SelfAssessment {
         /// down; expenses, tax paid, finance costs and losses rounded up), so the calculation
         /// matches HMRC's SA302.
         public var roundToWholePounds: Bool
+        /// The return entered the foreign tax paid in pounds and pence: kept as it is when
+        /// rounding to whole pounds (`TaxYear.foreignTaxInPence`).
+        public var foreignTaxInPence: Bool
 
         public init(startYear: Int, employments: [EmploymentInput] = [], properties: [PropertyInput] = [], otherNonSavingsIncome: Int = 0,
                     savingsIncome: Int = 0, dividendIncome: Int = 0, savingsTaxDeducted: Int = 0, grossPensionContributions: Int = 0,
                     financeCostsBroughtForward: Int = 0, propertyLossBroughtForward: Int = 0, paymentsOnAccountMade: Int = 0,
-                    roundToWholePounds: Bool = true) {
+                    roundToWholePounds: Bool = true, foreignTaxInPence: Bool = false) {
             self.startYear = startYear
             self.employments = employments
             self.properties = properties
@@ -111,6 +114,7 @@ public enum SelfAssessment {
             self.propertyLossBroughtForward = propertyLossBroughtForward
             self.paymentsOnAccountMade = paymentsOnAccountMade
             self.roundToWholePounds = roundToWholePounds
+            self.foreignTaxInPence = foreignTaxInPence
         }
 
         /// Pence rounded down to whole pounds (towards zero for a negative amount).
@@ -133,7 +137,7 @@ public enum SelfAssessment {
                 p.income = Self.down(p.income)
                 p.expenses = Self.up(p.expenses)
                 p.financeCosts = Self.up(p.financeCosts)
-                p.foreignTax = Self.up(p.foreignTax)
+                p.foreignTax = foreignTaxInPence ? p.foreignTax : Self.up(p.foreignTax)
                 return p
             }
             rounded.otherNonSavingsIncome = Self.down(otherNonSavingsIncome)
@@ -344,7 +348,8 @@ public enum SelfAssessment {
         func rate(_ basisPoints: Int) -> String { UKTaxRulesFormat.percent(basisPoints) }
         if given.roundToWholePounds && inputs != given {
             steps.append(Step(title: "Whole pounds",
-                              detail: "The return takes whole pounds: income is rounded down; expenses, tax paid, finance costs and losses are rounded up. The calculation uses those box values, as HMRC's does.",
+                              detail: "The return takes whole pounds: income is rounded down; expenses, tax paid, finance costs and losses are rounded up. The calculation uses those box values, as HMRC's does."
+                                + (given.foreignTaxInPence ? " The foreign tax paid stays in pounds and pence, as this year's return entered it." : ""),
                               amount: nil))
         }
 
@@ -684,6 +689,7 @@ public enum SelfAssessment {
         var warnings: [String] = []
         var inputs = Inputs(startYear: startYear)
         let year = UKTaxYear(startYear: startYear)
+        inputs.foreignTaxInPence = try TaxYears.year(db: db, startYear: startYear, personId: personId)?.foreignTaxInPence ?? false
 
         for employment in try Employments.employments(db: db, startYear: startYear, personId: personId) {
             let income = try Employments.effectiveIncome(db: db, employmentId: employment.id!)

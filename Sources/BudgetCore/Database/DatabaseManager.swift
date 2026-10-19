@@ -102,5 +102,7 @@ public final class DatabaseManager {
         registerInterestIndexAndMortgageRulesMigration(&migrator)
         registerMortgageAmountBorrowedMigration(&migrator)
         registerRentCreditEvidenceMigration(&migrator)
+        registerTaxNotClaimedMigration(&migrator)
+        registerTaxYearForeignTaxInPenceMigration(&migrator)
     }
 }
