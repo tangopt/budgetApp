@@ -1,6 +1,7 @@
 // App/Property/PropertyTenanciesTab.swift
 import SwiftUI
 import UniformTypeIdentifiers
+import QuickLook
 import BudgetCore
 import struct BudgetCore.Transaction
 
@@ -8,19 +9,24 @@ import struct BudgetCore.Transaction
 /// Import receipts… (the main action) and More (New tenancy…, Match credits, Utility
 /// invoices…); the tenancy's panel — tenant, dates, rent, what's held (and whether the
 /// deposit account matches), its rent history and contract; then its receipts as a table by
-/// year with totals — period, amounts, status, the credits that paid them, the PDF, and one
-/// actions menu per row.
+/// year with totals — period, amounts, status, the credits that paid them, the PDF (click its
+/// paperclip to preview it), and one actions menu per row. Clicking a receipt opens its panel.
 struct PropertyTenanciesTab: View {
     @ObservedObject var viewModel: PropertyViewModel
     let openTransaction: (Transaction) -> Void
+    /// Shows a library document selected on the Documents screen.
+    let showDocument: (Int64) -> Void
     @Environment(\.theme) private var theme
 
     @State private var editing: TenancyDraft?
     @State private var importing = false
     @State private var intakingInvoices = false
     @State private var deleting: Tenancy?
-    /// The record Add document… adds to (kept until the importer completes).
-    @State private var documentTarget: (entity: EvidenceEntity, role: String)?
+    /// The record Add document… adds to (kept until the importer completes), and the
+    /// documents a Replace PDF… unlinks once the new file is in.
+    @State private var documentTarget: (entity: EvidenceEntity, role: String, replacing: [Int64])?
+    /// The receipt PDF shown in Quick Look.
+    @State private var quickLook: URL?
     @State private var pickingDocument = false
     @State private var documentsOf: DocumentsTarget?
 
@@ -98,19 +104,30 @@ struct PropertyTenanciesTab: View {
         } message: { _ in
             Text("Its rent history, receipts and their credit links go too. Linked documents stay in the library. This can't be undone.")
         }
-        .fileImporter(isPresented: $pickingDocument, allowedContentTypes: EvidenceFiles.contentTypes, allowsMultipleSelection: true) { result in
+        .fileImporter(isPresented: $pickingDocument, allowedContentTypes: EvidenceFiles.contentTypes,
+                      allowsMultipleSelection: documentTarget?.replacing.isEmpty ?? true) { result in
             guard let target = documentTarget else { return }
             documentTarget = nil
             switch result {
-            case .success(let urls): viewModel.addDocuments(urls, to: target.entity, role: target.role)
+            case .success(let urls): viewModel.addDocuments(urls, to: target.entity, role: target.role, replacing: target.replacing)
             case .failure(let error): viewModel.errorMessage = error.localizedDescription
             }
         }
+        .quickLookPreview($quickLook)
     }
 
-    private func addDocument(_ entity: EvidenceEntity, role: String) {
-        documentTarget = (entity, role)
+    private func addDocument(_ entity: EvidenceEntity, role: String, replacing: [Int64] = []) {
+        documentTarget = (entity, role, replacing)
         pickingDocument = true
+    }
+
+    /// A receipt's linked documents, read when acted on.
+    private func receiptDocuments(_ row: TenancyReceiptRow) -> [EvidenceDocument] {
+        viewModel.documents(for: .rentReceipt(row.receipt.id!))
+    }
+
+    private func preview(_ document: EvidenceDocument) {
+        quickLook = viewModel.fileURL(for: document)
     }
 
     // MARK: Tenancy
@@ -262,7 +279,11 @@ struct PropertyTenanciesTab: View {
                 Text("No receipts yet: import the portal's export with Import receipts….").font(.callout).foregroundStyle(.secondary)
             } else {
                 DataTable(columns: receiptColumns(withholding: rows.contains { $0.receipt.withholdingMinorUnits != 0 }),
-                          sections: receiptSections(rows))
+                          sections: receiptSections(rows),
+                          onSelect: { line in
+                              if let id = line.row?.receipt.id { viewModel.toggleSidePanel(.receipt(id: id, tenancyId: tenancy.id!)) }
+                          },
+                          selectedId: openReceiptLineId(tenancy))
             }
         }
     }
@@ -290,12 +311,15 @@ struct PropertyTenanciesTab: View {
             DataTableColumn("Paid by", width: .fill(min: 170), accessibilityValue: paidByDescription) { line, _ in
                 if let row = line.row { paidBy(row) }
             },
-            // The PDF: its paperclip, or a dashed to-do circle that adds it (none for a
-            // cancelled receipt). No accessibility value: the button stays reachable.
-            DataTableColumn("PDF", alignment: .center, width: .fixed(36)) { line, kind in
+            // The PDF: its paperclip (previews it; a menu when there are several), or a dashed
+            // to-do circle that adds it (none for a cancelled receipt). No accessibility value:
+            // the button stays reachable.
+            DataTableColumn("PDF", alignment: .center, width: .fixed(40)) { line, kind in
                 if kind == .row, let row = line.row {
                     if row.documentCount > 0 {
-                        DocumentCountBadge(count: row.documentCount)
+                        ReceiptPDFButton(receiptNumber: row.receipt.receiptNumber, count: row.documentCount,
+                                         documents: { receiptDocuments(row) }, preview: preview,
+                                         openInPreview: viewModel.openInPreview, show: { $0.id.map(showDocument) })
                     } else if row.receipt.status != .cancelled {
                         Button { addDocument(.rentReceipt(row.receipt.id!), role: "Receipt") } label: {
                             Image(systemName: "circle.dashed").foregroundStyle(theme.pending)
@@ -308,7 +332,7 @@ struct PropertyTenanciesTab: View {
                     }
                 }
             }
-            .headerHelp("The receipt's PDF: a paperclip when it's in the library; a dashed circle when it's missing — click it to add the PDF (download it from Portal das Finanças)."),
+            .headerHelp("The receipt's PDF: a paperclip when it's in the library — click it to preview the PDF (right-click for Open in Preview and Show in Documents); a dashed circle when it's missing — click it to add the PDF (download it from Portal das Finanças)."),
             .actions { line in line.row.map(actions) ?? [] }
         ]
         return columns
@@ -326,24 +350,7 @@ struct PropertyTenanciesTab: View {
     }
 
     private func status(_ row: TenancyReceiptRow) -> StatusPill {
-        let currency = viewModel.currency
-        if row.receipt.status == .cancelled {
-            return StatusPill("Cancelled", help: "Cancelled on Portal das Finanças: it charged nothing, so no credit is expected and it isn't counted in the rent.")
-        }
-        let received = Money.format(row.receipt.amountReceivedMinorUnits, currency: currency).unbroken
-        let linked = Money.format(row.paidMinorUnits, currency: currency).unbroken
-        let credits = row.payments.map { DocumentFormat.day($0.transaction.date).unbroken }.joined(separator: ", ")
-        if row.isPaid {
-            return StatusPill("Paid", tone: .positive, systemImage: "checkmark",
-                              help: "Paid: the credit\(row.payments.count == 1 ? "" : "s") of \(credits) linked to it cover\(row.payments.count == 1 ? "s" : "") the \(received) it says was received.")
-        }
-        if row.payments.isEmpty {
-            return StatusPill("Not matched", tone: .warning,
-                              help: "No rent credit on the current account has been linked to this receipt yet. " + ReceiptStatusHelp.whyNotMatched(viewModel.snapshot))
-        }
-        let left = Money.format(row.receipt.amountReceivedMinorUnits - row.paidMinorUnits, currency: currency).unbroken
-        return StatusPill("Part paid", tone: .warning,
-                          help: "Part paid: the credit\(row.payments.count == 1 ? "" : "s") of \(credits) linked to it cover\(row.payments.count == 1 ? "s" : "") \(linked) of the \(received) received; \(left) is still to link. Another credit may pay the rest once it's imported: use Match credits.")
+        ReceiptStatusHelp.pill(row, currency: viewModel.currency, snapshot: viewModel.snapshot)
     }
 
     /// The credits that paid it: the day and the credit, the part that isn't rent beneath.
@@ -380,10 +387,32 @@ struct PropertyTenanciesTab: View {
         }.joined(separator: "; ")
     }
 
-    /// One ••• menu per receipt: its credits (show, unlink), its PDF (add, documents).
+    /// The receipt whose panel is open (its table line's id).
+    private func openReceiptLineId(_ tenancy: Tenancy) -> String? {
+        if case let .receipt(id, tenancyId) = viewModel.sidePanel, tenancyId == tenancy.id { return "\(id)" }
+        return nil
+    }
+
+    /// One ••• menu per receipt: its details, its PDF (view, open in Preview, show in
+    /// Documents, replace or add another, documents), its credits (show, unlink).
     private func actions(_ row: TenancyReceiptRow) -> [DataTableAction] {
         let receipt = row.receipt
-        var actions: [DataTableAction] = []
+        var actions: [DataTableAction] = [
+            DataTableAction("Receipt details", systemImage: "sidebar.right") {
+                viewModel.sidePanel = .receipt(id: receipt.id!, tenancyId: receipt.tenancyId)
+            }
+        ]
+        if row.documentCount > 0 {
+            actions.append(DataTableAction(row.documentCount == 1 ? "View receipt PDF" : "View the first receipt PDF", systemImage: "eye") {
+                if let document = receiptDocuments(row).first { preview(document) }
+            })
+            actions.append(DataTableAction("Open in Preview", systemImage: "arrow.up.forward.square") {
+                if let document = receiptDocuments(row).first { viewModel.openInPreview(document) }
+            })
+            actions.append(DataTableAction("Show in Documents", systemImage: "doc.text.magnifyingglass") {
+                if let id = receiptDocuments(row).first?.id { showDocument(id) }
+            })
+        }
         let single = row.payments.count == 1
         for info in row.payments {
             let day = DocumentFormat.day(info.transaction.date)
@@ -394,7 +423,12 @@ struct PropertyTenanciesTab: View {
                 viewModel.unlinkPayment(info.payment)
             })
         }
-        actions.append(DataTableAction(row.documentCount == 0 ? "Add the receipt PDF…" : "Add a PDF…", systemImage: "paperclip") {
+        if row.documentCount == 1 {
+            actions.append(DataTableAction("Replace PDF…", systemImage: "arrow.triangle.2.circlepath") {
+                addDocument(.rentReceipt(receipt.id!), role: "Receipt", replacing: receiptDocuments(row).compactMap(\.id))
+            })
+        }
+        actions.append(DataTableAction(row.documentCount == 0 ? "Add the receipt PDF…" : "Add another PDF…", systemImage: "paperclip") {
             addDocument(.rentReceipt(receipt.id!), role: "Receipt")
         })
         if row.documentCount > 0 {
@@ -481,6 +515,27 @@ struct PropertyDocumentsSheet: View {
 /// What the receipts' status pills and PDF marks explain on hover.
 enum ReceiptStatusHelp {
     static let noPDF = "No receipt PDF yet — click to add it (download it from Portal das Finanças)."
+
+    /// A receipt's status pill, its hover explaining it (the table's Status column, the receipt panel).
+    static func pill(_ row: TenancyReceiptRow, currency: Currency, snapshot: PropertyViewModel.Snapshot) -> StatusPill {
+        if row.receipt.status == .cancelled {
+            return StatusPill("Cancelled", help: "Cancelled on Portal das Finanças: it charged nothing, so no credit is expected and it isn't counted in the rent.")
+        }
+        let received = Money.format(row.receipt.amountReceivedMinorUnits, currency: currency).unbroken
+        let linked = Money.format(row.paidMinorUnits, currency: currency).unbroken
+        let credits = row.payments.map { DocumentFormat.day($0.transaction.date).unbroken }.joined(separator: ", ")
+        if row.isPaid {
+            return StatusPill("Paid", tone: .positive, systemImage: "checkmark",
+                              help: "Paid: the credit\(row.payments.count == 1 ? "" : "s") of \(credits) linked to it cover\(row.payments.count == 1 ? "s" : "") the \(received) it says was received.")
+        }
+        if row.payments.isEmpty {
+            return StatusPill("Not matched", tone: .warning,
+                              help: "No rent credit on the current account has been linked to this receipt yet. " + whyNotMatched(snapshot))
+        }
+        let left = Money.format(row.receipt.amountReceivedMinorUnits - row.paidMinorUnits, currency: currency).unbroken
+        return StatusPill("Part paid", tone: .warning,
+                          help: "Part paid: the credit\(row.payments.count == 1 ? "" : "s") of \(credits) linked to it cover\(row.payments.count == 1 ? "s" : "") \(linked) of the \(received) received; \(left) is still to link. Another credit may pay the rest once it's imported: use Match credits.")
+    }
 
     /// Why a receipt may have no credit yet, with how far the current account's imports run.
     static func whyNotMatched(_ snapshot: PropertyViewModel.Snapshot) -> String {

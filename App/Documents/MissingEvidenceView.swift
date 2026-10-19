@@ -16,7 +16,7 @@ import struct BudgetCore.Transaction
 /// picker or padding of its own, and those two sit in the summary instead.
 struct MissingEvidenceView: View {
     @ObservedObject var viewModel: MissingEvidenceViewModel
-    /// Shows a transaction where it lives (its Budget cell, or Uncategorized).
+    /// Shows a transaction: Search, on its day and account, with its row selected.
     let openTransaction: (Transaction) -> Void
     /// Shown inside Tax years: no period picker, toolbar items or padding of its own.
     var embedded = false

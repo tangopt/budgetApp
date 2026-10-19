@@ -201,7 +201,7 @@ struct DocumentInspector: View {
                 Spacer(minLength: 0)
                 if let info = row.transaction {
                     Button { openTransaction(info.transaction) } label: { Image(systemName: "arrow.right.circle") }
-                        .help(info.transaction.categoryId == nil ? "Show on the Uncategorized screen (or in Search)" : "Show in its Budget cell")
+                        .help("Show the transaction: Search, on its day and account, with it selected")
                         .accessibilityLabel("Show \(row.title)")
                 }
                 Button { viewModel.unlink(row) } label: { Image(systemName: "xmark.circle") }

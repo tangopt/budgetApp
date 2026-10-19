@@ -263,6 +263,9 @@ struct ContentView: View {
                     PropertyView(viewModel: propertyViewModel, openTransaction: openTransaction, openMissingEvidence: { id, name in
                         missingEvidenceViewModel.propertyFilter = .init(propertyId: id, name: name)
                         selection = .missingEvidence
+                    }, showDocument: { id in
+                        documentsViewModel.reveal(id)
+                        selection = .documents
                     })
                 case .none:
                     Text("Select a screen from the sidebar.")
@@ -376,24 +379,13 @@ struct ContentView: View {
         selection = .budgetGrid
     }
 
-    /// A document's linked transaction where it lives: its Budget cell; the Uncategorized
-    /// screen while it has no category and is listed there; otherwise Search, for its
-    /// description (e.g. a transfer's incoming leg, which never needs a category).
+    /// Show where it lives (Property, Recharges, Tax sources, Documents, Missing evidence):
+    /// the Search screen narrowed to the transaction's day and account, its row selected and
+    /// scrolled to, whatever its category or account (the Budget grid's cells don't list
+    /// transfers, uncategorised or non-budget transactions, nor point at one row).
     private func openTransaction(_ transaction: Transaction) {
-        if transaction.categoryId != nil {
-            showInBudget(transaction)
-            return
-        }
-        refreshUncategorizedCount()
-        let listed = transaction.id.flatMap { id in
-            try? environment.dbQueue.read { db in try UncategorizedTransactions.contains(db: db, id: id) }
-        } ?? false
-        if listed, isInSidebar(.uncategorized) {
-            selection = .uncategorized
-        } else {
-            searchViewModel.queryText = transaction.rawDescription
-            selection = .search
-        }
+        searchViewModel.reveal(transaction)
+        selection = .search
     }
 
     /// The sidebar's selection, guarded: leaving the Import screen while confirmed rows are

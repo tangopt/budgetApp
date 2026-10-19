@@ -133,6 +133,23 @@ final class SearchViewModel: ObservableObject {
         criteria = TransactionSearch.Criteria(text: criteria.text)
     }
 
+    /// A transaction another screen asked to show (Show where it lives): the screen selects
+    /// its row and scrolls to it once listed, then clears this.
+    @Published var revealId: Int64?
+
+    /// Show where it lives: narrows the search to the transaction's day and account (the
+    /// filter bar shows it; Reset widens it again) and asks the screen to select its row.
+    func reveal(_ shown: Transaction) {
+        guard let id = shown.id else { return }
+        // As stored now: the caller's copy may predate an edit of its day or account.
+        let transaction = (try? dbQueue.read { db in try Transaction.fetchOne(db, key: id) }) ?? shown
+        queryTask?.cancel()
+        queryText = ""
+        criteria = TransactionSearch.Criteria(date: .custom(from: transaction.date, to: transaction.date),
+                                              accountIds: [transaction.accountId])
+        revealId = id
+    }
+
     // MARK: Actions
 
     func transaction(id: Int64) -> Transaction? {

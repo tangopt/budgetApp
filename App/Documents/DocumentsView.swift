@@ -11,7 +11,7 @@ import struct BudgetCore.Transaction
 /// folder… are in the toolbar.
 struct DocumentsView: View {
     @ObservedObject var viewModel: DocumentsViewModel
-    /// Shows a linked transaction where it lives (its Budget cell, or Uncategorized).
+    /// Shows a linked transaction: Search, on its day and account, with its row selected.
     let openTransaction: (Transaction) -> Void
     @Environment(\.theme) private var theme
     @Environment(\.openSettings) private var openSettings

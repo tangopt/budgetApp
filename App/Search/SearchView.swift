@@ -45,13 +45,22 @@ struct SearchView: View {
                 }
                 .font(.callout)
             }
-            table
+            ScrollViewReader { proxy in
+                table
+                    .onChange(of: viewModel.revealId) { _, _ in reveal(proxy) }
+                    .onChange(of: viewModel.rows.map(\.id)) { _, _ in reveal(proxy) }
+                    .onAppear { reveal(proxy) }
+            }
             summaryBar
         }
         .padding()
         .onAppear {
+            let revealing = viewModel.revealId != nil
             viewModel.load()
-            searchFocused = true
+            // A transaction to show that the data no longer has: nothing to select.
+            if let id = viewModel.revealId, !viewModel.rows.contains(where: { $0.id == id }) { viewModel.revealId = nil }
+            // Arriving to show a transaction: the table keeps the focus (its row is selected).
+            if !revealing { searchFocused = true }
         }
         .onChange(of: viewModel.focusRequest) { _, _ in searchFocused = true }
         .onChange(of: viewModel.rows.map(\.id)) { _, ids in
@@ -79,6 +88,15 @@ struct SearchView: View {
 
     private var searchField: some View {
         SearchField("Search descriptions, notes, categories or an amount", text: $viewModel.queryText, focus: $searchFocused)
+    }
+
+    /// Selects the transaction another screen asked to show and scrolls to it, once listed.
+    private func reveal(_ proxy: ScrollViewProxy) {
+        guard let id = viewModel.revealId, viewModel.rows.contains(where: { $0.id == id }) else { return }
+        viewModel.revealId = nil
+        selection = [id]
+        // After the rows are laid out.
+        DispatchQueue.main.async { proxy.scrollTo(id, anchor: .center) }
     }
 
     // MARK: Table

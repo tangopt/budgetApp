@@ -150,6 +150,13 @@ public enum EvidenceLinks {
         return Dictionary(uniqueKeysWithValues: rows.map { (row: Row) in (row[0] as Int64, row[1] as Int) })
     }
 
+    /// The documents each record of `type` has, by document id (records without any are absent).
+    public static func linkedDocumentIds(db: Database, _ type: EvidenceEntityType) throws -> [Int64: [Int64]] {
+        let rows = try Row.fetchAll(db, sql: "SELECT entityId, documentId FROM documentLink WHERE entityType = ? ORDER BY entityId, documentId",
+                                    arguments: [type.rawValue])
+        return Dictionary(grouping: rows, by: { (row: Row) -> Int64 in row[0] }).mapValues { $0.map { (row: Row) -> Int64 in row[1] } }
+    }
+
     /// Documents linked to nothing, newest added first.
     public static func unlinkedDocuments(db: Database) throws -> [EvidenceDocument] {
         try EvidenceDocument

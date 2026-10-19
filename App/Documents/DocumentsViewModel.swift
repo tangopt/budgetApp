@@ -166,6 +166,16 @@ final class DocumentsViewModel: ObservableObject {
         filter = EvidenceDocumentSearch.Filter(text: filter.text)
     }
 
+    /// Brings a library document up selected (another screen's Show in Documents), clearing
+    /// the search and filters first when they hide it.
+    func reveal(_ id: Int64) {
+        if !entries.contains(where: { $0.id == id }), !filter.isDefault || !queryText.isEmpty {
+            queryText = ""
+            filter = EvidenceDocumentSearch.Filter()
+        }
+        selectedId = id
+    }
+
     // MARK: Selection
 
     /// A library document in full, read now (the list's context menu acts on any row).

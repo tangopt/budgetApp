@@ -161,7 +161,7 @@ struct RechargeMonthPanel: View {
 
 /// A statement line in a recharges panel: the provider (or the one-off line's description)
 /// and the amount charged; the invoice's number, issue day and period; its document; the
-/// debit that paid it, with Edit transaction and Show where it lives.
+/// debit that paid it, with Edit transaction and Show in Search.
 struct RechargeChargeRow: View {
     @ObservedObject var viewModel: PropertyViewModel
     let charge: RechargeChargeLine
@@ -235,8 +235,8 @@ struct RechargeChargeRow: View {
                         .accessibilityLabel("Edit the \(title) debit")
                     Button { onShow(debit) } label: { Image(systemName: "arrow.right.circle") }
                         .buttonStyle(.borderless)
-                        .help("Show the debit where it lives")
-                        .accessibilityLabel("Show the \(title) debit where it lives")
+                        .help("Show the debit: Search, on its day and account, with it selected")
+                        .accessibilityLabel("Show the \(title) debit in Search")
                 }
                 .font(.caption)
             } else if invoice != nil {

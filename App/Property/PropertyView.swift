@@ -8,10 +8,12 @@ import struct BudgetCore.Transaction
 /// custom range) drives Overview, Money and Checks.
 struct PropertyView: View {
     @ObservedObject var viewModel: PropertyViewModel
-    /// Shows a transaction where it lives (its Budget cell, or Uncategorized / Search).
+    /// Shows a transaction: Search, on its day and account, with its row selected.
     let openTransaction: (Transaction) -> Void
     /// Missing evidence, narrowed to this property's rules.
     let openMissingEvidence: (Int64, String) -> Void
+    /// Shows a library document selected on the Documents screen.
+    let showDocument: (Int64) -> Void
     @Environment(\.theme) private var theme
 
     @State private var editingProperty: PropertyDraft?
@@ -41,7 +43,7 @@ struct PropertyView: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        // Recharges' tables need the page's whole width (the window's 1100 pt minimum): their
+        // Recharges' and Tenancies' tables need the page's whole width (the window's 1100 pt minimum): their
         // panel floats over the page's trailing edge instead of narrowing it.
         .overlay(alignment: .trailing) {
             if let panel = viewModel.sidePanel, viewModel.property != nil, Self.floats(panel) {
@@ -100,7 +102,7 @@ struct PropertyView: View {
     private static func floats(_ panel: PropertyViewModel.SidePanel) -> Bool {
         switch panel {
         case .month: return false
-        case .rechargeStatement, .rechargeMonth: return true
+        case .rechargeStatement, .rechargeMonth, .receipt: return true
         }
     }
 
@@ -116,6 +118,10 @@ struct PropertyView: View {
         case let .rechargeMonth(month, tenancyId):
             RechargeMonthPanel(viewModel: viewModel, month: month, tenancyId: tenancyId, openTransaction: openTransaction)
                 .id(month)
+        case let .receipt(id, tenancyId):
+            RentReceiptPanel(viewModel: viewModel, receiptId: id, tenancyId: tenancyId, openTransaction: openTransaction,
+                             showDocument: showDocument)
+                .id(id)
         }
     }
 
@@ -123,7 +129,7 @@ struct PropertyView: View {
     private var content: some View {
         switch viewModel.tab {
         case .overview: PropertyOverviewTab(viewModel: viewModel)
-        case .tenancies: PropertyTenanciesTab(viewModel: viewModel, openTransaction: openTransaction)
+        case .tenancies: PropertyTenanciesTab(viewModel: viewModel, openTransaction: openTransaction, showDocument: showDocument)
         case .recharges: PropertyRechargesTab(viewModel: viewModel)
         case .money: PropertyMoneyTab(viewModel: viewModel, openTransaction: openTransaction)
         case .calendar: PropertyCalendarTab(viewModel: viewModel)
@@ -255,7 +261,7 @@ struct PropertyDrillDownSheet: View {
                             Image(systemName: "arrow.right.circle")
                         }
                         .buttonStyle(.borderless)
-                        .help("Show the transaction where it lives")
+                        .help("Show the transaction: Search, on its day and account, with it selected")
                         .accessibilityLabel("Show \(row.transaction.rawDescription)")
                     }
                 }

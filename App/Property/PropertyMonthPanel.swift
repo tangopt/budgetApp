@@ -6,7 +6,7 @@ import struct BudgetCore.Transaction
 /// A month of the Cash flow by month chart, opened by clicking it (Overview, Money): the
 /// month's three figures as the chart shows them, then its transactions grouped Rent / Other
 /// income / Costs / Mortgage (`PropertyFinance.monthBreakdown`), each with what it counts,
-/// its day, category and account, documents, Edit transaction and Show where it lives.
+/// its day, category and account, documents, Edit transaction and Show in Search.
 /// The groups add up to the bars and the line exactly.
 struct PropertyMonthPanel: View {
     @ObservedObject var viewModel: PropertyViewModel

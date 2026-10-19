@@ -308,6 +308,10 @@ final class EvidenceLibraryTests: XCTestCase {
         XCTAssertEqual(try library.entities(for: notice.id!).map(\.entity), [.transaction(seed.transaction), .category(seed.category)])
         XCTAssertEqual(try library.linkCounts(.transaction), [seed.transaction: 2])
         XCTAssertEqual(try library.linkCounts(.category), [seed.category: 1])
+        try library.database.read { db in
+            XCTAssertEqual(try EvidenceLinks.linkedDocumentIds(db: db, .transaction), [seed.transaction: [notice.id!, proof.id!].sorted()])
+            XCTAssertEqual(try EvidenceLinks.linkedDocumentIds(db: db, .rentReceipt), [:])
+        }
         XCTAssertEqual(try library.unlinkedDocuments().map(\.id), [])
     }
 

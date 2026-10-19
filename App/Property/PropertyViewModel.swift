@@ -89,6 +89,8 @@ final class PropertyViewModel: ObservableObject {
         case rechargeStatement(id: Int64, tenancyId: Int64)
         /// A month of the Recharges chart (its first day): invoices paid, statements, credits.
         case rechargeMonth(Date, tenancyId: Int64)
+        /// A rent receipt (Tenancies): its details, the credits that paid it, its PDF.
+        case receipt(id: Int64, tenancyId: Int64)
     }
 
     /// Bumped when the side panel changed recharges (its statement sheet closed), so the
@@ -128,7 +130,7 @@ final class PropertyViewModel: ObservableObject {
     @Published var selectedTenancyId: Int64? {
         didSet {
             switch sidePanel {
-            case let .rechargeStatement(_, tenancyId), let .rechargeMonth(_, tenancyId):
+            case let .rechargeStatement(_, tenancyId), let .rechargeMonth(_, tenancyId), let .receipt(_, tenancyId):
                 if tenancyId != selectedTenancy?.id { sidePanel = nil }
             default: break
             }
@@ -510,8 +512,9 @@ final class PropertyViewModel: ObservableObject {
 
     /// Adds files to the library and links them to `entity`. A tenancy's file is its contract
     /// and a receipt's its PDF (whatever the classifier would say), so the property's evidence
-    /// rules count them.
-    func addDocuments(_ urls: [URL], to entity: EvidenceEntity, role: String?) {
+    /// rules count them. `replacing`: documents unlinked from `entity` once every file is in
+    /// and linked (Replace PDF…); they stay in the library.
+    func addDocuments(_ urls: [URL], to entity: EvidenceEntity, role: String?, replacing: [Int64] = []) {
         let kind: DocumentKind? = switch entity.type {
         case .tenancy: .rentContract
         case .rentReceipt: .rentReceipt
@@ -524,6 +527,7 @@ final class PropertyViewModel: ObservableObject {
         Task {
             let failures = await Task.detached(priority: .userInitiated) { () -> [String] in
                 var failures: [String] = []
+                var linked: Set<Int64> = []
                 for url in files {
                     do {
                         let metadata = kind.map { EvidenceMetadata(kind: $0) } ?? EvidenceMetadata()
@@ -536,8 +540,16 @@ final class PropertyViewModel: ObservableObject {
                             }
                         }
                         _ = try library.link(id, to: entity, role: role)
+                        linked.insert(id)
                     } catch {
                         failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                    }
+                }
+                if failures.isEmpty, !linked.isEmpty {
+                    for id in replacing where !linked.contains(id) {
+                        do { _ = try library.unlink(id, from: entity) } catch {
+                            failures.append("unlinking the old file: \(error.localizedDescription)")
+                        }
                     }
                 }
                 return failures
@@ -562,6 +574,29 @@ final class PropertyViewModel: ObservableObject {
     /// Opens a library document by id (an invoice's PDF).
     func openDocument(id: Int64) {
         if let document = try? library.database.read({ db in try EvidenceDocument.fetchOne(db, key: id) }) { open(document) }
+    }
+
+    /// Where a library document's file is (for Quick Look and the thumbnail).
+    func fileURL(for document: EvidenceDocument) -> URL {
+        library.fileURL(for: document)
+    }
+
+    /// A tenancy's receipt row as the Tenancies table shows it.
+    func receiptRow(_ id: Int64, tenancyId: Int64) -> TenancyReceiptRow? {
+        snapshot.receipts[tenancyId]?.first { $0.receipt.id == id }
+    }
+
+    /// Opens a library document in Preview (its default app when Preview can't be found).
+    func openInPreview(_ document: EvidenceDocument) {
+        let url = library.fileURL(for: document)
+        guard let preview = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Preview") else {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        NSWorkspace.shared.open([url], withApplicationAt: preview, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+            guard let error else { return }
+            Task { @MainActor in self.errorMessage = "Couldn't open \(document.displayName) in Preview: \(error.localizedDescription)" }
+        }
     }
 
     func open(_ document: EvidenceDocument) {
@@ -593,6 +628,7 @@ final class PropertyViewModel: ObservableObject {
         switch sidePanel {
         case .month: if ![.overview, .money].contains(tab) { sidePanel = nil }
         case .rechargeStatement, .rechargeMonth: if tab != .recharges { sidePanel = nil }
+        case .receipt: if tab != .tenancies { sidePanel = nil }
         case nil: break
         }
     }

@@ -540,7 +540,7 @@ struct TaxLineSourcesSheet: View {
         })
         columns.append(.actions { row in
             guard let source = row.source, case let .transaction(id) = source.reference else { return [] }
-            return [DataTableAction("Show \(source.description) where it lives", systemImage: "arrow.right.circle", inline: true) {
+            return [DataTableAction("Show \(source.description) in Search", systemImage: "arrow.right.circle", inline: true) {
                 guard let info = viewModel.transaction(id) else { return }
                 dismiss()
                 openTransaction(info.transaction)

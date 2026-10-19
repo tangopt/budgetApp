@@ -14,8 +14,10 @@ public struct RentReceiptPaymentInfo: Equatable, Sendable {
 public struct TenancyReceiptRow: Equatable, Identifiable, Sendable {
     public var receipt: RentReceipt
     public var payments: [RentReceiptPaymentInfo]
-    /// Linked documents (the receipt PDF).
-    public var documentCount: Int
+    /// Linked documents (the receipt PDF), by id ascending.
+    public var documentIds: [Int64]
+
+    public var documentCount: Int { documentIds.count }
 
     public var id: Int64 { receipt.id ?? -1 }
     /// Rent covered by the linked credits.
@@ -42,17 +44,17 @@ public enum PropertyDrillDown: Hashable, Sendable {
 
 public enum PropertyPage {
     /// The tenancy's receipts (cancelled included), by rent period, with their credits and
-    /// document counts.
+    /// linked documents.
     public static func receiptRows(db: Database, tenancyId: Int64) throws -> [TenancyReceiptRow] {
         let receipts = try RentReceipts.receipts(db: db, tenancyId: tenancyId, includeCancelled: true)
-        let counts = try EvidenceLinks.linkCounts(db: db, .rentReceipt)
+        let documents = try EvidenceLinks.linkedDocumentIds(db: db, .rentReceipt)
         return try receipts.map { receipt in
             let payments = try RentReceiptMatching.payments(db: db, receiptId: receipt.id!)
             let transactions = Dictionary(uniqueKeysWithValues: try Transaction.filter(payments.map(\.transactionId).contains(Column("id")))
                 .fetchAll(db).map { ($0.id!, $0) })
             return TenancyReceiptRow(receipt: receipt,
                                      payments: payments.compactMap { p in transactions[p.transactionId].map { RentReceiptPaymentInfo(payment: p, transaction: $0) } },
-                                     documentCount: counts[receipt.id!] ?? 0)
+                                     documentIds: documents[receipt.id!] ?? [])
         }
     }
 

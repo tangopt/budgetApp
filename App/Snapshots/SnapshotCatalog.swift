@@ -44,6 +44,10 @@ enum SnapshotCatalog {
             screen("dashboard", "main", "Dashboard", .dashboard, settle: 1.5),
             screen("search", "main", "Search", .search),
             screen("search", "query", "Search: “greenleaf”", .search) { models, _ in models.search.queryText = "greenleaf" },
+            // Show in Search from another screen: the latest rent credit, its row selected.
+            screen("search", "revealed", "Search: a transaction shown from Property", .search) { models, context in
+                if let transaction = context.latestRentCredit() { models.search.reveal(transaction) }
+            },
             screen("budget", "main", "Budget grid", .budgetGrid, settle: 1.5),
             screen("forecast", "compare", "Forecast: Compare", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .compare },
             screen("forecast", "differences", "Forecast: Differences", .forecast, settle: 1.5) { models, _ in models.scenarioLab.tab = .differences },
@@ -130,6 +134,14 @@ enum SnapshotCatalog {
                 if let (statement, tenancy) = context.latestPaidStatement() {
                     models.property.selectedTenancyId = tenancy
                     models.property.sidePanel = .rechargeStatement(id: statement, tenancyId: tenancy)
+                }
+            },
+            // The running tenancy's latest receipt with its PDF and a credit.
+            screen("property", "tenancies_receipt", "Property: Tenancies, a receipt open", .property, settle: 1.6) { models, context in
+                models.property.tab = .tenancies
+                if let (receipt, tenancy) = context.latestReceiptWithPDF() {
+                    models.property.selectedTenancyId = tenancy
+                    models.property.sidePanel = .receipt(id: receipt, tenancyId: tenancy)
                 }
             },
             screen("property", "recharges_month", "Property: Recharges, August's month open", .property, settle: 1.5) { models, context in
@@ -433,6 +445,31 @@ extension SnapshotContext {
                   let statement = try RechargeStatement.filter(Column("tenancyId") == tenancy && Column("status") == RechargeStatementStatus.paid.rawValue)
                     .order(Column("month").desc).fetchOne(db)?.id else { return nil }
             return (statement, tenancy)
+        }
+    }
+
+    /// The latest tenancy's latest receipt that has a PDF and a credit linked, and that tenancy.
+    func latestReceiptWithPDF() -> (Int64, Int64)? {
+        try? dbQueue.read { db in
+            guard let tenancy = try Tenancy.order(Column("startDate").desc).fetchOne(db)?.id,
+                  let receipt = try Int64.fetchOne(db, sql: """
+                      SELECT r.id FROM rentReceipt r
+                      WHERE r.tenancyId = ?
+                        AND EXISTS (SELECT 1 FROM documentLink l WHERE l.entityType = ? AND l.entityId = r.id)
+                        AND EXISTS (SELECT 1 FROM rentReceiptPayment p WHERE p.rentReceiptId = r.id)
+                      ORDER BY r.periodStart DESC LIMIT 1
+                      """, arguments: [tenancy, EvidenceEntityType.rentReceipt.rawValue]) else { return nil }
+            return (receipt, tenancy)
+        }
+    }
+
+    /// The latest credit linked to a rent receipt.
+    func latestRentCredit() -> Transaction? {
+        try? dbQueue.read { db in
+            try Transaction.fetchOne(db, sql: """
+                SELECT t.* FROM transaction_ t JOIN rentReceiptPayment p ON p.transactionId = t.id
+                ORDER BY t.date DESC LIMIT 1
+                """)
         }
     }
 
