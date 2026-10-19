@@ -4,6 +4,31 @@ import BudgetCore
 import struct BudgetCore.Transaction
 import GRDB
 
+/// A page with its side panel docked at the trailing edge (like the Budget grid's cell
+/// panel): 320 pt behind a divider, the page narrowing to make room — its `DataTable`s hide or
+/// narrow low-priority columns — so the panel never covers the page. Closing it gives the
+/// page its full width back.
+struct PropertyPanelDock<Page: View, SidePanel: View>: View {
+    static var panelWidth: CGFloat { 320 }
+
+    let isOpen: Bool
+    @ViewBuilder let page: Page
+    @ViewBuilder let panel: SidePanel
+
+    var body: some View {
+        HStack(spacing: 0) {
+            page.frame(maxWidth: .infinity, alignment: .leading)
+            if isOpen {
+                Divider()
+                panel
+                    .frame(width: Self.panelWidth)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: isOpen)
+    }
+}
+
 /// The property page's side panel (the Budget grid's and Categories' `TransactionsSidePanel`
 /// recipe): 12 pt padding on `theme.windowFill`, a `.headline` title with ✕ (Escape closes),
 /// a `.callout` secondary subtitle, then the content (figures and a sectioned `List`).

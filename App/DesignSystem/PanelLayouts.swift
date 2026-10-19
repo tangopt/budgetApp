@@ -3,8 +3,8 @@ import SwiftUI
 
 /// Two panels side by side, the first taking `ratio` of the width (a chart beside its
 /// companion), both as tall as the taller one when they stretch (`Panel(fillsHeight:)`); one
-/// above the other when the row is narrower than `stackBelow`. `TwoUpRow` is the equal-width
-/// version.
+/// above the other when the row is narrower than `stackBelow`, or when either panel can't fit
+/// its share (a side panel open beside the page). `TwoUpRow` is the equal-width version.
 struct SplitRow: Layout {
     var ratio: CGFloat = 0.5
     var spacing: CGFloat = ScreenMetrics.spacing
@@ -13,6 +13,16 @@ struct SplitRow: Layout {
     private func widths(_ total: CGFloat) -> (CGFloat, CGFloat) {
         let first = ((total - spacing) * ratio).rounded()
         return (first, total - spacing - first)
+    }
+
+    /// Whether the two go side by side in `total`: wide enough, and (`checksFit`: a width was
+    /// proposed) each fits its share.
+    private func sideBySide(_ total: CGFloat, _ subviews: Subviews, checksFit: Bool) -> Bool {
+        guard subviews.count == 2, total >= stackBelow else { return false }
+        guard checksFit else { return true }
+        let (first, second) = widths(total)
+        return subviews[0].sizeThatFits(ProposedViewSize(width: first, height: nil)).width <= first + 0.5
+            && subviews[1].sizeThatFits(ProposedViewSize(width: second, height: nil)).width <= second + 0.5
     }
 
     private func width(_ proposal: ProposedViewSize, _ subviews: Subviews) -> CGFloat {
@@ -25,7 +35,7 @@ struct SplitRow: Layout {
             let heights = subviews.map { $0.sizeThatFits(ProposedViewSize(width: total, height: nil)).height }
             return CGSize(width: total, height: heights.reduce(0, +) + spacing * CGFloat(max(0, heights.count - 1)))
         }
-        if total < stackBelow {
+        if !sideBySide(total, subviews, checksFit: proposal.width != nil) {
             let heights = subviews.map { $0.sizeThatFits(ProposedViewSize(width: total, height: nil)).height }
             return CGSize(width: total, height: heights.reduce(0, +) + spacing)
         }
@@ -36,7 +46,7 @@ struct SplitRow: Layout {
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        guard subviews.count == 2, bounds.width >= stackBelow else {
+        guard sideBySide(bounds.width, subviews, checksFit: proposal.width != nil) else {
             var y = bounds.minY
             for subview in subviews {
                 let height = subview.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil)).height

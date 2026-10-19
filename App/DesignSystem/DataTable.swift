@@ -26,7 +26,15 @@ struct DataTableColumn<Row> {
     var accessibilityValue: ((Row) -> String?)?
     /// The header's tooltip (what the column's marks mean), when given.
     var headerHelp: String? = nil
-    let cell: (Row, DataTableRowKind) -> AnyView
+    var cell: (Row, DataTableRowKind) -> AnyView
+    /// When the table is narrower than its columns (a side panel open beside it), the column
+    /// gives way at this step — 1 first, then 2, and so on: it hides, or (with a compact cell
+    /// or width) narrows. Nil: it never gives way. Its value is still read with its row.
+    var giveWayPriority: Int? = nil
+    /// The narrower width the column takes when it gives way (nil: its own).
+    var compactWidth: Width? = nil
+    /// The shorter cell the column shows when it gives way (nil: its own).
+    var compactCell: ((Row, DataTableRowKind) -> AnyView)? = nil
 
     init<Cell: View>(_ title: String, alignment: Alignment = .leading, width: Width = .fit,
                      accessibilityValue: ((Row) -> String?)? = nil,
@@ -42,6 +50,45 @@ struct DataTableColumn<Row> {
     func headerHelp(_ text: String) -> Self {
         var column = self
         column.headerHelp = text
+        return column
+    }
+
+    /// A low-priority column that hides when the table is too narrow, at step `priority`
+    /// (1 hides first).
+    func hidesWhenNarrow(_ priority: Int) -> Self {
+        var column = self
+        column.giveWayPriority = priority
+        return column
+    }
+
+    /// A column that narrows when the table is too narrow, at step `priority`: to `width`
+    /// (a text column truncating in less room), keeping its cell.
+    func narrowsWhenNarrow(_ priority: Int, to width: Width) -> Self {
+        var column = self
+        column.giveWayPriority = priority
+        column.compactWidth = width
+        return column
+    }
+
+    /// A column that shows a shorter cell when the table is too narrow, at step `priority`
+    /// (an amount without its day, a period in fewer words), `width` wide.
+    func compactsWhenNarrow<Cell: View>(_ priority: Int, width: Width = .fit,
+                                        @ViewBuilder cell: @escaping (Row, DataTableRowKind) -> Cell) -> Self {
+        var column = self
+        column.giveWayPriority = priority
+        column.compactWidth = width
+        column.compactCell = { AnyView(cell($0, $1)) }
+        return column
+    }
+
+    /// The column at give-way step `step`: itself, its compact form, or nil (hidden).
+    fileprivate func at(step: Int) -> Self? {
+        guard let priority = giveWayPriority, priority <= step else { return self }
+        guard compactWidth != nil || compactCell != nil else { return nil }
+        var column = self
+        if let compactWidth { column.width = compactWidth }
+        if let compactCell { column.cell = compactCell }
+        column.giveWayPriority = nil
         return column
     }
 }
@@ -174,6 +221,7 @@ struct DataTable<Row: Identifiable>: View {
     /// What activating a row does, for VoiceOver ("Show details").
     var selectHint = "Shows its details"
     @Environment(\.theme) private var theme
+    @Environment(\.selectedRowScroller) private var selectedRowScroller
 
     init(columns: [DataTableColumn<Row>], sections: [DataTableSection<Row>], zebra: Bool = true, showsHeader: Bool = true,
          onSelect: ((Row) -> Void)? = nil, selectedId: Row.ID? = nil) {
@@ -200,7 +248,7 @@ struct DataTable<Row: Identifiable>: View {
 
     /// A line's identity: rows and totals by their row's id (and section), so a row's cells
     /// keep their state when rows come and go; the header and group strips by position.
-    private enum LineKey: Hashable {
+    fileprivate enum LineKey: Hashable {
         case header
         case section(Int)
         case row(section: Int, id: AnyHashable)
@@ -227,17 +275,88 @@ struct DataTable<Row: Identifiable>: View {
         return entries
     }
 
+    /// The give-way steps the columns have, in order (empty: the table never gives way).
+    private var steps: [Int] {
+        Array(Set(columns.compactMap(\.giveWayPriority))).sorted()
+    }
+
     var body: some View {
-        DataTableLayout(widths: columns.map(\.width)) {
+        content(steps)
+            // Once it has settled (a side panel opening narrows the page, and the table gives
+            // way), the open row is brought into view by its page's scroll view.
+            .task(id: selectedId) {
+                guard selectedId != nil, let selectedRowScroller else { return }
+                // Again a little later, should the page still have been settling (it is a
+                // no-op when the row is already in view).
+                for delay in [260, 600] {
+                    try? await Task.sleep(for: .milliseconds(delay))
+                    guard !Task.isCancelled else { return }
+                    selectedRowScroller.scrollTo(DataTableSelection.scrollID)
+                }
+            }
+    }
+
+    @ViewBuilder
+    private func content(_ steps: [Int]) -> some View {
+        if steps.isEmpty {
+            grid(columns, idealAtMinimum: false)
+        } else {
+            // Too narrow for every column (a side panel open beside it): low-priority columns
+            // hide or narrow, step by step, until it fits; past the last step it scrolls
+            // sideways rather than make the page wider than the window.
+            ViewThatFits(in: .horizontal) {
+                grid(columns, idealAtMinimum: true)
+                ForEach(steps, id: \.self) { step in
+                    grid(shown(at: step), idealAtMinimum: true)
+                }
+                ScrollView(.horizontal) {
+                    grid(shown(at: steps.last!), idealAtMinimum: true)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .wrapProbeScrollsHorizontally()
+            }
+        }
+    }
+
+    /// The columns at give-way step `step`. When the column that took the spare width hides
+    /// or stops filling, an empty one takes the spare width there, so the table still spans
+    /// its width with its figures and actions where they were.
+    private func shown(at step: Int) -> [DataTableColumn<Row>] {
+        func fills(_ column: DataTableColumn<Row>) -> Bool {
+            if case .fill = column.width { return true }
+            return false
+        }
+        var shown: [DataTableColumn<Row>] = []
+        var filler: Int?
+        for column in columns {
+            let given = column.at(step: step)
+            if let given { shown.append(given) }
+            // Where the spare width went: in place of a hidden fill column, after a narrowed one.
+            if fills(column), filler == nil, given.map(fills) != true { filler = shown.count }
+        }
+        if let filler, !shown.contains(where: fills) {
+            shown.insert(DataTableColumn("", width: .fill(min: 0)) { _, _ in EmptyView() }, at: filler)
+        }
+        return shown
+    }
+
+    /// The table with `shown` columns. `idealAtMinimum`: its ideal width has its fill columns
+    /// at their minimum (what `ViewThatFits` compares with the room there is).
+    private func grid(_ shown: [DataTableColumn<Row>], idealAtMinimum: Bool) -> some View {
+        DataTableLayout(widths: shown.map(\.width), idealAtMinimum: idealAtMinimum) {
             ForEach(entries) { entry in
                 let index = entry.index, line = entry.line
                 // Each line's background first, so it draws under the line's cells; for a row it
                 // is also the row's one VoiceOver element. It carries the line's minimum height:
                 // rows and totals at least `minRowHeight`, header and group strips their text's.
-                background(line).layoutValue(key: DataTableSlot.self, value: .background(line: index, minHeight: minHeight(line)))
+                background(line)
+                    // The open row can be scrolled to: a marker over it (its own identity, and
+                    // VoiceOver's focus, stay put).
+                    .overlay { if isSelected(line) { Color.clear.id(DataTableSelection.scrollID).accessibilityHidden(true) } }
+                    .layoutValue(key: DataTableSlot.self, value: .background(line: index, minHeight: minHeight(line)))
                 switch line {
                 case .header:
-                    ForEach(Array(columns.enumerated()), id: \.offset) { column, spec in
+                    ForEach(Array(shown.enumerated()), id: \.offset) { column, spec in
                         Text(spec.title)
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             .padding(.horizontal, 8).padding(.vertical, 4)
@@ -255,12 +374,17 @@ struct DataTable<Row: Identifiable>: View {
                         .accessibilityAddTraits(.isHeader)
                         .layoutValue(key: DataTableSlot.self, value: .span(line: index))
                 case let .row(row, _):
-                    cells(row, kind: .row, line: index)
+                    cells(row, shown, kind: .row, line: index)
                 case let .total(row):
-                    cells(row, kind: .total, line: index)
+                    cells(row, shown, kind: .total, line: index)
                 }
             }
         }
+    }
+
+    private func isSelected(_ line: Line) -> Bool {
+        if case let .row(row, _) = line, let selectedId { return row.id == selectedId }
+        return false
     }
 
     private func minHeight(_ line: Line) -> CGFloat {
@@ -270,7 +394,8 @@ struct DataTable<Row: Identifiable>: View {
         }
     }
 
-    /// A row as VoiceOver reads it: each described cell, titled ("Rent €1,200.00").
+    /// A row as VoiceOver reads it: each described cell, titled ("Rent €1,200.00") — also
+    /// the columns hidden while the table is narrow.
     private func accessibilityLabel(_ row: Row, kind: DataTableRowKind) -> String {
         let parts = columns.compactMap { column -> String? in
             guard let value = column.accessibilityValue?(row), !value.isEmpty else { return nil }
@@ -282,8 +407,8 @@ struct DataTable<Row: Identifiable>: View {
     }
 
     @ViewBuilder
-    private func cells(_ row: Row, kind: DataTableRowKind, line: Int) -> some View {
-        ForEach(Array(columns.enumerated()), id: \.offset) { column, spec in
+    private func cells(_ row: Row, _ shown: [DataTableColumn<Row>], kind: DataTableRowKind, line: Int) -> some View {
+        ForEach(Array(shown.enumerated()), id: \.offset) { column, spec in
             spec.cell(row, kind)
                 .padding(.horizontal, 8).padding(.vertical, 3)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: spec.alignment)
@@ -326,6 +451,17 @@ struct DataTable<Row: Identifiable>: View {
             base.accessibilityHidden(true)
         }
     }
+}
+
+/// The row whose details are open (`DataTable.selectedId`), for a `ScrollViewReader`: a page
+/// that narrows for a side panel scrolls it back into view when its rows move.
+enum DataTableSelection {
+    static let scrollID = "DataTable.selectedRow"
+}
+
+extension EnvironmentValues {
+    /// The page's scroll view, which brings the open row (`DataTableSelection.scrollID`) into view.
+    @Entry var selectedRowScroller: ScrollViewProxy? = nil
 }
 
 /// A clickable row's cell or background: the whole area takes the click (buttons in it keep theirs).
@@ -398,6 +534,9 @@ enum DataTableSlot: LayoutValueKey {
 /// least the minimum its background carries), backgrounds and spans across the full width.
 struct DataTableLayout: Layout {
     let widths: [DataTableWidth]
+    /// Its ideal width (no width proposed) has the fill columns at their minimum, not as
+    /// wide as their widest cell.
+    var idealAtMinimum = false
 
     struct Cache {
         var columnWidths: [CGFloat] = []
@@ -427,12 +566,12 @@ struct DataTableLayout: Layout {
         }
         guard !fillColumns.isEmpty else { return result }
         let fixedTotal = result.enumerated().filter { !fillColumns.contains($0.offset) }.reduce(0) { $0 + $1.element }
-        let available = (proposedWidth ?? (fixedTotal + fillColumns.reduce(0) { $0 + ideal[$1] })) - fixedTotal
+        let available = (proposedWidth ?? (fixedTotal + fillColumns.reduce(0) { $0 + (idealAtMinimum ? 0 : ideal[$1]) })) - fixedTotal
         let share = available / CGFloat(fillColumns.count)
         for index in fillColumns {
             let minimum: CGFloat
             if case let .fill(min) = widths[index] { minimum = min } else { minimum = 0 }
-            result[index] = Swift.max(minimum, proposedWidth == nil ? ideal[index] : share)
+            result[index] = Swift.max(minimum, proposedWidth == nil ? (idealAtMinimum ? minimum : ideal[index]) : share)
         }
         return result
     }

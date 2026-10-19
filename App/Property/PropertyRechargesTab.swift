@@ -357,9 +357,25 @@ struct RechargesTenancyView: View {
             .fixedSize()
             .accessibilityLabel("Tenancy")
             Spacer(minLength: 8)
-            Button("Utility invoices…", action: openIntake)
-                .help("Add utility invoices (files, the library or the source folders) and match them to their debits")
+            // Utility invoices… as a button when there's room; in More when a side panel narrows the page.
+            ViewThatFits(in: .horizontal) {
+                headerActions(invoicesInMenu: false)
+                headerActions(invoicesInMenu: true)
+            }
+        }
+    }
+
+    private func headerActions(invoicesInMenu: Bool) -> some View {
+        HStack(spacing: 8) {
+            if !invoicesInMenu {
+                Button("Utility invoices…", action: openIntake)
+                    .help("Add utility invoices (files, the library or the source folders) and match them to their debits")
+            }
             Menu {
+                if invoicesInMenu {
+                    Button("Utility invoices…", action: openIntake)
+                    Divider()
+                }
                 Button("Providers…", action: openProviders)
                 Divider()
                 Button("Match payments") { model.matchPayments() }
@@ -367,13 +383,16 @@ struct RechargesTenancyView: View {
                 Text("More")
             }
             .fixedSize()
-            .help("Providers…; Match payments: link rent credits to their receipts, then tenant credits whose remainder is what statements still need")
+            .help(invoicesInMenu
+                  ? "Utility invoices…; Providers…; Match payments: link rent credits to their receipts, then tenant credits whose remainder is what statements still need"
+                  : "Providers…; Match payments: link rent credits to their receipts, then tenant credits whose remainder is what statements still need")
             Button("Prepare \(RechargeEmail.monthName(model.nextMonth, language: .english))…") {
                 opened = RechargeStatementTarget(month: model.nextMonth, statementId: nil)
             }
             .buttonStyle(.borderedProminent).prominentTint()
             .help("The statement of the invoices since the last one, to email to the tenant")
         }
+        .fixedSize()
     }
 
     @ViewBuilder
@@ -407,9 +426,13 @@ struct RechargesTenancyView: View {
             DataTable(columns: [
                 .text("Statement", width: .fit, figure: true) { RechargeEmail.monthName($0.statement.month, language: .english) },
                 .date("Credit") { $0.transaction.date },
-                .text("Description", width: .fill(min: 160)) { $0.transaction.rawDescription },
+                // Narrow (a side panel open): the description truncates in less room, and the
+                // difference shows as a short pill.
+                DataTableColumn<Recharges.PaymentSuggestion>.text("Description", width: .fill(min: 160)) { $0.transaction.rawDescription }
+                    .narrowsWhenNarrow(1, to: .fill(min: 80)),
                 .money("Would pay", role: .neutral, currency: { _ in currency }) { $0.amountMinorUnits },
-                .status("") { differencePill($0) },
+                DataTableColumn<Recharges.PaymentSuggestion>.status("") { differencePill($0) }
+                    .compactsWhenNarrow(2) { suggestion, _ in differencePill(suggestion, short: true) },
                 DataTableColumn("", alignment: .trailing) { suggestion, _ in
                     Button("Accept") { model.accept(suggestion) }
                         .controlSize(.small)
@@ -420,13 +443,19 @@ struct RechargesTenancyView: View {
         }
     }
 
-    private func differencePill(_ suggestion: Recharges.PaymentSuggestion) -> StatusPill {
+    /// How the credit compares with the statement; `short`: the difference alone ("+€1.00").
+    private func differencePill(_ suggestion: Recharges.PaymentSuggestion, short: Bool = false) -> StatusPill {
         let difference = suggestion.differenceMinorUnits
         let amount = Money.format(abs(difference), currency: currency)
         if difference == 0 { return StatusPill("Exact", tone: .positive, systemImage: "checkmark") }
+        let more = "What's left of the credit after its rent is \(amount) more than the statement needs"
+        let partial = "The credit pays part of the statement; \(amount) would stay owed"
+        if short {
+            return difference > 0 ? StatusPill("+\(amount)", help: more) : StatusPill("−\(amount)", tone: .warning, help: partial)
+        }
         return difference > 0
-            ? StatusPill("Credit has \(amount) more", help: "What's left of the credit after its rent is \(amount) more than the statement needs")
-            : StatusPill("\(amount) short: partial", tone: .warning, help: "The credit pays part of the statement; \(amount) would stay owed")
+            ? StatusPill("Credit has \(amount) more", help: more)
+            : StatusPill("\(amount) short: partial", tone: .warning, help: partial)
     }
 
     // MARK: Summary
@@ -615,8 +644,10 @@ struct RechargesTenancyView: View {
                     .figureText()
             },
             .status("Status") { line in line.row.map(status) },
-            .date("Sent on") { $0.row?.statement.sentAt },
-            .text("Lines", width: .fill(min: 140)) { line in line.row.map { model.lineSummaries[$0.id] ?? "" } ?? "" },
+            // Hidden when the table is narrow (a side panel open): the panel shows them.
+            DataTableColumn<StatementLine>.date("Sent on") { $0.row?.statement.sentAt }.hidesWhenNarrow(2),
+            DataTableColumn<StatementLine>.text("Lines", width: .fill(min: 140)) { line in line.row.map { model.lineSummaries[$0.id] ?? "" } ?? "" }
+                .hidesWhenNarrow(1),
             .money("Total", role: .neutral, currency: { _ in currency }) { $0.total },
             DataTableColumn("Paid on", accessibilityValue: paidOnDescription) { line, kind in
                 if kind == .row, let row = line.row, !row.payments.isEmpty {
@@ -626,7 +657,8 @@ struct RechargesTenancyView: View {
                         }
                     }
                 }
-            },
+            }
+            .hidesWhenNarrow(3),
             DataTableColumn("Received", alignment: .trailing, width: .min(96),
                             accessibilityValue: { $0.received == 0 ? nil : Money.format($0.received, currency: currency) }) { line, kind in
                 if kind == .row, let row = line.row, !row.payments.isEmpty {

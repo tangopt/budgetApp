@@ -196,7 +196,9 @@ struct PropertyTenanciesTab: View {
                             ], rows: rents, zebra: false)
                         }
                     }
-                    .frame(width: 340, alignment: .leading)
+                    // Narrower (down to its table's width) while a side panel is open beside the page.
+                    .frame(minWidth: 280, idealWidth: 340, maxWidth: 340, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Contract").font(.subheadline.bold())
                         PropertyFacts {
@@ -297,8 +299,9 @@ struct PropertyTenanciesTab: View {
                     .foregroundStyle(line.isCancelled ? Color.secondary : Color.primary)
                     .figureText()
             },
-            PropertyReceiptColumns.period { $0.row.map { ($0.receipt.periodStart, $0.receipt.periodEnd) } },
-            .date("Received on") { $0.row?.receipt.receiptDate },
+            PropertyReceiptColumns.period(compactAt: 3) { $0.row.map { ($0.receipt.periodStart, $0.receipt.periodEnd) } },
+            // Hidden first when the table is narrow (the receipt's panel shows it).
+            DataTableColumn<ReceiptLine>.date("Received on") { $0.row?.receipt.receiptDate }.hidesWhenNarrow(1),
             amountColumn("Rent") { $0.rent }
         ]
         if withholding {
@@ -310,6 +313,10 @@ struct PropertyTenanciesTab: View {
                 .headerHelp("Paid: linked credits cover the receipt. Part paid: they cover part of it. Not matched: no credit linked yet. Cancelled: charged nothing. Hover a status for its details."),
             DataTableColumn("Paid by", width: .fill(min: 170), accessibilityValue: paidByDescription) { line, _ in
                 if let row = line.row { paidBy(row) }
+            }
+            // Narrow: the credits' amounts only (their days and the part that isn't rent on hover).
+            .compactsWhenNarrow(2) { line, _ in
+                if let row = line.row { paidBy(row, compact: true) }
             },
             // The PDF: its paperclip (previews it; a menu when there are several), or a dashed
             // to-do circle that adds it (none for a cancelled receipt). No accessibility value:
@@ -355,9 +362,16 @@ struct PropertyTenanciesTab: View {
 
     /// The credits that paid it: the day and the credit, the part that isn't rent beneath.
     @ViewBuilder
-    private func paidBy(_ row: TenancyReceiptRow) -> some View {
+    private func paidBy(_ row: TenancyReceiptRow, compact: Bool = false) -> some View {
         if row.payments.isEmpty {
             Text("—").foregroundStyle(.tertiary)
+        } else if compact {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(row.payments, id: \.payment.id) { info in
+                    MoneyText(minorUnits: info.transaction.amountMinorUnits, currency: viewModel.currency)
+                }
+            }
+            .help(paidByDescription(ReceiptLine(id: "", row: row, rent: 0, withheld: 0, received: 0)) ?? "")
         } else {
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(row.payments, id: \.payment.id) { info in
@@ -440,10 +454,12 @@ struct PropertyTenanciesTab: View {
     }
 }
 
-/// A rent period as two aligned days, "1 Aug 2025 – 31 Aug 2025" (`DateText`).
+/// A rent period as two aligned days, "1 Aug 2025 – 31 Aug 2025" (`DateText`); in a narrow
+/// table, from give-way step `compactAt` (nil: never), "1–31 Aug 2025" when it is within one month.
 enum PropertyReceiptColumns {
-    static func period<Row>(_ title: String = "Rent period", _ value: @escaping (Row) -> (Date, Date)?) -> DataTableColumn<Row> {
-        DataTableColumn(title, accessibilityValue: { row in
+    static func period<Row>(_ title: String = "Rent period", compactAt step: Int? = nil,
+                            _ value: @escaping (Row) -> (Date, Date)?) -> DataTableColumn<Row> {
+        let column = DataTableColumn<Row>(title, accessibilityValue: { row in
             value(row).map { "\(DocumentFormat.day($0.0)) to \(DocumentFormat.day($0.1))" }
         }) { row, _ in
             if let period = value(row) {
@@ -454,6 +470,22 @@ enum PropertyReceiptColumns {
                 }
             }
         }
+        guard let step else { return column }
+        return column.compactsWhenNarrow(step) { row, _ in
+            if let period = value(row) {
+                Text(compact(period.0, period.1)).monospacedDigit().figureText()
+            }
+        }
+    }
+
+    /// "1–31 Aug 2025" within one month; both days otherwise.
+    static func compact(_ start: Date, _ end: Date) -> String {
+        let calendar = MonthRange.calendar
+        let a = calendar.dateComponents([.year, .month, .day], from: start), b = calendar.dateComponents([.year, .month], from: end)
+        guard a.year == b.year, a.month == b.month, let day = a.day else {
+            return "\(DocumentFormat.day(start)) – \(DocumentFormat.day(end))"
+        }
+        return "\(day)–\(DocumentFormat.day(end))"
     }
 }
 

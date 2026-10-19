@@ -14,49 +14,34 @@ struct PropertyView: View {
     let openMissingEvidence: (Int64, String) -> Void
     /// Shows a library document selected on the Documents screen.
     let showDocument: (Int64) -> Void
-    @Environment(\.theme) private var theme
-
     @State private var editingProperty: PropertyDraft?
 
     var body: some View {
-        // The page, narrowing while a side panel (a chart month's transactions) is open beside it.
-        HStack(spacing: 0) {
+        // Every side panel (a chart month, a statement, a receipt) docks beside the page, which
+        // narrows to make room — its tables give way — so the panel never covers it.
+        PropertyPanelDock(isOpen: viewModel.sidePanel != nil && viewModel.property != nil) {
             VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
                 if viewModel.property == nil {
                     if viewModel.isLoading { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) } else { emptyState }
                 } else {
                     header
                     PropertyBanners(viewModel: viewModel)
-                    ScrollView {
-                        content
-                            .frame(maxWidth: .infinity, alignment: .topLeading)
-                            .padding(.bottom, ScreenMetrics.padding)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            content
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
+                                .padding(.bottom, ScreenMetrics.padding)
+                        }
+                        // The page narrows when a panel opens (taller tiles, compact tables): the
+                        // open row brings itself back into view once it has settled (`DataTable`).
+                        .environment(\.selectedRowScroller, proxy)
                     }
                 }
             }
             .padding([.horizontal, .top], ScreenMetrics.padding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if let panel = viewModel.sidePanel, viewModel.property != nil, !Self.floats(panel) {
-                Divider()
-                sidePanel(panel)
-                    .frame(width: 320)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-            }
+        } panel: {
+            if let panel = viewModel.sidePanel { sidePanel(panel) }
         }
-        // Recharges' and Tenancies' tables need the page's whole width (the window's 1100 pt minimum): their
-        // panel floats over the page's trailing edge instead of narrowing it.
-        .overlay(alignment: .trailing) {
-            if let panel = viewModel.sidePanel, viewModel.property != nil, Self.floats(panel) {
-                HStack(spacing: 0) {
-                    Divider()
-                    sidePanel(panel).frame(width: 320)
-                }
-                // The shadow on a fill behind the panel, not on its contents.
-                .background(Rectangle().fill(theme.windowFill).shadow(color: .black.opacity(0.15), radius: 8, x: -2))
-                .transition(.move(edge: .trailing).combined(with: .opacity))
-            }
-        }
-        .animation(.easeOut(duration: 0.2), value: viewModel.sidePanel == nil)
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
         .toolbar {
@@ -96,14 +81,6 @@ struct PropertyView: View {
             }
         }
         .frame(minHeight: 28)
-    }
-
-    /// Whether the panel floats over the page rather than narrowing it.
-    private static func floats(_ panel: PropertyViewModel.SidePanel) -> Bool {
-        switch panel {
-        case .month: return false
-        case .rechargeStatement, .rechargeMonth, .receipt: return true
-        }
     }
 
     @ViewBuilder
