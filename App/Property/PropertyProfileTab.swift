@@ -111,7 +111,7 @@ struct PropertyProfileTab: View {
                     .text("Person", { viewModel.personName($0.personId) }),
                     DataTableColumn("Share", alignment: .trailing, width: .min(56),
                                     accessibilityValue: { PropertyFormat.percent($0.shareBasisPoints) }) { owner, _ in
-                        Text(PropertyFormat.percent(owner.shareBasisPoints)).monospacedDigit()
+                        Text(PropertyFormat.percent(owner.shareBasisPoints)).monospacedDigit().figureText()
                     },
                     DataTableColumn("From", accessibilityValue: { $0.fromDate.map(DocumentFormat.day) ?? "since purchase" }) { owner, _ in
                         if owner.fromDate == nil { Text("Since purchase").foregroundStyle(.secondary) } else { DateText(date: owner.fromDate) }

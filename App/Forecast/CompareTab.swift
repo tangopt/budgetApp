@@ -42,6 +42,7 @@ struct CompareTab: View {
                         .containerRelativeFrame(.horizontal, alignment: .leading) { length, _ in
                             max(length, SummaryTable.minimumWidth)
                         }
+                        .wrapProbeScrollsHorizontally()
                 }
             }
             .padding(.bottom)
@@ -122,6 +123,8 @@ struct ScenarioNetWorthChart: View {
                     .foregroundStyle(Color.secondary.opacity(0.5))
             }
         }
+        // Charts lay their labels out apart from the scroll view: no clip check on them.
+        .wrapProbeInChart()
         .chartForegroundStyleScale(domain: ids, range: colors)
         .chartLegend(.hidden)
         .chartOverlay { proxy in
@@ -149,7 +152,7 @@ struct ScenarioNetWorthChart: View {
             AxisMarks(position: .leading) { value in
                 AxisGridLine()
                 AxisValueLabel {
-                    if let pounds = value.as(Double.self) { Text(DashboardFormat.axisThousands(pounds)) }
+                    if let pounds = value.as(Double.self) { Text(DashboardFormat.axisThousands(pounds)).figureText() }
                 }
             }
         }
@@ -161,14 +164,14 @@ struct ScenarioNetWorthChart: View {
 
     private func readoutBox(_ readout: (date: Date, values: [(name: String, colorIndex: Int?, minorUnits: Int)])) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(DashboardFormat.monthYear(readout.date)).font(.caption2).foregroundStyle(.secondary)
+            Text(DashboardFormat.monthYear(readout.date)).font(.caption2).foregroundStyle(.secondary).figureText()
             ForEach(Array(readout.values.enumerated()), id: \.offset) { _, value in
                 HStack(spacing: 4) {
                     Circle().fill(value.colorIndex.map(theme.series) ?? .gray).frame(width: 6, height: 6)
                     Text(value.name).font(.caption2).lineLimit(1)
                     Spacer(minLength: 8)
                     Text(DashboardFormat.pounds(value.minorUnits)).font(.caption.bold()).monospacedDigit()
-                        .lineLimit(1).fixedSize()
+                        .figureText()
                 }
             }
         }
@@ -233,6 +236,7 @@ struct SummaryTable: View {
         VStack(alignment: .leading, spacing: 0) {
             Text(yearLabel(year))
                 .font(.subheadline.bold())
+                .figureText()
                 .padding(.horizontal, 8).padding(.vertical, 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(theme.sectionHeaderTint)
@@ -286,7 +290,7 @@ struct SummaryTable: View {
         if let minorUnits {
             if signed && minorUnits > 0 {
                 Text("+" + Money.format(minorUnits, currency: .gbp)).font(.body.monospacedDigit()).foregroundStyle(theme.income)
-                    .lineLimit(1).fixedSize()
+                    .figureText()
             } else {
                 MoneyText(minorUnits: minorUnits)
             }

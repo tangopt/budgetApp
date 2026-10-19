@@ -110,6 +110,8 @@ struct MonthlyFlowChart: View {
                     }
             }
         }
+        // Charts lay their labels out apart from the scroll view: no clip check on them.
+        .wrapProbeInChart()
         .chartForegroundStyleScale([inflowLabel: theme.income, outflowLabel: theme.expense, netLabel: theme.chartAccent])
         .chartXAxis {
             AxisMarks(values: .stride(by: .month)) { _ in
@@ -121,7 +123,7 @@ struct MonthlyFlowChart: View {
             AxisMarks(position: .leading) { value in
                 AxisGridLine()
                 AxisValueLabel {
-                    if let amount = value.as(Double.self) { Text(MoneyAxis.compact(amount, currency: currency)) }
+                    if let amount = value.as(Double.self) { Text(MoneyAxis.compact(amount, currency: currency)).figureText() }
                 }
             }
         }
@@ -138,6 +140,7 @@ struct MonthlyFlowChart: View {
     private func readout(_ month: FlowMonth) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(month.start.formatted(Date.FormatStyle(timeZone: Self.utc).month(.wide).year())).font(.caption2).foregroundStyle(.secondary)
+                .figureText()
             if isFuture(month) {
                 Text("Not yet").font(.caption).foregroundStyle(.secondary).frame(minWidth: 150, alignment: .leading)
             } else {

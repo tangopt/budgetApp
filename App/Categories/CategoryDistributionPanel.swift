@@ -182,7 +182,7 @@ private struct DistributionDonut: View {
                 Spacer()
             }
             if let caption {
-                Text(caption).font(.caption).foregroundStyle(.secondary)
+                Text(caption).font(.caption).foregroundStyle(.secondary).figureText()
             }
             if slices.isEmpty {
                 Text(emptyText).font(.callout).foregroundStyle(.secondary)
@@ -206,6 +206,8 @@ private struct DistributionDonut: View {
                 .accessibilityLabel(wedge.name)
                 .accessibilityValue("\(Money.format(wedge.amount, currency: .gbp)), \(percent(wedge.amount))")
         }
+        // Charts lay their labels out apart from the scroll view: no clip check on them.
+        .wrapProbeInChart()
         .chartLegend(.hidden)
         .chartBackground { proxy in
             GeometryReader { geometry in
@@ -246,12 +248,10 @@ private struct DistributionDonut: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
-            Text(Money.format(hovered?.amount ?? total, currency: .gbp))
-                .font(.headline.monospacedDigit())
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
+            MoneyText(minorUnits: hovered?.amount ?? total, font: .headline.monospacedDigit(), alignment: .center, tint: .primary,
+                      minimumScale: 0.6)
             if let hovered {
-                Text(percent(hovered.amount)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Text(percent(hovered.amount)).font(.caption.monospacedDigit()).foregroundStyle(.secondary).figureText()
                 if hovered.slice == nil {
                     Text(otherHint).font(.caption2).foregroundStyle(.secondary)
                         .lineLimit(2).multilineTextAlignment(.center)
@@ -300,12 +300,11 @@ private struct DistributionDonut: View {
                 .frame(width: 10, height: 10)
             Text(slice.name).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
-            Text(Money.format(slice.amountMinorUnits, currency: .gbp)).monospacedDigit()
-                .lineLimit(1).fixedSize()
+            MoneyText(minorUnits: slice.amountMinorUnits, font: .callout.monospacedDigit(), tint: .primary)
             Text(percent(slice.amountMinorUnits))
                 .monospacedDigit()
-                .lineLimit(1)
                 .foregroundStyle(.secondary)
+                .figureText(.shrink())
                 .frame(width: 38, alignment: .trailing)
             if onSelect != nil {
                 Image(systemName: "chevron.forward").font(.caption2).foregroundStyle(.tertiary)

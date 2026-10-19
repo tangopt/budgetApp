@@ -32,6 +32,7 @@ struct PDFLayoutWizardView: View {
                 .frame(height: 200)
             Text("Preview: \(previewResult.transactions.count) matched, \(previewResult.unparsedLines.count) unmatched")
                 .font(.callout)
+                .figureText()
         }
     }
 }

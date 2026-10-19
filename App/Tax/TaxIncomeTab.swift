@@ -127,8 +127,10 @@ struct TaxIncomeTab: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(name).font(.subheadline.bold()).lineLimit(1)
                         .accessibilityAddTraits(.isHeader)
+                    // Wraps between its parts, each figure whole.
                     Text(TaxIncomeFormat.employmentCaption(employment, number: number, of: income.employments.count))
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
                 if row.documentCount > 0 {
@@ -383,9 +385,13 @@ struct HMRCPaymentsTable: View {
             }) { row, kind in
                 if let payment = row.payment {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("\(payment.kind.displayName) · \(UKTaxYear(startYear: payment.startYear).label)").lineLimit(1)
+                        // The kind truncates; the year never does.
+                        HStack(spacing: 0) {
+                            Text(payment.kind.displayName).lineLimit(1)
+                            Text(" · \(UKTaxYear(startYear: payment.startYear).label)").figureText()
+                        }
                         if let reference = payment.reference, !reference.isEmpty {
-                            Text("Ref. \(reference)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                            Text("Ref. \(reference)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).figureText()
                         }
                     }
                 } else {
@@ -430,7 +436,7 @@ enum TaxIncomeFormat {
         if let reference = employment.payeReference, !reference.isEmpty { parts.append("PAYE \(reference)") }
         if let start = employment.startDate { parts.append("from \(DocumentFormat.day(start))") }
         if let end = employment.endDate { parts.append("left \(DocumentFormat.day(end))") }
-        return parts.isEmpty ? "No PAYE reference" : parts.joined(separator: " · ")
+        return parts.isEmpty ? "No PAYE reference" : parts.map(\.unbroken).joined(separator: " · ")
     }
 
     /// The figures the return uses (`Employments.effectiveIncome`): pay and tax from the
@@ -1023,12 +1029,12 @@ struct PayrollFormConfirmSheet: View {
         let blocking = (hasInvalidBenefit ? ["Enter each benefit's cash equivalent (or remove the row)."] : []) + problems.map(TaxIncomeMessages.text)
         if !blocking.isEmpty {
             InlineBanner(.error) {
-                VStack(alignment: .leading, spacing: 3) { ForEach(blocking, id: \.self) { Text($0) } }
+                VStack(alignment: .leading, spacing: 3) { ForEach(blocking, id: \.self) { Text($0.figuresUnbroken) } }
             }
         }
         if !warnings.isEmpty {
             InlineBanner(.warning) {
-                VStack(alignment: .leading, spacing: 3) { ForEach(warnings, id: \.self) { Text($0) } }
+                VStack(alignment: .leading, spacing: 3) { ForEach(warnings, id: \.self) { Text($0.figuresUnbroken) } }
             }
         }
     }

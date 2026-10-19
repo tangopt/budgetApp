@@ -31,11 +31,12 @@ struct RulesView: View {
                 }
                 .labelsHidden()
             }
-            TableColumn("Priority") { rule in Text("\(rule.priority)") }
+            TableColumn("Priority") { rule in Text("\(rule.priority)").monospacedDigit().figureText(.shrink()) }
             TableColumn("") { rule in
                 Button("Delete") { try? viewModel.delete(rule) }
             }
         }
+        .wrapProbeClips()
         .contextMenu(forSelectionType: Rule.ID.self) { ids in
             if ids.count == 1, let rule = rule(ids.first ?? nil) {
                 Button("Edit Rule…") { sheetDraft = RuleDraft(rule: rule) }
@@ -198,7 +199,7 @@ private struct RuleSheet: View {
             } else if let previewError {
                 SheetCaption(previewError, isError: true)
             } else {
-                Text(matchSummary).font(.callout)
+                Text(matchSummary).font(.callout).figureText()
                 if !preview.sampleDescriptions.isEmpty {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(Array(preview.sampleDescriptions.enumerated()), id: \.offset) { _, description in
@@ -211,6 +212,7 @@ private struct RuleSheet: View {
                         if preview.matchCount > preview.sampleDescriptions.count {
                             Text("and \(preview.matchCount - preview.sampleDescriptions.count) more")
                                 .font(.caption).foregroundStyle(.secondary)
+                                .figureText()
                         }
                     }
                     .padding(.leading, 8)

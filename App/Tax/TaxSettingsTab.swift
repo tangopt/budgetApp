@@ -78,7 +78,7 @@ struct TaxSettingsTab: View {
         return PropertyFacts {
             PropertyFact(page.rates.count > 1 ? "Rate (\(rate.currencyCode))" : "Rate") {
                 HStack(spacing: 8) {
-                    Text(TaxFormat.unitsPerPound(rate)).monospacedDigit().fontWeight(.semibold).lineLimit(1)
+                    Text(TaxFormat.unitsPerPound(rate)).monospacedDigit().fontWeight(.semibold).figureText()
                     Spacer(minLength: 8)
                     // The same remove icon as the splits beside it.
                     Button(role: .destructive) { viewModel.removeRate(currencyCode: rate.currencyCode) } label: {
@@ -90,13 +90,13 @@ struct TaxSettingsTab: View {
                 }
             }
             PropertyFact("In pounds") {
-                Text(TaxFormat.poundsPerUnit(rate)).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                Text(TaxFormat.poundsPerUnit(rate)).monospacedDigit().foregroundStyle(.secondary).figureText()
             }
             PropertyFact("Source") {
                 HStack(spacing: 6) {
                     StatusPill(pill.title, tone: pill.tone, systemImage: pill.systemImage, help: rate.notes)
                     if let fetched = rate.fetchedAt {
-                        Text("on \(DocumentFormat.day(fetched))").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text("on \(DocumentFormat.day(fetched))").font(.caption).foregroundStyle(.secondary).figureText()
                     }
                 }
             }
@@ -114,7 +114,7 @@ struct TaxSettingsTab: View {
                 PropertyFacts {
                     PropertyFact("Ownership") {
                         HStack(spacing: 6) {
-                            Text(PropertyFormat.percent(page.ownershipShareBasisPoints)).monospacedDigit().fontWeight(.semibold)
+                            Text(PropertyFormat.percent(page.ownershipShareBasisPoints)).monospacedDigit().fontWeight(.semibold).figureText()
                             Text("over the year, weighted by days owned").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
@@ -126,7 +126,7 @@ struct TaxSettingsTab: View {
                         .text("Applies to", { $0.expenseType?.displayName ?? "Every type" }),
                         DataTableColumn("Share", alignment: .trailing, width: .min(56),
                                         accessibilityValue: { PropertyFormat.percent($0.shareBasisPoints) }) { split, _ in
-                            Text(PropertyFormat.percent(split.shareBasisPoints)).monospacedDigit()
+                            Text(PropertyFormat.percent(split.shareBasisPoints)).monospacedDigit().figureText()
                         },
                         .actions { split in
                             let name = split.expenseType?.displayName ?? "every type"
@@ -168,8 +168,9 @@ struct TaxSettingsTab: View {
                     HStack(spacing: 4) {
                         Text(row.rule.displayName).lineLimit(1)
                         if row.rule == .apportionByCover {
+                            // The rule's name truncates first; the months stay whole.
                             Text("· \(row.defaultCoverMonths ?? TaxAttributionRules.defaultCoverMonths) months if the cover is unknown")
-                                .foregroundStyle(.secondary).lineLimit(1)
+                                .foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
                         }
                     }
                 },

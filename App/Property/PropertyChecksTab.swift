@@ -129,7 +129,7 @@ struct PropertyChecksTab: View {
             StatusPill("\(months.count)", tone: .warning)
         } content: {
             DataTable(columns: [
-                .text("Month", width: .min(140), { $0.item.month.start.formatted(format) }),
+                .text("Month", width: .min(140), figure: true, { $0.item.month.start.formatted(format) }),
                 .text("Tenancy", { tenancyName($0.item.tenancyId) })
             ], rows: months.map(MonthRow.init))
         }
@@ -146,7 +146,7 @@ struct PropertyChecksTab: View {
             }
         } content: {
             DataTable(columns: [
-                .text("No.", width: .fit, { $0.receiptNumber }),
+                .text("No.", width: .fit, figure: true, { $0.receiptNumber }),
                 PropertyReceiptColumns.period { ($0.periodStart, $0.periodEnd) },
                 .money("Received", role: .neutral, currency: { _ in currency }) { $0.amountReceivedMinorUnits }
             ], rows: receipts)

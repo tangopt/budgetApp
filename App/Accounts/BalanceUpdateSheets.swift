@@ -15,7 +15,7 @@ enum BalanceUpdatePreview {
         guard difference != 0 else { return "Balance already matches — nothing will be added." }
         let role = CategoryBuiltInRole.forAccount(kind: row.account.kind)
         let sign = difference > 0 ? "+" : ""
-        return "Adds a \(role.defaultName) of \(sign)\(Money.format(difference, currency: row.account.currency)) on that day."
+        return "Adds a \(role.defaultName) of \((sign + Money.format(difference, currency: row.account.currency)).unbroken) on that day."
     }
 
     /// The caution for correcting anything but an investment.

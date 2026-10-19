@@ -66,9 +66,40 @@ enum SnapshotCatalog {
             screen("rules", "main", "Rules", .rules),
             screen("categories", "main", "Categories", .categories),
             screen("uncategorized", "main", "Uncategorized", .uncategorized),
+            // A statement staged for review (read only: nothing is saved until Finish import).
+            screen("import", "review", "Import: a statement in review", .importReview, settle: 3.5) { models, context in
+                guard let account = try? context.dbQueue.read({ db in try Account.filter(Column("name") == "Everyday Current").fetchOne(db) }) else { return }
+                Task { @MainActor in
+                    await models.importReview.stagePDF(lines: demoStatementLines, config: demoStatementLayout, account: account,
+                                                       sourceFileName: "Everyday Current October.pdf")
+                }
+            },
             SnapshotRoute(name: "settings-main", title: "Settings window") { _ in AnyView(SnapshotStandaloneCanvas(content: SettingsView())) }
         ]
     }
+
+    /// An invented statement for the Import route: merchants the demo's rules match or its
+    /// history knows by the same name (so nothing asks the on-device model), a long
+    /// description, a credit and a line that doesn't parse.
+    static let demoStatementLines = [
+        "02/10/2026 GREENLEAF MARKET LONDON 63.47",
+        "03/10/2026 CITY TRANSIT ZONE 1-2 2.85",
+        "04/10/2026 BEAN THERE COFFEE KINGS CROSS 4.35",
+        "05/10/2026 STREAMFLIX 10.99",
+        "06/10/2026 CORNER GROCER 17.62",
+        "06/10/2026 CORNER GROCER 8.14",
+        "07/10/2026 IRONWORKS GYM 39.00",
+        "08/10/2026 QUICKRIDE TRIP 23.15",
+        "09/10/2026 PEBBLE MOBILE 18.00",
+        "10/10/2026 FIBRELINE BROADBAND 32.00",
+        "12/10/2026 TUNEBOX MUSIC 11.99",
+        "13/10/2026 CLOUDVAULT STORAGE 2.99",
+        "14/10/2026 ACME WIDGETS LTD SALARY 3,412.88 CR",
+        "14/10/2026 GREENLEAF MARKET WESTFIELD STRATFORD CITY BRANCH 0412 CONTACTLESS 1,204.56",
+        "Balance carried forward 4,723.86"
+    ]
+    static let demoStatementLayout = PDFLayoutConfig(regexPattern: #"^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+([\d,]+\.\d{2})(?:\s+(?:DR|CR))?$"#,
+                                                     dateFormat: "dd/MM/yyyy")
 
     static var propertyTabs: [SnapshotRoute] {
         PropertyViewModel.Tab.allCases.map { tab in

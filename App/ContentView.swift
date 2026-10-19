@@ -318,7 +318,8 @@ struct ContentView: View {
                 dashboard: dashboardViewModel, budgetGrid: budgetGridViewModel, scenarioLab: scenarioLabViewModel,
                 accounts: accountsViewModel, categories: categoriesViewModel, search: searchViewModel,
                 documents: documentsViewModel, missingEvidence: missingEvidenceViewModel, property: propertyViewModel,
-                taxYears: taxYearsViewModel, rules: rulesViewModel, uncategorized: uncategorizedViewModel))
+                taxYears: taxYearsViewModel, rules: rulesViewModel, uncategorized: uncategorizedViewModel,
+                importReview: importViewModel))
         }
         .onChange(of: importViewModel.isStaging) { _, staging in
             // Staging starts from the Dashboard's import card or the Accounts screen: follow

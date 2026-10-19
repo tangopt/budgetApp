@@ -22,7 +22,7 @@ struct NetWorthCard: View {
                     .foregroundStyle(.secondary)
             } else {
                 if let behind = series.behindBalances {
-                    Label("\(behind.accountCount) balance\(behind.accountCount == 1 ? " was" : "s were") last updated \(DashboardFormat.day(behind.oldestSnapshotDate)), so the forecast restarts from \(behind.accountCount == 1 ? "it" : "them"). Update balances to correct it.", systemImage: "exclamationmark.triangle.fill")
+                    Label("\(behind.accountCount) balance\(behind.accountCount == 1 ? " was" : "s were") last updated \(DashboardFormat.day(behind.oldestSnapshotDate).unbroken), so the forecast restarts from \(behind.accountCount == 1 ? "it" : "them"). Update balances to correct it.", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
@@ -72,9 +72,10 @@ struct NetWorthCard: View {
     private func statBlock(title: String, value: String, detail: String?, large: Bool) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption).foregroundStyle(.secondary)
+                .figureText(.shrink(minimumScale: 0.8))
             Text(value).font(large ? .title2.bold() : .headline).monospacedDigit()
-                .lineLimit(1).minimumScaleFactor(0.7)
-            if let detail { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8) }
+                .figureText(.shrink())
+            if let detail { Text(detail).font(.caption).foregroundStyle(.secondary).figureText(.shrink(minimumScale: 0.8)) }
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)

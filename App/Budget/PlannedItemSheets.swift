@@ -52,10 +52,10 @@ enum PlanFormat {
     /// from Feb 2026", "£45.00 every 2 weeks from Nov 2026 until Oct 2027", "£1,000.00
     /// one-off on 20 Dec 2026". Dates are UTC days.
     static func series(_ entry: ForecastEntry) -> String {
-        let amount = Money.format(abs(entry.amountMinorUnits), currency: .gbp)
-        if entry.frequency == .once { return "\(amount) one-off on \(shortDayMonthYear.string(from: entry.startDate))" }
-        var line = "\(amount) \(frequency(entry.frequency, interval: entry.interval).lowercased()) from \(shortMonthYear.string(from: entry.startDate))"
-        if let end = entry.endDate { line += " until \(shortMonthYear.string(from: end))" }
+        let amount = Money.format(abs(entry.amountMinorUnits), currency: .gbp).unbroken
+        if entry.frequency == .once { return "\(amount) one-off on \(shortDayMonthYear.string(from: entry.startDate).unbroken)" }
+        var line = "\(amount) \(frequency(entry.frequency, interval: entry.interval).lowercased()) from \(shortMonthYear.string(from: entry.startDate).unbroken)"
+        if let end = entry.endDate { line += " until \(shortMonthYear.string(from: end).unbroken)" }
         return line
     }
 
@@ -284,7 +284,7 @@ struct PlannedOccurrencesSection: View {
                 if compact {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(alignment: .firstTextBaseline) {
-                            Text(PayMonthFormat.longDay(row.occurrence.date))
+                            Text(PayMonthFormat.longDay(row.occurrence.date)).figureText()
                             Spacer()
                             MoneyText(minorUnits: row.occurrence.amountMinorUnits)
                         }
@@ -308,9 +308,10 @@ struct PlannedOccurrencesSection: View {
                 } else {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(PayMonthFormat.longDay(row.occurrence.date))
+                            Text(PayMonthFormat.longDay(row.occurrence.date)).figureText()
                             Text(caption(row))
                                 .font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                         Spacer()
                         MoneyText(minorUnits: row.occurrence.amountMinorUnits)
@@ -340,6 +341,8 @@ struct PlannedOccurrencesSection: View {
             .font(.caption)
             .italic(!row.isConfirmed)
             .foregroundStyle(row.isConfirmed ? Color.secondary : theme.pending)
+            .lineLimit(1)
+            .fixedSize()
     }
 }
 
@@ -643,6 +646,7 @@ struct AddPlannedItemSheet: View {
                     LabeledContent("Already planned") {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(alreadyPlanned) { entry in
+                                // Wraps as a sentence; each figure in it stays whole.
                                 Text(PlanFormat.series(entry)).font(.callout)
                             }
                             SheetCaption("This adds to what's already planned. To change an existing item, edit it from the grid.")
@@ -706,6 +710,7 @@ struct IntervalStepper: View {
         HStack {
             Text("\(interval) \(PlanFormat.unit(frequency, interval: interval))")
                 .monospacedDigit()
+                .figureText()
             Stepper("Every", value: $interval, in: 1...12)
                 .labelsHidden()
         }

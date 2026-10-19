@@ -475,10 +475,12 @@ struct CategoriesView: View {
             .padding(.leading, 22)
     }
 
+    /// The name truncates; the count after it never does.
     private func countedName(_ name: String, count: Int) -> some View {
-        let suffix = Text(" · \(count)").foregroundStyle(.secondary)
-        return Text("\(Text(name).fontWeight(.semibold))\(suffix)")
-            .lineLimit(1)
+        HStack(spacing: 0) {
+            Text(name).fontWeight(.semibold).lineLimit(1)
+            Text(" · \(count)").foregroundStyle(.secondary).figureText()
+        }
     }
 
     /// A group row: name · count and its ⋯ menu (shown on hover or selection); a drop target.

@@ -62,12 +62,14 @@ struct YearAtAGlanceChart: View {
                     }
             }
         }
+        // Charts lay their labels out apart from the scroll view: no clip check on them.
+        .wrapProbeInChart()
         .chartXSelection(value: $selectedMonth)
         .chartYAxis {
             AxisMarks(position: .leading) { value in
                 AxisGridLine()
                 AxisValueLabel {
-                    if let pounds = value.as(Double.self) { Text(DashboardFormat.axisThousands(pounds)) }
+                    if let pounds = value.as(Double.self) { Text(DashboardFormat.axisThousands(pounds)).figureText() }
                 }
             }
         }
@@ -79,15 +81,14 @@ struct YearAtAGlanceChart: View {
     /// current month shows both halves of its bars.
     private func detail(_ flow: MonthlyFlow) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(name(flow)).font(.caption2).foregroundStyle(.secondary)
+            Text(name(flow)).font(.caption2).foregroundStyle(.secondary).figureText()
             line("Income", total: flow.incomeTotal, actual: flow.incomeActual, remaining: flow.incomeRemaining)
             line("Expenses", total: flow.expenseTotal, actual: flow.expenseActual, remaining: flow.expenseRemaining)
             if flow.reservedRemaining > 0 {
-                Text("of which reserved \(DashboardFormat.pounds(flow.reservedRemaining))").font(.caption2).foregroundStyle(.secondary)
+                Text("of which reserved \(DashboardFormat.pounds(flow.reservedRemaining))").font(.caption2).foregroundStyle(.secondary).figureText()
             }
-            Text("Net \(DashboardFormat.pounds(flow.net))").font(.caption.bold())
+            Text("Net \(DashboardFormat.pounds(flow.net))").font(.caption.bold()).figureText()
         }
-        .lineLimit(1)
         .fixedSize()
         .padding(4)
         .background(RoundedRectangle(cornerRadius: 6).fill(theme.windowFill))
@@ -95,9 +96,9 @@ struct YearAtAGlanceChart: View {
 
     @ViewBuilder
     private func line(_ title: String, total: Int, actual: Int, remaining: Int) -> some View {
-        Text("\(title) \(DashboardFormat.pounds(total))").font(.caption)
+        Text("\(title) \(DashboardFormat.pounds(total))").font(.caption).figureText()
         if remaining > 0 && actual > 0 {
-            Text("actual \(DashboardFormat.pounds(actual)) · expected \(DashboardFormat.pounds(remaining))").font(.caption2).foregroundStyle(.secondary)
+            Text("actual \(DashboardFormat.pounds(actual)) · expected \(DashboardFormat.pounds(remaining))").font(.caption2).foregroundStyle(.secondary).figureText()
         } else if remaining > 0 {
             Text("expected").font(.caption2).foregroundStyle(.secondary)
         }

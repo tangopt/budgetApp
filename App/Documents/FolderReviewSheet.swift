@@ -229,13 +229,19 @@ struct FolderReviewSheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 if let progress, progress.phase == .reading, progress.total > 0 {
                     ProgressView(value: Double(progress.completed), total: Double(progress.total))
-                    Text("Reading \(progress.completed) of \(progress.total)\(progress.currentPath.map { " · \($0)" } ?? "")")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
+                    // The count stays whole; the file's path truncates.
+                    HStack(spacing: 0) {
+                        Text("Reading \(progress.completed) of \(progress.total)").figureText()
+                        if let path = progress.currentPath {
+                            Text(" · \(path)").lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
                 } else {
                     ProgressView().progressViewStyle(.linear)
                     Text(progress.map { "Listing files… \($0.completed)" } ?? "Listing files…")
                         .font(.caption).foregroundStyle(.secondary)
+                        .figureText()
                 }
                 Text("New files are read to propose their kind, date, amount and transaction. Nothing in the folder is changed.")
                     .font(.callout).foregroundStyle(.secondary)
@@ -289,6 +295,7 @@ struct FolderReviewSheet: View {
                             Spacer()
                             Text("Last seen \(file.lastSeenAt.formatted(date: .abbreviated, time: .omitted))")
                                 .font(.caption).foregroundStyle(.secondary)
+                                .figureText()
                         }
                         .help(file.documentId == nil ? "Not in the library" : "Its library copy is kept")
                     }
@@ -310,9 +317,9 @@ struct FolderReviewSheet: View {
                 .accessibilityLabel("Add \(file.relativePath)")
             VStack(alignment: .leading, spacing: 3) {
                 Text(file.relativePath).lineLimit(1).truncationMode(.middle).help(file.relativePath)
-                Text(DocumentFormat.caption(kind: metadata?.kind ?? .other, date: metadata?.docDate,
-                                            amountMinorUnits: metadata?.amountMinorUnits, currency: metadata?.currency)
-                     + (file.analysis?.textStatus == .image ? " · image only" : ""))
+                Text((DocumentFormat.caption(kind: metadata?.kind ?? .other, date: metadata?.docDate,
+                                             amountMinorUnits: metadata?.amountMinorUnits, currency: metadata?.currency)
+                      + (file.analysis?.textStatus == .image ? " · image only" : "")).figuresUnbroken)
                     .font(.caption).foregroundStyle(.secondary)
                 linkChoice(item)
             }
@@ -365,9 +372,9 @@ struct FolderReviewSheet: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(file.relativePath).lineLimit(1).truncationMode(.middle).help(file.relativePath)
                 Text("Before: " + (file.previousDocumentId.flatMap { model.previousNames[$0] } ?? "not in the library")
-                     + (file.changeDetectedAt.map { " · change noticed \($0.formatted(date: .abbreviated, time: .omitted))" } ?? ""))
+                     + (file.changeDetectedAt.map { " · change noticed \($0.formatted(date: .abbreviated, time: .omitted).unbroken)" } ?? ""))
                     .font(.caption).foregroundStyle(.secondary)
-                Text("Now: \(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file)), modified \(file.modifiedAt.formatted(date: .abbreviated, time: .shortened))"
+                Text("Now: \(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file).unbroken), modified \(file.modifiedAt.formatted(date: .abbreviated, time: .shortened).unbroken)"
                      + (file.documentId != nil ? " · already in the library" : ""))
                     .font(.caption).foregroundStyle(.secondary)
             }

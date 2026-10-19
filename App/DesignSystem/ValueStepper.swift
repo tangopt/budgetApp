@@ -23,6 +23,7 @@ struct ValueStepper: View {
         HStack(spacing: 6) {
             Text(text(value))
                 .monospacedDigit()
+                .figureText()
                 .frame(minWidth: 70, alignment: .leading)
             Stepper(title, value: $value, in: range)
                 .labelsHidden()

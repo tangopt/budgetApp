@@ -200,11 +200,15 @@ struct TransactionDocumentsSection: View {
                     .lineLimit(1).truncationMode(.middle)
                     .strikethrough(unlinking)
                     .foregroundStyle(unlinking ? .secondary : .primary)
-                Text(unlinking ? "Will be unlinked on Save" : linking ? "Will be linked on Save"
-                     : DocumentFormat.caption(kind: document.kind, date: document.docDate,
-                                              amountMinorUnits: document.amountMinorUnits, currency: document.currency))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    .italic(unlinking || linking)
+                Group {
+                    if unlinking || linking {
+                        Text(unlinking ? "Will be unlinked on Save" : "Will be linked on Save").italic().lineLimit(1)
+                    } else {
+                        DocumentCaptionLine(kind: document.kind, date: document.docDate,
+                                            amountMinorUnits: document.amountMinorUnits, currency: document.currency)
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary)
             }
             .help(document.displayName)
             Spacer(minLength: 6)

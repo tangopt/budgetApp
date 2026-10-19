@@ -271,6 +271,7 @@ struct PropertyTenanciesTab: View {
                     .monospacedDigit()
                     .fontWeight(kind == .total ? .semibold : .regular)
                     .foregroundStyle(line.isCancelled ? Color.secondary : Color.primary)
+                    .figureText()
             },
             PropertyReceiptColumns.period { $0.row.map { ($0.receipt.periodStart, $0.receipt.periodEnd) } },
             .date("Received on") { $0.row?.receipt.receiptDate },
@@ -338,6 +339,7 @@ struct PropertyTenanciesTab: View {
                     if info.payment.otherMinorUnits > 0 {
                         Text("incl. \(Money.format(info.payment.otherMinorUnits, currency: viewModel.currency)) other")
                             .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                            .figureText()
                             .help("The part of the credit that isn't rent (utility recharges and the like)")
                     }
                 }

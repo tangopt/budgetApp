@@ -94,21 +94,26 @@ struct DocumentInspector: View {
                     metaRow("From", source)
                 }
                 // When it was added, on this Mac's calendar (a moment, not a stored day).
-                metaRow("Added", document.addedAt.formatted(date: .abbreviated, time: .omitted))
-                metaRow("Size", size)
+                metaRow("Added", document.addedAt.formatted(date: .abbreviated, time: .omitted), isFigure: true)
+                metaRow("Size", size, isFigure: true)
             }
             .font(.caption)
         }
     }
 
-    private func metaRow(_ label: String, _ value: String) -> some View {
+    /// A label and its value; a figure (a day, a size) on one line, a name in up to two.
+    private func metaRow(_ label: String, _ value: String, isFigure: Bool = false) -> some View {
         GridRow {
             Text(label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-            Text(value)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-                .help(value)
+            if isFigure {
+                Text(value).textSelection(.enabled).figureText()
+            } else {
+                Text(value)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .help(value)
+            }
         }
     }
 

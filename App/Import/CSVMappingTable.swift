@@ -40,6 +40,7 @@ struct CSVMappingTable: View {
                 }
             }
             .padding(.bottom, 8)
+            .wrapProbeScrollsHorizontally()
         }
         .scrollIndicators(.visible)
     }

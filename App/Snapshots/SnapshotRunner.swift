@@ -6,11 +6,12 @@ import GRDB
 
 #if SNAPSHOTS
 /// `Budget --render-snapshots <outDir> [--only a,b] [--themes classic,midnight] [--appearances light,dark]
-///  [--scale 1] [--settle 1.6] [--as-of YYYY-MM-DD] [--size 1440x900]`
+///  [--looks light-classic,dark-midnight] [--scale 1] [--settle 1.6] [--as-of YYYY-MM-DD] [--size 1440x900]`
 ///
 /// Renders every route of `SnapshotCatalog` (each sidebar screen and tab, the main sheets) in an
 /// off-screen window, in each appearance and theme, to
-/// `<outDir>/<screen>-<tab>-<appearance>-<theme>.png` plus `index.html`, then exits. It opens
+/// `<outDir>/<screen>-<tab>-<appearance>-<theme>.png` plus `index.html` and the wrap probe's
+/// `wrap-report.txt` (`WrapProbe`: figures that wrap, truncate or are cut off), then exits. It opens
 /// only a demo database: `BUDGET_DB_PATH` must be an absolute path to an existing file outside
 /// the app's data folders that carries the demo id (`DemoMarker`). It never shows a window,
 /// takes focus, appears in the Dock or touches the network.
@@ -24,6 +25,9 @@ enum SnapshotRunner {
         /// Seconds a route gets to load before its first capture.
         var settle: Double = 1.6
         var size = NSSize(width: 1440, height: 900)
+        /// Appearance–theme pairs to capture instead of every appearance in every theme
+        /// (`--looks light-classic,dark-midnight`).
+        var looks: [(appearance: String, theme: String)]?
     }
 
     @MainActor
@@ -75,7 +79,7 @@ enum SnapshotRunner {
     static func parseOptions() -> Options {
         var arguments = Array(CommandLine.arguments.dropFirst())
         guard let index = arguments.firstIndex(of: SnapshotMode.argument), index + 1 < arguments.count else {
-            fail("usage: --render-snapshots <outDir> [--only a,b] [--themes ids] [--appearances light,dark] [--scale n] [--as-of YYYY-MM-DD] [--size WxH]", code: 2)
+            fail("usage: --render-snapshots <outDir> [--only a,b] [--themes ids] [--appearances light,dark] [--looks light-classic,dark-midnight] [--scale n] [--as-of YYYY-MM-DD] [--size WxH]", code: 2)
         }
         let outPath = arguments[index + 1]
         guard outPath.hasPrefix("/") else { fail("the output folder must be an absolute path", code: 2) }
@@ -95,6 +99,14 @@ enum SnapshotRunner {
             case "--settle": options.settle = Double(value) ?? options.settle
             case "--as-of":
                 guard SnapshotMode.asOf != nil else { fail("--as-of takes YYYY-MM-DD", code: 2) }
+            case "--looks":
+                let pairs = list(value).map { $0.split(separator: "-", maxSplits: 1).map(String.init) }
+                guard !pairs.isEmpty, pairs.allSatisfy({ $0.count == 2 && ["light", "dark"].contains($0[0]) }) else {
+                    fail("--looks takes appearance-theme pairs, e.g. light-classic,dark-midnight", code: 2)
+                }
+                options.looks = pairs.map { ($0[0], $0[1]) }
+                options.appearances = Array(Set(pairs.map { $0[0] })).sorted { $0 == "light" && $1 != "light" }
+                options.themes = pairs.map { $0[1] }.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
             case "--size":
                 let parts = value.lowercased().split(separator: "x").compactMap { Double($0) }
                 guard parts.count == 2, parts[0] >= 800, parts[1] >= 500 else { fail("--size takes WxH, at least 800x500", code: 2) }
@@ -161,6 +173,9 @@ final class SnapshotSession {
     let hostState = SnapshotHostState()
     private var window: SnapshotWindow!
     private var written: [(route: SnapshotRoute, files: [String])] = []
+    /// The wrap probe's findings (`WrapProbe`), and each route's content minimum.
+    private var violations: [WrapProbe.Violation] = []
+    private var minimums: [(name: String, minimum: CGSize, rendered: CGSize, checked: Int)] = []
 
     init(options: SnapshotRunner.Options) {
         self.options = options
@@ -171,6 +186,9 @@ final class SnapshotSession {
         let environment = try await AppEnvironment.load()
         let context = SnapshotContext(environment: environment, settleSeconds: options.settle)
         let themes = options.themes.map(Theme.named)
+        // Each appearance in each theme, or just the pairs `--looks` names.
+        let looks: [(String, Theme)] = options.looks.map { $0.map { ($0.appearance, Theme.named($0.theme)) } }
+            ?? options.appearances.flatMap { appearance in themes.map { (appearance, $0) } }
         let routes = SnapshotCatalog.routes.filter { route in
             options.only.isEmpty || options.only.contains { route.name.contains($0) }
         }
@@ -185,39 +203,53 @@ final class SnapshotSession {
                 continue
             }
             // A fresh window per route, so no toolbar or title state carries over.
+            WrapProbe.shared.reset()
             window = SnapshotWindow.make()
-            window.setAppearance(options.appearances.first == "dark" ? .darkAqua : .aqua)
-            hostState.theme = themes.first ?? .classic
+            window.setAppearance(looks.first?.0 == "dark" ? .darkAqua : .aqua)
+            hostState.theme = looks.first?.1 ?? .classic
             window.mount(SnapshotHost(state: hostState, content: content))
             await context.settle(route.settleFactor)
             // A warm-up pass: some views (chart axes) finish laying out on their second display.
             _ = SnapshotCapture.png(of: window, scale: 1)
             await context.settle(0.2)
             var files: [String] = []
-            for appearance in options.appearances {
-                window.setAppearance(appearance == "dark" ? .darkAqua : .aqua)
-                for theme in themes {
-                    hostState.theme = theme
-                    await context.settle(0.25)
-                    let name = "\(route.name)-\(appearance)-\(theme.id).png"
-                    if let data = SnapshotCapture.png(of: window, scale: options.scale) {
-                        try data.write(to: options.outDir.appendingPathComponent(name))
-                        files.append(name)
-                    } else {
-                        print("  \(name): capture failed")
-                    }
+            var found = Set<WrapProbe.Violation>()
+            var shownAppearance: String?
+            var checked = 0
+            for (appearance, theme) in looks {
+                if appearance != shownAppearance {
+                    window.setAppearance(appearance == "dark" ? .darkAqua : .aqua)
+                    shownAppearance = appearance
                 }
+                hostState.theme = theme
+                await context.settle(0.25)
+                let name = "\(route.name)-\(appearance)-\(theme.id).png"
+                if let data = SnapshotCapture.png(of: window, scale: options.scale) {
+                    try data.write(to: options.outDir.appendingPathComponent(name))
+                    files.append(name)
+                } else {
+                    print("  \(name): capture failed")
+                }
+                // What the capture showed (it laid the window out).
+                found.formUnion(WrapProbe.shared.violations(route: route.name, window: window.contentLayoutSize))
+                checked = max(checked, WrapProbe.shared.checkedCount)
             }
+            violations += found
+            minimums.append((route.name, window.contentMinSize, window.contentLayoutSize, checked))
             window.unmount()
             window.orderOut(nil)
             window.close()
             written.append((route, files))
-            print(String(format: "  %@ (%.1fs)", route.name, Date().timeIntervalSince(started)))
+            print(String(format: "  %@ (%.1fs)", route.name, Date().timeIntervalSince(started)) + (found.isEmpty ? "" : " — \(found.count) wrap probe violation\(found.count == 1 ? "" : "s")"))
         }
+        WrapProbe.shared.reset()
         try SnapshotIndex.html(written.map { ($0.route.name, $0.route.title, $0.files) }, appearances: options.appearances,
                                themes: themes.map(\.id))
             .write(to: options.outDir.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let report = WrapProbe.report(violations, routes: minimums, options: options)
+        try report.write(to: options.outDir.appendingPathComponent("wrap-report.txt"), atomically: true, encoding: .utf8)
         print("Wrote \(written.reduce(0) { $0 + $1.files.count }) PNGs and index.html")
+        print(report.split(separator: "\n", omittingEmptySubsequences: false).prefix(2).joined(separator: "\n") + " — wrap-report.txt")
     }
 }
 
@@ -228,7 +260,8 @@ final class SnapshotHostState: ObservableObject {
 }
 
 /// A route's view with the theme (as `ThemedRoot` would inject it) and the harness's own
-/// defaults store.
+/// defaults store. It fills the window, which (like the app's) is never smaller than the
+/// view's minimum (`SnapshotWindow.mount`).
 struct SnapshotHost: View {
     @ObservedObject var state: SnapshotHostState
     let content: AnyView
@@ -238,7 +271,6 @@ struct SnapshotHost: View {
             .environment(\.theme, state.theme)
             .tint(state.theme.usesSystemAccent ? nil : state.theme.accent)
             .defaultAppStorage(SnapshotMode.defaults)
-            .frame(width: SnapshotWindow.size.width, height: SnapshotWindow.size.height)
     }
 }
 

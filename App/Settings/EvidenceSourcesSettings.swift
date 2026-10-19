@@ -209,16 +209,21 @@ private struct EvidenceSourcesList: View {
         VStack(alignment: .leading, spacing: 2) {
             if let progress, progress.phase == .reading, progress.total > 0 {
                 ProgressView(value: Double(progress.completed), total: Double(progress.total))
-                Text("Reading \(progress.completed) of \(progress.total)\(progress.currentPath.map { " · \($0)" } ?? "")")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                // The count stays whole; the file's path truncates.
+                HStack(spacing: 0) {
+                    Text("Reading \(progress.completed) of \(progress.total)").figureText()
+                    if let path = progress.currentPath {
+                        Text(" · \(path)").lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             } else {
                 ProgressView().progressViewStyle(.linear)
                 Text(progress.map { "Listing files… \($0.completed)" } ?? "Listing files…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .figureText()
             }
         }
         .frame(maxWidth: 360)
@@ -239,7 +244,8 @@ private struct EvidenceSourcesList: View {
             if !result.notDownloaded.isEmpty { parts.append("\(result.notDownloaded.count) not downloaded") }
             if !result.unreadable.isEmpty { parts.append("\(result.unreadable.count) unreadable") }
         }
-        return parts.joined(separator: " · ")
+        // Wraps between its figures, never inside one.
+        return parts.map(\.unbroken).joined(separator: " · ")
     }
 
     private static func count(_ value: Int, _ noun: String) -> String {

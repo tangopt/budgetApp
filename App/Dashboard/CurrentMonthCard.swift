@@ -17,7 +17,7 @@ struct CurrentMonthCard: View {
     private var hasActuals: Bool { month.hasTransactions }
 
     var body: some View {
-        DashboardCard(title: "\(PayMonthFormat.monthName(payMonth)) · \(PayMonthFormat.range((month.start, month.end))) · day \(month.dayOfMonth) of \(month.daysInMonth)", linkTitle: "Budget", onLink: { navigate(.budgetGrid) }) {
+        DashboardCard(title: "\(PayMonthFormat.monthName(payMonth)) · \(PayMonthFormat.range((month.start, month.end)).unbroken) · \("day \(month.dayOfMonth) of \(month.daysInMonth)".unbroken)", linkTitle: "Budget", onLink: { navigate(.budgetGrid) }) {
             if !hasActuals {
                 Text("No \(monthName) transactions imported yet. Showing expected only.")
                     .font(.caption)
@@ -32,7 +32,7 @@ struct CurrentMonthCard: View {
                     Text("of which reserved").font(.caption)
                     Spacer()
                     Text(DashboardFormat.pounds(month.reservedProjected)).font(.caption).monospacedDigit()
-                        .lineLimit(1).fixedSize()
+                        .figureText()
                 }
                 .foregroundStyle(.secondary)
                 .help("Allowance for expected but uncategorised spending (the Budget grid’s reserves). Counted in full every month.")
@@ -42,12 +42,12 @@ struct CurrentMonthCard: View {
                     Text("Net").font(.callout.bold())
                     Spacer()
                     Text("Projected month-end \(DashboardFormat.pounds(month.net.projected))").font(.callout).monospacedDigit()
-                        .lineLimit(1).fixedSize()
+                        .figureText()
                 }
                 if hasActuals {
                     Text("So far \(DashboardFormat.pounds(month.net.actual)) · expected \(DashboardFormat.pounds(month.net.expected))")
                         .font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1).minimumScaleFactor(0.8)
+                        .figureText(.shrink(minimumScale: 0.8))
                 }
             }
             if month.unreviewedCount > 0 {
@@ -73,13 +73,12 @@ struct CurrentMonthCard: View {
                 Spacer()
                 Group {
                     if hasActuals {
-                        Text("\(DashboardFormat.pounds(totals.actual)) of \(DashboardFormat.pounds(totals.expected))")
+                        Text("\(DashboardFormat.pounds(totals.actual)) of \(DashboardFormat.pounds(totals.expected))").figureText()
                     } else {
-                        Text("expected \(DashboardFormat.pounds(totals.expected))")
+                        Text("expected \(DashboardFormat.pounds(totals.expected))").figureText()
                     }
                 }
                 .font(.callout).monospacedDigit()
-                .lineLimit(1).fixedSize()
             }
             if hasActuals {
                 PaceMeter(fraction: totals.expected > 0 ? Double(totals.actual) / Double(totals.expected) : (totals.actual > 0 ? 1 : 0), pace: pace, tint: tint)
@@ -87,13 +86,13 @@ struct CurrentMonthCard: View {
             Text("Projected month-end \(DashboardFormat.pounds(totals.projected))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(1).minimumScaleFactor(0.8)
+                .figureText(.shrink(minimumScale: 0.8))
         }
     }
 
     private var unreviewedFootnote: String {
-        var text = "\(month.unreviewedCount) unreviewed transaction\(month.unreviewedCount == 1 ? "" : "s") (\(DashboardFormat.pounds(month.unreviewedOutflowMinorUnits)) out) aren't included."
-        if month.reservedProjected > 0 { text += " Your reserves (\(DashboardFormat.pounds(month.reservedProjected)) this month) stand in for unplanned spending." }
+        var text = "\(month.unreviewedCount) unreviewed transaction\(month.unreviewedCount == 1 ? "" : "s") (\(DashboardFormat.pounds(month.unreviewedOutflowMinorUnits).unbroken) out) aren't included."
+        if month.reservedProjected > 0 { text += " Your reserves (\(DashboardFormat.pounds(month.reservedProjected).unbroken) this month) stand in for unplanned spending." }
         return text
     }
 }

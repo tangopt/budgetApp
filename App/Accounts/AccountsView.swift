@@ -197,6 +197,7 @@ struct AccountsView: View {
             Text(overview.asOf.map { "Net worth · as of \(DashboardFormat.day($0))" } ?? "Net worth")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .figureText()
             MoneyText(minorUnits: overview.netWorthGBP, font: .largeTitle.bold().monospacedDigit(), tint: .primary)
             if let change = overview.changeVsPreviousMonthGBP {
                 HStack(spacing: 4) {
@@ -204,7 +205,7 @@ struct AccountsView: View {
                         Text("No change vs previous month")
                     } else {
                         Text(change > 0 ? "↑" : "↓")
-                        Text("\(Money.format(abs(change), currency: .gbp)) vs previous month")
+                        Text("\(Money.format(abs(change), currency: .gbp)) vs previous month").figureText()
                     }
                 }
                 .font(.callout)
@@ -220,7 +221,7 @@ struct AccountsView: View {
     @ViewBuilder
     private func banners(_ overview: AccountsOverview) -> some View {
         if overview.staleCount > 0 {
-            let since = overview.oldestStaleDate.map { " since \(DashboardFormat.day($0))" } ?? ""
+            let since = overview.oldestStaleDate.map { " since \(DashboardFormat.day($0).unbroken)" } ?? ""
             Banner(systemImage: "exclamationmark.triangle.fill", tint: .orange) {
                 Text("\(overview.staleCount) balance\(overview.staleCount == 1 ? "" : "s") not updated\(since) — import a statement or update them.")
             }
@@ -257,6 +258,7 @@ struct AccountsView: View {
         return Text("EUR rate \(formattedRate) · updated \(DashboardFormat.day(rate.updatedAt))")
             .font(.caption)
             .foregroundStyle(.secondary)
+            .figureText()
     }
 
     private var emptyState: some View {
@@ -383,6 +385,7 @@ private struct AccountsListView: View {
                 }
             }
         }
+        .wrapProbeClips()
         .listStyle(.inset(alternatesRowBackgrounds: false))
     }
 }
@@ -405,8 +408,14 @@ private struct AccountListRow: View {
                     Text(row.account.displayName).lineLimit(1)
                     flags
                 }
-                Text(caption)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                // The nickname's account name truncates; the import date never does.
+                HStack(spacing: 0) {
+                    if row.account.displayName != row.account.name {
+                        Text("\(row.account.name) · ").lineLimit(1)
+                    }
+                    Text(importedCaption).figureText()
+                }
+                .font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 1) {
@@ -426,11 +435,6 @@ private struct AccountListRow: View {
         }
         .font(.body.monospacedDigit())
         .padding(.vertical, 2)
-    }
-
-    /// "Account name · Imported up to 12 Oct" with a nickname; else just the import date.
-    private var caption: String {
-        row.account.displayName != row.account.name ? "\(row.account.name) · \(importedCaption)" : importedCaption
     }
 
     /// Stale and mismatch flags, then the Main account and Not in net worth pills.
@@ -489,7 +493,7 @@ private struct AccountBankDetails: View {
                     ForEach(lines, id: \.label) { line in
                         GridRow {
                             Text(line.label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                            Text(line.shown).font(.body.monospacedDigit()).textSelection(.enabled)
+                            Text(line.shown).font(.body.monospacedDigit()).textSelection(.enabled).figureText()
                             Button {
                                 Self.copy(line.copied)
                             } label: {
@@ -561,6 +565,7 @@ private struct AccountDetailView: View {
                         Text(importedThrough.map { "Imported up to \(DashboardFormat.day($0))" } ?? "Not imported yet")
                             .font(.callout)
                             .foregroundStyle(.secondary)
+                            .figureText()
                     }
                     if let mismatch = AccountsFormat.statementMismatch(row.account) {
                         Label(mismatch, systemImage: "exclamationmark.triangle.fill")
@@ -620,7 +625,7 @@ private struct AccountDetailView: View {
     private func updatedLine(_ row: AccountRow) -> some View {
         Group {
             if let date = row.lastUpdated {
-                Text("Updated \(DashboardFormat.day(date)) · \(AccountsFormat.age(of: date))")
+                Text("Updated \(DashboardFormat.day(date)) · \(AccountsFormat.age(of: date))").figureText()
             } else {
                 Text("No balance recorded yet")
             }
@@ -646,6 +651,8 @@ private struct AccountDetailView: View {
                         .foregroundStyle(Color.secondary.opacity(0.5))
                 }
             }
+            // Charts lay their labels out apart from the scroll view: no clip check on them.
+            .wrapProbeInChart()
             .chartXAxis(.hidden)
             .chartYAxis(.hidden)
             .chartOverlay { proxy in
@@ -668,7 +675,7 @@ private struct AccountDetailView: View {
 
     private func readoutBox(_ row: AccountRow, date: Date, minorUnits: Int) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(DashboardFormat.day(date)).font(.caption2).foregroundStyle(.secondary)
+            Text(DashboardFormat.day(date)).font(.caption2).foregroundStyle(.secondary).figureText()
             HStack(spacing: 4) {
                 Circle().fill(theme.series(0)).frame(width: 6, height: 6)
                 Text(row.account.displayName).font(.caption2).lineLimit(1)
@@ -693,7 +700,7 @@ private struct AccountDetailView: View {
             ForEach(visible) { entry in
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(DashboardFormat.day(entry.date))
+                        Text(DashboardFormat.day(entry.date)).figureText()
                         Text(Self.label(entry)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                     }
                     Spacer()
@@ -702,7 +709,7 @@ private struct AccountDetailView: View {
                         AccountsFormat.balanceText(entry.amountMinorUnits, kind: row.account.kind, currency: row.account.currency)
                     case .adjustment:
                         Text(AccountsFormat.signedMoney(entry.amountMinorUnits, currency: row.account.currency))
-                            .lineLimit(1).fixedSize()
+                            .figureText()
                             .foregroundStyle(entry.amountMinorUnits < 0 ? theme.expense : Color.primary)
                     }
                 }
@@ -772,7 +779,7 @@ enum AccountsFormat {
     /// account has none (spec 2026-10-14 §2).
     static func statementMismatch(_ account: Account) -> String? {
         guard let difference = account.statementMismatchMinorUnits, let date = account.statementMismatchDate else { return nil }
-        return "Statement mismatch on \(DashboardFormat.day(date)): \(signedMoney(difference, currency: account.currency))"
+        return "Statement mismatch on \(DashboardFormat.day(date).unbroken): \(signedMoney(difference, currency: account.currency).unbroken)"
     }
 
     /// "+£12.00" / "-£12.00" / "£0.00".

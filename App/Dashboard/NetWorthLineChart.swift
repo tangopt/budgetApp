@@ -60,16 +60,16 @@ struct NetWorthLineChart: View {
                     .foregroundStyle(Color.secondary.opacity(0.5))
                     .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
                         VStack(spacing: 0) {
-                            Text(DashboardFormat.monthYear(selected.date)).font(.caption2).foregroundStyle(.secondary)
-                            Text(DashboardFormat.pounds(Int(selected.pounds * 100))).font(.caption.bold())
+                            Text(DashboardFormat.monthYear(selected.date)).font(.caption2).foregroundStyle(.secondary).figureText()
+                            Text(DashboardFormat.pounds(Int(selected.pounds * 100))).font(.caption.bold()).figureText()
                         }
-                        .lineLimit(1)
-                        .fixedSize()
                         .padding(4)
                         .background(RoundedRectangle(cornerRadius: 6).fill(theme.windowFill))
                     }
             }
         }
+        // Charts lay their labels out apart from the scroll view: no clip check on them.
+        .wrapProbeInChart()
         .chartXSelection(value: $selectedDate)
         .chartXAxis {
             AxisMarks(values: .stride(by: .year)) { _ in
@@ -81,7 +81,7 @@ struct NetWorthLineChart: View {
             AxisMarks(position: .leading) { value in
                 AxisGridLine()
                 AxisValueLabel {
-                    if let pounds = value.as(Double.self) { Text(DashboardFormat.axisThousands(pounds)) }
+                    if let pounds = value.as(Double.self) { Text(DashboardFormat.axisThousands(pounds)).figureText() }
                 }
             }
         }

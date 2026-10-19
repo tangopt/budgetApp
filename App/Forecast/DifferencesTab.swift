@@ -92,7 +92,7 @@ struct DifferencesTab: View {
                     .disabled(viewModel.tickedDifferenceIds.isEmpty)
                     .keyboardShortcut(.defaultAction)
             }
-            Text("Tick one version per item. Applied changes start from the current pay month (\(PayMonthFormat.name(viewModel.payCalendar.current))) and become ordinary planned items in the budget.")
+            Text("Tick one version per item. Applied changes start from the current pay month (\(PayMonthFormat.name(viewModel.payCalendar.current).unbroken)) and become ordinary planned items in the budget.")
                 .font(.caption).foregroundStyle(.secondary)
             if viewModel.differenceRows.isEmpty {
                 Text("No differences: the ticked scenarios match their copies of the budget. Change them in the Grid tab.")
@@ -119,6 +119,7 @@ struct DifferencesTab: View {
                     headerRow
                 }
             }
+            .wrapProbeScrollsHorizontally()
         }
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25), lineWidth: 1))
     }
@@ -162,7 +163,8 @@ struct DifferencesTab: View {
             }
             .padding(8)
             .frame(width: Self.categoryWidth, alignment: .topLeading)
-            Text(row.budgetSummary ?? "—")
+            // Summaries wrap in their column, each figure in them whole.
+            Text(row.budgetSummary?.figuresUnbroken ?? "—")
                 .foregroundStyle(row.budgetSummary == nil ? .tertiary : .primary)
                 .padding(8)
                 .frame(width: Self.budgetWidth, alignment: .topLeading)
@@ -186,7 +188,7 @@ struct DifferencesTab: View {
             differenceCell(difference, row: row, scenario: scenario)
         } else if !row.isAdded, let sourceId = row.cells.values.first?.sourceEntryId,
                   let id = scenario.id, viewModel.unchangedCopies[id]?.contains(sourceId) == true {
-            Text(row.budgetSummary ?? "").foregroundStyle(.secondary)
+            Text(row.budgetSummary?.figuresUnbroken ?? "").foregroundStyle(.secondary)
         } else {
             Text("—").foregroundStyle(.tertiary)
         }
@@ -217,10 +219,10 @@ struct DifferencesTab: View {
                     if difference.kind == .removed {
                         Text("Removed").fontWeight(.medium).foregroundStyle(.red)
                     } else {
-                        Text(difference.summary)
+                        Text(difference.summary.figuresUnbroken)
                     }
                     ForEach(difference.fieldChanges, id: \.self) { change in
-                        Text("• \(change)").foregroundStyle(.secondary)
+                        Text("• \(change.figuresUnbroken)").foregroundStyle(.secondary)
                     }
                 }
             }

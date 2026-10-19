@@ -51,6 +51,7 @@ struct ScenarioChips: View {
             }
             .padding(.vertical, 2)
             .padding(.horizontal, 1)
+            .wrapProbeScrollsHorizontally()
         }
         .scrollIndicators(.automatic)
     }

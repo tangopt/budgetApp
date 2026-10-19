@@ -263,6 +263,7 @@ struct BudgetGridView: View {
                                             ForEach(1...12, id: \.self) { month in
                                                 let payMonth = PayMonth(year: year, month: month)
                                                 Text(GridMonthLabel.monthYear(year: year, month: month))
+                                                    .figureText(.shrink())
                                                     .frame(width: GridMetrics.cellWidth, alignment: .trailing)
                                                     .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
                                                     .contentShape(Rectangle())
@@ -339,6 +340,7 @@ struct BudgetGridView: View {
                                             rowCells(entry.kind, shaded: entry.shaded)
                                         }
                                     }
+                                    .wrapProbeScrollsHorizontally()
                                 }
                                 // The header mirrors the content's offset (negated: content moves left).
                                 .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, x in scrollOffset.update(-x) }

@@ -87,7 +87,7 @@ enum TaxBoxTable {
         [
             DataTableColumn("Box", alignment: .trailing, width: .fixed(boxWidth), accessibilityValue: { $0.box }) { row, _ in
                 if let box = row.box {
-                    Text(box).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                    Text(box).monospacedDigit().foregroundStyle(.secondary).figureText(.shrink())
                 }
             },
             DataTableColumn("Description", width: .fill(min: 180), accessibilityValue: { $0.label }) { row, _ in
@@ -127,7 +127,7 @@ struct TaxBoxValueText: View {
     var body: some View {
         switch value {
         case let .amount(pence): MoneyText(minorUnits: pence, currency: .gbp, role: .neutral, wholeUnits: wholePounds)
-        case let .text(text): Text(text).monospacedDigit().lineLimit(1).truncationMode(.middle).help(text)
+        case let .text(text): Text(text).monospacedDigit().truncationMode(.middle).figureText(.shrink()).help(text)
         case .cross: Text("X").font(.body.weight(.semibold))
         }
     }
@@ -149,7 +149,7 @@ struct TaxSelfAssessmentWarnings: View {
         if !result.warnings.isEmpty {
             InlineBanner(.warning) {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(result.warnings, id: \.self) { Text($0) }
+                    ForEach(result.warnings, id: \.self) { Text($0.figuresUnbroken) }
                 }
             }
         }
@@ -242,11 +242,13 @@ struct TaxStepsList: View {
         return HStack(alignment: .firstTextBaseline, spacing: 0) {
             Text("\(index + 1)")
                 .monospacedDigit().foregroundStyle(.secondary)
+                .figureText()
                 .frame(width: 28, alignment: .trailing)
             VStack(alignment: .leading, spacing: 2) {
-                Text(step.title).font(.body.weight(.semibold))
+                // Sentences that wrap; the figures in them stay whole.
+                Text(step.title.figuresUnbroken).font(.body.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
-                Text(step.detail).font(.callout).foregroundStyle(.secondary)
+                Text(step.detail.figuresUnbroken).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.leading, 12)
@@ -428,7 +430,7 @@ struct TaxFilingStepView: View {
                     }
                 }
                 .frame(minHeight: Self.circle - 4)
-                Text(step.detail).font(.callout).foregroundStyle(.secondary)
+                Text(step.detail.figuresUnbroken).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if !step.values.isEmpty {
                     DataTable(columns: TaxBoxTable.columns(boxWidth: 84, copy: copy), sections: valueSections, showsHeader: false)

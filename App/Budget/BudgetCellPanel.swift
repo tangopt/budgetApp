@@ -131,6 +131,7 @@ struct UnassignedItemsPanel: View {
     private func header(_ rows: [PlannedRow]) -> some View {
         HStack {
             Text(rows.count == 1 ? "1 planned item" : "\(rows.count) planned items")
+                .figureText()
             Spacer()
             MoneyText(minorUnits: rows.reduce(0) { $0 + $1.occurrence.amountMinorUnits })
             assignMenu("Assign all to", rows: rows)
@@ -154,7 +155,7 @@ struct UnassignedItemsPanel: View {
             ForEach(rows) { row in
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(PayMonthFormat.longDay(row.occurrence.date))
+                        Text(PayMonthFormat.longDay(row.occurrence.date)).figureText()
                         Spacer()
                         MoneyText(minorUnits: row.occurrence.amountMinorUnits)
                     }

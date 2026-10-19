@@ -1,5 +1,6 @@
 // App/DesignSystem/EmptyState.swift
 import SwiftUI
+import BudgetCore
 
 /// A screen's or a panel's "nothing here yet" (spec §1.10): an icon (`.largeTitle`,
 /// secondary), a `.title3` semibold line, a `.callout` secondary sentence, centred, and the
@@ -26,7 +27,7 @@ struct EmptyState<Actions: View>: View {
             Text(title).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
                 .accessibilityAddTraits(.isHeader)
             if let message {
-                Text(message)
+                Text(message.figuresUnbroken)
                     .font(.callout).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)

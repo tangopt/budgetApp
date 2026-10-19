@@ -233,7 +233,7 @@ struct PropertyMoneyTab: View {
         } content: {
             if showsMonthlyTable {
                 DataTable(columns: [
-                    .text("Month", width: .fill(min: 90), { $0.title }),
+                    .text("Month", width: .fill(min: 90), figure: true, { $0.title }),
                     monthColumn("Rent per receipts", .neutral, currency) { $0.rentPerReceipts },
                     monthColumn("Rent received", .signed, currency) { $0.rentReceived },
                     monthColumn("Recharges", .signed, currency) { $0.recharges },
@@ -265,8 +265,7 @@ private struct MortgagePart: View {
                 .monospacedDigit().foregroundStyle(.secondary)
         }
         .font(.callout)
-        .lineLimit(1)
-        .fixedSize()
+        .figureText()
         .accessibilityElement(children: .combine)
     }
 }
@@ -289,6 +288,8 @@ private struct MortgageMonthsChart: View {
                     .foregroundStyle(by: .value("Part", "Capital repaid"))
             }
         }
+        // Charts lay their labels out apart from the scroll view: no clip check on them.
+        .wrapProbeInChart()
         .chartForegroundStyleScale(["Interest": theme.expense, "Capital repaid": theme.transfer])
         .chartLegend(.hidden)
         .chartXAxis {
@@ -300,7 +301,7 @@ private struct MortgageMonthsChart: View {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
                 AxisGridLine()
                 AxisValueLabel {
-                    if let amount = value.as(Double.self) { Text(MoneyAxis.compact(amount, currency: currency)) }
+                    if let amount = value.as(Double.self) { Text(MoneyAxis.compact(amount, currency: currency)).figureText() }
                 }
             }
         }

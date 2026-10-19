@@ -323,8 +323,12 @@ struct EditTransactionSheet: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(candidate.rawDescription).lineLimit(1)
-                        Text("\(candidate.accountName) · \(candidate.date.formatted(date: .abbreviated, time: .omitted))")
-                            .font(.caption).foregroundStyle(.secondary)
+                        // The account truncates; the day never does.
+                        HStack(spacing: 0) {
+                            Text("\(candidate.accountName) · ").lineLimit(1)
+                            Text(candidate.date.formatted(date: .abbreviated, time: .omitted)).figureText()
+                        }
+                        .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     MoneyText(minorUnits: candidate.amountMinorUnits, currency: candidate.currency)

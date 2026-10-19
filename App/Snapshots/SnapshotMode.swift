@@ -68,4 +68,5 @@ struct SnapshotScreenModels {
     let taxYears: TaxYearsViewModel
     let rules: RulesViewModel
     let uncategorized: UncategorizedViewModel
+    let importReview: ImportViewModel
 }

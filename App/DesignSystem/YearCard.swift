@@ -26,7 +26,7 @@ struct YearCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 0) {
-                Text(String(year)).font(.subheadline).bold()
+                Text(String(year)).font(.subheadline).bold().figureText()
                 if let caption {
                     Text(caption).font(.caption2).foregroundStyle(.secondary)
                 }
@@ -40,6 +40,7 @@ struct YearCard: View {
             if let change, DashboardFormat.pounds(abs(change)) != DashboardFormat.pounds(0) {
                 Text(Self.changeText(change: change, percent: percent))
                     .font(.caption2).monospacedDigit()
+                    .figureText(.shrink())
                     .foregroundStyle(change >= 0 ? theme.yoyGood : theme.yoyBad)
             } else {
                 Text("—").font(.caption2).foregroundStyle(.secondary)
@@ -89,6 +90,7 @@ struct YearCardRow<Card: View>: View {
             // scroll view's own bounds.
             .padding(.horizontal)
             .padding(.vertical, 4)
+            .wrapProbeScrollsHorizontally()
         }
     }
 }

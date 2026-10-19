@@ -50,11 +50,20 @@ final class SnapshotWindow: NSWindow {
     @objc func hasKeyAppearance() -> Bool { true }
     @objc func hasMainAppearance() -> Bool { true }
 
+    /// Shows `view` filling the window. Like the app's window (SwiftUI's `minSize` sizing),
+    /// the window is never smaller than the view's minimum: on a screen that needs more than
+    /// `--size`, it grows to the screen's minimum, as the app's window does on that screen.
     func mount<Content: View>(_ view: Content) {
         let hosting = NSHostingView(rootView: view)
+        hosting.sizingOptions = [.minSize]
         hosting.frame = NSRect(origin: .zero, size: Self.size)
         contentView = hosting
         setFrame(NSRect(origin: Self.offscreenOrigin, size: Self.size), display: false)
+    }
+
+    /// The content's size now (the window may have grown to the content's minimum).
+    var contentLayoutSize: CGSize {
+        contentView?.bounds.size ?? Self.size
     }
 
     func unmount() {

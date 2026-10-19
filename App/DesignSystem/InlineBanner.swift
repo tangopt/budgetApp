@@ -1,5 +1,6 @@
 // App/DesignSystem/InlineBanner.swift
 import SwiftUI
+import BudgetCore
 
 /// A message inside a screen (spec §1.2, C9): an icon in the style's colour, `.callout`
 /// text, an optional trailing action and an optional ✕; 8 pt padding on 10% of the colour,
@@ -73,6 +74,7 @@ extension InlineBanner where Action == EmptyView {
 extension InlineBanner where Content == Text, Action == EmptyView {
     /// A banner with plain text.
     init(_ style: Style, _ text: String, onDismiss: (() -> Void)? = nil) {
-        self.init(style, onDismiss: onDismiss) { Text(text) }
+        // Wraps as prose; the figures in it stay whole (spec §6.3).
+        self.init(style, onDismiss: onDismiss) { Text(text.figuresUnbroken) }
     }
 }

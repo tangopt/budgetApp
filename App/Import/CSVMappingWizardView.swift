@@ -129,6 +129,7 @@ struct CSVMappingWizardView: View {
                                 Text("…and \(unreadable.count - Self.unreadableListLimit) more")
                                     .font(.callout)
                                     .foregroundStyle(.secondary)
+                                    .figureText()
                             }
                         }
                         .padding(.leading, 24)

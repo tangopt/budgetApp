@@ -59,8 +59,12 @@ struct EvidenceRulesSheet: View {
                 Text(requirement.name).font(.body.weight(.semibold)).lineLimit(1)
                 Text(viewModel.scopeSummary(requirement))
                     .font(.callout).foregroundStyle(.secondary).lineLimit(2)
-                Text(details(requirement))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                // What and where from truncate; when (a range of months) never does.
+                HStack(spacing: 0) {
+                    Text(details(requirement) + " · ").lineLimit(1)
+                    Text(MissingEvidenceViewModel.activeRange(requirement) ?? "Always").figureText()
+                }
+                .font(.caption).foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
             Spacer(minLength: 8)
@@ -78,7 +82,6 @@ struct EvidenceRulesSheet: View {
     private func details(_ requirement: EvidenceRequirement) -> String {
         var parts = ["Needs " + MissingEvidenceViewModel.kindsText(requirement.kinds)]
         if let source = requirement.usualSource { parts.append("From \(source)") }
-        parts.append(MissingEvidenceViewModel.activeRange(requirement) ?? "Always")
         return parts.joined(separator: " · ")
     }
 }
@@ -441,6 +444,7 @@ struct CheckboxList<Value: Hashable>: View {
             if !selection.isEmpty {
                 Text("\(selection.count) ticked")
                     .font(.caption2).foregroundStyle(.secondary)
+                    .figureText()
                     .padding(4)
             }
         }

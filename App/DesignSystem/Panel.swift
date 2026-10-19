@@ -1,5 +1,6 @@
 // App/DesignSystem/Panel.swift
 import SwiftUI
+import BudgetCore
 
 /// The shared measurements of the screens (UI polish spec §1): screen padding, block spacing
 /// and the card recipe.
@@ -45,7 +46,8 @@ struct Panel<Content: View, Accessory: View>: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(title).font(.headline).accessibilityAddTraits(.isHeader)
                             if let subtitle {
-                                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                                // Wraps as prose; the figures in it stay whole (spec §6.3).
+                                Text(subtitle.figuresUnbroken).font(.caption).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }

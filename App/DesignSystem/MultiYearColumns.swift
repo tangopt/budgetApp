@@ -42,6 +42,7 @@ struct MultiYearHeaderCell: View {
 
     var body: some View {
         Text(title)
+            .figureText(.shrink())
             .frame(width: GridMetrics.cellWidth, alignment: .trailing)
             .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
     }
@@ -73,11 +74,10 @@ struct YearDeltaCells: View {
                     Text("—")
                 }
             }
-            .lineLimit(1)
-            .minimumScaleFactor(0.7)
+            .figureText(.shrink())
             .multiYearValueCell()
             Text(DashboardFormat.percent(delta?.amount == 0 ? nil : delta?.fraction))
-                .lineLimit(1)
+                .figureText(.shrink())
                 .multiYearValueCell()
         }
         .font(isSectionHeader ? PlanCellView.captionFont : PlanCellView.bodyFont)

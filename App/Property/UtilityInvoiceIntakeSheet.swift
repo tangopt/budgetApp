@@ -274,7 +274,7 @@ struct UtilityInvoiceIntakeSheet: View {
                     }
                     Spacer(minLength: 8)
                     if !model.rows.isEmpty {
-                        Text(status).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                        Text(status).font(.callout).foregroundStyle(.secondary).figureText()
                     }
                 }
                 .disabled(model.isWorking)
@@ -426,7 +426,7 @@ struct UtilityInvoiceIntakeSheet: View {
                         .lineLimit(1)
                         .help("Missing: \(missing.joined(separator: ", "))")
                 } else if let start = row.proposal.reading.periodStart, let end = row.proposal.reading.periodEnd {
-                    Text(RechargeFormat.period(start, end)).font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                    Text(RechargeFormat.period(start, end)).font(.caption).foregroundStyle(.secondary).monospacedDigit().figureText()
                 }
             }
             .opacity(row.include ? 1 : 0.55)

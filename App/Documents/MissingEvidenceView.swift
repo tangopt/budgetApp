@@ -33,6 +33,11 @@ struct MissingEvidenceView: View {
     /// Sources whose rows are folded away.
     @State private var collapsed: Set<String> = []
 
+    /// The narrowest the page lays out at: the summary's two panels side by side
+    /// (`TwoUpRow`'s 340 pt each). Embedded, what Tax years has left at a 1100-wide window.
+    static let minimumWidth: CGFloat = 700
+    static let embeddedMinimumWidth: CGFloat = 600
+
     var body: some View {
         VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
             summary
@@ -45,6 +50,10 @@ struct MissingEvidenceView: View {
                 // The table or empty state takes the rest of the window below the summary.
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
+        // The page's minimum is measured at this width, where the summary's panels sit side by
+        // side: measured narrower, they stacked and the window's minimum height came to 932 pt
+        // (the checklist scrolls in whatever height is left).
+        .frame(minWidth: embedded ? Self.embeddedMinimumWidth : Self.minimumWidth)
         // Standalone: padded like Accounts and Budget. Embedded: the page pads the sides and
         // top; the bottom is ours.
         .padding(embedded ? [.bottom] : .all, ScreenMetrics.padding)
@@ -217,13 +226,11 @@ struct MissingEvidenceView: View {
             if group.progress.missing > 0 {
                 Text("\(group.progress.missing) missing")
                     .foregroundStyle(theme.pending)
-                    .lineLimit(1)
-                    .fixedSize()
+                    .figureText()
             }
             Text("\(group.progress.done)/\(group.progress.total)")
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .fixedSize()
+                .figureText()
                 .frame(minWidth: 36, alignment: .trailing)
         }
         .font(.callout.monospacedDigit())
@@ -236,7 +243,7 @@ struct MissingEvidenceView: View {
     @ViewBuilder
     private var periodControl: some View {
         if embedded {
-            Text(viewModel.periodTitle).font(.headline)
+            Text(viewModel.periodTitle).font(.headline).figureText()
         } else {
             HStack(spacing: 8) {
                 Menu {
@@ -249,6 +256,7 @@ struct MissingEvidenceView: View {
                     HStack(spacing: 4) {
                         Text(viewModel.periodChoice == .custom ? "Custom range" : viewModel.periodTitle)
                             .font(.headline)
+                            .figureText()
                         Image(systemName: "chevron.down").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     }
                 }
@@ -312,6 +320,7 @@ struct MissingEvidenceView: View {
             let shown = viewModel.groups.reduce(0) { $0 + $1.items.count }
             Text(shown == 1 ? "1 item" : "\(shown) items")
                 .font(.callout).foregroundStyle(.secondary).monospacedDigit()
+                .figureText()
         }
     }
 
@@ -346,11 +355,11 @@ struct MissingEvidenceView: View {
             }
         } else if viewModel.items.isEmpty {
             ContentUnavailableView("Nothing expected", systemImage: "checkmark.seal",
-                                   description: Text("No rule expects a document in \(viewModel.periodTitle)."))
+                                   description: Text("No rule expects a document in \(viewModel.periodTitle.unbroken)."))
         } else if viewModel.groups.isEmpty {
             if viewModel.missingOnly, viewModel.queryText.isEmpty {
                 ContentUnavailableView("Nothing missing", systemImage: "checkmark.seal",
-                                       description: Text("Every item in \(viewModel.periodTitle) has its document or is marked not available."))
+                                       description: Text("Every item in \(viewModel.periodTitle.unbroken) has its document or is marked not available."))
             } else {
                 ContentUnavailableView.search(text: viewModel.queryText)
             }
@@ -491,10 +500,12 @@ private struct ChecklistTable: View {
             if isCollapsed {
                 Text(group.items.count == 1 ? "1 item" : "\(group.items.count) items")
                     .font(.caption).foregroundStyle(.secondary)
+                    .figureText()
             }
             Spacer(minLength: 8)
             Text("\(progress.done) of \(progress.total) done")
                 .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                .figureText()
             ProgressRing(done: progress.done, total: progress.total, size: 14, lineWidth: 3)
         }
         .padding(.horizontal, ChecklistColumns.rowInset + ChecklistColumns.cellPadding)

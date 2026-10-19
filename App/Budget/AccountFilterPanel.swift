@@ -161,6 +161,7 @@ struct AccountFilterPanel: View {
             Text(count.formatted())
                 .font(.caption).monospacedDigit()
                 .foregroundStyle(.secondary)
+                .figureText()
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(RoundedRectangle(cornerRadius: 5).fill(ticked ? theme.accent.opacity(0.12) : Color.clear))

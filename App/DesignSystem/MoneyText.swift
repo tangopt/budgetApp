@@ -52,7 +52,12 @@ struct MoneyText: View {
     /// Whole units, the pence dropped (towards zero): "£41,760" — a Self Assessment box, which
     /// the return takes in whole pounds and whose copy is the same figure.
     var wholeUnits = false
+    /// How far the amount may shrink in a fixed-width cell (`alignment`) before it would truncate.
+    var minimumScale: CGFloat = MoneyText.minimumScale
     @Environment(\.theme) private var theme
+
+    /// How far an amount in a fixed-width cell (`alignment`) shrinks by default.
+    static let minimumScale: CGFloat = 0.7
 
     /// `Money.format`, or its whole units when `wholeUnits` ("£41,760", "-£123").
     static func format(_ minorUnits: Int, currency: Currency, wholeUnits: Bool) -> String {
@@ -68,17 +73,20 @@ struct MoneyText: View {
         // Never wraps: an amount reads as one figure. In a fixed-width cell (`alignment`) it
         // shrinks a little rather than wrap or truncate; at its natural size it keeps its full
         // width, so neighbouring text truncates instead.
-        let text = Text(Self.format(shown, currency: currency, wholeUnits: wholeUnits))
+        let formatted = Self.format(shown, currency: currency, wholeUnits: wholeUnits)
+        let text = Text(formatted)
             .font(font)
             .foregroundStyle(color)
             .contentTransition(.numericText())
             .lineLimit(1)
         if let alignment {
             text
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(minimumScale)
+                .wrapProbe("MoneyText", text: formatted, minimumScale: minimumScale)
                 .frame(maxWidth: .infinity, alignment: alignment)
         } else {
             text.fixedSize(horizontal: true, vertical: false)
+                .wrapProbe("MoneyText", text: formatted)
         }
     }
 }

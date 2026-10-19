@@ -25,16 +25,19 @@ enum ComponentGallery {
     }
 }
 
-/// A gallery page: the window's colour, screen padding, content from the top left.
+/// A gallery page: the window's colour, screen padding, content from the top left, scrolling
+/// (it's longer than any window: unscrolled, the window would grow to hold it).
 private struct GalleryPage<Content: View>: View {
     @ViewBuilder let content: Content
     @Environment(\.theme) private var theme
 
     var body: some View {
-        content
-            .padding(ScreenMetrics.padding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(theme.windowFill)
+        ScrollView {
+            content
+                .padding(ScreenMetrics.padding)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .background(theme.windowFill)
     }
 }
 

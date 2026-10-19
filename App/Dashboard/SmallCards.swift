@@ -18,22 +18,19 @@ struct TopCategoriesCard: View {
                     HStack {
                         Text(category.name).lineLimit(1)
                         Spacer()
-                        Group {
+                        // Amounts never wrap; the name truncates instead.
                         if category.isCoveredByReserve && category.expected == 0 && category.actual > 0 {
-                            Text("\(DashboardFormat.pounds(category.actual)) · covered by reserve").foregroundStyle(.secondary)
+                            Text("\(DashboardFormat.pounds(category.actual)) · covered by reserve").foregroundStyle(.secondary).figureText()
                         } else if category.isUnplanned {
-                            Text("\(DashboardFormat.pounds(category.actual)) · unplanned").foregroundStyle(.orange)
+                            Text("\(DashboardFormat.pounds(category.actual)) · unplanned").foregroundStyle(.orange).figureText()
                         } else if hasActuals {
                             Text("\(DashboardFormat.pounds(category.actual)) of \(DashboardFormat.pounds(category.expected))")
                                 .foregroundStyle(category.isOver ? theme.expense : Color.primary)
-                            if category.isOver { Text("+\(DashboardFormat.pounds(category.actual - category.expected))").foregroundStyle(theme.expense) }
+                                .figureText()
+                            if category.isOver { Text("+\(DashboardFormat.pounds(category.actual - category.expected))").foregroundStyle(theme.expense).figureText() }
                         } else {
-                            Text("expected \(DashboardFormat.pounds(category.expected))").foregroundStyle(.secondary)
+                            Text("expected \(DashboardFormat.pounds(category.expected))").foregroundStyle(.secondary).figureText()
                         }
-                        }
-                        // Amounts never wrap; the name truncates instead.
-                        .lineLimit(1)
-                        .fixedSize()
                     }
                     .font(.callout)
                     .monospacedDigit()
@@ -61,7 +58,7 @@ struct AttentionCard: View {
                 row(warning: false, "Nothing uncategorized", link: nil) {}
             }
             if items.staleBalanceCount > 0 {
-                let since = items.oldestStaleSnapshotDate.map { " since \(DashboardFormat.day($0))" } ?? ""
+                let since = items.oldestStaleSnapshotDate.map { " since \(DashboardFormat.day($0).unbroken)" } ?? ""
                 row(warning: true, "\(items.staleBalanceCount) balance\(items.staleBalanceCount == 1 ? "" : "s") not updated\(since)", link: "Update balances") { navigate(.accounts) }
             } else {
                 row(warning: false, "All balances up to date", link: nil) {}
@@ -98,10 +95,14 @@ struct UpcomingBillsCard: View {
             let visible = Array(bills.prefix(shown).enumerated())
             ForEach(visible, id: \.offset) { index, bill in
                 HStack {
-                    Text("\(DashboardFormat.day(bill.date)) · \(bill.categoryName)").lineLimit(1)
+                    // The day keeps its width; the category truncates.
+                    HStack(spacing: 4) {
+                        Text(DashboardFormat.day(bill.date)).figureText()
+                        Text("· \(bill.categoryName)").lineLimit(1)
+                    }
                     Spacer()
                     Text(DashboardFormat.pounds(abs(bill.amountMinorUnits))).monospacedDigit()
-                        .lineLimit(1).fixedSize()
+                        .figureText()
                 }
                 .font(.callout)
                 if index < visible.count - 1 { Divider() }
@@ -130,7 +131,6 @@ struct AccountsCard: View {
                     Text(account.name).lineLimit(1)
                     Spacer()
                     balanceText(account)
-                        .lineLimit(1)
                         .fixedSize()
                 }
                 .font(.callout)
@@ -153,18 +153,19 @@ struct AccountsCard: View {
         HStack(spacing: 4) {
             if account.currency == .gbp {
                 if isOwed {
-                    Text("\(DashboardFormat.pounds(abs(account.gbpBalanceMinorUnits))) owed").foregroundStyle(theme.expense)
+                    Text("\(DashboardFormat.pounds(abs(account.gbpBalanceMinorUnits))) owed").foregroundStyle(theme.expense).figureText()
                 } else {
-                    Text(DashboardFormat.pounds(account.gbpBalanceMinorUnits))
+                    Text(DashboardFormat.pounds(account.gbpBalanceMinorUnits)).figureText()
                 }
             } else {
                 if isOwed {
-                    Text("\(Money.format(abs(account.nativeBalanceMinorUnits), currency: account.currency)) owed").foregroundStyle(theme.expense)
+                    Text("\(Money.format(abs(account.nativeBalanceMinorUnits), currency: account.currency)) owed").foregroundStyle(theme.expense).figureText()
                 } else {
-                    Text(Money.format(account.nativeBalanceMinorUnits, currency: account.currency))
+                    MoneyText(minorUnits: account.nativeBalanceMinorUnits, currency: account.currency, font: .callout.monospacedDigit(), tint: .primary)
                 }
                 Text("(\(DashboardFormat.pounds(isOwed ? abs(account.gbpBalanceMinorUnits) : account.gbpBalanceMinorUnits)))")
                     .foregroundStyle(.secondary)
+                    .figureText()
             }
         }
     }

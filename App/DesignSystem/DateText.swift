@@ -28,6 +28,7 @@ struct DateText: View {
         .font(font.monospacedDigit())
         .lineLimit(1)
         .fixedSize()
+        .wrapProbe("DateText", text: date.map(DocumentFormat.day) ?? "—")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(date.map(DocumentFormat.day) ?? "No date")
     }

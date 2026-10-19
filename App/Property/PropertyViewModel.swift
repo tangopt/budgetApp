@@ -586,7 +586,7 @@ enum PropertyFormat {
 
     /// "2 months deposit, 1 month advance rent".
     static func held(_ tenancy: Tenancy) -> String {
-        "\(months(tenancy.depositMonths)) deposit, \(months(tenancy.advanceRentMonths)) advance rent"
+        "\(months(tenancy.depositMonths).unbroken) deposit, \(months(tenancy.advanceRentMonths).unbroken) advance rent"
     }
 
     /// "1 month", "2 months".

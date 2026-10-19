@@ -1,5 +1,6 @@
 // App/DesignSystem/SheetScaffold.swift
 import SwiftUI
+import BudgetCore
 
 /// The shared measurements for sheets and popovers (spec 2026-10-13 §3).
 enum SheetMetrics {
@@ -23,7 +24,8 @@ enum SheetMetrics {
     /// A wide table (a line's sources, a folder's files).
     static let tableWidth: CGFloat = 860
     /// Two panes, or a table of editable columns (a statement and its email, invoice intake).
-    static let workspaceWidth: CGFloat = 1120
+    /// Narrower than a 1100-wide window, as a sheet should be (it was 1120).
+    static let workspaceWidth: CGFloat = 1040
 }
 
 /// A button in a sheet's footer.
@@ -70,7 +72,8 @@ struct SheetScaffold<Content: View>: View {
                     .font(.title3.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
                 if let subtitle {
-                    Text(subtitle)
+                    // Wraps as prose; the figures in it stay whole (spec §6.3).
+                    Text(subtitle.figuresUnbroken)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -211,7 +214,7 @@ struct SheetCaption: View {
     var body: some View {
         // No `fixedSize` here: inside a `SheetForm` it stops the grid filling the sheet's
         // width (the form itself is fixed-size vertically, so captions still wrap).
-        Text(text)
+        Text(text.figuresUnbroken)
             .font(.caption)
             .foregroundStyle(isError ? Color.red : Color.secondary)
     }

@@ -29,11 +29,13 @@ struct FigureTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                .wrapProbe("FigureTile.title", text: title)
             switch value {
             case let .money(minorUnits, currency, role):
                 MoneyText(minorUnits: minorUnits, currency: currency, font: .title3.monospacedDigit().weight(.semibold), role: role)
             case let .text(text):
                 Text(text).font(.title3.monospacedDigit().weight(.semibold)).lineLimit(1).fixedSize()
+                    .wrapProbe("FigureTile.value", text: text)
             }
             if let gbp {
                 MoneyText(minorUnits: gbp, currency: .gbp, font: .caption.monospacedDigit(), role: role, tint: .secondary)
@@ -41,6 +43,7 @@ struct FigureTile: View {
             if let caption {
                 Text(caption).font(.caption).lineLimit(1)
                     .foregroundStyle(captionIsWarning ? theme.pending : Color.secondary)
+                    .wrapProbe("FigureTile.caption", text: caption)
             }
             if let pill {
                 pill.padding(.top, 2)

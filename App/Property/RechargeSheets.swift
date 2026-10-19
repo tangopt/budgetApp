@@ -1006,7 +1006,7 @@ struct UtilityProviderFormSheet: View {
                     PropertyFact("Issued") { testValue(reading.issueDate.map(DocumentFormat.day)) }
                     PropertyFact("Period") {
                         if let start = reading.periodStart, let end = reading.periodEnd {
-                            Text(RechargeFormat.period(start, end)).monospacedDigit()
+                            Text(RechargeFormat.period(start, end)).monospacedDigit().figureText()
                         } else {
                             testValue(nil)
                         }
@@ -1020,7 +1020,7 @@ struct UtilityProviderFormSheet: View {
     @ViewBuilder
     private func testValue(_ text: String?) -> some View {
         if let text {
-            Text(text).monospacedDigit().textSelection(.enabled)
+            Text(text).monospacedDigit().textSelection(.enabled).figureText()
         } else {
             StatusPill("Not found", tone: .warning, systemImage: "questionmark.circle")
         }

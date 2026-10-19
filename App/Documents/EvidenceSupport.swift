@@ -246,13 +246,36 @@ struct EvidenceDocumentPickRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(summary.displayName).lineLimit(1).truncationMode(.middle)
-                Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                DocumentCaptionLine(kind: summary.kind, date: summary.docDate, amountMinorUnits: summary.amountMinorUnits,
+                                    currency: summary.currency)
+                    .font(.caption).foregroundStyle(.secondary)
                 if !reasons.isEmpty {
                     Text(reasons.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
         }
         .help(([summary.displayName, caption] + reasons).joined(separator: "\n"))
+    }
+}
+
+/// `DocumentFormat.caption` on one line — "Mortgage notice · 31 Jan 2024 · €1,234.56" — where
+/// the kind truncates and the day and amount never do.
+struct DocumentCaptionLine: View {
+    let kind: DocumentKind
+    let date: Date?
+    let amountMinorUnits: Int?
+    let currency: Currency?
+
+    var body: some View {
+        let figures = [date.map(DocumentFormat.day),
+                       amountMinorUnits.flatMap { amount in currency.map { Money.format(amount, currency: $0) } }].compactMap { $0 }
+        HStack(spacing: 0) {
+            Text(kind.displayName).lineLimit(1)
+            if !figures.isEmpty {
+                Text(" · " + figures.joined(separator: " · ")).figureText()
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 

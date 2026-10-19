@@ -140,7 +140,7 @@ struct WaterfallChart: View {
                         Text(label(bar))
                             .font(.caption2.monospacedDigit().weight(bar.isLevel ? .semibold : .regular))
                             .foregroundStyle(bar.isLevel ? Color.primary : Color.secondary)
-                            .fixedSize()
+                            .figureText()
                     }
             }
             if let selected {
@@ -151,6 +151,8 @@ struct WaterfallChart: View {
                     }
             }
         }
+        // Charts lay their labels out apart from the scroll view: no clip check on them.
+        .wrapProbeInChart()
         .chartXScale(domain: -0.5...(Double(bars.count) - 0.5))
         .chartYScale(domain: domain)
         .chartXAxis {
@@ -171,7 +173,7 @@ struct WaterfallChart: View {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
                 AxisGridLine()
                 AxisValueLabel {
-                    if let amount = value.as(Double.self) { Text(MoneyAxis.compact(amount, currency: currency)) }
+                    if let amount = value.as(Double.self) { Text(MoneyAxis.compact(amount, currency: currency)).figureText() }
                 }
             }
         }
@@ -197,10 +199,12 @@ struct WaterfallChart: View {
                 Circle().fill(color(bar)).frame(width: 6, height: 6)
                 Text((!bar.isLevel && bar.value > 0 ? "+" : "") + Money.format(bar.shownValue, currency: currency))
                     .font(.caption2.monospacedDigit())
+                    .figureText()
             }
             if !bar.isLevel {
                 Text("Running total \(Money.format(bar.level, currency: currency))")
                     .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    .figureText()
             }
         }
         .fixedSize()

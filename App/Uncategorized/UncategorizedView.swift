@@ -49,6 +49,7 @@ struct UncategorizedView: View {
                             groupContent(group)
                         }
                     }
+                    .wrapProbeClips()
                     // Assigning removes rows and can turn a group into a single row, so drop
                     // selected ids that no longer name a line.
                     .onChange(of: viewModel.transactions.map(\.id)) { _, _ in
@@ -104,11 +105,13 @@ struct UncategorizedView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(group.key)
-                    Text("× \(group.rows.count)").foregroundStyle(.secondary)
+                    // The name gives way; the count and the days never wrap.
+                    Text(group.key).lineLimit(1)
+                    Text("× \(group.rows.count)").foregroundStyle(.secondary).figureText()
                 }
                 Text(dateRangeText(group))
                     .font(.caption).foregroundStyle(.secondary)
+                    .figureText()
             }
             Spacer()
             let total = viewModel.groupTotal(group.rows)
@@ -161,6 +164,7 @@ struct UncategorizedView: View {
                     Text(transaction.date.formatted(date: .abbreviated, time: .omitted))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .figureText()
                     if transaction.isManual { ManualTag() }
                 }
             }

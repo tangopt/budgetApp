@@ -62,12 +62,18 @@ struct DataTableAction {
 }
 
 extension DataTableColumn {
-    /// Text, one line, with an optional `.caption` secondary line under it.
-    static func text(_ title: String, width: Width = .fill(), _ value: @escaping (Row) -> String,
+    /// Text, one line, with an optional `.caption` secondary line under it. `figure`: the text
+    /// is a figure (a month, a receipt number), in monospaced digits, that shrinks a little
+    /// rather than truncate when its column can't give it room (spec §6.3).
+    static func text(_ title: String, width: Width = .fill(), figure: Bool = false, _ value: @escaping (Row) -> String,
                      detail: ((Row) -> String?)? = nil) -> Self {
         Self(title, width: width, accessibilityValue: { row in [value(row), detail?(row) ?? nil].compactMap { $0 }.joined(separator: ", ") }) { row, kind in
             VStack(alignment: .leading, spacing: 1) {
-                Text(value(row)).fontWeight(kind == .total ? .semibold : .regular).lineLimit(1)
+                if figure {
+                    Text(value(row)).fontWeight(kind == .total ? .semibold : .regular).monospacedDigit().figureText(.shrink())
+                } else {
+                    Text(value(row)).fontWeight(kind == .total ? .semibold : .regular).lineLimit(1)
+                }
                 if let detail, let text = detail(row) {
                     Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }

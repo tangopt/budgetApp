@@ -88,6 +88,7 @@ struct ReviewView: View {
                     } label: {
                         Label("\(viewModel.unparsedLines.count) line(s) couldn't be auto-parsed", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
+                            .figureText()
                     }
                 }
             }
@@ -97,6 +98,7 @@ struct ReviewView: View {
                     HStack {
                         Text("\(viewModel.skippedRowCount) pending or reverted \(viewModel.skippedRowCount == 1 ? "row" : "rows") skipped")
                             .foregroundStyle(.secondary)
+                            .figureText()
                             .help("The statement's status column says these haven't completed, so they weren't imported. Import the statement again once they have.")
                         Spacer()
                         Button("Dismiss") { viewModel.dismissSkippedRows() }
@@ -115,8 +117,8 @@ struct ReviewView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     ForEach(Array(viewModel.duplicates.enumerated()), id: \.offset) { _, duplicate in
                                         HStack {
-                                            Text(duplicate.date.formatted(date: .abbreviated, time: .omitted))
-                                            Text(duplicate.rawDescription)
+                                            Text(duplicate.date.formatted(date: .abbreviated, time: .omitted)).figureText()
+                                            Text(duplicate.rawDescription).lineLimit(1)
                                             Spacer()
                                             MoneyText(minorUnits: duplicate.amountMinorUnits, currency: viewModel.currency, font: .caption)
                                         }
@@ -139,6 +141,7 @@ struct ReviewView: View {
                     } label: {
                         Text("\(viewModel.duplicateCount) duplicate transaction(s) skipped")
                             .foregroundStyle(.secondary)
+                            .figureText()
                     }
                 }
             }
@@ -287,10 +290,12 @@ struct ReviewView: View {
                 List {
                     ForEach(groups) { group in confirmedGroupContent(group) }
                 }
+                .wrapProbeClips()
             } else {
                 List(selection: selection(in: tab)) {
                     ForEach(groups) { group in groupContent(group) }
                 }
+                .wrapProbeClips()
                 .onKeyPress(.return) { confirmSelection() }
             }
         }
@@ -367,7 +372,7 @@ struct ReviewView: View {
         case .available:
             switch viewModel.statementCheck {
             case .matches(let closing):
-                Label("Matches the statement closing balance \(Money.format(closing.balanceMinorUnits, currency: viewModel.currency)) on \(ImportViewModel.day(closing.date))",
+                Label("Matches the statement closing balance \(Money.format(closing.balanceMinorUnits, currency: viewModel.currency).unbroken) on \(ImportViewModel.day(closing.date).unbroken)",
                       systemImage: "checkmark.circle")
                     .font(.callout)
                     .foregroundStyle(.green)
@@ -394,11 +399,11 @@ struct ReviewView: View {
                     Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 2) {
                         GridRow {
                             Text("Statement closing balance").foregroundStyle(.secondary)
-                            Text(Money.format(mismatch.statementMinorUnits, currency: currency))
+                            MoneyText(minorUnits: mismatch.statementMinorUnits, currency: currency, font: .callout.monospacedDigit(), tint: .primary)
                         }
                         GridRow {
                             Text("Computed with this import").foregroundStyle(.secondary)
-                            Text(Money.format(mismatch.computedMinorUnits, currency: currency))
+                            MoneyText(minorUnits: mismatch.computedMinorUnits, currency: currency, font: .callout.monospacedDigit(), tint: .primary)
                         }
                     }
                     .font(.callout.monospacedDigit())
@@ -410,16 +415,16 @@ struct ReviewView: View {
                 }
                 .padding(.top, 4)
             } label: {
-                Label("Doesn't match the statement on \(ImportViewModel.day(mismatch.date)): difference \(difference)", systemImage: "xmark.octagon.fill")
+                Label("Doesn't match the statement on \(ImportViewModel.day(mismatch.date).unbroken): difference \(difference.unbroken)", systemImage: "xmark.octagon.fill")
                     .font(.callout.bold())
                     .foregroundStyle(.red)
             }
             if let blocked = viewModel.statementAdjustmentBlockedBy {
-                Text("An adjustment can't be added: there's a recorded balance on \(ImportViewModel.day(blocked)).")
+                Text("An adjustment can't be added: there's a recorded balance on \(ImportViewModel.day(blocked).unbroken).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Toggle("Add a balance adjustment of \(difference) so the balance matches the statement (best avoided)", isOn: $viewModel.addStatementAdjustment)
+                Toggle("Add a balance adjustment of \(difference.unbroken) so the balance matches the statement (best avoided)", isOn: $viewModel.addStatementAdjustment)
                     .toggleStyle(.checkbox)
                     .font(.callout)
             }
@@ -468,11 +473,13 @@ struct ReviewView: View {
         return HStack {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(group.key)
-                    Text("× \(group.rows.count)").foregroundStyle(.secondary)
+                    // The name gives way; the count and the days never wrap.
+                    Text(group.key).lineLimit(1)
+                    Text("× \(group.rows.count)").foregroundStyle(.secondary).figureText()
                 }
                 Text(dateRangeText(group))
                     .font(.caption).foregroundStyle(.secondary)
+                    .figureText()
             }
             Spacer()
             MoneyText(minorUnits: ReviewGrouping.total(amounts), currency: viewModel.currency)
@@ -584,8 +591,8 @@ struct ReviewView: View {
                 ForEach(group.rows) { row in confirmedRow(row) }
             } label: {
                 HStack {
-                    Text(group.key)
-                    Text("× \(group.rows.count)").foregroundStyle(.secondary)
+                    Text(group.key).lineLimit(1)
+                    Text("× \(group.rows.count)").foregroundStyle(.secondary).figureText()
                     Spacer()
                     MoneyText(minorUnits: ReviewGrouping.total(group.rows.map(\.staged.parsed.amountMinorUnits)), currency: viewModel.currency)
                     Text(categoryText(ReviewGrouping.categoryState(of: group.rows.map(\.chosenCategoryId))))
@@ -604,7 +611,7 @@ struct ReviewView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.staged.parsed.rawDescription)
-                Text(row.staged.parsed.date.formatted(date: .abbreviated, time: .omitted)).font(.caption)
+                Text(row.staged.parsed.date.formatted(date: .abbreviated, time: .omitted)).font(.caption).figureText()
             }
             Spacer()
             MoneyText(minorUnits: row.staged.parsed.amountMinorUnits, currency: viewModel.currency)
@@ -631,8 +638,14 @@ struct ReviewView: View {
             ConfidenceDot(source: row.staged.source, confidence: row.staged.confidence)
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.staged.parsed.rawDescription)
-                Text(detailLine(for: row))
-                    .font(.caption).foregroundStyle(.secondary)
+                // The day never wraps; the note after it truncates.
+                HStack(spacing: 0) {
+                    Text(row.staged.parsed.date.formatted(date: .abbreviated, time: .omitted)).figureText()
+                    if let suggestion = historySuggestion(for: row) {
+                        Text(" · " + suggestion).lineLimit(1)
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary)
                 if let transfer = row.staged.transfer { transferBadge(transfer) }
                 if let replacement = row.staged.replacesManual { manualReplacementBadge(replacement) }
             }
@@ -682,7 +695,11 @@ struct ReviewView: View {
     /// "↔ Transfer from Lloyds Classic, 9 Mar 2026".
     private func transferBadge(_ transfer: StagedTransfer) -> some View {
         let otherDate = transfer.otherDate.formatted(date: .abbreviated, time: .omitted)
-        return Text("↔ Transfer \(transfer.isIncoming ? "from" : "to") \(transfer.otherAccountName), \(otherDate)")
+        // The account truncates; the day never does.
+        return HStack(spacing: 0) {
+            Text("↔ Transfer \(transfer.isIncoming ? "from" : "to") \(transfer.otherAccountName), ").lineLimit(1)
+            Text(otherDate).figureText()
+        }
             .font(.caption)
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
@@ -696,6 +713,7 @@ struct ReviewView: View {
     private func manualReplacementBadge(_ replacement: StagedManualReplacement) -> some View {
         Text("Replaces your manual entry (\(ManualFormat.shortDay(replacement.date)))")
             .font(.caption)
+            .figureText()
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
             .background(Capsule().fill(theme.accent.opacity(0.15)))
@@ -706,10 +724,10 @@ struct ReviewView: View {
     }
 
     /// "1 Oct 2026 · Suggested from 3 past transactions" for history suggestions.
-    private func detailLine(for row: ReviewRow) -> String {
-        let date = row.staged.parsed.date.formatted(date: .abbreviated, time: .omitted)
-        guard row.staged.source == .history, let count = row.staged.historyCount else { return date }
-        return "\(date) · Suggested from \(count) past transaction\(count == 1 ? "" : "s")"
+    /// "Suggested from 12 past transactions" for a row categorised from the history.
+    private func historySuggestion(for row: ReviewRow) -> String? {
+        guard row.staged.source == .history, let count = row.staged.historyCount else { return nil }
+        return "Suggested from \(count) past transaction\(count == 1 ? "" : "s")"
     }
 }
 

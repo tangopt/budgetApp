@@ -107,7 +107,7 @@ struct ThemeSwatchCard: View {
             HStack(spacing: 0) {
                 Text("Category").bold()
                 Spacer()
-                Text("Oct").bold()
+                Text("Oct").bold().figureText()
             }
             .padding(.horizontal, 5)
             .frame(height: 15)
@@ -147,9 +147,9 @@ struct ThemeSwatchCard: View {
 
     private func row<Amount: View>(_ name: String, bold: Bool = false, stripe: Color, background: Color, @ViewBuilder amount: () -> Amount) -> some View {
         HStack(spacing: 0) {
-            Text(name).fontWeight(bold ? .bold : .regular)
+            Text(name).fontWeight(bold ? .bold : .regular).lineLimit(1)
             Spacer(minLength: 4)
-            amount()
+            amount().figureText()
         }
         .padding(.leading, 6).padding(.trailing, 5)
         .frame(height: 15)

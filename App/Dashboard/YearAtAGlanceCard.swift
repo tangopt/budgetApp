@@ -17,7 +17,7 @@ struct YearAtAGlanceCard: View {
                 Spacer()
                 Button { viewModel.selectYear(viewModel.selectedYear - 1) } label: { Image(systemName: "chevron.left") }
                     .disabled(viewModel.selectedYear <= content.yearRange.lowerBound)
-                Text(String(viewModel.selectedYear)).font(.headline).frame(minWidth: 48)
+                Text(String(viewModel.selectedYear)).font(.headline).figureText().frame(minWidth: 48)
                 Button { viewModel.selectYear(viewModel.selectedYear + 1) } label: { Image(systemName: "chevron.right") }
                     .disabled(viewModel.selectedYear >= content.yearRange.upperBound)
             }
@@ -49,7 +49,7 @@ struct YearAtAGlanceCard: View {
             return isFuture ? text + " Unreviewed transactions aren't included." : text
         }
         let single = unreviewed.count == 1
-        let out = unreviewed.outflowMinorUnits > 0 ? " (\(DashboardFormat.pounds(unreviewed.outflowMinorUnits)) out)" : ""
+        let out = unreviewed.outflowMinorUnits > 0 ? " (\(DashboardFormat.pounds(unreviewed.outflowMinorUnits).unbroken) out)" : ""
         text += " \(unreviewed.count) unreviewed transaction\(single ? "" : "s")\(out) in \(String(viewModel.selectedYear)) \(single ? "isn't" : "aren't") included."
         return text
     }
@@ -57,11 +57,12 @@ struct YearAtAGlanceCard: View {
     private func total(_ title: String, projected: Int, actual: Int, hasForecast: Bool) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(hasForecast ? "\(title) · projected" : title).font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1)
             Text(DashboardFormat.pounds(projected)).font(.headline).monospacedDigit()
-                .lineLimit(1).minimumScaleFactor(0.7)
+                .figureText(.shrink())
             if hasForecast {
                 Text("of which actual \(DashboardFormat.pounds(actual))").font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .figureText(.shrink(minimumScale: 0.8))
             }
         }
         .padding(8)

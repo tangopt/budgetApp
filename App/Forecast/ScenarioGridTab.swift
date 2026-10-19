@@ -232,6 +232,7 @@ struct ScenarioGridTab: View {
                                 ForEach(rows) { row in rowCells(row.kind, shaded: row.shaded, year: year) }
                             }
                         }
+                        .wrapProbeScrollsHorizontally()
                     }
                     .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, x in scrollOffset.update(-x) }
                     .frame(maxWidth: scrollingWidth)
@@ -257,6 +258,7 @@ struct ScenarioGridTab: View {
         HStack(spacing: 0) {
             ForEach(1...12, id: \.self) { month in
                 Text(PayMonthFormat.name(PayMonth(year: year, month: month)))
+                    .figureText(.shrink())
                     .frame(width: GridMetrics.cellWidth, alignment: .trailing)
                     .padding(.horizontal, GridMetrics.cellPadding).padding(.vertical, 6)
                     .help(PayMonthFormat.range(viewModel.payCalendar.range(of: PayMonth(year: year, month: month))))

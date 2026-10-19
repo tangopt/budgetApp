@@ -403,7 +403,7 @@ struct RechargesTenancyView: View {
             StatusPill(count == 1 ? "1 to review" : "\(count) to review", tone: .warning)
         } content: {
             DataTable(columns: [
-                .text("Statement", width: .fit) { RechargeEmail.monthName($0.statement.month, language: .english) },
+                .text("Statement", width: .fit, figure: true) { RechargeEmail.monthName($0.statement.month, language: .english) },
                 .date("Credit") { $0.transaction.date },
                 .text("Description", width: .fill(min: 160)) { $0.transaction.rawDescription },
                 .money("Would pay", role: .neutral, currency: { _ in currency }) { $0.amountMinorUnits },
@@ -440,7 +440,7 @@ struct RechargesTenancyView: View {
                 .fixedSize()
                 .accessibilityLabel("Year")
             } else {
-                Text(String(year)).font(.callout).foregroundStyle(.secondary)
+                Text(String(year)).font(.callout).foregroundStyle(.secondary).figureText()
             }
         } content: {
             FigureStrip(tiles)
@@ -492,12 +492,12 @@ struct RechargesTenancyView: View {
                     BreakdownBars(items: items, currency: currency, role: .neutral)
                     Divider()
                     PropertyFacts {
-                        PropertyFact("Invoices") { Text("\(figures.invoices)").monospacedDigit() }
+                        PropertyFact("Invoices") { Text("\(figures.invoices)").monospacedDigit().figureText() }
                         if months > 0 {
                             PropertyFact("A month") {
                                 HStack(spacing: 4) {
                                     MoneyText(minorUnits: figures.paid / months, currency: currency, role: .neutral)
-                                    Text("on average, over \(months) month\(months == 1 ? "" : "s")").foregroundStyle(.secondary).lineLimit(1)
+                                    Text("on average, over \(months) month\(months == 1 ? "" : "s")").foregroundStyle(.secondary).figureText()
                                 }
                             }
                         }
@@ -505,7 +505,7 @@ struct RechargesTenancyView: View {
                             PropertyFact("Highest") {
                                 HStack(spacing: 4) {
                                     MoneyText(minorUnits: busiest.minorUnits, currency: currency, role: .neutral)
-                                    Text("in \(Self.monthName(busiest.month))").foregroundStyle(.secondary).lineLimit(1)
+                                    Text("in \(Self.monthName(busiest.month))").foregroundStyle(.secondary).figureText()
                                 }
                             }
                         }
@@ -589,7 +589,7 @@ struct RechargesTenancyView: View {
             DataTableColumn("Month", accessibilityValue: { line in line.row.map { $0.statement.month.formatted(Self.monthYearFormat) } }) { line, kind in
                 Text(kind == .total ? "Total sent" : line.row.map { Self.monthName($0.statement.month) } ?? "")
                     .fontWeight(kind == .total ? .semibold : .regular)
-                    .lineLimit(1)
+                    .figureText()
             },
             .status("Status") { line in line.row.map(status) },
             .date("Sent on") { $0.row?.statement.sentAt },

@@ -40,6 +40,7 @@ struct CSVMappingPreview: View {
                         GridRow {
                             Text(Self.dayFormatter.string(from: transaction.date))
                                 .monospacedDigit()
+                                .figureText()
                             Text(transaction.rawDescription)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
@@ -47,9 +48,8 @@ struct CSVMappingPreview: View {
                             MoneyText(minorUnits: transaction.amountMinorUnits, currency: currency)
                             if showsBalance {
                                 if let balance = transaction.balanceAfterMinorUnits {
-                                    Text(Money.format(balance, currency: currency))
-                                        .monospacedDigit()
-                                        .lineLimit(1).fixedSize()
+                                    // A balance: neither a gain nor a loss.
+                                    MoneyText(minorUnits: balance, currency: currency, tint: .primary)
                                 } else {
                                     Text("—").foregroundStyle(.secondary)
                                 }

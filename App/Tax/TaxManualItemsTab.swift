@@ -75,7 +75,7 @@ struct TaxManualItemsTab: View {
     private var columns: [DataTableColumn<Row>] {
         [
             .date("Date") { $0.item?.date },
-            DataTableColumn("Item", width: .fill(min: 200), accessibilityValue: { row in
+            DataTableColumn("Item", width: .fill(min: 120), accessibilityValue: { row in
                 [row.title, row.item.map { $0.isWholeProperty ? "the whole property's amount" : "" },
                  row.isAsEntered ? "as entered, whole-property items at 100%" : nil].compactMap { $0 }.filter { !$0.isEmpty }
                     .joined(separator: ", ")
@@ -93,9 +93,11 @@ struct TaxManualItemsTab: View {
                 }
                 .help([row.title, row.item?.notes].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n"))
             },
-            DataTableColumn("Tax line", accessibilityValue: { $0.item?.expenseType.displayName }) { row, _ in
+            // A label that truncates (whole on hover) so the figures keep their room.
+            DataTableColumn("Tax line", width: .fill(min: 90), accessibilityValue: { $0.item?.expenseType.displayName }) { row, _ in
                 if let item = row.item {
                     Text(item.expenseType.displayName).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                        .help(item.expenseType.displayName)
                 }
             },
             // Every item is a cost or income named for the return: as given, uncoloured (spec §1.4).

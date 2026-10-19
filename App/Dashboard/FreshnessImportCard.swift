@@ -37,9 +37,9 @@ struct FreshnessImportCard: View {
         var parts: [String] = []
         if let at = freshness.lastImportAt {
             let file = freshness.lastImportFileName.map { " (\($0))" } ?? ""
-            parts.append("Last import \(DashboardFormat.day(at))\(file)")
+            parts.append("Last import \(DashboardFormat.day(at).unbroken)\(file)")
         }
-        if let through = freshness.dataThrough { parts.append("transactions through \(DashboardFormat.day(through))") }
+        if let through = freshness.dataThrough { parts.append("transactions through \(DashboardFormat.day(through).unbroken)") }
         return parts.joined(separator: " · ")
     }
 
@@ -160,7 +160,7 @@ struct FreshnessImportCard: View {
                     Text(importedThrough[id].map { "Imported up to \(DashboardFormat.day($0))" } ?? "Not imported yet")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .figureText()
                         .layoutPriority(-1)
                 }
             }
@@ -184,7 +184,7 @@ struct FreshnessImportCard: View {
                 // Confirmed rows aren't saved until Finish import, so say so.
                 Text(importViewModel.confirmedCount > 0
                      ? "Import in review · \(importViewModel.confirmedCount) confirmed, not saved yet"
-                     : "Import ready to review").font(.callout)
+                     : "Import ready to review").font(.callout).figureText()
                 Button("Resume review ›") { navigate(.importReview) }.buttonStyle(.link).fixedSize()
             }
         } else if accounts.isEmpty {

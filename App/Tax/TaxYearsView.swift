@@ -76,6 +76,7 @@ struct TaxYearsList: View {
                 }
             }
         }
+        .wrapProbeClips()
         .listStyle(.inset)
         // On the window's colour like the page beside it (the list's own white or grey would
         // be a stripe of system colour in a theme with a background of its own).
@@ -94,7 +95,7 @@ struct TaxYearHeaderView: View {
         HStack(spacing: 5) {
             // The year never wraps: the pill and the deadline beside it are fixed too.
             Text(year.label).font(.subheadline.bold()).monospacedDigit().foregroundStyle(.primary)
-                .lineLimit(1).fixedSize()
+                .figureText()
             Spacer(minLength: 0)
             if rateMissing {
                 // HMRC's average is for the year to 31 March: missing only once the year is over.
@@ -128,7 +129,7 @@ struct TaxYearRowView: View {
         HStack(spacing: 6) {
             Text(row.person.name).lineLimit(1)
             if row.properties.count > 1 {
-                Text("\(row.properties.count) properties").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text("\(row.properties.count) properties").font(.caption).foregroundStyle(.secondary).figureText()
             }
             Spacer(minLength: 4)
             TaxStatusPill(status: row.status)
@@ -182,7 +183,7 @@ struct TaxYearPage: View {
             HStack(alignment: .center, spacing: 10) {
                 Text("\(page.row.year.label) · \(page.row.person.name)")
                     .font(.title3.weight(.semibold)).monospacedDigit()
-                    .lineLimit(1).fixedSize()
+                    .figureText()
                 if page.row.properties.count > 1 {
                     Picker("Property", selection: Binding(get: { page.property?.id }, set: { viewModel.propertyId = $0 })) {
                         ForEach(page.row.properties) { Text($0.name).tag($0.id) }
@@ -194,10 +195,15 @@ struct TaxYearPage: View {
                         .foregroundStyle(.secondary).lineLimit(1)
                 }
                 ForEach(viewModel.automaticallyFetchedRates, id: \.currencyCode) { rate in
-                    Label("\(rate.bothWaysText), fetched automatically", systemImage: "arrow.down.circle")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.tail)
-                        .help("HMRC average rate fetched automatically. \(rate.notes ?? "HMRC's average for the year to 31 March")")
+                    // The rate stays whole; the words after it truncate.
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.down.circle")
+                        Text(rate.bothWaysText + ",").figureText()
+                        Text("fetched automatically").lineLimit(1)
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityElement(children: .combine)
+                    .help("HMRC average rate fetched automatically. \(rate.notes ?? "HMRC's average for the year to 31 March")")
                 }
                 Spacer(minLength: 8)
                 Text("Status").foregroundStyle(.secondary)

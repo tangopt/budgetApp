@@ -94,7 +94,7 @@ struct PropertyOverviewTab: View {
                         PropertyFact("Tenant") { Text(tenancy.tenantName ?? "—") }
                         PropertyFact("Runs") {
                             HStack(spacing: 6) {
-                                Text(PropertyFormat.period(tenancy.startDate, tenancy.endDate))
+                                Text(PropertyFormat.period(tenancy.startDate, tenancy.endDate)).figureText()
                                 StatusPill(running ? "Running" : "Ended", tone: running ? .positive : .neutral)
                             }
                         }
@@ -125,7 +125,7 @@ struct PropertyOverviewTab: View {
         let rows = viewModel.snapshot.receipts[tenancy.id ?? -1] ?? []
         let issued = rows.filter { $0.receipt.status == .issued }.count, paid = rows.filter(\.isPaid).count
         return HStack(spacing: 6) {
-            Text("\(issued) issued").monospacedDigit()
+            Text("\(issued) issued").monospacedDigit().figureText()
             if issued > 0 {
                 if paid == issued {
                     StatusPill("All paid", tone: .positive, systemImage: "checkmark")
@@ -186,7 +186,7 @@ struct PropertyLoanPanel: View {
                         Spacer(minLength: 8)
                         if first.owedMinorUnits > last.owedMinorUnits {
                             Text("\(Money.format(first.owedMinorUnits - last.owedMinorUnits, currency: currency)) repaid")
-                                .font(.callout).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                                .font(.callout).monospacedDigit().foregroundStyle(.secondary).figureText()
                         }
                     }
                     BalanceLineChart(points: points.map { BalancePoint(date: $0.date, minorUnits: $0.owedMinorUnits) },

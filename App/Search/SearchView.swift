@@ -86,21 +86,23 @@ struct SearchView: View {
     private var table: some View {
         Table(viewModel.rows, selection: $selection, sortOrder: $viewModel.sortOrder) {
             TableColumn("Date", value: \Row.date) { row in
-                Text(SearchFormat.day(row.date)).monospacedDigit()
+                Text(SearchFormat.day(row.date)).monospacedDigit().figureText(.shrink())
             }
             .width(min: 90, ideal: 100, max: 120)
             TableColumn("Description", value: \Row.description) { row in
                 descriptionCell(row)
             }
-            .width(min: 180, ideal: 320)
+            // Ideal widths that fit a 1100-point window (the table starts its columns at their
+            // ideal widths and only widens them): the Amount column is never pushed out of view.
+            .width(min: 180, ideal: 260)
             TableColumn("Category", value: \Row.categoryName) { row in
                 categoryCell(row)
             }
-            .width(min: 120, ideal: 180)
+            .width(min: 120, ideal: 150)
             TableColumn("Account", value: \Row.accountName) { row in
                 Text(row.accountName).lineLimit(1)
             }
-            .width(min: 90, ideal: 150)
+            .width(min: 90, ideal: 130)
             TableColumn("Amount", value: \Row.amountMinorUnits) { row in
                 MoneyText(minorUnits: row.amountMinorUnits, currency: row.currency, alignment: .trailing)
             }
@@ -113,6 +115,7 @@ struct SearchView: View {
             }
             .width(24)
         }
+        .wrapProbeClips()
         .contextMenu(forSelectionType: Int64.self) { ids in
             contextMenu(ids)
         } primaryAction: { ids in
@@ -199,6 +202,7 @@ struct SearchView: View {
         let totals = viewModel.totals
         return HStack(spacing: 16) {
             Text(totals.count == 1 ? "1 transaction" : "\(totals.count) transactions")
+                .figureText()
             summaryFigure("In", totals.inMinorUnits)
             summaryFigure("Out", totals.outMinorUnits)
             summaryFigure("Net", totals.netMinorUnits)
@@ -206,10 +210,12 @@ struct SearchView: View {
                 Text("Transfers between your accounts counted once")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    // The note gives way to the figures beside it.
+                    .lineLimit(1)
                     .help("A linked transfer's incoming leg is listed but left out of In and Out, as on the Budget grid. Pick accounts to total their rows as they are.")
             }
             if !selection.isEmpty {
-                Text("\(selection.count) selected").foregroundStyle(.secondary)
+                Text("\(selection.count) selected").foregroundStyle(.secondary).figureText()
             }
             Spacer()
             setCategoryButton
@@ -219,7 +225,7 @@ struct SearchView: View {
 
     private func summaryFigure(_ label: String, _ minorUnits: Int) -> some View {
         HStack(spacing: 4) {
-            Text(label).foregroundStyle(.secondary)
+            Text(label).foregroundStyle(.secondary).fixedSize()
             MoneyText(minorUnits: minorUnits, font: .callout.monospacedDigit())
         }
     }

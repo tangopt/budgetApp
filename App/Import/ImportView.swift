@@ -36,6 +36,7 @@ struct ImportView: View {
                 Text("Categorizing \(progress.current) of \(progress.total) transactions…")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .figureText()
             } else {
                 ProgressView()
                 Text("Preparing…")

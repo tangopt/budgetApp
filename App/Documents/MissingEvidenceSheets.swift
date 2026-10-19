@@ -84,8 +84,8 @@ struct LinkEvidenceSheet: View {
 
     private var subtitle: String {
         var parts = [item.title]
-        if let date = item.expectedDate { parts.append(DocumentFormat.day(date)) }
-        if let slot = item.expectedPeriod { parts.append(MissingEvidenceFormat.slot(slot)) }
+        if let date = item.expectedDate { parts.append(DocumentFormat.day(date).unbroken) }
+        if let slot = item.expectedPeriod { parts.append(MissingEvidenceFormat.slot(slot).unbroken) }
         return parts.joined(separator: " · ") + "\nNeeds: " + MissingEvidenceViewModel.kindsText(item.expectedKinds)
     }
 

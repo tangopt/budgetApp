@@ -24,12 +24,15 @@ struct DocumentsView: View {
     @State private var removing: EvidenceDocument?
 
     var body: some View {
-        HSplitView {
-            // The list takes the width; the column beside keeps one width whether or not a
-            // document is selected, so the list's columns don't jump.
+        // An HStack, not an HSplitView: the split view asked the window for 1209 pt (its panes'
+        // minimums plus 145 pt of its own), more than a 1100-wide window has. The list takes the
+        // width; the column beside keeps one width whether or not a document is selected, so
+        // the list's columns don't jump.
+        HStack(spacing: 0) {
             libraryList
                 .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
                 .layoutPriority(1)
+            Divider()
             detail
                 .frame(minWidth: 400, idealWidth: 420, maxWidth: 460, maxHeight: .infinity)
         }
@@ -142,9 +145,10 @@ struct DocumentsView: View {
             let shown = viewModel.entries.count, total = viewModel.index.entries.count
             Text(shown == total ? "\(total) document\(total == 1 ? "" : "s")" : "\(shown) of \(total) documents")
                 .monospacedDigit()
+                .figureText()
             if viewModel.addingCount > 0 {
                 ProgressView().controlSize(.small)
-                Text("Adding \(viewModel.addingCount)…")
+                Text("Adding \(viewModel.addingCount)…").figureText()
             }
             Spacer()
         }
@@ -222,11 +226,14 @@ private struct DocumentsTable: View {
             TableColumn("Name") { entry in
                 DocumentNameCell(summary: entry.summary)
             }
-            .width(min: 180, ideal: 320)
+            // Ideals that fit the list's pane in a 1100-wide window (the table starts its columns
+            // at their ideal widths and only widens them), so Amount is never cut off; the name
+            // takes the extra width.
+            .width(min: 110, ideal: 120)
             TableColumn("Kind") { entry in
                 StatusPill(entry.summary.kind.displayName)
             }
-            .width(min: 96, ideal: 112, max: 124)
+            .width(min: 96, ideal: 100, max: 124)
             TableColumn("Date") { entry in
                 DateText(date: entry.summary.docDate)
             }
@@ -240,7 +247,7 @@ private struct DocumentsTable: View {
                 }
             }
             // A cap, so the room left over goes to the names.
-            .width(min: 84, ideal: 96, max: 112)
+            .width(min: 84, ideal: 90, max: 112)
             TableColumn(Text(Image(systemName: "link")).accessibilityLabel("Links")) { entry in
                 DocumentLinksCell(count: entry.linkCount)
             }
@@ -253,14 +260,16 @@ private struct DocumentsTable: View {
                     }
                 } header: {
                     HStack(spacing: 6) {
-                        Text(section.title).fontWeight(.semibold).monospacedDigit()
+                        Text(section.title).fontWeight(.semibold).monospacedDigit().figureText()
                         Text(section.entries.count == 1 ? "1 document" : "\(section.entries.count) documents")
                             .foregroundStyle(.secondary)
+                            .figureText()
                     }
                     .accessibilityElement(children: .combine)
                 }
             }
         }
+        .wrapProbeClips()
         .contextMenu(forSelectionType: Int64.self) { ids in
             if let id = ids.first, ids.count == 1 {
                 Button("Open") { actions.open(id) }
@@ -305,7 +314,7 @@ private struct DocumentLinksCell: View {
             if count > 0 {
                 HStack(spacing: 2) {
                     Image(systemName: "link")
-                    Text("\(count)").monospacedDigit()
+                    Text("\(count)").monospacedDigit().figureText()
                 }
                 .foregroundStyle(.secondary)
                 .help(count == 1 ? "Linked to 1 record" : "Linked to \(count) records")

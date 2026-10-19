@@ -53,28 +53,28 @@ struct YearOverYearChart: View {
                     .foregroundStyle(Color.secondary.opacity(0.3))
                     .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
                         VStack(spacing: 0) {
-                            Text(label(selected)).font(.caption2).foregroundStyle(.secondary)
-                            Text(DashboardFormat.pounds(selected.totalMinorUnits)).font(.caption.bold())
-                            Text(DashboardFormat.percent(selected.percent)).font(.caption2).foregroundStyle(.secondary)
+                            Text(label(selected)).font(.caption2).foregroundStyle(.secondary).figureText()
+                            Text(DashboardFormat.pounds(selected.totalMinorUnits)).font(.caption.bold()).figureText()
+                            Text(DashboardFormat.percent(selected.percent)).font(.caption2).foregroundStyle(.secondary).figureText()
                             // A year that is partly forecast shows both parts of the bar.
                             if selected.forecastMinorUnits != 0 {
-                                Text("Realised \(DashboardFormat.pounds(selected.realisedMinorUnits))").font(.caption2)
-                                Text("Forecast \(DashboardFormat.pounds(selected.forecastMinorUnits))").font(.caption2).foregroundStyle(.secondary)
+                                Text("Realised \(DashboardFormat.pounds(selected.realisedMinorUnits))").font(.caption2).figureText()
+                                Text("Forecast \(DashboardFormat.pounds(selected.forecastMinorUnits))").font(.caption2).foregroundStyle(.secondary).figureText()
                             }
                         }
-                        .lineLimit(1)
-                        .fixedSize()
                         .padding(4)
                         .background(RoundedRectangle(cornerRadius: 6).fill(theme.windowFill))
                     }
             }
         }
+        // Charts lay their labels out apart from the scroll view: no clip check on them.
+        .wrapProbeInChart()
         .chartXSelection(value: $selectedYear)
         .chartYAxis {
             AxisMarks(position: .leading) { value in
                 AxisGridLine()
                 AxisValueLabel {
-                    if let pounds = value.as(Double.self) { Text(DashboardFormat.axisThousands(pounds)) }
+                    if let pounds = value.as(Double.self) { Text(DashboardFormat.axisThousands(pounds)).figureText() }
                 }
             }
         }
@@ -85,8 +85,7 @@ struct YearOverYearChart: View {
     private func totalLabel(_ change: YearChange) -> some View {
         Text(DashboardFormat.compactPounds(change.totalMinorUnits))
             .font(.caption2)
-            .lineLimit(1)
-            .fixedSize()
+            .figureText()
             .foregroundStyle(.secondary)
     }
 }

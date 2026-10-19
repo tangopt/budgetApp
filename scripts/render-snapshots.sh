@@ -8,20 +8,23 @@
 # demo's marker, and the build is deleted again at the end.
 #
 #   scripts/render-snapshots.sh <outDir> [--only property,sheet-tax] [--themes classic,midnight,sunset]
-#                               [--appearances light,dark] [--scale 1] [--settle 1.6]
-#                               [--as-of 2026-10-15] [--size 1440x900]
+#                               [--appearances light,dark] [--looks light-classic,dark-midnight]
+#                               [--scale 1] [--settle 1.6] [--as-of 2026-10-15] [--size 1440x900]
 #
 # <outDir> (relative to where you run it) must be new, empty, or an earlier output of this
 # script (it holds a .budget-snapshots marker). Writes <outDir>/demo.sqlite (+ Evidence/),
-# <outDir>/<screen>-<tab>-<appearance>-<theme>.png and <outDir>/index.html. A full run
-# replaces the folder's PNGs; an --only run adds to them. --as-of is the day the app takes as
-# today (default: the demo's 15 Oct 2026); --size the window (default 1440x900).
+# <outDir>/<screen>-<tab>-<appearance>-<theme>.png, <outDir>/index.html and
+# <outDir>/wrap-report.txt (the wrap probe: every figure that wraps, truncates or is cut off,
+# by route). A full run replaces the folder's PNGs; an --only run adds to them (its report
+# covers what it rendered). --looks captures just those appearance-theme pairs instead of
+# every appearance in every theme; --as-of is the day the app takes as today (default: the
+# demo's 15 Oct 2026); --size the window (default 1440x900).
 # Builds into $SNAPSHOT_SCRATCH (default $TMPDIR/budget-snapshots): dd-ui.noindex (the app)
 # and spm (the demo-database tool).
 set -euo pipefail
 
 if [[ $# -lt 1 || "$1" == -* ]]; then
-    echo "usage: $0 <outDir> [--only a,b] [--themes ids] [--appearances light,dark] [--scale n] [--as-of YYYY-MM-DD] [--size WxH]" >&2
+    echo "usage: $0 <outDir> [--only a,b] [--themes ids] [--appearances light,dark] [--looks light-classic,dark-midnight] [--scale n] [--as-of YYYY-MM-DD] [--size WxH]" >&2
     exit 2
 fi
 
@@ -95,7 +98,7 @@ head -2 "$SCRATCH/render-demo.log"
 
 # A full run starts from an empty set; an --only run adds to (and overwrites in) the folder.
 if (( ! ${@[(Ie)--only]} )); then
-    rm -f "$OUT"/*.png(N) "$OUT/index.html"
+    rm -f "$OUT"/*.png(N) "$OUT/index.html" "$OUT/wrap-report.txt"
 fi
 echo "Rendering…"
 BUDGET_DB_PATH="$OUT/demo.sqlite" "$APP/Contents/MacOS/Budget" --render-snapshots "$OUT" "$@"

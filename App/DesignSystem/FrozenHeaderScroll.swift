@@ -31,6 +31,7 @@ struct HorizontalOffsetFollower<Content: View>: View {
 
     var body: some View {
         content.offset(x: offset.x)
+            .wrapProbeScrollsHorizontally()
     }
 }
 

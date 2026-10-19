@@ -52,6 +52,7 @@ struct StatusPill: View {
         .font(.caption.weight(.medium))
         .lineLimit(1)
         .fixedSize()
+        .wrapProbe("StatusPill", text: title)
         .padding(.horizontal, 6)
         .padding(.vertical, 1)
         .background(Capsule().fill(color.opacity(0.15)))

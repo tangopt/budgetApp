@@ -24,7 +24,7 @@ struct TaxAccountsTab: View {
                 if !accounts.warnings.isEmpty {
                     InlineBanner(.warning) {
                         VStack(alignment: .leading, spacing: 4) {
-                            ForEach(accounts.warnings, id: \.self) { Text($0) }
+                            ForEach(accounts.warnings, id: \.self) { Text($0.figuresUnbroken) }
                         }
                     }
                 }
@@ -90,7 +90,7 @@ struct TaxAccountsTab: View {
         let apart = "Finance costs get relief at the basic rate; the PT tax (calendar year \(String(accounts.taxYear.startYear))) is the foreign tax credit relief input; not-deductible items are listed for information."
         guard accounts.currency != .gbp else { return apart }
         guard let rate = accounts.rate else { return "No HMRC average rate for \(accounts.taxYear.label): set or fetch it in Settings. " + apart }
-        return "GBP at HMRC's average rate: \(TaxFormat.rate(rate)), \(TaxFormat.source(of: rate)). Pound items are added as they are, never converted. " + apart
+        return "GBP at HMRC's average rate: \(TaxFormat.rate(rate).unbroken), \(TaxFormat.source(of: rate)). Pound items are added as they are, never converted. " + apart
     }
 
     // MARK: Headline
@@ -150,13 +150,14 @@ struct TaxAccountsTab: View {
     private func lineColumns(_ accounts: RentalAccounts.Result) -> [DataTableColumn<LineRow>] {
         let currency = accounts.currency
         var columns: [DataTableColumn<LineRow>] = [
-            DataTableColumn("Line", width: .fill(min: 190), accessibilityValue: { $0.title }) { row, kind in
+            DataTableColumn("Line", width: .fill(min: 140), accessibilityValue: { $0.title }) { row, kind in
                 Text(row.title)
                     .fontWeight(kind == .total ? .semibold : .regular)
                     .lineLimit(1)
                     .help(row.line.map { "\($0.ruleExplanation) Share: \($0.shareExplanation)." } ?? row.title)
             },
-            DataTableColumn("Rule", accessibilityValue: { $0.line?.rule.displayName }) { row, _ in
+            // A label that truncates (whole on hover) so the figures keep their room.
+            DataTableColumn("Rule", width: .fill(min: 90), accessibilityValue: { $0.line?.rule.displayName }) { row, _ in
                 if let line = row.line {
                     Text(line.rule.displayName).font(.callout).foregroundStyle(.secondary).lineLimit(1)
                         .help(line.ruleExplanation)
@@ -167,7 +168,7 @@ struct TaxAccountsTab: View {
             columns.append(DataTableColumn("Share", alignment: .trailing, width: .min(52),
                                            accessibilityValue: { $0.line.map { PropertyFormat.percent($0.share.shareBasisPoints) } }) { row, _ in
                 if let line = row.line {
-                    Text(PropertyFormat.percent(line.share.shareBasisPoints)).monospacedDigit()
+                    Text(PropertyFormat.percent(line.share.shareBasisPoints)).monospacedDigit().figureText()
                         .help(line.shareExplanation)
                 }
             })
@@ -202,7 +203,7 @@ struct TaxAccountsTab: View {
                 }
                 if let paid = Self.paidInGBP(row) {
                     Text("incl. \(paid) paid in GBP")
-                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary).figureText()
                         .help("Items paid in pounds, added as they are (never converted)")
                 }
             }
@@ -268,7 +269,7 @@ struct TaxAccountsTab: View {
                     TaxRentMonthsChart(months: months, currency: accounts.currency, personName: page.row.person.name)
                     if showsRentTable {
                         DataTable(columns: [
-                            .text("Month", width: .fill(min: 90), { $0.title }),
+                            .text("Month", width: .fill(min: 90), figure: true, { $0.title }),
                             .money("Property", role: .neutral, currency: { _ in accounts.currency }) { $0.whole },
                             .money(page.row.person.name, role: .signed, currency: { _ in accounts.currency }) { $0.amount }
                         ], rows: months.map { RentRow(id: "\($0.start.timeIntervalSince1970)", title: $0.start.formatted(format),
@@ -291,7 +292,7 @@ struct TaxSourcesButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 3) {
-                Text("\(count)").font(.callout).monospacedDigit()
+                Text("\(count)").font(.callout).monospacedDigit().figureText()
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold))
             }
         }
@@ -353,6 +354,8 @@ struct TaxRentMonthsChart: View {
                     }
             }
         }
+        // Charts lay their labels out apart from the scroll view: no clip check on them.
+        .wrapProbeInChart()
         .chartForegroundStyleScale([personName: theme.income, othersLabel: theme.income.opacity(0.3)])
         .chartLegend(.hidden)
         .chartXAxis {
@@ -364,7 +367,7 @@ struct TaxRentMonthsChart: View {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
                 AxisGridLine()
                 AxisValueLabel {
-                    if let amount = value.as(Double.self) { Text(MoneyAxis.compact(amount, currency: currency)) }
+                    if let amount = value.as(Double.self) { Text(MoneyAxis.compact(amount, currency: currency)).figureText() }
                 }
             }
         }
@@ -382,14 +385,14 @@ struct TaxRentMonthsChart: View {
             MoneyText(minorUnits: minorUnits, currency: currency, font: .callout.monospacedDigit(), role: .neutral)
         }
         .font(.callout)
-        .lineLimit(1)
-        .fixedSize()
+        .figureText()
         .accessibilityElement(children: .combine)
     }
 
     private func readout(_ month: RentalAccounts.RentMonth) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(month.start.formatted(Date.FormatStyle(timeZone: Self.utc).month(.wide).year())).font(.caption2).foregroundStyle(.secondary)
+                .figureText()
             // Each series under its own name and colour, then the whole property's rent.
             readoutLine(personName, month.amount, theme.income)
             if !ownsAll {
@@ -524,7 +527,7 @@ struct TaxLineSourcesSheet: View {
             columns.append(DataTableColumn("Share", alignment: .trailing, width: .min(52),
                                            accessibilityValue: { $0.source.map { PropertyFormat.percent($0.shareBasisPoints) } }) { row, _ in
                 if let source = row.source {
-                    Text(PropertyFormat.percent(source.shareBasisPoints)).monospacedDigit()
+                    Text(PropertyFormat.percent(source.shareBasisPoints)).monospacedDigit().figureText()
                         .foregroundStyle(source.shareBasisPoints == line.share.shareBasisPoints ? .secondary : .primary)
                 }
             })
@@ -566,7 +569,7 @@ private struct SourceDocumentsButton: View {
             } label: {
                 HStack(spacing: 1) {
                     Image(systemName: "paperclip")
-                    Text("\(documents.count)").monospacedDigit()
+                    Text("\(documents.count)").monospacedDigit().figureText()
                 }
                 .font(.caption)
             }

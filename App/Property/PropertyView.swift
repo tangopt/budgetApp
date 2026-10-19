@@ -212,6 +212,7 @@ struct PropertyDrillDownSheet: View {
                         .accessibilityLabel("Show \(row.transaction.rawDescription)")
                     }
                 }
+                .wrapProbeClips()
                 .frame(minHeight: 320)
                 .sheetListFrame()
             }

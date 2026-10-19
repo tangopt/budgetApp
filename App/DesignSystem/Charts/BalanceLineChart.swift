@@ -85,7 +85,7 @@ struct BalanceLineChart: View {
                     .foregroundStyle(Color.secondary.opacity(0.5))
                     .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(DocumentFormat.day(selected.date)).font(.caption2).foregroundStyle(.secondary)
+                            Text(DocumentFormat.day(selected.date)).font(.caption2).foregroundStyle(.secondary).figureText()
                             MoneyText(minorUnits: selected.minorUnits, currency: currency, font: .caption.bold().monospacedDigit(), role: .neutral)
                         }
                         .padding(6)
@@ -94,6 +94,8 @@ struct BalanceLineChart: View {
                     }
             }
         }
+        // Charts lay their labels out apart from the scroll view: no clip check on them.
+        .wrapProbeInChart()
         .chartYScale(domain: domain)
         // Room after the last point for the last month's label.
         .chartXScale(range: .plotDimension(endPadding: showsAxes ? 18 : 0))
@@ -110,7 +112,7 @@ struct BalanceLineChart: View {
                 AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
                     AxisGridLine()
                     AxisValueLabel {
-                        if let amount = value.as(Double.self) { Text(MoneyAxis.compact(amount, currency: currency)) }
+                        if let amount = value.as(Double.self) { Text(MoneyAxis.compact(amount, currency: currency)).figureText() }
                     }
                 }
             }

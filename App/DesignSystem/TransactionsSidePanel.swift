@@ -94,6 +94,7 @@ struct TransactionsSidePanel<Planned: View>: View {
             if showsTransactions {
                 HStack {
                     Text(transactions.count == 1 ? "1 transaction" : "\(transactions.count) transactions")
+                        .figureText()
                     Spacer()
                     MoneyText(minorUnits: transactions.reduce(0) { $0 + conversion.gbp($1) })
                         .help(convertedTotalNote.map { _ in Self.convertedTotalHelp } ?? "")
@@ -104,6 +105,7 @@ struct TransactionsSidePanel<Planned: View>: View {
                     Text(note)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .figureText()
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .help(Self.convertedTotalHelp)
                 }
@@ -122,6 +124,7 @@ struct TransactionsSidePanel<Planned: View>: View {
                 }
                 plannedSection()
             }
+            .wrapProbeClips()
         }
         .padding(12)
         .frame(maxHeight: .infinity, alignment: .top)
