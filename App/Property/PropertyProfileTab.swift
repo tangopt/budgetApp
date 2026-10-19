@@ -175,34 +175,70 @@ struct PropertyProfileTab: View {
 
     // MARK: Mortgage
 
-    /// The mortgage's terms: when its rate is revised (the calendar's revisions), what it
-    /// follows, and the facts the loan's projection uses.
+    /// The mortgage: the rate its rules give now (the index fixing plus the spread, or the
+    /// fixed rate, or the rate given for the period), the next revision and instalment, and the
+    /// loan's instalments and balloon.
     private func mortgagePanel(_ snapshot: PropertyViewModel.Snapshot) -> some View {
         let terms = snapshot.mortgageTerms ?? PropertyMortgageTerms(propertyId: viewModel.propertyId ?? 0)
+        let status = snapshot.rateStatus
         let currency = viewModel.currency
-        return Panel("Mortgage", subtitle: "Rate revisions and the loan's end, for the calendar and the loan chart", fillsHeight: true) {
+        return Panel("Mortgage", subtitle: "The rate from the loan's rules, for the calendar and the loan chart", fillsHeight: true) {
             Button { editingMortgageTerms = true } label: { Image(systemName: "pencil") }
                 .buttonStyle(.borderless)
-                .help("Edit the mortgage terms: rate revisions, final instalment, balloon")
+                .help("Edit the mortgage terms: index, spread, revisions, instalments, balloon")
                 .accessibilityLabel("Edit mortgage terms")
         } content: {
             PropertyFacts {
-                PropertyFact("Rate revised") {
-                    Text(MortgageTerms.scheduleText(terms.revisionMonths).capitalizedFirst)
-                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                }
-                PropertyFact("Rate follows") {
-                    if let note = terms.rateNote { Text(note).lineLimit(1).help(note) } else { Text("—").foregroundStyle(.secondary) }
-                }
-                PropertyFact("Rate now") {
-                    if let rate = terms.annualRatePercent {
-                        Text(String(format: "%.3f%%", rate)).monospacedDigit().figureText()
+                PropertyFact("Rate") {
+                    if let current = status?.current {
+                        Text(current.explanation)
+                            .monospacedDigit()
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if terms.hasRateRules {
+                        Text("No \(terms.rateIndex?.displayName ?? "index") fixing stored for this period yet")
+                            .foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                     } else {
-                        Text("From the interest charged on the loan").foregroundStyle(.secondary).lineLimit(1)
+                        Text("Add the loan's rules with the pencil (index and spread)")
+                            .foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                PropertyFact("Next revision") {
+                    if let next = status?.nextRevision {
+                        HStack(spacing: 4) {
+                            DateText(date: next)
+                            Text(MortgageTerms.scheduleText(terms.revisionMonths).unbroken)
+                                .foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                                .help(MortgageTerms.scheduleText(terms.revisionMonths).capitalizedFirst)
+                        }
+                    } else {
+                        Text(MortgageTerms.scheduleText(terms.revisionMonths).capitalizedFirst).lineLimit(1)
+                    }
+                }
+                PropertyFact("Next instalment") {
+                    if let amount = status?.nextInstalmentMinorUnits, let due = status?.nextDue {
+                        HStack(spacing: 4) {
+                            MoneyText(minorUnits: amount, currency: currency, role: .neutral)
+                            Text("due").foregroundStyle(.secondary)
+                            DateText(date: due)
+                        }
+                    } else {
+                        Text("—").foregroundStyle(.secondary)
+                    }
+                }
+                PropertyFact("Instalments") {
+                    if let total = terms.totalInstalments {
+                        HStack(spacing: 4) {
+                            Text("\(total) in all").monospacedDigit().figureText()
+                            if let left = status?.remainingInstalments {
+                                Text("· \(left) left").monospacedDigit().foregroundStyle(.secondary).figureText()
+                            }
+                        }
+                    } else {
+                        Text("—").foregroundStyle(.secondary)
                     }
                 }
                 PropertyFact("Final instalment") {
-                    if terms.finalInstalmentDate != nil { DateText(date: terms.finalInstalmentDate) } else { Text("—").foregroundStyle(.secondary) }
+                    if let final = terms.effectiveFinalInstalmentDate { DateText(date: final) } else { Text("—").foregroundStyle(.secondary) }
                 }
                 PropertyFact("Balloon") {
                     if let balloon = terms.balloonMinorUnits {

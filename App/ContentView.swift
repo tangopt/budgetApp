@@ -142,7 +142,8 @@ struct ContentView: View {
         _searchViewModel = StateObject(wrappedValue: SearchViewModel(dbQueue: environment.dbQueue))
         _documentsViewModel = StateObject(wrappedValue: DocumentsViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
         _missingEvidenceViewModel = StateObject(wrappedValue: MissingEvidenceViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
-        _propertyViewModel = StateObject(wrappedValue: PropertyViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
+        _propertyViewModel = StateObject(wrappedValue: PropertyViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary,
+                                                                                     indexAutoFetch: environment.interestIndexAutoFetch))
         _taxYearsViewModel = StateObject(wrappedValue: TaxYearsViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary,
                                                                                rateAutoFetch: environment.hmrcRateAutoFetch))
     }

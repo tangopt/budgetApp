@@ -285,15 +285,21 @@ struct PropertyLoanPanel: View {
     private var assumptions: String? {
         guard let basis = viewModel.snapshot.loanBasis, let projection else { return nil }
         let input = basis.input
-        let rate = String(format: "%.2f%%", input.annualRatePercent)
-        let rateSource: String
+        let instalment = Money.format(projection.payments.first?.paidMinorUnits ?? input.instalmentMinorUnits, currency: currency).unbroken
+        var text: String
         switch basis.rateSource {
-        case .entered: rateSource = "the rate in Profile"
-        case let .derived(day): rateSource = "from the interest charged on \(DocumentFormat.day(day))"
+        case let .rules(current):
+            text = "Projection: \(current.explanation) from \(MortgageTerms.dayText(current.start).unbroken)"
+            if let held = basis.heldFrom, let fixing = held.fixing {
+                text += "; from \(MortgageTerms.dayText(held.start).unbroken) the latest fixing (\(fixing.dateText.unbroken)) is held, "
+                    + "\(MortgageRate.percent(held.ratePercent).unbroken) to the end (not a market forecast)"
+            }
+            text += "; revised \(MortgageTerms.scheduleText(input.revisionMonths)); \(instalment) a month"
+        case let .derived(day):
+            let rate = MortgageRate.percent(input.annualRatePercent).unbroken
+            text = "Projection: \(rate) (from the interest charged on \(DocumentFormat.day(day))) held constant to the end, revised "
+                + "\(MortgageTerms.scheduleText(input.revisionMonths)); \(instalment) a month"
         }
-        let instalment = Money.format(input.instalmentMinorUnits, currency: currency)
-        var text = "Projection: \(rate) (\(rateSource)) held constant to the end, revised "
-            + "\(MortgageTerms.scheduleText(input.revisionMonths)); \(instalment) a month"
         if let date = projection.finalDate, let paid = projection.finalPaymentMinorUnits {
             let final = Money.format(paid, currency: currency)
             text += input.finalInstalmentDate != nil
@@ -301,6 +307,8 @@ struct PropertyLoanPanel: View {
                     ? ", the final instalment of \(final) on \(DocumentFormat.day(date)) repaying the \(Money.format(input.balloonMinorUnits, currency: currency)) balloon."
                     : ", the final instalment of \(final) on \(DocumentFormat.day(date)).")
                 : " until repaid on \(DocumentFormat.day(date)) (no final instalment in Profile)."
+        } else {
+            text += "."
         }
         return text
     }

@@ -122,15 +122,34 @@ public enum PropertyCalendar {
         for accountId in mortgageIds {
             if try !mortgageLegs(db: db, accountId: accountId, before: today).isEmpty { hasInstalments = true }
         }
-        if hasInstalments, terms.finalInstalmentDate == nil {
+        if hasInstalments, terms.effectiveFinalInstalmentDate == nil {
             let owed = try PropertyFinance.balance(db: db, property: property, conversion: try CurrencyConversion.current(db: db),
                                                    accountIds: mortgageIds, asOf: PropertyDates.day(today))
             if owed.native <= 0 { hasInstalments = false }
         }
         if hasInstalments {
-            let end = terms.finalInstalmentDate.map { min(to, PropertyDates.nextDay($0)) } ?? to
-            for date in terms.revisionDates(from: from, to: end) {
-                add(date, .mortgageRateReset, "Mortgage rate revision", estimate: false, source: "\(propertyId)")
+            let end = terms.effectiveFinalInstalmentDate.map { min(to, PropertyDates.nextDay($0)) } ?? to
+            let revisions = terms.revisionDates(from: from, to: end)
+            // Once a revision's rate is known (its fixing published, a fixed rate or an
+            // override), the rate and the instalment it resets to (the projection's first
+            // instalment on or after it).
+            var known: [Date: (rate: Double, instalment: Int?)] = [:]
+            if terms.hasRateRules, !revisions.isEmpty {
+                let series = try MortgageRate.series(db: db, terms: terms)
+                let overrides = try MortgageRate.overrides(db: db, propertyId: propertyId)
+                let projection = try MortgageProjection.basis(db: db, propertyId: propertyId, today: today).map { MortgageProjection.project($0.input) }
+                for date in revisions {
+                    guard let rate = MortgageRate.rate(periodStart: date, terms: terms, series: series, overrides: overrides) else { continue }
+                    known[date] = (rate.ratePercent, projection?.payments.first { $0.date >= date }?.paidMinorUnits)
+                }
+            }
+            for date in revisions {
+                var title = "Mortgage rate revision"
+                if let (rate, instalment) = known[date] {
+                    title += ": \(MortgageRate.percent(rate).unbroken)"
+                    if let instalment { title += ", instalment \(Money.format(instalment, currency: property.currency).unbroken)" }
+                }
+                add(date, .mortgageRateReset, title, estimate: false, source: "\(propertyId)")
             }
         }
 

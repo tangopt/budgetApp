@@ -31,7 +31,10 @@ final class MortgageProjectionTests: XCTestCase {
 
     func testTheFinalInstalmentRepaysTheBalloon() {
         let owed = 10_000_000, balloon = 4_000_000, rate = 3.0
-        let instalment = Int(BBVAFundMortgageImport.annuityPayment(balance: owed, annualRate: rate, payments: 60, balloon: balloon).rounded())
+        // 60 instalments: the annuity runs over the 59 before the final one, which repays the
+        // balloon with its month's interest.
+        let instalment = MortgageRate.instalment(owed: owed, annualRatePercent: rate, remaining: 60, balloon: balloon)!
+        XCTAssertEqual(Double(instalment), BBVAFundMortgageImport.annuityPayment(balance: owed, annualRate: rate, payments: 59, balloon: balloon), accuracy: 0.5)
         let result = MortgageProjection.project(.init(owedMinorUnits: owed, asOf: Self.date(2026, 10, 15), annualRatePercent: rate,
                                                       instalmentMinorUnits: instalment, paymentDay: 1,
                                                       finalInstalmentDate: Self.date(2031, 10, 1), balloonMinorUnits: balloon))
@@ -41,9 +44,9 @@ final class MortgageProjectionTests: XCTestCase {
         XCTAssertEqual(result.payments.last?.owedMinorUnits, 0)
         // The rate held: every reset gives the same instalment (to a cent or two of rounding).
         for payment in result.payments.dropLast() { XCTAssertEqual(payment.paidMinorUnits, instalment, accuracy: 2) }
-        // Left before the final instalment: the balloon plus that month's capital.
+        // Left before the final instalment: the balloon (to rounding); the final pays it with a month's interest.
         let beforeLast = result.payments[result.payments.count - 2].owedMinorUnits
-        XCTAssertEqual(result.finalPaymentMinorUnits!, instalment + balloon, accuracy: 300)
+        XCTAssertEqual(beforeLast, balloon, accuracy: 100)
         XCTAssertEqual(result.finalPaymentMinorUnits, beforeLast + Int((Double(beforeLast) * rate / 1200).rounded()))
         XCTAssertEqual(result.payments.map(\.owedMinorUnits), result.payments.map(\.owedMinorUnits).sorted(by: >))
     }

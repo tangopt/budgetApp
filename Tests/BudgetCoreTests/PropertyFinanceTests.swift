@@ -554,10 +554,12 @@ final class PropertyFinanceTests: XCTestCase {
 
         try db.write { db in
             try MortgageTerms.save(db: db, PropertyMortgageTerms(propertyId: propertyId, revisionMonths: [3, 9], finalInstalmentDate: Self.date(2040, 6, 5),
-                                                                balloonMinorUnits: 2_000_000, annualRatePercent: 3.5))
+                                                                balloonMinorUnits: 2_000_000, annualRatePercent: 3.5, rateIndex: .fixed))
         }
         let entered = try db.read { db in try MortgageProjection.basis(db: db, propertyId: propertyId, today: today) }!
-        XCTAssertEqual(entered.rateSource, .entered)
+        // A fixed rate: the rules' rate for the period the next instalment (5 August) falls in.
+        XCTAssertEqual(entered.rateSource, .rules(MortgageRate.PeriodRate(start: Self.date(2025, 3, 1), ratePercent: 3.5, source: .fixed, spreadPercent: nil)))
+        XCTAssertFalse(entered.input.resetsAtFirstPayment)
         XCTAssertEqual(entered.input.annualRatePercent, 3.5)
         XCTAssertEqual(entered.input.balloonMinorUnits, 2_000_000)
         XCTAssertEqual(entered.input.revisionMonths, [3, 9])

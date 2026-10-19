@@ -15,11 +15,15 @@ final class AppEnvironment: ObservableObject {
     /// HMRC's average rates the ended tax years lack, fetched in the background (after
     /// launch, and whenever the Tax years screen appears).
     let hmrcRateAutoFetch: HMRCRateAutoFetch
+    /// The Euribor monthly averages the mortgages follow, fetched in the background (after
+    /// launch, and whenever a property page opens).
+    let interestIndexAutoFetch: InterestIndexAutoFetch
 
     private init(dbQueue: DatabaseQueue, evidenceRoot: URL) {
         self.dbQueue = dbQueue
         self.evidenceRoot = evidenceRoot
         self.hmrcRateAutoFetch = HMRCRateAutoFetch(dbQueue: dbQueue)
+        self.interestIndexAutoFetch = InterestIndexAutoFetch(dbQueue: dbQueue)
 
         // The snapshot harness never touches the network (and renders from its own data);
         // `HMRCRateAutoFetch.run` refuses in that mode too (the Tax years screen calls it).
@@ -27,6 +31,7 @@ final class AppEnvironment: ObservableObject {
         Task { [weak self] in
             await self?.refreshExchangeRate()
             self?.hmrcRateAutoFetch.run()
+            self?.interestIndexAutoFetch.run()
         }
     }
 

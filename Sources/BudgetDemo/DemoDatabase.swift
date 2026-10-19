@@ -83,6 +83,26 @@ public enum DemoDatabase {
     public static func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
         MonthRange.calendar.date(from: DateComponents(year: year, month: month, day: day))!
     }
+
+    // MARK: Mortgage
+
+    /// The demo loan's rules: Euribor 3M + 1.000%, the previous month's average, revised every
+    /// quarter; 360 instalments due on the 1st from 1 Nov 2016 (the last on 1 Oct 2046), a
+    /// €24,800 balloon.
+    public static func mortgageTerms(propertyId: Int64) -> PropertyMortgageTerms {
+        PropertyMortgageTerms(propertyId: propertyId, balloonMinorUnits: 2_480_000, rateIndex: .euribor3M, spreadPercent: 1.0,
+                              totalInstalments: 360, firstInstalmentDate: date(2016, 11, 1))
+    }
+
+    /// A synthetic Euribor 3M monthly average (not the real series): from June 2023 to
+    /// September 2026, a smooth wave between about 0.9% and 1.6%, four decimals.
+    public static func euribor3M() -> [(Date, Double)] {
+        (0..<40).map { offset in
+            let month = MonthRange.calendar.date(byAdding: .month, value: offset, to: date(2023, 6, 1))!
+            let value = 1.25 + 0.3 * sin(Double(offset) / 5) + 0.0123 * Double(offset % 3)
+            return (month, (value * 10_000).rounded() / 10_000)
+        }
+    }
 }
 
 // MARK: - Builder
@@ -490,9 +510,13 @@ extension DemoDatabase {
             _ = try Properties.setAccount(db: db, propertyId: propertyId, accountId: accounts["Property Mortgage"]!, role: .mortgage)
             _ = try Properties.setAccount(db: db, propertyId: propertyId, accountId: accounts["Deposit Holding"]!, role: .deposit)
             try Properties.addCategoryGroup(db: db, propertyId: propertyId, categoryGroupId: groups[DemoDatabase.propertyName]!)
-            // Revised every quarter; twenty more years with a balloon (the rate is read from the interest).
-            try MortgageTerms.save(db: db, PropertyMortgageTerms(propertyId: propertyId, rateNote: "Euribor 3M + 1.00%",
-                                                                finalInstalmentDate: date(2046, 10, 1), balloonMinorUnits: 2_480_000))
+            // The loan's rules (Euribor 3M + 1.000%, revised every quarter, 360 instalments to
+            // 1 Oct 2046 with a balloon) and a synthetic Euribor 3M series, as if fetched.
+            try MortgageTerms.save(db: db, DemoDatabase.mortgageTerms(propertyId: propertyId))
+            for (month, value) in DemoDatabase.euribor3M() {
+                try InterestIndexValues.set(db: db, index: .euribor3M, period: .month, date: month, valuePercent: value,
+                                            source: .ecb, fetchedAt: date(2026, 10, 2))
+            }
 
             var first = Tenancy(propertyId: propertyId, referenceLabel: "Tenancy 1", contractNumber: "CT-0001", tenantName: "Tenant One",
                                 startDate: date(2023, 11, 1), endDate: date(2024, 6, 30), advanceRentMonths: 0, depositMonths: 2,
@@ -534,21 +558,33 @@ extension DemoDatabase {
             try tx(db, "Deposit Holding", date(2024, 7, 5), "DEPOSIT RETURNED TENANT ONE", -200_000, "Tenant deposits")
             try tx(db, "Deposit Holding", date(2024, 7, 26), "DEPOSIT TENANT TWO", 230_000, "Tenant deposits")
             var owed = 18_200_000
+            // The loan follows its rules: each quarter's rate is the synthetic Euribor 3M of the
+            // month before plus the spread; the instalment resets at each revision.
+            let terms = DemoDatabase.mortgageTerms(propertyId: 0)
+            let series = MortgageRate.Series(index: .euribor3M, monthly: Dictionary(uniqueKeysWithValues: DemoDatabase.euribor3M()))
+            var payment = 0
             for (year, month) in months() {
                 func on(_ d: Int) -> Date { day(year, month, d) }
                 // Mortgage: interest charged on the loan, the instalment paid into it.
                 if inRange(on(1)) {
-                    let interest = owed * 21 / 12_000
-                    owed += interest - 76_000
+                    let start = MortgageRate.periodStart(containing: on(1), months: terms.revisionMonths)!
+                    let rate = MortgageRate.rate(periodStart: start, terms: terms, series: series)!.ratePercent
+                    if payment == 0 || start == on(1) {
+                        payment = MortgageRate.instalment(owed: owed, annualRatePercent: rate, remaining: terms.totalInstalments! - terms.instalmentNumber(dueIn: on(1))! + 1,
+                                                          balloon: terms.balloonMinorUnits ?? 0)!
+                    }
+                    let interest = MortgageRate.interest(owed: owed, annualRatePercent: rate, dayCount: .thirty360, previousDue: nil, due: on(1), rounding: .nearest)
+                    owed += interest - payment
                     let interestRow = try tx(db, "Property Mortgage", on(1), "LOAN INTEREST", -interest, "Mortgage interest")
-                    let (instalment, _) = try transfer(db, from: "Euro Current", to: "Property Mortgage", on(1), out: 76_000,
+                    let (instalment, _) = try transfer(db, from: "Euro Current", to: "Property Mortgage", on(1), out: payment,
                                                        "LOAN INSTALMENT", "INSTALMENT RECEIVED")
                     if (year, month) < (2026, 7) {
                         docs.append(doc("Mortgage notice \(year)-\(String(format: "%02d", month)).pdf", kind: .mortgageNotice, issuer: "Banco Exemplo",
                                         title: "Loan instalment notice",
-                                        lines: [("Instalment", Money.format(76_000, currency: .eur)), ("Interest", Money.format(interest, currency: .eur)),
-                                                ("Capital", Money.format(76_000 - interest, currency: .eur)), ("Outstanding", Money.format(owed, currency: .eur))],
-                                        date: on(1), amount: 76_000, links: [.transaction(instalment.id!), .transaction(interestRow.id!)]))
+                                        lines: [("Instalment", Money.format(payment, currency: .eur)), ("Interest", Money.format(interest, currency: .eur)),
+                                                ("Rate", MortgageRate.percent(rate)),
+                                                ("Capital", Money.format(payment - interest, currency: .eur)), ("Outstanding", Money.format(owed, currency: .eur))],
+                                        date: on(1), amount: payment, links: [.transaction(instalment.id!), .transaction(interestRow.id!)]))
                     }
                 }
                 // Monthly bank fee.

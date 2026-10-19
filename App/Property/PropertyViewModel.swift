@@ -71,6 +71,10 @@ final class PropertyViewModel: ObservableObject {
         /// from today to the end; nil when there's no loan to project.
         var loanBasis: MortgageProjection.Basis?
         var loanProjection: MortgageProjection.Result?
+        /// The rate in force, the next revision and instalment (`MortgageRate.status`).
+        var rateStatus: MortgageRate.Status?
+        /// The rates given for single periods (Mortgage terms…).
+        var rateOverrides: [MortgageRateOverride] = []
         /// The current account (rent's) and the day of its latest transaction: how far its
         /// imports run, for the receipts' explanations.
         var currentAccountName: String?
@@ -144,9 +148,14 @@ final class PropertyViewModel: ObservableObject {
     private var isActive = false
     private let now: () -> Date
 
-    init(dbQueue: DatabaseQueue, library: EvidenceLibrary, now: @escaping () -> Date = { AppClock.now }) {
+    /// Fetches the Euribor the mortgage follows when the page opens (nil in tests and snapshots).
+    private let indexAutoFetch: InterestIndexAutoFetch?
+
+    init(dbQueue: DatabaseQueue, library: EvidenceLibrary, indexAutoFetch: InterestIndexAutoFetch? = nil,
+         now: @escaping () -> Date = { AppClock.now }) {
         self.dbQueue = dbQueue
         self.library = library
+        self.indexAutoFetch = indexAutoFetch
         self.now = now
         let today = now()
         let year = MonthRange.components(of: today).year
@@ -163,6 +172,7 @@ final class PropertyViewModel: ObservableObject {
             MainActor.assumeIsolated { self?.restartObservation() }
         }
         restartObservation()
+        indexAutoFetch?.run()
     }
 
     func stop() {
@@ -283,6 +293,8 @@ final class PropertyViewModel: ObservableObject {
         snapshot.mortgageTerms = try MortgageTerms.terms(db: db, propertyId: propertyId)
         snapshot.loanBasis = try MortgageProjection.basis(db: db, propertyId: propertyId, today: today)
         snapshot.loanProjection = snapshot.loanBasis.map { MortgageProjection.project($0.input) }
+        snapshot.rateStatus = try MortgageRate.status(db: db, propertyId: propertyId, today: today)
+        snapshot.rateOverrides = try MortgageRate.overrides(db: db, propertyId: propertyId)
         if let current = snapshot.propertyAccounts.first(where: { $0.role == .current }) {
             snapshot.currentAccountName = snapshot.accounts.first { $0.id == current.accountId }?.displayName
             snapshot.currentAccountLastDay = try Transaction.filter(Column("accountId") == current.accountId)
@@ -380,9 +392,24 @@ final class PropertyViewModel: ObservableObject {
         errorMessage = write { db in _ = try Properties.removeAccount(db: db, propertyId: propertyId, accountId: accountId) }
     }
 
-    /// Saves the mortgage's terms (Profile ▸ Mortgage terms…).
-    func saveMortgageTerms(_ terms: PropertyMortgageTerms) -> String? {
-        write { db in try MortgageTerms.save(db: db, terms) }
+    /// The stored values of an index (the Mortgage terms sheet's preview of the rate).
+    func rateSeries(_ index: InterestIndex) -> MortgageRate.Series {
+        (try? dbQueue.read { db in try MortgageRate.Series.load(db: db, index: index) }) ?? MortgageRate.Series(index: index)
+    }
+
+    /// Saves the mortgage's terms and the rates given for single periods (Profile ▸ Mortgage
+    /// terms…): the overrides listed replace the stored ones.
+    func saveMortgageTerms(_ terms: PropertyMortgageTerms, overrides: [MortgageRateOverride]) -> String? {
+        write { db in
+            try MortgageTerms.save(db: db, terms)
+            let kept = Set(overrides.map { MonthRange.calendar.startOfDay(for: $0.periodStart) })
+            for existing in try MortgageRate.overrides(db: db, propertyId: terms.propertyId) where !kept.contains(existing.periodStart) {
+                try MortgageRate.removeOverride(db: db, propertyId: terms.propertyId, periodStart: existing.periodStart)
+            }
+            for given in overrides {
+                try MortgageRate.setOverride(db: db, propertyId: terms.propertyId, periodStart: given.periodStart, ratePercent: given.ratePercent, note: given.note)
+            }
+        }
     }
 
     func addGroup(_ groupId: Int64) {
@@ -672,6 +699,9 @@ enum PropertyMessages {
         case .invalidRevisionMonths: return "Choose at least one month the rate is revised in."
         case .negativeBalloon: return "The balloon can't be negative."
         case .invalidRate: return "Enter a rate between 0% and 50%."
+        case .invalidSpread: return "Enter a spread between −5% and 20%."
+        case .invalidCount: return "Enter between 1 and 1,200 instalments (and 0–10 business days, 0–6 decimals)."
+        case .finalBeforeFirst: return "The final instalment is before the first."
         }
     }
 
