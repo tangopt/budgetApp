@@ -36,6 +36,9 @@ struct BalanceLineChart: View {
     var showsAxes = true
     var includesZero = true
     var today: Date? = nil
+    /// The dates the chart shows, when not the points' own extent (a window around today; the
+    /// caller keeps the points inside it).
+    var xDomain: ClosedRange<Date>? = nil
     /// Points labelled on the chart.
     var markers: [BalanceMarker] = []
     var height: CGFloat = 200
@@ -79,6 +82,7 @@ struct BalanceLineChart: View {
 
     /// Over about four years, the axis counts years ("2030") rather than months ("Mar 26").
     private var spansYears: Bool {
+        if let xDomain { return xDomain.upperBound.timeIntervalSince(xDomain.lowerBound) > 4 * 365 * 86_400 }
         guard let first = points.first?.date, let last = points.last?.date else { return false }
         return last.timeIntervalSince(first) > 4 * 365 * 86_400
     }
@@ -145,7 +149,7 @@ struct BalanceLineChart: View {
         .wrapProbeInChart()
         .chartYScale(domain: domain)
         // Room after the last point for the last month's label.
-        .chartXScale(range: .plotDimension(endPadding: showsAxes ? 18 : 0))
+        .modifier(XScale(domain: xDomain, endPadding: showsAxes ? 18 : 0))
         .chartXAxis {
             if showsAxes {
                 if spansYears {
@@ -178,5 +182,19 @@ struct BalanceLineChart: View {
         .environment(\.timeZone, Self.utc)
         .frame(minHeight: height, idealHeight: height, maxHeight: growsVertically ? .infinity : height)
         .accessibilityLabel(title)
+    }
+}
+
+/// The date scale: the points' extent, or the given window.
+private struct XScale: ViewModifier {
+    let domain: ClosedRange<Date>?
+    let endPadding: CGFloat
+
+    func body(content: Content) -> some View {
+        if let domain {
+            content.chartXScale(domain: domain, range: .plotDimension(endPadding: endPadding))
+        } else {
+            content.chartXScale(range: .plotDimension(endPadding: endPadding))
+        }
     }
 }

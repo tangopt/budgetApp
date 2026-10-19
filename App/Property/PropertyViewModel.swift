@@ -105,7 +105,8 @@ final class PropertyViewModel: ObservableObject {
     /// How far the Outstanding loan chart reaches.
     enum LoanRange: String, CaseIterable, Identifiable {
         case soFar = "So far"
-        case fiveYears = "Next 5 years"
+        /// Five years back and five on, around today.
+        case fiveYears = "±5 years"
         case toTheEnd = "To the end"
         var id: String { rawValue }
     }

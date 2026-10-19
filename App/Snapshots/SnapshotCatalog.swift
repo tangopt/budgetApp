@@ -120,7 +120,7 @@ enum SnapshotCatalog {
                 models.property.tab = .money
                 models.property.sidePanel = .month(august)
             },
-            screen("property", "overview_loan_5y", "Property: Overview, the loan five years on", .property, settle: 1.3) { models, _ in
+            screen("property", "overview_loan_5y", "Property: Overview, the loan five years each side", .property, settle: 1.3) { models, _ in
                 models.property.tab = .overview
                 models.property.loanRange = .fiveYears
             },

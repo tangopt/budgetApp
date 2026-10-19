@@ -175,8 +175,9 @@ struct PropertyMonthlyChart: View {
 /// What the mortgage owes over time (`PropertyViewModel.Snapshot.loanHistory`) — from the
 /// first instalment when the amount borrowed is known, the part before the first statement
 /// estimated from the loan's terms (`MortgageHistory`, lighter and finely dashed) — and,
-/// zoomed out (Next 5 years, To the end), what it will owe (`MortgageProjection`, dashed) to
-/// the final instalment and its balloon. At the bottom, in one slot of constant height: for
+/// zoomed out, what it will owe (`MortgageProjection`, dashed): ±5 years shows the five years
+/// before today and the five after (the window alone, its scale fitted to it); To the end, the
+/// whole loan to the final instalment and its balloon. At the bottom, in one slot of constant height: for
 /// So far, how much is repaid (a bar and the figures) and what the estimate rests on; for the
 /// projections, the projection's assumptions. The slot is as tall as the taller of the two,
 /// so the tile never changes height between ranges.
@@ -225,7 +226,7 @@ struct PropertyLoanPanel: View {
                     }
                     BalanceLineChart(points: chartPoints, currency: currency, title: "Outstanding loan",
                                      includesZero: range == .toTheEnd, today: range == .soFar ? nil : last.date,
-                                     markers: markers, height: 160, growsVertically: true)
+                                     xDomain: window, markers: markers, height: 160, growsVertically: true)
                         // Room above the plot for the "Today" label (in every range, so the
                         // tile keeps its height).
                         .padding(.top, 8)
@@ -252,8 +253,9 @@ struct PropertyLoanPanel: View {
         .controlSize(.small)
         .prominentTint()
         .fixedSize()
-        .help("How far the chart reaches: the loan so far, or projected five years on, or to its final instalment")
+        .help("How far the chart reaches: the loan so far; five years back and five years projected on from today; or the whole loan to its final instalment")
         .accessibilityLabel("Loan chart range")
+        .accessibilityHint("So far, five years before and after today, or to the final instalment")
     }
 
     /// So far: what's been repaid; zoomed out: when the loan ends.
@@ -356,15 +358,36 @@ struct PropertyLoanPanel: View {
 
     // MARK: Chart
 
-    /// The estimate, the history, then the projection as far as the range reaches.
+    /// ±5 years: today − 5 years … today + 5 years (nil in the other ranges: the points' extent).
+    private var window: ClosedRange<Date>? {
+        guard range == .fiveYears, let today = points.last?.date else { return nil }
+        let calendar = MonthRange.calendar
+        return calendar.date(byAdding: .year, value: -5, to: today)!...calendar.date(byAdding: .year, value: 5, to: today)!
+    }
+
+    /// The estimate, the history, then the projection as far as the range reaches (±5 years:
+    /// only what falls in the window, the line meeting its left edge).
     private var chartPoints: [BalancePoint] {
-        let history = estimatedPoints + points.map { BalancePoint(date: $0.date, minorUnits: $0.owedMinorUnits) }
-        guard range != .soFar, let projection, let today = points.last?.date else { return history }
-        let limit = range == .fiveYears ? MonthRange.calendar.date(byAdding: .year, value: 5, to: today)! : Date.distantFuture
+        var history = estimatedPoints + points.map { BalancePoint(date: $0.date, minorUnits: $0.owedMinorUnits) }
+        guard range != .soFar, let projection else { return history }
+        if let window { history = Self.clipped(history, from: window.lowerBound) }
+        let limit = window?.upperBound ?? Date.distantFuture
         // The history's month ends, then what's owed after each projected instalment, on its
         // payment day (so the final instalment's drop to nothing shows).
         return history + projection.payments.filter { $0.date <= limit }
             .map { BalancePoint(date: $0.date, minorUnits: $0.owedMinorUnits, isForecast: true) }
+    }
+
+    /// The points from `start` on, led by one on `start` itself (interpolated between the
+    /// points either side, styled as the earlier one) so the line reaches the window's edge.
+    static func clipped(_ history: [BalancePoint], from start: Date) -> [BalancePoint] {
+        guard let index = history.firstIndex(where: { $0.date >= start }) else { return [] }
+        let kept = Array(history[index...])
+        guard index > 0, kept[0].date > start else { return kept }
+        let before = history[index - 1], after = kept[0]
+        let fraction = start.timeIntervalSince(before.date) / after.date.timeIntervalSince(before.date)
+        let owed = Double(before.minorUnits) + Double(after.minorUnits - before.minorUnits) * fraction
+        return [BalancePoint(date: start, minorUnits: Int(owed.rounded()), isEstimated: before.isEstimated)] + kept
     }
 
     /// The final instalment (the balloon), marked where the chart reaches it.
