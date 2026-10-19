@@ -271,11 +271,18 @@ public enum RentalAccounts {
                 guard attributed != 0 else { continue }
                 let total = PropertyFinance.days(receipt.periodStart, PropertyDates.nextDay(receipt.periodEnd))
                 let inside = PropertyFinance.days(max(receipt.periodStart, window.start), min(PropertyDates.nextDay(receipt.periodEnd), window.end))
+                var portion = "\(inside) of \(total) days"
+                if let months = PropertyFinance.wholeMonths(start: receipt.periodStart, lastDay: receipt.periodEnd), months > 1 {
+                    let from = max(PropertyDates.day(receipt.periodStart), window.start), to = min(PropertyDates.nextDay(receipt.periodEnd), window.end)
+                    let count = PropertyFinance.monthsElapsed(from: PropertyDates.day(receipt.periodStart), to: to)
+                        - PropertyFinance.monthsElapsed(from: PropertyDates.day(receipt.periodStart), to: from)
+                    portion = (count == count.rounded() ? String(Int(count)) : String(format: "%.2f", count)) + " of \(months) months"
+                }
                 sourcesByType[.rentalIncome, default: []].append(Source(
                     reference: .rentReceipt(receipt.id!), date: receipt.receiptDate,
                     description: "Rent receipt \(receipt.receiptNumber)", currency: property.currency,
                     amountMinorUnits: receipt.amountMinorUnits, attributedMinorUnits: attributed, shareBasisPoints: share,
-                    explanation: "Rent period \(day(receipt.periodStart)) – \(day(receipt.periodEnd)): \(inside) of \(total) days in \(monthsLabel(window))",
+                    explanation: "Rent period \(day(receipt.periodStart)) – \(day(receipt.periodEnd)): \(portion) in \(monthsLabel(window))",
                     documentIds: receiptDocs[receipt.id!] ?? []))
             }
             // The person's months are rounded cumulatively, so they add up to the line's share.

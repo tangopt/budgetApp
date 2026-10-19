@@ -25,6 +25,17 @@ public final class DatabaseManager {
         try migrator.migrate(dbQueue)
     }
 
+    /// The migrations this build has that the database hasn't run yet, and those the database
+    /// ran that this build doesn't know (a newer build wrote it). A one-off tool's real run
+    /// wants both empty: the installed app already migrated the database at this version.
+    public func migrationStatus() throws -> (pending: [String], unknown: [String]) {
+        var migrator = DatabaseMigrator()
+        registerMigrations(&migrator)
+        let applied = try dbQueue.read { db in try migrator.appliedIdentifiers(db) }
+        let known = migrator.migrations
+        return (known.filter { !applied.contains($0) }, applied.filter { !known.contains($0) }.sorted())
+    }
+
     /// Individual model files append their own migration in an extension
     /// on this function via `registerMigrations(_:)` overloads is not
     /// possible in Swift, so each model file defines a free function

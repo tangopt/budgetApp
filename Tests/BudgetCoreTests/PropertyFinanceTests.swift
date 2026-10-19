@@ -134,9 +134,9 @@ final class PropertyFinanceTests: XCTestCase {
         XCTAssertEqual(summary.grossYield!, 0.03, accuracy: 1e-9)
         XCTAssertEqual(summary.netYield!, Double(totals.income.native - totals.costs.native) / 20_000_000, accuracy: 1e-9)
 
-        // Monthly series: the April–June receipt is spread over its days, exactly.
+        // Monthly series: the April–June receipt (whole months) is spread evenly over its months.
         XCTAssertEqual(summary.months.count, 12)
-        XCTAssertEqual(summary.months.map(\.figures.rentPerReceipts.native).prefix(7), [100_000, 100_000, 100_000, 98_901, 102_198, 98_901, 0])
+        XCTAssertEqual(summary.months.map(\.figures.rentPerReceipts.native).prefix(7), [100_000, 100_000, 100_000, 100_000, 100_000, 100_000, 0])
         XCTAssertEqual(summary.months.map(\.figures.mortgageInterest.native).reduce(0, +), 120_000)
         XCTAssertEqual(summary.months[1].figures.recharges.native, 15_000)
     }
@@ -165,7 +165,7 @@ final class PropertyFinanceTests: XCTestCase {
     func testCustomAndTaxYearPeriods() throws {
         let custom = DateInterval(start: Self.date(2025, 1, 1), end: Self.date(2025, 5, 1))
         let summary = try db.read { db in try PropertyFinance.summary(db: db, propertyId: propertyId, period: .custom(custom)) }
-        XCTAssertEqual(summary.totals.rentPerReceipts.native, 300_000 + 98_901)
+        XCTAssertEqual(summary.totals.rentPerReceipts.native, 300_000 + 100_000)
         XCTAssertEqual(summary.months.count, 4)
         XCTAssertEqual(summary.outstandingLoan.native, 10_000_000 - (4 * 50_000 + 2_000 - 4 * 20_000))
 
@@ -175,8 +175,8 @@ final class PropertyFinanceTests: XCTestCase {
         XCTAssertEqual(PropertyPeriod.calendarYear(2025).label, "2025")
         XCTAssertEqual(PropertyPeriod.custom(custom).label, "2025-01-01 – 2025-04-30")
         let taxYear = try db.read { db in try PropertyFinance.summary(db: db, propertyId: propertyId, period: year) }
-        // 6 April – 30 June of the 91-day receipt: 86 days.
-        XCTAssertEqual(taxYear.totals.rentPerReceipts.native, Int((300_000.0 * 86 / 91).rounded()))
+        // 6 April – 30 June of the April–June receipt: 25 of April's 30 days, then May and June.
+        XCTAssertEqual(taxYear.totals.rentPerReceipts.native, Int((100_000.0 * 25 / 30).rounded()) + 200_000)
         XCTAssertEqual(taxYear.months.first?.start, Self.date(2025, 4, 6))
         XCTAssertEqual(taxYear.months.count, 13) // 6–30 April … 1–5 April
     }
@@ -188,6 +188,16 @@ final class PropertyFinanceTests: XCTestCase {
             .map { PropertyFinance.apportioned(100_001, start: start, lastDay: last, to: DateInterval(start: $0.0, end: $0.1)) }
         XCTAssertEqual(parts.reduce(0, +), 100_001)
         XCTAssertEqual(PropertyFinance.apportioned(100, start: start, lastDay: last, to: DateInterval(start: Self.date(2024, 1, 1), end: Self.date(2025, 1, 1))), 0)
+        // Whole calendar months: each month the same, whatever its days (a "January to May" receipt).
+        let months = [(1, 2), (2, 3), (3, 4), (4, 5), (5, 6)].map {
+            PropertyFinance.apportioned(975_000, start: Self.date(2022, 1, 1), lastDay: Self.date(2022, 5, 31),
+                                        to: DateInterval(start: Self.date(2022, $0.0, 1), end: Self.date(2022, $0.1, 1)))
+        }
+        XCTAssertEqual(months, [195_000, 195_000, 195_000, 195_000, 195_000])
+        XCTAssertEqual(PropertyFinance.apportioned(975_000, start: Self.date(2022, 1, 1), lastDay: Self.date(2022, 5, 31),
+                                                   to: DateInterval(start: Self.date(2022, 1, 1), end: Self.date(2022, 4, 6))), 585_000 + Int((195_000.0 * 5 / 30).rounded()))
+        XCTAssertNil(PropertyFinance.wholeMonths(start: Self.date(2024, 1, 1), lastDay: Self.date(2024, 2, 7)))
+        XCTAssertEqual(PropertyFinance.wholeMonths(start: Self.date(2022, 1, 1), lastDay: Self.date(2022, 5, 31)), 5)
     }
 
     // MARK: Calendar

@@ -245,8 +245,12 @@ public enum PropertyFinance {
         return PropertyAmount(native: native, gbp: gbp)
     }
 
-    /// The share of `amount` (spread evenly over the days `start`…`lastDay`) that falls in
-    /// `interval`. Shares of adjacent intervals add up exactly to the whole.
+    /// The share of `amount` that falls in `interval`: spread evenly over the days
+    /// `start`…`lastDay`, or — for a period of whole calendar months (the 1st to a month's last
+    /// day, several months, like a receipt for "January to May") — evenly over its months, each
+    /// month's share then spread over its days (rent is monthly: every month the same, as the
+    /// accountant's monthly schedule takes it). Shares of adjacent intervals add up exactly to
+    /// the whole.
     static func apportioned(_ amount: Int, start: Date, lastDay: Date, to interval: DateInterval) -> Int {
         let first = PropertyDates.day(start)
         let end = PropertyDates.nextDay(lastDay)
@@ -256,11 +260,34 @@ public enum PropertyFinance {
             let day = PropertyDates.day(date)
             return day == date ? day : PropertyDates.nextDay(date)
         }
+        let months = wholeMonths(start: start, lastDay: lastDay)
         func cumulative(_ date: Date) -> Int {
             let clamped = min(max(boundary(date), first), end)
-            return Int((Double(amount) * Double(days(first, clamped)) / Double(total)).rounded())
+            guard let months, months > 1 else {
+                return Int((Double(amount) * Double(days(first, clamped)) / Double(total)).rounded())
+            }
+            return Int((Double(amount) * monthsElapsed(from: first, to: clamped) / Double(months)).rounded())
         }
         return cumulative(interval.end) - cumulative(interval.start)
+    }
+
+    /// The number of calendar months in a period from the 1st of a month to a month's last day;
+    /// nil for any other period.
+    static func wholeMonths(start: Date, lastDay: Date) -> Int? {
+        let calendar = MonthRange.calendar
+        let first = PropertyDates.day(start), end = PropertyDates.nextDay(lastDay)
+        guard first < end, calendar.component(.day, from: first) == 1, calendar.component(.day, from: end) == 1 else { return nil }
+        return calendar.dateComponents([.month], from: first, to: end).month
+    }
+
+    /// Whole months from `from` (a month's 1st) to `to`, plus the days of the last, partial month
+    /// as a fraction of that month.
+    static func monthsElapsed(from: Date, to: Date) -> Double {
+        let calendar = MonthRange.calendar
+        let whole = calendar.dateComponents([.month], from: from, to: to).month ?? 0
+        let monthStart = calendar.date(byAdding: .month, value: whole, to: from)!
+        let monthEnd = calendar.date(byAdding: .month, value: 1, to: monthStart)!
+        return Double(whole) + Double(days(monthStart, to)) / Double(days(monthStart, monthEnd))
     }
 
     static func days(_ from: Date, _ to: Date) -> Int {

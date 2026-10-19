@@ -166,15 +166,15 @@ final class RentalAccountsTests: XCTestCase {
 
     func testRentByRentPeriodFromReceipts() throws {
         let result = try compute()
-        // 11 × 1,000 + 3,300 × 31/92 for March 2025.
-        let march = Int((330_000.0 * 31 / 92).rounded())
+        // 11 × 1,000 + one month of the 3-month receipt for March 2025 (whole months: by month).
+        let march = 110_000
         XCTAssertEqual(result.income.whole.native, 1_100_000 + march)
         XCTAssertEqual(result.income.amount.native, Int((Double(1_100_000 + march) / 2).rounded()))
         XCTAssertEqual(result.income.amount.gbp, Int((Double(result.income.amount.native) * 0.8).rounded()))
         XCTAssertEqual(result.income.rule, .byRentPeriod)
         XCTAssertEqual(result.income.sources.count, 12)
         XCTAssertTrue(result.income.sources.allSatisfy { if case .rentReceipt = $0.reference { return true } else { return false } })
-        XCTAssertEqual(result.income.sources.last?.explanation, "Rent period 2025-03-01 – 2025-05-31: 31 of 92 days in Apr 2024 – Mar 2025")
+        XCTAssertEqual(result.income.sources.last?.explanation, "Rent period 2025-03-01 – 2025-05-31: 1 of 3 months in Apr 2024 – Mar 2025")
         XCTAssertEqual(result.rentMonths.count, 12)
         XCTAssertEqual(result.rentMonths.first?.whole, 100_000)
         XCTAssertEqual(result.rentMonths.first?.amount, 50_000)
@@ -663,7 +663,7 @@ extension RentalAccountsTests {
     static let history = """
         country,year,person,field,value,currency,source_file
         UK,2024-25,Person A,rental_income,6000.0,EUR,Draft.pdf
-        UK,2024-25,Person A,rental_income,6055.98,EUR,Example approval pack.pdf
+        UK,2024-25,Person A,rental_income,6050.00,EUR,Example approval pack.pdf
         UK,2024-25,Person A,rental_exp_council_tax_if_paid_by_landlord,400.00,EUR,Example approval pack.pdf
         UK,2024-25,Person A,rental_exp_council_tax_if_paid_by_landlord,320.00,GBP,Example approval pack.pdf
         UK,2024-25,Person A,fx_rate_implied_gbp_per_eur,0.8,GBP/EUR,Example approval pack.pdf
@@ -676,7 +676,7 @@ extension RentalAccountsTests {
         let filed = TaxRegression.parseHistory(Self.history)
         XCTAssertEqual(filed.map(\.field), ["rental_income", "rental_exp_council_tax_if_paid_by_landlord",
                                             "rental_exp_council_tax_if_paid_by_landlord", "rental_exp_accountancy_fee"])
-        XCTAssertEqual(filed[0].minorUnits, 605_598)
+        XCTAssertEqual(filed[0].minorUnits, 605_000)
         XCTAssertEqual(filed[0].startYear, 2024)
         XCTAssertEqual(filed[2].currency, "GBP")
     }
