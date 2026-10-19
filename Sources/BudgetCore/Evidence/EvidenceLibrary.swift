@@ -229,15 +229,8 @@ public struct EvidenceLibrary: Sendable {
         }
         let metadata = analysis.map { Self.merged(callerMetadata, with: $0) } ?? callerMetadata
 
-        var document = EvidenceDocument(
-            sha256: hash, storedRelativePath: relativePath, originalFileName: fileURL.lastPathComponent,
-            byteCount: byteCount, canonicalName: Transaction.normalizedNote(metadata.canonicalName),
-            kind: metadata.kind, docDate: metadata.docDate, periodStart: metadata.periodStart, periodEnd: metadata.periodEnd,
-            amountMinorUnits: metadata.amountMinorUnits, currency: metadata.currency, persons: metadata.persons,
-            textStatus: metadata.textStatus, extractedText: metadata.extractedText,
-            sourceFolderId: metadata.sourceFolderId, sourceRelativePath: metadata.sourceRelativePath,
-            sourceModifiedAt: metadata.sourceModifiedAt.map(EvidenceLinks.wholeSeconds),
-            addedAt: EvidenceLinks.wholeSeconds(now), note: Transaction.normalizedNote(metadata.note))
+        var document = Self.makeDocument(sha256: hash, relativePath: relativePath, fileName: fileURL.lastPathComponent,
+                                         byteCount: byteCount, metadata: metadata, now: now)
         do {
             try hooks.beforeInsert?()
             try database.write { db in try document.insert(db) }
@@ -250,6 +243,74 @@ public struct EvidenceLibrary: Sendable {
             throw error
         }
         return AddResult(document: document, isNew: true)
+    }
+
+    static func makeDocument(sha256 hash: String, relativePath: String, fileName: String, byteCount: Int64,
+                             metadata: EvidenceMetadata, now: Date) -> EvidenceDocument {
+        EvidenceDocument(
+            sha256: hash, storedRelativePath: relativePath, originalFileName: fileName,
+            byteCount: byteCount, canonicalName: Transaction.normalizedNote(metadata.canonicalName),
+            kind: metadata.kind, docDate: metadata.docDate, periodStart: metadata.periodStart, periodEnd: metadata.periodEnd,
+            amountMinorUnits: metadata.amountMinorUnits, currency: metadata.currency, persons: metadata.persons,
+            textStatus: metadata.textStatus, extractedText: metadata.extractedText,
+            sourceFolderId: metadata.sourceFolderId, sourceRelativePath: metadata.sourceRelativePath,
+            sourceModifiedAt: metadata.sourceModifiedAt.map(EvidenceLinks.wholeSeconds),
+            addedAt: EvidenceLinks.wholeSeconds(now), note: Transaction.normalizedNote(metadata.note))
+    }
+
+    /// What `add(db:…)` did: the document, and the stored copy it placed — to remove if the
+    /// caller's transaction rolls back — or `nil` when the content was already stored.
+    public struct StagedAdd: Equatable, Sendable {
+        public var result: AddResult
+        public var placedFile: URL?
+    }
+
+    /// `add` inside the caller's transaction (`db` is a connection to `database`), so the row
+    /// commits or rolls back with the caller's other writes (links). The file is copied into the
+    /// store at once; if the transaction rolls back, the caller removes `placedFile`. A file
+    /// whose content is already in the library returns that document unchanged.
+    public func add(db: Database, _ fileURL: URL, metadata callerMetadata: EvidenceMetadata, analysis: EvidenceAnalysis?,
+                    now: Date = Date()) throws -> StagedAdd {
+        let fileManager = FileManager.default
+        let source = fileURL.resolvingSymlinksInPath()
+        let values = try source.resourceValues(forKeys: [.isRegularFileKey])
+        guard values.isRegularFile == true else { throw EvidenceLibraryError.notAFile }
+
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        removeStaleTemporaryFiles(now: now)
+        let temporary = root.appendingPathComponent("\(Self.temporaryPrefix)\(Int(now.timeIntervalSince1970))-\(UUID().uuidString)")
+        let hash: String, byteCount: Int64
+        do {
+            try fileManager.copyItem(at: source, to: temporary)
+            hash = try Self.sha256(of: temporary)
+            byteCount = try Self.byteCount(of: temporary)
+        } catch {
+            try? fileManager.removeItem(at: temporary)
+            throw error
+        }
+        if let existing = try EvidenceDocument.filter(Column("sha256") == hash).fetchOne(db) {
+            try? fileManager.removeItem(at: temporary)
+            return StagedAdd(result: AddResult(document: existing, isNew: false), placedFile: nil)
+        }
+        let relativePath = Self.storedRelativePath(sha256: hash, fileExtension: fileURL.pathExtension)
+        let destination = root.appendingPathComponent(relativePath)
+        let movedIn: Bool
+        do {
+            movedIn = try place(temporary, at: destination, sha256: hash, byteCount: byteCount)
+        } catch {
+            try? fileManager.removeItem(at: temporary)
+            throw error
+        }
+        let metadata = analysis.map { Self.merged(callerMetadata, with: $0) } ?? callerMetadata
+        var document = Self.makeDocument(sha256: hash, relativePath: relativePath, fileName: fileURL.lastPathComponent,
+                                         byteCount: byteCount, metadata: metadata, now: now)
+        do {
+            try document.insert(db)
+        } catch {
+            if movedIn { try? fileManager.removeItem(at: destination) }
+            throw error
+        }
+        return StagedAdd(result: AddResult(document: document, isNew: true), placedFile: movedIn ? destination : nil)
     }
 
     static let temporaryPrefix = ".adding-"
