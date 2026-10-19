@@ -311,8 +311,16 @@ extension InterestIndexValues {
 
     /// An index is asked for at most once in this long.
     public static let retryInterval: TimeInterval = 86_400
-    /// The first month fetched.
+    /// The first month fetched (at the latest: a loan that started earlier back-fills from its start).
     public static let fetchStartPeriod = "2000-01"
+
+    /// The first month to fetch: `fetchStartPeriod`, or earlier when a loan's first instalment
+    /// is (from the year before it, so its first fixing is there).
+    public static func fetchStartPeriod(db: Database) throws -> String {
+        let first = try PropertyMortgageTerms.fetchAll(db).compactMap(\.firstInstalmentDate).min()
+        guard let first, MonthRange.components(of: first).year - 1 < 2000 else { return fetchStartPeriod }
+        return String(format: "%04d-01", max(1999, MonthRange.components(of: first).year - 1))
+    }
 
     /// Fetches the monthly averages of every index in use (`indicesInUse`) and stores them
     /// (`storeFetched`: never over a manual value). Each index is asked at most once per
@@ -320,7 +328,7 @@ extension InterestIndexValues {
     @discardableResult
     public static func fetchInUse(db: some DatabaseWriter, today: Date = Date(), fetcher: InterestIndexFetching,
                                   log: InterestIndexFetchLog) async throws -> AutoFetchOutcome {
-        let indices = try await db.read { db in try Self.indicesInUse(db: db) }
+        let (indices, startPeriod) = try await db.read { db in (try Self.indicesInUse(db: db), try Self.fetchStartPeriod(db: db)) }
         var outcome = AutoFetchOutcome()
         for index in indices {
             if let last = log.lastAttempt(index: index), abs(today.timeIntervalSince(last)) < retryInterval {
@@ -328,7 +336,7 @@ extension InterestIndexValues {
                 continue
             }
             log.recordAttempt(index: index, at: today)
-            guard let values = await fetcher.fetchMonthlyAverages(for: index, startPeriod: fetchStartPeriod) else {
+            guard let values = await fetcher.fetchMonthlyAverages(for: index, startPeriod: startPeriod) else {
                 outcome.failed.append(index)
                 continue
             }

@@ -26,6 +26,7 @@ struct MortgageTermsSheet: View {
     @State private var hasFinalDate: Bool
     @State private var finalDate: Date?
     @State private var balloonText: String
+    @State private var borrowedText: String
     @State private var dayCount: MortgageDayCount
     @State private var rounding: MortgageInterestRounding
     @State private var indexDecimals: Int
@@ -56,6 +57,7 @@ struct MortgageTermsSheet: View {
         _hasFinalDate = State(initialValue: terms.finalInstalmentDate != nil)
         _finalDate = State(initialValue: terms.finalInstalmentDate)
         _balloonText = State(initialValue: terms.balloonMinorUnits.map { Money.formatInput($0) } ?? "")
+        _borrowedText = State(initialValue: terms.amountBorrowedMinorUnits.map { Money.formatInput($0) } ?? "")
         _dayCount = State(initialValue: terms.dayCount)
         _rounding = State(initialValue: terms.interestRounding)
         _indexDecimals = State(initialValue: terms.indexDecimals)
@@ -210,9 +212,14 @@ struct MortgageTermsSheet: View {
                 }
             }
         }
-        LabeledContent("Balloon") {
-            MoneyField("Balloon", text: $balloonText, currency: currency, width: 140)
-                .sheetFieldNote("Capital left to repay with the final instalment (blank or 0: none)")
+        // One row for both amounts (the sheet stays within a 1100×700 window).
+        LabeledContent("Amount borrowed") {
+            HStack(spacing: 10) {
+                MoneyField("Amount borrowed", text: $borrowedText, currency: currency, width: 120)
+                Text("balloon").foregroundStyle(.secondary).lineLimit(1)
+                MoneyField("Balloon", text: $balloonText, currency: currency, width: 120)
+            }
+            .sheetFieldNote("Lent at the start (Overview draws the loan from it); balloon: repaid with the final instalment (0: none)")
         }
     }
 
@@ -313,6 +320,8 @@ struct MortgageTermsSheet: View {
         let total = Int(totalText.trimmingCharacters(in: .whitespaces))
         let balloonInput = balloonText.trimmingCharacters(in: .whitespaces)
         let balloon = balloonInput.isEmpty ? nil : Money.parseMinorUnits(balloonInput)
+        let borrowedInput = borrowedText.trimmingCharacters(in: .whitespaces)
+        let borrowed = borrowedInput.isEmpty ? nil : Money.parseMinorUnits(borrowedInput)
         return PropertyMortgageTerms(propertyId: propertyId, revisionMonths: Array(months), rateNote: stored.rateNote,
                                      finalInstalmentDate: hasFinalDate ? (finalDate ?? derivedFinalDate ?? today) : nil,
                                      balloonMinorUnits: balloon == 0 ? nil : balloon,
@@ -320,7 +329,8 @@ struct MortgageTermsSheet: View {
                                      spreadPercent: index == .fixed ? stored.spreadPercent : spread,
                                      fixingConvention: convention, fixingBusinessDays: businessDays, dayCount: dayCount,
                                      totalInstalments: total, firstInstalmentDate: hasFirstDate ? (firstDate ?? today) : nil,
-                                     indexDecimals: indexDecimals, interestRounding: rounding)
+                                     indexDecimals: indexDecimals, interestRounding: rounding,
+                                     amountBorrowedMinorUnits: borrowed == 0 ? nil : borrowed)
     }
 
     /// The rate these rules give today.
@@ -339,6 +349,8 @@ struct MortgageTermsSheet: View {
     private func save() {
         let balloonInput = balloonText.trimmingCharacters(in: .whitespaces)
         if !balloonInput.isEmpty, Money.parseMinorUnits(balloonInput) == nil { error = MoneyField.invalidAmountMessage(balloonInput); return }
+        let borrowedInput = borrowedText.trimmingCharacters(in: .whitespaces)
+        if !borrowedInput.isEmpty, Money.parseMinorUnits(borrowedInput) == nil { error = MoneyField.invalidAmountMessage(borrowedInput); return }
         for (text, name) in [(index == .fixed ? fixedRateText : spreadText, index == .fixed ? "rate" : "spread")] {
             if !text.trimmingCharacters(in: .whitespaces).isEmpty, percentValue(text) == nil {
                 error = "“\(text)” isn't a \(name): enter a percentage such as 1.000."

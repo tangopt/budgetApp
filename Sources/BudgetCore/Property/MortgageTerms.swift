@@ -60,6 +60,10 @@ public struct PropertyMortgageTerms: Codable, Equatable, FetchableRecord, Persis
     /// The index value is rounded to this many decimals before the spread is added.
     public var indexDecimals: Int
     public var interestRounding: MortgageInterestRounding
+    /// The capital first lent (the amount borrowed), positive, in the property's currency:
+    /// with the first instalment's day it lets the loan's history be estimated back to its
+    /// start (`MortgageHistory`).
+    public var amountBorrowedMinorUnits: Int?
 
     public static let databaseTableName = "propertyMortgageTerms"
 
@@ -68,7 +72,7 @@ public struct PropertyMortgageTerms: Codable, Equatable, FetchableRecord, Persis
         case revisionMonthsText = "revisionMonths"
         case rateNote, finalInstalmentDate, balloonMinorUnits, annualRatePercent
         case rateIndex, spreadPercent, fixingConvention, fixingBusinessDays, dayCount, totalInstalments, firstInstalmentDate
-        case indexDecimals, interestRounding
+        case indexDecimals, interestRounding, amountBorrowedMinorUnits
     }
 
     public init(propertyId: Int64, revisionMonths: [Int] = MortgageTerms.defaultRevisionMonths, rateNote: String? = nil,
@@ -76,7 +80,7 @@ public struct PropertyMortgageTerms: Codable, Equatable, FetchableRecord, Persis
                 rateIndex: InterestIndex? = nil, spreadPercent: Double? = nil,
                 fixingConvention: MortgageFixingConvention = .previousMonthAverage, fixingBusinessDays: Int = 2,
                 dayCount: MortgageDayCount = .thirty360, totalInstalments: Int? = nil, firstInstalmentDate: Date? = nil,
-                indexDecimals: Int = 3, interestRounding: MortgageInterestRounding = .nearest) {
+                indexDecimals: Int = 3, interestRounding: MortgageInterestRounding = .nearest, amountBorrowedMinorUnits: Int? = nil) {
         self.propertyId = propertyId
         self.revisionMonthsText = MortgageTerms.text(revisionMonths)
         self.rateNote = rateNote
@@ -92,6 +96,7 @@ public struct PropertyMortgageTerms: Codable, Equatable, FetchableRecord, Persis
         self.firstInstalmentDate = firstInstalmentDate
         self.indexDecimals = indexDecimals
         self.interestRounding = interestRounding
+        self.amountBorrowedMinorUnits = amountBorrowedMinorUnits
     }
 
     /// Whether the rules give a rate: a fixed rate entered, or an index with its spread.
@@ -148,6 +153,8 @@ public enum MortgageTermsError: Error, Equatable {
     case invalidCount
     /// The final instalment is before the first.
     case finalBeforeFirst
+    /// An amount borrowed of zero or less, or not more than the balloon.
+    case invalidAmountBorrowed
 }
 
 public enum MortgageTerms {
@@ -166,6 +173,9 @@ public enum MortgageTerms {
         let months = Self.months(terms.revisionMonthsText)
         guard !months.isEmpty, Self.allMonthsValid(terms.revisionMonthsText) else { throw MortgageTermsError.invalidRevisionMonths }
         if let balloon = terms.balloonMinorUnits, balloon < 0 { throw MortgageTermsError.negativeBalloon }
+        if let borrowed = terms.amountBorrowedMinorUnits, borrowed <= max(0, terms.balloonMinorUnits ?? 0) {
+            throw MortgageTermsError.invalidAmountBorrowed
+        }
         if let rate = terms.annualRatePercent, !(0...50).contains(rate) { throw MortgageTermsError.invalidRate }
         if let spread = terms.spreadPercent, !(-5...20).contains(spread) { throw MortgageTermsError.invalidSpread }
         if let total = terms.totalInstalments, !(1...1_200).contains(total) { throw MortgageTermsError.invalidCount }
@@ -262,6 +272,14 @@ func registerPropertyMortgageTermsMigration(_ migrator: inout DatabaseMigrator) 
             t.column("finalInstalmentDate", .datetime)
             t.column("balloonMinorUnits", .integer)
             t.column("annualRatePercent", .double)
+        }
+    }
+}
+
+func registerMortgageAmountBorrowedMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addMortgageAmountBorrowed") { db in
+        try db.alter(table: "propertyMortgageTerms") { t in
+            t.add(column: "amountBorrowedMinorUnits", .integer)
         }
     }
 }

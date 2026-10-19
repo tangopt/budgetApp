@@ -65,6 +65,11 @@ final class PropertyViewModel: ObservableObject {
         /// The loan at each month end since the mortgage accounts' first record, then today
         /// (Overview's loan chart).
         var loanHistory: [LoanPoint] = []
+        /// The loan before its first record, estimated from the amount borrowed and the rules
+        /// (`MortgageHistory`); nil without them.
+        var loanEstimate: MortgageHistory.Estimate?
+        /// How much of the amount borrowed is repaid today; nil without the amount.
+        var loanProgress: MortgageHistory.Progress?
         /// The mortgage's terms (revision schedule, final instalment, balloon, rate), saved or default.
         var mortgageTerms: PropertyMortgageTerms?
         /// Where the loan's projection starts (`MortgageProjection.basis`) and the projection
@@ -291,8 +296,15 @@ final class PropertyViewModel: ObservableObject {
         snapshot.categoryNames = Dictionary(uniqueKeysWithValues: try Category.fetchAll(db).compactMap { c in c.id.map { ($0, c.name) } })
         snapshot.hasEvidenceRules = try PropertyEvidence.defaultRules(db: db, propertyId: propertyId).isEmpty
         let mortgageIds = snapshot.propertyAccounts.filter { $0.role == .mortgage }.map(\.accountId)
-        snapshot.loanHistory = try loanHistory(db: db, property: property, accountIds: mortgageIds, today: today)
         snapshot.mortgageTerms = try MortgageTerms.terms(db: db, propertyId: propertyId)
+        snapshot.loanEstimate = try MortgageHistory.estimate(db: db, propertyId: propertyId)
+        // With an estimate, the history reaches back to where it ends (the day before the
+        // first instalment paid into the loan), however long ago.
+        let anchorDay = snapshot.loanEstimate.map { MonthRange.calendar.date(byAdding: .day, value: -1, to: $0.anchor.paidOn)! }
+        snapshot.loanHistory = try loanHistory(db: db, property: property, accountIds: mortgageIds, today: today, reachingBack: anchorDay)
+        if let terms = snapshot.mortgageTerms, let owed = snapshot.loanHistory.last?.owedMinorUnits {
+            snapshot.loanProgress = MortgageHistory.progress(terms: terms, owedMinorUnits: owed, today: today)
+        }
         snapshot.loanBasis = try MortgageProjection.basis(db: db, propertyId: propertyId, today: today)
         snapshot.loanProjection = snapshot.loanBasis.map { MortgageProjection.project($0.input) }
         snapshot.rateStatus = try MortgageRate.status(db: db, propertyId: propertyId, today: today)
@@ -309,10 +321,11 @@ final class PropertyViewModel: ObservableObject {
     nonisolated static let loanHistoryMonths = 120
 
     /// What `accountIds` (the mortgage) owe at the end of each month from their first record
-    /// (at most `loanHistoryMonths` back) and at the end of `today`, read by
+    /// (at most `loanHistoryMonths` back, or `reachingBack` when earlier) and at the end of `today`, read by
     /// `PropertyFinance.loanBalances` (the rule of `PropertyFinance.balance`, which gives the
     /// summary's outstanding loan).
-    nonisolated static func loanHistory(db: Database, property: Property, accountIds: [Int64], today: Date) throws -> [LoanPoint] {
+    nonisolated static func loanHistory(db: Database, property: Property, accountIds: [Int64], today: Date,
+                                        reachingBack: Date? = nil) throws -> [LoanPoint] {
         guard !accountIds.isEmpty else { return [] }
         let firstSnapshot = try BalanceSnapshot.filter(accountIds.contains(Column("accountId")))
             .select(GRDB.min(Column("date")), as: Date.self).fetchOne(db)
@@ -320,7 +333,7 @@ final class PropertyViewModel: ObservableObject {
             .select(GRDB.min(Column("date")), as: Date.self).fetchOne(db)
         guard let first = [firstSnapshot, firstTransaction].compactMap({ $0 }).min() else { return [] }
         let calendar = MonthRange.calendar
-        let earliest = calendar.date(byAdding: .month, value: -loanHistoryMonths, to: today)!
+        let earliest = min(calendar.date(byAdding: .month, value: -loanHistoryMonths, to: today)!, reachingBack ?? .distantFuture)
         let start = max(calendar.startOfDay(for: first), earliest)
         guard start <= today else { return [] }
         var days = [start]
@@ -738,6 +751,7 @@ enum PropertyMessages {
         case .invalidSpread: return "Enter a spread between −5% and 20%."
         case .invalidCount: return "Enter between 1 and 1,200 instalments (and 0–10 business days, 0–6 decimals)."
         case .finalBeforeFirst: return "The final instalment is before the first."
+        case .invalidAmountBorrowed: return "The amount borrowed must be more than the balloon."
         }
     }
 

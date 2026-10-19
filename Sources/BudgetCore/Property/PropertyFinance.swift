@@ -282,8 +282,13 @@ public enum PropertyFinance {
         let depositAccountIds: [Int64]
         /// Income and expense transactions of the property's categories in the interval.
         let transactions: [Transaction]
-        /// Rows on the mortgage accounts in the interval.
+        /// Rows on the mortgage accounts counted in the interval: by the instalment's due day
+        /// (`countedDay`), so an instalment debited a day or two after its due day still
+        /// counts in the month it was due.
         let loanRows: [Transaction]
+        /// The day each row on the mortgage accounts counts on, when it isn't its own date:
+        /// the due day of the instalment it was paid for (`MortgageRate.dueDay`).
+        let dueDays: [Int64: Date]
         let rentCredits: [Transaction]
         let otherByCredit: [Int64: Int]
         let receipts: [RentReceipt]
@@ -309,12 +314,35 @@ public enum PropertyFinance {
             mortgageAccountIds = try Properties.accounts(db: db, propertyId: propertyId, role: .mortgage).map(\.accountId)
             depositAccountIds = try Properties.accounts(db: db, propertyId: propertyId, role: .deposit).map(\.accountId)
             let ids = Array(incomeCategoryIds.union(expenseCategoryIds))
-            transactions = ids.isEmpty ? [] : try Transaction
+            // The loan's instalments by the month they were due: read with a margin either side,
+            // each instalment (and the interest charged with it) counted on its due day
+            // (`MortgageRate.instalmentDueDays`); other rows on their date.
+            let margin = TimeInterval(MortgageRate.dueDayToleranceDays + 1) * 86_400
+            let nearby = mortgageAccountIds.isEmpty ? [] : try Transaction
+                .filter(mortgageAccountIds.contains(Column("accountId")) && Column("date") >= interval.start.addingTimeInterval(-margin)
+                        && Column("date") < interval.end.addingTimeInterval(margin))
+                .order(Column("date"), Column("id")).fetchAll(db)
+            let paymentDay = try MortgageTerms.terms(db: db, propertyId: propertyId).paymentDay
+            var dueDays: [Int64: Date] = [:]
+            if let paymentDay {
+                let typical = try MortgageRate.typicalInstalment(db: db, accountIds: mortgageAccountIds, transferCategoryIds: transferCategoryIds)
+                dueDays = MortgageRate.instalmentDueDays(rows: nearby, transferCategoryIds: transferCategoryIds, paymentDay: paymentDay,
+                                                         typicalInstalment: typical)
+            }
+            self.dueDays = dueDays
+            let loanRows = nearby.filter { row in
+                let day = row.id.flatMap { dueDays[$0] } ?? row.date
+                return day >= interval.start && day < interval.end
+            }
+            self.loanRows = loanRows
+            let mortgageIds = Set(mortgageAccountIds)
+            let categorised = ids.isEmpty ? [] : try Transaction
                 .filter(ids.contains(Column("categoryId")) && Column("date") >= interval.start && Column("date") < interval.end)
                 .order(Column("date"), Column("id")).fetchAll(db)
-            loanRows = mortgageAccountIds.isEmpty ? [] : try Transaction
-                .filter(mortgageAccountIds.contains(Column("accountId")) && Column("date") >= interval.start && Column("date") < interval.end)
-                .order(Column("date"), Column("id")).fetchAll(db)
+                .filter { !mortgageIds.contains($0.accountId) }
+            let idSet = Set(ids)
+            self.transactions = (categorised + loanRows.filter { idSet.contains($0.categoryId ?? -1) })
+                .sorted { (Self.countedDay($0, dueDays), $0.id ?? 0) < (Self.countedDay($1, dueDays), $1.id ?? 0) }
             rentCredits = try RentReceiptMatching.candidateCredits(db: db, propertyId: propertyId)
                 .filter { $0.date >= interval.start && $0.date < interval.end }
             let rows = try Row.fetchAll(db, sql: """
@@ -328,6 +356,14 @@ public enum PropertyFinance {
             rechargeByCredit = Dictionary(uniqueKeysWithValues: rechargeRows.map { ($0[0] as Int64, $0[1] as Int) })
         }
 
+        /// The day a transaction counts on: a row on the loan on its instalment's due day,
+        /// anything else on its date.
+        func countedDay(_ transaction: Transaction) -> Date { Self.countedDay(transaction, dueDays) }
+
+        static func countedDay(_ transaction: Transaction, _ dueDays: [Int64: Date]) -> Date {
+            transaction.id.flatMap { dueDays[$0] } ?? transaction.date
+        }
+
         /// A transaction's amount in the property's currency and GBP.
         func amount(_ transaction: Transaction) -> PropertyAmount {
             amount(transaction.amountMinorUnits, currency: accounts[transaction.accountId]?.currency ?? .gbp)
@@ -338,7 +374,10 @@ public enum PropertyFinance {
         }
 
         func figures(in interval: DateInterval) -> PropertyFigures {
-            func within(_ transaction: Transaction) -> Bool { transaction.date >= interval.start && transaction.date < interval.end }
+            func within(_ transaction: Transaction) -> Bool {
+                let day = countedDay(transaction)
+                return day >= interval.start && day < interval.end
+            }
             var figures = PropertyFigures()
             for receipt in receipts {
                 let share = PropertyFinance.apportioned(receipt.amountMinorUnits, start: receipt.periodStart, lastDay: receipt.periodEnd, to: interval)

@@ -117,18 +117,24 @@ extension PropertyFinance {
             lines[.costs, default: []].append(line(.costs, transaction, ledger.amount(transaction)))
         }
         // Mortgage: instalments leave; the interest in them already counted in Costs comes back.
+        // Each counts in the month it was due (`Ledger.dueDays`), which a debit a day or two
+        // late says.
+        func due(_ row: Transaction, _ note: String) -> String {
+            guard let id = row.id, let day = ledger.dueDays[id] else { return note }
+            return "\(note), due \(MortgageTerms.dayText(day).unbroken)"
+        }
         for row in ledger.loanRows {
             guard let category = row.categoryId else { continue }
             if ledger.anyExpenseCategoryIds.contains(category) {
                 if ledger.expenseCategoryIds.contains(category) {
                     lines[.mortgage, default: []].append(line(.mortgage, row, -ledger.amount(row),
-                                                              note: "Interest in the instalment, already counted in Costs"))
+                                                              note: due(row, "Interest in the instalment, already counted in Costs")))
                 } else {
                     lines[.mortgage, default: []].append(line(.mortgage, row, .zero,
-                                                              note: "Interest in the instalment, filed outside the property's categories"))
+                                                              note: due(row, "Interest in the instalment, filed outside the property's categories")))
                 }
             } else if ledger.transferCategoryIds.contains(category) && row.amountMinorUnits > 0 {
-                lines[.mortgage, default: []].append(line(.mortgage, row, -ledger.amount(row), note: "Instalment paid into the loan"))
+                lines[.mortgage, default: []].append(line(.mortgage, row, -ledger.amount(row), note: due(row, "Instalment paid into the loan")))
             }
         }
 

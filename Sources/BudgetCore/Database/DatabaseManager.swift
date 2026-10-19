@@ -89,5 +89,6 @@ public final class DatabaseManager {
         registerPropertyMortgageTermsMigration(&migrator)
         registerRechargeLineKindMigration(&migrator)
         registerInterestIndexAndMortgageRulesMigration(&migrator)
+        registerMortgageAmountBorrowedMigration(&migrator)
     }
 }

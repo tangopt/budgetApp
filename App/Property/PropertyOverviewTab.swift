@@ -24,7 +24,7 @@ struct PropertyOverviewTab: View {
                 SplitRow(ratio: 0.6) {
                     Panel("Cash flow by month", subtitle: "Rent above the line, costs below, net as the line; click a month for its transactions",
                           fillsHeight: true) {
-                        PropertyMonthlyChart(summary: summary, height: 210, viewModel: viewModel)
+                        PropertyMonthlyChart(summary: summary, height: 210, growsVertically: true, viewModel: viewModel)
                     }
                     PropertyLoanPanel(viewModel: viewModel, currency: summary.currency)
                 }
@@ -157,6 +157,8 @@ struct PropertyOverviewTab: View {
 struct PropertyMonthlyChart: View {
     let summary: PropertySummary
     var height: CGFloat = 220
+    /// Taller than `height` when the panel is stretched to its row (Overview, beside the loan).
+    var growsVertically = false
     var viewModel: PropertyViewModel? = nil
 
     var body: some View {
@@ -165,14 +167,19 @@ struct PropertyMonthlyChart: View {
                                          outflowMinorUnits: month.figures.costs.native, netMinorUnits: month.figures.netCashFlow.native)
                          },
                          currency: summary.currency, inflowLabel: "Rent received", outflowLabel: "Costs", netLabel: "Net cash flow",
-                         today: AppClock.now, height: height, openMonth: viewModel?.openMonthStart,
+                         today: AppClock.now, height: height, growsVertically: growsVertically, openMonth: viewModel?.openMonthStart,
                          onSelectMonth: viewModel.map { model in { model.toggleMonth($0) } })
     }
 }
 
-/// What the mortgage owes over time (`PropertyViewModel.Snapshot.loanHistory`), and, zoomed
-/// out (Next 5 years, To the end), what it will owe (`MortgageProjection`, dashed) to the
-/// final instalment and its balloon, with the projection's assumptions as a caption.
+/// What the mortgage owes over time (`PropertyViewModel.Snapshot.loanHistory`) — from the
+/// first instalment when the amount borrowed is known, the part before the first statement
+/// estimated from the loan's terms (`MortgageHistory`, lighter and finely dashed) — and,
+/// zoomed out (Next 5 years, To the end), what it will owe (`MortgageProjection`, dashed) to
+/// the final instalment and its balloon. At the bottom, in one slot of constant height: for
+/// So far, how much is repaid (a bar and the figures) and what the estimate rests on; for the
+/// projections, the projection's assumptions. The slot is as tall as the taller of the two,
+/// so the tile never changes height between ranges.
 struct PropertyLoanPanel: View {
     @ObservedObject var viewModel: PropertyViewModel
     let currency: Currency
@@ -185,6 +192,23 @@ struct PropertyLoanPanel: View {
     private var isLinked: Bool { viewModel.snapshot.propertyAccounts.contains { $0.role == .mortgage } }
     private var range: PropertyViewModel.LoanRange { projection == nil ? .soFar : viewModel.loanRange }
 
+    /// The estimate before the first real point: only when it ends where the plotted history
+    /// starts (its anchor is no earlier than the first point, give or take a month), so the
+    /// two never leave a stretch of real history out.
+    private var estimate: MortgageHistory.Estimate? {
+        guard let estimate = viewModel.snapshot.loanEstimate, let first = points.first,
+              let lastEstimated = estimate.points.last?.date, lastEstimated < first.date,
+              first.date.timeIntervalSince(lastEstimated) <= 45 * 86_400 else { return nil }
+        return estimate
+    }
+    private var estimatedPoints: [BalancePoint] {
+        guard let estimate, let first = points.first else { return [] }
+        return estimate.points.filter { $0.date < first.date }
+            .map { BalancePoint(date: $0.date, minorUnits: $0.owedMinorUnits, isEstimated: true) }
+    }
+    /// Where the chart starts: the amount borrowed, or the first record.
+    private var startDate: Date? { estimatedPoints.first?.date ?? points.first?.date }
+
     var body: some View {
         Panel("Outstanding loan", subtitle: subtitle, fillsHeight: true) {
             if let first = points.first, let last = points.last, points.count >= 2 {
@@ -196,18 +220,16 @@ struct PropertyLoanPanel: View {
                         // The label gives way before the figures beside it.
                         Text("owed today").font(.callout).foregroundStyle(.secondary).lineLimit(1).layoutPriority(-1)
                         Spacer(minLength: 8)
-                        headlineEnd(first: first, last: last)
+                        headlineEnd(repaid: viewModel.snapshot.loanProgress?.repaidMinorUnits
+                                        ?? (estimatedPoints.first?.minorUnits ?? first.owedMinorUnits) - last.owedMinorUnits)
                     }
                     BalanceLineChart(points: chartPoints, currency: currency, title: "Outstanding loan",
                                      includesZero: range == .toTheEnd, today: range == .soFar ? nil : last.date,
-                                     markers: markers, height: 160)
-                        // Room above the plot for the "Today" label.
-                        .padding(.top, range == .soFar ? 0 : 8)
-                    if range != .soFar, let caption = assumptions {
-                        Text(caption.figuresUnbroken)
-                            .font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                                     markers: markers, height: 160, growsVertically: true)
+                        // Room above the plot for the "Today" label (in every range, so the
+                        // tile keeps its height).
+                        .padding(.top, 8)
+                    footer
                 }
             } else if isLinked {
                 Text("The mortgage account has too little history yet to draw the loan: it needs balances on two days or more.")
@@ -236,7 +258,7 @@ struct PropertyLoanPanel: View {
 
     /// So far: what's been repaid; zoomed out: when the loan ends.
     @ViewBuilder
-    private func headlineEnd(first: PropertyViewModel.LoanPoint, last: PropertyViewModel.LoanPoint) -> some View {
+    private func headlineEnd(repaid: Int) -> some View {
         if range != .soFar, let date = projection?.finalDate {
             HStack(spacing: 4) {
                 Text("ends").foregroundStyle(.secondary).lineLimit(1)
@@ -244,15 +266,99 @@ struct PropertyLoanPanel: View {
             }
             .font(.callout)
             .fixedSize()
-        } else if first.owedMinorUnits > last.owedMinorUnits {
-            Text("\(Money.format(first.owedMinorUnits - last.owedMinorUnits, currency: currency)) repaid")
+        } else if repaid > 0 {
+            Text("\(Money.format(repaid, currency: currency)) repaid")
                 .font(.callout).monospacedDigit().foregroundStyle(.secondary).figureText()
         }
     }
 
-    /// The history, then the projection as far as the range reaches.
+    // MARK: Footer
+
+    /// One slot for both: the assumptions (projections) and the progress (So far), each laid
+    /// out in every range and shown in its own, so the slot's height never changes.
+    private var footer: some View {
+        ZStack(alignment: .topLeading) {
+            if let caption = assumptions {
+                Text(caption.figuresUnbroken)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .opacity(range == .soFar ? 0 : 1)
+                    .accessibilityHidden(range == .soFar)
+            }
+            progressFooter
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .opacity(range == .soFar ? 1 : 0)
+                .accessibilityHidden(range != .soFar)
+        }
+    }
+
+    /// The share of the amount borrowed repaid, as a bar and its figures; then what the
+    /// estimate before the first statement rests on.
+    private var progressFooter: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let progress = viewModel.snapshot.loanProgress {
+                ProgressBar(fraction: progress.fraction, accessibilityLabel: "Loan repaid")
+                ViewThatFits(in: .horizontal) {
+                    progressLine(progress, showsInstalment: true, showsAmounts: true)
+                    progressLine(progress, showsInstalment: false, showsAmounts: true)
+                    progressLine(progress, showsInstalment: false, showsAmounts: false)
+                }
+            } else {
+                Text("Enter the amount borrowed in Mortgage terms to follow the loan from its start.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let note = estimateNote {
+                Text(note.figuresUnbroken)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// "44% repaid · €X of €Y · instalment 175 of 300".
+    private func progressLine(_ progress: MortgageHistory.Progress, showsInstalment: Bool, showsAmounts: Bool) -> some View {
+        HStack(spacing: 4) {
+            Text("\(progress.percent)% repaid").fontWeight(.semibold).figureText()
+            if showsAmounts {
+                Text("·").foregroundStyle(.secondary)
+                MoneyText(minorUnits: progress.repaidMinorUnits, currency: currency, font: .caption.monospacedDigit(), role: .neutral)
+                Text("of").foregroundStyle(.secondary)
+                MoneyText(minorUnits: progress.borrowedMinorUnits, currency: currency, font: .caption.monospacedDigit(), role: .neutral)
+            }
+            if showsInstalment, let number = progress.instalmentNumber, let total = progress.totalInstalments {
+                Text("·").foregroundStyle(.secondary)
+                Text("instalment \(number) of \(total)").foregroundStyle(.secondary).figureText()
+            }
+        }
+        .font(.caption)
+        .fixedSize()
+    }
+
+    /// "Before 30 Sep 2023: estimated from the loan's terms and Euribor history, adjusted by
+    /// €327.07 to meet the first statement" (the demo loan); with a large gap, the amount
+    /// borrowed that would meet it, to check.
+    private var estimateNote: String? {
+        guard let estimate, let first = points.first else { return nil }
+        var text = "Before \(MortgageTerms.dayText(first.date).unbroken): estimated from the loan's terms and Euribor history"
+        let gap = Money.format(abs(estimate.gapMinorUnits), currency: currency).unbroken
+        if estimate.isAdjusted {
+            text += ", adjusted by \(gap) to meet the first statement"
+        } else if estimate.isLargeGap {
+            text += "; it misses the first statement by \(gap): check the amount borrowed"
+            if let suggested = estimate.suggestedPrincipalMinorUnits {
+                text += " (\(Money.format(suggested, currency: currency).unbroken) would meet it)"
+            }
+        }
+        return text
+    }
+
+    // MARK: Chart
+
+    /// The estimate, the history, then the projection as far as the range reaches.
     private var chartPoints: [BalancePoint] {
-        let history = points.map { BalancePoint(date: $0.date, minorUnits: $0.owedMinorUnits) }
+        let history = estimatedPoints + points.map { BalancePoint(date: $0.date, minorUnits: $0.owedMinorUnits) }
         guard range != .soFar, let projection, let today = points.last?.date else { return history }
         let limit = range == .fiveYears ? MonthRange.calendar.date(byAdding: .year, value: 5, to: today)! : Date.distantFuture
         // The history's month ends, then what's owed after each projected instalment, on its
@@ -271,14 +377,13 @@ struct PropertyLoanPanel: View {
         return [BalanceMarker(date: date, minorUnits: before, label: label)]
     }
 
+    /// The same in every range (so the title block keeps its height).
     private var subtitle: String? {
-        guard let first = points.first, points.count >= 2 else { return nil }
+        guard let start = startDate, points.count >= 2 else { return nil }
         let utc = Date.FormatStyle(timeZone: TimeZone(identifier: "UTC")!).month(.abbreviated).year()
-        switch range {
-        case .soFar: return "Month ends since \(first.date.formatted(utc))"
-        case .fiveYears: return "Since \(first.date.formatted(utc)), projected five years on (dashed)"
-        case .toTheEnd: return "Since \(first.date.formatted(utc)), projected to the final instalment (dashed)"
-        }
+        var since = "Since \(start.formatted(utc))"
+        if estimate != nil, let first = points.first { since += " (estimated before \(first.date.formatted(utc)))" }
+        return projection == nil ? since : since + ", then the projection (dashed)"
     }
 
     /// The projection's assumptions: the rate held, how it's revised, the instalment, the end.

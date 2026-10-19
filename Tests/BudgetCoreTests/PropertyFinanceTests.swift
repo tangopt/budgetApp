@@ -529,6 +529,63 @@ final class PropertyFinanceTests: XCTestCase {
         XCTAssertNil(june.group(.rent))
     }
 
+    /// Instalments due on the 31st are sometimes debited a day or two later (a weekend): each
+    /// counts in the month it was due, interest and capital, in the summary's months and the
+    /// month breakdowns alike; a row on the loan far from any due day stays on its date.
+    func testInstalmentsCountInTheMonthTheyWereDue() throws {
+        let loan = ids["loan"]!
+        try db.write { db in
+            try db.execute(sql: "DELETE FROM transaction_ WHERE accountId = ? OR categoryId = ?", arguments: [loan, ids["toLoan"]!])
+            try MortgageTerms.save(db: db, PropertyMortgageTerms(propertyId: propertyId, totalInstalments: 360,
+                                                                 firstInstalmentDate: Self.date(2024, 1, 31)))
+        }
+        // Due 31 Jan, 28 Feb, 31 Mar, 30 Apr, 31 May, 30 Jun; debited on these days.
+        let debits = [(2025, 1, 31), (2025, 3, 3), (2025, 3, 31), (2025, 5, 2), (2025, 6, 2), (2025, 6, 30)]
+        for (y, m, d) in debits {
+            try add(bank, Self.date(y, m, d), -50_000, "toLoan")
+            try add(loan, Self.date(y, m, d), 50_000, "fromBank")
+            try add(loan, Self.date(y, m, d), -20_000, "interest")
+        }
+        // A fee mid-month: no instalment near it, so on its own day.
+        try add(loan, Self.date(2025, 6, 15), -1_000, "interest")
+        // A fee the day after July's due day with no instalment that day, and an early
+        // repayment the day after August's: neither is an instalment, so both keep their dates.
+        try add(loan, Self.date(2025, 8, 1), -700, "interest")
+        try add(bank, Self.date(2025, 9, 1), -2_000_000, "toLoan")
+        try add(loan, Self.date(2025, 9, 1), 2_000_000, "fromBank")
+        let (summary, breakdowns) = try db.read { db -> (PropertySummary, [PropertyMonthBreakdown]) in
+            let summary = try PropertyFinance.summary(db: db, propertyId: propertyId, period: .calendarYear(2025), today: Self.date(2026, 1, 10))
+            return (summary, try summary.months.map { month in
+                try PropertyFinance.monthBreakdown(db: db, propertyId: propertyId, interval: DateInterval(start: month.start, end: month.end))
+            })
+        }
+        // One instalment in each month, January to June.
+        let interest = summary.months.prefix(6).map(\.figures.mortgageInterest.native)
+        let capital = summary.months.prefix(6).map(\.figures.mortgageCapital.native)
+        XCTAssertEqual(interest, [20_000, 20_000, 20_000, 20_000, 20_000, 21_000])
+        XCTAssertEqual(capital, [30_000, 30_000, 30_000, 30_000, 30_000, 29_000])
+        for (month, breakdown) in zip(summary.months, breakdowns) {
+            XCTAssertEqual(breakdown.costs, month.figures.costs, "\(month.start)")
+            XCTAssertEqual(breakdown.netCashFlow, month.figures.netCashFlow, "\(month.start)")
+            let legs = breakdown.group(.mortgage)?.lines.filter { $0.transaction.amountMinorUnits > 0 } ?? []
+            XCTAssertEqual(legs.count, month.start < Self.date(2025, 7, 1) || month.start == Self.date(2025, 9, 1) ? 1 : 0, "\(month.start)")
+        }
+        // May's instalment, debited on 2 June, is in May's breakdown and says when it was due.
+        let may = breakdowns[4].group(.mortgage)!.lines
+        XCTAssertEqual(may.map(\.transaction.date), [Self.date(2025, 6, 2), Self.date(2025, 6, 2)])
+        XCTAssertTrue(may.allSatisfy { $0.note?.replacingOccurrences(of: "\u{00A0}", with: " ").hasSuffix("due 31 May 2025") == true })
+        XCTAssertEqual(breakdowns[1].group(.mortgage)?.lines.first?.transaction.date, Self.date(2025, 3, 3))
+        XCTAssertEqual(summary.months[7].figures.mortgageInterest.native, 700)
+        XCTAssertEqual(summary.months[6].figures.mortgageInterest.native, 0)
+        XCTAssertEqual(summary.months[8].figures.mortgageCapital.native, 2_000_000)
+        // The year's totals are the same either way.
+        XCTAssertEqual(summary.totals.mortgageInterest.native, 121_700)
+        // The due day: the nearest payment day within a week, else none.
+        XCTAssertEqual(MortgageRate.dueDay(paidOn: Self.date(2025, 6, 2), paymentDay: 31), Self.date(2025, 5, 31))
+        XCTAssertEqual(MortgageRate.dueDay(paidOn: Self.date(2025, 3, 3), paymentDay: 31), Self.date(2025, 2, 28))
+        XCTAssertNil(MortgageRate.dueDay(paidOn: Self.date(2025, 6, 15), paymentDay: 31))
+    }
+
     // MARK: Loan projection basis
 
     func testProjectionBasisReadsTheLoan() throws {

@@ -88,16 +88,26 @@ public enum DemoDatabase {
 
     /// The demo loan's rules: Euribor 3M + 1.000%, the previous month's average, revised every
     /// quarter; 360 instalments due on the 1st from 1 Nov 2016 (the last on 1 Oct 2046), a
-    /// €24,800 balloon.
+    /// €24,800 balloon; €223,000 borrowed (the history before the first statement is estimated
+    /// from it, a little off the statement's figure, as a real loan's would be).
     public static func mortgageTerms(propertyId: Int64) -> PropertyMortgageTerms {
         PropertyMortgageTerms(propertyId: propertyId, balloonMinorUnits: 2_480_000, rateIndex: .euribor3M, spreadPercent: 1.0,
-                              totalInstalments: 360, firstInstalmentDate: date(2016, 11, 1))
+                              totalInstalments: 360, firstInstalmentDate: date(2016, 11, 1), amountBorrowedMinorUnits: 22_300_000)
     }
 
-    /// A synthetic Euribor 3M monthly average (not the real series): from June 2023 to
-    /// September 2026, a smooth wave between about 0.9% and 1.6%, four decimals.
+    /// A synthetic Euribor 3M monthly average (not the real series), four decimals: from
+    /// January 2016 to May 2023 a gentle dip just below zero rising to about 1.1% (the loan's
+    /// history before its first statement), then to September 2026 a smooth wave between
+    /// about 0.9% and 1.6%.
     public static func euribor3M() -> [(Date, Double)] {
-        (0..<40).map { offset in
+        let early = (0..<89).map { offset -> (Date, Double) in
+            let month = MonthRange.calendar.date(byAdding: .month, value: offset, to: date(2016, 1, 1))!
+            // Flat around −0.3% to 2021, then rising through 2022 to about 1.1% in May 2023.
+            let rise = max(0, Double(offset - 72)) / 16 * 1.4
+            let value = -0.3 + 0.05 * sin(Double(offset) / 7) + rise
+            return (month, (value * 10_000).rounded() / 10_000)
+        }
+        return early + (0..<40).map { offset in
             let month = MonthRange.calendar.date(byAdding: .month, value: offset, to: date(2023, 6, 1))!
             let value = 1.25 + 0.3 * sin(Double(offset) / 5) + 0.0123 * Double(offset % 3)
             return (month, (value * 10_000).rounded() / 10_000)

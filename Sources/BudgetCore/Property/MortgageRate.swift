@@ -407,6 +407,55 @@ public enum MortgageRate {
         return result.sorted { $0.paidOn < $1.paidOn }
     }
 
+    /// How far from its due day an instalment's debit can be and still count for it.
+    public static let dueDayToleranceDays = 7
+
+    /// The due day an instalment (or the interest charged with it) debited on `paidOn` was
+    /// for: the payment day nearest to it (clamped to short months), when it's within
+    /// `dueDayToleranceDays`; nil when it's further (not an instalment's). An instalment due on
+    /// the 31st and debited on 1 June, the 31st being a Sunday, was May's.
+    public static func dueDay(paidOn: Date, paymentDay: Int) -> Date? {
+        let day = PropertyDates.day(paidOn)
+        let due = nearestDue(to: day, day: paymentDay)
+        return abs(PropertyFinance.days(min(due, day), max(due, day))) <= dueDayToleranceDays ? due : nil
+    }
+
+    /// The due day each instalment row among `rows` (rows on the mortgage accounts) counts
+    /// on, when it isn't its own date. Only instalments shift: a transfer leg into the loan of
+    /// about the usual instalment (at most 1.5 × `typicalInstalment`; any size without one)
+    /// within `dueDayToleranceDays` of a payment day, and the rows on its account and day that
+    /// aren't transfers (the interest charged with it). A fee on another day or an early
+    /// repayment (a larger leg) keeps its date.
+    public static func instalmentDueDays(rows: [Transaction], transferCategoryIds: Set<Int64>, paymentDay: Int,
+                                         typicalInstalment: Int?) -> [Int64: Date] {
+        struct Key: Hashable { let accountId: Int64; let day: Date }
+        func isTransfer(_ row: Transaction) -> Bool { row.categoryId.map(transferCategoryIds.contains) ?? false }
+        var instalmentDays: [Key: Date] = [:]
+        var result: [Int64: Date] = [:]
+        for row in rows where isTransfer(row) && row.amountMinorUnits > 0 {
+            if let typical = typicalInstalment, typical > 0, Double(row.amountMinorUnits) > 1.5 * Double(typical) { continue }
+            let day = PropertyDates.day(row.date)
+            guard let due = dueDay(paidOn: day, paymentDay: paymentDay) else { continue }
+            instalmentDays[Key(accountId: row.accountId, day: day)] = due
+            if due != day, let id = row.id { result[id] = due }
+        }
+        for row in rows where !isTransfer(row) {
+            let day = PropertyDates.day(row.date)
+            guard let due = instalmentDays[Key(accountId: row.accountId, day: day)], due != day, let id = row.id else { continue }
+            result[id] = due
+        }
+        return result
+    }
+
+    /// The median transfer leg into `accountIds`: the usual instalment.
+    static func typicalInstalment(db: Database, accountIds: [Int64], transferCategoryIds: Set<Int64>) throws -> Int? {
+        guard !accountIds.isEmpty, !transferCategoryIds.isEmpty else { return nil }
+        let amounts = try Int.fetchAll(db, Transaction.filter(accountIds.contains(Column("accountId")) && Column("amountMinorUnits") > 0
+                                                               && transferCategoryIds.contains(Column("categoryId")))
+            .select(Column("amountMinorUnits")).order(Column("amountMinorUnits")))
+        return amounts.isEmpty ? nil : amounts[amounts.count / 2]
+    }
+
     /// The payment day (`day` of a month) nearest to `date`.
     public static func nearestDue(to date: Date, day: Int) -> Date {
         let candidates = (-1...1).map { MortgageTerms.dueDate(monthsAfter: $0, from: date, day: day) }

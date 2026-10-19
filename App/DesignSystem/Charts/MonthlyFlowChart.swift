@@ -53,6 +53,8 @@ struct MonthlyFlowChart: View {
     var netLabel = "Net"
     var today: Date? = nil
     var height: CGFloat = 220
+    /// Taller than `height` when its container offers more (a panel stretched to its row).
+    var growsVertically = false
     /// The month whose details are open (highlighted behind its bars), when the chart drills down.
     var openMonth: Date? = nil
     /// Clicking a month (or its accessible button, from the keyboard or VoiceOver) calls this
@@ -153,7 +155,7 @@ struct MonthlyFlowChart: View {
         // its neighbour's label across a daylight-saving change.
         .environment(\.calendar, MonthRange.calendar)
         .environment(\.timeZone, Self.utc)
-        .frame(height: height)
+        .frame(minHeight: height, idealHeight: height, maxHeight: growsVertically ? .infinity : height)
         if let onSelectMonth {
             // A button over each month: click (or Space from the keyboard, or VoiceOver's
             // activate) opens it; hovering it shows the readout as the chart's hover does.

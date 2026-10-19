@@ -9,6 +9,9 @@ struct BalancePoint: Identifiable, Equatable {
     let minorUnits: Int
     /// A projected value (drawn dashed, without the area).
     var isForecast = false
+    /// An estimated past value (drawn lighter and finely dashed, over a fainter area): a
+    /// loan's history before its first statement.
+    var isEstimated = false
     var id: Date { date }
 }
 
@@ -21,8 +24,8 @@ struct BalanceMarker: Identifiable, Equatable {
 }
 
 /// A balance over time (spec §4.1; the Dashboard's net worth line): the area at 0.12 under a
-/// 2 pt line in `theme.series(series)`, forecast points dashed; a dashed "Today" rule; hover
-/// for a readout. With `showsAxes` off it's the Accounts sparkline. `includesZero` off fits
+/// 2 pt line in `theme.series(series)`, forecast points dashed, estimated past points lighter
+/// and finely dashed over a fainter area; a dashed "Today" rule; hover for a readout. With `showsAxes` off it's the Accounts sparkline. `includesZero` off fits
 /// the scale to the values (a loan that moves a few percent a year), the area filling down
 /// to the bottom of the plot.
 struct BalanceLineChart: View {
@@ -36,12 +39,21 @@ struct BalanceLineChart: View {
     /// Points labelled on the chart.
     var markers: [BalanceMarker] = []
     var height: CGFloat = 200
+    /// Taller than `height` when its container offers more (a panel stretched to its row).
+    var growsVertically = false
     @Environment(\.theme) private var theme
     @State private var selectedDate: Date?
 
     private static let utc = TimeZone(identifier: "UTC")!
 
-    private var actual: [BalancePoint] { points.filter { !$0.isForecast } }
+    private var actual: [BalancePoint] { points.filter { !$0.isForecast && !$0.isEstimated } }
+
+    /// The estimate runs on to the first actual point.
+    private var estimated: [BalancePoint] {
+        let past = points.filter(\.isEstimated)
+        guard !past.isEmpty else { return [] }
+        return past + (actual.first.map { [$0] } ?? [])
+    }
 
     /// The forecast continues from the last actual point.
     private var forecast: [BalancePoint] {
@@ -76,6 +88,14 @@ struct BalanceLineChart: View {
         let domain = domain
         let spansYears = spansYears
         Chart {
+            ForEach(estimated) { point in
+                AreaMark(x: .value("Date", point.date), yStart: .value(title, domain.lowerBound),
+                         yEnd: .value(title, Double(point.minorUnits) / 100), series: .value("Series", "Estimated area"))
+                    .foregroundStyle(color.opacity(0.06))
+                LineMark(x: .value("Date", point.date), y: .value(title, Double(point.minorUnits) / 100), series: .value("Series", "Estimated"))
+                    .foregroundStyle(color.opacity(0.6))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [2, 3]))
+            }
             ForEach(actual) { point in
                 AreaMark(x: .value("Date", point.date), yStart: .value(title, domain.lowerBound),
                          yEnd: .value(title, Double(point.minorUnits) / 100), series: .value("Series", "Area"))
@@ -111,7 +131,8 @@ struct BalanceLineChart: View {
                     .foregroundStyle(Color.secondary.opacity(0.5))
                     .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(DocumentFormat.day(selected.date)).font(.caption2).foregroundStyle(.secondary).figureText()
+                            Text(DocumentFormat.day(selected.date) + (selected.isEstimated ? " · estimated" : ""))
+                                .font(.caption2).foregroundStyle(.secondary).figureText()
                             MoneyText(minorUnits: selected.minorUnits, currency: currency, font: .caption.bold().monospacedDigit(), role: .neutral)
                         }
                         .padding(6)
@@ -155,7 +176,7 @@ struct BalanceLineChart: View {
         // month's label.
         .environment(\.calendar, MonthRange.calendar)
         .environment(\.timeZone, Self.utc)
-        .frame(height: height)
+        .frame(minHeight: height, idealHeight: height, maxHeight: growsVertically ? .infinity : height)
         .accessibilityLabel(title)
     }
 }
