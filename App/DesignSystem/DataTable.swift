@@ -81,6 +81,17 @@ struct DataTableColumn<Row> {
         return column
     }
 
+    /// Whether the column has a compact form (a narrower width or a shorter cell).
+    fileprivate var compacts: Bool { compactWidth != nil || compactCell != nil }
+
+    /// Whether the column's width depends on its cells (what `DataTable` measures to choose its step).
+    fileprivate var isMeasured: Bool {
+        switch width {
+        case .fit, .min: return true
+        case .fixed, .fill: return false
+        }
+    }
+
     /// The column at give-way step `step`: itself, its compact form, or nil (hidden).
     fileprivate func at(step: Int) -> Self? {
         guard let priority = giveWayPriority, priority <= step else { return self }
@@ -220,8 +231,19 @@ struct DataTable<Row: Identifiable>: View {
     var selectedId: Row.ID? = nil
     /// What activating a row does, for VoiceOver ("Show details").
     var selectHint = "Shows its details"
+    /// What the cells show besides their rows (`cellsRebuilt(when:)`), and each row as its
+    /// cells compare it: while both are unchanged, a cell isn't built again — selecting another
+    /// row redraws the rows' backgrounds only.
+    private var cellsKey: DataTableContentKey?
+    private var rowKey: ((Row) -> DataTableContentKey)?
     @Environment(\.theme) private var theme
     @Environment(\.selectedRowScroller) private var selectedRowScroller
+    /// How far the columns give way (a table with give-way steps): chosen from the width there
+    /// is and the columns' measured widths, so only that one grid is ever built.
+    @State private var fit = DataTableFit()
+    /// The columns' widths as their cells need them, the width the table is given, and whether
+    /// the open row is in view: read when choosing, never drawn, so not observed.
+    @State private var measured = DataTableMeasurements()
 
     init(columns: [DataTableColumn<Row>], sections: [DataTableSection<Row>], zebra: Bool = true, showsHeader: Bool = true,
          onSelect: ((Row) -> Void)? = nil, selectedId: Row.ID? = nil) {
@@ -237,6 +259,18 @@ struct DataTable<Row: Identifiable>: View {
          onSelect: ((Row) -> Void)? = nil, selectedId: Row.ID? = nil) {
         self.init(columns: columns, sections: [DataTableSection(rows: rows, total: total)], zebra: zebra, showsHeader: showsHeader,
                   onSelect: onSelect, selectedId: selectedId)
+    }
+
+    /// The table whose cells are built again only when their row or `key` changes: `key` must
+    /// hold everything else the columns' cells show (a currency, the theme), but not the
+    /// selection. Rule: any state outside the rows that changes what a column's cells show
+    /// (or which columns there are, beyond their titles and widths) must be in `key`, or those
+    /// cells keep showing the old state.
+    func cellsRebuilt<Key: Equatable>(when key: Key) -> Self where Row: Equatable {
+        var table = self
+        table.cellsKey = DataTableContentKey(key)
+        table.rowKey = { DataTableContentKey($0) }
+        return table
     }
 
     private enum Line {
@@ -281,105 +315,245 @@ struct DataTable<Row: Identifiable>: View {
     }
 
     var body: some View {
-        content(steps)
+        // A column's measured width changing (its cells narrowed or widened) chooses the step
+        // again, so the table can widen back too (with this table's current columns).
+        let _ = measured.onWidthsChanged = steps.isEmpty ? nil : { chooseFit() }
+        content
             // Once it has settled (a side panel opening narrows the page, and the table gives
-            // way), the open row is brought into view by its page's scroll view.
-            .task(id: selectedId) {
-                guard selectedId != nil, let selectedRowScroller else { return }
-                // Again a little later, should the page still have been settling (it is a
-                // no-op when the row is already in view).
-                for delay in [260, 600] {
-                    try? await Task.sleep(for: .milliseconds(delay))
-                    guard !Task.isCancelled else { return }
-                    selectedRowScroller.scrollTo(DataTableSelection.scrollID)
-                }
+            // way), the open row is brought into view by its page's scroll view: once, a moment
+            // after the last change of row or columns (a no-op when the row is already in view).
+            .task(id: DataTableScrollKey(selected: selectedId.map(AnyHashable.init), fit: fit)) {
+                guard let selectedId, let selectedRowScroller else { return }
+                try? await Task.sleep(for: .milliseconds(120))
+                // Scrolling lays the whole page out again: not when the row is in view already.
+                guard !Task.isCancelled, measured.visibleSelection != AnyHashable(selectedId) else { return }
+                selectedRowScroller.scrollTo(DataTableSelection.scrollID)
             }
     }
 
     @ViewBuilder
-    private func content(_ steps: [Int]) -> some View {
+    private var content: some View {
         if steps.isEmpty {
-            grid(columns, idealAtMinimum: false)
+            grid(columns.enumerated().map { ($0.element, $0.offset * 2) }, idealAtMinimum: false)
         } else {
             // Too narrow for every column (a side panel open beside it): low-priority columns
             // hide or narrow, step by step, until it fits; past the last step it scrolls
-            // sideways rather than make the page wider than the window.
-            ViewThatFits(in: .horizontal) {
-                grid(columns, idealAtMinimum: true)
-                ForEach(steps, id: \.self) { step in
-                    grid(shown(at: step), idealAtMinimum: true)
+            // sideways rather than make the page wider than the window. The step comes from
+            // the width the table is given and its columns' widths (each form measured: the
+            // shown ones by the grid, the others by a hidden probe), so only one grid is built.
+            let shown = shown(atLevel: fit.level)
+            DataTableFitLayout {
+                Group {
+                    if fit.scrolls {
+                        ScrollView(.horizontal) {
+                            grid(shown, idealAtMinimum: true)
+                        }
+                        .fixedSize(horizontal: false, vertical: true)
+                        .wrapProbeScrollsHorizontally()
+                    } else {
+                        grid(shown, idealAtMinimum: true)
+                    }
                 }
-                ScrollView(.horizontal) {
-                    grid(shown(at: steps.last!), idealAtMinimum: true)
-                }
-                .fixedSize(horizontal: false, vertical: true)
-                .wrapProbeScrollsHorizontally()
+                // Wider than given when its columns don't fit: choose again.
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { _ in chooseFit() }
             }
+            .background(alignment: .topLeading) {
+                let excluded = Set(shown.compactMap(\.key))
+                if let cellsKey, let rowKey {
+                    let rows = entries.compactMap { entry -> DataTableContentKey? in
+                        switch entry.line {
+                        case let .row(row, _), let .total(row): return rowKey(row)
+                        case .header, .section: return nil
+                        }
+                    }
+                    EquatableContent(DataTableProbeKey(content: cellsKey, rows: rows, forms: excluded.sorted())) { probe(excluding: excluded) }
+                        .equatable()
+                } else {
+                    probe(excluding: excluded)
+                }
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                measured.available = width
+                chooseFit()
+            }
+        }
+    }
+
+    /// The give-way levels: 0 (every column), then each step in turn.
+    private var levels: Int { steps.count }
+
+    /// The columns at `level` (0: every column; n: give-way step n), each with its measured
+    /// form's key (nil for the empty filler column).
+    private func shown(atLevel level: Int) -> [(column: DataTableColumn<Row>, key: Int?)] {
+        level == 0 ? columns.enumerated().map { ($0.element, $0.offset * 2) } : shown(at: steps[level - 1])
+    }
+
+    /// The width `level`'s columns need (fill columns at their minimum), or nil while a column
+    /// in it hasn't been measured yet.
+    private func required(atLevel level: Int) -> CGFloat? {
+        var total: CGFloat = 0
+        for (column, key) in shown(atLevel: level) {
+            switch column.width {
+            case let .fixed(value): total += value
+            case let .fill(min): total += Swift.max(min, 0)
+            case .fit:
+                guard let key, let width = measured.widths[key] else { return nil }
+                total += width
+            case let .min(value):
+                guard let key, let width = measured.widths[key] else { return nil }
+                total += Swift.max(width, value)
+            }
+        }
+        return total
+    }
+
+    /// The first level whose columns fit the width there is; scrolling at the last when none does.
+    private func chooseFit() {
+        guard let available = measured.available else { return }
+        var choice = DataTableFit(level: levels, scrolls: true)
+        for level in 0...levels {
+            // Not measured yet: the probe or the grid reports it, and this runs again.
+            guard let width = required(atLevel: level) else { return }
+            if width <= available + 0.5 {
+                choice = DataTableFit(level: level, scrolls: false)
+                break
+            }
+        }
+        if choice != fit { fit = choice }
+    }
+
+    /// Every form of the measured columns (fit and minimum widths) that the grid doesn't
+    /// show, laid out hidden for their widths only: what choosing the step needs.
+    @ViewBuilder
+    private func probe(excluding shownKeys: Set<Int>) -> some View {
+        let forms: [(column: DataTableColumn<Row>, key: Int)] = columns.enumerated().flatMap { index, column in
+            var forms: [(DataTableColumn<Row>, Int)] = [(column, index * 2)]
+            if column.compacts, let step = column.giveWayPriority, let compact = column.at(step: step) { forms.append((compact, index * 2 + 1)) }
+            return forms.filter { $0.0.isMeasured && !shownKeys.contains($0.1) }
+        }
+        if !forms.isEmpty {
+            DataTableLayout(widths: forms.map { _ in .fit }, keys: forms.map(\.key), measured: measured) {
+                ForEach(entries) { entry in
+                    let index = entry.index
+                    switch entry.line {
+                    case .header:
+                        ForEach(Array(forms.enumerated()), id: \.offset) { column, form in
+                            headerCell(form.column).layoutValue(key: DataTableSlot.self, value: .cell(line: index, column: column))
+                        }
+                    case .section: EmptyView()
+                    case let .row(row, _): probeCells(row, forms.map(\.column), kind: .row, line: index)
+                    case let .total(row): probeCells(row, forms.map(\.column), kind: .total, line: index)
+                    }
+                }
+            }
+            .fixedSize()
+            .hidden()
+            .accessibilityHidden(true)
+            .allowsHitTesting(false)
+            .wrapProbeIgnored()
+            // Measured anew (rows changed): choose again.
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in chooseFit() }
         }
     }
 
     /// The columns at give-way step `step`. When the column that took the spare width hides
     /// or stops filling, an empty one takes the spare width there, so the table still spans
     /// its width with its figures and actions where they were.
-    private func shown(at step: Int) -> [DataTableColumn<Row>] {
+    private func shown(at step: Int) -> [(column: DataTableColumn<Row>, key: Int?)] {
         func fills(_ column: DataTableColumn<Row>) -> Bool {
             if case .fill = column.width { return true }
             return false
         }
-        var shown: [DataTableColumn<Row>] = []
+        var shown: [(column: DataTableColumn<Row>, key: Int?)] = []
         var filler: Int?
-        for column in columns {
+        for (index, column) in columns.enumerated() {
             let given = column.at(step: step)
-            if let given { shown.append(given) }
+            // Its key: its own form (even), or its compact form (odd).
+            if let given { shown.append((given, index * 2 + (column.compacts && (column.giveWayPriority ?? .max) <= step ? 1 : 0))) }
             // Where the spare width went: in place of a hidden fill column, after a narrowed one.
             if fills(column), filler == nil, given.map(fills) != true { filler = shown.count }
         }
-        if let filler, !shown.contains(where: fills) {
-            shown.insert(DataTableColumn("", width: .fill(min: 0)) { _, _ in EmptyView() }, at: filler)
+        if let filler, !shown.contains(where: { fills($0.column) }) {
+            shown.insert((DataTableColumn("", width: .fill(min: 0)) { _, _ in EmptyView() }, nil), at: filler)
         }
         return shown
     }
 
     /// The table with `shown` columns. `idealAtMinimum`: its ideal width has its fill columns
-    /// at their minimum (what `ViewThatFits` compares with the room there is).
-    private func grid(_ shown: [DataTableColumn<Row>], idealAtMinimum: Bool) -> some View {
-        DataTableLayout(widths: shown.map(\.width), idealAtMinimum: idealAtMinimum) {
+    /// at their minimum (what the table compares with the room there is).
+    private func grid(_ keyed: [(column: DataTableColumn<Row>, key: Int?)], idealAtMinimum: Bool) -> some View {
+        let shown = keyed.map(\.column)
+        return DataTableLayout(widths: shown.map(\.width), idealAtMinimum: idealAtMinimum, keys: keyed.map(\.key),
+                               measured: steps.isEmpty ? nil : measured) {
             ForEach(entries) { entry in
                 let index = entry.index, line = entry.line
-                // Each line's background first, so it draws under the line's cells; for a row it
-                // is also the row's one VoiceOver element. It carries the line's minimum height:
+                // The lines' backgrounds first, so they draw under the cells; for a row it is
+                // also the row's one VoiceOver element. It carries the line's minimum height:
                 // rows and totals at least `minRowHeight`, header and group strips their text's.
                 background(line)
                     // The open row can be scrolled to: a marker over it (its own identity, and
                     // VoiceOver's focus, stay put).
-                    .overlay { if isSelected(line) { Color.clear.id(DataTableSelection.scrollID).accessibilityHidden(true) } }
+                    .overlay { if case let .row(row, _) = line, isSelected(line) { selectionMarker(AnyHashable(row.id)) } }
                     .layoutValue(key: DataTableSlot.self, value: .background(line: index, minHeight: minHeight(line)))
-                switch line {
-                case .header:
-                    ForEach(Array(shown.enumerated()), id: \.offset) { column, spec in
-                        Text(spec.title)
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: spec.alignment)
-                            .contentShape(Rectangle())
-                            .help(spec.headerHelp ?? "")
-                            .accessibilityHidden(true)
-                            .layoutValue(key: DataTableSlot.self, value: .cell(line: index, column: column))
-                    }
-                case let .section(title):
-                    Text(title)
-                        .font(.subheadline.bold())
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityAddTraits(.isHeader)
-                        .layoutValue(key: DataTableSlot.self, value: .span(line: index))
-                case let .row(row, _):
-                    cells(row, shown, kind: .row, line: index)
-                case let .total(row):
-                    cells(row, shown, kind: .total, line: index)
+            }
+            lineCells(keyed)
+        }
+    }
+
+    private func lineCells(_ keyed: [(column: DataTableColumn<Row>, key: Int?)]) -> some View {
+        let shown = keyed.map(\.column)
+        return ForEach(entries) { entry in
+            let index = entry.index, line = entry.line
+            switch line {
+            case .header:
+                ForEach(Array(shown.enumerated()), id: \.offset) { column, spec in
+                    headerCell(spec)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: spec.alignment)
+                        .contentShape(Rectangle())
+                        .help(spec.headerHelp ?? "")
+                        .accessibilityHidden(true)
+                        .layoutValue(key: DataTableSlot.self, value: .cell(line: index, column: column))
                 }
+            case let .section(title):
+                Text(title)
+                    .font(.subheadline.bold())
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityAddTraits(.isHeader)
+                    .layoutValue(key: DataTableSlot.self, value: .span(line: index))
+            case let .row(row, _):
+                cells(row, keyed, kind: .row, line: index)
+            case let .total(row):
+                cells(row, keyed, kind: .total, line: index)
             }
         }
+    }
+
+    /// A row's cells in the probe: as the grid lays them out, for their widths only.
+    private func probeCells(_ row: Row, _ forms: [DataTableColumn<Row>], kind: DataTableRowKind, line: Int) -> some View {
+        ForEach(Array(forms.enumerated()), id: \.offset) { column, spec in
+            spec.cell(row, kind)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .layoutValue(key: DataTableSlot.self, value: .cell(line: line, column: column))
+        }
+    }
+
+    private func headerCell(_ spec: DataTableColumn<Row>) -> some View {
+        Text(spec.title)
+            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+    }
+
+    /// Over the open row: what its page's scroll view scrolls to, and whether it's in view.
+    private func selectionMarker(_ id: AnyHashable) -> some View {
+        Color.clear
+            .id(DataTableSelection.scrollID)
+            .accessibilityHidden(true)
+            .onScrollVisibilityChange(threshold: 0.99) { [measured] visible in
+                if visible { measured.visibleSelection = id } else if measured.visibleSelection == id { measured.visibleSelection = nil }
+            }
+            // Gone (another row opened, the table rebuilt): no longer known to be in view.
+            .onDisappear { [measured] in if measured.visibleSelection == id { measured.visibleSelection = nil } }
     }
 
     private func isSelected(_ line: Line) -> Bool {
@@ -407,16 +581,33 @@ struct DataTable<Row: Identifiable>: View {
     }
 
     @ViewBuilder
-    private func cells(_ row: Row, _ shown: [DataTableColumn<Row>], kind: DataTableRowKind, line: Int) -> some View {
-        ForEach(Array(shown.enumerated()), id: \.offset) { column, spec in
-            spec.cell(row, kind)
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: spec.alignment)
-                .modifier(DataTableRowTap(action: kind == .row ? onSelect.map { select in { select(row) } } : nil))
-                // Described cells are read with their row (its background's label).
-                .accessibilityHidden(spec.accessibilityValue != nil)
+    private func cells(_ row: Row, _ keyed: [(column: DataTableColumn<Row>, key: Int?)], kind: DataTableRowKind, line: Int) -> some View {
+        // By column (its form): when the table gives way, the cells of the columns that stay
+        // are kept, only those of the columns that hide or change form go.
+        ForEach(Array(keyed.enumerated()), id: \.element.key) { column, form in
+            // With `cellsRebuilt(when:)`: built again only when its row, column or the table's
+            // key changes.
+            if let cellsKey, let rowKey {
+                EquatableContent(DataTableCellKey(table: cellsKey, row: rowKey(row), kind: kind, form: form.key,
+                                                  title: form.column.title, width: form.column.width, alignment: form.column.alignment)) {
+                    cell(row, form.column, kind: kind)
+                }
+                .equatable()
                 .layoutValue(key: DataTableSlot.self, value: .cell(line: line, column: column))
+            } else {
+                cell(row, form.column, kind: kind)
+                    .layoutValue(key: DataTableSlot.self, value: .cell(line: line, column: column))
+            }
         }
+    }
+
+    private func cell(_ row: Row, _ spec: DataTableColumn<Row>, kind: DataTableRowKind) -> some View {
+        spec.cell(row, kind)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: spec.alignment)
+            .modifier(DataTableRowTap(action: kind == .row ? onSelect.map { select in { select(row) } } : nil))
+            // Described cells are read with their row (its background's label).
+            .accessibilityHidden(spec.accessibilityValue != nil)
     }
 
     @ViewBuilder
@@ -451,6 +642,82 @@ struct DataTable<Row: Identifiable>: View {
             base.accessibilityHidden(true)
         }
     }
+}
+
+/// How far a `DataTable`'s columns give way: `level` 0 shows every column, n the columns at
+/// give-way step n; `scrolls` when even the last step is too wide (the table scrolls sideways).
+struct DataTableFit: Equatable {
+    var level = 0
+    var scrolls = false
+}
+
+/// A `DataTable`'s `cellsRebuilt(when:)` key, of any equatable type.
+struct DataTableContentKey: Equatable {
+    private let value: Any
+    private let equals: (Any) -> Bool
+
+    init<Value: Equatable>(_ value: Value) {
+        self.value = value
+        self.equals = { ($0 as? Value) == value }
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.equals(rhs.value) }
+}
+
+/// A cell of a table with `cellsRebuilt(when:)`: what it shows and where.
+private struct DataTableCellKey: Equatable {
+    let table: DataTableContentKey
+    let row: DataTableContentKey
+    let kind: DataTableRowKind
+    let form: Int?
+    let title: String
+    let width: DataTableWidth
+    let alignment: Alignment
+}
+
+/// The probe of a table with `cellsRebuilt(when:)`: the rows and the forms it measures.
+private struct DataTableProbeKey: Equatable {
+    let content: DataTableContentKey
+    let rows: [DataTableContentKey]
+    let forms: [Int]
+}
+
+/// What brings the open row into view: the row, and the columns it is laid out with.
+private struct DataTableScrollKey: Equatable {
+    let selected: AnyHashable?
+    let fit: DataTableFit
+}
+
+/// What a `DataTable` measures and tracks without drawing it (not observed, so updating it
+/// doesn't redraw the table): the widths its measured columns need, by column form (its index
+/// × 2, + 1 for its compact form), written as its grid and probe lay out; the width it is
+/// given; and the open row, while it's in view.
+final class DataTableMeasurements: @unchecked Sendable {
+    var widths: [Int: CGFloat] = [:]
+    var available: CGFloat?
+    var visibleSelection: AnyHashable?
+    /// Chooses the table's step again (set by the table as it draws).
+    var onWidthsChanged: (() -> Void)?
+}
+
+/// A table that gives way: as wide as it is given (never wider, so the page doesn't grow) and
+/// as tall as its grid; the grid is laid out in that width, overflowing it only until the
+/// table has chosen its columns.
+struct DataTableFitLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let grid = subviews.first else { return .zero }
+        let size = grid.sizeThatFits(proposal)
+        guard let width = proposal.width, width.isFinite else { return size }
+        return CGSize(width: width, height: size.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(width: bounds.width, height: proposal.height))
+    }
+
+    // No alignment guides of its own (`DataTableLayout`'s note).
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
 }
 
 /// The row whose details are open (`DataTable.selectedId`), for a `ScrollViewReader`: a page
@@ -537,21 +804,61 @@ struct DataTableLayout: Layout {
     /// Its ideal width (no width proposed) has the fill columns at their minimum, not as
     /// wide as their widest cell.
     var idealAtMinimum = false
+    /// Each column's form (`DataTableMeasurements`), when its measured width is reported.
+    var keys: [Int?] = []
+    var measured: DataTableMeasurements?
 
+    /// What the layout has measured since its cells last changed: each column's widest cell
+    /// (what doesn't depend on the width proposed), each column's cell heights at the width it
+    /// was last given, and the layout at the widths proposed lately — so a new width proposed
+    /// (a side panel opening, the window's minimum worked out) measures again only the columns
+    /// whose width changes.
     struct Cache {
+        var ideal: [CGFloat]?
+        /// By column: its width, and its cells' heights by line at that width.
+        var columnHeights: [Int: (width: CGFloat, heights: [Int: CGFloat])] = [:]
+        /// The group strips' heights by line, at the table's width.
+        var spanHeights: (width: CGFloat, heights: [Int: CGFloat])?
+        /// The lines' minimum heights (their backgrounds').
+        var minimumHeights: [Int: CGFloat]?
+        /// The layout by width proposed.
+        var layouts: [CGFloat?: Laid] = [:]
         var columnWidths: [CGFloat] = []
         var lineHeights: [Int: CGFloat] = [:]
-        var proposedWidth: CGFloat?
+    }
+
+    struct Laid {
+        var columnWidths: [CGFloat]
+        var lineHeights: [Int: CGFloat]
     }
 
     func makeCache(subviews: Subviews) -> Cache { Cache() }
 
-    private func columnWidths(_ subviews: Subviews, proposedWidth: CGFloat?) -> [CGFloat] {
+    /// Each column's widest cell (unconstrained), reported to `measured`.
+    private func idealWidths(_ subviews: Subviews) -> [CGFloat] {
         var ideal = Array(repeating: CGFloat(0), count: widths.count)
         for subview in subviews {
             guard case let .cell(_, column) = subview[DataTableSlot.self], column < widths.count else { continue }
             ideal[column] = max(ideal[column], subview.sizeThatFits(.unspecified).width)
         }
+        if let measured {
+            var changed = false
+            for (index, key) in keys.enumerated() where index < ideal.count {
+                guard let key else { continue }
+                switch widths[index] {
+                case .fit, .min:
+                    if measured.widths[key] != ideal[index] { changed = true }
+                    measured.widths[key] = ideal[index]
+                case .fixed, .fill: break
+                }
+            }
+            // Choose the step again once this layout is over (not during it).
+            if changed { DispatchQueue.main.async { measured.onWidthsChanged?() } }
+        }
+        return ideal
+    }
+
+    private func columnWidths(ideal: [CGFloat], proposedWidth: CGFloat?) -> [CGFloat] {
         var result = ideal
         var fillColumns: [Int] = []
         for (index, width) in widths.enumerated() {
@@ -576,38 +883,66 @@ struct DataTableLayout: Layout {
         return result
     }
 
-    private func lineHeights(_ subviews: Subviews, columnWidths: [CGFloat]) -> [Int: CGFloat] {
+    /// Each line's height at `columnWidths`: its tallest cell, at least its minimum. Only the
+    /// columns whose width changed since they were last measured are measured again.
+    private func lineHeights(_ subviews: Subviews, columnWidths: [CGFloat], cache: inout Cache) -> [Int: CGFloat] {
         let total = columnWidths.reduce(0, +)
-        var heights: [Int: CGFloat] = [:]
-        for subview in subviews {
-            let slot = subview[DataTableSlot.self]
-            switch slot {
-            case let .cell(line, column):
-                let width = column < columnWidths.count ? columnWidths[column] : 0
-                let height = subview.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
-                heights[line] = Swift.max(heights[line] ?? 0, height)
-            case let .span(line):
-                let height = subview.sizeThatFits(ProposedViewSize(width: total, height: nil)).height
-                heights[line] = Swift.max(heights[line] ?? 0, height)
-            case let .background(line, minHeight):
-                heights[line] = Swift.max(heights[line] ?? 0, minHeight)
-            case .none: break
+        if cache.minimumHeights == nil {
+            var minimums: [Int: CGFloat] = [:]
+            for subview in subviews {
+                if case let .background(line, minHeight) = subview[DataTableSlot.self] { minimums[line] = Swift.max(minimums[line] ?? 0, minHeight) }
             }
+            cache.minimumHeights = minimums
         }
+        let stale = Set(columnWidths.indices.filter { cache.columnHeights[$0]?.width != columnWidths[$0] })
+        let spansStale = cache.spanHeights?.width != total
+        if !stale.isEmpty || spansStale {
+            var fresh: [Int: [Int: CGFloat]] = [:]
+            var spans: [Int: CGFloat] = [:]
+            for subview in subviews {
+                switch subview[DataTableSlot.self] {
+                case let .cell(line, column) where stale.contains(column):
+                    let height = subview.sizeThatFits(ProposedViewSize(width: columnWidths[column], height: nil)).height
+                    fresh[column, default: [:]][line] = Swift.max(fresh[column]?[line] ?? 0, height)
+                case let .span(line) where spansStale:
+                    spans[line] = Swift.max(spans[line] ?? 0, subview.sizeThatFits(ProposedViewSize(width: total, height: nil)).height)
+                default: break
+                }
+            }
+            for column in stale { cache.columnHeights[column] = (columnWidths[column], fresh[column] ?? [:]) }
+            if spansStale { cache.spanHeights = (total, spans) }
+        }
+        var heights = cache.minimumHeights ?? [:]
+        for (_, entry) in cache.columnHeights {
+            for (line, height) in entry.heights { heights[line] = Swift.max(heights[line] ?? 0, height) }
+        }
+        for (line, height) in cache.spanHeights?.heights ?? [:] { heights[line] = Swift.max(heights[line] ?? 0, height) }
         return heights
     }
 
     private func prepare(_ proposal: ProposedViewSize, _ subviews: Subviews, _ cache: inout Cache) {
-        if cache.columnWidths.isEmpty || cache.proposedWidth != proposal.width {
-            cache.columnWidths = columnWidths(subviews, proposedWidth: proposal.width)
-            cache.lineHeights = lineHeights(subviews, columnWidths: cache.columnWidths)
-            cache.proposedWidth = proposal.width
+        if let laid = cache.layouts[proposal.width] {
+            cache.columnWidths = laid.columnWidths
+            cache.lineHeights = laid.lineHeights
+            return
         }
+        let ideal = cache.ideal ?? idealWidths(subviews)
+        cache.ideal = ideal
+        cache.columnWidths = columnWidths(ideal: ideal, proposedWidth: proposal.width)
+        cache.lineHeights = lineHeights(subviews, columnWidths: cache.columnWidths, cache: &cache)
+        // A few widths are proposed in turn (the window's minimum, the page's width…).
+        if cache.layouts.count >= 8 { cache.layouts.removeAll() }
+        cache.layouts[proposal.width] = Laid(columnWidths: cache.columnWidths, lineHeights: cache.lineHeights)
     }
 
     func updateCache(_ cache: inout Cache, subviews: Subviews) {
         cache = Cache()
     }
+
+    // The table has no alignment guides of its own: without these, a stack aligning it would
+    // ask every cell for its guides (the default merges its subviews'), on every layout.
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGFloat? { nil }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
         prepare(proposal, subviews, &cache)

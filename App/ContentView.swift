@@ -111,8 +111,13 @@ struct ContentView: View {
     @StateObject private var documentsViewModel: DocumentsViewModel
     /// Kept for the app session: the period and filters survive navigation.
     @StateObject private var missingEvidenceViewModel: MissingEvidenceViewModel
-    /// The property page on show (`propertyId`), kept for the session like the others.
-    @StateObject private var propertyViewModel: PropertyViewModel
+    /// The property page on show (`propertyId`), kept for the session like the others. Held,
+    /// not observed: the page observes it, so its frequent changes (a side panel opening, a
+    /// receipt selected) redraw the page alone rather than the whole window. The window's
+    /// title follows its property's name (`propertyName`).
+    @State private var propertyViewModel: PropertyViewModel
+    /// The property page's name, for the window's title.
+    @State private var propertyName: String?
     /// Kept for the app session: the year on show and its tab survive navigation.
     @StateObject private var taxYearsViewModel: TaxYearsViewModel
 
@@ -142,7 +147,7 @@ struct ContentView: View {
         _searchViewModel = StateObject(wrappedValue: SearchViewModel(dbQueue: environment.dbQueue))
         _documentsViewModel = StateObject(wrappedValue: DocumentsViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
         _missingEvidenceViewModel = StateObject(wrappedValue: MissingEvidenceViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
-        _propertyViewModel = StateObject(wrappedValue: PropertyViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary,
+        _propertyViewModel = State(initialValue: PropertyViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary,
                                                                                      indexAutoFetch: environment.interestIndexAutoFetch))
         _taxYearsViewModel = StateObject(wrappedValue: TaxYearsViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary,
                                                                                rateAutoFetch: environment.hmrcRateAutoFetch))
@@ -271,7 +276,10 @@ struct ContentView: View {
                     Text("Select a screen from the sidebar.")
                 }
             }
-            .navigationTitle(selection == .property ? (propertyViewModel.property?.name ?? "Property") : (selection?.rawValue ?? "Budget"))
+            .navigationTitle(selection == .property ? (propertyName ?? "Property") : (selection?.rawValue ?? "Budget"))
+            .onReceive(propertyViewModel.$snapshot) { snapshot in
+                if snapshot.property?.name != propertyName { propertyName = snapshot.property?.name }
+            }
             // The theme's window colour behind every screen (clear for Classic).
             .background(theme.windowBackground.ignoresSafeArea())
             .toolbar {

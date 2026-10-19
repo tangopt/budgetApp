@@ -584,6 +584,12 @@ final class PropertyViewModel: ObservableObject {
         (try? library.documents(for: entity)) ?? []
     }
 
+    /// A record's linked documents, read off the main thread (a side panel's).
+    func loadDocuments(for entity: EvidenceEntity) async -> [EvidenceDocument] {
+        let library = library
+        return await Task.detached(priority: .userInitiated) { (try? library.documents(for: entity)) ?? [] }.value
+    }
+
     /// Opens a library document by id (an invoice's PDF).
     func openDocument(id: Int64) {
         if let document = try? library.database.read({ db in try EvidenceDocument.fetchOne(db, key: id) }) { open(document) }

@@ -10,6 +10,7 @@
 #   scripts/render-snapshots.sh <outDir> [--only property,sheet-tax] [--themes classic,midnight,sunset]
 #                               [--appearances light,dark] [--looks light-classic,dark-midnight]
 #                               [--scale 1] [--settle 1.6] [--as-of 2026-10-15] [--size 1440x900]
+#   scripts/render-snapshots.sh <outDir> --perf tenancies [--size 1100x700]
 #
 # <outDir> (relative to where you run it) must be new, empty, or an earlier output of this
 # script (it holds a .budget-snapshots marker). Writes <outDir>/demo.sqlite (+ Evidence/),
@@ -19,6 +20,8 @@
 # covers what it rendered). --looks captures just those appearance-theme pairs instead of
 # every appearance in every theme; --as-of is the day the app takes as today (default: the
 # demo's 15 Oct 2026); --size the window (default 1440x900).
+# --perf tenancies times the Tenancies tab's receipt panel instead (`PanelTiming`), on a demo
+# with "Tenancy L" (62 receipts, each with its PDF and credit): <outDir>/perf-report.txt.
 # Builds into $SNAPSHOT_SCRATCH (default $TMPDIR/budget-snapshots): dd-ui.noindex (the app)
 # and spm (the demo-database tool).
 set -euo pipefail
@@ -93,7 +96,9 @@ if ! swift build --scratch-path "$SCRATCH/spm" --product MakeDemoDatabase > "$SP
     echo "Building MakeDemoDatabase failed (log: $SPM_LOG)." >&2
     exit 1
 fi
-"$SCRATCH/spm/debug/MakeDemoDatabase" "$OUT/demo.sqlite" --force > "$SCRATCH/render-demo.log"
+DEMO_OPTIONS=()
+(( ${@[(Ie)--perf]} )) && DEMO_OPTIONS=(--long-tenancy 62)
+"$SCRATCH/spm/debug/MakeDemoDatabase" "$OUT/demo.sqlite" --force "${DEMO_OPTIONS[@]}" > "$SCRATCH/render-demo.log"
 head -2 "$SCRATCH/render-demo.log"
 
 # A full run starts from an empty set; an --only run adds to (and overwrites in) the folder.

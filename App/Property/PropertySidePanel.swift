@@ -7,7 +7,8 @@ import GRDB
 /// A page with its side panel docked at the trailing edge (like the Budget grid's cell
 /// panel): 320 pt behind a divider, the page narrowing to make room — its `DataTable`s hide or
 /// narrow low-priority columns — so the panel never covers the page. Closing it gives the
-/// page its full width back.
+/// page its full width back. The page narrows at once (animating its width would lay out its
+/// tables again on every frame); only the panel fades in and out.
 struct PropertyPanelDock<Page: View, SidePanel: View>: View {
     static var panelWidth: CGFloat { 320 }
 
@@ -22,10 +23,9 @@ struct PropertyPanelDock<Page: View, SidePanel: View>: View {
                 Divider()
                 panel
                     .frame(width: Self.panelWidth)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .transition(.opacity.animation(.easeOut(duration: 0.15)))
             }
         }
-        .animation(.easeOut(duration: 0.2), value: isOpen)
     }
 }
 

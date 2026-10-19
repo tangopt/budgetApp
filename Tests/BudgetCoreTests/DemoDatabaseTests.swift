@@ -38,6 +38,31 @@ final class DemoDatabaseTests: XCTestCase {
         }
     }
 
+    /// The timing harness's long tenancy (`--long-tenancy`): every receipt with its PDF and
+    /// its credit; the ordinary demo has none of it.
+    func testLongTenancyForTiming() throws {
+        XCTAssertEqual(try db.read { db in try Tenancy.filter(Column("referenceLabel") == "Tenancy L").fetchCount(db) }, 0)
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("DemoEvidence-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: evidence) }
+        try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence, longTenancyReceipts: 62)
+        try manager.dbQueue.read { db in
+            let tenancy = try XCTUnwrap(try Tenancy.filter(Column("referenceLabel") == "Tenancy L").fetchOne(db)?.id)
+            let receipts = try Int64.fetchAll(db, sql: "SELECT id FROM rentReceipt WHERE tenancyId = ?", arguments: [tenancy])
+            XCTAssertEqual(receipts.count, 62)
+            let withPDF = try Int.fetchOne(db, sql: """
+                SELECT COUNT(DISTINCT entityId) FROM documentLink WHERE entityType = ? AND entityId IN (SELECT id FROM rentReceipt WHERE tenancyId = ?)
+                """, arguments: [EvidenceEntityType.rentReceipt.rawValue, tenancy])
+            XCTAssertEqual(withPDF, 62)
+            let paid = try Int.fetchOne(db, sql: """
+                SELECT COUNT(DISTINCT rentReceiptId) FROM rentReceiptPayment WHERE rentReceiptId IN (SELECT id FROM rentReceipt WHERE tenancyId = ?)
+                """, arguments: [tenancy])
+            XCTAssertEqual(paid, 62)
+        }
+    }
+
     func testBuildsEveryKindOfRecord() throws {
         try db.read { db in
             XCTAssertEqual(try Account.fetchCount(db), 8)

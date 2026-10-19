@@ -74,6 +74,7 @@ struct PropertyView: View {
     private var header: some View {
         HStack(spacing: 12) {
             ScreenTabs("Property section", selection: $viewModel.tab, tabs: PropertyViewModel.Tab.allCases, label: \.rawValue)
+                .equatable()
                 .layoutPriority(1)
             Spacer(minLength: 8)
             if [.overview, .money, .checks].contains(viewModel.tab) {
@@ -96,9 +97,10 @@ struct PropertyView: View {
             RechargeMonthPanel(viewModel: viewModel, month: month, tenancyId: tenancyId, openTransaction: openTransaction)
                 .id(month)
         case let .receipt(id, tenancyId):
+            // Kept (not rebuilt) from one receipt to the next: clicking down the table only
+            // changes what it shows.
             RentReceiptPanel(viewModel: viewModel, receiptId: id, tenancyId: tenancyId, openTransaction: openTransaction,
                              showDocument: showDocument)
-                .id(id)
         }
     }
 

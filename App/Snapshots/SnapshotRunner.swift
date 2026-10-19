@@ -28,6 +28,8 @@ enum SnapshotRunner {
         /// Appearance–theme pairs to capture instead of every appearance in every theme
         /// (`--looks light-classic,dark-midnight`).
         var looks: [(appearance: String, theme: String)]?
+        /// A timing run instead of the routes (`--perf tenancies`: `PanelTiming`).
+        var perf: String?
     }
 
     @MainActor
@@ -93,6 +95,9 @@ enum SnapshotRunner {
             let value = arguments.removeFirst()
             switch argument {
             case "--only": options.only = list(value)
+            case "--perf":
+                guard value == "tenancies" else { fail("--perf takes tenancies", code: 2) }
+                options.perf = value
             case "--themes": options.themes = list(value)
             case "--appearances": options.appearances = list(value).filter { ["light", "dark"].contains($0) }
             case "--scale": options.scale = CGFloat(Double(value) ?? 1)
@@ -185,6 +190,10 @@ final class SnapshotSession {
         try FileManager.default.createDirectory(at: options.outDir, withIntermediateDirectories: true)
         let environment = try await AppEnvironment.load()
         let context = SnapshotContext(environment: environment, settleSeconds: options.settle)
+        if options.perf != nil {
+            try await PanelTiming.run(context: context, options: options, hostState: hostState)
+            return
+        }
         let themes = options.themes.map(Theme.named)
         // Each appearance in each theme, or just the pairs `--looks` names.
         let looks: [(String, Theme)] = options.looks.map { $0.map { ($0.appearance, Theme.named($0.theme)) } }

@@ -65,6 +65,17 @@ extension View {
         #endif
     }
 
+    /// Marks hidden copies laid out only to be measured (a table's probe, the tabs' forms):
+    /// the probe leaves their figures out. Snapshot builds only; does nothing in the app.
+    @ViewBuilder
+    func wrapProbeIgnored() -> some View {
+        #if SNAPSHOTS
+        environment(\.wrapProbeIsReference, true)
+        #else
+        self
+        #endif
+    }
+
     /// Marks a chart: Swift Charts lays its axis labels and annotations out apart from the
     /// enclosing scroll view, so the probe's scroll-view clip check doesn't apply to them.
     /// Snapshot builds only; does nothing in the app.

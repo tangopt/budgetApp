@@ -68,8 +68,10 @@ struct PropertyTenanciesTab: View {
                     .help("Import the Portal das Finanças receipts export (ListaRecibos .xlsx); credits are matched after")
             }
             if let tenancy = viewModel.selectedTenancy {
-                tenancyPanel(tenancy)
-                receiptsPanel(tenancy)
+                // Each built again only when what it shows changes, not whenever the page's
+                // model does (a receipt's panel opening, another receipt chosen).
+                EquatableContent(tenancyPanelKey(tenancy)) { tenancyPanel(tenancy) }.equatable()
+                EquatableContent(receiptsPanelKey(tenancy)) { receiptsPanel(tenancy) }.equatable()
             } else {
                 Panel {
                     EmptyState(systemImage: "person.2", title: "No tenancies yet",
@@ -131,6 +133,24 @@ struct PropertyTenanciesTab: View {
     }
 
     // MARK: Tenancy
+
+    /// What the tenancy's panel shows.
+    private struct TenancyPanelKey: Equatable {
+        let tenancy: Tenancy
+        let rents: [TenancyRent]
+        let contracts: Int
+        let currency: Currency
+        let inForce: TenancyRent?
+        let deposit: PropertyCheckReport.DepositCheck?
+        let theme: Theme
+    }
+
+    private func tenancyPanelKey(_ tenancy: Tenancy) -> TenancyPanelKey {
+        let id = tenancy.id!
+        return TenancyPanelKey(tenancy: tenancy, rents: viewModel.snapshot.rents[id] ?? [], contracts: viewModel.snapshot.tenancyDocumentCounts[id] ?? 0,
+                               currency: viewModel.currency, inForce: viewModel.rentInForce(tenancy),
+                               deposit: viewModel.currentTenancy?.id == id ? viewModel.snapshot.checks?.deposit : nil, theme: theme)
+    }
 
     private func tenancyPanel(_ tenancy: Tenancy) -> some View {
         let id = tenancy.id!
@@ -233,8 +253,43 @@ struct PropertyTenanciesTab: View {
 
     // MARK: Receipts
 
+    /// What the receipts' panel shows besides the open receipt (and, without the rows, what the
+    /// table's cells show besides their rows).
+    private struct ReceiptsKey: Equatable {
+        let tenancyId: Int64?
+        let rows: [TenancyReceiptRow]
+        let currency: Currency
+        let currentAccountName: String?
+        let currentAccountLastDay: Date?
+        let theme: Theme
+    }
+
+    /// What the receipts' cells show besides their row.
+    private struct ReceiptsCellsKey: Equatable {
+        let currency: Currency
+        let currentAccountName: String?
+        let currentAccountLastDay: Date?
+        let theme: Theme
+    }
+
+    /// What the receipts' panel shows.
+    private struct ReceiptsPanelKey: Equatable {
+        let receipts: ReceiptsKey
+        let openLineId: String?
+    }
+
+    private func receiptsKey(_ tenancy: Tenancy) -> ReceiptsKey {
+        ReceiptsKey(tenancyId: tenancy.id, rows: viewModel.snapshot.receipts[tenancy.id!] ?? [], currency: viewModel.currency,
+                    currentAccountName: viewModel.snapshot.currentAccountName,
+                    currentAccountLastDay: viewModel.snapshot.currentAccountLastDay, theme: theme)
+    }
+
+    private func receiptsPanelKey(_ tenancy: Tenancy) -> ReceiptsPanelKey {
+        ReceiptsPanelKey(receipts: receiptsKey(tenancy), openLineId: openReceiptLineId(tenancy))
+    }
+
     /// A receipt (or a year's total) as a table row.
-    private struct ReceiptLine: Identifiable {
+    private struct ReceiptLine: Identifiable, Equatable {
         let id: String
         /// Nil for a total.
         let row: TenancyReceiptRow?
@@ -286,6 +341,9 @@ struct PropertyTenanciesTab: View {
                               if let id = line.row?.receipt.id { viewModel.toggleSidePanel(.receipt(id: id, tenancyId: tenancy.id!)) }
                           },
                           selectedId: openReceiptLineId(tenancy))
+                // Choosing another receipt redraws the rows' backgrounds, not their cells.
+                .cellsRebuilt(when: ReceiptsCellsKey(currency: viewModel.currency, currentAccountName: viewModel.snapshot.currentAccountName,
+                                                     currentAccountLastDay: viewModel.snapshot.currentAccountLastDay, theme: theme))
             }
         }
     }

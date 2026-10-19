@@ -25,6 +25,9 @@ extension EnvironmentValues {
 @MainActor
 final class WrapProbe {
     static let shared = WrapProbe()
+    /// Off while timing (`PanelTiming`): the probe's geometry readers would be timed too, and
+    /// the app has none.
+    nonisolated(unsafe) static var isEnabled = true
 
     struct Entry {
         var kind: String
@@ -215,7 +218,7 @@ struct WrapProbeModifier: ViewModifier {
     @State private var id = UUID()
 
     func body(content: Content) -> some View {
-        if isReference {
+        if isReference || !WrapProbe.isEnabled {
             content
         } else {
             content

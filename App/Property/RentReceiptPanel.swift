@@ -17,6 +17,8 @@ struct RentReceiptPanel: View {
     @Environment(\.theme) private var theme
     @State private var editing: Transaction?
     @State private var documents: [EvidenceDocument] = []
+    /// The receipt `documents` were read for (the panel stays as the open receipt changes).
+    @State private var documentsReceiptId: Int64?
     @State private var picking = false
     @State private var replacing: [Int64] = []
     @State private var pickingMany = true
@@ -70,7 +72,7 @@ struct RentReceiptPanel: View {
                     Section {
                         pdfSection(row)
                     } header: {
-                        Text(documents.count > 1 ? "Receipt PDFs" : "Receipt PDF")
+                        Text(row.documentCount > 1 ? "Receipt PDFs" : "Receipt PDF")
                     }
                 }
                 .wrapProbeClips()
@@ -84,14 +86,25 @@ struct RentReceiptPanel: View {
                 case .failure(let error): viewModel.errorMessage = error.localizedDescription
                 }
             }
-            // Re-read when the receipt's links change (a PDF added, replaced or unlinked).
-            .task(id: row.documentIds) { documents = viewModel.documents(for: .rentReceipt(receiptId)) }
+            // Read off the main thread when the receipt changes or its links do (a PDF added,
+            // replaced or unlinked).
+            .task(id: DocumentsKey(receiptId: receiptId, documentIds: row.documentIds)) {
+                let loaded = await viewModel.loadDocuments(for: .rentReceipt(receiptId))
+                guard !Task.isCancelled else { return }
+                documents = loaded
+                documentsReceiptId = receiptId
+            }
         } else {
             PropertySidePanel(title: "Receipt", onClose: { viewModel.sidePanel = nil }) {
                 Text("The receipt no longer exists.").font(.callout).foregroundStyle(.secondary)
                 Spacer()
             }
         }
+    }
+
+    private struct DocumentsKey: Equatable {
+        let receiptId: Int64
+        let documentIds: [Int64]
     }
 
     /// Opens the file picker: one file when replacing, any number when adding.
@@ -104,7 +117,12 @@ struct RentReceiptPanel: View {
     @ViewBuilder
     private func pdfSection(_ row: TenancyReceiptRow) -> some View {
         let number = row.receipt.receiptNumber
-        if documents.isEmpty {
+        // Another receipt's documents (just switched; this one's are being read): the
+        // thumbnail's place, loading.
+        let documents = documentsReceiptId == receiptId ? documents : []
+        if documents.isEmpty, documentsReceiptId != receiptId, row.documentCount > 0 {
+            ProgressView().frame(maxWidth: .infinity).frame(height: 200)
+        } else if documents.isEmpty {
             if row.receipt.status == .cancelled {
                 Text("Cancelled: no PDF needed.").foregroundStyle(.secondary)
             } else {

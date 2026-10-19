@@ -45,8 +45,12 @@ public enum DemoDatabase {
     /// demo's (`DemoMarker`), and fills it; the evidence PDFs go to `evidenceRoot` (the app
     /// reads `Evidence` beside the database), which gets the demo marker file. Refuses the
     /// app's own data folders.
+    ///
+    /// `longTenancyReceipts` > 0 adds "Tenancy L" (for the snapshot harness's `--perf` timing
+    /// only, never the ordinary demo): an earlier tenancy with that many monthly receipts from
+    /// January 2018, each with its PDF and its credit.
     @discardableResult
-    public static func build(at path: String, evidenceRoot: URL, asOf: Date = defaultAsOf) throws -> Report {
+    public static func build(at path: String, evidenceRoot: URL, asOf: Date = defaultAsOf, longTenancyReceipts: Int = 0) throws -> Report {
         for target in [path, evidenceRoot.path] where TaxRegression.isAppData(target) {
             throw DemoError.appData(target)
         }
@@ -56,13 +60,14 @@ public enum DemoDatabase {
         try FileManager.default.createDirectory(at: evidenceRoot, withIntermediateDirectories: true)
         try Data("Synthetic demo evidence (MakeDemoDatabase).\n".utf8)
             .write(to: evidenceRoot.appendingPathComponent(DemoMarker.evidenceFileName))
-        return try build(dbQueue: manager.dbQueue, evidenceRoot: evidenceRoot, asOf: asOf)
+        return try build(dbQueue: manager.dbQueue, evidenceRoot: evidenceRoot, asOf: asOf, longTenancyReceipts: longTenancyReceipts)
     }
 
     /// Fills a migrated, empty database.
     @discardableResult
-    public static func build(dbQueue: DatabaseQueue, evidenceRoot: URL, asOf: Date = defaultAsOf) throws -> Report {
+    public static func build(dbQueue: DatabaseQueue, evidenceRoot: URL, asOf: Date = defaultAsOf, longTenancyReceipts: Int = 0) throws -> Report {
         let builder = Builder(asOf: asOf)
+        builder.longTenancyReceipts = longTenancyReceipts
         try dbQueue.write { db in
             guard try Account.fetchCount(db) == 0, try Transaction.fetchCount(db) == 0 else { throw DemoError.notEmpty }
             try builder.buildCore(db)
@@ -163,6 +168,8 @@ extension DemoDatabase {
         var people: [String: Int64] = [:]
         var tenancy1: Int64 = 0
         var tenancy2: Int64 = 0
+        /// "Tenancy L"'s receipts (0: no such tenancy).
+        var longTenancyReceipts = 0
 
         init(asOf: Date) {
             self.asOf = MonthRange.calendar.startOfDay(for: asOf)
@@ -183,6 +190,7 @@ extension DemoDatabase {
             try property(db)
             try euroHistory(db)
             try recharges(db)
+            try longTenancy(db)
             try matchRent(db)
             try tax(db)
             try evidenceRules(db)
@@ -708,6 +716,27 @@ extension DemoDatabase {
 
         var receiptCounter: [Int64: Int] = [:]
 
+        /// "Tenancy L": `longTenancyReceipts` monthly receipts from January 2018, each with its
+        /// PDF and its credit (before the demo's history; for timing the Tenancies tab only).
+        func longTenancy(_ db: Database) throws {
+            guard longTenancyReceipts > 0 else { return }
+            let start = date(2018, 1, 1)
+            let end = calendar.date(byAdding: DateComponents(month: longTenancyReceipts, day: -1), to: start)!
+            var tenancy = Tenancy(propertyId: propertyId, referenceLabel: "Tenancy L", contractNumber: "CT-0000", tenantName: "Tenant Long",
+                                  startDate: start, endDate: end, advanceRentMonths: 0, depositMonths: 2,
+                                  notes: "A long tenancy (timing only).", tenantEmail: "tenant.long@example.com")
+            try Tenancies.save(db: db, &tenancy)
+            let id = tenancy.id!
+            _ = try Tenancies.setRents(db: db, tenancyId: id, [TenancyRent(tenancyId: id, fromDate: start, monthlyAmountMinorUnits: 90_000)])
+            count("tenancies")
+            for offset in 0..<longTenancyReceipts {
+                let (year, month) = MonthRange.components(of: calendar.date(byAdding: .month, value: offset, to: start)!)
+                let credit = try tx(db, "Euro Current", day(year, month, 3), "TRF TENANT LONG RENT", 90_000, "Rental income")
+                try receipt(tenancy: id, number: "TL-\(String(format: "%03d", offset + 1))", year: year, month: month, amount: 90_000,
+                            receiptDate: credit.date, db: db, withPDF: true)
+            }
+        }
+
         @discardableResult
         func receipt(tenancy: Int64, number: String, year: Int, month: Int, amount: Int, receiptDate: Date, db: Database,
                      withPDF: Bool) throws -> RentReceipt {
@@ -719,7 +748,7 @@ extension DemoDatabase {
             receiptCounter[tenancy, default: 0] += 1
             count("rent receipts")
             if withPDF {
-                let tenant = tenancy == tenancy1 ? "Tenant One" : "Tenant Two"
+                let tenant = tenancy == tenancy1 ? "Tenant One" : tenancy == tenancy2 ? "Tenant Two" : "Tenant Long"
                 docs.append(doc("Rent receipt \(number).pdf", kind: .rentReceipt, issuer: "Tax Authority portal", title: "Rent receipt \(number)",
                                 lines: [("Tenant", tenant), ("Period", "\(DemoDatabase.monthName(month)) \(year)"), ("Rent", Money.format(amount, currency: .eur)),
                                         ("Withholding", "€0.00")],

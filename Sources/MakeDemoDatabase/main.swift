@@ -5,7 +5,7 @@ import BudgetDemo
 // Builds the synthetic demo database (`DemoDatabase`): every screen with invented data, for
 // the UI snapshot harness (`scripts/render-snapshots.sh`) and manual testing.
 //
-//   MakeDemoDatabase <out.sqlite> [--evidence <dir>] [--force]
+//   MakeDemoDatabase <out.sqlite> [--evidence <dir>] [--force] [--long-tenancy <receipts>]
 //
 // The evidence PDFs go to `<dir>` (default: `Evidence` beside the database, where the app
 // looks). Refuses the app's own data folder. With `--force` it replaces an earlier demo: a
@@ -20,6 +20,8 @@ func fail(_ message: String, code: Int32 = 1) -> Never {
 var arguments = Array(CommandLine.arguments.dropFirst())
 var evidencePath: String?
 var force = false
+/// "Tenancy L"'s receipts (the snapshot harness's `--perf` timing): 0, none.
+var longTenancyReceipts = 0
 var positional: [String] = []
 while !arguments.isEmpty {
     let argument = arguments.removeFirst()
@@ -28,8 +30,12 @@ while !arguments.isEmpty {
         guard !arguments.isEmpty else { fail("--evidence needs a folder") }
         evidencePath = arguments.removeFirst()
     case "--force": force = true
+    case "--long-tenancy":
+        guard let value = arguments.first.flatMap(Int.init), (1...240).contains(value) else { fail("--long-tenancy takes 1–240 receipts") }
+        arguments.removeFirst()
+        longTenancyReceipts = value
     case "-h", "--help":
-        print("usage: MakeDemoDatabase <out.sqlite> [--evidence <dir>] [--force]")
+        print("usage: MakeDemoDatabase <out.sqlite> [--evidence <dir>] [--force] [--long-tenancy <receipts>]")
         exit(0)
     default: positional.append(argument)
     }
@@ -72,7 +78,7 @@ if replacesEvidence {
 }
 do {
     try manager.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
-    let report = try DemoDatabase.build(at: output.path, evidenceRoot: evidence)
+    let report = try DemoDatabase.build(at: output.path, evidenceRoot: evidence, longTenancyReceipts: longTenancyReceipts)
     print("Demo database: \(output.path)")
     print("Evidence: \(evidence.path)")
     print(report.summary)

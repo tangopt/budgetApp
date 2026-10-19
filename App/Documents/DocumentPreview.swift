@@ -8,7 +8,9 @@ import AppKit
 /// A library file's first page at a glance (the inspector's top panel): a PDF's page 1 or an
 /// image, scaled to fit `height`, or the file's icon for anything else (spreadsheets,
 /// archives). Click it for Quick Look. Loaded off the main thread when shown, so only the
-/// selected document is ever read.
+/// selected document is ever read, and kept in a small cache (by file and height): going back
+/// to a document shows it at once. Library files never change in place (a replaced document
+/// is a new file).
 struct DocumentThumbnail: View {
     let url: URL
     var height: CGFloat = 220
@@ -20,9 +22,15 @@ struct DocumentThumbnail: View {
         case missing
     }
 
-    @State private var content: Content?
+    @State private var loaded: Loaded?
     @State private var loadedURL: URL?
     @State private var quickLook: URL?
+
+    /// What shows: this file's page, once read (another file's while the view is reused).
+    private var content: Content? {
+        if loadedURL == url, let loaded { return loaded.content }
+        return Self.cached(url, height: height)?.content
+    }
 
     var body: some View {
         VStack(spacing: 6) {
@@ -63,12 +71,17 @@ struct DocumentThumbnail: View {
         .quickLookPreview($quickLook)
         .task(id: url) {
             guard loadedURL != url else { return }
-            content = nil
             let url = url
             let height = height
-            let loaded = await Task.detached(priority: .userInitiated) { Self.load(url, height: height) }.value
+            let result: Loaded
+            if let cached = Self.cached(url, height: height) {
+                result = cached
+            } else {
+                result = await Task.detached(priority: .userInitiated) { Self.load(url, height: height) }.value
+            }
             guard !Task.isCancelled else { return }
-            content = loaded.content
+            Self.cache.setObject(result, forKey: Self.key(url, height: height))
+            loaded = result
             loadedURL = url
         }
     }
@@ -84,8 +97,26 @@ struct DocumentThumbnail: View {
 
     /// `Content` isn't Sendable (AppKit objects); it's created here and only read on the main
     /// actor afterwards.
-    private struct Loaded: @unchecked Sendable {
+    private final class Loaded: @unchecked Sendable {
         let content: Content
+        init(content: Content) { self.content = content }
+    }
+
+    /// The pages read lately, by file and height (a missing file isn't kept: it may come back).
+    nonisolated(unsafe) private static let cache: NSCache<NSString, Loaded> = {
+        let cache = NSCache<NSString, Loaded>()
+        cache.countLimit = 40
+        return cache
+    }()
+
+    private static func key(_ url: URL, height: CGFloat) -> NSString {
+        "\(url.path)|\(height)" as NSString
+    }
+
+    private static func cached(_ url: URL, height: CGFloat) -> Loaded? {
+        guard let loaded = cache.object(forKey: key(url, height: height)) else { return nil }
+        if case .missing = loaded.content { return nil }
+        return loaded
     }
 
     nonisolated private static func load(_ url: URL, height: CGFloat) -> Loaded {
