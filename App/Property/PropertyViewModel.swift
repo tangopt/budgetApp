@@ -566,6 +566,16 @@ final class PropertyViewModel: ObservableObject {
                         }
                     }
                 }
+                if entity.type == .rentReceipt, !linked.isEmpty {
+                    // A receipt's PDF is also the evidence of the credits that paid it.
+                    do {
+                        try library.database.write { db in
+                            try RentCreditEvidence.linkReceiptDocuments(db: db, receiptIds: [entity.id])
+                        }
+                    } catch {
+                        failures.append("linking the PDF to the rent credit: \(error.localizedDescription)")
+                    }
+                }
                 return failures
             }.value
             errorMessage = failures.isEmpty ? nil : "Couldn't add " + failures.joined(separator: "; ")

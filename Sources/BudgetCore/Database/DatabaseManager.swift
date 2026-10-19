@@ -101,5 +101,6 @@ public final class DatabaseManager {
         registerRechargeLineKindMigration(&migrator)
         registerInterestIndexAndMortgageRulesMigration(&migrator)
         registerMortgageAmountBorrowedMigration(&migrator)
+        registerRentCreditEvidenceMigration(&migrator)
     }
 }

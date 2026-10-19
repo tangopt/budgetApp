@@ -382,7 +382,8 @@ public enum RentReceiptPDFs {
 
     /// Adds (or reuses) and links the plan's `.link` items, inside the caller's transaction:
     /// each PDF as a rent receipt document (kind set on a reused one of another kind), linked
-    /// to its receipt with the role "Receipt". The plan must come from the same `inputs`.
+    /// to its receipt with the role "Receipt" (and to the credits paying it, `RentCreditEvidence`).
+    /// The plan must come from the same `inputs`.
     public static func apply(db: Database, plan: Plan, inputs: [Input], library: EvidenceLibrary, now: Date = Date()) throws -> Applied {
         var applied = Applied()
         let byHash = Dictionary(inputs.map { ($0.sha256, $0) }, uniquingKeysWith: { first, _ in first })
@@ -409,6 +410,8 @@ public enum RentReceiptPDFs {
                 let before = try DocumentLink.filter(EvidenceEntity.rentReceipt(receipt.id!)).filter(Column("documentId") == documentId).fetchCount(db)
                 try EvidenceLinks.link(db: db, documentId: documentId, to: .rentReceipt(receipt.id!), role: "Receipt")
                 if before == 0 { applied.linked += 1 }
+                // And to the credits that paid it, so they show their evidence.
+                try RentCreditEvidence.linkReceiptDocuments(db: db, receiptIds: [receipt.id!])
             }
         } catch {
             for url in applied.placedFiles { try? FileManager.default.removeItem(at: url) }

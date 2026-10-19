@@ -502,4 +502,24 @@ final class RentReceiptImportTests: XCTestCase {
         XCTAssertEqual(report.removedPaymentLinks, 1)
         XCTAssertEqual(try links(receipt), [])
     }
+
+    func testCancellingAReceiptDropsItsPDFFromTheCredit() throws {
+        _ = try importRows([month("3001", "1", 2025, 1)])
+        let credit = try addCredit(Self.date(2025, 1, 2), 110_000)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("RentReceiptImportTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = EvidenceLibrary(root: root.appendingPathComponent("Evidence"), database: db)
+        let url = EvidenceTestPDFs.textPDF(["RECIBO DE RENDA", "3001/1"], name: "receipt.pdf")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let pdf = try library.add(url, metadata: EvidenceMetadata(kind: .rentReceipt)).document.id!
+        _ = try library.link(pdf, to: EvidenceEntity(type: .rentReceipt, id: try receiptId("3001", "1")), role: "Receipt")
+        _ = try match()
+        func onCredit() throws -> [Int64] {
+            try db.read { db in try EvidenceLinks.documents(db: db, for: .transaction(credit)).map { $0.id! } }
+        }
+        XCTAssertEqual(try onCredit(), [pdf])
+        let report = try importRows([month("3001", "1", 2025, 1, status: "Anulado")])
+        XCTAssertEqual(report.cancelledReceipts, 1)
+        XCTAssertEqual(try onCredit(), [])
+    }
 }

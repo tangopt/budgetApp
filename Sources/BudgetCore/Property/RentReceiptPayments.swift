@@ -76,12 +76,20 @@ public enum RentReceiptMatching {
         /// fraction of the rent received (0.5: a €1,000 receipt takes a credit of up to €1,500).
         /// Larger credits stay unmatched for review.
         public var maxOtherFraction: Double
+        /// The last pass, by date: a receipt still unpaid takes the closest credit in its window
+        /// from the tenancy's known payer (a name in the descriptions of the credits that paid
+        /// its earlier receipts) that covers the rent, with an excess of up to this fraction of
+        /// the rent (transfers carrying large recharges; below a whole month, so an advance of two
+        /// months stays for the run pass or review). `nil` turns the pass off.
+        public var dateFallbackMaxOtherFraction: Double?
 
-        public init(categoryIds: [Int64]? = nil, accountIds: [Int64]? = nil, windowDays: Int = 10, maxOtherFraction: Double = 0.5) {
+        public init(categoryIds: [Int64]? = nil, accountIds: [Int64]? = nil, windowDays: Int = 10, maxOtherFraction: Double = 0.5,
+                    dateFallbackMaxOtherFraction: Double? = 0.75) {
             self.categoryIds = categoryIds
             self.accountIds = accountIds
             self.windowDays = windowDays
             self.maxOtherFraction = maxOtherFraction
+            self.dateFallbackMaxOtherFraction = dateFallbackMaxOtherFraction
         }
 
         /// Whether `excess` beyond `rent` is within `maxOtherFraction` of it.
@@ -93,6 +101,10 @@ public enum RentReceiptMatching {
     public struct Result: Equatable, Sendable {
         /// Links made by this run.
         public var created: [RentReceiptPayment]
+        /// Of `created`, the links made by the date pass (the credit's amount didn't fit).
+        public var byDate: [RentReceiptPayment] = []
+        /// Receipt PDFs linked to the credits of `created` (`RentCreditEvidence`).
+        public var receiptDocumentLinks: [RentCreditEvidence.ReceiptDocumentLink] = []
         /// Issued receipts whose rent isn't fully covered by linked credits.
         public var unmatchedReceipts: [RentReceipt]
         /// Rent credits not linked to any receipt.
@@ -106,7 +118,11 @@ public enum RentReceiptMatching {
     /// back-to-back receipts of a tenancy (each period starting the day after the previous one
     /// ends; a run stops at a receipt already paid) — advance rent; 3. one larger credit (the
     /// excess is recharge/other, at most `maxOtherFraction` of the rent); 4. two or three credits
-    /// that together cover it (the same cap on the excess, which is other on the last). Within a pass, the credit closest to the receipt date (else period start) wins.
+    /// that together cover it (the same cap on the excess, which is other on the last); 5. by date
+    /// (`dateFallbackMaxOtherFraction`): the closest credit from the tenancy's known payer that
+    /// covers the rent, whatever the recharges added, unless it's nearer the next period's start.
+    /// Within a pass, the credit closest to the receipt date (else period start) wins. The
+    /// receipts' PDFs are linked to the credits that pay them.
     /// Credits must fall within the period-start month ± `windowDays` or the receipt date ±
     /// `windowDays`. Existing and dismissed links are left alone, so re-running is idempotent.
     @discardableResult
@@ -250,7 +266,26 @@ public enum RentReceiptMatching {
             if let best { try take([receipt], best.credits) }
         }
 
-        return Result(created: created,
+        // 5. By date: the tenancy's payer, the closest credit covering the rent.
+        var byDate: [RentReceiptPayment] = []
+        if let fraction = options.dateFallbackMaxOtherFraction, !freeReceipts.isEmpty, !freeCredits.isEmpty {
+            let payers = try RentCreditEvidence.tenancyPayers(db: db)
+            let before = created.count
+            try greedy(pairs { receipt, credit in
+                guard let known = payers[receipt.tenancyId], !known.isEmpty,
+                      RentCreditEvidence.samePayer(RentCreditEvidence.payerWords(credit.rawDescription), known) else { return false }
+                let excess = credit.amountMinorUnits - receipt.amountReceivedMinorUnits
+                guard excess >= 0 && Double(excess) <= Double(receipt.amountReceivedMinorUnits) * fraction else { return false }
+                // A credit nearer the next period's start than this receipt is the next month's.
+                let nextStart = PropertyDates.nextDay(receipt.periodEnd)
+                let toNext = abs(MonthRange.calendar.dateComponents([.day], from: nextStart, to: PropertyDates.day(credit.date)).day ?? 0)
+                return distance(credit, receipt) <= toNext
+            })
+            byDate = Array(created[before...])
+        }
+
+        let documents = try RentCreditEvidence.linkReceiptDocuments(db: db, receiptIds: Array(Set(created.map(\.rentReceiptId))).sorted())
+        return Result(created: created, byDate: byDate, receiptDocumentLinks: documents,
                       unmatchedReceipts: try unmatchedReceipts(db: db, propertyId: propertyId),
                       unmatchedCredits: try unmatchedCredits(db: db, propertyId: propertyId, options: options))
     }
@@ -398,6 +433,7 @@ public enum RentReceiptMatching {
         link.origin = .manual
         link.isDismissed = false
         try link.save(db)
+        try RentCreditEvidence.linkReceiptDocuments(db: db, receiptIds: [receiptId])
         return link
     }
 
