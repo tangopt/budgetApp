@@ -162,7 +162,7 @@ extension PropertyFormat {
     static func obligationPill(_ kind: PropertyObligationKind) -> StatusPill? {
         switch kind {
         case .ptIncomeTaxReturn, .ukSelfAssessmentJanuary, .ukSelfAssessmentJuly: return StatusPill("Tax deadline", tone: .accent)
-        case .mortgageRateReset: return StatusPill("Rate review")
+        case .mortgageRateReset: return StatusPill("Rate revision")
         case .insuranceRenewal: return StatusPill("Renewal")
         case .imiInstalment, .mortgageInstalment, .recurringCost: return nil
         }

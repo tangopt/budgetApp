@@ -53,6 +53,13 @@ struct MonthlyFlowChart: View {
     var netLabel = "Net"
     var today: Date? = nil
     var height: CGFloat = 220
+    /// The month whose details are open (highlighted behind its bars), when the chart drills down.
+    var openMonth: Date? = nil
+    /// Clicking a month (or its accessible button, from the keyboard or VoiceOver) calls this
+    /// with the month's `start`; nil keeps the chart hover-only.
+    var onSelectMonth: ((Date) -> Void)? = nil
+    /// What a month's button is called ("Show the transactions of March 2026").
+    var selectLabel: (String) -> String = { "Show the transactions of \($0)" }
     @Environment(\.theme) private var theme
     @State private var selectedDate: Date?
 
@@ -75,8 +82,22 @@ struct MonthlyFlowChart: View {
         return today >= first && today < MonthRange.calendar.date(byAdding: .month, value: 1, to: last)!
     }
 
+    /// The calendar month a (possibly partial) month's bars stand in, and the next one's start.
+    private static func bin(_ start: Date) -> (start: Date, end: Date) {
+        let (year, month) = MonthRange.components(of: start)
+        let range = MonthRange.of(year: year, month: month)
+        return (range.start, range.end.addingTimeInterval(1))
+    }
+
+    private static let monthTitle = Date.FormatStyle(timeZone: TimeZone(identifier: "UTC")!).month(.wide).year()
+
     var body: some View {
-        Chart {
+        let chart = Chart {
+            if let openMonth {
+                let bin = Self.bin(openMonth)
+                RectangleMark(xStart: .value("Month", bin.start), xEnd: .value("Month", bin.end))
+                    .foregroundStyle(theme.selectionFill)
+            }
             ForEach(months) { month in
                 BarMark(x: .value("Month", month.start, unit: .month), y: .value("Amount", Double(month.inflowMinorUnits) / 100))
                     .foregroundStyle(by: .value("Series", inflowLabel))
@@ -128,13 +149,56 @@ struct MonthlyFlowChart: View {
             }
         }
         .chartLegend(position: .bottom, alignment: .leading)
-        .chartXSelection(value: $selectedDate)
         // The months are UTC days: bin, stride and label them in UTC, so a month never takes
         // its neighbour's label across a daylight-saving change.
         .environment(\.calendar, MonthRange.calendar)
         .environment(\.timeZone, Self.utc)
         .frame(height: height)
-        .accessibilityLabel("\(inflowLabel), \(outflowLabel.lowercased()) and \(netLabel.lowercased()) by month")
+        if let onSelectMonth {
+            // A button over each month: click (or Space from the keyboard, or VoiceOver's
+            // activate) opens it; hovering it shows the readout as the chart's hover does.
+            chart
+                .chartOverlay { proxy in
+                    GeometryReader { geometry in
+                        if let plot = proxy.plotFrame {
+                            let frame = geometry[plot]
+                            ForEach(months) { month in
+                                let bin = Self.bin(month.start)
+                                if let x0 = proxy.position(forX: bin.start), let x1 = proxy.position(forX: bin.end), x1 > x0 {
+                                    monthButton(month, onSelect: onSelectMonth)
+                                        .frame(width: x1 - x0, height: frame.height)
+                                        .position(x: frame.minX + (x0 + x1) / 2, y: frame.midY)
+                                }
+                            }
+                        }
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("\(inflowLabel), \(outflowLabel.lowercased()) and \(netLabel.lowercased()) by month")
+        } else {
+            chart
+                .chartXSelection(value: $selectedDate)
+                .accessibilityLabel("\(inflowLabel), \(outflowLabel.lowercased()) and \(netLabel.lowercased()) by month")
+        }
+    }
+
+    private func monthButton(_ month: FlowMonth, onSelect: @escaping (Date) -> Void) -> some View {
+        let title = month.start.formatted(Self.monthTitle)
+        let isOpen = openMonth.map { Self.bin($0).start == Self.bin(month.start).start } ?? false
+        var value = "\(inflowLabel) \(Money.format(month.inflowMinorUnits, currency: currency)), "
+            + "\(outflowLabel.lowercased()) \(Money.format(month.outflowMinorUnits, currency: currency))"
+        if let net = month.netMinorUnits, !isFuture(month) { value += ", \(netLabel.lowercased()) \(Money.format(net, currency: currency))" }
+        return Button { onSelect(month.start) } label: {
+            Rectangle().fill(Color.clear).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in
+            if inside { selectedDate = month.start } else if selectedDate == month.start { selectedDate = nil }
+        }
+        .help(isOpen ? "Close \(title)" : selectLabel(title))
+        .accessibilityLabel(selectLabel(title))
+        .accessibilityValue(value)
+        .accessibilityAddTraits(isOpen ? .isSelected : [])
     }
 
     private func readout(_ month: FlowMonth) -> some View {

@@ -257,4 +257,58 @@ final class AppDataGuardTests: XCTestCase {
         XCTAssertEqual(folders.first?.path, home.appendingPathComponent("Library/Application Support/Budget").path)
         XCTAssertFalse(TaxRegression.isAppData(FileManager.default.temporaryDirectory.appendingPathComponent("demo.sqlite").path))
     }
+
+    /// The Recharges panel's figures reconcile: a statement's charges add up to its total, its
+    /// credits to what's linked, its outstanding to `Recharges.outstanding`; a month's
+    /// statements and invoices to the chart's bars (as the tab computes them).
+    func testRechargeDetailsReconcile() throws {
+        let today = MonthRange.calendar.date(from: DateComponents(year: 2026, month: 10, day: 15))!
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("DemoEvidence-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: evidence) }
+        try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
+        try manager.dbQueue.read { db in
+            let tenancies = try Tenancy.fetchAll(db)
+            var statementsChecked = 0, monthsWithBoth = 0
+            for tenancy in tenancies {
+                let rows = try Recharges.overview(db: db, tenancyId: tenancy.id!)
+                for row in rows {
+                    let detail = try RechargeDetails.statement(db: db, statementId: row.id)
+                    XCTAssertEqual(detail.chargesTotal, row.statement.totalMinorUnits, "statement \(row.id)")
+                    XCTAssertEqual(detail.paid, row.payments.reduce(0) { $0 + $1.amountMinorUnits })
+                    if row.statement.status != .draft { XCTAssertEqual(detail.outstanding, row.outstandingMinorUnits) }
+                    XCTAssertTrue(detail.charges.filter { $0.detail.invoice != nil }.allSatisfy { $0.rechargeDate != nil })
+                    statementsChecked += 1
+                }
+                // The chart's months, as RechargesModel counts them.
+                var charged: [(Date, Int)] = []
+                for row in rows {
+                    for detail in try Recharges.lineDetails(db: db, statementId: row.id) {
+                        guard let invoice = detail.invoice else { continue }
+                        charged.append((try Recharges.rechargeDate(db: db, invoice), detail.line.amountMinorUnits))
+                    }
+                }
+                for line in try Recharges.pendingLines(db: db, tenancyId: tenancy.id!, through: today) {
+                    charged.append((line.rechargeDate, line.amountMinorUnits))
+                }
+                for year in 2024...2026 {
+                    for month in 1...12 {
+                        let range = MonthRange.of(year: year, month: month)
+                        let detail = try RechargeDetails.month(db: db, tenancyId: tenancy.id!, month: range.start, today: today)
+                        let recharged = rows.filter { $0.statement.status != .draft && $0.statement.month >= range.start && $0.statement.month <= range.end }
+                            .reduce(0) { $0 + $1.statement.totalMinorUnits }
+                        let paid = charged.filter { $0.0 >= range.start && $0.0 <= range.end }.reduce(0) { $0 + $1.1 }
+                        XCTAssertEqual(detail.recharged, recharged, "\(year)-\(month)")
+                        XCTAssertEqual(detail.paid, paid, "\(year)-\(month)")
+                        XCTAssertTrue(detail.credits.allSatisfy { $0.transaction.date >= range.start && $0.transaction.date <= range.end })
+                        if detail.recharged != 0 && detail.paid != 0 { monthsWithBoth += 1 }
+                    }
+                }
+            }
+            XCTAssertGreaterThan(statementsChecked, 20)
+            XCTAssertGreaterThan(monthsWithBoth, 10)
+        }
+    }
 }

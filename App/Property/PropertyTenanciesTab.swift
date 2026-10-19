@@ -249,9 +249,12 @@ struct PropertyTenanciesTab: View {
                      : "\(rows.count) receipt\(rows.count == 1 ? "" : "s") · \(paid) of \(issued) issued paid by their credits") {
             if issued > 0 {
                 if paid == issued {
-                    StatusPill("All paid", tone: .positive, systemImage: "checkmark")
+                    StatusPill("All paid", tone: .positive, systemImage: "checkmark",
+                               help: "Every issued receipt is paid: the rent credits linked to it cover what it says was received.")
                 } else {
-                    StatusPill("\(issued - paid) not matched", tone: .warning)
+                    StatusPill("\(issued - paid) not matched", tone: .warning,
+                               help: "\(issued - paid) issued receipt\(issued - paid == 1 ? " isn't" : "s aren't") fully paid by linked rent credits yet. "
+                                   + ReceiptStatusHelp.whyNotMatched(viewModel.snapshot))
                 }
             }
         } content: {
@@ -282,13 +285,14 @@ struct PropertyTenanciesTab: View {
             columns.append(amountColumn("Received") { $0.received })
         }
         columns += [
-            .status("Status") { line in line.row.map(Self.status) },
+            .status("Status") { line in line.row.map(status) }
+                .headerHelp("Paid: linked credits cover the receipt. Part paid: they cover part of it. Not matched: no credit linked yet. Cancelled: charged nothing. Hover a status for its details."),
             DataTableColumn("Paid by", width: .fill(min: 170), accessibilityValue: paidByDescription) { line, _ in
                 if let row = line.row { paidBy(row) }
             },
             // The PDF: its paperclip, or a dashed to-do circle that adds it (none for a
             // cancelled receipt). No accessibility value: the button stays reachable.
-            DataTableColumn("", alignment: .center, width: .fixed(36)) { line, kind in
+            DataTableColumn("PDF", alignment: .center, width: .fixed(36)) { line, kind in
                 if kind == .row, let row = line.row {
                     if row.documentCount > 0 {
                         DocumentCountBadge(count: row.documentCount)
@@ -297,11 +301,14 @@ struct PropertyTenanciesTab: View {
                             Image(systemName: "circle.dashed").foregroundStyle(theme.pending)
                         }
                         .buttonStyle(.borderless)
-                        .help("No PDF yet: add the receipt PDF…")
-                        .accessibilityLabel("Add the PDF of receipt \(row.receipt.receiptNumber)")
+                        .contentShape(Rectangle())
+                        .help(ReceiptStatusHelp.noPDF)
+                        .accessibilityLabel("No receipt PDF yet for receipt \(row.receipt.receiptNumber): add it")
+                        .accessibilityHint("Download it from Portal das Finanças, then choose the file")
                     }
                 }
-            },
+            }
+            .headerHelp("The receipt's PDF: a paperclip when it's in the library; a dashed circle when it's missing — click it to add the PDF (download it from Portal das Finanças)."),
             .actions { line in line.row.map(actions) ?? [] }
         ]
         return columns
@@ -318,10 +325,25 @@ struct PropertyTenanciesTab: View {
         }
     }
 
-    private static func status(_ row: TenancyReceiptRow) -> StatusPill {
-        if row.receipt.status == .cancelled { return StatusPill("Cancelled") }
-        if row.isPaid { return StatusPill("Paid", tone: .positive, systemImage: "checkmark") }
-        return row.payments.isEmpty ? StatusPill("Not matched", tone: .warning) : StatusPill("Part paid", tone: .warning)
+    private func status(_ row: TenancyReceiptRow) -> StatusPill {
+        let currency = viewModel.currency
+        if row.receipt.status == .cancelled {
+            return StatusPill("Cancelled", help: "Cancelled on Portal das Finanças: it charged nothing, so no credit is expected and it isn't counted in the rent.")
+        }
+        let received = Money.format(row.receipt.amountReceivedMinorUnits, currency: currency).unbroken
+        let linked = Money.format(row.paidMinorUnits, currency: currency).unbroken
+        let credits = row.payments.map { DocumentFormat.day($0.transaction.date).unbroken }.joined(separator: ", ")
+        if row.isPaid {
+            return StatusPill("Paid", tone: .positive, systemImage: "checkmark",
+                              help: "Paid: the credit\(row.payments.count == 1 ? "" : "s") of \(credits) linked to it cover\(row.payments.count == 1 ? "s" : "") the \(received) it says was received.")
+        }
+        if row.payments.isEmpty {
+            return StatusPill("Not matched", tone: .warning,
+                              help: "No rent credit on the current account has been linked to this receipt yet. " + ReceiptStatusHelp.whyNotMatched(viewModel.snapshot))
+        }
+        let left = Money.format(row.receipt.amountReceivedMinorUnits - row.paidMinorUnits, currency: currency).unbroken
+        return StatusPill("Part paid", tone: .warning,
+                          help: "Part paid: the credit\(row.payments.count == 1 ? "" : "s") of \(credits) linked to it cover\(row.payments.count == 1 ? "s" : "") \(linked) of the \(received) received; \(left) is still to link. Another credit may pay the rest once it's imported: use Match credits.")
     }
 
     /// The credits that paid it: the day and the credit, the part that isn't rent beneath.
@@ -453,5 +475,23 @@ struct PropertyDocumentsSheet: View {
                  }]
             }
         ]
+    }
+}
+
+/// What the receipts' status pills and PDF marks explain on hover.
+enum ReceiptStatusHelp {
+    static let noPDF = "No receipt PDF yet — click to add it (download it from Portal das Finanças)."
+
+    /// Why a receipt may have no credit yet, with how far the current account's imports run.
+    static func whyNotMatched(_ snapshot: PropertyViewModel.Snapshot) -> String {
+        let imports: String
+        if let day = snapshot.currentAccountLastDay {
+            let name = snapshot.currentAccountName ?? "the current account"
+            imports = " (\(name)'s transactions run to \(DocumentFormat.day(day).unbroken))"
+        } else {
+            imports = ""
+        }
+        return "Usually the tenant's transfer isn't imported yet\(imports), or it arrived under a different amount or name, "
+            + "so it wasn't matched: import the statement, then use Match credits (in More). Checks lists the credits without a receipt."
     }
 }

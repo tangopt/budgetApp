@@ -24,6 +24,8 @@ struct DataTableColumn<Row> {
     /// What the cell says to VoiceOver, read as part of its row ("Rent €1,200.00"); a column
     /// without one (actions, custom controls) stays its own element.
     var accessibilityValue: ((Row) -> String?)?
+    /// The header's tooltip (what the column's marks mean), when given.
+    var headerHelp: String? = nil
     let cell: (Row, DataTableRowKind) -> AnyView
 
     init<Cell: View>(_ title: String, alignment: Alignment = .leading, width: Width = .fit,
@@ -34,6 +36,13 @@ struct DataTableColumn<Row> {
         self.width = width
         self.accessibilityValue = accessibilityValue
         self.cell = { AnyView(cell($0, $1)) }
+    }
+
+    /// The column with a header tooltip.
+    func headerHelp(_ text: String) -> Self {
+        var column = self
+        column.headerHelp = text
+        return column
     }
 }
 
@@ -157,17 +166,29 @@ struct DataTable<Row: Identifiable>: View {
     var zebra = true
     var showsHeader = true
     var minRowHeight: CGFloat = 28
+    /// Clicking a row (anywhere but its buttons) opens it — e.g. a side panel; VoiceOver
+    /// activates it. Nil: rows aren't clickable.
+    var onSelect: ((Row) -> Void)? = nil
+    /// The row whose details are open: drawn in the selection colours.
+    var selectedId: Row.ID? = nil
+    /// What activating a row does, for VoiceOver ("Show details").
+    var selectHint = "Shows its details"
     @Environment(\.theme) private var theme
 
-    init(columns: [DataTableColumn<Row>], sections: [DataTableSection<Row>], zebra: Bool = true, showsHeader: Bool = true) {
+    init(columns: [DataTableColumn<Row>], sections: [DataTableSection<Row>], zebra: Bool = true, showsHeader: Bool = true,
+         onSelect: ((Row) -> Void)? = nil, selectedId: Row.ID? = nil) {
         self.columns = columns
         self.sections = sections
         self.zebra = zebra
         self.showsHeader = showsHeader
+        self.onSelect = onSelect
+        self.selectedId = selectedId
     }
 
-    init(columns: [DataTableColumn<Row>], rows: [Row], total: Row? = nil, zebra: Bool = true, showsHeader: Bool = true) {
-        self.init(columns: columns, sections: [DataTableSection(rows: rows, total: total)], zebra: zebra, showsHeader: showsHeader)
+    init(columns: [DataTableColumn<Row>], rows: [Row], total: Row? = nil, zebra: Bool = true, showsHeader: Bool = true,
+         onSelect: ((Row) -> Void)? = nil, selectedId: Row.ID? = nil) {
+        self.init(columns: columns, sections: [DataTableSection(rows: rows, total: total)], zebra: zebra, showsHeader: showsHeader,
+                  onSelect: onSelect, selectedId: selectedId)
     }
 
     private enum Line {
@@ -221,6 +242,8 @@ struct DataTable<Row: Identifiable>: View {
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             .padding(.horizontal, 8).padding(.vertical, 4)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: spec.alignment)
+                            .contentShape(Rectangle())
+                            .help(spec.headerHelp ?? "")
                             .accessibilityHidden(true)
                             .layoutValue(key: DataTableSlot.self, value: .cell(line: index, column: column))
                     }
@@ -264,6 +287,7 @@ struct DataTable<Row: Identifiable>: View {
             spec.cell(row, kind)
                 .padding(.horizontal, 8).padding(.vertical, 3)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: spec.alignment)
+                .modifier(DataTableRowTap(action: kind == .row ? onSelect.map { select in { select(row) } } : nil))
                 // Described cells are read with their row (its background's label).
                 .accessibilityHidden(spec.accessibilityValue != nil)
                 .layoutValue(key: DataTableSlot.self, value: .cell(line: line, column: column))
@@ -275,7 +299,7 @@ struct DataTable<Row: Identifiable>: View {
         let fill: Color = switch line {
         case .header: theme.gridHeaderBackground
         case .section: theme.sectionHeaderTint
-        case let .row(_, shaded): theme.rowBackground(shaded)
+        case let .row(row, shaded): selectedId.map { $0 == row.id } == true ? theme.selectionFill : theme.rowBackground(shaded)
         case .total: theme.totalsTint
         }
         let base = fill.overlay(alignment: .bottom) {
@@ -286,12 +310,33 @@ struct DataTable<Row: Identifiable>: View {
         switch line {
         case let .row(row, _):
             let label = accessibilityLabel(row, kind: .row)
-            base.accessibilityElement(children: .ignore).accessibilityLabel(label).accessibilityHidden(label.isEmpty)
+            if let onSelect {
+                base.modifier(DataTableRowTap(action: { onSelect(row) }))
+                    .accessibilityElement(children: .ignore).accessibilityLabel(label)
+                    .accessibilityAddTraits(selectedId.map { $0 == row.id } == true ? [.isButton, .isSelected] : .isButton)
+                    .accessibilityHint(selectHint)
+                    .accessibilityAction { onSelect(row) }
+            } else {
+                base.accessibilityElement(children: .ignore).accessibilityLabel(label).accessibilityHidden(label.isEmpty)
+            }
         case let .total(row):
             let label = accessibilityLabel(row, kind: .total)
             base.accessibilityElement(children: .ignore).accessibilityLabel(label).accessibilityHidden(label.isEmpty)
         case .header, .section:
             base.accessibilityHidden(true)
+        }
+    }
+}
+
+/// A clickable row's cell or background: the whole area takes the click (buttons in it keep theirs).
+private struct DataTableRowTap: ViewModifier {
+    let action: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        if let action {
+            content.contentShape(Rectangle()).onTapGesture(perform: action)
+        } else {
+            content
         }
     }
 }

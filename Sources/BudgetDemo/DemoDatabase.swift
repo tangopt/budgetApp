@@ -490,6 +490,9 @@ extension DemoDatabase {
             _ = try Properties.setAccount(db: db, propertyId: propertyId, accountId: accounts["Property Mortgage"]!, role: .mortgage)
             _ = try Properties.setAccount(db: db, propertyId: propertyId, accountId: accounts["Deposit Holding"]!, role: .deposit)
             try Properties.addCategoryGroup(db: db, propertyId: propertyId, categoryGroupId: groups[DemoDatabase.propertyName]!)
+            // Revised every quarter; twenty more years with a balloon (the rate is read from the interest).
+            try MortgageTerms.save(db: db, PropertyMortgageTerms(propertyId: propertyId, rateNote: "Euribor 3M + 1.00%",
+                                                                finalInstalmentDate: date(2046, 10, 1), balloonMinorUnits: 2_480_000))
 
             var first = Tenancy(propertyId: propertyId, referenceLabel: "Tenancy 1", contractNumber: "CT-0001", tenantName: "Tenant One",
                                 startDate: date(2023, 11, 1), endDate: date(2024, 6, 30), advanceRentMonths: 0, depositMonths: 2,

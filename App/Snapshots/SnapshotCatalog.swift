@@ -102,11 +102,44 @@ enum SnapshotCatalog {
                                                      dateFormat: "dd/MM/yyyy")
 
     static var propertyTabs: [SnapshotRoute] {
-        PropertyViewModel.Tab.allCases.map { tab in
+        let august = DateInterval(start: MonthRange.of(year: 2026, month: 8).start, end: MonthRange.of(year: 2026, month: 9).start)
+        return PropertyViewModel.Tab.allCases.map { tab in
             screen("property", tab.rawValue.lowercased(), "Property: \(tab.rawValue)", .property, settle: 1.3) { models, _ in
                 models.property.tab = tab
             }
-        }
+        } + [
+            screen("property", "overview_month", "Property: Overview, August's transactions open", .property, settle: 1.5) { models, _ in
+                models.property.tab = .overview
+                models.property.sidePanel = .month(august)
+            },
+            screen("property", "money_month", "Property: Money, August's transactions open", .property, settle: 1.5) { models, _ in
+                models.property.tab = .money
+                models.property.sidePanel = .month(august)
+            },
+            screen("property", "overview_loan_5y", "Property: Overview, the loan five years on", .property, settle: 1.3) { models, _ in
+                models.property.tab = .overview
+                models.property.loanRange = .fiveYears
+            },
+            screen("property", "overview_loan_end", "Property: Overview, the loan to the end", .property, settle: 1.3) { models, _ in
+                models.property.tab = .overview
+                models.property.loanRange = .toTheEnd
+            },
+            // The running tenancy's latest paid statement, and August's recharges.
+            screen("property", "recharges_statement", "Property: Recharges, a paid statement open", .property, settle: 1.5) { models, context in
+                models.property.tab = .recharges
+                if let (statement, tenancy) = context.latestPaidStatement() {
+                    models.property.selectedTenancyId = tenancy
+                    models.property.sidePanel = .rechargeStatement(id: statement, tenancyId: tenancy)
+                }
+            },
+            screen("property", "recharges_month", "Property: Recharges, August's month open", .property, settle: 1.5) { models, context in
+                models.property.tab = .recharges
+                if let (_, tenancy) = context.latestPaidStatement() {
+                    models.property.selectedTenancyId = tenancy
+                    models.property.sidePanel = .rechargeMonth(august.start, tenancyId: tenancy)
+                }
+            }
+        ]
     }
 
     static var taxTabs: [SnapshotRoute] {
@@ -166,6 +199,7 @@ enum SnapshotCatalog {
                 return AnyView(PersonFormSheet(viewModel: model, person: person))
             },
             sheet("link_account", "Link account") { context in AnyView(LinkAccountSheet(viewModel: await context.propertyModel())) },
+            sheet("mortgage_terms", "Mortgage terms") { context in AnyView(MortgageTermsSheet(viewModel: await context.propertyModel())) },
             sheet("tenancy_form", "Edit tenancy") { context in
                 let model = await context.propertyModel()
                 guard let tenancy = model.snapshot.tenancies.first(where: { $0.referenceLabel == "Tenancy 2" }) else { throw SnapshotMissing("Tenancy 2") }
@@ -392,6 +426,16 @@ enum SnapshotCatalog {
 // MARK: - Demo records
 
 extension SnapshotContext {
+    /// The latest paid recharge statement of the latest tenancy, and that tenancy.
+    func latestPaidStatement() -> (Int64, Int64)? {
+        try? dbQueue.read { db in
+            guard let tenancy = try Tenancy.order(Column("startDate").desc).fetchOne(db)?.id,
+                  let statement = try RechargeStatement.filter(Column("tenancyId") == tenancy && Column("status") == RechargeStatementStatus.paid.rawValue)
+                    .order(Column("month").desc).fetchOne(db)?.id else { return nil }
+            return (statement, tenancy)
+        }
+    }
+
     func accountId(_ name: String) -> Int64? {
         try? dbQueue.read { db in try Account.filter(Column("name") == name).fetchOne(db)?.id }
     }

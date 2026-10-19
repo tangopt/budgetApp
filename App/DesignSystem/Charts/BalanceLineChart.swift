@@ -12,6 +12,14 @@ struct BalancePoint: Identifiable, Equatable {
     var id: Date { date }
 }
 
+/// A labelled point on a balance chart (the loan's final instalment).
+struct BalanceMarker: Identifiable, Equatable {
+    let date: Date
+    let minorUnits: Int
+    let label: String
+    var id: Date { date }
+}
+
 /// A balance over time (spec §4.1; the Dashboard's net worth line): the area at 0.12 under a
 /// 2 pt line in `theme.series(series)`, forecast points dashed; a dashed "Today" rule; hover
 /// for a readout. With `showsAxes` off it's the Accounts sparkline. `includesZero` off fits
@@ -25,6 +33,8 @@ struct BalanceLineChart: View {
     var showsAxes = true
     var includesZero = true
     var today: Date? = nil
+    /// Points labelled on the chart.
+    var markers: [BalanceMarker] = []
     var height: CGFloat = 200
     @Environment(\.theme) private var theme
     @State private var selectedDate: Date?
@@ -55,9 +65,16 @@ struct BalanceLineChart: View {
         return (low - margin)...(high + margin)
     }
 
+    /// Over about four years, the axis counts years ("2030") rather than months ("Mar 26").
+    private var spansYears: Bool {
+        guard let first = points.first?.date, let last = points.last?.date else { return false }
+        return last.timeIntervalSince(first) > 4 * 365 * 86_400
+    }
+
     var body: some View {
         let color = theme.series(series)
         let domain = domain
+        let spansYears = spansYears
         Chart {
             ForEach(actual) { point in
                 AreaMark(x: .value("Date", point.date), yStart: .value(title, domain.lowerBound),
@@ -71,6 +88,15 @@ struct BalanceLineChart: View {
                 LineMark(x: .value("Date", point.date), y: .value(title, Double(point.minorUnits) / 100), series: .value("Series", "Forecast"))
                     .foregroundStyle(color)
                     .lineStyle(StrokeStyle(lineWidth: 2, dash: [5, 4]))
+            }
+            ForEach(markers) { marker in
+                PointMark(x: .value("Date", marker.date), y: .value(title, Double(marker.minorUnits) / 100))
+                    .foregroundStyle(color)
+                    .symbolSize(30)
+                    .annotation(position: .bottom, alignment: .trailing, spacing: 2,
+                                overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                        Text(marker.label).font(.caption2).foregroundStyle(.secondary).figureText()
+                    }
             }
             if let today, showsAxes {
                 RuleMark(x: .value("Today", today))
@@ -101,9 +127,16 @@ struct BalanceLineChart: View {
         .chartXScale(range: .plotDimension(endPadding: showsAxes ? 18 : 0))
         .chartXAxis {
             if showsAxes {
-                AxisMarks(values: .automatic(desiredCount: 6)) { _ in
-                    AxisGridLine()
-                    AxisValueLabel(format: Date.FormatStyle(timeZone: Self.utc).month(.abbreviated).year(.twoDigits))
+                if spansYears {
+                    AxisMarks(values: .automatic(desiredCount: 6)) { _ in
+                        AxisGridLine()
+                        AxisValueLabel(format: Date.FormatStyle(timeZone: Self.utc).year(), collisionResolution: .greedy)
+                    }
+                } else {
+                    AxisMarks(values: .automatic(desiredCount: 6)) { _ in
+                        AxisGridLine()
+                        AxisValueLabel(format: Date.FormatStyle(timeZone: Self.utc).month(.abbreviated).year(.twoDigits), collisionResolution: .greedy)
+                    }
                 }
             }
         }

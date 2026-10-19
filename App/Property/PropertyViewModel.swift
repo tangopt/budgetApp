@@ -65,26 +65,71 @@ final class PropertyViewModel: ObservableObject {
         /// The loan at each month end since the mortgage accounts' first record, then today
         /// (Overview's loan chart).
         var loanHistory: [LoanPoint] = []
+        /// The mortgage's terms (revision schedule, final instalment, balloon, rate), saved or default.
+        var mortgageTerms: PropertyMortgageTerms?
+        /// Where the loan's projection starts (`MortgageProjection.basis`) and the projection
+        /// from today to the end; nil when there's no loan to project.
+        var loanBasis: MortgageProjection.Basis?
+        var loanProjection: MortgageProjection.Result?
+        /// The current account (rent's) and the day of its latest transaction: how far its
+        /// imports run, for the receipts' explanations.
+        var currentAccountName: String?
+        var currentAccountLastDay: Date?
+    }
+
+    /// What the side panel beside the page shows.
+    enum SidePanel: Equatable {
+        /// A month of the Cash flow by month chart (Overview, Money): its transactions.
+        case month(DateInterval)
+        /// A recharge statement (Recharges): its charges and the credits that paid it.
+        case rechargeStatement(id: Int64, tenancyId: Int64)
+        /// A month of the Recharges chart (its first day): invoices paid, statements, credits.
+        case rechargeMonth(Date, tenancyId: Int64)
+    }
+
+    /// Bumped when the side panel changed recharges (its statement sheet closed), so the
+    /// Recharges tab re-reads.
+    @Published var rechargesRevision = 0
+
+    /// How far the Outstanding loan chart reaches.
+    enum LoanRange: String, CaseIterable, Identifiable {
+        case soFar = "So far"
+        case fiveYears = "Next 5 years"
+        case toTheEnd = "To the end"
+        var id: String { rawValue }
     }
 
     let dbQueue: DatabaseQueue
     let library: EvidenceLibrary
 
     @Published var propertyId: Int64? {
-        didSet { if propertyId != oldValue { selectedTenancyId = nil; restartObservation() } }
+        didSet { if propertyId != oldValue { selectedTenancyId = nil; sidePanel = nil; restartObservation() } }
     }
-    @Published var tab: Tab = .overview
+    @Published var tab: Tab = .overview {
+        didSet { if tab != oldValue { closeSidePanelIfHidden() } }
+    }
+    /// The side panel open beside the page (Escape or ✕ closes it).
+    @Published var sidePanel: SidePanel?
+    @Published var loanRange: LoanRange = .soFar
     @Published var periodChoice: PeriodChoice {
-        didSet { if periodChoice != oldValue { restartObservation() } }
+        didSet { if periodChoice != oldValue { closeMonthPanel(); restartObservation() } }
     }
     /// The custom range's first and last days (UTC midnights).
     @Published var customFirstDay: Date {
-        didSet { if customFirstDay != oldValue, periodChoice == .custom { restartObservation() } }
+        didSet { if customFirstDay != oldValue, periodChoice == .custom { closeMonthPanel(); restartObservation() } }
     }
     @Published var customLastDay: Date {
-        didSet { if customLastDay != oldValue, periodChoice == .custom { restartObservation() } }
+        didSet { if customLastDay != oldValue, periodChoice == .custom { closeMonthPanel(); restartObservation() } }
     }
-    @Published var selectedTenancyId: Int64?
+    @Published var selectedTenancyId: Int64? {
+        didSet {
+            switch sidePanel {
+            case let .rechargeStatement(_, tenancyId), let .rechargeMonth(_, tenancyId):
+                if tenancyId != selectedTenancy?.id { sidePanel = nil }
+            default: break
+            }
+        }
+    }
     @Published private(set) var snapshot = Snapshot()
     @Published private(set) var isLoading = true
     @Published var errorMessage: String?
@@ -235,6 +280,14 @@ final class PropertyViewModel: ObservableObject {
         snapshot.hasEvidenceRules = try PropertyEvidence.defaultRules(db: db, propertyId: propertyId).isEmpty
         let mortgageIds = snapshot.propertyAccounts.filter { $0.role == .mortgage }.map(\.accountId)
         snapshot.loanHistory = try loanHistory(db: db, property: property, accountIds: mortgageIds, today: today)
+        snapshot.mortgageTerms = try MortgageTerms.terms(db: db, propertyId: propertyId)
+        snapshot.loanBasis = try MortgageProjection.basis(db: db, propertyId: propertyId, today: today)
+        snapshot.loanProjection = snapshot.loanBasis.map { MortgageProjection.project($0.input) }
+        if let current = snapshot.propertyAccounts.first(where: { $0.role == .current }) {
+            snapshot.currentAccountName = snapshot.accounts.first { $0.id == current.accountId }?.displayName
+            snapshot.currentAccountLastDay = try Transaction.filter(Column("accountId") == current.accountId)
+                .select(GRDB.max(Column("date")), as: Date.self).fetchOne(db)
+        }
         return snapshot
     }
 
@@ -325,6 +378,11 @@ final class PropertyViewModel: ObservableObject {
     func removeAccount(_ accountId: Int64) {
         guard let propertyId else { return }
         errorMessage = write { db in _ = try Properties.removeAccount(db: db, propertyId: propertyId, accountId: accountId) }
+    }
+
+    /// Saves the mortgage's terms (Profile ▸ Mortgage terms…).
+    func saveMortgageTerms(_ terms: PropertyMortgageTerms) -> String? {
+        write { db in try MortgageTerms.save(db: db, terms) }
     }
 
     func addGroup(_ groupId: Int64) {
@@ -474,8 +532,67 @@ final class PropertyViewModel: ObservableObject {
         (try? library.documents(for: entity)) ?? []
     }
 
+    /// Opens a library document by id (an invoice's PDF).
+    func openDocument(id: Int64) {
+        if let document = try? library.database.read({ db in try EvidenceDocument.fetchOne(db, key: id) }) { open(document) }
+    }
+
     func open(_ document: EvidenceDocument) {
         NSWorkspace.shared.open(library.fileURL(for: document))
+    }
+
+    // MARK: Side panel
+
+    /// The month panel opened from a Cash flow chart: the summary's month starting at
+    /// `start` (clipped to the period), or closed when it's the one already open.
+    func toggleMonth(_ start: Date) {
+        guard let month = snapshot.summary?.months.first(where: { $0.start == start }) else { return }
+        let interval = DateInterval(start: month.start, end: month.end)
+        sidePanel = sidePanel == .month(interval) ? nil : .month(interval)
+    }
+
+    /// The open month's start, for the charts' highlight.
+    var openMonthStart: Date? {
+        if case let .month(interval) = sidePanel { return interval.start }
+        return nil
+    }
+
+    private func closeMonthPanel() {
+        if case .month = sidePanel { sidePanel = nil }
+    }
+
+    /// Closes a panel whose tab is no longer showing.
+    private func closeSidePanelIfHidden() {
+        switch sidePanel {
+        case .month: if ![.overview, .money].contains(tab) { sidePanel = nil }
+        case .rechargeStatement, .rechargeMonth: if tab != .recharges { sidePanel = nil }
+        case nil: break
+        }
+    }
+
+    /// The transactions behind a month's cash flow, counted as the chart counts them.
+    func monthBreakdown(_ interval: DateInterval) -> PropertyMonthBreakdown? {
+        guard let propertyId else { return nil }
+        do {
+            return try dbQueue.read { db in try PropertyFinance.monthBreakdown(db: db, propertyId: propertyId, interval: interval) }
+        } catch {
+            // Read while the panel draws: the panel says it couldn't.
+            return nil
+        }
+    }
+
+    /// Opens a recharges panel, or closes it when it's the one open.
+    func toggleSidePanel(_ panel: SidePanel) {
+        sidePanel = sidePanel == panel ? nil : panel
+    }
+
+    func rechargeStatementDetail(_ id: Int64) -> RechargeStatementDetail? {
+        try? dbQueue.read { db in try RechargeDetails.statement(db: db, statementId: id) }
+    }
+
+    func rechargeMonthDetail(_ month: Date, tenancyId: Int64) -> RechargeMonthDetail? {
+        let today = PropertyDays.utcToday(now())
+        return try? dbQueue.read { db in try RechargeDetails.month(db: db, tenancyId: tenancyId, month: month, today: today) }
     }
 
     // MARK: Drill-down
@@ -515,6 +632,7 @@ enum PropertyMessages {
         case let error as PropertyError: return text(error)
         case let error as RentReceiptsExport.ExportError: return text(error)
         case let error as RentPaymentError: return text(error)
+        case let error as MortgageTermsError: return text(error)
         case is ZipArchiveReader.ZipError, is XLSXReader.XLSXError: return "That file isn't a readable .xlsx spreadsheet."
         default: return error.localizedDescription
         }
@@ -546,6 +664,14 @@ enum PropertyMessages {
         case .duplicateReceiptNumber: return "That receipt number is already used for this tenancy."
         case .invalidWithholding: return "The withholding can't be more than the rent."
         case let .invalidEmail(text): return "“\(text)” isn't an email address."
+        }
+    }
+
+    static func text(_ error: MortgageTermsError) -> String {
+        switch error {
+        case .invalidRevisionMonths: return "Choose at least one month the rate is revised in."
+        case .negativeBalloon: return "The balloon can't be negative."
+        case .invalidRate: return "Enter a rate between 0% and 50%."
         }
     }
 

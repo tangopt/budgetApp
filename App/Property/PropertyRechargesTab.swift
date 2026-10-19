@@ -336,6 +336,8 @@ struct RechargesTenancyView: View {
         }
         .onAppear { model.load() }
         .onChange(of: refreshToken) { _, _ in model.load() }
+        // The side panel's statement sheet closed: what it changed shows here too.
+        .onChange(of: viewModel.rechargesRevision) { _, _ in model.load() }
         .sheet(item: $opened, onDismiss: { model.load() }) { target in
             RechargeStatementSheet(model: RechargeStatementModel(dbQueue: model.dbQueue, library: model.library, propertyId: model.propertyId,
                                                                  tenancy: tenancy, currency: model.currency, target: target))
@@ -473,10 +475,14 @@ struct RechargesTenancyView: View {
     // MARK: Charts
 
     private var chartPanel: some View {
-        Panel("Paid and recharged by month · \(String(year))", subtitle: "Recharged above the line, utilities paid below, the difference as the line",
+        Panel("Paid and recharged by month · \(String(year))",
+              subtitle: "Recharged above the line, utilities paid below, the difference as the line; click a month for its details",
               fillsHeight: true) {
             MonthlyFlowChart(months: model.flowMonths(year, tenancy: tenancy), currency: currency, inflowLabel: "Recharged",
-                             outflowLabel: "Utilities paid", netLabel: "Difference", today: AppClock.now, height: 200)
+                             outflowLabel: "Utilities paid", netLabel: "Difference", today: AppClock.now, height: 200,
+                             openMonth: openMonth,
+                             onSelectMonth: { month in viewModel.toggleSidePanel(.rechargeMonth(month, tenancyId: tenancy.id!)) },
+                             selectLabel: { "Show the invoices and recharges of \($0)" })
         }
     }
 
@@ -515,6 +521,22 @@ struct RechargesTenancyView: View {
         }
     }
 
+    /// The chart month whose panel is open.
+    private var openMonth: Date? {
+        if case let .rechargeMonth(month, tenancyId) = viewModel.sidePanel, tenancyId == tenancy.id { return month }
+        return nil
+    }
+
+    /// The statement whose panel is open (its table line's id).
+    private var openStatementLineId: String? {
+        if case let .rechargeStatement(id, tenancyId) = viewModel.sidePanel, tenancyId == tenancy.id { return "\(id)" }
+        return nil
+    }
+
+    private func showDetails(_ row: Recharges.MonthRow) {
+        viewModel.toggleSidePanel(.rechargeStatement(id: row.id, tenancyId: tenancy.id!))
+    }
+
     // MARK: Statements
 
     /// A statement (or a year's total) as a table row.
@@ -533,7 +555,7 @@ struct RechargesTenancyView: View {
         let paid = rows.filter { $0.statement.status == .paid }.count
         let drafts = rows.filter { $0.statement.status == .draft }.count
         let awaiting = model.awaiting.count
-        return Panel("Statements", subtitle: rows.isEmpty ? nil : "\(rows.count) statement\(rows.count == 1 ? "" : "s") · \(paid) paid") {
+        return Panel("Statements", subtitle: rows.isEmpty ? nil : "\(rows.count) statement\(rows.count == 1 ? "" : "s") · \(paid) paid · click one for its charges and credits") {
             HStack(spacing: 6) {
                 if drafts > 0 { StatusPill(drafts == 1 ? "1 draft" : "\(drafts) drafts") }
                 if awaiting > 0 {
@@ -548,7 +570,8 @@ struct RechargesTenancyView: View {
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                DataTable(columns: statementColumns, sections: statementSections(rows))
+                DataTable(columns: statementColumns, sections: statementSections(rows),
+                          onSelect: { line in if let row = line.row { showDetails(row) } }, selectedId: openStatementLineId)
             }
         }
     }
@@ -644,7 +667,8 @@ struct RechargesTenancyView: View {
         var actions = [DataTableAction(isDraft ? "Edit \(month)…" : "Open \(month)…", systemImage: isDraft ? "pencil" : "doc.text",
                                        inline: true) {
             opened = RechargeStatementTarget(month: statement.month, statementId: statement.id)
-        }]
+        },
+        DataTableAction("Details of \(month): charges and credits", systemImage: "chevron.right", inline: true) { showDetails(row) }]
         if statement.status == .sent && row.payments.isEmpty {
             actions.append(DataTableAction("Reopen as draft, to change its lines", systemImage: "arrow.uturn.backward") { model.reopen(statement) })
         }

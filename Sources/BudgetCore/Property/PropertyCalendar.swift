@@ -10,7 +10,8 @@ public enum PropertyObligationKind: String, Codable, CaseIterable, Sendable {
     case ukSelfAssessmentJanuary
     /// UK Self Assessment, 31 July: 2nd payment on account.
     case ukSelfAssessmentJuly
-    /// The mortgage's variable rate is revised (every quarter from the last instalment change).
+    /// The mortgage's variable rate is revised: on the 1st of the property's revision months
+    /// (`PropertyMortgageTerms.revisionMonths`, by default 1 January, April, July and October).
     case mortgageRateReset
     case mortgageInstalment
     /// An insurance cover period ends: renew (from the documents' cover periods, else a year
@@ -61,8 +62,6 @@ public enum PropertyCalendar {
     /// Long enough for a yearly cost to show two payments a year apart and still be read
     /// months after the latest (2 × 365 + 35 days).
     public static let historyDays = 765
-    /// Months between mortgage rate revisions.
-    public static let rateResetMonths = 3
 
     /// Obligations dated in `[from, to)`, by date then kind. Recurring and mortgage items are
     /// projected from the history up to `today`.
@@ -113,16 +112,25 @@ public enum PropertyCalendar {
             }
         }
 
-        // Mortgage: instalments as a recurring pattern, rate resets every quarter from the
-        // last change in the instalment amount.
-        for accountId in try Properties.accounts(db: db, propertyId: propertyId, role: .mortgage).map(\.accountId) {
-            let legs = try mortgageLegs(db: db, accountId: accountId, before: today)
-            if let anchor = lastChange(legs) {
-                var k = 0
-                while let date = calendar.date(byAdding: .month, value: k * rateResetMonths, to: anchor), date < to {
-                    if k > 0 || date >= from { add(date, .mortgageRateReset, "Mortgage rate revision", estimate: true, source: "\(accountId)") }
-                    k += 1
-                }
+        // Mortgage: instalments as a recurring pattern; the rate revised on the 1st of the
+        // property's revision months (`PropertyMortgageTerms`, by default every quarter), while
+        // a mortgage account has instalments and until the final one when it's known (without
+        // one, while something is still owed).
+        let terms = try MortgageTerms.terms(db: db, propertyId: propertyId)
+        let mortgageIds = try Properties.accounts(db: db, propertyId: propertyId, role: .mortgage).map(\.accountId)
+        var hasInstalments = false
+        for accountId in mortgageIds {
+            if try !mortgageLegs(db: db, accountId: accountId, before: today).isEmpty { hasInstalments = true }
+        }
+        if hasInstalments, terms.finalInstalmentDate == nil {
+            let owed = try PropertyFinance.balance(db: db, property: property, conversion: try CurrencyConversion.current(db: db),
+                                                   accountIds: mortgageIds, asOf: PropertyDates.day(today))
+            if owed.native <= 0 { hasInstalments = false }
+        }
+        if hasInstalments {
+            let end = terms.finalInstalmentDate.map { min(to, PropertyDates.nextDay($0)) } ?? to
+            for date in terms.revisionDates(from: from, to: end) {
+                add(date, .mortgageRateReset, "Mortgage rate revision", estimate: false, source: "\(propertyId)")
             }
         }
 
@@ -225,15 +233,6 @@ public enum PropertyCalendar {
             SELECT * FROM transaction_ WHERE accountId = ? AND amountMinorUnits > 0 AND date <= ?
             AND categoryId IN (SELECT id FROM category WHERE type = ?) ORDER BY date, id
             """, arguments: [accountId, today, CategoryType.transfer.rawValue])
-    }
-
-    /// The day of the last instalment whose amount differs from the one before.
-    static func lastChange(_ legs: [Transaction]) -> Date? {
-        guard legs.count >= 2 else { return nil }
-        for index in stride(from: legs.count - 1, to: 0, by: -1) where legs[index].amountMinorUnits != legs[index - 1].amountMinorUnits {
-            return PropertyDates.day(legs[index].date)
-        }
-        return nil
     }
 
     static func propertyCategories(db: Database, propertyId: Int64) throws -> [Category] {

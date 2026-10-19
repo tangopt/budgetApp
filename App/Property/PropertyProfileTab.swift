@@ -16,6 +16,7 @@ struct PropertyProfileTab: View {
     @State private var pickingDocument = false
     @State private var confirmingDelete = false
     @State private var editingPerson: Person?
+    @State private var editingMortgageTerms = false
 
     var body: some View {
         let snapshot = viewModel.snapshot
@@ -30,12 +31,17 @@ struct PropertyProfileTab: View {
             } second: {
                 groupsPanel(snapshot)
             }
-            documentsPanel(snapshot)
+            TwoUpRow {
+                mortgagePanel(snapshot)
+            } second: {
+                documentsPanel(snapshot)
+            }
         }
         .sheet(item: $editingProperty) { PropertyFormSheet(viewModel: viewModel, draft: $0) }
         .sheet(isPresented: $editingOwners) { OwnersSheet(viewModel: viewModel) }
         .sheet(item: $editingPerson) { PersonFormSheet(viewModel: viewModel, person: $0) }
         .sheet(isPresented: $linkingAccount) { LinkAccountSheet(viewModel: viewModel) }
+        .sheet(isPresented: $editingMortgageTerms) { MortgageTermsSheet(viewModel: viewModel) }
         .fileImporter(isPresented: $pickingDocument, allowedContentTypes: EvidenceFiles.contentTypes, allowsMultipleSelection: true) { result in
             guard let id = viewModel.propertyId else { return }
             switch result {
@@ -167,6 +173,48 @@ struct PropertyProfileTab: View {
         }
     }
 
+    // MARK: Mortgage
+
+    /// The mortgage's terms: when its rate is revised (the calendar's revisions), what it
+    /// follows, and the facts the loan's projection uses.
+    private func mortgagePanel(_ snapshot: PropertyViewModel.Snapshot) -> some View {
+        let terms = snapshot.mortgageTerms ?? PropertyMortgageTerms(propertyId: viewModel.propertyId ?? 0)
+        let currency = viewModel.currency
+        return Panel("Mortgage", subtitle: "Rate revisions and the loan's end, for the calendar and the loan chart", fillsHeight: true) {
+            Button { editingMortgageTerms = true } label: { Image(systemName: "pencil") }
+                .buttonStyle(.borderless)
+                .help("Edit the mortgage terms: rate revisions, final instalment, balloon")
+                .accessibilityLabel("Edit mortgage terms")
+        } content: {
+            PropertyFacts {
+                PropertyFact("Rate revised") {
+                    Text(MortgageTerms.scheduleText(terms.revisionMonths).capitalizedFirst)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+                PropertyFact("Rate follows") {
+                    if let note = terms.rateNote { Text(note).lineLimit(1).help(note) } else { Text("—").foregroundStyle(.secondary) }
+                }
+                PropertyFact("Rate now") {
+                    if let rate = terms.annualRatePercent {
+                        Text(String(format: "%.3f%%", rate)).monospacedDigit().figureText()
+                    } else {
+                        Text("From the interest charged on the loan").foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                PropertyFact("Final instalment") {
+                    if terms.finalInstalmentDate != nil { DateText(date: terms.finalInstalmentDate) } else { Text("—").foregroundStyle(.secondary) }
+                }
+                PropertyFact("Balloon") {
+                    if let balloon = terms.balloonMinorUnits {
+                        MoneyText(minorUnits: balloon, currency: currency, role: .neutral)
+                    } else {
+                        Text("—").foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: Category groups
 
     private struct GroupRow: Identifiable {
@@ -233,4 +281,9 @@ struct PropertyProfileTab: View {
             }
         }
     }
+}
+
+private extension String {
+    /// "Every 3 months…" from "every 3 months…".
+    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }

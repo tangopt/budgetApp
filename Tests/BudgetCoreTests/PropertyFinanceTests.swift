@@ -220,7 +220,8 @@ final class PropertyFinanceTests: XCTestCase {
         XCTAssertEqual(dates(.ukSelfAssessmentJanuary), [Self.date(2026, 1, 31)])
         XCTAssertTrue(obligations.first { $0.kind == .ukSelfAssessmentJanuary }!.title.contains("2024/25"))
         XCTAssertEqual(dates(.ukSelfAssessmentJuly), [Self.date(2026, 7, 31)])
-        XCTAssertEqual(dates(.mortgageRateReset), [Self.date(2026, 1, 5), Self.date(2026, 4, 5), Self.date(2026, 7, 5), Self.date(2026, 10, 5)])
+        // Revised on quarter starts by default, not a quarter from an instalment (the 5th).
+        XCTAssertEqual(dates(.mortgageRateReset), [Self.date(2026, 1, 1), Self.date(2026, 4, 1), Self.date(2026, 7, 1), Self.date(2026, 10, 1)])
         XCTAssertEqual(dates(.mortgageInstalment).count, 12)
         XCTAssertEqual(obligations.first { $0.kind == .mortgageInstalment }?.expectedMinorUnits, 52_000)
         let condo = obligations.filter { $0.kind == .recurringCost }
@@ -230,6 +231,71 @@ final class PropertyFinanceTests: XCTestCase {
         XCTAssertEqual(renewal.map(\.date), [Self.date(2026, 3, 1)])
         XCTAssertFalse(renewal[0].isEstimate)
         XCTAssertEqual(obligations.map(\.date), obligations.map(\.date).sorted())
+    }
+
+    /// The revision schedule is the property's: its months, on their 1st; none after the
+    /// final instalment; none without a mortgage that has instalments.
+    func testMortgageRateRevisionsFollowThePropertysSchedule() throws {
+        func revisions(from: Date, to: Date) throws -> [Date] {
+            try db.read { db in
+                try PropertyCalendar.obligations(db: db, propertyId: propertyId, from: from, to: to, today: Self.date(2025, 7, 31))
+                    .filter { $0.kind == .mortgageRateReset }.map(\.date)
+            }
+        }
+        // A window starting on a revision day includes it.
+        XCTAssertEqual(try revisions(from: Self.date(2025, 10, 1), to: Self.date(2026, 1, 2)), [Self.date(2025, 10, 1), Self.date(2026, 1, 1)])
+        try db.write { db in
+            try MortgageTerms.save(db: db, PropertyMortgageTerms(propertyId: propertyId, revisionMonths: [9, 3], rateNote: "  Euribor 6M + 1%  ",
+                                                                finalInstalmentDate: Self.date(2026, 9, 5)))
+        }
+        XCTAssertEqual(try revisions(from: Self.date(2025, 8, 1), to: Self.date(2027, 8, 1)),
+                       [Self.date(2025, 9, 1), Self.date(2026, 3, 1), Self.date(2026, 9, 1)])
+        let saved = try db.read { db in try MortgageTerms.terms(db: db, propertyId: propertyId) }
+        XCTAssertEqual(saved.revisionMonths, [3, 9])
+        XCTAssertEqual(saved.rateNote, "Euribor 6M + 1%")
+        // No mortgage instalments: no revisions.
+        try db.write { db in _ = try Properties.removeAccount(db: db, propertyId: propertyId, accountId: ids["loan"]!) }
+        XCTAssertEqual(try revisions(from: Self.date(2025, 8, 1), to: Self.date(2027, 8, 1)), [])
+    }
+
+    /// A loan repaid (nothing owed) and no final day: no more revisions.
+    func testNoRevisionsOnceTheLoanIsRepaid() throws {
+        let owed = try db.read { db in
+            try PropertyFinance.balance(db: db, property: try Property.fetchOne(db, key: propertyId)!, conversion: try CurrencyConversion.current(db: db),
+                                        accountIds: [ids["loan"]!], asOf: Self.date(2025, 7, 9)).native
+        }
+        try add(ids["loan"]!, Self.date(2025, 7, 10), owed, "fromBank")
+        let revisions = try db.read { db in
+            try PropertyCalendar.obligations(db: db, propertyId: propertyId, from: Self.date(2025, 8, 1), to: Self.date(2026, 8, 1),
+                                             today: Self.date(2025, 7, 31)).filter { $0.kind == .mortgageRateReset }
+        }
+        XCTAssertEqual(revisions, [])
+    }
+
+    func testMortgageTermsDefaultsValidationAndWording() throws {
+        let defaults = try db.read { db in try MortgageTerms.terms(db: db, propertyId: propertyId) }
+        XCTAssertEqual(defaults.revisionMonths, [1, 4, 7, 10])
+        XCTAssertNil(defaults.finalInstalmentDate)
+        for (terms, error) in [(PropertyMortgageTerms(propertyId: propertyId, revisionMonths: []), MortgageTermsError.invalidRevisionMonths),
+                               (PropertyMortgageTerms(propertyId: propertyId, revisionMonths: [13]), .invalidRevisionMonths),
+                               (PropertyMortgageTerms(propertyId: propertyId, balloonMinorUnits: -1), .negativeBalloon),
+                               (PropertyMortgageTerms(propertyId: propertyId, annualRatePercent: 51), .invalidRate)] {
+            XCTAssertThrowsError(try db.write { db in try MortgageTerms.save(db: db, terms) }) { XCTAssertEqual($0 as? MortgageTermsError, error) }
+        }
+        XCTAssertThrowsError(try db.write { db in try MortgageTerms.save(db: db, PropertyMortgageTerms(propertyId: 999)) })
+        func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{00A0}", with: " ") }
+        XCTAssertEqual(plain(MortgageTerms.scheduleText([1, 4, 7, 10])), "every 3 months on 1 Jan, 1 Apr, 1 Jul and 1 Oct")
+        XCTAssertEqual(plain(MortgageTerms.scheduleText([3, 9])), "every 6 months on 1 Mar and 1 Sep")
+        XCTAssertEqual(plain(MortgageTerms.scheduleText([1])), "every year on 1 Jan")
+        XCTAssertEqual(plain(MortgageTerms.scheduleText([1, 2, 6])), "on 1 Jan, 1 Feb and 1 Jun")
+        XCTAssertEqual(MortgageTerms.revisionDates(months: [1, 4, 7, 10], from: Self.date(2026, 10, 2), to: Self.date(2027, 4, 1)),
+                       [Self.date(2027, 1, 1)])
+        // Deleting the property deletes its terms.
+        try db.write { db in
+            try MortgageTerms.save(db: db, PropertyMortgageTerms(propertyId: propertyId, revisionMonths: [6]))
+            _ = try Properties.delete(db: db, id: propertyId)
+        }
+        XCTAssertEqual(try db.read { db in try PropertyMortgageTerms.fetchCount(db) }, 0)
     }
 
     func testUKDeadlinesOnlyForUKTaxpayerOwners() throws {
@@ -416,6 +482,93 @@ final class PropertyFinanceTests: XCTestCase {
         XCTAssertEqual(totals.mortgageCapital.native, 306_000 - 125_000)
         XCTAssertEqual(totals.netCashFlow.native, totals.income.native - totals.costs.native - 5_000 - totals.mortgageCapital.native)
         XCTAssertEqual(summary.netYield!, Double(totals.income.native - totals.costs.native - 5_000) / 20_000_000, accuracy: 1e-9)
+    }
+
+    // MARK: A month's transactions
+
+    /// Every month's breakdown adds up to the chart's figures exactly: Rent to the bar above
+    /// the line, Costs to the bar below, all groups to the net cash flow (interest filed
+    /// outside the property's categories included).
+    func testMonthBreakdownsMatchTheChartsFigures() throws {
+        try db.write { db in
+            var other = Category(name: "Loan interest", type: .expense)
+            try other.insert(db)
+            ids["otherInterest"] = other.id!
+        }
+        try add(ids["loan"]!, Self.date(2025, 6, 20), -5_000, "otherInterest")
+        let (summary, breakdowns) = try db.read { db -> (PropertySummary, [PropertyMonthBreakdown]) in
+            let summary = try PropertyFinance.summary(db: db, propertyId: propertyId, period: .calendarYear(2025), today: Self.date(2026, 1, 10))
+            return (summary, try summary.months.map { month in
+                try PropertyFinance.monthBreakdown(db: db, propertyId: propertyId, interval: DateInterval(start: month.start, end: month.end))
+            })
+        }
+        for (month, breakdown) in zip(summary.months, breakdowns) {
+            XCTAssertEqual(breakdown.rentReceived, month.figures.rentReceived, "\(month.start)")
+            XCTAssertEqual(breakdown.costs, month.figures.costs, "\(month.start)")
+            XCTAssertEqual(breakdown.netCashFlow, month.figures.netCashFlow, "\(month.start)")
+            XCTAssertEqual(breakdown.group(.costs)?.total ?? .zero, -month.figures.costs)
+        }
+
+        // February: the 1,150 credit counts 1,000 as rent and 150 as other income; the GBP
+        // utilities converted; the instalment out and the interest (in Costs) back.
+        let february = breakdowns[1]
+        XCTAssertEqual(february.groups.map(\.kind), [.rent, .otherIncome, .costs, .mortgage])
+        XCTAssertEqual(february.group(.rent)?.lines.map(\.counted.native), [100_000])
+        XCTAssertNotNil(february.group(.rent)?.lines.first?.note)
+        XCTAssertEqual(february.group(.otherIncome)?.lines.map(\.counted.native), [15_000])
+        XCTAssertEqual(february.group(.costs)?.lines.map(\.counted.native).sorted(), [-20_000, -5_882])
+        XCTAssertEqual(february.group(.costs)?.lines.first { $0.accountCurrency == .gbp }?.transaction.amountMinorUnits, -5_000)
+        XCTAssertEqual(february.group(.mortgage)?.lines.map(\.counted.native).sorted(), [-50_000, 20_000])
+        XCTAssertEqual(february.group(.mortgage)?.total.native, -30_000) // the capital repaid
+        XCTAssertEqual(february.group(.costs)?.lines.first?.categoryName, "Mortgage interest")
+
+        // June: the interest filed elsewhere is listed, counting nothing more (it's in the instalment).
+        let june = breakdowns[5]
+        let outside = june.group(.mortgage)?.lines.first { $0.transaction.categoryId == ids["otherInterest"] }
+        XCTAssertEqual(outside?.counted, .zero)
+        XCTAssertNil(june.group(.rent))
+    }
+
+    // MARK: Loan projection basis
+
+    func testProjectionBasisReadsTheLoan() throws {
+        let today = Self.date(2025, 7, 31)
+        // A fee charged after the latest instalment, and a small one with it: neither is the interest.
+        try db.write { db in
+            var fees = Category(name: "Loan fees", type: .expense)
+            try fees.insert(db)
+            ids["fees"] = fees.id!
+        }
+        try add(ids["loan"]!, Self.date(2025, 7, 20), -50_000, "fees")
+        try add(ids["loan"]!, Self.date(2025, 6, 5), -300, "fees")
+        let derived = try db.read { db in try MortgageProjection.basis(db: db, propertyId: propertyId, today: today) }!
+        XCTAssertEqual(derived.input.owedMinorUnits, 10_000_000 - (306_000 - 120_000) + 50_300)
+        XCTAssertEqual(derived.input.instalmentMinorUnits, 52_000)
+        XCTAssertEqual(derived.input.paymentDay, 5)
+        XCTAssertEqual(derived.input.revisionMonths, [1, 4, 7, 10])
+        // 200 of interest on 5 June (the largest charge that day) on what was owed on 4 June
+        // (100,000 − 3 × 300 − 2 × 320).
+        XCTAssertEqual(derived.rateSource, .derived(Self.date(2025, 6, 5)))
+        XCTAssertEqual(derived.input.annualRatePercent, 20_000.0 * 1200 / 9_846_000, accuracy: 1e-9)
+        XCTAssertNil(derived.input.finalInstalmentDate)
+
+        try db.write { db in
+            try MortgageTerms.save(db: db, PropertyMortgageTerms(propertyId: propertyId, revisionMonths: [3, 9], finalInstalmentDate: Self.date(2040, 6, 5),
+                                                                balloonMinorUnits: 2_000_000, annualRatePercent: 3.5))
+        }
+        let entered = try db.read { db in try MortgageProjection.basis(db: db, propertyId: propertyId, today: today) }!
+        XCTAssertEqual(entered.rateSource, .entered)
+        XCTAssertEqual(entered.input.annualRatePercent, 3.5)
+        XCTAssertEqual(entered.input.balloonMinorUnits, 2_000_000)
+        XCTAssertEqual(entered.input.revisionMonths, [3, 9])
+        let projection = MortgageProjection.project(entered.input)
+        XCTAssertEqual(projection.end, .finalInstalment)
+        XCTAssertEqual(projection.finalDate, Self.date(2040, 6, 5))
+        XCTAssertEqual(projection.payments.first?.date, Self.date(2025, 8, 5))
+
+        // No mortgage: no basis.
+        try db.write { db in _ = try Properties.removeAccount(db: db, propertyId: propertyId, accountId: ids["loan"]!) }
+        XCTAssertNil(try db.read { db in try MortgageProjection.basis(db: db, propertyId: propertyId, today: today) })
     }
 
     func testYieldsCoverTheElapsedOwnedPart() throws {

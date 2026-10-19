@@ -29,7 +29,8 @@ struct PropertyMoneyTab: View {
                 Panel("Summary · \(summary.period.label)", subtitle: rateNote(summary)) {
                     FigureStrip(headline(summary))
                 }
-                SplitRow(ratio: 0.57) {
+                // Side by side only where costs by category gets the width its bars and figures need.
+                SplitRow(ratio: 0.57, stackBelow: 1000) {
                     Panel("Figures", subtitle: "A chevron lists a figure's transactions", fillsHeight: true) {
                         DataTable(columns: figureColumns(summary.currency), sections: figureSections(summary), zebra: false)
                     }
@@ -38,8 +39,8 @@ struct PropertyMoneyTab: View {
                         mortgagePanel(summary)
                     }
                 }
-                Panel("Cash flow by month", subtitle: "Rent received above the line, costs below, net cash flow as the line") {
-                    PropertyMonthlyChart(summary: summary, height: 220)
+                Panel("Cash flow by month", subtitle: "Rent received above the line, costs below, net cash flow as the line; click a month for its transactions") {
+                    PropertyMonthlyChart(summary: summary, height: 220, viewModel: viewModel)
                 }
                 monthlyPanel(summary)
             } else if viewModel.period == nil {
