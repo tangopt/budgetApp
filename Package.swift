@@ -33,6 +33,7 @@ let package = Package(
         .executableTarget(name: "SelfAssessmentRegression", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
         .executableTarget(name: "BackfillRecharges", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
         .executableTarget(name: "ApplyTaxData", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
+        .executableTarget(name: "RebuildRechargesFromTracker", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
         .executableTarget(name: "MakeDemoDatabase", dependencies: ["BudgetCore", "BudgetDemo"])
     ]
 )

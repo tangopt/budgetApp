@@ -341,4 +341,237 @@ final class UtilityInvoiceIntakeTests: XCTestCase {
         XCTAssertTrue(RechargeNetting.isUtilityName("Electric"))
         XCTAssertEqual(EvidenceRequirementDefaults.rule(forCategoryName: "Car charging").kinds, [])
     }
+
+
+    // MARK: Reading fixes (recharges audit)
+
+    private static func preset(_ name: String) -> UtilityInvoiceRules {
+        UtilityInvoiceRules.presets.first { $0.name == name }!.rules
+    }
+
+    /// The water rules as first stored (before "VALOR DA FATURA" and the due date).
+    private static let storedWaterRules = UtilityInvoiceRules(
+        textMarkers: ["SIMAR"], fileNameMarkers: ["AGUA"], invoiceNumberPatterns: [UtilityInvoiceRules.atcud],
+        periodLabels: ["LITROS (", "PERIODO DE CONSUMO"], amountLabels: ["VALOR TOTAL", "TOTAL"], refundLabels: ["VALOR A RECEBER"])
+
+    /// The old layout prints the column headings ("QUANTIDADE VALOR TOTAL VALOR A PAGAR") before
+    /// the line items; the new one repeats "VALOR TOTAL" over its columns and has 4-decimal items.
+    private static let oldWaterLayout = """
+        SIMAR services · Resumo da Fatura
+        Data limite de pagamento da fatura: 2022.11.28
+        Documentos Valor Data limite de pagamento
+        2022.11.07 11.23+ 2022.11.28
+        €
+        4.44
+        3.38
+        IVA 0.25
+        TOTAL 11.23
+        QUANTIDADE VALOR TOTAL VALOR A PAGAR IVA%
+        4.44
+        1.00 m3 0.5111 0.51 6.00
+        34 dias 0.1111 3.78 6.00
+        IVA( 6% x 4.29) 0.25
+        Valor da Fatura 11.23
+        Total Residuos Urbanos Recolhidos: 100.000
+        """
+    private static let newWaterLayout = """
+        SIMAR services
+        2026-01-08
+        ATCUD:ABCD1234-1
+        Data-limite de pagamento da Fatura: 2026-01-28
+        SUB TOTAL 41,2345
+        IVA 0,9100
+        TOTAL 44,56€
+        A FATURAR A DEDUZIR A PAGAR
+        QUANT. VALOR VALOR
+        TOTAL
+        QUANT. VALOR VALOR
+        TOTAL
+        VALOR A
+        PAGAR
+        5,2 m3 1) 0,5000 2,6000 2,6000 6,8 m3 1) 1,2000 8,1600 8,1600
+        VALOR TOTAL 44,56€
+        """
+
+    func testWaterTotalsAreTheInvoiceTotalOnBothLayouts() {
+        for rules in [Self.preset("Municipal water (SIMAR)"), Self.storedWaterRules] {
+            let old = UtilityInvoiceReader.read(text: Self.oldWaterLayout, fileName: "x.pdf", rules: rules)
+            XCTAssertEqual(old.amountMinorUnits, 1_123)
+            let new = UtilityInvoiceReader.read(text: Self.newWaterLayout, fileName: "x.pdf", rules: rules)
+            XCTAssertEqual(new.amountMinorUnits, 4_456)
+        }
+        let rules = Self.preset("Municipal water (SIMAR)")
+        XCTAssertEqual(UtilityInvoiceReader.read(text: Self.oldWaterLayout, fileName: "x.pdf", rules: rules).dueDate, Self.date(2022, 11, 28))
+        XCTAssertEqual(UtilityInvoiceReader.read(text: Self.newWaterLayout, fileName: "x.pdf", rules: rules).dueDate, Self.date(2026, 1, 28))
+    }
+
+    func testGasCreditNotesAreRefunds() {
+        let rules = Self.preset("Natural gas (CUR)")
+        let older = """
+            CURGASNATURAL customer copy
+            Valor a creditar: 12,34 €
+            Período facturado:
+            Nota de Crédito
+            NC 1234/5678 de 2025-09-17 - Original
+            2025-08-17 a 2025-09-16
+            Outros créd./déb. € 0,00
+            Total sem IVA € -9,99
+            TOTAL EM CRÉDITO €
+            """
+        let olderReading = UtilityInvoiceReader.read(text: older, fileName: "x.pdf", rules: rules)
+        XCTAssertEqual(olderReading.amountMinorUnits, -1_234)
+        XCTAssertEqual(olderReading.issueDate, Self.date(2025, 9, 17))
+        let newer = """
+            BALCAO DIGITAL CUR
+            Data: 27 AGO 2026
+            Período de Faturação: 18 JUL 2026 a 17 AGO 2026
+            VALOR A CREDITAR
+            21,50€Total c/IVA
+            11,11€
+            Total 21,50€
+            """
+        XCTAssertEqual(UtilityInvoiceReader.read(text: newer, fileName: "x.pdf", rules: rules).amountMinorUnits, -2_150)
+        // A minus sign right before a labelled total makes it a credit.
+        XCTAssertEqual(UtilityInvoiceReader.read(text: "CURGASNATURAL 2025-01-02 TOTAL: -5,00 €", fileName: "x.pdf", rules: rules).amountMinorUnits,
+                       -500)
+        // An invoice is still a charge.
+        XCTAssertEqual(UtilityInvoiceReader.read(text: "CURGASNATURAL Data: 2025-01-02 Valor a pagar 30,00 €", fileName: "x.pdf",
+                                                 rules: rules).amountMinorUnits, 3_000)
+    }
+
+    func testStoredRulesTakeANewerPresetsLabelsWithoutLosingEdits() {
+        let stored = UtilityInvoiceRules(textMarkers: ["MINE"], amountLabels: ["TOTAL", "MY TOTAL"], refundLabels: ["VALOR A RECEBER"])
+        let merged = stored.merging(Self.preset("Natural gas (CUR)"))
+        XCTAssertEqual(merged.textMarkers.first, "MINE")
+        XCTAssertEqual(merged.amountLabels, ["TOTAL", "MY TOTAL", "VALOR A PAGAR"])
+        XCTAssertEqual(merged.refundLabels, ["VALOR A RECEBER", "A SEU FAVOR", "VALOR A CREDITAR", "TOTAL EM CREDITO"])
+        XCTAssertEqual(merged.merging(Self.preset("Natural gas (CUR)")), merged)
+    }
+
+    func testADebitOfAnotherAmountNearTheDueDateIsFlagged() throws {
+        let debit = try transaction(Self.date(2026, 1, 28), -4_456, "SEPADD/EXAMPLE WTR ADC/1")
+        try transaction(Self.date(2026, 3, 28), -1_000, "SEPADD/EXAMPLE WTR ADC/1")  // far from the due date
+        let misread = "EXAMPLE WATER 2026-01-08 ATCUD:ABCD1234-1 VALOR TOTAL 3,03€"
+        let proposal = try db.read { db in
+            try UtilityInvoiceIntake.propose(db: db, propertyId: id("property"), documentId: nil, text: misread, fileName: "x.pdf", textStatus: .text)
+        }
+        XCTAssertNil(proposal.transactionId)
+        XCTAssertEqual(proposal.warnings, ["Example Water debited €44.56 on 2026-01-28, not the €3.03 read: check the amount"])
+        // Read right, it matches and nothing is flagged.
+        let right = try db.read { db in
+            try UtilityInvoiceIntake.propose(db: db, propertyId: id("property"), documentId: nil, text: misread.replacingOccurrences(of: "3,03", with: "44,56"),
+                                             fileName: "x.pdf", textStatus: .text)
+        }
+        XCTAssertEqual(right.transactionId, debit)
+        XCTAssertEqual(right.warnings, [])
+        // With a due date, only debits within 10 days of it count.
+        try db.read { db in
+            let water = try XCTUnwrap(try UtilityProvider.fetchOne(db, key: id("water")))
+            XCTAssertEqual(try UtilityInvoiceIntake.debitsForAnotherAmount(db: db, propertyId: id("property"), provider: water, amountMinorUnits: 303,
+                                                                            issueDate: Self.date(2026, 1, 8), dueDate: Self.date(2026, 3, 25)).map(\.amountMinorUnits),
+                           [-1_000])
+            XCTAssertEqual(try UtilityInvoiceIntake.debitsForAnotherAmount(db: db, propertyId: id("property"), provider: water, amountMinorUnits: 303,
+                                                                            issueDate: Self.date(2026, 1, 8), dueDate: Self.date(2026, 5, 1)), [])
+        }
+    }
+
+    private func document(_ name: String, text: String) throws -> Int64 {
+        try db.write { db in
+            var document = EvidenceDocument(sha256: UUID().uuidString, storedRelativePath: "x/\(name)", originalFileName: name, byteCount: 1,
+                                            kind: .other, addedAt: Date())
+            document.extractedText = text
+            try document.insert(db)
+            return document.id!
+        }
+    }
+
+    func testCopiesOfBillsWithoutANumberAreDuplicates() throws {
+        let text = "EXAMPLE WATER bill of 2022-12-29\nTOTAL 9,52"
+        let original = try document("20221229 - Agua.pdf", text: text)
+        let copy = try document("20231229 - Agua .pdf", text: text + "\n")
+        try db.write { db in
+            var first = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2022, 12, 29), amountMinorUnits: 952, documentId: original)
+            try UtilityInvoiceIntake.record(db: db, &first)
+            // The same text in another file (misread differently, even), or the same date, period and amount.
+            var sameText = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2023, 12, 29), amountMinorUnits: 376, documentId: copy)
+            XCTAssertEqual(try Recharges.duplicate(db: db, of: sameText)?.id, first.id)
+            XCTAssertThrowsError(try Recharges.saveInvoice(db: db, &sameText)) { XCTAssertEqual($0 as? RechargeError, .duplicateInvoice) }
+            var sameBill = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2022, 12, 29), amountMinorUnits: 952)
+            XCTAssertThrowsError(try Recharges.saveInvoice(db: db, &sameBill)) { XCTAssertEqual($0 as? RechargeError, .duplicateInvoice) }
+            // Another month's bill, another provider's, or another number isn't a copy.
+            var next = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2023, 1, 30), amountMinorUnits: 952)
+            try Recharges.saveInvoice(db: db, &next)
+            var power = UtilityInvoice(providerId: id("power"), issueDate: Self.date(2022, 12, 29), amountMinorUnits: 952)
+            try Recharges.saveInvoice(db: db, &power)
+            var numbered = UtilityInvoice(providerId: id("water"), invoiceNumber: "N-1", issueDate: Self.date(2024, 1, 1), amountMinorUnits: 100)
+            try Recharges.saveInvoice(db: db, &numbered)
+            var otherNumber = UtilityInvoice(providerId: id("water"), invoiceNumber: "N-2", issueDate: Self.date(2024, 1, 1), amountMinorUnits: 100)
+            try Recharges.saveInvoice(db: db, &otherNumber)
+            // Editing an invoice isn't refused as a copy of itself.
+            first.notes = "checked"
+            try Recharges.saveInvoice(db: db, &first)
+            // The copy isn't offered as a pending invoice either.
+            XCTAssertFalse(try UtilityInvoiceIntake.pendingDocuments(db: db, propertyId: id("property")).contains { $0.id == copy })
+        }
+        // The same ATCUD in another text.
+        let atcudText = "EXAMPLE WATER 2024-02-01 ATCUD:ABCD1234-77 VALOR TOTAL 12,00"
+        let withATCUD = try document("a.pdf", text: atcudText)
+        let reprint = try document("b.pdf", text: atcudText + " 2.ª via")
+        try db.write { db in
+            var first = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2024, 2, 1), amountMinorUnits: 1_200, documentId: withATCUD)
+            try Recharges.saveInvoice(db: db, &first)
+            let second = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2024, 2, 2), amountMinorUnits: 1_200, documentId: reprint)
+            XCTAssertEqual(try Recharges.duplicate(db: db, of: second)?.id, first.id)
+        }
+        let proposal = try db.read { db in
+            try UtilityInvoiceIntake.propose(db: db, propertyId: id("property"), documentId: reprint, text: atcudText + " 2.ª via", fileName: "b.pdf",
+                                             textStatus: .text)
+        }
+        XCTAssertNotNil(proposal.duplicateOf)
+        XCTAssertEqual(proposal.warnings, ["A copy of the invoice of 2024-02-01 for €12.00 already recorded"])
+    }
+
+
+    // MARK: Review fixes (recharges audit)
+
+    func testALabelInsideAnotherWordIsNotTheTotal() {
+        let rules = UtilityInvoiceRules(textMarkers: ["X"], amountLabels: ["TOTAL"])
+        XCTAssertEqual(UtilityInvoiceReader.read(text: "X 2025-01-02 SUBTOTAL 40,00 € IVA 5,00 € TOTAL 45,00 €", fileName: "x.pdf", rules: rules)
+                        .amountMinorUnits, 4_500)
+    }
+
+    func testElectricityInvoicesReadAsBefore() {
+        let text = """
+            EDP COMERCIAL customer copy
+            Documento emitido a: 14 de março 2026
+            Período de faturação: 12 de janeiro a 11 de março 2026
+            Eletricidade Gás Natural Serviços Taxas, Impostos e
+            Outros Encargos
+            300,00 € Aderir Aderir 75,00 €
+            Quanto tenho
+            a pagar?
+            375,00 €
+            Débito na minha conta a partir de: 6 abr 2026
+            Descrição Quantidade x Preço = Valor Desconto Total s/IVA IVA
+            Total 300,00 € sem IVA
+            Total 70,00 €
+            """
+        let reading = UtilityInvoiceReader.read(text: text, fileName: "x.pdf", rules: Self.preset("EDP"))
+        XCTAssertEqual(reading.amountMinorUnits, 37_500)
+        XCTAssertEqual(reading.issueDate, Self.date(2026, 3, 14))
+        XCTAssertEqual(reading.periodStart, Self.date(2026, 1, 12))
+        XCTAssertEqual(reading.periodEnd, Self.date(2026, 3, 11))
+    }
+
+    func testBillsWithDifferentATCUDsAreNotCopies() throws {
+        let first = try document("a.pdf", text: "EXAMPLE WATER 2024-02-01 ATCUD:ABCD1234-1 VALOR TOTAL 12,00")
+        let second = try document("b.pdf", text: "EXAMPLE WATER 2024-02-01 ATCUD:ABCD1234-2 VALOR TOTAL 12,00 (second meter)")
+        try db.write { db in
+            var a = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2024, 2, 1), amountMinorUnits: 1_200, documentId: first)
+            try Recharges.saveInvoice(db: db, &a)
+            var b = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2024, 2, 1), amountMinorUnits: 1_200, documentId: second)
+            try Recharges.saveInvoice(db: db, &b)
+            XCTAssertEqual(try UtilityInvoice.filter(Column("providerId") == id("water")).fetchCount(db), 2)
+        }
+    }
 }

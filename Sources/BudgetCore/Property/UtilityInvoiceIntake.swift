@@ -18,6 +18,11 @@ public enum UtilityInvoiceIntake {
         public var textStatus: DocumentTextStatus
         /// Whether the text came from OCR.
         public var usedOCR: Bool
+        /// What to check before recording: a debit of the provider near the due date for
+        /// another amount (the amount may be misread), or a copy of an invoice already recorded.
+        public var warnings: [String] = []
+        /// The recorded invoice this document is a copy of.
+        public var duplicateOf: Int64?
 
         /// What the user still has to fill in before it can be recorded.
         public var missing: [String] {
@@ -86,12 +91,53 @@ public enum UtilityInvoiceIntake {
         let reading = UtilityInvoiceReader.read(text: text, fileName: fileName, providers: providers)
         var proposal = Proposal(documentId: documentId, fileName: fileName, reading: reading, transactionId: nil,
                                 textStatus: textStatus, usedOCR: usedOCR)
+        let provider = providers.first { $0.id == reading.providerId }
         if let amount = reading.amountMinorUnits, let issueDate = reading.issueDate {
-            let provider = providers.first { $0.id == reading.providerId }
             proposal.transactionId = try bestPayment(db: db, propertyId: propertyId, provider: provider, amountMinorUnits: amount,
                                                      issueDate: issueDate)?.id
+            if proposal.transactionId == nil, let provider,
+               let other = try debitsForAnotherAmount(db: db, propertyId: propertyId, provider: provider, amountMinorUnits: amount,
+                                                      issueDate: issueDate, dueDate: reading.dueDate).first {
+                proposal.warnings.append("\(provider.name) debited \(Money.format(abs(other.amountMinorUnits), currency: .eur)) on "
+                    + "\(PropertyDates.isoDay(other.date)), not the \(Money.format(abs(amount), currency: .eur)) read: check the amount")
+            }
+        }
+        if let invoice = proposal.invoice, let copy = try Recharges.duplicate(db: db, of: invoice) {
+            proposal.duplicateOf = copy.id
+            proposal.warnings.append("A copy of the invoice of \(PropertyDates.isoDay(copy.issueDate)) for "
+                + "\(Money.format(copy.amountMinorUnits, currency: .eur)) already recorded")
         }
         return proposal
+    }
+
+    /// Days around the due date (else after the issue date: `daysBefore` before to
+    /// `lateDebitWindow` after) a debit of the provider for another amount is looked for.
+    public static let dueDateSlack = 10
+    public static let lateDebitWindow = 45
+
+    /// The provider's bank movements (its bank description; debits, or credits for a refund)
+    /// near the invoice's due date — else from `daysBefore` before to `lateDebitWindow` after
+    /// its issue date — not of the amount read and not another invoice's: a sign the amount
+    /// was misread. Closest to the due (else issue) date first.
+    public static func debitsForAnotherAmount(db: Database, propertyId: Int64, provider: UtilityProvider, amountMinorUnits: Int,
+                                              issueDate: Date, dueDate: Date?, excludingInvoice invoiceId: Int64? = nil) throws -> [Transaction] {
+        guard amountMinorUnits != 0, provider.bankDescriptionPattern != nil else { return [] }
+        let accountIds = try Properties.accounts(db: db, propertyId: propertyId, role: .current).map(\.accountId)
+        guard !accountIds.isEmpty else { return [] }
+        let calendar = MonthRange.calendar
+        let anchor = PropertyDates.day(dueDate ?? issueDate)
+        let from = calendar.date(byAdding: .day, value: dueDate == nil ? -daysBefore : -dueDateSlack, to: anchor)!
+        let to = calendar.date(byAdding: .day, value: (dueDate == nil ? lateDebitWindow : dueDateSlack) + 1, to: anchor)!
+        let taken = Set(try Int64.fetchAll(db, sql: "SELECT transactionId FROM utilityInvoice WHERE transactionId IS NOT NULL AND id != ?",
+                                           arguments: [invoiceId ?? -1]))
+        let sign = amountMinorUnits > 0 ? "<" : ">"
+        return try Transaction
+            .filter(accountIds.contains(Column("accountId")) && Column("date") >= from && Column("date") < to
+                    && Column("amountMinorUnits") != -amountMinorUnits)
+            .filter(sql: "amountMinorUnits \(sign) 0")
+            .fetchAll(db)
+            .filter { !taken.contains($0.id!) && provider.matchesBankDescription($0.rawDescription) }
+            .sorted { (abs(PropertyFinance.days(anchor, PropertyDates.day($0.date))), $0.id!) < (abs(PropertyFinance.days(anchor, PropertyDates.day($1.date))), $1.id!) }
     }
 
     // MARK: Matching the payment
@@ -174,6 +220,11 @@ public enum UtilityInvoiceIntake {
     public static func pendingDocuments(db: Database, propertyId: Int64) throws -> [EvidenceDocument] {
         let providers = try Recharges.providers(db: db, propertyId: propertyId)
         let recorded = Set(try Int64.fetchAll(db, sql: "SELECT documentId FROM utilityInvoice WHERE documentId IS NOT NULL"))
+        // A copy of a recorded invoice (same text, another file) isn't pending either.
+        let recordedTexts = Set(try String.fetchAll(db, sql: """
+            SELECT document.extractedText FROM document JOIN utilityInvoice ON utilityInvoice.documentId = document.id
+            WHERE document.extractedText IS NOT NULL
+            """).map(EvidenceText.normalized).filter { !$0.isEmpty })
         let accountIds = Set(try Properties.accounts(db: db, propertyId: propertyId).map(\.accountId))
         let elsewhere = Set(try Int64.fetchAll(db, sql: """
             SELECT documentLink.documentId FROM documentLink JOIN transaction_ ON transaction_.id = documentLink.entityId
@@ -182,6 +233,7 @@ public enum UtilityInvoiceIntake {
             arguments: [EvidenceEntityType.transaction.rawValue]))
         return try EvidenceDocument.order(Column("docDate") == nil, Column("docDate"), Column("id")).fetchAll(db).filter { document in
             guard !recorded.contains(document.id!) else { return false }
+            if let text = document.extractedText.map(EvidenceText.normalized), recordedTexts.contains(text) { return false }
             let recognised = UtilityInvoiceReader.provider(text: document.extractedText, fileName: "", providers: providers) != nil
                 || ((document.kind == .other) && UtilityInvoiceReader.provider(text: nil, fileName: document.originalFileName, providers: providers) != nil)
             if recognised { return true }

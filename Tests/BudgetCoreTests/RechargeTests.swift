@@ -779,4 +779,77 @@ final class RechargeTests: XCTestCase {
             XCTAssertEqual(try Recharges.pendingLines(db: db, tenancyId: id("tenancy"), through: Self.date(2024, 5, 31)).map(\.amountMinorUnits), [-500])
         }
     }
+
+
+    // MARK: Audit fixes
+
+    func testALateDebitDoesNotDateTheRecharge() throws {
+        // Debited 58 days after it was issued: it's recharged by its issue date.
+        let late = try transaction("utilities", Self.date(2024, 6, 14), -3_500, "EXAMPLE POWER")
+        try invoice("power", "P-late", issued: Self.date(2024, 4, 17), amount: 3_500, debit: late)
+        // Debited 31 days after: the debit dates it, as before.
+        let usual = try transaction("utilities", Self.date(2024, 5, 18), -2_000, "EXAMPLE POWER")
+        try invoice("power", "P-usual", issued: Self.date(2024, 4, 17), amount: 2_000, debit: usual)
+        let april = try db.read { db in try Recharges.pendingLines(db: db, tenancyId: id("tenancy"), through: Self.date(2024, 4, 30)) }
+        XCTAssertEqual(april.map(\.invoice.invoiceNumber), ["P-late"])
+        XCTAssertEqual(april.map(\.rechargeDate), [Self.date(2024, 4, 17)])
+        let may = try db.read { db in try Recharges.pendingLines(db: db, tenancyId: id("tenancy"), through: Self.date(2024, 5, 31)) }
+        XCTAssertEqual(may.map(\.rechargeDate), [Self.date(2024, 4, 17), Self.date(2024, 5, 18)])
+    }
+
+    func testAResetKeepsOneOffLinesAndDropsRoundingAndPayments() throws {
+        let (statementId, creditId) = try payAprilWithMayRent()
+        let refund = try transaction("repairs", Self.date(2024, 4, 18), 500, "SHOP REFUND")
+        try db.write { db in
+            try Recharges.unlinkPayment(db: db, statementId: statementId, transactionId: creditId)
+            try Recharges.reopen(db: db, statementId: statementId)
+            let oneOff = try Recharges.saveManualLine(db: db, statementId: statementId, description: "Dishwasher refund", amountMinorUnits: -500,
+                                                      transactionId: refund)
+            XCTAssertEqual(oneOff.transactionId, refund)
+            XCTAssertTrue(oneOff.isOneOff)
+            let rounding = try Recharges.saveManualLine(db: db, statementId: statementId, description: "Rounding: the transfer was €0.01 more",
+                                                        amountMinorUnits: 1, isRounding: true)
+            XCTAssertFalse(rounding.isOneOff)
+            XCTAssertThrowsError(try Recharges.saveManualLine(db: db, statementId: statementId, description: "X", amountMinorUnits: 1,
+                                                              transactionId: 999_999)) {
+                XCTAssertEqual($0 as? RechargeError, .transactionNotFound)
+            }
+            try Recharges.markSent(db: db, statementId: statementId, at: Self.date(2024, 4, 30))
+            try Recharges.linkPayment(db: db, statementId: statementId, transactionId: creditId, amountMinorUnits: 1_000)
+
+            let kept = try Recharges.resetStatement(db: db, statementId: statementId)
+            XCTAssertEqual(kept.map(\.lineDescription), ["Dishwasher refund"])
+            let statement = try XCTUnwrap(try RechargeStatement.fetchOne(db, key: statementId))
+            XCTAssertEqual(statement.status, .draft)
+            XCTAssertNil(statement.sentAt)
+            XCTAssertEqual(statement.totalMinorUnits, -500)
+            XCTAssertEqual(try RechargePayment.filter(Column("statementId") == statementId).fetchCount(db), 0)
+            // The invoices are pending again.
+            XCTAssertEqual(try Recharges.pendingLines(db: db, tenancyId: id("tenancy"), through: Self.date(2024, 4, 30)).count, 2)
+        }
+    }
+
+
+    func testEditingAManualLineKeepsWhatIsntPassed() throws {
+        try seedInvoices()
+        let debit = try transaction("utilities", Self.date(2024, 4, 18), -700, "EXAMPLE POWER")
+        try db.write { db in
+            let statement = try Recharges.draftStatement(db: db, tenancyId: id("tenancy"), month: Self.date(2024, 4, 1))
+            let rounding = try Recharges.saveManualLine(db: db, statementId: statement.id!, description: "Rounding: the transfer was €0.01 more",
+                                                        amountMinorUnits: 1, note: "cents", isRounding: true)
+            let linked = try Recharges.saveManualLine(db: db, statementId: statement.id!, description: "Invoice to come", amountMinorUnits: 700,
+                                                      note: "from the portal", transactionId: debit)
+            // As the statement sheet saves them: description and amount only.
+            let editedRounding = try Recharges.saveManualLine(db: db, statementId: statement.id!, lineId: rounding.id, description: "Rounding",
+                                                              amountMinorUnits: 2)
+            XCTAssertTrue(editedRounding.isRounding)
+            XCTAssertEqual(editedRounding.note, "cents")
+            let editedLinked = try Recharges.saveManualLine(db: db, statementId: statement.id!, lineId: linked.id, description: "Invoice to come",
+                                                            amountMinorUnits: 710)
+            XCTAssertEqual(editedLinked.transactionId, debit)
+            XCTAssertEqual(editedLinked.note, "from the portal")
+            XCTAssertFalse(editedLinked.isRounding)
+            XCTAssertEqual(try RechargeLine.fetchOne(db, key: linked.id!)?.transactionId, debit)
+        }
+    }
 }

@@ -15,13 +15,21 @@ public struct UtilityInvoiceRules: Codable, Equatable, Hashable, Sendable {
     public var issueDateLabels: [String]
     /// "start – end" after one of these ("12 de maio a 11 de julho 2026", "(2026-05-08 a 2026-08-06)").
     public var periodLabels: [String]
-    /// The total is the first amount after one of these.
+    /// The total is the amount right after one of these ("TOTAL 10,57", "Valor da Fatura: 10,57 €"),
+    /// in label order; none right after any of them → the first amount after one. A minus sign
+    /// before it ("Total -10,69 €") makes it a credit.
     public var amountLabels: [String]
     /// When one of these is in the text, its amount is owed to the customer: a refund (negative).
+    /// Credit notes ("VALOR A CREDITAR 24,92€", "TOTAL EM CRÉDITO") are refunds too.
     public var refundLabels: [String]
+    /// The payment due date is the first date after one of these (debits come on it): used to
+    /// look for a debit of another amount when none matches.
+    public var dueDateLabels: [String]
 
     public init(textMarkers: [String] = [], fileNameMarkers: [String] = [], invoiceNumberPatterns: [String] = [],
-                issueDateLabels: [String] = [], periodLabels: [String] = [], amountLabels: [String] = [], refundLabels: [String] = []) {
+                issueDateLabels: [String] = [], periodLabels: [String] = [], amountLabels: [String] = [], refundLabels: [String] = [],
+                dueDateLabels: [String] = []) {
+        self.dueDateLabels = dueDateLabels
         self.textMarkers = textMarkers
         self.fileNameMarkers = fileNameMarkers
         self.invoiceNumberPatterns = invoiceNumberPatterns
@@ -41,6 +49,19 @@ public struct UtilityInvoiceRules: Codable, Equatable, Hashable, Sendable {
         periodLabels = try container.decodeIfPresent([String].self, forKey: .periodLabels) ?? []
         amountLabels = try container.decodeIfPresent([String].self, forKey: .amountLabels) ?? []
         refundLabels = try container.decodeIfPresent([String].self, forKey: .refundLabels) ?? []
+        dueDateLabels = try container.decodeIfPresent([String].self, forKey: .dueDateLabels) ?? []
+    }
+
+    /// These rules with `other`'s entries each list lacks appended (stored rules brought up to
+    /// a newer preset without losing the user's edits or changing their order).
+    public func merging(_ other: UtilityInvoiceRules) -> UtilityInvoiceRules {
+        func union(_ mine: [String], _ theirs: [String]) -> [String] { mine + theirs.filter { !mine.contains($0) } }
+        return UtilityInvoiceRules(
+            textMarkers: union(textMarkers, other.textMarkers), fileNameMarkers: union(fileNameMarkers, other.fileNameMarkers),
+            invoiceNumberPatterns: union(invoiceNumberPatterns, other.invoiceNumberPatterns),
+            issueDateLabels: union(issueDateLabels, other.issueDateLabels), periodLabels: union(periodLabels, other.periodLabels),
+            amountLabels: union(amountLabels, other.amountLabels), refundLabels: union(refundLabels, other.refundLabels),
+            dueDateLabels: union(dueDateLabels, other.dueDateLabels))
     }
 
     /// For providers without their own rules: common Portuguese invoice labels.
@@ -48,8 +69,9 @@ public struct UtilityInvoiceRules: Codable, Equatable, Hashable, Sendable {
         invoiceNumberPatterns: [#"FATURA N\S*\s*([A-Z0-9]+(?: [A-Z0-9]+)?/\d+)"#, #"FATURA:\s*([A-Z0-9]+(?: [A-Z0-9]+)?/\d+)"#, atcud],
         issueDateLabels: ["DATA DE EMISSAO", "EMITIDO A", "EMITIDA A", "DATA:"],
         periodLabels: ["PERIODO DE FATURACAO", "PERIODO DE CONSUMO", "PERIODO DE FORNECIMENTO"],
-        amountLabels: ["VALOR A PAGAR", "QUANTO TENHO A PAGAR", "TOTAL A PAGAR", "VALOR TOTAL", "TOTAL"],
-        refundLabels: ["VALOR A RECEBER", "A SEU FAVOR", "QUANTO VOU RECEBER"])
+        amountLabels: ["VALOR A PAGAR", "QUANTO TENHO A PAGAR", "TOTAL A PAGAR", "VALOR DA FATURA", "VALOR TOTAL", "TOTAL"],
+        refundLabels: ["VALOR A RECEBER", "A SEU FAVOR", "QUANTO VOU RECEBER", "VALOR A CREDITAR", "TOTAL EM CREDITO", "TOTAL A CREDITAR"],
+        dueDateLabels: ["DATA LIMITE DE PAGAMENTO", "DATA-LIMITE DE PAGAMENTO", "DATA DE VENCIMENTO", "PAGAR ATE"])
 
     /// The document's unique code every Portuguese invoice prints ("ATCUD:ABCD1234-123"): the
     /// fallback number.
@@ -77,15 +99,17 @@ public struct UtilityInvoiceRules: Codable, Equatable, Hashable, Sendable {
             invoiceNumberPatterns: [#"(?<![\d/])(\d{5}/\d{8})(?![\d/])"#, atcud],
             issueDateLabels: [],
             periodLabels: ["LITROS (", "PERIODO DE CONSUMO"],
-            amountLabels: ["VALOR TOTAL", "TOTAL"],
-            refundLabels: ["VALOR A RECEBER"])),
+            amountLabels: ["VALOR DA FATURA", "VALOR TOTAL", "TOTAL"],
+            refundLabels: ["VALOR A RECEBER", "VALOR A CREDITAR"],
+            dueDateLabels: ["LIMITE DE PAGAMENTO DA FATURA:"])),
         Preset(name: "Natural gas (CUR)", kind: .gas, bankDescriptionPattern: "GDL CUR|LISBOAGAS", rules: UtilityInvoiceRules(
             textMarkers: ["CURGASNATURAL", "LISBOAGAS", "BALCAO DIGITAL CUR"], fileNameMarkers: ["GAS"],
             invoiceNumberPatterns: [#"FATURA:\s*([A-Z]{2} [A-Z0-9]+/\d+)"#, #"FATURA (FT \d+/\d+) DE"#, #"N\S*\s*DOCUMENTO:\s*(\d+)"#, atcud],
-            issueDateLabels: ["DATA:", "FATURA FT"],
+            issueDateLabels: ["DATA:", "FATURA FT", "NOTA DE CREDITO NC"],
             periodLabels: ["PERIODO DE FATURACAO", "PERIODO FACTURADO"],
             amountLabels: ["VALOR A PAGAR", "TOTAL"],
-            refundLabels: ["VALOR A RECEBER", "A SEU FAVOR"]))
+            refundLabels: ["VALOR A RECEBER", "A SEU FAVOR", "VALOR A CREDITAR", "TOTAL EM CREDITO"],
+            dueDateLabels: ["DATA LIMITE DE PAGAMENTO", "DATA-LIMITE DE PAGAMENTO"]))
     ]
 }
 
@@ -111,9 +135,12 @@ public struct UtilityInvoiceReading: Equatable, Sendable {
     public var periodEnd: Date?
     /// Negative for a refund.
     public var amountMinorUnits: Int?
+    /// When the debit is due (the rules' due-date labels).
+    public var dueDate: Date?
 
     public init(providerId: Int64? = nil, invoiceNumber: String? = nil, issueDate: Date? = nil, periodStart: Date? = nil,
-                periodEnd: Date? = nil, amountMinorUnits: Int? = nil) {
+                periodEnd: Date? = nil, amountMinorUnits: Int? = nil, dueDate: Date? = nil) {
+        self.dueDate = dueDate
         self.providerId = providerId
         self.invoiceNumber = invoiceNumber
         self.issueDate = issueDate
@@ -169,13 +196,44 @@ public enum UtilityInvoiceReader {
             reading.periodStart = period.start
             reading.periodEnd = period.end
         }
-        // A refund label's amount (the first after it, even zero) is owed back only when positive.
-        if let refund = labelled(rules.refundLabels, in: source, length: 70, firstAmount), refund > 0 {
-            reading.amountMinorUnits = -refund
+        reading.dueDate = labelled(rules.dueDateLabels, in: source, length: 40) { EvidenceDateParser.dates(in: $0).first?.date }
+        // A refund label's amount (right after it, else the first after it; even zero) is owed
+        // back only when not zero.
+        if let refund = labelledAmount(rules.refundLabels, in: source, positiveOnly: false), refund != 0 {
+            reading.amountMinorUnits = -abs(refund)
         } else {
-            reading.amountMinorUnits = labelled(rules.amountLabels, in: source, length: 70, positiveAmount)
+            reading.amountMinorUnits = labelledAmount(rules.amountLabels, in: source, positiveOnly: true)
         }
         return reading
+    }
+
+    /// The amount right after one of the labels (only spaces, `:`, a currency or a minus sign
+    /// between: negative with the sign), trying the labels in order; else the first (positive,
+    /// when `positiveOnly`) amount in the 70 characters after one, as before.
+    static func labelledAmount(_ labels: [String], in text: NSString, positiveOnly: Bool) -> Int? {
+        for label in labels {
+            let key = EvidenceText.normalized(label)
+            guard !key.isEmpty else { continue }
+            for range in EvidenceAnalyzer.occurrences(of: key, in: text) where isWord(range, in: text) {
+                let window = EvidenceAnalyzer.window(after: range, in: text, length: 70)
+                guard let first = EvidenceAmountParser.amounts(in: window).first else { continue }
+                let gap = (window as NSString).substring(to: first.range.location)
+                let rest = gap.trimmingCharacters(in: CharacterSet(charactersIn: " :€-−").union(.whitespaces))
+                guard rest.isEmpty || rest == "EUR" else { continue }
+                if positiveOnly && first.minorUnits == 0 { continue }
+                return gap.contains("-") || gap.contains("−") ? -first.minorUnits : first.minorUnits
+            }
+        }
+        return labelled(labels, in: text, length: 70, positiveOnly ? positiveAmount : firstAmount)
+    }
+
+    /// Whether the label found at `range` is a word of its own (not "TOTAL" inside "SUBTOTAL").
+    static func isWord(_ range: NSRange, in text: NSString) -> Bool {
+        func isLetter(_ index: Int) -> Bool {
+            guard index >= 0, index < text.length, let scalar = Unicode.Scalar(text.character(at: index)) else { return false }
+            return CharacterSet.letters.contains(scalar)
+        }
+        return !isLetter(range.location - 1) && !isLetter(range.location + range.length)
     }
 
     /// The first value `parse` finds in the window after any occurrence of the labels, in label order.

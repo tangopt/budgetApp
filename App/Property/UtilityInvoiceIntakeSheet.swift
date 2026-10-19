@@ -218,6 +218,7 @@ enum RechargeMessages {
         guard let error = error as? RechargeError else { return error.localizedDescription }
         switch error {
         case .duplicateInvoiceNumber: return "An invoice with that number is already recorded for this provider."
+        case .duplicateInvoice: return "That invoice is already recorded for this provider (a copy of the same bill)."
         case .duplicateName: return "There's already a provider with that name."
         case .invalidPeriod: return "The period's end is before its start."
         case .invoiceOnSentStatement: return "That invoice is on a sent statement: its amount and period can't change."
@@ -417,6 +418,9 @@ struct UtilityInvoiceIntakeSheet: View {
                     Text(row.proposal.fileName).lineLimit(1).truncationMode(.middle).help(row.proposal.fileName)
                     if row.proposal.usedOCR {
                         StatusPill("OCR", tone: .warning, help: "Read from the image: check every figure")
+                    }
+                    if !row.proposal.warnings.isEmpty {
+                        StatusPill("Check", tone: .warning, help: row.proposal.warnings.joined(separator: "\n"))
                     }
                 }
                 if !missing.isEmpty && row.include {

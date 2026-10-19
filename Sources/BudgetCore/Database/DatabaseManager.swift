@@ -87,5 +87,6 @@ public final class DatabaseManager {
         registerTaxPolicyReceiptMigration(&migrator)
         registerForeignTaxApportionedMigration(&migrator)
         registerPropertyMortgageTermsMigration(&migrator)
+        registerRechargeLineKindMigration(&migrator)
     }
 }

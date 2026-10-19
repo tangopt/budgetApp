@@ -137,7 +137,10 @@ public struct RechargeStatement: Codable, Equatable, Identifiable, FetchableReco
 }
 
 /// One invoice (or its part for the tenancy) on a statement, or a manual line (a one-off
-/// charge or refund: `invoiceId` nil, a description, optionally a document).
+/// charge or refund: `invoiceId` nil, a description, optionally a document and the bank
+/// movement it stands for). Manual lines the app writes itself to settle a transfer's cents
+/// are rounding lines (`isRounding`): a rebuild replaces those, but keeps the other manual
+/// lines (the user's one-offs).
 public struct RechargeLine: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var id: Int64?
     public var statementId: Int64
@@ -155,9 +158,15 @@ public struct RechargeLine: Codable, Equatable, Identifiable, FetchableRecord, M
     /// A prorated invoice: the tenancy's days of its period, and the period's days.
     public var daysInTenancy: Int?
     public var daysInPeriod: Int?
+    /// A manual line written to settle a transfer's cents (more or less than the lines).
+    public var isRounding: Bool
+    /// A manual line's bank movement (a debit whose invoice isn't recorded yet, a refund).
+    public var transactionId: Int64?
 
     public init(id: Int64? = nil, statementId: Int64, invoiceId: Int64?, lineDescription: String? = nil, amountMinorUnits: Int,
-                note: String? = nil, documentId: Int64? = nil) {
+                note: String? = nil, documentId: Int64? = nil, isRounding: Bool = false, transactionId: Int64? = nil) {
+        self.isRounding = isRounding
+        self.transactionId = transactionId
         self.id = id
         self.statementId = statementId
         self.invoiceId = invoiceId
@@ -168,6 +177,9 @@ public struct RechargeLine: Codable, Equatable, Identifiable, FetchableRecord, M
     }
 
     public var isManual: Bool { invoiceId == nil }
+
+    /// A manual line that isn't a rounding line: the user's one-off, kept by rebuilds.
+    public var isOneOff: Bool { isManual && !isRounding }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
         id = inserted.rowID
@@ -313,5 +325,18 @@ func registerRechargeMigration(_ migrator: inout DatabaseMigrator) {
                                        WHERE statementId = OLD.statementId AND isDismissed = 0);
             END
             """)
+    }
+}
+
+/// Rounding lines are told apart from the user's one-off manual lines (rebuilds keep the
+/// latter), and a manual line can name the bank movement it stands for.
+func registerRechargeLineKindMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addRechargeLineRoundingAndTransaction") { db in
+        try db.alter(table: "rechargeLine") { t in
+            t.add(column: "isRounding", .boolean).notNull().defaults(to: false)
+            t.add(column: "transactionId", .integer).references("transaction_", onDelete: .setNull)
+        }
+        // The backfill's rounding lines so far.
+        try db.execute(sql: "UPDATE rechargeLine SET isRounding = 1 WHERE invoiceId IS NULL AND lineDescription LIKE 'Rounding:%'")
     }
 }

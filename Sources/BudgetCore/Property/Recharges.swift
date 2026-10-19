@@ -11,6 +11,9 @@ public enum RechargeError: Error, Equatable {
     case blankName
     case duplicateName
     case duplicateInvoiceNumber
+    /// Another invoice of the provider is the same one (same document text, ATCUD, or issue
+    /// date, period and amount): a copy of a bill without an invoice number.
+    case duplicateInvoice
     /// A period with only one end, or ending before it starts.
     case invalidPeriod
     /// Lines can only change while the statement is a draft.
@@ -55,7 +58,8 @@ public enum RechargeError: Error, Equatable {
 ///   recharge date falls in the tenancy). The tenancy's share is the whole invoice, or the
 ///   tenancy's days of the period when the period runs past the tenancy's start or end.
 /// - Its recharge date is its bank debit's date (the tracker lists invoices by the day they're
-///   debited), else — not matched to a debit yet — its issue date.
+///   debited), else — not matched to a debit yet, or debited more than `lateDebitDays` after
+///   it was issued (a late collection: it was sent with the month it arrived in) — its issue date.
 /// - A month's statement takes every invoice of the tenancy with a recharge date up to the
 ///   month's last day that isn't on one of the tenancy's statements yet: "issued (or debited)
 ///   since the last statement", late arrivals included.
@@ -67,6 +71,11 @@ public enum Recharges {
     /// still owed shows as overdue. A run of consecutive statements is matched from the last
     /// one's day, so an older statement in a run can still be paid after its own window.
     public static let paymentWindowDays = 45
+
+    /// A debit this many days or fewer after the issue date dates the invoice's recharge; a
+    /// later one doesn't (the issue date does). Direct debits come 19–32 days after the issue
+    /// date (water and electricity around 20, gas around 30), so 40 only catches late collections.
+    public static let lateDebitDays = 40
 
     // MARK: Providers
 
@@ -131,6 +140,7 @@ public enum Recharges {
             if let id = invoice.id { other = other.filter(Column("id") != id) }
             guard try other.fetchCount(db) == 0 else { throw RechargeError.transactionOnAnotherInvoice }
         }
+        if invoice.id == nil, try duplicate(db: db, of: invoice) != nil { throw RechargeError.duplicateInvoice }
         let before = try invoice.id.flatMap { try UtilityInvoice.fetchOne(db, key: $0) }
         let recharged = before.map { $0.providerId != invoice.providerId || $0.amountMinorUnits != invoice.amountMinorUnits
             || $0.periodStart != invoice.periodStart || $0.periodEnd != invoice.periodEnd || $0.issueDate != invoice.issueDate
@@ -191,10 +201,47 @@ public enum Recharges {
             """, arguments: [propertyId])
     }
 
-    /// The debit's day, else the issue date.
+    /// The debit's day, else (no debit, or one more than `lateDebitDays` after the issue date)
+    /// the issue date.
     public static func rechargeDate(db: Database, _ invoice: UtilityInvoice) throws -> Date {
         guard let id = invoice.transactionId, let debit = try Transaction.fetchOne(db, key: id) else { return invoice.issueDate }
-        return PropertyDates.day(debit.date)
+        let day = PropertyDates.day(debit.date)
+        return PropertyFinance.days(invoice.issueDate, day) > lateDebitDays ? invoice.issueDate : day
+    }
+
+    /// The provider's other invoice that `invoice` is a copy of: the same document, the same
+    /// document text or ATCUD, or — when one of them has no document text or no ATCUD to tell
+    /// them apart — the same issue date, period and amount. Two different invoice numbers, or
+    /// two different ATCUDs, are never copies.
+    public static func duplicate(db: Database, of invoice: UtilityInvoice) throws -> UtilityInvoice? {
+        var others = UtilityInvoice.filter(Column("providerId") == invoice.providerId)
+        if let id = invoice.id { others = others.filter(Column("id") != id) }
+        let candidates = try others.fetchAll(db)
+        guard !candidates.isEmpty else { return nil }
+        func text(_ documentId: Int64?) throws -> String? {
+            guard let documentId else { return nil }
+            return try String.fetchOne(db, sql: "SELECT extractedText FROM document WHERE id = ?", arguments: [documentId])
+                .map(EvidenceText.normalized).flatMap { $0.isEmpty ? nil : $0 }
+        }
+        let ownText = try text(invoice.documentId)
+        let ownATCUD = ownText.flatMap { UtilityInvoiceReader.invoiceNumber(in: $0, patterns: [UtilityInvoiceRules.atcud]) }
+        for other in candidates {
+            if let a = invoice.invoiceNumber, let b = other.invoiceNumber, a.caseInsensitiveCompare(b) != .orderedSame { continue }
+            if let documentId = invoice.documentId, documentId == other.documentId { return other }
+            let otherText = try text(other.documentId)
+            let otherATCUD = otherText.flatMap { UtilityInvoiceReader.invoiceNumber(in: $0, patterns: [UtilityInvoiceRules.atcud]) }
+            if let ownATCUD, let otherATCUD {
+                if ownATCUD == otherATCUD { return other }
+                continue
+            }
+            if let ownText, let otherText, ownText == otherText { return other }
+            if PropertyDates.day(other.issueDate) == PropertyDates.day(invoice.issueDate), other.amountMinorUnits == invoice.amountMinorUnits,
+               other.periodStart.map(PropertyDates.day) == invoice.periodStart.map(PropertyDates.day),
+               other.periodEnd.map(PropertyDates.day) == invoice.periodEnd.map(PropertyDates.day) {
+                return other
+            }
+        }
+        return nil
     }
 
     /// The tenancy's part of an invoice and why, `nil` when the invoice isn't the tenancy's.
@@ -324,13 +371,17 @@ public enum Recharges {
     }
 
     /// Adds a manual line (a one-off charge, or a refund with a negative amount) to a draft
-    /// statement, or changes it when `lineId` is given.
+    /// statement, or changes it when `lineId` is given. `isRounding` marks a line settling a
+    /// transfer's cents; `transactionId`, the bank movement the line stands for. Editing a
+    /// line, the document, note, rounding mark and movement not passed (`nil`) stay as stored.
     @discardableResult
     public static func saveManualLine(db: Database, statementId: Int64, lineId: Int64? = nil, description: String, amountMinorUnits: Int,
-                                      documentId: Int64? = nil, note: String? = nil) throws -> RechargeLine {
+                                      documentId: Int64? = nil, note: String? = nil, isRounding: Bool? = nil,
+                                      transactionId: Int64? = nil) throws -> RechargeLine {
         _ = try draft(db: db, statementId)
         guard let text = Transaction.normalizedNote(description) else { throw RechargeError.blankDescription }
         if let documentId, try !EvidenceDocument.exists(db, key: documentId) { throw RechargeError.documentNotFound }
+        if let transactionId, try !Transaction.exists(db, key: transactionId) { throw RechargeError.transactionNotFound }
         var line: RechargeLine
         if let lineId {
             guard let existing = try RechargeLine.fetchOne(db, key: lineId), existing.statementId == statementId, existing.isManual else {
@@ -342,8 +393,10 @@ public enum Recharges {
         }
         line.lineDescription = text
         line.amountMinorUnits = amountMinorUnits
-        line.documentId = documentId
-        line.note = Transaction.normalizedNote(note)
+        if let documentId { line.documentId = documentId }
+        if let note { line.note = Transaction.normalizedNote(note) }
+        if let isRounding { line.isRounding = isRounding }
+        if let transactionId { line.transactionId = transactionId }
         try line.save(db)
         try refreshTotal(db: db, statementId: statementId)
         return line
@@ -391,6 +444,22 @@ public enum Recharges {
         statement.sentAt = nil
         try statement.update(db)
         return statement
+    }
+
+    /// Takes a statement back to a draft to rebuild it: its payment links go (dismissed ones
+    /// too), and so do its invoice and rounding lines; the user's one-off manual lines stay.
+    /// Returns the lines kept.
+    @discardableResult
+    public static func resetStatement(db: Database, statementId: Int64) throws -> [RechargeLine] {
+        guard var statement = try RechargeStatement.fetchOne(db, key: statementId) else { throw RechargeError.statementNotFound }
+        try RechargePayment.filter(Column("statementId") == statementId).deleteAll(db)
+        if let fresh = try RechargeStatement.fetchOne(db, key: statementId) { statement = fresh }
+        statement.status = .draft
+        statement.sentAt = nil
+        try statement.update(db)
+        try RechargeLine.filter(Column("statementId") == statementId && (Column("invoiceId") != nil || Column("isRounding") == true)).deleteAll(db)
+        try refreshTotal(db: db, statementId: statementId)
+        return try lines(db: db, statementId: statementId)
     }
 
     /// Deletes a draft statement (its invoices become pending again).

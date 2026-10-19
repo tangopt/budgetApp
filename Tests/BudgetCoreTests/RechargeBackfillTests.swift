@@ -160,8 +160,9 @@ final class RechargeBackfillTests: XCTestCase {
         }
         XCTAssertEqual(outcomes.map(\.month), [Self.date(2024, 4, 1), Self.date(2024, 5, 1), Self.date(2024, 6, 1), Self.date(2024, 7, 1)])
         XCTAssertEqual(outcomes.map(\.rechargePartMinorUnits), [2_700, 1_300, 100, 1_000])
-        XCTAssertEqual(outcomes.map(\.totalMinorUnits), [2_700, 1_300, 0, 950])
-        XCTAssertEqual(outcomes.map(\.linkedMinorUnits), [2_700, 1_300, 0, 950])
+        // August's transfer is €0.50 over its invoice: a rounding line takes it.
+        XCTAssertEqual(outcomes.map(\.totalMinorUnits), [2_700, 1_300, 0, 1_000])
+        XCTAssertEqual(outcomes.map(\.linkedMinorUnits), [2_700, 1_300, 0, 1_000])
         XCTAssertEqual(outcomes[0].explanation, "exact: the invoices pending at month end")
         XCTAssertEqual(outcomes[1].explanation, "exact with 1 invoice issued after month end (before the transfer)")
         XCTAssertEqual(outcomes[2].explanation, "no invoices pending: the transfer's part isn't explained by invoices")
@@ -169,11 +170,11 @@ final class RechargeBackfillTests: XCTestCase {
         try db.read { db in
             XCTAssertEqual(try RechargeStatement.order(Column("month")).fetchAll(db).map(\.status), [.paid, .paid, .paid])
         }
-        // Idempotent: statements already made are left alone.
+        // Idempotent: statements already made are left alone (July's €1 stays unexplained).
         let again = try db.write { db in
             try RechargeBackfill.rebuildStatements(db: db, tenancyId: id("tenancy"), since: Self.date(2024, 1, 1))
         }
-        XCTAssertEqual(again.map(\.linkedMinorUnits), [0, 0])
+        XCTAssertEqual(again.map(\.linkedMinorUnits), [0])
         XCTAssertEqual(try db.read { db in try RechargeStatement.fetchCount(db) }, 3)
     }
 
@@ -183,12 +184,12 @@ final class RechargeBackfillTests: XCTestCase {
         var impact = try db.write { db in try RechargeBackfill.nettingImpact(db: db, propertyId: id("property"), years: [UKTaxYear(startYear: 2024)]) }
         XCTAssertEqual(impact.first?.automaticMode, .netOfRecharges)
         XCTAssertEqual(impact.first?.utilitiesPaid, 7_000)
-        XCTAssertEqual(impact.first?.rechargesReceived, 4_950)
-        XCTAssertEqual(impact.first?.nettedUtilities, 2_050)
+        XCTAssertEqual(impact.first?.rechargesReceived, 5_000)
+        XCTAssertEqual(impact.first?.nettedUtilities, 2_000)
         XCTAssertEqual(impact.first?.automaticNotDeductible, 7_000)
-        XCTAssertEqual(impact.first?.profitChange, -2_050)
-        XCTAssertEqual(impact.first?.automaticChange, -2_050)
-        // Marked filed from the plan: the filed treatment stays; netting would lower its profit by 2,050.
+        XCTAssertEqual(impact.first?.profitChange, -2_000)
+        XCTAssertEqual(impact.first?.automaticChange, -2_000)
+        // Marked filed from the plan: the filed treatment stays; netting would lower its profit by 2,000.
         let marked = try db.write { db in try RechargeBackfill.markFiledYears(db: db, propertyId: id("property"), years: Self.plan.filedTaxYears!) }
         XCTAssertEqual(marked.map(\.status), [.filed])
         XCTAssertNil(marked.first?.previous)
@@ -206,7 +207,7 @@ final class RechargeBackfillTests: XCTestCase {
         XCTAssertEqual(impact.first?.status, .paid)
         XCTAssertEqual(impact.first?.automaticChange, 0)
         XCTAssertEqual(impact.first?.automaticNotDeductible, 7_000)
-        XCTAssertEqual(impact.first?.profitChange, -2_050)
+        XCTAssertEqual(impact.first?.profitChange, -2_000)
         XCTAssertNil(try db.read { db in try RechargeNetting.mode(db: db, startYear: 2024) })
     }
 
@@ -244,5 +245,81 @@ final class RechargeBackfillTests: XCTestCase {
             XCTAssertEqual(try RechargeBackfill.nettingImpact(db: db, propertyId: id("property"), years: [UKTaxYear(startYear: 2024)]).map(\.person),
                            ["Person A"])
         }
+    }
+
+
+    // MARK: Audit fixes
+
+    func testATransferWithoutARentReceiptPaysTheMonthBefore() throws {
+        try invoice("W1", issued: Self.date(2024, 4, 20), amount: 2_470)
+        // May's rent on its own, and the recharge on a separate transfer the same day.
+        try transaction("rent", Self.date(2024, 5, 2), 100_000, "TRF 0123 TENANT NAME")
+        let separate = try transaction("rent", Self.date(2024, 5, 2), 2_470, "TRF 0456 TENANT NAME")
+        try db.write { db in _ = try RentReceiptMatching.match(db: db, propertyId: id("property")) }
+        let outcomes = try db.write { db in
+            try RechargeBackfill.rebuildStatements(db: db, tenancyId: id("tenancy"), since: Self.date(2024, 1, 1))
+        }
+        XCTAssertEqual(outcomes.map(\.creditId), [separate])
+        XCTAssertEqual(outcomes.map(\.month), [Self.date(2024, 4, 1)])
+        XCTAssertEqual(outcomes.map(\.linkedMinorUnits), [2_470])
+        XCTAssertEqual(try db.read { db in try RechargeStatement.fetchOne(db)?.status }, .paid)
+    }
+
+    func testAnotherPayersCreditIsNotTheTenantsWhenTenanciesOverlap() throws {
+        try db.write { db in
+            var other = Tenancy(propertyId: id("property"), referenceLabel: "Room Contract CD", contractNumber: "3002", startDate: Self.date(2024, 1, 1))
+            try Tenancies.save(db: db, &other)
+        }
+        try transaction("rent", Self.date(2024, 5, 2), 100_000, "TRF 0123 TENANT NAME")
+        let stranger = try transaction("rent", Self.date(2024, 5, 3), 2_470, "TRF 0456 SOMEONE ELSE")
+        let tenant = try transaction("rent", Self.date(2024, 5, 4), 2_470, "TRF 0789 TENANT")
+        try db.write { db in _ = try RentReceiptMatching.match(db: db, propertyId: id("property")) }
+        try db.read { db in
+            let tenancy = try XCTUnwrap(try Tenancy.fetchOne(db, key: id("tenancy")))
+            XCTAssertEqual(try RechargeBackfill.tenantCreditsWithoutReceipt(db: db, tenancy: tenancy, since: Self.date(2024, 1, 1)).map(\.id),
+                           [tenant])
+            XCTAssertNotEqual(tenant, stranger)
+        }
+    }
+
+    func testATransferRoundedUpGetsARoundingLineToo() throws {
+        try invoice("W1", issued: Self.date(2024, 4, 20), amount: 1_000)
+        try transaction("rent", Self.date(2024, 5, 2), 101_030, "TRANSFER")
+        try db.write { db in _ = try RentReceiptMatching.match(db: db, propertyId: id("property")) }
+        let outcomes = try db.write { db in
+            try RechargeBackfill.rebuildStatements(db: db, tenancyId: id("tenancy"), since: Self.date(2024, 1, 1))
+        }
+        XCTAssertEqual(outcomes.first?.totalMinorUnits, 1_030)
+        XCTAssertEqual(outcomes.first?.linkedMinorUnits, 1_030)
+        try db.read { db in
+            let statement = try XCTUnwrap(try RechargeStatement.fetchOne(db))
+            XCTAssertEqual(statement.status, .paid)
+            let rounding = try XCTUnwrap(try Recharges.lines(db: db, statementId: statement.id!).first(where: \.isManual))
+            XCTAssertEqual(rounding.lineDescription, "Rounding: the transfer was €0.30 more")
+            XCTAssertEqual(rounding.amountMinorUnits, 30)
+            XCTAssertTrue(rounding.isRounding)
+            // Nothing small is left over to suggest.
+            XCTAssertEqual(try Recharges.paymentSuggestions(db: db, propertyId: id("property")), [])
+        }
+    }
+
+
+    func testATransferWithoutAReceiptThatInvoicesDontMakeIsLeftAlone() throws {
+        try invoice("W1", issued: Self.date(2024, 4, 20), amount: 2_470)
+        try invoice("W2", issued: Self.date(2024, 4, 25), amount: 1_000)
+        // A whole rent paid with no receipt for it (receipts for May only).
+        let rent = try transaction("rent", Self.date(2024, 5, 2), 100_000, "TRF 0123 TENANT NAME")
+        try transaction("rent", Self.date(2024, 5, 3), 100_000, "TRF 0456 TENANT NAME")
+        try db.write { db in _ = try RentReceiptMatching.match(db: db, propertyId: id("property")) }
+        let outcomes = try db.write { db in
+            try RechargeBackfill.rebuildStatements(db: db, tenancyId: id("tenancy"), since: Self.date(2024, 1, 1))
+        }
+        XCTAssertFalse(outcomes.contains { $0.creditId == rent && $0.linkedMinorUnits > 0 })
+        XCTAssertEqual(outcomes.map(\.explanation), ["a transfer without a rent receipt that the invoices don't make: not taken"])
+        XCTAssertEqual(try db.read { db in try RechargeStatement.fetchCount(db) }, 0)
+    }
+
+    func testPayerWordsLeaveOutBankingWords() {
+        XCTAssertEqual(RechargeBackfill.payerWords("TRF IMEDIATA RECEBIDA MBWAY BBVA TENANT 12345"), ["TENANT"])
     }
 }

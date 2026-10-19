@@ -233,6 +233,13 @@ public enum RechargeBackfill {
                 try discard(added)
                 outcomes.append(outcome)
                 continue
+            } catch RechargeError.duplicateInvoice {
+                outcome.status = .duplicate
+                outcome.invoiceId = proposal.duplicateOf
+                outcome.reason = "a copy of an invoice already recorded (same text, ATCUD, or date, period and amount)"
+                try discard(added)
+                outcomes.append(outcome)
+                continue
             }
             outcome.status = .recorded(matched: invoice.transactionId != nil)
             outcome.invoiceId = invoice.id
@@ -245,6 +252,7 @@ public enum RechargeBackfill {
                 } else {
                     outcome.reason = "no debit of that amount from 5 days before to 60 after the issue date"
                 }
+                if let warning = proposal.warnings.first { outcome.reason! += "; " + warning }
             }
             outcomes.append(outcome)
         }
@@ -272,18 +280,24 @@ public enum RechargeBackfill {
     }
 
     /// Rebuilds the tenancy's statements from its rent credits dated from `since` (run after
-    /// rent matching): for each credit with a part beyond its rent, oldest first, the month
+    /// rent matching) — and the tenant's transfers that pay no rent receipt (a recharge sent on
+    /// its own): for each credit with a part beyond its rent, oldest first, the month
     /// before the rent it pays (its earliest linked receipt's period) gets a statement of the invoices pending then — or, when a few
     /// invoices more (issued up to the day before the credit) or fewer make the credit's part
-    /// exactly, those — marked sent and paid by the credit. Credits whose month already has a
-    /// statement pay what it still needs. Statements already made are left alone.
+    /// exactly, those — marked sent and paid by the credit. A transfer within €1 of the lines
+    /// gets a rounding line for the difference (either way), so it settles the statement.
+    /// Credits whose month already has a statement pay what it still needs. Statements already
+    /// made are left alone.
     public static func rebuildStatements(db: Database, tenancyId: Int64, since: Date) throws -> [StatementOutcome] {
-        guard try Tenancy.exists(db, key: tenancyId) else { throw BackfillError.tenancyNotFound }
-        let credits = try Transaction.fetchAll(db, sql: """
+        guard let tenancy = try Tenancy.fetchOne(db, key: tenancyId) else { throw BackfillError.tenancyNotFound }
+        let rentCredits = try Transaction.fetchAll(db, sql: """
             SELECT DISTINCT t.* FROM transaction_ t JOIN rentReceiptPayment p ON p.transactionId = t.id
             JOIN rentReceipt r ON r.id = p.rentReceiptId
             WHERE r.tenancyId = ? AND p.isDismissed = 0 AND t.date >= ? ORDER BY t.date, t.id
             """, arguments: [tenancyId, since])
+        let withoutReceipt = try tenantCreditsWithoutReceipt(db: db, tenancy: tenancy, since: since)
+        let unlinked = Set(withoutReceipt.map(\.id!))
+        let credits = (rentCredits + withoutReceipt).sorted { ($0.date, $0.id!) < ($1.date, $1.id!) }
         let calendar = MonthRange.calendar
         var outcomes: [StatementOutcome] = []
         for credit in credits {
@@ -304,7 +318,9 @@ public enum RechargeBackfill {
                 outcome.statementId = existing.id
                 outcome.totalMinorUnits = existing.totalMinorUnits
                 let needed = try Recharges.outstanding(db: db, statementId: existing.id!)
-                if existing.status != .draft, needed > 0 {
+                if unlinked.contains(credit.id!), part != needed {
+                    outcome.explanation = "a transfer without a rent receipt that isn't what the month's statement needs: not taken"
+                } else if existing.status != .draft, needed > 0 {
                     let link = try Recharges.linkPayment(db: db, statementId: existing.id!, transactionId: credit.id!,
                                                          amountMinorUnits: min(part, needed), origin: .auto)
                     outcome.linkedMinorUnits = link.amountMinorUnits
@@ -349,6 +365,13 @@ public enum RechargeBackfill {
                 outcomes.append(outcome)
                 continue
             }
+            // A transfer without a rent receipt may be anything (a late rent, a deposit): it's a
+            // recharge only when invoices make it (within rounding).
+            if unlinked.contains(credit.id!), exact.isEmpty, near != chosen {
+                outcome.explanation = "a transfer without a rent receipt that the invoices don't make: not taken"
+                outcomes.append(outcome)
+                continue
+            }
 
             var statement = try Recharges.draftStatement(db: db, tenancyId: tenancyId, month: month)
             for line in pending.prefix(base).dropFirst(chosen) {
@@ -359,13 +382,14 @@ public enum RechargeBackfill {
                                       note: line.note)
             }
             let included = Array(pending.prefix(chosen))
-            // A transfer rounded down: the cents it's short are written off on the statement, so
-            // it's settled rather than left owing.
+            // A transfer rounded: the cents it's short are written off on the statement, and
+            // the cents it's over added to it, so it's settled and the credit fully allocated.
             let sum = sums[chosen]
-            if !exact.contains(chosen), sum > part, sum - part <= roundingTolerance {
-                try Recharges.saveManualLine(db: db, statementId: statement.id!,
-                                             description: "Rounding: the transfer was \(Money.format(sum - part, currency: .eur)) less",
-                                             amountMinorUnits: part - sum)
+            if !exact.contains(chosen), sum != part, abs(sum - part) <= roundingTolerance {
+                let description = sum > part ? "Rounding: the transfer was \(Money.format(sum - part, currency: .eur)) less"
+                                             : "Rounding: the transfer was \(Money.format(part - sum, currency: .eur)) more"
+                try Recharges.saveManualLine(db: db, statementId: statement.id!, description: description, amountMinorUnits: part - sum,
+                                             isRounding: true)
             }
             let sentAt = min(max(lastDay, included.map(\.rechargeDate).max() ?? lastDay), creditDay)
             statement = try Recharges.markSent(db: db, statementId: statement.id!, at: sentAt)
@@ -381,6 +405,41 @@ public enum RechargeBackfill {
             outcomes.append(outcome)
         }
         return outcomes
+    }
+
+    /// The tenant's credits linked to no rent receipt (a recharge sent on its own transfer):
+    /// the property's rent credits dated in the tenancy from `since` with no active receipt
+    /// link and something left after their recharge links, that are the tenant's — the only
+    /// tenancy of the property on that day, or a payer word (a name in the description) shared
+    /// with the tenancy's own rent credits (words of other tenancies' rent credits don't count).
+    public static func tenantCreditsWithoutReceipt(db: Database, tenancy: Tenancy, since: Date) throws -> [Transaction] {
+        let linked = Set(try Int64.fetchAll(db, sql: "SELECT transactionId FROM rentReceiptPayment WHERE isDismissed = 0"))
+        let tenancies = try Tenancies.all(db: db, propertyId: tenancy.propertyId)
+        let ownWords = Set(try Transaction.fetchAll(db, sql: """
+            SELECT DISTINCT t.* FROM transaction_ t JOIN rentReceiptPayment p ON p.transactionId = t.id
+            JOIN rentReceipt r ON r.id = p.rentReceiptId WHERE r.tenancyId = ? AND p.isDismissed = 0
+            """, arguments: [tenancy.id!]).flatMap { payerWords($0.rawDescription) })
+            .subtracting(try Transaction.fetchAll(db, sql: """
+                SELECT DISTINCT t.* FROM transaction_ t JOIN rentReceiptPayment p ON p.transactionId = t.id
+                JOIN rentReceipt r ON r.id = p.rentReceiptId WHERE r.tenancyId != ? AND p.isDismissed = 0
+                """, arguments: [tenancy.id!]).flatMap { payerWords($0.rawDescription) })
+        return try RentReceiptMatching.candidateCredits(db: db, propertyId: tenancy.propertyId).filter { credit in
+            guard credit.date >= since, !linked.contains(credit.id!), tenancy.covers(PropertyDates.day(credit.date)),
+                  try Recharges.creditRemainder(db: db, transactionId: credit.id!) > 0 else { return false }
+            let alone = tenancies.filter { $0.covers(PropertyDates.day(credit.date)) }.count == 1
+            return alone || !ownWords.isDisjoint(with: payerWords(credit.rawDescription))
+        }
+    }
+
+    /// The words of a bank description that can name a payer: letters only, 4 or more, not a
+    /// banking word or a bank's name.
+    static func payerWords(_ description: String) -> Set<String> {
+        let ignored: Set<String> = ["TRANSF", "TRANSFER", "TRANSFERENCIA", "SEPA", "CREDIT", "CREDITO", "PAGAMENTO", "RENDA", "ALUGUER",
+                                    "IMEDIATA", "RECEBIDA", "RECEBIDO", "MBWAY", "PAYMENT", "INSTANT", "BBVA", "CAIXA", "MILLENNIUM",
+                                    "NOVO", "BANCO", "SANTANDER", "MONTEPIO", "ACTIVOBANK", "BANKINTER", "REVOLUT", "WISE", "MONZO",
+                                    "BARCLAYS", "HSBC", "LLOYDS", "NATWEST"]
+        return Set(EvidenceText.normalized(description).split(whereSeparator: { !$0.isLetter }).map(String.init)
+            .filter { $0.count >= 4 && !ignored.contains($0) })
     }
 
     // MARK: Netting impact

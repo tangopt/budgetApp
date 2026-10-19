@@ -37,6 +37,11 @@ public enum PropertyError: Error, Equatable {
 enum PropertyDates {
     static func day(_ date: Date) -> Date { MonthRange.calendar.startOfDay(for: date) }
     static func nextDay(_ date: Date) -> Date { MonthRange.calendar.date(byAdding: .day, value: 1, to: day(date))! }
+    /// "2024-05-02".
+    static func isoDay(_ date: Date) -> String {
+        let c = MonthRange.calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", c.year!, c.month!, c.day!)
+    }
 }
 
 // MARK: - People
