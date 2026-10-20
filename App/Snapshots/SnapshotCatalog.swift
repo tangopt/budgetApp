@@ -161,6 +161,21 @@ enum SnapshotCatalog {
                 let demo = ImportReviewDemo.make(context)
                 context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.figuresId)
             },
+            // A Ready receipt linked to a demo debit, its peek opened in place.
+            screen("imports", "review_peek", "Imports: review, a linked transaction's peek opened", .imports, settle: 1.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                let center = context.environment.importCenter
+                center.showSnapshotPlan(demo.plan, selecting: demo.insuranceId)
+                center.expandedPeeks = Set([demo.linkedTransactionId].compactMap { $0 })
+            },
+            // The same receipt's "Link to a transaction…" search, open over its preview.
+            screen("imports", "review_link_search", "Imports: review, the link search open", .imports, settle: 2.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                let center = context.environment.importCenter
+                center.showSnapshotPlan(demo.plan, selecting: demo.insuranceId)
+                center.expandedPeeks = []
+                center.linkSearchItemId = demo.insuranceId
+            },
             // The statement left out: its rows already imported are out with it (no Put back of their own).
             screen("imports", "review_left_out_rows", "Imports: review, a statement's rows left out with it", .imports, settle: 1.5) { _, context in
                 let demo = ImportReviewDemo.make(context)

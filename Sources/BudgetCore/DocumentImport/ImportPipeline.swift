@@ -128,6 +128,22 @@ public struct ImportPipeline: @unchecked Sendable {
         }
     }
 
+    // MARK: Searching transactions
+
+    /// The review's transaction search (`ImportTransactionSearch`), on the plan's planning copy
+    /// — the transactions a link change can name.
+    public func searchTransactions(_ query: ImportTransactionQuery, limit: Int = ImportTransactionSearch.limit) async throws -> [ImportTransactionCandidate] {
+        let copy = try session.current(from: dbQueue)
+        return try await copy.dbQueue.read { db in try ImportTransactionSearch.search(db: db, query: query, limit: limit) }
+    }
+
+    /// The transactions `ids` as the peek shows them, on the planning copy.
+    public func transactions(_ ids: [Int64]) async throws -> [ImportTransactionCandidate] {
+        guard !ids.isEmpty else { return [] }
+        let copy = try session.current(from: dbQueue)
+        return try await copy.dbQueue.read { db in try ImportTransactionSearch.candidates(db: db, ids: ids) }
+    }
+
     // MARK: Resolving
 
     /// The plan with the user's answer to one item (`ImportResolutions.apply`); `issueId`
@@ -145,7 +161,25 @@ public struct ImportPipeline: @unchecked Sendable {
             throw ImportResolutionError.notOffered(resolution)
         }
         var result = plan
-        if var edited = try ImportResolutions.apply(resolution, to: item, issueId: issueId) {
+        // What the answer names must exist in the planning copy: the transactions linked to,
+        // a target the reader didn't offer.
+        let named = ImportResolutions.chosenTransactions(resolution)
+        var labels: [EvidenceEntity: String] = [:]
+        if !named.isEmpty || Self.needsTargetCheck(resolution, item: item, issueId: issueId) {
+            let copy = try session.current(from: dbQueue)
+            labels = try await copy.dbQueue.read { db -> [EvidenceEntity: String] in
+                if case .chooseTarget(let kind, let id) = resolution, try !Self.targetExists(db: db, kind, id) {
+                    throw ImportResolutionError.notOffered(resolution)
+                }
+                var found: [EvidenceEntity: String] = [:]
+                for id in named {
+                    guard try Transaction.exists(db, key: id) else { throw ImportResolutionError.transactionNotFound(id) }
+                    found[.transaction(id)] = try entityLabel(db: db, .transaction(id))
+                }
+                return found
+            }
+        }
+        if var edited = try ImportResolutions.apply(resolution, to: item, issueId: issueId, transactions: labels) {
             // A link the answer added (a chosen candidate) replaces what the intent says, as read ones do.
             edited = Self.withReplacements(edited, intent: plan.state.intents[itemId] ?? .none)
             result.items[index] = edited
@@ -171,6 +205,22 @@ public struct ImportPipeline: @unchecked Sendable {
             }
         }
         return try await reread(item, in: plan, resolution)
+    }
+
+    /// Whether the answer is a target no question of the item offers (a correction): it must exist.
+    private static func needsTargetCheck(_ resolution: ImportResolution, item: ImportItem, issueId: String?) -> Bool {
+        guard case .chooseTarget = resolution else { return false }
+        return !item.issues.contains { (issueId == nil || $0.id == issueId) && ImportResolutions.accepts($0, resolution) }
+    }
+
+    static func targetExists(db: Database, _ kind: ImportTargetKind, _ id: Int64) throws -> Bool {
+        switch kind {
+        case .property: return try Property.exists(db, key: id)
+        case .person: return try Person.exists(db, key: id)
+        case .account: return try Account.exists(db, key: id)
+        case .tenancy: return try Tenancy.exists(db, key: id)
+        case .provider: return try UtilityProvider.exists(db, key: id)
+        }
     }
 
     /// The item read again after the user chose its kind or a target, keeping its id; its old

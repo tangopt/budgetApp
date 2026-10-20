@@ -292,6 +292,33 @@ final class FiledYearGuardTests: XCTestCase {
         XCTAssertEqual(try db.read { try EvidenceDocument.fetchCount($0) }, 0)
     }
 
+    func testUtilityInvoicePaidByTwoDebitsAttributesBothToTheInvoiceDate() throws {
+        // Paid in two parts after the filed year: each linked debit counts by the invoice's date.
+        let first = try bankTransaction((2025, 4, 10), "POWER CO PART 1", -4_000, category: "utilities")
+        let second = try bankTransaction((2025, 4, 20), "POWER CO PART 2", -6_000, category: "utilities")
+        let providerId = try db.write { db -> Int64 in
+            var provider = UtilityProvider(propertyId: id("property"), name: "Power Co", kind: .electricity)
+            try provider.insert(db)
+            return provider.id!
+        }
+        func item(_ payments: [Int64]) -> ImportItem {
+            let invoice = UtilityInvoice(providerId: providerId, invoiceNumber: "INV-2", issueDate: Self.date(2025, 3, 15), amountMinorUnits: 10_000)
+            return ImportItem(file: file("invoice.pdf"), recognition: ImportRecognition(kind: .utilityInvoice, confidence: .certain, reason: "x"),
+                              title: "Invoice Power Co", placement: placement(.utilityInvoice, date: Self.date(2025, 3, 15), amount: 10_000),
+                              links: payments.map { ProposedLink(entity: .transaction($0), label: "POWER CO", confidence: .certain, reasons: ["Chosen by you"]) },
+                              effect: .utilityInvoice(invoice))
+        }
+        let both = try db.write { db in try FiledYearGuard.annotate([item([first, second])], db: db) }.first!
+        let one = try db.write { db in try FiledYearGuard.annotate([item([first])], db: db) }.first!
+        let bothImpact = try XCTUnwrap(filedImpact(both), "\(both.issues)")
+        let oneImpact = try XCTUnwrap(filedImpact(one), "\(one.issues)")
+        XCTAssertEqual(bothImpact.startYear, 2024)
+        XCTAssertEqual(both.section, .needsYou)
+        // Both parts moved into 2024/25, not only the first.
+        XCTAssertNotEqual(bothImpact.returnChanges.map(\.after), oneImpact.returnChanges.map(\.after))
+        XCTAssertEqual(try db.read { try DocumentLink.fetchCount($0) }, 0)
+    }
+
     func testFiledInvoiceLinkedToAFiledYearTransactionIsHeld() throws {
         // The accountant's invoice is dated after the year: linking it moves the cost out of 2024/25.
         let paymentId = try bankTransaction((2025, 3, 30), "ACCOUNTANT", -10_000, category: "accountant")

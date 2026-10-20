@@ -241,10 +241,12 @@ public enum RechargeBackfill {
                 outcomes.append(outcome)
                 continue
             }
-            outcome.status = .recorded(matched: invoice.transactionId != nil)
+            // Paid: its debit, or the debits its document is linked to (paid in parts).
+            let payments = try library.database.read { db in try Recharges.payments(db: db, invoice) }
+            outcome.status = .recorded(matched: !payments.isEmpty)
             outcome.invoiceId = invoice.id
-            outcome.transactionId = invoice.transactionId
-            if invoice.transactionId == nil {
+            outcome.transactionId = invoice.transactionId ?? payments.first?.id
+            if payments.isEmpty {
                 if let firstMovement, invoice.issueDate < firstMovement {
                     outcome.reason = "issued before the bank history starts"
                 } else if invoice.amountMinorUnits < 0 {

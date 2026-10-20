@@ -114,6 +114,9 @@ struct ImportIssueControls: View {
         case .confirmFigure(let field, _): return "Use this \(field.displayName.lowercased())"
         case .chooseTarget(let kind, let id): return "Use \(targetNames.name(kind, id))"
         case .leaveOut: return Self.leaveOutTitle
+        case .linkTransactions(let ids): return ids.count == 1 ? "Link to this transaction" : "Link to these \(ids.count) transactions"
+        case .addTransactionLink: return "Link to this transaction too"
+        case .unlink: return "Unlink"
         }
     }
 
@@ -146,7 +149,7 @@ struct ImportIssueControls: View {
 
 /// "What is this?": the library's kinds by name, and "Use this kind" (with "Keep as …" when
 /// the file may stay what it was recognised as).
-private struct ImportKindChooser: View {
+struct ImportKindChooser: View {
     let keep: String?
     let resolve: (ImportResolution) -> Void
     @State private var kind: DocumentKind
@@ -178,7 +181,7 @@ private struct ImportKindChooser: View {
 }
 
 /// A figure to check or enter: a day, an amount, a tax year or text, and "Confirm" / "Use this".
-private struct ImportFigureEditor: View {
+struct ImportFigureEditor: View {
     enum Kind { case date, money, year, text }
 
     let field: ImportFigureField
@@ -272,7 +275,7 @@ private struct ImportFigureEditor: View {
 }
 
 /// "Which one?" among the offered records: each with why it was offered, and "Link to this".
-private struct ImportLinkChooser: View {
+struct ImportLinkChooser: View {
     let candidates: [LinkCandidate]
     let resolve: (ImportResolution) -> Void
     @State private var chosen: EvidenceEntity?
@@ -310,7 +313,7 @@ private struct ImportLinkChooser: View {
 }
 
 /// Which property, person, account, tenancy or provider the document is for.
-private struct ImportTargetChooser: View {
+struct ImportTargetChooser: View {
     let kind: ImportTargetKind
     let options: [Int64]
     let names: ImportTargetNames

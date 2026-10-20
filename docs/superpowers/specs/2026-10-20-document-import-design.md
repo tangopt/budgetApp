@@ -83,6 +83,13 @@ Other: anything else → archived with a user-chosen kind (and learnt).
 5. **Source-folder scan** becomes a shortcut that sends the folder's new or changed files into the importer; the folder's new/changed/missing state is kept.
 6. **Account for a statement** that can't be detected (e.g. UK CSVs without an account number) is a Needs-you item to choose the account; the choice is learnt for files like it.
 
+## Review: linking and correcting (user, 2026-10-20, after trying plan 1)
+
+- When validating a document, the user can **search** the app's transactions (description, amount, date, account) and **link it to one or several** existing transactions, replacing or adding to what was proposed.
+- When a document is linked (proposed or chosen), the user can **see the linked transaction(s) in place** — date, account, description, amount, category and the documents already on it — without leaving the review, to check it is the right one.
+- **Ready items can be corrected too**: kind, figures, target and links can be changed or removed on any item, not only those in Needs you. A changed item goes through duplicates and the filed-year guard again and may move to Needs you.
+- *My calls:* a user-chosen link is certain with the reason "Chosen by you"; links can be removed ("Unlink"); several linked debits all count as the document's payments, with equal standing (user, 2026-10-20) — a utility invoice records its debit only when exactly one is linked; filed-year holds still allow only Leave out.
+
 ## Constraints
 
 - macOS 26 SwiftUI app + BudgetCore Swift package (GRDB). All detection, matching and planning logic in **BudgetCore** (future iOS/iPadOS clients); the App only presents.

@@ -135,8 +135,7 @@ public enum UtilityInvoiceIntake {
         let anchor = PropertyDates.day(dueDate ?? issueDate)
         let from = calendar.date(byAdding: .day, value: dueDate == nil ? -daysBefore : -dueDateSlack, to: anchor)!
         let to = calendar.date(byAdding: .day, value: (dueDate == nil ? lateDebitWindow : dueDateSlack) + 1, to: anchor)!
-        let taken = Set(try Int64.fetchAll(db, sql: "SELECT transactionId FROM utilityInvoice WHERE transactionId IS NOT NULL AND id != ?",
-                                           arguments: [invoiceId ?? -1]))
+        let taken = try Recharges.paymentsTaken(db: db, excludingInvoice: invoiceId)
         let sign = amountMinorUnits > 0 ? "<" : ">"
         return try Transaction
             .filter(accountIds.contains(Column("accountId")) && Column("date") >= from && Column("date") < to
@@ -166,8 +165,7 @@ public enum UtilityInvoiceIntake {
         let day = PropertyDates.day(issueDate)
         let from = calendar.date(byAdding: .day, value: -daysBefore, to: day)!
         let to = calendar.date(byAdding: .day, value: daysAfter + 1, to: day)!
-        let taken = Set(try Int64.fetchAll(db, sql: "SELECT transactionId FROM utilityInvoice WHERE transactionId IS NOT NULL AND id != ?",
-                                           arguments: [invoiceId ?? -1]))
+        let taken = try Recharges.paymentsTaken(db: db, excludingInvoice: invoiceId)
         let utilityCategories = try RechargeNetting.utilityCategoryIds(db: db, propertyId: propertyId)
         let candidates = try Transaction
             .filter(accountIds.contains(Column("accountId")) && Column("amountMinorUnits") == -amountMinorUnits

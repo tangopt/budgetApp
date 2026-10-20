@@ -14,15 +14,21 @@ struct ImportPreviewPanel: View {
     let canPutBack: Bool
     let targetNames: ImportTargetNames
     let isAnswerable: Bool
+    /// The linked transactions' peeks and the link search.
+    @ObservedObject var center: ImportCenterModel
     /// (item, issue, answer).
     let resolve: (UUID, String?, ImportResolution) -> Void
 
     var body: some View {
         Panel(padding: 12, fillsHeight: true) {
-            if let item {
+            if let item, center.linkSearchItemId == item.id {
+                // Over the preview, the review staying as it is beside it.
+                ImportLinkSearchPanel(item: item, center: center, isAnswerable: isAnswerable) { resolve(item.id, nil, $0) }
+                    .id("search-\(item.id)")
+            } else if let item {
                 ScrollView {
                     ImportPreviewContent(item: item, children: children, canPutBack: canPutBack, targetNames: targetNames,
-                                         isAnswerable: isAnswerable, resolve: resolve)
+                                         isAnswerable: isAnswerable, center: center, resolve: resolve)
                         .padding(.trailing, 4)
                 }
                 // A new document starts at its top, with its own answers' state.
@@ -42,7 +48,12 @@ private struct ImportPreviewContent: View {
     let canPutBack: Bool
     let targetNames: ImportTargetNames
     let isAnswerable: Bool
+    @ObservedObject var center: ImportCenterModel
     let resolve: (UUID, String?, ImportResolution) -> Void
+    /// The figure being changed (its pencil in Figures).
+    @State private var editingField: ImportFigureField?
+
+    private var correctable: Bool { ImportResolutions.isCorrectable(item) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -107,14 +118,21 @@ private struct ImportPreviewContent: View {
             }
 
             block("Recognised as \(item.recognition.kind.displayName)") {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(item.recognition.reason.figuresUnbroken).fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                    if item.recognition.confidence == .needsReview {
-                        StatusPill("Check it", tone: .warning)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(item.recognition.reason.figuresUnbroken).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        if item.recognition.confidence == .needsReview {
+                            StatusPill("Check it", tone: .warning)
+                        }
+                    }
+                    .font(.callout).foregroundStyle(.secondary)
+                    if correctable {
+                        // Ready items too: any change is checked again (it may move to Needs you).
+                        ImportCorrections(item: item, targetNames: targetNames) { resolve(item.id, nil, $0) }
+                            .disabled(!isAnswerable)
                     }
                 }
-                .font(.callout).foregroundStyle(.secondary)
             }
 
             if !item.facts.isEmpty {
@@ -128,8 +146,29 @@ private struct ImportPreviewContent: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 StatusPill(fact.source.pillTitle, tone: fact.confidence == .needsReview ? .warning : .neutral,
                                            help: fact.reason)
+                                if correctable {
+                                    Button {
+                                        editingField = editingField == fact.field ? nil : fact.field
+                                    } label: {
+                                        Image(systemName: "pencil").foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Change the \(fact.field.displayName.lowercased())")
+                                    .accessibilityLabel("Change the \(fact.field.displayName.lowercased())")
+                                }
                             }
                         }
+                    }
+                    if correctable, let field = editingField, let fact = item.facts.first(where: { $0.field == field }) {
+                        ImportFigureEditor(field: field, current: fact.value,
+                                           currency: ImportIssueControls.currency(of: item, field: field),
+                                           confirming: false) { resolution in
+                            editingField = nil
+                            resolve(item.id, nil, resolution)
+                        }
+                        .id("\(item.id)-edit-\(field.rawValue)")
+                        .disabled(!isAnswerable)
+                        .padding(.top, 4)
                     }
                 }
             }
@@ -142,27 +181,10 @@ private struct ImportPreviewContent: View {
                 }
             }
 
-            if !item.links.isEmpty {
+            if !item.links.isEmpty || correctable {
                 block("Links to") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(item.links, id: \.entity) { link in
-                            VStack(alignment: .leading, spacing: 1) {
-                                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                    Text(link.label.figuresUnbroken).font(.callout)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    Spacer(minLength: 0)
-                                    if link.confidence == .needsReview {
-                                        StatusPill("Check it", tone: .warning)
-                                    }
-                                }
-                                if !link.reasons.isEmpty {
-                                    Text(link.reasons.joined(separator: " · ").figuresUnbroken)
-                                        .font(.caption).foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
-                        }
-                    }
+                    ImportLinksSection(item: item, center: center) { resolve(item.id, nil, $0) }
+                        .disabled(!isAnswerable)
                 }
             }
 

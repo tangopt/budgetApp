@@ -201,10 +201,39 @@ public enum Recharges {
             """, arguments: [propertyId])
     }
 
-    /// The debit's day, else (no debit, or one more than `lateDebitDays` after the issue date)
-    /// the issue date.
+    /// The bank movements that paid the invoice, by date: its debit (`transactionId`), else the
+    /// debits (credits for a refund) its document is linked to — a document paid in several
+    /// parts links every part, all of them its payments (user, 2026-10-20).
+    public static func payments(db: Database, _ invoice: UtilityInvoice) throws -> [Transaction] {
+        if let id = invoice.transactionId { return try Transaction.fetchOne(db, key: id).map { [$0] } ?? [] }
+        guard let documentId = invoice.documentId else { return [] }
+        let sign = invoice.amountMinorUnits >= 0 ? "<" : ">"
+        return try Transaction.fetchAll(db, sql: """
+            SELECT transaction_.* FROM transaction_ JOIN documentLink ON documentLink.entityId = transaction_.id
+            WHERE documentLink.documentId = ? AND documentLink.entityType = ? AND transaction_.amountMinorUnits \(sign) 0
+            ORDER BY transaction_.date, transaction_.id
+            """, arguments: [documentId, EvidenceEntityType.transaction.rawValue])
+    }
+
+    /// The debits (or refund credits) paying an invoice other than `invoiceId`: their
+    /// `transactionId`s and the payments their documents are linked to — as `payments` reads
+    /// them, debits for an invoice and credits for a refund.
+    static func paymentsTaken(db: Database, excludingInvoice invoiceId: Int64?) throws -> Set<Int64> {
+        Set(try Int64.fetchAll(db, sql: """
+            SELECT transactionId FROM utilityInvoice WHERE transactionId IS NOT NULL AND id != ?
+            UNION SELECT documentLink.entityId FROM documentLink
+            JOIN utilityInvoice ON utilityInvoice.documentId = documentLink.documentId
+            JOIN transaction_ ON transaction_.id = documentLink.entityId
+            WHERE documentLink.entityType = ? AND utilityInvoice.transactionId IS NULL AND utilityInvoice.id != ?
+              AND ((utilityInvoice.amountMinorUnits >= 0 AND transaction_.amountMinorUnits < 0)
+                OR (utilityInvoice.amountMinorUnits < 0 AND transaction_.amountMinorUnits > 0))
+            """, arguments: [invoiceId ?? -1, EvidenceEntityType.transaction.rawValue, invoiceId ?? -1]))
+    }
+
+    /// The (last) payment's day, else (no payment, or one more than `lateDebitDays` after the
+    /// issue date) the issue date.
     public static func rechargeDate(db: Database, _ invoice: UtilityInvoice) throws -> Date {
-        guard let id = invoice.transactionId, let debit = try Transaction.fetchOne(db, key: id) else { return invoice.issueDate }
+        guard let debit = try payments(db: db, invoice).last else { return invoice.issueDate }
         let day = PropertyDates.day(debit.date)
         return PropertyFinance.days(invoice.issueDate, day) > lateDebitDays ? invoice.issueDate : day
     }

@@ -5,6 +5,8 @@ public enum ImportResolutionError: Error, Equatable {
     case itemNotFound(UUID)
     /// Nothing on the item offers this resolution (or the value doesn't fit the figure).
     case notOffered(ImportResolution)
+    /// A transaction chosen to link to doesn't exist.
+    case transactionNotFound(Int64)
 }
 
 /// The user's answers to an item's questions, as pure edits of the item. Only offered
@@ -24,7 +26,15 @@ public enum ImportResolutions {
     ///   on a corrected version, the document is filed only, linked where its original is.
     /// - `.confirmFigure`: the fact becomes the user's (`.user`, `.certain`); the placement and
     ///   the effect's figure follow.
-    public static func apply(_ resolution: ImportResolution, to item: ImportItem, issueId: String? = nil) throws -> ImportItem? {
+    /// - `.linkTransactions`, `.addTransactionLink`, `.unlink`: the item's transaction links as
+    ///   the user set them (`withTransactionLinks`); `transactions` names each chosen
+    ///   transaction that exists (`transactionNotFound` otherwise).
+    ///
+    /// Corrections (a kind, a figure, a target, links) are taken on any item that is not held
+    /// (a filed return, a failed check, an unreadable file: only leaving out), left out or a
+    /// duplicate — Ready ones too, not only where a question asks (`isCorrectable`).
+    public static func apply(_ resolution: ImportResolution, to item: ImportItem, issueId: String? = nil,
+                             transactions: [EvidenceEntity: String] = [:]) throws -> ImportItem? {
         // A file that couldn't be read has nothing to answer: only leaving it out.
         guard resolution == .leaveOut || !isUnreadable(item) else { throw ImportResolutionError.notOffered(resolution) }
         let targeted = item.issues.filter { issueId == nil || $0.id == issueId }
@@ -39,12 +49,31 @@ public enum ImportResolutions {
             return edited
 
         case .chooseKind:
-            guard !accepting.isEmpty || (issueId == nil && item.recognition.confidence == .needsReview) else { throw refuse() }
+            guard !accepting.isEmpty || (issueId == nil && (item.recognition.confidence == .needsReview || isCorrectable(item))) else {
+                throw refuse()
+            }
             return nil
 
-        case .chooseTarget:
-            guard !accepting.isEmpty else { throw refuse() }
+        case .chooseTarget(let kind, _):
+            // A correction changes only the target the item's reader reads.
+            guard !accepting.isEmpty || (issueId == nil && isCorrectable(item) && correctableTarget(of: item) == kind) else { throw refuse() }
             return nil
+
+        case .linkTransactions(let ids):
+            guard issueId == nil, isCorrectable(item), !ids.isEmpty, Set(ids).count == ids.count else { throw refuse() }
+            return try withTransactionLinks(item, ids, chosen: Set(ids), labels: transactions)
+
+        case .addTransactionLink(let id):
+            guard issueId == nil, isCorrectable(item) else { throw refuse() }
+            // The certain transaction links stay (an invoice's own payment first); unsure ones
+            // the user didn't keep go, as a "which one?" answered.
+            let kept = item.links.filter { $0.entity.type == .transaction && $0.confidence == .certain && $0.entity.id != id }
+                .sorted { $0.madeByEffect && !$1.madeByEffect }.map(\.entity.id)
+            return try withTransactionLinks(item, kept + [id], chosen: [id], labels: transactions)
+
+        case .unlink(let entity):
+            guard issueId == nil, isCorrectable(item), let link = item.links.first(where: { $0.entity == entity }) else { throw refuse() }
+            return try unlinked(item, link)
 
         case .acknowledge:
             guard let first = accepting.first, let index = edited.issues.firstIndex(of: first) else { throw refuse() }
@@ -54,7 +83,7 @@ public enum ImportResolutions {
         case .confirmFigure(let field, let value):
             guard fits(value, field) else { throw refuse() }
             let unsure = item.facts.contains { $0.field == field && $0.confidence == .needsReview }
-            guard !accepting.isEmpty || (issueId == nil && unsure) else { throw refuse() }
+            guard !accepting.isEmpty || (issueId == nil && (unsure || isCorrectable(item))) else { throw refuse() }
             edited.issues.removeAll { accepting.contains($0) }
             let existed = edited.facts.contains { $0.field == field }
             edited.facts.removeAll { $0.field == field }
@@ -163,6 +192,140 @@ public enum ImportResolutions {
     }
 
     static let chosenReason = "Chosen by you"
+    /// The reason a link or a choice made by the user carries.
+    public static var chosenReasonText: String { chosenReason }
+
+    /// Whether the item takes corrections beyond its questions: not held (a filed-year hold,
+    /// a failed check, an unreadable file), not left out, not a duplicate.
+    public static func isCorrectable(_ item: ImportItem) -> Bool {
+        !item.isLeftOut && item.duplicate == nil && !isUnreadable(item) && !item.issues.contains { onlyLeavesOut($0, in: item) }
+    }
+
+    /// The target a correction can change on the item (`.chooseTarget`), when its reader reads
+    /// one: an invoice's provider, a payroll form's person, a statement's account, a rent
+    /// receipt's tenancy, a receipts export's property.
+    public static func correctableTarget(of item: ImportItem) -> ImportTargetKind? {
+        switch item.recognition.kind {
+        case .utilityInvoice: return .provider
+        case .payrollForm: return .person
+        case .bankStatementCSV, .bankStatementPDF: return .account
+        case .rentReceiptPDF: return .tenancy
+        case .rentReceiptsExport: return .property
+        default: return nil
+        }
+    }
+
+    /// The transactions a link change names (each must exist).
+    public static func chosenTransactions(_ resolution: ImportResolution) -> [Int64] {
+        switch resolution {
+        case .linkTransactions(let ids): return ids
+        case .addTransactionLink(let id): return [id]
+        default: return []
+        }
+    }
+
+    /// The item linked to the transactions `ids`, in order, instead of its transaction links
+    /// (its other links stay). `chosen`: the ones the user picked now — certain, "Chosen by
+    /// you" — the others kept as they were. Every linked transaction is one of the document's
+    /// payments, with equal standing: a utility invoice records exactly one as its debit
+    /// (`transactionId`), several as plain payment links (none its own); a transfer advice keeps
+    /// its credits when all are still chosen (else only the document is filed, linked as the
+    /// advice of each chosen credit). The "which one?" questions about transactions are answered.
+    static func withTransactionLinks(_ item: ImportItem, _ ids: [Int64], chosen: Set<Int64>,
+                                     labels: [EvidenceEntity: String]) throws -> ImportItem {
+        var edited = item
+        let previous = item.links.filter { $0.entity.type == .transaction }
+        edited.issues.removeAll { issue in
+            if case .chooseLink(let candidates) = issue.kind {
+                return !candidates.isEmpty && candidates.allSatisfy { $0.entity.type == .transaction }
+            }
+            return false
+        }
+        edited.links.removeAll { $0.entity.type == .transaction }
+        var adviceRole: String?
+        if case .transferAdvice = item.effect {
+            adviceRole = RentCreditEvidence.adviceRole
+            let credits = Set(previous.filter(\.madeByEffect).map(\.entity.id))
+            if !credits.isSubset(of: Set(ids)) { edited.effect = .file }
+        }
+        for id in ids {
+            let entity = EvidenceEntity.transaction(id)
+            let before = previous.first { $0.entity == entity }
+            if chosen.contains(id) || before == nil {
+                guard let label = labels[entity] else { throw ImportResolutionError.transactionNotFound(id) }
+                var link = before ?? ProposedLink(entity: entity, role: adviceRole, label: label, confidence: .certain, reasons: [])
+                link.label = label
+                link.confidence = .certain
+                if !link.reasons.contains(chosenReason) { link.reasons.append(chosenReason) }
+                edited.links.append(link)
+            } else if var link = before {
+                link.confidence = .certain
+                edited.links.append(link)
+            }
+        }
+        // An advice filed as a document only: its credits are plain links (as its advice).
+        if item.recognition.kind == .transferAdvice, edited.effect == .file {
+            for i in edited.links.indices { edited.links[i].madeByEffect = false }
+        }
+        withPayments(&edited)
+        edited.notes.removeAll { $0.hasPrefix("Not linked:") }
+        return edited
+    }
+
+    /// The item without `link`. A utility invoice's debit unlinked: the one transaction left,
+    /// if exactly one, becomes its debit. An advice's credit or a rent receipt PDF's receipt
+    /// unlinked: only the document is filed (the advice's other credits stay linked as its
+    /// advice). A link the effect itself makes otherwise (a payroll form's employment) isn't
+    /// removed this way: leave the item out or change its target.
+    static func unlinked(_ item: ImportItem, _ link: ProposedLink) throws -> ImportItem {
+        guard canUnlink(link, in: item) else { throw ImportResolutionError.notOffered(.unlink(link.entity)) }
+        var edited = item
+        if link.madeByEffect, item.effect.isLinking {
+            edited.effect = .file
+            for i in edited.links.indices { edited.links[i].madeByEffect = false }
+        }
+        edited.links.removeAll { $0.entity == link.entity }
+        edited.issues.removeAll { issue in
+            if case .chooseLink(let candidates) = issue.kind { return candidates.allSatisfy { $0.entity == link.entity } }
+            return false
+        }
+        if case .utilityInvoice(var invoice) = edited.effect, invoice.transactionId == link.entity.id, link.entity.type == .transaction {
+            invoice.transactionId = nil
+            edited.effect = .utilityInvoice(invoice)
+        }
+        withPayments(&edited)
+        if link.entity.type == .transaction, !edited.links.contains(where: { $0.entity.type == .transaction }),
+           !edited.notes.contains(withoutLinkNote) {
+            edited.notes.append(withoutLinkNote)
+        }
+        return edited
+    }
+
+    /// Whether "Unlink" takes the link off the item: any link of a correctable item, except
+    /// one its effect makes that isn't a link of its own (a payroll form's employment).
+    public static func canUnlink(_ link: ProposedLink, in item: ImportItem) -> Bool {
+        guard isCorrectable(item), item.links.contains(where: { $0.entity == link.entity }) else { return false }
+        guard link.madeByEffect else { return true }
+        if case .utilityInvoice = item.effect { return true }
+        return item.effect.isLinking
+    }
+
+    /// A utility invoice's payments after the user changed its links: exactly one certain
+    /// transaction link is the invoice's debit (`transactionId`, made by recording it); with
+    /// several, each is a plain payment link and the invoice records none of them (the
+    /// invoice's payments are then its document's linked debits, `Recharges.payments`).
+    private static func withPayments(_ item: inout ImportItem) {
+        guard case .utilityInvoice(var invoice) = item.effect else { return }
+        let payments = item.links.indices.filter { item.links[$0].entity.type == .transaction && item.links[$0].confidence == .certain }
+        for i in payments { item.links[i].madeByEffect = false }
+        if payments.count == 1, let only = payments.first {
+            invoice.transactionId = item.links[only].entity.id
+            item.links[only].madeByEffect = true
+        } else {
+            invoice.transactionId = nil
+        }
+        item.effect = .utilityInvoice(invoice)
+    }
     /// The issue of a file that couldn't be read, and the placeholder hash it gets.
     static let unreadableIssueId = "unreadable"
     static let unreadableHashPrefix = "unreadable:"

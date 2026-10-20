@@ -3,8 +3,10 @@
 import Foundation
 import BudgetCore
 import GRDB
+import struct BudgetCore.Transaction
 
-/// An invented review for the Imports routes (`imports-review_link`, `_kind`, `_statement`, `_figures`, `_left_out_rows`):
+/// An invented review for the Imports routes (`imports-review_link`, `_kind`, `_statement`, `_figures`, `_left_out_rows`,
+/// `_peek`, `_link_search`):
 /// every section filled — a utility invoice with two possible debits, a P60 held by a filed
 /// return, an unknown scan, a statement with unread lines and rows already imported, ready rent
 /// receipts and an insurance receipt, a duplicate and a file left out. Nothing is read or saved;
@@ -18,6 +20,9 @@ enum ImportReviewDemo {
         let scanId: UUID
         let statementId: UUID
         let figuresId: UUID
+        /// The Ready insurance receipt, linked to a demo transaction (`linkedTransactionId`).
+        let insuranceId: UUID
+        let linkedTransactionId: Int64?
     }
 
     static func day(_ year: Int, _ month: Int, _ day: Int) -> Date {
@@ -122,16 +127,32 @@ enum ImportReviewDemo {
                        effect: .file, groupKey: "Rent receipts")
         }
 
+        // A debit of the demo database the insurance receipt is linked to (its peek, the search).
+        let debit: (transaction: Transaction, currency: Currency)? = (try? context.dbQueue.read { db -> (Transaction, Currency)? in
+            guard let transaction = try Transaction.filter(Column("amountMinorUnits") < 0).order(Column("date").desc, Column("id").desc).fetchOne(db)
+            else { return nil }
+            return (transaction, try Account.fetchOne(db, key: transaction.accountId)?.currency ?? .gbp)
+        }) ?? nil
+        let insuranceId = UUID()
+        let insuranceAmount = debit.map { abs($0.transaction.amountMinorUnits) } ?? 21_650
+        let insuranceDate = debit.map { PayCalendar.utcDay(sameDayAs: $0.transaction.date, in: TimeZone(identifier: "UTC")!) } ?? day(2025, 3, 2)
+        let insuranceCurrency = debit?.currency ?? .eur
+        let insuranceLinks = [ProposedLink(entity: EvidenceEntity(type: .property, id: 1), label: "Flat 1", confidence: .certain, reasons: ["Policy address is Flat 1"])]
+            + (debit.flatMap { found in found.transaction.id.map { id in
+                [ProposedLink(entity: .transaction(id), label: found.transaction.rawDescription, confidence: .certain,
+                              reasons: ["Booked on the receipt's day for exactly its amount"])]
+            } } ?? [])
         let insurance = ImportItem(
+            id: insuranceId,
             file: file("Seguro casa 2025.pdf"), recognition: certain(.evidence(.insuranceReceipt), "Insurer's receipt wording"),
             title: "Insurance receipt · Flat 1 · 2025",
-            facts: [fact(.amount, .money(21_650, .eur)), fact(.docDate, .date(day(2025, 3, 2)))],
-            placement: ImportPlacement(metadata: EvidenceMetadata(kind: .insuranceReceipt), canonicalName: "2025-03-02 Insurance receipt Flat 1 €216.50.pdf"),
-            links: [ProposedLink(entity: EvidenceEntity(type: .property, id: 1), label: "Flat 1", confidence: .certain, reasons: ["Policy address is Flat 1"])],
+            facts: [fact(.amount, .money(insuranceAmount, insuranceCurrency)), fact(.docDate, .date(insuranceDate))],
+            placement: ImportPlacement(metadata: EvidenceMetadata(kind: .insuranceReceipt), canonicalName: "\(ISO8601DateFormatter.string(from: insuranceDate, timeZone: TimeZone(identifier: "UTC")!, formatOptions: .withFullDate)) Insurance receipt Flat 1 \(Money.format(insuranceAmount, currency: insuranceCurrency)).pdf"),
+            links: insuranceLinks,
             informationChanges: [FiledYearImpact(startYear: 2024, person: "Person A", isPaid: false, returnChanges: [],
                                                  informationChanges: [.init(label: "Property costs · Insurance", before: "£0.00", after: "£183.40")],
                                                  taxDifferenceMinorUnits: 0, causes: [])],
-            groupKey: "Other documents", notes: ["Not linked: no matching transaction yet"])
+            groupKey: "Other documents")
 
         let duplicate = ImportItem(
             file: file("EDP invoice FT 0451-41022.pdf"), recognition: certain(.utilityInvoice, "EDP layout"),
@@ -146,7 +167,8 @@ enum ImportReviewDemo {
         let plan = ImportPlan(items: [invoice, held, figures, scan, statement, statementRows, receipt(51, 5), receipt(52, 6),
                                       insurance, duplicate, leftOut],
                               ignoredFiles: [".DS_Store"])
-        return Demo(plan: plan, invoiceId: invoiceId, heldId: heldId, scanId: scanId, statementId: statementId, figuresId: figuresId)
+        return Demo(plan: plan, invoiceId: invoiceId, heldId: heldId, scanId: scanId, statementId: statementId, figuresId: figuresId,
+                    insuranceId: insuranceId, linkedTransactionId: debit?.transaction.id)
     }
 }
 #endif

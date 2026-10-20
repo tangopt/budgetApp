@@ -221,7 +221,7 @@ struct RechargeChargeRow: View {
                         .accessibilityLabel("Open the document of \(title)")
                 }
             }
-            if let debit = charge.debit {
+            ForEach(charge.debits, id: \.id) { debit in
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.turn.down.right").foregroundStyle(.tertiary).accessibilityHidden(true)
                     Text("Paid").foregroundStyle(.secondary)
@@ -239,7 +239,8 @@ struct RechargeChargeRow: View {
                         .accessibilityLabel("Show the \(title) debit in Search")
                 }
                 .font(.caption)
-            } else if invoice != nil {
+            }
+            if charge.debits.isEmpty, invoice != nil {
                 Text("No debit matched yet").font(.caption).foregroundStyle(.secondary)
             }
             if showsStatement {

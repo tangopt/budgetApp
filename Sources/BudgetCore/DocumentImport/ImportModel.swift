@@ -252,6 +252,15 @@ public enum ImportResolution: Equatable, Sendable {
     case confirmFigure(ImportFigureField, ImportFactValue)
     case chooseTarget(ImportTargetKind, Int64)
     case acknowledge
+    /// The document's transactions become these (one or more, the user's choice from a
+    /// search), replacing the transaction links proposed; all of them are its payments.
+    case linkTransactions([Int64])
+    /// One more transaction the user chose, beside the item's certain links (the unsure
+    /// transaction links it didn't keep are dropped, and its "which one?" questions about
+    /// transactions answered, as with `.linkTransactions`).
+    case addTransactionLink(Int64)
+    /// A link (proposed or chosen) removed.
+    case unlink(EvidenceEntity)
 }
 
 /// A UK bank statement's rows to add to its account (`ImportCoordinator.commit`), its closing
@@ -298,6 +307,15 @@ public enum ImportEffect: Equatable, Sendable {
     case payrollForm(PayrollFormImport.Confirmed)
     case ukStatement(UKStatementEffect)
     case none
+
+    /// Whether the effect is only a link of the document (a rent receipt PDF to its receipt, an
+    /// advice to its credits): without the link only the document is filed.
+    public var isLinking: Bool {
+        switch self {
+        case .rentReceiptPDF, .transferAdvice: return true
+        default: return false
+        }
+    }
 
     /// Whether applying it can move a figure that may sit on a filed return (anything beyond
     /// filing the document: a linked document can move a cost between years too).
@@ -449,8 +467,9 @@ public struct ImportPlan: Equatable, Sendable {
             return n == 1 ? "1 rent receipt → linked to its receipt" : "\(n) rent receipts → linked to their receipts"
         }
         if kinds.allSatisfy({ $0 == .utilityInvoice }) {
+            // Linked as the importer counts it: its debit, or the debits it is linked to (paid in parts).
             let linked = members.filter { item in
-                if case .utilityInvoice(let invoice) = item.effect { return invoice.transactionId != nil }
+                if case .utilityInvoice(let invoice) = item.effect { return invoice.transactionId != nil || item.linksToTransaction }
                 return false
             }.count
             let invoices = count("utility invoice", "utility invoices")
@@ -494,7 +513,9 @@ public struct ImportPlan: Equatable, Sendable {
         }
         if documentKinds.count == n, let first = documentKinds.first {
             let named = documentKinds.allSatisfy { $0 == first } ? Self.lowercasedName(first.displayName) + " " : ""
-            return "\(n) \(named)document\(n == 1 ? "" : "s") → filed"
+            let linked = members.filter(\.linksToTransaction).count
+            let links = linked == 0 ? "" : (n == 1 ? ", linked to its transaction" : linked == n ? ", linked to their transactions" : ", \(linked) linked to transactions")
+            return "\(n) \(named)document\(n == 1 ? "" : "s") → filed" + links
         }
         return count("file", "files")
     }
@@ -529,6 +550,11 @@ struct ImportPlanState: Equatable, Sendable {
 }
 
 extension ImportItem {
+    /// Whether confirming it links the document to a transaction (a certain link).
+    public var linksToTransaction: Bool {
+        links.contains { $0.entity.type == .transaction && $0.confidence == .certain }
+    }
+
     /// Whether the filed-year guard holds the item (a filed return would move, or it couldn't
     /// be checked against them): its only resolution is to leave it out.
     public var isHeldByFiledYear: Bool {

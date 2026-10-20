@@ -162,7 +162,7 @@ struct ImportReviewView: View {
                     ImportPreviewPanel(item: center.selectedItemId.flatMap { review.items[$0] },
                                        children: center.selectedItemId.flatMap { review.children[$0] } ?? [],
                                        canPutBack: center.selectedItemId.map(review.canPutBack.contains) ?? false,
-                                       targetNames: center.targetNames, isAnswerable: isAnswerable,
+                                       targetNames: center.targetNames, isAnswerable: isAnswerable, center: center,
                                        resolve: { itemId, issueId, resolution in center.resolve(itemId, issueId: issueId, resolution) })
                         .frame(width: Self.previewWidth)
                         .frame(maxHeight: .infinity, alignment: .top)
@@ -420,8 +420,11 @@ extension ImportItem {
 
     /// A Ready row's line: its first note, else what it links to, else where it's filed.
     var readyDetail: String? {
+        // A link the user chose is named first, with the others ("Links to Flat 1 · THE GOLDEN SPOON").
+        let chosen = links.contains { $0.reasons.contains(ImportResolutions.chosenReasonText) }
+        if !chosen, let note = notes.first { return note }
+        if !links.isEmpty { return "Links to " + links.map(\.label).joined(separator: " · ") }
         if let note = notes.first { return note }
-        if let link = links.first { return "Links to \(link.label)" }
         return placement.map { "Filed as \($0.canonicalName)" }
     }
 }

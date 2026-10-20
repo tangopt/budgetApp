@@ -38,8 +38,18 @@ final class ImportCenterModel: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var plan: ImportPlan? {
         // The review's sections are worked out once per plan, never while drawing.
-        didSet { review = plan.map(ImportReviewState.init) }
+        didSet {
+            review = plan.map(ImportReviewState.init)
+            loadLinkedTransactions()
+        }
     }
+    /// The transactions the open plan links to or offers, as the preview's peek shows them,
+    /// read off the main actor when a plan arrives (`loadLinkedTransactions`).
+    @Published private(set) var linkedTransactions: [Int64: ImportTransactionCandidate] = [:]
+    /// The peeks the user opened, by transaction (kept while the review is open).
+    @Published var expandedPeeks: Set<Int64> = []
+    /// The item whose "Link to a transaction…" search is open over its preview.
+    @Published var linkSearchItemId: UUID?
     /// The open plan's sections, rows and counts as the review shows them.
     @Published private(set) var review: ImportReviewState?
     /// The names of the properties, people, accounts, tenancies and providers a "which one?"
@@ -341,6 +351,66 @@ final class ImportCenterModel: ObservableObject {
         reviewEntryPoint = nil
         problem = nil
         phase = .idle
+    }
+
+    /// Reads the transactions the plan names that aren't read yet (off the main actor, on the
+    /// planning copy); forgets them when the review closes.
+    private func loadLinkedTransactions() {
+        guard let plan else {
+            linkedTransactions = [:]
+            expandedPeeks = []
+            linkSearchItemId = nil
+            return
+        }
+        let missing = Self.transactionIds(in: plan).filter { linkedTransactions[$0] == nil }
+        guard !missing.isEmpty else { return }
+        let pipeline = pipeline
+        Task { [weak self] in
+            do {
+                let found = try await DetachedWork.run(priority: .userInitiated) { try await pipeline.transactions(missing) }
+                guard let self, self.plan != nil else { return }
+                for candidate in found { self.linkedTransactions[candidate.id] = candidate }
+            } catch {
+                self?.logger.error("Reading the import's linked transactions failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Every transaction the plan's items link to or a "which one?" offers.
+    static func transactionIds(in plan: ImportPlan) -> [Int64] {
+        var ids: [Int64] = []
+        var seen = Set<Int64>()
+        for item in plan.items {
+            let offered = item.issues.flatMap { issue -> [EvidenceEntity] in
+                if case .chooseLink(let candidates) = issue.kind { return candidates.map(\.entity) }
+                return []
+            }
+            for entity in item.links.map(\.entity) + offered where entity.type == .transaction && seen.insert(entity.id).inserted {
+                ids.append(entity.id)
+            }
+        }
+        return ids
+    }
+
+    /// The review's transaction search (off the main actor, on the planning copy); the results
+    /// are remembered for the peek.
+    func searchTransactions(_ query: ImportTransactionQuery) async throws -> [ImportTransactionCandidate] {
+        let pipeline = pipeline
+        let found = try await DetachedWork.run(priority: .userInitiated) { try await pipeline.searchTransactions(query) }
+        for candidate in found { linkedTransactions[candidate.id] = candidate }
+        return found
+    }
+
+    /// The transactions `ids` as the peek shows them (read now when not read yet).
+    func transactions(_ ids: [Int64]) async throws -> [ImportTransactionCandidate] {
+        let missing = ids.filter { linkedTransactions[$0] == nil }
+        if !missing.isEmpty {
+            let pipeline = pipeline
+            for candidate in try await DetachedWork.run(priority: .userInitiated, { try await pipeline.transactions(missing) }) {
+                linkedTransactions[candidate.id] = candidate
+            }
+        }
+        return ids.compactMap { linkedTransactions[$0] }
     }
 
     /// Re-reads the names a target question offers (off the main actor).

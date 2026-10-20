@@ -254,16 +254,24 @@ public struct DocumentIdentityIndex {
             }
         }
         // A corrected version of a recorded invoice filed as a document only: an invoice
-        // document linked to the invoice's debit that prints its number (as a whole number) is
+        // document linked to the invoice's debit (or a debit paying it in parts) that prints its number (as a whole number) is
         // that invoice too (with its own figures), so a copy of it is a copy. Never another
         // recorded invoice's own document, nor a credit note.
         for row in try Row.fetchAll(db, sql: """
-            SELECT dl.documentId, i.providerId, i.invoiceNumber, d.extractedText FROM utilityInvoice i
-            JOIN documentLink dl ON dl.entityType = ? AND dl.entityId = i.transactionId
+            WITH paid(invoiceId, transactionId) AS (
+                SELECT id, transactionId FROM utilityInvoice WHERE transactionId IS NOT NULL
+                UNION SELECT i.id, pay.entityId FROM utilityInvoice i
+                JOIN documentLink pay ON pay.documentId = i.documentId AND pay.entityType = ?
+                JOIN transaction_ t ON t.id = pay.entityId AND t.amountMinorUnits < 0
+                WHERE i.transactionId IS NULL)
+            SELECT DISTINCT dl.documentId, i.providerId, i.invoiceNumber, d.extractedText FROM utilityInvoice i
+            JOIN paid p ON p.invoiceId = i.id
+            JOIN documentLink dl ON dl.entityType = ? AND dl.entityId = p.transactionId
             JOIN document d ON d.id = dl.documentId
             WHERE i.invoiceNumber IS NOT NULL AND i.amountMinorUnits >= 0 AND d.kind = ?
               AND dl.documentId NOT IN (SELECT documentId FROM utilityInvoice WHERE documentId IS NOT NULL)
-            """, arguments: [EvidenceEntityType.transaction.rawValue, DocumentKind.utilityInvoice.rawValue]) {
+            """, arguments: [EvidenceEntityType.transaction.rawValue, EvidenceEntityType.transaction.rawValue,
+                             DocumentKind.utilityInvoice.rawValue]) {
             let number: String = row[2], providerId: Int64 = row[1]
             let text: String? = row[3]
             guard let text, DocumentIdentity.prints(number, in: text) else { continue }

@@ -17,8 +17,11 @@ public struct RechargeChargeLine: Equatable, Identifiable, Sendable {
     public var amountMinorUnits: Int
     /// The day the invoice was paid (its debit, else its issue day): when it counts as paid.
     public var rechargeDate: Date?
-    /// The utility debit that paid the invoice, when matched.
-    public var debit: Transaction?
+    /// The utility debits that paid the invoice (`Recharges.payments`): its matched debit, or
+    /// every debit its document is linked to when it was paid in parts; empty while unmatched.
+    public var debits: [Transaction]
+    /// The first of them.
+    public var debit: Transaction? { debits.first }
     /// The statement it's on; nil while it waits for the next statement.
     public var statementId: Int64?
     /// That statement's month (its first day).
@@ -138,10 +141,10 @@ public enum RechargeDetails {
 
     private static func chargeLine(db: Database, detail: Recharges.LineDetail, amount: Int, statementId: Int64?,
                                    month: Date?) throws -> RechargeChargeLine {
-        let debit = try detail.invoice?.transactionId.flatMap { try Transaction.fetchOne(db, key: $0) }
+        let debits = try detail.invoice.map { try Recharges.payments(db: db, $0) } ?? []
         let date = try detail.invoice.map { try Recharges.rechargeDate(db: db, $0) }
         let id = detail.invoice?.id.map { "invoice/\($0)/\(statementId ?? 0)" } ?? "line/\(detail.line.id ?? 0)"
-        return RechargeChargeLine(id: id, detail: detail, amountMinorUnits: amount, rechargeDate: date, debit: debit, statementId: statementId,
+        return RechargeChargeLine(id: id, detail: detail, amountMinorUnits: amount, rechargeDate: date, debits: debits, statementId: statementId,
                                   statementMonth: month)
     }
 

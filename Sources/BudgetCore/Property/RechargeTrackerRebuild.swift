@@ -326,9 +326,13 @@ public enum RechargeTrackerRebuild {
             guard try RechargeLine.filter(Column("invoiceId") == invoice.id!).fetchCount(db) == 0 else {
                 throw RebuildError.invoiceStillOnStatement(invoice.id!)
             }
-            // Its document stays in the library; it stops being its debit's evidence.
-            if let documentId = invoice.documentId, let transactionId = invoice.transactionId {
-                _ = try EvidenceLinks.unlink(db: db, documentId: documentId, from: .transaction(transactionId))
+            // Its document stays in the library; it stops being its debits' evidence (each
+            // part, when it was paid in several).
+            if let documentId = invoice.documentId {
+                for debit in try Recharges.payments(db: db, invoice) {
+                    guard let transactionId = debit.id else { continue }
+                    _ = try EvidenceLinks.unlink(db: db, documentId: documentId, from: .transaction(transactionId))
+                }
             }
             try Recharges.deleteInvoice(db: db, id: invoice.id!)
             actions.append(Action(change: .deleted, subject: "invoice \(deletion.invoiceId)",
