@@ -33,12 +33,17 @@ public enum TaxDataPlan {
 
         /// An insurer's (or condomínio) receipt: linked to the one debit of its amount on a
         /// property account within a week of `debitDate` (else `date`), else kept on its own.
+        /// With `debitAmount`, it is one item of a debit of that amount (a condomínio payment of
+        /// a year's quotas and an extra charge): several entries name the same debit, their
+        /// amounts must add up to it, and each is attributed by its own cover months.
         public struct PolicyReceipt: Codable, Equatable, Sendable {
             /// A `TaxExpenseType` raw value; `nil` = insurance.
             public var expenseType: String?
             public var date: String
             public var debitDate: String?
             public var amount: String
+            /// The debit this item is part of (positive decimal text); `nil` = the receipt is the whole debit.
+            public var debitAmount: String?
             /// "EUR" (default) or "GBP".
             public var currency: String?
             public var policyYear: Int?
@@ -168,6 +173,9 @@ public enum TaxDataPlan {
             public var startYear: Int?
             /// For `apportionByCover`: the cover months assumed without a period.
             public var coverMonths: Int?
+            /// One year's window moved by whole months (a filed year that counted October–
+            /// September, say): only with `startYear`, on a rule with months, within ±11.
+            public var windowShiftMonths: Int?
         }
 
         /// HMRC's published averages to fetch (the year to 31 March) and store where the year
@@ -217,7 +225,8 @@ public enum TaxDataPlan {
         "": ["property", "categorize", "expenseTypes", "policyReceipts", "transactionOwners", "rates", "manualItems", "summaryYears",
              "attributionRules", "fetchHMRCRates", "notClaimed", "splits", "employments", "hmrcPayments", "taxYears"],
         "categorize": ["account", "date", "amount", "description", "category", "createCategory"],
-        "policyReceipts": ["expenseType", "date", "debitDate", "amount", "currency", "policyYear", "instalment", "of", "coverFrom", "coverTo", "note"],
+        "policyReceipts": ["expenseType", "date", "debitDate", "amount", "debitAmount", "currency", "policyYear", "instalment", "of", "coverFrom",
+                           "coverTo", "note"],
         "transactionOwners": ["person", "reference", "date", "amount", "note"],
         "rates": ["startYear", "currency", "gbpPerUnit", "note"],
         "manualItems": ["startYear", "person", "expenseType", "label", "amount", "currency", "date", "wholeProperty", "note", "notClaimed"],
@@ -227,7 +236,7 @@ public enum TaxDataPlan {
         "employments.benefits": ["kind", "amount", "description"],
         "hmrcPayments": ["person", "startYear", "date", "amount", "kind", "reference", "note"],
         "taxYears": ["startYear", "person", "status", "note", "foreignTaxInPence"],
-        "attributionRules": ["expenseType", "rule", "startYear", "coverMonths"],
+        "attributionRules": ["expenseType", "rule", "startYear", "coverMonths", "windowShiftMonths"],
         "fetchHMRCRates": ["years", "currencies"]
     ]
 
@@ -505,9 +514,15 @@ public enum TaxDataPlan {
             let section = TaxDataPlan.sections[2]
             let accountIds = try Properties.accounts(db: db, propertyId: propertyId).map(\.accountId)
             var used: Set<Int64> = []
+            /// Debits with items in the plan, by id: their items must add up to them.
+            var itemised: [Int64: Transaction] = [:]
+            /// Stored receipts already matched to an entry: each entry matches a distinct one.
+            var matchedReceipts: Set<Int64> = []
             for entry in entries {
-                let what = "\(entry.date) \(entry.amount)"
+                let what = "\(entry.date) \(entry.amount)" + (entry.debitAmount.map { " (item of \($0))" } ?? "")
                 guard let amount = Money.parseMinorUnits(entry.amount), amount > 0 else { problems.append("\(section): bad amount \(entry.amount)"); continue }
+                let debitAmount = entry.debitAmount.flatMap(Money.parseMinorUnits)
+                if entry.debitAmount != nil && (debitAmount ?? 0) <= 0 { problems.append("\(section): bad debit amount \(entry.debitAmount!)"); continue }
                 guard let currency = Currency(rawValue: (entry.currency ?? "EUR").lowercased()) else {
                     problems.append("\(section): bad currency \(entry.currency ?? "")"); continue
                 }
@@ -520,33 +535,62 @@ public enum TaxDataPlan {
                 let debitDay = debitDate ?? date
                 let (from, to) = dayRange(debitDay, days: 7)
                 let candidates = try Transaction
-                    .filter(accountIds.contains(Column("accountId")) && Column("amountMinorUnits") == -amount
+                    .filter(accountIds.contains(Column("accountId")) && Column("amountMinorUnits") == -(debitAmount ?? amount)
                             && Column("date") >= from && Column("date") <= to)
                     .fetchAll(db).filter { !used.contains($0.id!) }
                 guard candidates.count <= 1 else {
-                    problems.append("\(section): \(candidates.count) debits of \(entry.amount) within a week of \(MissingEvidence.day(debitDay)): ambiguous")
+                    problems.append("\(section): \(candidates.count) debits of \(entry.debitAmount ?? entry.amount) within a week of \(MissingEvidence.day(debitDay)): ambiguous")
                     continue
                 }
                 let debit = candidates.first
-                if let id = debit?.id { used.insert(id) }
+                if debitAmount != nil {
+                    // An item needs its debit (an item paid outside the bank history is a receipt of its own).
+                    guard let debit else {
+                        problems.append("\(section): no debit of \(entry.debitAmount!) within a week of \(MissingEvidence.day(debitDay)) for the item \(what)")
+                        continue
+                    }
+                    itemised[debit.id!] = debit
+                } else if let id = debit?.id {
+                    guard itemised[id] == nil else {
+                        problems.append("\(section): \(describe(debit!)) has items in the plan and a receipt for the whole of it"); continue
+                    }
+                    used.insert(id)
+                }
                 var receipt = TaxPolicyReceipt(propertyId: propertyId, expenseType: type, transactionId: debit?.id, date: debit?.date ?? date,
                                                amountMinorUnits: amount, currency: currency, policyYear: entry.policyYear,
                                                instalment: entry.instalment, instalmentCount: entry.of, coverStart: coverStart,
                                                coverEnd: coverEnd, notes: entry.note ?? "Tax data plan")
                 let label = "\(type.displayName) \(what) \(receipt.label)"
                     + (receipt.cover.map { ", cover \(MissingEvidence.day($0.start)) – \(MissingEvidence.day($0.end))" } ?? "")
-                    + (debit.map { " → debit \(describe($0))" } ?? " → no debit (kept on its own)")
-                // Already there: the receipt of that debit, else one on its own of that amount and
-                // type on the plan's day or the debit's (linked to the debit when there is one).
+                    + (debit.map { (debitAmount == nil ? " → debit " : " → item of debit ") + describe($0) } ?? " → no debit (kept on its own)")
+                // Already there: the receipt of that debit (an item: the debit's item of that amount
+                // and cover), else one on its own of that amount and type on the plan's day or the
+                // debit's (linked to the debit when there is one).
                 var existing: TaxPolicyReceipt? = nil
-                if let id = debit?.id { existing = try TaxPolicyReceipt.filter(Column("transactionId") == id).fetchOne(db) }
-                if existing == nil {
+                if let id = debit?.id {
+                    let onDebit = try TaxPolicyReceipt.filter(Column("transactionId") == id).fetchAll(db)
+                    if debitAmount == nil {
+                        existing = onDebit.first
+                        if onDebit.count > 1 {
+                            problems.append("\(section): \(describe(debit!)) has \(onDebit.count) item receipts recorded, the plan has one receipt for the whole of it"); continue
+                        }
+                    } else {
+                        func same(_ a: Date?, _ b: Date?) -> Bool { a.map(PropertyDates.day) == b.map(PropertyDates.day) }
+                        existing = onDebit.first { !matchedReceipts.contains($0.id!) && $0.amountMinorUnits == amount
+                            && same($0.coverStart, coverStart) && same($0.coverEnd, coverEnd) }
+                        if existing == nil, onDebit.count == 1, onDebit[0].amountMinorUnits == debitAmount {
+                            problems.append("\(section): \(describe(debit!)) has a receipt for the whole of it (\(onDebit[0].label)), the plan itemises it"); continue
+                        }
+                    }
+                }
+                if existing == nil, debitAmount == nil {
                     let days = Set([date] + (debit.map { [PropertyDates.day($0.date)] } ?? []))
                     existing = try TaxPolicyReceipt.filter(Column("propertyId") == propertyId && Column("transactionId") == nil
                                                            && Column("expenseType") == type.rawValue && Column("amountMinorUnits") == amount)
                         .fetchAll(db).first { days.contains(PropertyDates.day($0.date)) }
                 }
                 if var existing {
+                    matchedReceipts.insert(existing.id!)
                     func same(_ a: Date?, _ b: Date?) -> Bool { a.map(PropertyDates.day) == b.map(PropertyDates.day) }
                     guard existing.propertyId == propertyId, existing.expenseType == type, existing.currency == currency,
                           existing.policyYear == entry.policyYear, existing.instalment == entry.instalment,
@@ -566,9 +610,17 @@ public enum TaxDataPlan {
                 }
                 do {
                     try TaxPolicyReceipts.save(db: db, &receipt)
+                    matchedReceipts.insert(receipt.id!)
                     note(section, .added, label)
                 } catch {
                     problems.append("\(section): \(what): \(error)")
+                }
+            }
+            // An itemised debit's receipts add up to it.
+            for (id, debit) in itemised.sorted(by: { $0.key < $1.key }) {
+                let total = try TaxPolicyReceipt.filter(Column("transactionId") == id).fetchAll(db).reduce(0) { $0 + $1.amountMinorUnits }
+                if total != -debit.amountMinorUnits {
+                    problems.append("\(section): the items of \(describe(debit)) add up to \(eur(total)), not the debit's \(eur(-debit.amountMinorUnits))")
                 }
             }
         }
@@ -718,8 +770,9 @@ public enum TaxDataPlan {
         // 6. Attribution rules.
         mutating func attributionRules(_ entries: [Plan.AttributionRule]) throws {
             let section = TaxDataPlan.sections[6]
-            func text(_ rule: TaxAttributionRuleKind, _ months: Int?) -> String {
+            func text(_ rule: TaxAttributionRuleKind, _ months: Int?, _ shift: Int? = nil) -> String {
                 rule.displayName + (months.map { ", \($0) months of cover assumed" } ?? "")
+                    + ((shift ?? 0) == 0 ? "" : ", window moved \(shift!) months")
             }
             func scope(_ startYear: Int?) -> String { startYear.map { UKTaxYear(startYear: $0).label } ?? "every year" }
             var seen: Set<String> = []
@@ -730,20 +783,27 @@ public enum TaxDataPlan {
                 }
                 let what = "\(type.displayName), \(scope(entry.startYear))"
                 if let months = entry.coverMonths, months < 1 { problems.append("\(section): \(what): cover months must be 1 or more"); continue }
+                let shift = entry.windowShiftMonths ?? 0
+                if shift != 0 {
+                    // Guarded: one year's own rule, with months to move, by less than a year.
+                    guard entry.startYear != nil else { problems.append("\(section): \(what): a window can only be moved for one year"); continue }
+                    guard rule.supportsWindowShift else { problems.append("\(section): \(what): \(rule.displayName) has no months to move"); continue }
+                    guard (-11...11).contains(shift) else { problems.append("\(section): \(what): a window moves by 11 months at most"); continue }
+                }
                 guard seen.insert("\(type.rawValue):\(entry.startYear.map(String.init) ?? "-")").inserted else {
                     problems.append("\(section): \(what) is in the plan more than once"); continue
                 }
-                let planned = text(rule, entry.coverMonths)
+                let planned = text(rule, entry.coverMonths, shift)
                 var request = TaxAttributionRule.filter(Column("expenseType") == type.rawValue)
                 request = entry.startYear.map { request.filter(Column("startYear") == $0) } ?? request.filter(Column("startYear") == nil)
                 if let existing = try request.fetchOne(db) {
-                    let stored = text(existing.rule, existing.defaultCoverMonths)
-                    if existing.rule == rule && existing.defaultCoverMonths == entry.coverMonths {
+                    let stored = text(existing.rule, existing.defaultCoverMonths, existing.windowShiftMonths)
+                    if existing.rule == rule && existing.defaultCoverMonths == entry.coverMonths && (existing.windowShiftMonths ?? 0) == shift {
                         note(section, .unchanged, "\(what): already \(planned)")
                     } else if existing.notes == TaxAttributionRules.seededNote {
                         // The seeded default isn't the user's choice: the plan's replaces it.
                         try TaxAttributionRules.set(db: db, expenseType: type, startYear: entry.startYear, rule: rule,
-                                                    defaultCoverMonths: entry.coverMonths, notes: "Tax data plan")
+                                                    defaultCoverMonths: entry.coverMonths, windowShiftMonths: shift, notes: "Tax data plan")
                         note(section, .added, "\(what): \(planned) (replaces the seeded default, \(stored))")
                     } else {
                         problems.append("\(section): \(what) is set to \(stored), the plan says \(planned)")
@@ -753,7 +813,7 @@ public enum TaxDataPlan {
                     let before = try TaxAttributionRules.effective(db: db, expenseType: type, startYear: entry.startYear ?? Int.min)
                     let origin = before.id == nil ? "the built-in default" : "the every-year rule"
                     try TaxAttributionRules.set(db: db, expenseType: type, startYear: entry.startYear, rule: rule,
-                                                defaultCoverMonths: entry.coverMonths, notes: "Tax data plan")
+                                                defaultCoverMonths: entry.coverMonths, windowShiftMonths: shift, notes: "Tax data plan")
                     note(section, .added, "\(what): \(planned) (was \(origin), \(text(before.rule, before.defaultCoverMonths)))")
                 }
                 // An every-year rule: a year with its own (different) rule keeps it.

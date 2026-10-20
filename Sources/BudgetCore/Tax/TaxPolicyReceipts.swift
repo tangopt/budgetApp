@@ -6,7 +6,10 @@ import Foundation
 // - `TaxPolicyReceipt`: an insurer's receipt — its policy year, "instalment n of m" and the
 //   cover period it pays for. Linked to its bank debit, it tells the insurance rules which
 //   months the debit covers; without a debit (a receipt paid before the bank history starts,
-//   or from another account) it is a source of its own.
+//   or from another account) it is a source of its own. A debit that settles several items
+//   (a condomínio payment of a year's quotas and an extra charge) has one receipt per item,
+//   each with its amount and the months it is for: the items, adding up to the debit, are
+//   the sources then, each attributed by its own months.
 // - `TaxTransactionOwner`: whose a payment is for tax (a person's own PT IRS paid from the
 //   joint account): that person takes the whole of it, the other owners none.
 
@@ -17,10 +20,12 @@ public struct TaxPolicyReceipt: Codable, Equatable, Identifiable, FetchableRecor
     /// The tax line it belongs to (insurance by default).
     public var expenseType: TaxExpenseType
     /// The bank debit that paid it; `nil` = paid outside the bank history (the receipt is the source).
+    /// Several receipts on one debit are its items (amounts adding up to the debit's).
     public var transactionId: Int64?
     /// The payment (or receipt) date.
     public var date: Date
-    /// Positive, in `currency`. With a transaction, the transaction's amount is used.
+    /// Positive, in `currency`. With a transaction, the transaction's amount is used — unless
+    /// the debit has several receipts (its items): then each item's own amount.
     public var amountMinorUnits: Int
     public var currency: Currency
     /// The policy (calendar) year the receipt is for.
@@ -127,8 +132,23 @@ public enum TaxPolicyReceipts {
         receipt.coverStart = receipt.coverStart.map(PropertyDates.day)
         receipt.coverEnd = receipt.coverEnd.map(PropertyDates.day)
         if let start = receipt.coverStart, let end = receipt.coverEnd, start >= end { throw TaxError.invalidCoverPeriod }
+        // A debit's items never add up to more than the debit.
+        if let transactionId = receipt.transactionId {
+            var others = TaxPolicyReceipt.filter(Column("transactionId") == transactionId)
+            if let id = receipt.id { others = others.filter(Column("id") != id) }
+            let otherAmounts = try others.fetchAll(db).map(\.amountMinorUnits)
+            if !otherAmounts.isEmpty, let debit = try Transaction.fetchOne(db, key: transactionId),
+               otherAmounts.reduce(receipt.amountMinorUnits, +) > abs(debit.amountMinorUnits) {
+                throw TaxError.itemsExceedPayment
+            }
+        }
         receipt.notes = Transaction.normalizedNote(receipt.notes)
         try receipt.save(db)
+    }
+
+    /// A debit's receipts by transaction id (several = its items), each list by date then id.
+    public static func byTransaction(_ receipts: [TaxPolicyReceipt]) -> [Int64: [TaxPolicyReceipt]] {
+        Dictionary(grouping: receipts.filter { $0.transactionId != nil }, by: { $0.transactionId! })
     }
 
     /// The property's receipts, by date then id.
@@ -199,6 +219,50 @@ func registerTaxPolicyReceiptMigration(_ migrator: inout DatabaseMigrator) {
             t.column("personId", .integer).notNull().indexed().references("person", onDelete: .cascade)
             t.column("notes", .text)
         }
+        let value = EvidenceEntityType.taxPolicyReceipt.rawValue
+        try db.execute(sql: """
+            CREATE TRIGGER documentLink_delete_\(value) AFTER DELETE ON taxPolicyReceipt
+            BEGIN DELETE FROM documentLink WHERE entityType = '\(value)' AND entityId = OLD.id; END
+            """)
+        try db.execute(sql: """
+            CREATE TRIGGER evidenceWaiver_delete_\(value) AFTER DELETE ON taxPolicyReceipt
+            BEGIN DELETE FROM evidenceWaiver WHERE entityType = '\(value)' AND entityId = OLD.id; END
+            """)
+    }
+}
+
+/// Several receipts on one debit (its items): `transactionId` no longer unique. The table is
+/// rebuilt (SQLite can't drop a constraint), its rows, indexes and triggers kept; GRDB runs
+/// migrations with foreign keys off, so the not-claimed marks and links that point at
+/// receipts stay.
+func registerTaxPolicyReceiptItemsMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("taxPolicyReceiptItems") { db in
+        try db.create(table: "taxPolicyReceipt_new") { t in
+            t.autoIncrementedPrimaryKey("id")
+            t.column("propertyId", .integer).notNull().references("property", onDelete: .cascade)
+            t.column("expenseType", .text).notNull()
+            t.column("transactionId", .integer).references("transaction_", onDelete: .cascade)
+            t.column("date", .datetime).notNull()
+            t.column("amountMinorUnits", .integer).notNull()
+            t.column("currency", .text).notNull()
+            t.column("policyYear", .integer)
+            t.column("instalment", .integer)
+            t.column("instalmentCount", .integer)
+            t.column("coverStart", .datetime)
+            t.column("coverEnd", .datetime)
+            t.column("notes", .text)
+        }
+        let columns = "id, propertyId, expenseType, transactionId, date, amountMinorUnits, currency, policyYear, instalment, instalmentCount, coverStart, coverEnd, notes"
+        try db.execute(sql: "INSERT INTO taxPolicyReceipt_new (\(columns)) SELECT \(columns) FROM taxPolicyReceipt")
+        // AUTOINCREMENT: ids of deleted receipts are never reused; keep the counter.
+        let sequence = try Int64.fetchOne(db, sql: "SELECT seq FROM sqlite_sequence WHERE name = 'taxPolicyReceipt'") ?? 0
+        try db.drop(table: "taxPolicyReceipt")
+        try db.rename(table: "taxPolicyReceipt_new", to: "taxPolicyReceipt")
+        try db.execute(sql: "DELETE FROM sqlite_sequence WHERE name IN ('taxPolicyReceipt', 'taxPolicyReceipt_new')")
+        let maxId = try Int64.fetchOne(db, sql: "SELECT MAX(id) FROM taxPolicyReceipt") ?? 0
+        try db.execute(sql: "INSERT INTO sqlite_sequence (name, seq) VALUES ('taxPolicyReceipt', ?)", arguments: [max(sequence, maxId)])
+        try db.create(index: "taxPolicyReceipt_on_propertyId", on: "taxPolicyReceipt", columns: ["propertyId"])
+        try db.create(index: "taxPolicyReceipt_on_transactionId", on: "taxPolicyReceipt", columns: ["transactionId"])
         let value = EvidenceEntityType.taxPolicyReceipt.rawValue
         try db.execute(sql: """
             CREATE TRIGGER documentLink_delete_\(value) AFTER DELETE ON taxPolicyReceipt

@@ -162,15 +162,22 @@ public enum TaxAttributionRules {
         return TaxAttributionRule(expenseType: expenseType, rule: defaultRule(for: expenseType))
     }
 
-    /// Sets the type's rule for every year (`startYear` nil) or one year.
+    /// Sets the type's rule for every year (`startYear` nil) or one year. `windowShiftMonths`
+    /// moves one year's window (`TaxAttributionRule.windowShiftMonths`): `nil` keeps the stored
+    /// shift while the rule still has months (a rule without months drops it), 0 removes it.
     @discardableResult
     public static func set(db: Database, expenseType: TaxExpenseType, startYear: Int?, rule: TaxAttributionRuleKind,
-                           defaultCoverMonths: Int? = nil, notes: String? = nil) throws -> TaxAttributionRule {
+                           defaultCoverMonths: Int? = nil, windowShiftMonths: Int? = nil, notes: String? = nil) throws -> TaxAttributionRule {
         if let months = defaultCoverMonths, months < 1 { throw TaxError.invalidCoverMonths }
+        if let shift = windowShiftMonths, shift != 0 {
+            guard startYear != nil, rule.supportsWindowShift, (-11...11).contains(shift) else { throw TaxError.invalidWindowShift }
+        }
         var row = try request(expenseType: expenseType, startYear: startYear).fetchOne(db)
             ?? TaxAttributionRule(expenseType: expenseType, startYear: startYear, rule: rule)
         row.rule = rule
         row.defaultCoverMonths = defaultCoverMonths
+        if let shift = windowShiftMonths { row.windowShiftMonths = shift == 0 ? nil : shift }
+        if !rule.supportsWindowShift || startYear == nil { row.windowShiftMonths = nil }
         row.notes = Transaction.normalizedNote(notes)
         try row.save(db)
         return row

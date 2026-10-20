@@ -104,5 +104,7 @@ public final class DatabaseManager {
         registerRentCreditEvidenceMigration(&migrator)
         registerTaxNotClaimedMigration(&migrator)
         registerTaxYearForeignTaxInPenceMigration(&migrator)
+        registerTaxAttributionRuleWindowShiftMigration(&migrator)
+        registerTaxPolicyReceiptItemsMigration(&migrator)
     }
 }

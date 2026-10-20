@@ -89,6 +89,8 @@ public enum TaxOverview {
         public var rule: TaxAttributionRuleKind
         public var defaultCoverMonths: Int?
         public var scope: RuleScope
+        /// The year's window moved by this many months (`TaxAttributionRule.effectiveWindowShift`); 0 = April–March.
+        public var windowShiftMonths: Int = 0
         public var id: TaxExpenseType { expenseType }
     }
 
@@ -138,7 +140,8 @@ public enum TaxOverview {
         for type in TaxExpenseType.allCases {
             let rule = try TaxAttributionRules.effective(db: db, expenseType: type, startYear: startYear)
             let scope: RuleScope = rule.id == nil ? .builtIn : (rule.startYear == nil ? .allYears : .thisYear)
-            rules.append(RuleRow(expenseType: type, rule: rule.rule, defaultCoverMonths: rule.defaultCoverMonths, scope: scope))
+            rules.append(RuleRow(expenseType: type, rule: rule.rule, defaultCoverMonths: rule.defaultCoverMonths, scope: scope,
+                                 windowShiftMonths: rule.effectiveWindowShift))
         }
         var items = try TaxManualItems.items(db: db, startYear: startYear, personId: personId)
         if let propertyId = property?.id { items = items.filter { $0.propertyId == nil || $0.propertyId == propertyId } }

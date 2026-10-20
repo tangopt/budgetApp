@@ -172,6 +172,9 @@ struct TaxSettingsTab: View {
                             Text("· \(row.defaultCoverMonths ?? TaxAttributionRules.defaultCoverMonths) months if the cover is unknown")
                                 .foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
                         }
+                        if row.windowShiftMonths != 0 {
+                            Text("· \(windowText(row))").foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
+                        }
                     }
                 },
                 // The exception (this year only) as a pill; the usual scopes as plain words.
@@ -248,10 +251,17 @@ struct TaxSettingsTab: View {
     }
 
     private func ruleText(_ row: TaxOverview.RuleRow) -> String {
+        var text = row.rule.displayName
         if row.rule == .apportionByCover {
-            return "\(row.rule.displayName) (\(row.defaultCoverMonths ?? TaxAttributionRules.defaultCoverMonths) months if unknown)"
+            text += " (\(row.defaultCoverMonths ?? TaxAttributionRules.defaultCoverMonths) months if unknown)"
         }
-        return row.rule.displayName
+        if row.windowShiftMonths != 0 { text += ", \(windowText(row))" }
+        return text
+    }
+
+    /// "window Oct 2022 – Sep 2023, as filed": the year's moved window.
+    private func windowText(_ row: TaxOverview.RuleRow) -> String {
+        "window \(RentalAccounts.windowLabel(page.row.year, shift: row.windowShiftMonths)), as filed"
     }
 }
 

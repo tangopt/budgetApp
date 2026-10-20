@@ -97,7 +97,12 @@ public enum TaxNotClaimedSources {
             for personId in Array(Set(try Properties.owners(db: db, propertyId: propertyId).map(\.personId))).sorted() {
                 let accounts = try RentalAccounts.compute(db: db, taxYear: UKTaxYear(startYear: startYear), personId: personId, propertyId: propertyId)
                 if let line = accounts.allLines.first(where: { line in
-                    (line.sources + line.notClaimedSources).contains { $0.reference == reference }
+                    // A payment's items count as the payment (its mark covers them).
+                    (line.sources + line.notClaimedSources).contains { source in
+                        if source.reference == reference { return true }
+                        if case let .transaction(id) = reference { return source.transactionId == id }
+                        return false
+                    }
                 }) {
                     return line.expenseType
                 }

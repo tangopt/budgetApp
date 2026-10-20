@@ -413,6 +413,8 @@ enum TaxMessages {
         case .notClaimable: return "Only a cost of a deductible line (an expense or the mortgage interest) can be marked not claimed."
         case .sourceNotFound: return "That source no longer exists."
         case .notASourceOfTheYear: return "That source doesn't feed this year's rental accounts."
+        case .invalidWindowShift: return "Only one year's rule with months (quota, cover or policy year) can move its window, by 11 months at most."
+        case .itemsExceedPayment: return "The payment's items add up to more than the payment."
         }
     }
 }

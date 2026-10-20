@@ -643,7 +643,7 @@ struct TaxLineSourcesSheet: View {
         columns.append(.actions { row in
             guard let source = row.source else { return [] }
             var actions: [DataTableAction] = []
-            if case let .transaction(id) = source.reference {
+            if let id = source.transactionId {
                 actions.append(DataTableAction("Show \(source.description) in Search", systemImage: "arrow.right.circle", inline: true) {
                     guard let info = viewModel.transaction(id) else { return }
                     dismiss()

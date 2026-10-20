@@ -278,6 +278,7 @@ final class RechargeTests: XCTestCase {
         XCTAssertTrue(line.ruleExplanation.contains("Net of the utilities recharged"))
         let recharge = try XCTUnwrap(line.sources.first { $0.attributedMinorUnits < 0 })
         XCTAssertEqual(recharge.reference, .transaction(creditId))
+        XCTAssertEqual(recharge.transactionId, creditId, "Show in Search opens the credit")
         XCTAssertEqual(recharge.attributedMinorUnits, -2_700)
         XCTAssertEqual(a.notDeductible.whole.native, 0)
         XCTAssertEqual(a.utilityNetting, RentalAccounts.UtilityNetting(mode: .netOfRecharges, isAutomatic: true, utilitiesPaid: 7_000,
@@ -305,6 +306,7 @@ final class RechargeTests: XCTestCase {
         // The excess, 12,200 received − 7,000 paid, is rental income.
         let excess = try XCTUnwrap(a.income.sources.first { $0.description.hasPrefix("Recharges above utilities paid") })
         XCTAssertEqual(excess.reference, .transaction(credit))
+        XCTAssertEqual(excess.transactionId, credit)
         XCTAssertEqual(excess.attributedMinorUnits, 5_200)
         XCTAssertTrue(excess.explanation.contains("the part above the utilities paid"))
         XCTAssertEqual(a.income.whole.native, rentOnly.income.whole.native + 5_200)

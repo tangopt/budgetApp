@@ -73,6 +73,8 @@ public enum RentalAccounts {
         public var explanation: String
         /// The documents linked to the record.
         public var documentIds: [Int64]
+        /// The bank movement behind it: the transaction, or the debit an item receipt is part of.
+        public var transactionId: Int64? = nil
     }
 
     public struct Line: Equatable, Sendable {
@@ -234,16 +236,20 @@ public enum RentalAccounts {
         let documents = try linkedDocuments(db: db, type: .transaction, ids: transactions.compactMap(\.id))
         // Insurers' receipts (cover periods, policy years) and per-person assignments.
         let policyReceipts = try TaxPolicyReceipts.receipts(db: db, propertyId: propertyId)
-        let receiptByTransaction = Dictionary(policyReceipts.compactMap { r in r.transactionId.map { ($0, r) } }, uniquingKeysWith: { a, _ in a })
+        let receiptsByTransaction = TaxPolicyReceipts.byTransaction(policyReceipts)
+        let receiptDocs = try linkedDocumentIds(db: db, type: .taxPolicyReceipt, ids: policyReceipts.compactMap(\.id))
         let assignedOwners = try TaxTransactionOwners.all(db: db)
         // Sources left off this year's return ("deductible, not claimed"): listed apart.
         let notClaimedMarks = try TaxNotClaimedSources.marks(db: db, startYear: taxYear.startYear)
         var notClaimedByType: [TaxExpenseType: [Source]] = [:]
         /// Whether a source of `type` is left off the line (a mark on a line that can't be
         /// left off — rent, PT tax — is reported and ignored).
+        var ignoredMarks: Set<SourceReference> = []
         func isNotClaimed(_ reference: SourceReference, type: TaxExpenseType, description: String) -> Bool {
             guard notClaimedMarks[reference] != nil else { return false }
             guard TaxNotClaimedSources.isClaimable(type) else {
+                // Once per marked source (a payment's items share its mark).
+                guard ignoredMarks.insert(reference).inserted else { return false }
                 warnings.append("“\(description)” is marked not claimed in \(taxYear.label), but it's on the \(type.displayName.lowercased()) line, which can't be left off: the mark is ignored.")
                 return false
             }
@@ -260,6 +266,23 @@ public enum RentalAccounts {
         for type in TaxExpenseType.allCases {
             rules[type] = try TaxAttributionRules.effective(db: db, expenseType: type, startYear: taxYear.startYear)
             shares[type] = try TaxSplits.share(db: db, startYear: taxYear.startYear, personId: personId, propertyId: propertyId, expenseType: type)
+        }
+
+        // A year whose window is moved (as filed): name the months it shares with a neighbouring
+        // year, which count in both.
+        for type in TaxExpenseType.allCases where rules[type]!.effectiveWindowShift != 0 {
+            let window = Self.window(taxYear, shift: rules[type]!.effectiveWindowShift)
+            var shared: [String] = []
+            for neighbour in [taxYear.startYear - 1, taxYear.startYear + 1] {
+                let rule = try TaxAttributionRules.effective(db: db, expenseType: type, startYear: neighbour)
+                let other = Self.window(UKTaxYear(startYear: neighbour), shift: rule.effectiveWindowShift)
+                let start = max(window.start, other.start), end = min(window.end, other.end)
+                if start < end {
+                    shared.append("\(monthsLabel(DateInterval(start: start, end: end))) also count in \(UKTaxYear(startYear: neighbour).label)")
+                }
+            }
+            warnings.append("\(type.displayName): \(taxYear.label) counts \(monthsLabel(window)) (its window moved \(rules[type]!.effectiveWindowShift) months, as filed)"
+                            + (shared.isEmpty ? "." : "; " + shared.joined(separator: "; ") + "."))
         }
 
         // Utilities and the recharges received for them (phase 5): the mode decides each
@@ -394,51 +417,91 @@ public enum RentalAccounts {
             if type == .foreignTax, rule.rule == .apportionCalendarYear, natural > 0 {
                 foreignTaxYears.insert(context.liabilityYear(item: Item(transaction), documents: docs).0)
             }
-            guard let (attributed, explanation) = context.attribute(item: Item(transaction), amount: natural, rule: rule, documents: docs,
-                                                                   receipt: receiptByTransaction[transaction.id!]) else { continue }
-            var share = shares[type]!.shareBasisPoints
-            var explained = explanation
-            if rechargePart > 0 {
-                explained += "; less \(Money.format(rechargePart, currency: currencies[transaction.accountId] ?? .gbp)) of utilities recharged (its recharge statement links)"
-            }
-            if let owner = assignedOwners[transaction.id!] {
-                // Assigned to one person (their own PT IRS from the joint account): all theirs.
-                if shares[type]!.origin != .ownership {
-                    splitConflicts.insert(type)
-                }
-                share = owner == personId ? PropertyOwner.wholeShare : 0
-                explained += owner == personId ? "; \(person.name)'s (assigned)" : "; \(ownerNames[owner] ?? "another person")'s (assigned)"
-            } else if type == .foreignTax {
-                switch named(person: person.name, others: otherNames, note: transaction.note, documents: docs) {
-                case .this:
-                    share = PropertyOwner.wholeShare
-                    explained += "; \(person.name)'s (named)"
-                case .other:
-                    share = 0
-                    explained += "; another person's (named)"
-                case .none:
-                    break
-                }
-            }
+            // The parts the payment feeds the line with: the payment whole, or (a debit with
+            // several receipts) its items, each attributed by its own months.
             let currency = currencies[transaction.accountId] ?? .gbp
-            let reference = SourceReference.transaction(transaction.id!)
-            // Left off the return: listed apart, and (a utility) not counted as paid when the
-            // recharges are netted (`utilityNetting.utilitiesPaid`), as the return didn't deduct it.
-            if isNotClaimed(reference, type: type, description: transaction.rawDescription) {
-                notClaimedByType[type, default: []].append(Source(
-                    reference: reference, date: transaction.date, description: transaction.rawDescription,
-                    currency: currency, amountMinorUnits: natural, attributedMinorUnits: attributed, shareBasisPoints: share,
-                    explanation: explained + notClaimedNote(reference), documentIds: docs.compactMap(\.id)))
-                continue
+            let transactionReference = SourceReference.transaction(transaction.id!)
+            var parts: [Part] = []
+            let receipts = receiptsByTransaction[transaction.id!] ?? []
+            if receipts.count > 1 {
+                let total = receipts.reduce(0) { $0 + $1.amountMinorUnits }
+                let otherCurrency = receipts.first { $0.currency != currency }?.currency
+                if total == natural, rechargePart == 0, otherCurrency == nil {
+                    for (index, item) in receipts.enumerated() {
+                        guard let (attributed, explanation) = context.attribute(
+                            item: Item(date: transaction.date, note: item.cover == nil ? item.notes : nil, description: ""),
+                            amount: item.amountMinorUnits, rule: rule, documents: [], receipt: item) else { continue }
+                        parts.append(Part(reference: .policyReceipt(item.id!), description: "\(transaction.rawDescription) · \(item.notes ?? item.label)",
+                                          amount: item.amountMinorUnits, attributed: attributed,
+                                          explanation: "Item \(index + 1) of \(receipts.count) of the payment: \(explanation)",
+                                          documentIds: (receiptDocs[item.id!] ?? []) + docs.compactMap(\.id)))
+                    }
+                } else {
+                    let payment = "“\(transaction.rawDescription)” of \(day(transaction.date))"
+                    let cause: String
+                    if let otherCurrency {
+                        cause = "has item receipts in \(otherCurrency.rawValue.uppercased()), not the payment's \(currency.rawValue.uppercased())"
+                    } else if rechargePart > 0 {
+                        cause = "has \(receipts.count) item receipts, but part of it is a utilities recharge (its recharge statement links)"
+                    } else {
+                        cause = "has \(receipts.count) item receipts adding up to \(Money.format(total, currency: currency)), not the payment's \(Money.format(natural, currency: currency))"
+                    }
+                    warnings.append("\(payment) \(cause): the items are ignored and the payment is attributed whole. Correct the items.")
+                    if let (attributed, explanation) = context.attribute(item: Item(transaction), amount: natural, rule: rule, documents: docs) {
+                        parts.append(Part(reference: transactionReference, description: transaction.rawDescription, amount: natural,
+                                          attributed: attributed, explanation: explanation, documentIds: docs.compactMap(\.id)))
+                    }
+                }
+            } else if let (attributed, explanation) = context.attribute(item: Item(transaction), amount: natural, rule: rule, documents: docs,
+                                                                         receipt: receipts.first) {
+                parts.append(Part(reference: transactionReference, description: transaction.rawDescription, amount: natural,
+                                  attributed: attributed, explanation: explanation, documentIds: docs.compactMap(\.id)))
             }
-            sourcesByType[type, default: []].append(Source(
-                reference: reference, date: transaction.date, description: transaction.rawDescription,
-                currency: currency, amountMinorUnits: natural, attributedMinorUnits: attributed, shareBasisPoints: share,
-                explanation: explained, documentIds: docs.compactMap(\.id)))
-            if isUtility {
-                utilitySources += 1
-                if type == .notDeductible { utilityNotDeductibleSources += 1 }
-                if let value = context.nativeValue(attributed, currency: currency) { utilityNetting.utilitiesPaid += value }
+            for part in parts {
+                var share = shares[type]!.shareBasisPoints
+                var explained = part.explanation
+                if rechargePart > 0 {
+                    explained += "; less \(Money.format(rechargePart, currency: currencies[transaction.accountId] ?? .gbp)) of utilities recharged (its recharge statement links)"
+                }
+                if let owner = assignedOwners[transaction.id!] {
+                    // Assigned to one person (their own PT IRS from the joint account): all theirs.
+                    if shares[type]!.origin != .ownership {
+                        splitConflicts.insert(type)
+                    }
+                    share = owner == personId ? PropertyOwner.wholeShare : 0
+                    explained += owner == personId ? "; \(person.name)'s (assigned)" : "; \(ownerNames[owner] ?? "another person")'s (assigned)"
+                } else if type == .foreignTax {
+                    switch named(person: person.name, others: otherNames, note: transaction.note, documents: docs) {
+                    case .this:
+                        share = PropertyOwner.wholeShare
+                        explained += "; \(person.name)'s (named)"
+                    case .other:
+                        share = 0
+                        explained += "; another person's (named)"
+                    case .none:
+                        break
+                    }
+                }
+                // Left off the return: listed apart, and (a utility) not counted as paid when the
+                // recharges are netted (`utilityNetting.utilitiesPaid`), as the return didn't deduct it.
+                // A mark on the payment covers its items; an item can be marked on its own.
+                if let marked = [transactionReference, part.reference].first(where: { notClaimedMarks[$0] != nil }),
+                   isNotClaimed(marked, type: type, description: part.description) {
+                    notClaimedByType[type, default: []].append(Source(
+                        reference: marked, date: transaction.date, description: part.description,
+                        currency: currency, amountMinorUnits: part.amount, attributedMinorUnits: part.attributed, shareBasisPoints: share,
+                        explanation: explained + notClaimedNote(marked), documentIds: part.documentIds, transactionId: transaction.id))
+                    continue
+                }
+                sourcesByType[type, default: []].append(Source(
+                    reference: part.reference, date: transaction.date, description: part.description,
+                    currency: currency, amountMinorUnits: part.amount, attributedMinorUnits: part.attributed, shareBasisPoints: share,
+                    explanation: explained, documentIds: part.documentIds, transactionId: transaction.id))
+                if isUtility {
+                    utilitySources += 1
+                    if type == .notDeductible { utilityNotDeductibleSources += 1 }
+                    if let value = context.nativeValue(part.attributed, currency: currency) { utilityNetting.utilitiesPaid += value }
+                }
             }
         }
 
@@ -523,14 +586,15 @@ public enum RentalAccounts {
                             currency: currency, amountMinorUnits: amount, attributedMinorUnits: amount - applied,
                             shareBasisPoints: shares[.rentalIncome]!.shareBasisPoints,
                             explanation: "\(received); the part above the utilities paid in \(taxYear.label) (utilities offset first)",
-                            documentIds: []))
+                            documentIds: [], transactionId: recharge.transaction.id))
                     }
                 }
                 sourcesByType[.utilities, default: []].append(Source(
                     reference: .transaction(recharge.transaction.id!), date: recharge.transaction.date,
                     description: "Utilities recharged to the tenant, \(month(recharge.statement.month)) statement",
                     currency: currency, amountMinorUnits: -amount, attributedMinorUnits: -applied, shareBasisPoints: share,
-                    explanation: explanation, documentIds: try statementDocumentIds(db: db, statementId: recharge.statement.id!)))
+                    explanation: explanation, documentIds: try statementDocumentIds(db: db, statementId: recharge.statement.id!),
+                    transactionId: recharge.transaction.id))
             }
             utilityNetting.excess = utilityNetting.rechargesReceived - utilityNetting.rechargesApplied
             if utilityNetting.excess > 0 {
@@ -629,22 +693,24 @@ public enum RentalAccounts {
                     ? receipt?.cover.map { ($0, "from the receipt") } : nil
                 let (period, from) = receiptPeriod ?? hint(transaction: transaction, documents: documents, useDescription: true)
                     ?? (monthOf(date), "the debit month")
-                return apportionByMonths(amount, period: period, from: from, noun: "quota months")
+                return apportionByMonths(amount, period: period, from: from, noun: "quota months", windowShift: rule.effectiveWindowShift)
             case .apportionByCover:
                 let months = rule.defaultCoverMonths ?? TaxAttributionRules.defaultCoverMonths
                 // The note first, then the insurer's receipt, then a linked document.
                 if let period = TaxPeriodHint.period(in: transaction.note) {
-                    return apportionByMonths(amount, period: period, from: "from the note", noun: "cover months")
+                    return apportionByMonths(amount, period: period, from: "from the note", noun: "cover months", windowShift: rule.effectiveWindowShift)
                 }
                 if let receipt, let cover = receipt.cover {
-                    return apportionByMonths(amount, period: cover, from: "from the receipt, \(receipt.label)", noun: "cover months")
+                    return apportionByMonths(amount, period: cover, from: "from the receipt, \(receipt.label)", noun: "cover months",
+                                             windowShift: rule.effectiveWindowShift)
                 }
                 if let (period, from) = hint(transaction: transaction, documents: documents, useDescription: false) {
-                    return apportionByMonths(amount, period: period, from: from, noun: "cover months")
+                    return apportionByMonths(amount, period: period, from: from, noun: "cover months", windowShift: rule.effectiveWindowShift)
                 }
                 let start = MonthRange.calendar.date(byAdding: .month, value: 1, to: monthOf(date).start)!
                 let assumed = DateInterval(start: start, end: MonthRange.calendar.date(byAdding: .month, value: months, to: start)!)
-                return apportionByMonths(amount, period: assumed, from: "assumed: \(months) months from the month after the debit", noun: "cover months")
+                return apportionByMonths(amount, period: assumed, from: "assumed: \(months) months from the month after the debit", noun: "cover months",
+                                         windowShift: rule.effectiveWindowShift)
             case .apportionPolicyYear:
                 let calendar = MonthRange.calendar
                 let year: Int
@@ -662,7 +728,7 @@ public enum RentalAccounts {
                 }
                 let policy = DateInterval(start: calendar.date(from: DateComponents(year: year, month: 1, day: 1))!,
                                           end: calendar.date(from: DateComponents(year: year + 1, month: 1, day: 1))!)
-                return apportionByMonths(amount, period: policy, from: from, noun: "months of policy year \(year)")
+                return apportionByMonths(amount, period: policy, from: from, noun: "months of policy year \(year)", windowShift: rule.effectiveWindowShift)
             }
         }
 
@@ -689,17 +755,26 @@ public enum RentalAccounts {
             return nil
         }
 
-        func apportionByMonths(_ amount: Int, period: DateInterval, from: String, noun: String) -> (Int, String)? {
+        func apportionByMonths(_ amount: Int, period: DateInterval, from: String, noun: String, windowShift: Int = 0) -> (Int, String)? {
             let months = monthSpan(period)
-            let window = taxYear.monthsInterval
+            let window = RentalAccounts.window(taxYear, shift: windowShift)
             let inside = months.filter { within($0, window) }.count
             guard inside > 0, !months.isEmpty else { return nil }
-            // Cumulative rounding (as `PropertyFinance.apportioned`): the years' parts add up to the payment.
-            let before = months.filter { $0 < window.start }.count
             func upTo(_ count: Int) -> Int { Int((Double(amount) * Double(count) / Double(months.count)).rounded()) }
-            let attributed = upTo(before + inside) - upTo(before)
+            let attributed: Int
+            if windowShift == 0 {
+                // Cumulative rounding (as `PropertyFinance.apportioned`): the years' parts add up to the payment.
+                let before = months.filter { $0 < window.start }.count
+                attributed = upTo(before + inside) - upTo(before)
+            } else {
+                // A moved window (a filed year's own): the part rounded on its own, as the
+                // workbook did. The years' parts no longer add up to the payment: months of the
+                // window may also count in a neighbouring year, or in none (warned, as filed).
+                attributed = upTo(inside)
+            }
             let span = "\(month(months.first!)) – \(month(months.last!))"
-            return (attributed, "\(inside) of \(months.count) \(noun), \(span) (\(from))")
+            let moved = windowShift == 0 ? "" : " in \(monthsLabel(window)), the year's moved window"
+            return (attributed, "\(inside) of \(months.count) \(noun), \(span) (\(from))\(moved)")
         }
 
         /// Whole and person's amounts of a line's sources: native and GBP-native apart, the
@@ -755,6 +830,13 @@ public enum RentalAccounts {
     }
 
     static func ruleExplanation(_ rule: TaxAttributionRule, type: TaxExpenseType) -> String {
+        let text = baseRuleExplanation(rule, type: type)
+        guard rule.effectiveWindowShift != 0, let startYear = rule.startYear else { return text }
+        let window = Self.window(UKTaxYear(startYear: startYear), shift: rule.effectiveWindowShift)
+        return text + " This year's window is moved \(rule.effectiveWindowShift) months, to \(monthsLabel(window)) (as filed); each part is rounded on its own."
+    }
+
+    static func baseRuleExplanation(_ rule: TaxAttributionRule, type: TaxExpenseType) -> String {
         switch rule.rule {
         case .byRentPeriod:
             return type == .rentalIncome
@@ -783,6 +865,16 @@ public enum RentalAccounts {
 
     /// What a rule reads of a source: its date, note and description (a transaction's, or an
     /// insurer's receipt paid outside the bank history).
+    /// What a payment feeds a line with: itself, or one of its item receipts.
+    struct Part {
+        var reference: SourceReference
+        var description: String
+        var amount: Int
+        var attributed: Int
+        var explanation: String
+        var documentIds: [Int64]
+    }
+
     struct Item {
         var date: Date
         var note: String?
@@ -922,6 +1014,19 @@ public enum RentalAccounts {
         let days = Double(PropertyFinance.days(start, period.end))
         let count = max(1, Int((days / (365.25 / 12)).rounded()))
         return (0..<count).map { calendar.date(byAdding: .month, value: $0, to: first)! }
+    }
+
+    /// "Oct 2022 – Sep 2023": the year's months, moved by `shift` (a filed year's own window).
+    public static func windowLabel(_ taxYear: UKTaxYear, shift: Int) -> String {
+        monthsLabel(window(taxYear, shift: shift))
+    }
+
+    /// The year's April–March months, moved by `shift` months (a filed year's own window).
+    static func window(_ taxYear: UKTaxYear, shift: Int) -> DateInterval {
+        guard shift != 0 else { return taxYear.monthsInterval }
+        let calendar = MonthRange.calendar
+        return DateInterval(start: calendar.date(byAdding: .month, value: shift, to: taxYear.monthsInterval.start)!,
+                            end: calendar.date(byAdding: .month, value: shift, to: taxYear.monthsInterval.end)!)
     }
 
     static func monthOf(_ date: Date) -> DateInterval {

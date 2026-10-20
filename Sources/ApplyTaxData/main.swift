@@ -2,8 +2,10 @@
 //
 // One-off tax data for a property (`TaxDataPlan`): categorises the plan's uncategorised
 // debits, stores the category → expense type map, records insurers' and condomínio receipts
-// (linked to their debits), assigns payments to one person, adds HMRC filed-return rates and
-// manual items the years don't have yet, stores attribution rules, fetches HMRC's published
+// (linked to their debits; a debit settling several items gets one receipt per item, with its
+// months — `debitAmount`), assigns payments to one person, adds HMRC filed-return rates and
+// manual items the years don't have yet, stores attribution rules (a filed year's own moved
+// window: `windowShiftMonths`), fetches HMRC's published
 // average rates (`fetchHMRCRates`, the Trade Tariff file for the year to 31 March; only for a
 // year lacking a rate, before the write), and sets a year up from its filed return (splits,
 // employments, HMRC payments, statuses from Preparing and notes, sources the return left out:

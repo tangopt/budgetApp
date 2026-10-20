@@ -165,6 +165,15 @@ public enum TaxAttributionRuleKind: String, Codable, CaseIterable, Sendable {
     /// By the transaction's date, 6 April – 5 April.
     case byDate
 
+    /// The rules that apportion months to the April–March window (quota, cover and policy
+    /// months): a year's override of one can move its window (`TaxAttributionRule.windowShiftMonths`).
+    public var supportsWindowShift: Bool {
+        switch self {
+        case .byQuotaMonth, .apportionByCover, .apportionPolicyYear: return true
+        case .byRentPeriod, .byDebitMonth, .previousCalendarYear, .apportionCalendarYear, .byDate: return false
+        }
+    }
+
     public var displayName: String {
         switch self {
         case .byRentPeriod: return "By rent period"
@@ -189,16 +198,28 @@ public struct TaxAttributionRule: Codable, Equatable, Identifiable, FetchableRec
     /// For `apportionByCover` without a period on the documents or note: the cover months
     /// assumed, starting the month after the debit. `nil` = 12.
     public var defaultCoverMonths: Int?
+    /// One year's window moved by this many months (a filed year whose workbook counted the
+    /// cover or quota months October–September, say): the April–March months of the
+    /// month-based rules (`TaxAttributionRuleKind.supportsWindowShift`) start this many months
+    /// later (earlier when negative). Only on a year's override; `nil` = April–March.
+    public var windowShiftMonths: Int?
     public var notes: String?
 
     public init(id: Int64? = nil, expenseType: TaxExpenseType, startYear: Int? = nil, rule: TaxAttributionRuleKind,
-                defaultCoverMonths: Int? = nil, notes: String? = nil) {
+                defaultCoverMonths: Int? = nil, windowShiftMonths: Int? = nil, notes: String? = nil) {
         self.id = id
         self.expenseType = expenseType
         self.startYear = startYear
         self.rule = rule
         self.defaultCoverMonths = defaultCoverMonths
+        self.windowShiftMonths = windowShiftMonths
         self.notes = notes
+    }
+
+    /// The shift in effect: a non-zero one on a year's override of a rule that has months.
+    public var effectiveWindowShift: Int {
+        guard startYear != nil, rule.supportsWindowShift, let windowShiftMonths else { return 0 }
+        return windowShiftMonths
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -364,6 +385,10 @@ public enum TaxError: Error, Equatable {
     case invalidInstalment
     /// A cover period that ends before it starts.
     case invalidCoverPeriod
+    /// A window shift on an every-year rule, on a rule without months, or of a year or more.
+    case invalidWindowShift
+    /// A payment's itemised receipts add up to more than the payment.
+    case itemsExceedPayment
     /// The person doesn't own the property the payment is for (on its date).
     case notAnOwner
     /// Only a cost of a deductible line (an expense or the finance costs) can be marked
@@ -477,6 +502,15 @@ func registerTaxYearForeignTaxInPenceMigration(_ migrator: inout DatabaseMigrato
     migrator.registerMigration("addTaxYearForeignTaxInPence") { db in
         try db.alter(table: "taxYear") { t in
             t.add(column: "foreignTaxInPence", .boolean).notNull().defaults(to: false)
+        }
+    }
+}
+
+/// One year's attribution window moved by whole months (`TaxAttributionRule.windowShiftMonths`).
+func registerTaxAttributionRuleWindowShiftMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addTaxAttributionRuleWindowShift") { db in
+        try db.alter(table: "taxAttributionRule") { t in
+            t.add(column: "windowShiftMonths", .integer)
         }
     }
 }
