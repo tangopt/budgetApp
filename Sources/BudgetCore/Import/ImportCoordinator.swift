@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-public struct StagedTransaction: Equatable, Identifiable {
+public struct StagedTransaction: Equatable, Identifiable, Sendable {
     public let id: UUID
     public let parsed: ParsedTransaction
     public let suggestedCategoryId: Int64?
@@ -46,16 +46,20 @@ public struct StagedImport {
     /// CSV rows left out because their status column says they aren't completed (pending,
     /// reverted…). 0 for PDFs and profiles without a status column.
     public let skippedRowCount: Int
+    /// The rows of `alreadyStaged` (an earlier statement of the same batch) this file holds
+    /// too: counted in `duplicates`, as that statement's staged rows.
+    public let batchDuplicates: [StagedTransaction]
 
     public var duplicateCount: Int { duplicates.count }
 
     public init(staged: [StagedTransaction], duplicates: [ParsedTransaction], unparsedLines: [String], statementBalances: StatementBalanceResult = .notProvided,
-                skippedRowCount: Int = 0) {
+                skippedRowCount: Int = 0, batchDuplicates: [StagedTransaction] = []) {
         self.staged = staged
         self.duplicates = duplicates
         self.unparsedLines = unparsedLines
         self.statementBalances = statementBalances
         self.skippedRowCount = skippedRowCount
+        self.batchDuplicates = batchDuplicates
     }
 }
 
@@ -77,6 +81,16 @@ public struct ImportDecision {
 }
 
 public final class ImportCoordinator {
+    /// How staged rows get their suggested category.
+    public enum Categorization: Sendable {
+        /// Saved rules, then the history of past transactions, then the on-device model.
+        case full
+        /// Saved rules only (`RuleMatcher.match`: source `.rule`, confidence 1); every other
+        /// row is left uncategorised (`nil`, `.none`) for the Uncategorized screen. Transfers
+        /// and manual-entry replacements apply as with `.full`.
+        case rulesOnly
+    }
+
     private let dbQueue: DatabaseQueue
     private let categorizationService: CategorizationService
     /// Descriptions per `CategorizationService.categorizeBatch` call. Large enough to cut
@@ -90,19 +104,28 @@ public final class ImportCoordinator {
         self.categorizationService = categorizationService
     }
 
-    public func stageCSVImport(csvText: String, profile: ImportProfile, accountId: Int64, onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> StagedImport {
+    /// `alreadyStaged`: the rows of earlier statements of the same account in one batch (the
+    /// document importer), treated as already imported (`StagedImport.batchDuplicates`) and
+    /// keeping the manual entries they replace.
+    public func stageCSVImport(csvText: String, profile: ImportProfile, accountId: Int64, categorization: Categorization = .full,
+                               alreadyStaged: [StagedTransaction] = [],
+                               onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> StagedImport {
         let parseResult = CSVStatementParser.parse(csvText: csvText, profile: profile)
-        let staged = try await stage(parsed: parseResult.transactions, unparsedLines: parseResult.unparsedLines, accountId: accountId, onProgress: onProgress)
+        let staged = try await stage(parsed: parseResult.transactions, unparsedLines: parseResult.unparsedLines, accountId: accountId,
+                                     categorization: categorization, alreadyStaged: alreadyStaged, onProgress: onProgress)
         return StagedImport(
             staged: staged.staged, duplicates: staged.duplicates, unparsedLines: staged.unparsedLines,
             statementBalances: StatementBalanceExtractor.extract(from: parseResult.transactions),
-            skippedRowCount: parseResult.skippedRows
+            skippedRowCount: parseResult.skippedRows, batchDuplicates: staged.batchDuplicates
         )
     }
 
-    public func stagePDFImport(lines: [String], config: PDFLayoutConfig, accountId: Int64, onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> StagedImport {
+    public func stagePDFImport(lines: [String], config: PDFLayoutConfig, accountId: Int64, categorization: Categorization = .full,
+                               alreadyStaged: [StagedTransaction] = [],
+                               onProgress: @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> StagedImport {
         let parseResult = PDFLineParser.parse(lines: lines, config: config)
-        return try await stage(parsed: parseResult.transactions, unparsedLines: parseResult.unparsedLines, accountId: accountId, onProgress: onProgress)
+        return try await stage(parsed: parseResult.transactions, unparsedLines: parseResult.unparsedLines, accountId: accountId,
+                               categorization: categorization, alreadyStaged: alreadyStaged, onProgress: onProgress)
     }
 
     /// Shared staging for every statement format: fingerprint (with a within-file
@@ -112,22 +135,31 @@ public final class ImportCoordinator {
     /// `onProgress(categorized, totalToCategorize)` fires after each batch — the total is
     /// the count of non-duplicate rows (the actual categorization workload), not the raw
     /// row count in the file, since duplicates are already known and skipped before this
-    /// count is reported.
-    private func stage(parsed: [ParsedTransaction], unparsedLines: [String], accountId: Int64, onProgress: @Sendable (Int, Int) -> Void) async throws -> StagedImport {
+    /// count is reported. `.rulesOnly` asks neither the history nor the model.
+    private func stage(parsed: [ParsedTransaction], unparsedLines: [String], accountId: Int64, categorization: Categorization,
+                       alreadyStaged: [StagedTransaction] = [], onProgress: @Sendable (Int, Int) -> Void) async throws -> StagedImport {
         let (existingFingerprints, categories, rules, history) = try await dbQueue.read { db in
             (
                 try Set(String.fetchAll(db, sql: "SELECT fingerprint FROM transaction_ WHERE accountId = ?", arguments: [accountId])),
                 try Category.fetchAll(db).filter(\.isAssignable),
                 try Rule.fetchAll(db),
-                try HistoryCategorizer.load(db: db)
+                categorization == .full ? try HistoryCategorizer.load(db: db) : []
             )
         }
 
+        var earlier: [String: StagedTransaction] = [:]
+        for row in alreadyStaged where earlier[row.fingerprint] == nil { earlier[row.fingerprint] = row }
         var duplicates: [ParsedTransaction] = []
+        var batchDuplicates: [StagedTransaction] = []
         var nonDuplicates: [(parsed: ParsedTransaction, fingerprint: String)] = []
         for (parsedTransaction, fingerprint) in zip(parsed, TransactionFingerprint.computeAll(accountId: accountId, transactions: parsed)) {
             if existingFingerprints.contains(fingerprint) {
                 duplicates.append(parsedTransaction)
+                continue
+            }
+            if let row = earlier[fingerprint] {
+                duplicates.append(parsedTransaction)
+                batchDuplicates.append(row)
                 continue
             }
             nonDuplicates.append((parsedTransaction, fingerprint))
@@ -138,15 +170,33 @@ public final class ImportCoordinator {
         var categorizedCount = 0
         for batchStart in stride(from: 0, to: nonDuplicates.count, by: Self.categorizationBatchSize) {
             let batch = nonDuplicates[batchStart..<min(batchStart + Self.categorizationBatchSize, nonDuplicates.count)]
-            let results = await categorizationService.categorizeBatch(descriptions: batch.map(\.parsed.rawDescription), rules: rules, categories: categories, history: history)
+            let descriptions = batch.map(\.parsed.rawDescription)
+            let results: [CategorizationResult]
+            switch categorization {
+            case .full:
+                results = await categorizationService.categorizeBatch(descriptions: descriptions, rules: rules, categories: categories, history: history)
+            case .rulesOnly:
+                results = descriptions.map(Self.ruleCategorization(rules: rules))
+            }
             for (item, result) in zip(batch, results) {
                 staged.append(StagedTransaction(parsed: item.parsed, suggestedCategoryId: result.categoryId, source: result.source, confidence: result.confidence, fingerprint: item.fingerprint, historyCount: result.historyCount))
             }
             categorizedCount += batch.count
             onProgress(categorizedCount, nonDuplicates.count)
         }
-        let withReplacements = try await withManualReplacements(staged, accountId: accountId)
-        return StagedImport(staged: try await withTransfers(withReplacements, accountId: accountId), duplicates: duplicates, unparsedLines: unparsedLines)
+        let withReplacements = try await withManualReplacements(staged, accountId: accountId, alreadyStaged: alreadyStaged)
+        return StagedImport(staged: try await withTransfers(withReplacements, accountId: accountId), duplicates: duplicates, unparsedLines: unparsedLines,
+                            batchDuplicates: batchDuplicates)
+    }
+
+    /// A saved rule's category (source `.rule`, confidence 1), else uncategorised.
+    private static func ruleCategorization(rules: [Rule]) -> (String) -> CategorizationResult {
+        { description in
+            guard let rule = RuleMatcher.match(description: description, rules: rules) else {
+                return CategorizationResult(categoryId: nil, source: .none, confidence: 0)
+            }
+            return CategorizationResult(categoryId: rule.categoryId, source: .rule, confidence: 1)
+        }
     }
 
     /// Marks the rows that replace a manual entry of the account
@@ -269,20 +319,23 @@ public final class ImportCoordinator {
         }
     }
 
-    /// `commit` in the caller's write transaction (one-off tools that do more in the same
-    /// transaction): the same rows, rule learning, transfer matching and forecast refresh.
+    /// `commit` in the caller's write transaction (one-off tools and the document importer,
+    /// which do more in the same transaction): the same rows, rule learning, transfer matching
+    /// and forecast refresh. `importRunId` stamps the batch row with the import run it belongs to.
     @discardableResult
     public static func commit(db: Database, accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision],
-                              statement: StatementFinish? = nil) throws -> StatementFinishOutcome? {
-        try commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions, statement: statement)
+                              statement: StatementFinish? = nil, importRunId: Int64? = nil) throws -> StatementFinishOutcome? {
+        try commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions, statement: statement,
+                       importRunId: importRunId)
     }
 
-    private static func commitRows(db: Database, accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision], statement: StatementFinish?) throws -> StatementFinishOutcome? {
+    private static func commitRows(db: Database, accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision],
+                                   statement: StatementFinish?, importRunId: Int64? = nil) throws -> StatementFinishOutcome? {
         let decisionById = Dictionary(decisions.map { ($0.stagedId, $0.finalCategoryId) }, uniquingKeysWith: { _, last in last })
         let learnById = Dictionary(decisions.map { ($0.stagedId, $0.learnRule) }, uniquingKeysWith: { _, last in last })
         let noteById = Dictionary(decisions.map { ($0.stagedId, $0.note) }, uniquingKeysWith: { _, last in last })
         do {
-            var batch = ImportBatch(accountId: accountId, sourceFileName: sourceFileName, importedAt: Date())
+            var batch = ImportBatch(accountId: accountId, sourceFileName: sourceFileName, importedAt: Date(), importRunId: importRunId)
             try batch.insert(db)
             for stagedTransaction in staged {
                 let finalCategoryId: Int64? = decisionById[stagedTransaction.id] ?? stagedTransaction.suggestedCategoryId
@@ -329,7 +382,7 @@ public final class ImportCoordinator {
         try dbQueue.write { db in try Self.finishStatementOnly(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: statement) }
     }
 
-    private static func finishStatementOnly(db: Database, accountId: Int64, sourceFileName: String, statement: StatementFinish) throws -> StatementFinishOutcome {
+    static func finishStatementOnly(db: Database, accountId: Int64, sourceFileName: String, statement: StatementFinish) throws -> StatementFinishOutcome {
         let outcome = try StatementCheck.finish(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: statement)
         if outcome.adjustmentTransactionId != nil { try AutoForecastGenerator.refresh(db: db) }
         return outcome

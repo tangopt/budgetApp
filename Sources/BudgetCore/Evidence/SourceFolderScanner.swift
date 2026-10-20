@@ -495,6 +495,19 @@ public struct SourceFolderScanner: Sendable {
         .contentModificationDateKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey
     ]
 
+    /// Why a listed entry is left out of a folder listing (before any iCloud placeholder
+    /// handling), or nil when it is a candidate file or an ordinary folder to descend into.
+    /// Shared by scans and by import's file collection.
+    static func ignoreReason(name: String, values: URLResourceValues) -> IgnoredFile.Reason? {
+        let isDirectory = values.isDirectory == true
+        if values.isSymbolicLink == true || (values.isAliasFile == true && !isDirectory) { return .alias }
+        if systemFileNames.contains(name) { return .systemFile }
+        if name.hasPrefix(".") || values.isHidden == true { return .hidden }
+        if isDirectory { return values.isPackage == true ? .package : nil }
+        if values.isRegularFile == true && name.hasPrefix("~$") { return .officeLock }
+        return nil
+    }
+
     /// Every entry under `root`, sorted by path, sorted into readable files, ignored ones and
     /// iCloud files not downloaded. Doesn't descend into hidden folders or packages, or follow
     /// links.
@@ -523,7 +536,8 @@ public struct SourceFolderScanner: Sendable {
             }
             let isDirectory = values.isDirectory == true
 
-            if values.isSymbolicLink == true || (values.isAliasFile == true && !isDirectory) {
+            let reason = Self.ignoreReason(name: name, values: values)
+            if reason == .alias {
                 listing.ignored.append(IgnoredFile(relativePath: relativePath, reason: .alias))
                 continue
             }
@@ -534,26 +548,12 @@ public struct SourceFolderScanner: Sendable {
                 listing.notDownloaded.append(directory.isEmpty ? original : directory + "/" + original)
                 continue
             }
-            if Self.systemFileNames.contains(name) {
-                listing.ignored.append(IgnoredFile(relativePath: relativePath, reason: .systemFile))
-                continue
-            }
-            if name.hasPrefix(".") || values.isHidden == true {
-                if isDirectory { enumerator.skipDescendants() }
-                listing.ignored.append(IgnoredFile(relativePath: relativePath, reason: .hidden))
-                continue
-            }
-            if isDirectory {
-                if values.isPackage == true {
-                    listing.ignored.append(IgnoredFile(relativePath: relativePath, reason: .package))
-                }
+            if let reason {
+                if reason == .hidden && isDirectory { enumerator.skipDescendants() }
+                listing.ignored.append(IgnoredFile(relativePath: relativePath, reason: reason))
                 continue
             }
             guard values.isRegularFile == true else { continue }
-            if name.hasPrefix("~$") {
-                listing.ignored.append(IgnoredFile(relativePath: relativePath, reason: .officeLock))
-                continue
-            }
             if Self.isNotDownloaded(url, values: values) {
                 listing.notDownloaded.append(relativePath)
                 continue

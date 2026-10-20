@@ -561,9 +561,9 @@ extension DemoDatabase {
             docs.append(doc("Property deed.pdf", kind: .propertyDeed, issuer: "Registry Office", title: "Deed of purchase",
                             lines: [("Property", "Property A"), ("Price", "€240,000.00"), ("Date", "1 Sep 2023"), ("Buyers", "Person A, Person B")],
                             date: date(2023, 9, 1), amount: 24_000_000, links: [EvidenceEntity(type: .property, id: propertyId)]))
-            docs.append(doc("Energy certificate.pdf", kind: .certificate, issuer: "Energy Agency", title: "Energy performance certificate",
-                            lines: [("Property", "Property A"), ("Rating", "B"), ("Valid until", "2033")],
-                            date: date(2023, 8, 10), amount: nil, links: [EvidenceEntity(type: .property, id: propertyId)]))
+            let certificate = DemoDatabase.energyCertificate
+            docs.append(doc(certificate.fileName, kind: .certificate, issuer: certificate.issuer, title: certificate.title,
+                            lines: certificate.lines, date: date(2023, 8, 10), amount: nil, links: [EvidenceEntity(type: .property, id: propertyId)]))
         }
 
         // MARK: Euro history (the property's money)
@@ -990,10 +990,8 @@ extension DemoDatabase {
 
         func doc(_ fileName: String, kind: DocumentKind, issuer: String, title: String, lines: [(String, String)], date: Date,
                  amount: Int?, links: [EvidenceEntity]) -> DocSpec {
-            let tints: [(Double, Double, Double)] = [(0.16, 0.36, 0.62), (0.13, 0.50, 0.42), (0.55, 0.30, 0.18), (0.42, 0.26, 0.58), (0.20, 0.45, 0.55)]
-            let tint = tints[abs(issuer.hashValueStable) % tints.count]
             let currency: Currency? = [.p60, .p11d, .hmrcPaymentProof].contains(kind) ? .gbp : (amount == nil ? nil : .eur)
-            return DocSpec(fileName: fileName, page: DemoPDF.Page(issuer: issuer, title: title, lines: lines, tint: tint),
+            return DocSpec(fileName: fileName, page: DemoDatabase.page(issuer: issuer, title: title, lines: lines),
                            metadata: EvidenceMetadata(kind: kind, docDate: date, amountMinorUnits: amount, currency: currency,
                                                       canonicalName: fileName.replacingOccurrences(of: ".pdf", with: ""),
                                                       textStatus: .text,
@@ -1034,6 +1032,16 @@ extension DemoDatabase {
             report.notes.append("Unlinked documents: \(try EvidenceLinks.unlinkedDocuments(db: db).count)")
         }
     }
+
+    /// A demo document's page, in its issuer's colour (an issuer always has the same one).
+    static func page(issuer: String, title: String, lines: [(String, String)]) -> DemoPDF.Page {
+        let tints: [(Double, Double, Double)] = [(0.16, 0.36, 0.62), (0.13, 0.50, 0.42), (0.55, 0.30, 0.18), (0.42, 0.26, 0.58), (0.20, 0.45, 0.55)]
+        return DemoPDF.Page(issuer: issuer, title: title, lines: lines, tint: tints[abs(issuer.hashValueStable) % tints.count])
+    }
+
+    /// The property's energy certificate (in the library; its copy is an import sample, `DemoImportSamples`).
+    static let energyCertificate = (fileName: "Energy certificate.pdf", issuer: "Energy Agency", title: "Energy performance certificate",
+                                    lines: [("Property", "Property A"), ("Rating", "B"), ("Valid until", "2033")])
 
     static func monthName(_ month: Int) -> String {
         ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][month - 1]

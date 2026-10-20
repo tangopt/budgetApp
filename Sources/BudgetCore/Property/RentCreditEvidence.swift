@@ -192,12 +192,47 @@ public enum RentCreditEvidence {
 
     /// The received-transfer advices already in the library, oldest first.
     public static func libraryAdvices(db: Database) throws -> [AdviceInput] {
-        try EvidenceDocument.filter(Column("extractedText") != nil).order(Column("docDate"), Column("id")).fetchAll(db)
-            .compactMap { document -> AdviceInput? in
-                guard let text = document.extractedText, let advice = parseAdvice(text) else { return nil }
-                return AdviceInput(source: .document(document.id!), name: document.canonicalName ?? document.originalFileName,
-                                   sha256: document.sha256, advice: advice)
+        try libraryAdvices(db: db, cache: AdviceCache())
+    }
+
+    /// What `libraryAdvices` read of each document (by id and content), so repeated calls in
+    /// one pass (the filed-year guard runs the follow-on matching once per item) read and parse
+    /// each document's text once. Not thread-safe: one pass, one connection.
+    public final class AdviceCache {
+        struct Key: Hashable {
+            var id: Int64
+            var sha256: String
+        }
+        private var advices: [Key: Advice?] = [:]
+        /// Documents whose text was parsed (tests).
+        public private(set) var parses = 0
+
+        public init() {}
+
+        /// The document's advice: from the cache, else `text()` parsed (and remembered).
+        func advice(_ key: Key, text: () throws -> String?) rethrows -> Advice? {
+            if let cached = advices[key] { return cached }
+            parses += 1
+            let advice = try text().flatMap(RentCreditEvidence.parseAdvice)
+            advices[key] = .some(advice)
+            return advice
+        }
+    }
+
+    /// `libraryAdvices`, reading only the text of documents `cache` hasn't seen.
+    static func libraryAdvices(db: Database, cache: AdviceCache) throws -> [AdviceInput] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, sha256, COALESCE(canonicalName, originalFileName) AS name FROM document
+            WHERE extractedText IS NOT NULL ORDER BY docDate, id
+            """)
+        return try rows.compactMap { row -> AdviceInput? in
+            let key = AdviceCache.Key(id: row["id"], sha256: row["sha256"])
+            let found = try cache.advice(key) {
+                try String.fetchOne(db, sql: "SELECT extractedText FROM document WHERE id = ?", arguments: [key.id])
             }
+            guard let advice = found else { return nil }
+            return AdviceInput(source: .document(key.id), name: row["name"], sha256: key.sha256, advice: advice)
+        }
     }
 
     public enum AdviceOutcome: Equatable, Sendable {
@@ -231,6 +266,11 @@ public enum RentCreditEvidence {
         /// For a `.link` or `.alreadyLinked` file: the library document with the same content, if any.
         public var documentId: Int64?
         public var category: String?
+        /// For an `.ambiguous` item: the other credits (each one transfer, split parts together)
+        /// the planner weighed equally with `credits`.
+        public var alternatives: [[Transaction]] = []
+        /// For an `.ambiguous` item made by two advices claiming one credit: the other advice's name.
+        public var competingAdvices: [String] = []
 
         public var credit: Transaction? { credits.first }
         public var amountMinorUnits: Int { credits.reduce(0) { $0 + $1.amountMinorUnits } }
@@ -319,6 +359,7 @@ public enum RentCreditEvidence {
                                       category: parts[0].categoryId.flatMap { categories[$0] })
             if ranked.count > 1 && ranked[1].key == best.key {
                 item.outcome = .ambiguous
+                item.alternatives = ranked.dropFirst().filter { $0.key == best.key }.map { ordered($0.credits) }
                 items.append(item)
                 continue
             }
@@ -366,6 +407,8 @@ public enum RentCreditEvidence {
                     // Two new advices for one credit: neither is linked.
                     items[other].outcome = .ambiguous
                     item.outcome = .ambiguous
+                    items[other].competingAdvices.append(item.input.name)
+                    item.competingAdvices.append(items[other].input.name)
                 }
                 items.append(item)
                 continue
@@ -385,6 +428,30 @@ public enum RentCreditEvidence {
         public var amountsSet = 0
         /// Stored copies placed in the library (remove them if the transaction rolls back).
         public var placedFiles: [URL] = []
+    }
+
+    /// Links the advice document to each part of its credit (role `adviceRole`) and gives it
+    /// the credit's amount when it has none (or zero); returns 1 when the amount was set.
+    static func linkAdvice(db: Database, documentId: Int64, credits: [Transaction]) throws -> Int {
+        for part in credits {
+            guard let creditId = part.id else { throw ImportEffectsError.incompleteEffect("Transfer advice credit not saved") }
+            try EvidenceLinks.link(db: db, documentId: documentId, to: .transaction(creditId), role: adviceRole)
+        }
+        try db.execute(sql: "UPDATE document SET amountMinorUnits = ? WHERE id = ? AND (amountMinorUnits IS NULL OR amountMinorUnits = 0)",
+                       arguments: [credits.reduce(0) { $0 + $1.amountMinorUnits }, documentId])
+        return db.changesCount
+    }
+
+    /// Links the plan's `.link` advices that are library documents to their credits (files not
+    /// yet in the library are `applyAdvices`'s); returns how many were linked.
+    static func linkLibraryAdvices(db: Database, plan: [AdvicePlanItem]) throws -> Int {
+        var linked = 0
+        for item in plan where item.outcome == .link && !item.credits.isEmpty {
+            guard case .document(let documentId) = item.input.source else { continue }
+            _ = try linkAdvice(db: db, documentId: documentId, credits: item.credits)
+            linked += 1
+        }
+        return linked
     }
 
     /// Adds (files not yet in the library) and links the plan's `.link` advices to their
@@ -426,13 +493,8 @@ public enum RentCreditEvidence {
                     }
                 }
                 guard let documentId else { continue }
-                for part in item.credits {
-                    try EvidenceLinks.link(db: db, documentId: documentId, to: .transaction(part.id!), role: adviceRole)
-                }
+                applied.amountsSet += try linkAdvice(db: db, documentId: documentId, credits: item.credits)
                 applied.linked += 1
-                try db.execute(sql: "UPDATE document SET amountMinorUnits = ? WHERE id = ? AND (amountMinorUnits IS NULL OR amountMinorUnits = 0)",
-                               arguments: [amount, documentId])
-                applied.amountsSet += db.changesCount
             }
         } catch {
             for url in applied.placedFiles { try? FileManager.default.removeItem(at: url) }

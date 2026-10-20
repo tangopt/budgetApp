@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ParsedTransaction: Equatable {
+public struct ParsedTransaction: Equatable, Sendable {
     public let date: Date
     public let rawDescription: String
     public let amountMinorUnits: Int

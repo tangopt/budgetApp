@@ -106,5 +106,6 @@ public final class DatabaseManager {
         registerTaxYearForeignTaxInPenceMigration(&migrator)
         registerTaxAttributionRuleWindowShiftMigration(&migrator)
         registerTaxPolicyReceiptItemsMigration(&migrator)
+        registerImportRunMigration(&migrator)
     }
 }

@@ -28,6 +28,7 @@ struct BudgetApp: App {
         }
         .commands {
             SearchCommands()
+            ImportCommands()
         }
         // Budget ▸ Settings… (⌘,): Appearance and Theme.
         Settings {

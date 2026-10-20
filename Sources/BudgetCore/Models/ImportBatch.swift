@@ -6,12 +6,14 @@ public struct ImportBatch: Codable, Equatable, Identifiable, FetchableRecord, Mu
     public var accountId: Int64
     public var sourceFileName: String
     public var importedAt: Date
+    public var importRunId: Int64?
 
-    public init(id: Int64? = nil, accountId: Int64, sourceFileName: String, importedAt: Date) {
+    public init(id: Int64? = nil, accountId: Int64, sourceFileName: String, importedAt: Date, importRunId: Int64? = nil) {
         self.id = id
         self.accountId = accountId
         self.sourceFileName = sourceFileName
         self.importedAt = importedAt
+        self.importRunId = importRunId
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {

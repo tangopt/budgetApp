@@ -7,6 +7,8 @@ import GRDB
 
 enum AppScreen: String, CaseIterable, Identifiable {
     case importReview = "Import"
+    /// The document importer: reading, review and the import history.
+    case imports = "Imports"
     case dashboard = "Dashboard"
     case search = "Search"
     case budgetGrid = "Budget"
@@ -25,6 +27,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .importReview: return "square.and.arrow.down"
+        case .imports: return "tray.and.arrow.down"
         case .uncategorized: return "folder.badge.questionmark"
         case .dashboard: return "square.grid.2x2"
         case .search: return "magnifyingglass"
@@ -50,7 +53,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
     /// distinct value first appears in `allCases` (not alphabetically).
     var sidebarSection: String {
         switch self {
-        case .importReview, .uncategorized: return "Workflow"
+        case .importReview, .imports, .uncategorized: return "Workflow"
         case .dashboard, .search, .budgetGrid, .forecast, .accounts, .property: return "Overview"
         case .taxYears, .documents, .missingEvidence: return "Tax"
         case .rules, .categories: return "Settings"
@@ -91,6 +94,8 @@ struct ContentView: View {
     @AppStorage("lastImportAccountId") private var lastImportAccountId = 0
     /// Show in Budget has just loaded the Budget grid's data (so its appearance needn't).
     @State private var budgetGridJustLoaded = false
+    /// Files are being dragged over the window (the import drop target's outline).
+    @State private var importDropTargeted = false
     @Environment(\.theme) private var theme
 
     // Each screen's view model is owned once by ContentView and handed down as a
@@ -237,6 +242,8 @@ struct ContentView: View {
                 case .importReview:
                     // Account and file are picked on the Dashboard's import card (spec §6).
                     ImportView(viewModel: importViewModel)
+                case .imports:
+                    ImportsScreen(center: environment.importCenter)
                 case .budgetGrid:
                     BudgetGridView(viewModel: budgetGridViewModel)
                         .onAppear {
@@ -280,6 +287,23 @@ struct ContentView: View {
             .onReceive(propertyViewModel.$snapshot) { snapshot in
                 if snapshot.property?.name != propertyName { propertyName = snapshot.property?.name }
             }
+            // Files and folders dropped anywhere on a screen go to the document importer
+            // (a screen's own drop target, e.g. Documents', takes its drops first).
+            .overlay {
+                if importDropTargeted {
+                    // The Documents drop zone's outline (no design-system token for it).
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(theme.accent, lineWidth: 2)
+                        .padding(4)
+                        .allowsHitTesting(false)
+                }
+            }
+            .dropDestination(for: URL.self) { urls, _ in
+                let files = urls.filter(\.isFileURL)
+                guard !files.isEmpty else { return false }
+                environment.importCenter.start(files, intent: .none, entryPoint: "Drop")
+                return true
+            } isTargeted: { importDropTargeted = $0 }
             // The theme's window colour behind every screen (clear for Classic).
             .background(theme.windowBackground.ignoresSafeArea())
             .toolbar {
@@ -287,8 +311,18 @@ struct ContentView: View {
                     SidebarToggleButton(columnVisibility: $columnVisibility)
                 }
                 .sharedBackgroundVisibility(.hidden)
+                ToolbarItem(placement: .primaryAction) {
+                    Button { documentImport.pickFiles(.none, "Toolbar") } label: {
+                        Label("Import…", systemImage: "square.and.arrow.down.on.square")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Import documents (⇧⌘I)")
+                    .accessibilityLabel("Import documents")
+                }
+                .sharedBackgroundVisibility(.hidden)
             }
         }
+        .environment(\.documentImport, documentImport)
         .alert(
             "Save the \(importViewModel.confirmedCount) confirmed transaction\(importViewModel.confirmedCount == 1 ? "" : "s")?",
             isPresented: $showUnsavedImportAlert
@@ -325,6 +359,8 @@ struct ContentView: View {
             searchViewModel.onTransactionEdited = { refreshUncategorizedCount() }
             rulesViewModel.onTransactionsCategorised = { refreshUncategorizedCount() }
             propertyViewModel.onPropertiesChanged = { id in refreshProperties(select: id) }
+            environment.importCenter.onShow = { sidebarSelectionChanged(to: .screen(.imports)) }
+            environment.importCenter.onDataChanged = { documentImportChangedData() }
             refreshSharedState()
             snapshotSetup?.prepare(SnapshotScreenModels(
                 dashboard: dashboardViewModel, budgetGrid: budgetGridViewModel, scenarioLab: scenarioLabViewModel,
@@ -350,6 +386,8 @@ struct ContentView: View {
             sidebarSelectionChanged(to: .screen(.search))
             searchViewModel.requestFocus()
         })
+        // File ▸ Import… (⇧⌘I) in this window.
+        .focusedSceneValue(\.documentImport, documentImport)
         .onChange(of: selection) {
             // Screens can also be changed in code (the Dashboard's links, the alert below).
             if sidebarSelection != currentSidebarItem { sidebarSelection = currentSidebarItem }
@@ -373,6 +411,18 @@ struct ContentView: View {
             if selection == .dashboard { dashboardViewModel.load() }
             if selection == .accounts { accountsViewModel.load() }
         }
+    }
+
+    /// The window's document importer: File ▸ Import…, the toolbar button, screens' shortcuts.
+    private var documentImport: DocumentImportAction {
+        DocumentImportAction.forCenter(environment.importCenter)
+    }
+
+    /// A document import was applied or undone: what it may have changed is read again.
+    private func documentImportChangedData() {
+        refreshSharedState()
+        if selection == .dashboard { dashboardViewModel.load() }
+        if selection == .accounts { accountsViewModel.load() }
     }
 
     /// Search's Show in Budget: the Budget grid on the transaction's pay year, with its

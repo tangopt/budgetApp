@@ -41,9 +41,8 @@ final class TaxReceiptItemsTests: XCTestCase {
             var account = Account(name: "Bank A", currency: .eur, kind: .cash, trackingMode: .imported)
             try account.insert(db)
             ids["bank"] = account.id!
-            var batch = ImportBatch(accountId: account.id!, sourceFileName: "bank.csv", importedAt: Date())
-            try batch.insert(db)
-            ids["batch"] = batch.id!
+            try db.execute(sql: "INSERT INTO importBatch (accountId, sourceFileName, importedAt) VALUES (?, 'bank.csv', ?)", arguments: [account.id!, Date()])
+            ids["batch"] = db.lastInsertedRowID
             try Properties.setAccount(db: db, propertyId: p, accountId: account.id!, role: .current)
             var group = CategoryGroup(name: "Property A")
             try group.insert(db)

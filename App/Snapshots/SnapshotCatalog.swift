@@ -27,7 +27,69 @@ struct SnapshotMissing: Error, CustomStringConvertible {
 /// link the demo builder (`BudgetDemo`).
 @MainActor
 enum SnapshotCatalog {
-    static var routes: [SnapshotRoute] { screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes }
+    /// `importRoutes` last: `imports-history` writes to the demo copy.
+    static var routes: [SnapshotRoute] { screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + importRoutes }
+
+    // MARK: Imports, from the demo's samples
+
+    /// The demo's import samples (`DemoImportSamples`, written to `ImportSamples` beside the
+    /// demo database) read by the real pipeline: the review with the first Needs-you item, the
+    /// P60 a filed return holds, the receipt in its Ready group — then (last: it writes to the
+    /// demo copy) the samples imported with Needs you left out, the history with that run, and
+    /// its undo refused after a document it filed was changed.
+    static var importRoutes: [SnapshotRoute] {
+        [
+            importReview("review", "Imports: the demo samples in review") { $0.items(in: .needsYou).first?.id },
+            importReview("review_filed", "Imports: the samples, a P60 held by a filed return") { plan in
+                plan.items(in: .needsYou).first { $0.issues.contains(where: ImportResolutions.isFiledYearHold) }?.id
+            },
+            importReview("review_ready", "Imports: the samples, a rent receipt ready") { plan in
+                plan.items(in: .ready).first { $0.recognition.kind == .evidence(.rentReceipt) }?.id
+            },
+            SnapshotRoute(name: "imports-history", title: "Imports: the samples imported, in the history", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                center.discard()
+                let plan = try await center.snapshotLeavingOutNeedsYou(try await center.snapshotPlan(try importSamples(context)))
+                try await center.snapshotApply(plan, entryPoint: "Demo samples")
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in })))
+            },
+            // After `imports-history` (it needs that run): a document the run filed is changed
+            // by hand, so Undo import… is refused with what changed since.
+            SnapshotRoute(name: "imports-history_undo_refused", title: "Imports: undo refused, a filed document changed since", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                center.discard()
+                await center.reloadRuns()
+                if !center.runs.contains(where: { $0.entryPoint == "Demo samples" && $0.undoneAt == nil }) {
+                    let plan = try await center.snapshotLeavingOutNeedsYou(try await center.snapshotPlan(try importSamples(context)))
+                    try await center.snapshotApply(plan, entryPoint: "Demo samples")
+                    center.discard()
+                }
+                try await center.snapshotRefusedUndo()
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in })))
+            }
+        ]
+    }
+
+    /// The samples read into a review, `select` choosing the document the preview shows.
+    static func importReview(_ tab: String, _ title: String, select: @escaping (ImportPlan) -> UUID?) -> SnapshotRoute {
+        SnapshotRoute(name: "imports-\(tab)", title: title, settleFactor: 1.5) { context in
+            let center = context.environment.importCenter
+            let plan = try await center.snapshotPlan(try importSamples(context))
+            guard let selected = select(plan) else { throw SnapshotMissing("The sample for \(tab)") }
+            return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                center.showSnapshotPlan(plan, selecting: selected)
+            })))
+        }
+    }
+
+    /// The files in `ImportSamples` beside the demo database, by name.
+    static func importSamples(_ context: SnapshotContext) throws -> [URL] {
+        guard let path = context.environment.databasePath else { throw SnapshotMissing("ImportSamples") }
+        let folder = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("ImportSamples", isDirectory: true)
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        guard !files.isEmpty else { throw SnapshotMissing("ImportSamples") }
+        return files.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
 
     // MARK: Screens
 
@@ -77,6 +139,37 @@ enum SnapshotCatalog {
                     await models.importReview.stagePDF(lines: demoStatementLines, config: demoStatementLayout, account: account,
                                                        sourceFileName: "Everyday Current October.pdf")
                 }
+            },
+            // The document importer with nothing in progress (no import history yet: `imports-history` comes last).
+            screen("imports", "main", "Imports", .imports),
+            // An invented review with every section filled (read only): the invoice with two
+            // possible debits selected, an unknown scan, a statement, figures to check. (The
+            // reviews of real files are `importRoutes`.)
+            screen("imports", "review_link", "Imports: review, a link to choose", .imports, settle: 1.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.invoiceId)
+            },
+            screen("imports", "review_kind", "Imports: review, an unknown scan", .imports, settle: 1.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.scanId)
+            },
+            screen("imports", "review_statement", "Imports: review, a statement with lines not read", .imports, settle: 1.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.statementId)
+            },
+            screen("imports", "review_figures", "Imports: review, a figure confirmed and one to check", .imports, settle: 1.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.figuresId)
+            },
+            // The statement left out: its rows already imported are out with it (no Put back of their own).
+            screen("imports", "review_left_out_rows", "Imports: review, a statement's rows left out with it", .imports, settle: 1.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                var plan = demo.plan
+                for index in plan.items.indices where plan.items[index].id == demo.statementId || plan.items[index].parentId == demo.statementId {
+                    plan.items[index].isLeftOut = true
+                }
+                let rows = plan.items.first { $0.parentId == demo.statementId }?.id
+                context.environment.importCenter.showSnapshotPlan(plan, selecting: rows)
             },
             SnapshotRoute(name: "settings-main", title: "Settings window") { _ in AnyView(SnapshotStandaloneCanvas(content: SettingsView())) }
         ]

@@ -50,12 +50,12 @@ final class DatabaseManagerTests: XCTestCase {
             // Raw SQL: the Account record has columns from later migrations.
             try db.execute(sql: "INSERT INTO account (name, currency, kind, trackingMode) VALUES ('A', 'gbp', 'cash', 'imported')")
             let accountId = db.lastInsertedRowID
-            var batch = ImportBatch(accountId: accountId, sourceFileName: "a.csv", importedAt: Date())
-            try batch.insert(db)
+            try db.execute(sql: "INSERT INTO importBatch (accountId, sourceFileName, importedAt) VALUES (?, 'a.csv', ?)", arguments: [accountId, Date()])
+            let batchId = db.lastInsertedRowID
             try db.execute(sql: """
                 INSERT INTO transaction_ (importBatchId, accountId, date, rawDescription, amountMinorUnits, status, categorizedBy, fingerprint)
                 VALUES (?, ?, ?, 'X', -100, 'pendingReview', 'none', 'f')
-                """, arguments: [batch.id, accountId, Date()])
+                """, arguments: [batchId, accountId, Date()])
         }
         try manager.migrate()
         let columns = try manager.dbQueue.read { db in try db.columns(in: "transaction_").map(\.name) }

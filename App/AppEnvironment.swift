@@ -7,6 +7,9 @@ import OSLog
 @MainActor
 final class AppEnvironment: ObservableObject {
     let dbQueue: DatabaseQueue
+    /// The database file (nil for an in-memory one): the document importer backs it up
+    /// before a large import.
+    let databasePath: String?
     /// Where the evidence library keeps its copies: beside the database.
     let evidenceRoot: URL
     /// Set once, right after launch, only if the fetched rate actually differs from the
@@ -18,9 +21,15 @@ final class AppEnvironment: ObservableObject {
     /// The Euribor monthly averages the mortgages follow, fetched in the background (after
     /// launch, and whenever a property page opens).
     let interestIndexAutoFetch: InterestIndexAutoFetch
+    /// The one document importer (File ▸ Import…, the toolbar, a drop on the window, the
+    /// Imports screen), made when first used.
+    lazy var importCenter: ImportCenterModel = ImportCenterModel(
+        dbQueue: dbQueue, databasePath: databasePath, library: evidenceLibrary,
+        categorizationService: CategorizationService(categorizer: OnDeviceCategorizer.systemDefault()))
 
-    private init(dbQueue: DatabaseQueue, evidenceRoot: URL) {
+    private init(dbQueue: DatabaseQueue, databasePath: String?, evidenceRoot: URL) {
         self.dbQueue = dbQueue
+        self.databasePath = databasePath
         self.evidenceRoot = evidenceRoot
         self.hmrcRateAutoFetch = HMRCRateAutoFetch(dbQueue: dbQueue)
         self.interestIndexAutoFetch = InterestIndexAutoFetch(dbQueue: dbQueue)
@@ -73,7 +82,7 @@ final class AppEnvironment: ObservableObject {
         // `Evidence` next to the database: `Application Support/Budget/Evidence` normally, and
         // beside a `BUDGET_DB_PATH` copy when testing against one.
         let evidenceRoot = URL(fileURLWithPath: dbPath).deletingLastPathComponent().appendingPathComponent("Evidence", isDirectory: true)
-        let environment = AppEnvironment(dbQueue: dbQueue, evidenceRoot: evidenceRoot)
+        let environment = AppEnvironment(dbQueue: dbQueue, databasePath: dbPath, evidenceRoot: evidenceRoot)
         AppEnvironment.Current.shared.environment = environment
         // Every transaction's paperclip count, kept current from here on.
         TransactionDocumentCounts.shared.start(dbQueue: dbQueue)

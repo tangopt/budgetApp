@@ -373,6 +373,40 @@ public struct EvidenceLibrary: Sendable {
         try? FileManager.default.removeItem(at: fileURL(for: document))
     }
 
+    /// Deletes the stored copies `add(db:…)` placed (`StagedAdd.placedFile`) in a transaction
+    /// that then rolled back — each only when no document row references its stored path, and
+    /// only files under `root`. Returns how many files went; throws the first removal that
+    /// failed (after trying them all).
+    @discardableResult
+    public func removeOrphanedFiles(placedFiles: [URL]) throws -> Int {
+        let rootPath = root.standardizedFileURL.path + "/"
+        let candidates = placedFiles.compactMap { url -> (url: URL, relative: String)? in
+            let path = url.standardizedFileURL.path
+            guard path.hasPrefix(rootPath) else { return nil }
+            return (url, String(path.dropFirst(rootPath.count)))
+        }
+        guard !candidates.isEmpty else { return 0 }
+        let referenced = try database.read { db in
+            try Set(String.fetchAll(db, sql: "SELECT storedRelativePath FROM document WHERE storedRelativePath IN (\(candidates.map { _ in "?" }.joined(separator: ",")))",
+                                    arguments: StatementArguments(candidates.map(\.relative))))
+        }
+        var removed = 0
+        var failure: Error?
+        for candidate in candidates where !referenced.contains(candidate.relative) {
+            do {
+                try FileManager.default.removeItem(at: candidate.url)
+                removed += 1
+            } catch CocoaError.fileNoSuchFile {
+                continue
+            } catch {
+                failure = failure ?? error
+            }
+        }
+        // Every file was tried; the first that couldn't be removed is reported.
+        if let failure { throw failure }
+        return removed
+    }
+
     // MARK: Reading
 
     public func document(sha256: String) throws -> EvidenceDocument? {

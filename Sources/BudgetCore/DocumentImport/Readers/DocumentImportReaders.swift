@@ -1,0 +1,506 @@
+import GRDB
+import Foundation
+
+private func isoDay(_ date: Date) -> String { PropertyDates.isoDay(date) }
+
+/// "DEMO PWR DD 123 −€100.00" for a transaction offered or linked.
+private func transactionLabel(_ transaction: Transaction, currency: Currency) -> String {
+    "\(transaction.rawDescription) \(Money.format(transaction.amountMinorUnits, currency: currency))"
+}
+
+/// What a record is called in the review: a transaction's description and amount, an account's
+/// or category's name, a property or tax record's title.
+func entityLabel(db: Database, _ entity: EvidenceEntity) throws -> String {
+    try entityTitle(db: db, entity) ?? "\(entity.type.displayName) #\(entity.id)"
+}
+
+/// The record's title; `nil` when it no longer exists (`.other` records are named by id).
+private func entityTitle(db: Database, _ entity: EvidenceEntity) throws -> String? {
+    switch entity.type {
+    case .transaction:
+        if let transaction = try Transaction.fetchOne(db, key: entity.id) {
+            let currency = try Account.fetchOne(db, key: transaction.accountId)?.currency ?? .eur
+            return transactionLabel(transaction, currency: currency)
+        }
+    case .account:
+        if let account = try Account.fetchOne(db, key: entity.id) { return account.displayName }
+    case .category:
+        if let category = try Category.fetchOne(db, key: entity.id) { return category.name }
+    case .property, .person, .tenancy, .rentReceipt:
+        if let title = try PropertyEvidence.title(db: db, entity: entity) { return title }
+    case .taxYear, .taxManualItem, .employment, .employmentIncome, .hmrcPayment, .otherIncome, .pensionContribution, .taxPolicyReceipt:
+        if let title = try TaxEvidence.title(db: db, entity: entity) { return title }
+    case .other:
+        return "\(entity.type.displayName) #\(entity.id)"
+    }
+    return nil
+}
+
+/// "5 Mar 2023", the app's day style.
+private func dayText(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.calendar = MonthRange.calendar
+    formatter.timeZone = MonthRange.calendar.timeZone
+    formatter.locale = Locale(identifier: "en_GB")
+    formatter.dateFormat = "d MMM yyyy"
+    return formatter.string(from: date)
+}
+
+/// The reason of a `chooseTarget` issue: the question, or — with nothing to choose from — that
+/// the record has to be added first or the file left out.
+private func targetReason(_ question: String, options: [Int64], none: String) -> String {
+    options.isEmpty ? "\(none) on record: add one first, or leave this file out of the import" : question
+}
+
+/// A reader problem with a running id.
+private func problem(_ item: inout ImportItem, _ text: String, offers: [ImportResolution] = []) {
+    item.issues.append(ImportIssue(id: "readerProblem\(item.issues.count)", kind: .readerProblem(text), reason: text, offers: offers))
+}
+
+// MARK: Utility invoices
+
+/// A utility provider's invoice (or credit note): read with the provider's rules
+/// (`UtilityInvoiceIntake.propose`), matched to the debit that paid it.
+public struct UtilityInvoiceImportReader: ImportReader {
+    /// Id of the issue of an invoice no record can be made of (only "file the document only",
+    /// `.fileWithoutLink`, or a provider choice settles it).
+    public static let documentOnlyIssueId = "noInvoiceRecord"
+    /// The note of an invoice filed as a document only.
+    public static let documentOnlyNote = "No invoice record: only the document is filed"
+
+    static let documentOnlyIssue: ImportIssue = {
+        let text = "No invoice record can be made from this file: choose its provider, or file the document only"
+        return ImportIssue(id: documentOnlyIssueId, kind: .readerProblem(text), reason: text, offers: [.fileWithoutLink])
+    }()
+
+    /// Providers to recognise invoices by when the context has none.
+    public var providers: [UtilityProvider]
+
+    public init(providers: [UtilityProvider] = []) {
+        self.providers = providers
+    }
+
+    public func handles(_ kind: ImportKind) -> Bool { kind == .utilityInvoice }
+
+    public func propose(_ files: [(file: ImportFile, recognition: ImportRecognition)], context: ImportContext, db: Database) throws -> [ImportItem] {
+        try files.map { try item(file: $0.file, recognition: $0.recognition, context: context, db: db) }
+    }
+
+    private func item(file: ImportFile, recognition: ImportRecognition, context: ImportContext, db: Database) throws -> ImportItem {
+        let groupKey = "Utility invoices"
+        var item = ImportItem(file: file, recognition: recognition, title: "Utility invoice", groupKey: groupKey)
+        let known = context.providers.isEmpty ? providers : context.providers
+        // The provider the user chose, else the one the invoice names.
+        let chosen = context.intent.providerId.flatMap { id in known.first { $0.id == id } }
+        let detected = chosen ?? UtilityInvoiceReader.provider(text: file.text, fileName: file.fileName, providers: known)
+
+        // The property: the import's target, else the provider's.
+        var property: Property?
+        if let id = context.intent.propertyId, let found = context.properties.first(where: { $0.id == id }) {
+            property = found
+            if let detected, detected.propertyId != id {
+                let owner = context.properties.first { $0.id == detected.propertyId }
+                item.issues.append(ImportIssue(id: "chooseTarget", kind: .chooseTarget(.property, options: [id, detected.propertyId]),
+                                               reason: "\(detected.name) is a provider of \(owner?.name ?? "another property"), not \(found.name): "
+                                                   + "which property is this invoice for?"))
+            }
+        } else if let detected {
+            property = context.properties.first { $0.id == detected.propertyId }
+        }
+        guard let property, let propertyId = property.id else {
+            let providerIds = known.compactMap(\.id)
+            if providerIds.isEmpty {
+                let options = context.properties.compactMap(\.id)
+                item.issues.append(ImportIssue(id: "chooseTarget", kind: .chooseTarget(.property, options: options),
+                                               reason: targetReason("No provider of a property recognised: which property is this invoice for?",
+                                                                    options: options, none: "No properties")))
+            } else {
+                item.issues.append(ImportIssue(id: "chooseProvider", kind: .chooseTarget(.provider, options: providerIds),
+                                               reason: "No provider recognised: whose invoice is this?"))
+            }
+            item.issues.append(Self.documentOnlyIssue)
+            return item
+        }
+
+        let proposal: UtilityInvoiceIntake.Proposal
+        do {
+            proposal = try UtilityInvoiceIntake.propose(db: db, propertyId: propertyId, documentId: nil, text: file.text,
+                                                        fileName: file.fileName, textStatus: file.textStatus, usedOCR: file.usedOCR,
+                                                        providerId: chosen?.id)
+        } catch {
+            problem(&item, "The invoice could not be read: \(error.localizedDescription)")
+            return item
+        }
+        let reading = proposal.reading
+        let provider = try reading.providerId.flatMap { try UtilityProvider.fetchOne(db, key: $0) }
+        let currency = property.currency
+        let source: ImportFactSource = file.usedOCR ? .ocr : .textLayer
+        // The same reading without the file name: what it lacks came from the file name.
+        let textOnly = UtilityInvoiceReader.read(text: file.text, fileName: "", rules: provider?.effectiveRules ?? .generic)
+
+        // Facts, with where each was read.
+        var facts: [ImportFact] = []
+        if let provider {
+            let fromText = UtilityInvoiceReader.provider(text: file.text, fileName: "", providers: [provider]) != nil
+            if let chosen, chosen.id == provider.id {
+                facts.append(ImportFact(field: .issuer, value: .text(provider.name), source: .user, confidence: .certain,
+                                        reason: "Chosen by you"))
+            } else {
+                facts.append(ImportFact(field: .issuer, value: .text(provider.name), source: fromText ? source : .fileName,
+                                        confidence: .certain, reason: fromText ? "\(provider.name)'s wording on the invoice" : "File name names \(provider.name)"))
+            }
+        }
+        if let number = reading.invoiceNumber {
+            facts.append(ImportFact(field: .invoiceNumber, value: .text(number), source: source, confidence: .certain,
+                                    reason: "Invoice number on the invoice"))
+        }
+        if let issued = reading.issueDate {
+            let fromText = textOnly.issueDate != nil
+            facts.append(ImportFact(field: .docDate, value: .date(issued), source: fromText ? source : .fileName, confidence: .certain,
+                                    reason: "Issue date on the invoice"))
+        }
+        if let start = reading.periodStart {
+            facts.append(ImportFact(field: .periodStart, value: .date(start), source: source, confidence: .certain, reason: "Period on the invoice"))
+        }
+        if let end = reading.periodEnd {
+            facts.append(ImportFact(field: .periodEnd, value: .date(end), source: source, confidence: .certain, reason: "Period on the invoice"))
+        }
+        if let amount = reading.amountMinorUnits {
+            facts.append(ImportFact(field: .amount, value: .money(amount, currency), source: source, confidence: .certain,
+                                    reason: amount < 0 ? "Refund on the invoice" : "Amount due on the invoice"))
+        }
+        item.facts = facts
+        item.placement = ImportNaming.placement(kind: .utilityInvoice, facts: facts, file: file, persons: [])
+        let providerName = provider?.name ?? "a utility provider"
+        item.title = [reading.amountMinorUnits.map { $0 < 0 ? "Credit note" : "Invoice" } ?? "Invoice",
+                      reading.invoiceNumber, "of \(providerName)"].compactMap { $0 }.joined(separator: " ")
+            + (reading.issueDate.map { ", \(dayText($0))" } ?? "")
+
+        // What is missing, and what to check.
+        let missingFields: [String: (ImportFigureField, String)] = [
+            "provider": (.issuer, "No provider recognised: which provider's invoice is it?"),
+            "issue date": (.docDate, "No issue date could be read"),
+            "amount": (.amount, "No amount could be read")
+        ]
+        let propertyProviders = try Recharges.providers(db: db, propertyId: propertyId).compactMap(\.id)
+        for missing in proposal.missing {
+            if missing == "provider", !propertyProviders.isEmpty {
+                item.issues.append(ImportIssue(id: "chooseProvider", kind: .chooseTarget(.provider, options: propertyProviders),
+                                               reason: "No provider recognised: which provider's invoice is it?"))
+                continue
+            }
+            guard let (field, reason) = missingFields[missing] else {
+                problem(&item, "No \(missing) could be read")
+                continue
+            }
+            item.issues.append(ImportIssue(id: "missingFigure.\(field.rawValue)", kind: .missingFigure(field), reason: reason))
+        }
+        if let copy = try proposal.duplicateOf.flatMap({ try UtilityInvoice.fetchOne(db, key: $0) }) {
+            let named = copy.invoiceNumber ?? reading.invoiceNumber
+            item.duplicate = ImportDuplicate(level: .document,
+                                             of: named.map { "Invoice \($0) of \(providerName) already recorded" }
+                                                 ?? "Invoice of \(isoDay(copy.issueDate)) of \(providerName) already recorded",
+                                             existingDocumentId: copy.documentId)
+        }
+        for warning in proposal.warnings where !(proposal.duplicateOf != nil && warning.hasPrefix("A copy of the invoice")) {
+            problem(&item, warning)
+        }
+
+        // The payment: certain only when exactly one movement of the exact amount in the issue
+        // window is the provider's (bank description) or in a utility category — the one the
+        // intake proposed; else the user picks, the likely ones first.
+        guard var invoice = proposal.invoice else {
+            // No invoice record without provider, date and amount: the user chooses the
+            // provider (read again), or files the document only.
+            item.issues.append(Self.documentOnlyIssue)
+            return item
+        }
+        let accountCurrency: (Transaction) throws -> Currency = { try Account.fetchOne(db, key: $0.accountId)?.currency ?? currency }
+        let utilityCategories = try RechargeNetting.utilityCategoryIds(db: db, propertyId: propertyId)
+        let amountText = Money.format(abs(invoice.amountMinorUnits), currency: currency)
+        func why(_ transaction: Transaction) -> String? {
+            if provider?.matchesBankDescription(transaction.rawDescription) == true { return "its description is \(providerName)'s" }
+            if utilityCategories.contains(transaction.categoryId ?? -1) { return "it is in a utility category" }
+            return nil
+        }
+        let candidates = try UtilityInvoiceIntake.paymentCandidates(db: db, propertyId: propertyId, provider: provider,
+                                                                    amountMinorUnits: invoice.amountMinorUnits, issueDate: invoice.issueDate)
+        let qualifying = candidates.filter { why($0) != nil }
+        if qualifying.count == 1, let payment = qualifying.first, let paymentId = payment.id, proposal.transactionId == paymentId,
+           let reason = why(payment) {
+            item.links = [ProposedLink(entity: .transaction(paymentId), label: transactionLabel(payment, currency: try accountCurrency(payment)),
+                                       confidence: .certain,
+                                       reasons: ["Booked on \(isoDay(payment.date)) for exactly \(amountText); \(reason)"],
+                                       madeByEffect: true)]
+        } else {
+            invoice.transactionId = nil
+            if candidates.isEmpty {
+                item.notes.append("Not linked: no matching debit yet")
+            } else {
+                let offered = try candidates.prefix(5).compactMap { transaction -> LinkCandidate? in
+                    guard let id = transaction.id else { return nil }
+                    let reason = why(transaction).map { "Booked on \(isoDay(transaction.date)) for exactly \(amountText); \($0)" }
+                        ?? "Booked on \(isoDay(transaction.date)) for exactly \(amountText), but neither \(providerName)'s description nor a utility category"
+                    return LinkCandidate(entity: .transaction(id), label: transactionLabel(transaction, currency: try accountCurrency(transaction)),
+                                         reasons: [reason])
+                }
+                let reason = qualifying.count >= 2
+                    ? "\(qualifying.count) movements of \(amountText) look like \(providerName)'s: which one paid this invoice?"
+                    : "A movement of the amount fits, but nothing shows it is \(providerName)'s: which one paid it?"
+                item.issues.append(ImportIssue(id: "chooseLink", kind: .chooseLink(offered), reason: reason, offers: [.fileWithoutLink]))
+            }
+        }
+        item.effect = .utilityInvoice(invoice)
+        return item
+    }
+}
+
+// MARK: Payroll forms
+
+/// P60, P45 and P11D forms (`PayrollFormReader`), for the person whose National Insurance
+/// number they show.
+public struct PayrollFormImportReader: ImportReader {
+    /// Vision's accurate recogniser for scans (false: the fast one).
+    public var accurateOCR: Bool
+
+    public init(accurateOCR: Bool = true) {
+        self.accurateOCR = accurateOCR
+    }
+
+    public func handles(_ kind: ImportKind) -> Bool {
+        if case .payrollForm = kind { return true }
+        return false
+    }
+
+    public func propose(_ files: [(file: ImportFile, recognition: ImportRecognition)], context: ImportContext, db: Database) throws -> [ImportItem] {
+        try files.map { try item(file: $0.file, recognition: $0.recognition, context: context, db: db) }
+    }
+
+    /// Reads the form's positioned words (OCR for a scan) into `file.payrollExtraction`. Called
+    /// by the pipeline in the file-reading stage, never inside the write transaction. A scan
+    /// is recognised again here: `ImportFile.load`'s OCR keeps text only, not word positions.
+    public func prepare(_ file: ImportFile, recognition: ImportRecognition) -> ImportFile {
+        guard case .payrollForm(let kind) = recognition.kind, file.payrollExtraction == nil else { return file }
+        var prepared = file
+        prepared.payrollExtraction = PayrollFormReader.read(file.url, kind: kind, accurateOCR: accurateOCR)
+        return prepared
+    }
+
+    /// Reader warnings that a missing-figure issue already says (or the OCR facts do).
+    private static let coveredWarnings: Set<String> = [
+        "Read by text recognition: check every figure against the document.",
+        "No text could be read: enter the figures by hand.",
+        "No employer PAYE reference found.", "No tax year found.", "No employer name found.",
+        "No pay and tax figures found.", "No leaving date found."
+    ]
+
+    private func item(file: ImportFile, recognition: ImportRecognition, context: ImportContext, db: Database) throws -> ImportItem {
+        guard case .payrollForm(let kind) = recognition.kind else {
+            return ImportItem(file: file, recognition: recognition, title: file.fileName, groupKey: "Payroll forms")
+        }
+        var item = ImportItem(file: file, recognition: recognition, title: kind.displayName, groupKey: "Payroll forms")
+        // Only what `prepare` read: no file reading (let alone OCR) inside the write transaction.
+        let extraction = file.payrollExtraction ?? PayrollFormExtraction(kind: kind, entryMethod: .manual)
+        if file.payrollExtraction == nil { problem(&item, "The form was not read before the review: add it again") }
+        let source: ImportFactSource = extraction.entryMethod == .ocr ? .ocr : .textLayer
+
+        // The person: the import's target, else the one the NI number names, else the user picks.
+        let suggested = try PayrollFormImport.suggestedPersonId(db: db, nationalInsuranceNumber: extraction.nationalInsuranceNumber)
+        let ninoText = extraction.nationalInsuranceNumber.map(PayrollFormImport.normalizedNINO) ?? ""
+        var person: Person?
+        var personSource = source
+        var personReason = ""
+        if let id = context.intent.personId, let found = context.people.first(where: { $0.id == id }) {
+            person = found
+            personSource = .intent
+            personReason = "Chosen as the import target"
+            if let suggested, suggested != id {
+                let owner = context.people.first { $0.id == suggested }?.name ?? "someone else"
+                item.issues.append(ImportIssue(id: "chooseTarget", kind: .chooseTarget(.person, options: [id, suggested]),
+                                               reason: "National Insurance number \(ninoText) is \(owner)'s, not \(found.name)'s: whose form is this?"))
+            }
+        } else if let suggested, let found = context.people.first(where: { $0.id == suggested }) {
+            person = found
+            personReason = "National Insurance number \(ninoText) is \(found.name)'s"
+        } else {
+            let why = ninoText.isEmpty ? "No National Insurance number read" : "National Insurance number \(ninoText) is no one's on record"
+            let options = context.people.compactMap(\.id)
+            item.issues.append(ImportIssue(id: "chooseTarget", kind: .chooseTarget(.person, options: options),
+                                           reason: targetReason("\(why): whose \(kind.displayName) is this?", options: options, none: "No people")))
+        }
+
+        // Facts, all from the form (OCR: every one needs checking).
+        var facts: [ImportFact] = []
+        func add(_ field: ImportFigureField, _ value: ImportFactValue, _ reason: String) {
+            facts.append(ImportFact(field: field, value: value, source: source, confidence: .certain, reason: reason))
+        }
+        if let employer = extraction.employerName { add(.issuer, .text(employer), "Employer on the \(kind.displayName)") }
+        if let year = extraction.startYear { add(.taxYear, .year(year), "Tax year on the \(kind.displayName)") }
+        if let reference = extraction.payeReference { add(.reference, .text(reference), "Employer PAYE reference on the \(kind.displayName)") }
+        if let pay = extraction.payMinorUnits { add(.pay, .money(pay, .gbp), "Pay in this employment") }
+        if let tax = extraction.taxDeductedMinorUnits { add(.taxDeducted, .money(tax, .gbp), "Tax deducted in this employment") }
+        if kind == .p11d {
+            let total = extraction.benefits.reduce(0) { $0 + $1.cashEquivalentMinorUnits }
+            if !extraction.benefits.isEmpty { add(.amount, .money(total, .gbp), "Cash equivalents of the benefits") }
+        }
+        if kind == .p45, let leaving = extraction.leavingDate { add(.docDate, .date(leaving), "Leaving date on the P45") }
+        if let person {
+            facts.append(ImportFact(field: .person, value: .text(person.name), source: personSource, confidence: .certain, reason: personReason))
+        }
+        item.facts = facts
+        item.placement = ImportNaming.placement(kind: recognition.kind, facts: facts, file: file,
+                                                persons: person.map { [$0.displayShortName] } ?? [])
+        item.title = [kind.displayName, extraction.employerName,
+                      extraction.startYear.map { UKTaxYear(startYear: $0).label }].compactMap { $0 }.joined(separator: " ")
+
+        // What stops it being saved, and what the reader wasn't sure of.
+        let confirmed = PayrollFormImport.Confirmed(extraction, kind: kind, personId: person?.id ?? 0)
+        for found in PayrollFormImport.problems(confirmed) {
+            switch found {
+            case .missingTaxYear:
+                item.issues.append(ImportIssue(id: "missingFigure.taxYear", kind: .missingFigure(.taxYear), reason: "No tax year could be read"))
+            case .missingEmployer:
+                item.issues.append(ImportIssue(id: "missingFigure.issuer", kind: .missingFigure(.issuer), reason: "No employer could be read"))
+            case .missingPayOrTax:
+                let field: ImportFigureField = extraction.payMinorUnits == nil ? .pay : .taxDeducted
+                item.issues.append(ImportIssue(id: "missingFigure.\(field.rawValue)", kind: .missingFigure(field),
+                                               reason: "No pay and tax figures could be read"))
+            case .missingLeavingDate:
+                item.issues.append(ImportIssue(id: "missingFigure.docDate", kind: .missingFigure(.docDate), reason: "No leaving date could be read"))
+            case .leavingDateOutsideYear:
+                problem(&item, "The leaving date isn't in the form's tax year")
+            case .invalidPAYEReference:
+                problem(&item, "The employer PAYE reference \(extraction.payeReference ?? "") isn't like 123/AB456")
+            }
+        }
+        for warning in extraction.warnings where !Self.coveredWarnings.contains(warning) {
+            problem(&item, warning, offers: [.acknowledge])
+        }
+
+        guard let person, let personId = person.id else { return item }
+        item.effect = .payrollForm(PayrollFormImport.Confirmed(extraction, kind: kind, personId: personId))
+        if let year = extraction.startYear,
+           let employment = try Employments.find(db: db, startYear: year, personId: personId, payeReference: extraction.payeReference,
+                                                 employerName: extraction.employerName),
+           let employmentId = employment.id {
+            let label = UKTaxYear(startYear: year).label
+            let why: String
+            if let reference = try? Employments.normalizedPAYEReference(extraction.payeReference), employment.payeReference == reference {
+                why = "PAYE reference \(reference) matches \(person.name)'s employment in \(label)"
+            } else {
+                why = "\(employment.employerName) is \(person.name)'s employer in \(label)"
+            }
+            item.links = [ProposedLink(entity: .employment(employmentId), role: kind.displayName,
+                                       label: try entityLabel(db: db, .employment(employmentId)), confidence: .certain,
+                                       reasons: [why], madeByEffect: true)]
+        } else if let year = extraction.startYear, let employer = extraction.employerName {
+            item.notes.append("Creates \(person.name)'s employment at \(employer) in \(UKTaxYear(startYear: year).label)")
+        }
+        return item
+    }
+}
+
+// MARK: Other evidence documents
+
+/// Any other recognised document (insurance, IMI, condomínio, tax letters …) and unrecognised
+/// files: read with `EvidenceAnalyzer`, linked to the transaction `EvidenceMatcher` is sure of.
+public struct EvidenceDocumentReader: ImportReader {
+    public init() {}
+
+    public func handles(_ kind: ImportKind) -> Bool {
+        if case .evidence = kind { return true }
+        return kind == .unknown
+    }
+
+    public func propose(_ files: [(file: ImportFile, recognition: ImportRecognition)], context: ImportContext, db: Database) throws -> [ImportItem] {
+        guard !files.isEmpty else { return [] }
+        let index = EvidenceMatcher.Index(transactions: try Transaction.fetchAll(db), accounts: try Account.fetchAll(db),
+                                          categories: try Category.fetchAll(db))
+        let targetLabel = try context.intent.target.flatMap { try entityTitle(db: db, $0.entity) }
+        return try files.map { try item(file: $0.file, recognition: $0.recognition, context: context, index: index,
+                                         targetLabel: targetLabel, db: db) }
+    }
+
+    /// Suggestions this close to the best are as good: the user picks.
+    static let tieMargin = 20
+
+    private func item(file: ImportFile, recognition: ImportRecognition, context: ImportContext, index: EvidenceMatcher.Index,
+                      targetLabel: String?, db: Database) throws -> ImportItem {
+        guard case .evidence(let kind) = recognition.kind else {
+            var item = ImportItem(file: file, recognition: recognition, title: file.fileName, groupKey: "Other documents")
+            item.issues.append(ImportIssue(id: "unknownKind", kind: .unknownKind(proposed: nil), reason: "What kind of document is this?"))
+            item.placement = ImportNaming.placement(kind: .unknown, facts: [], file: file, persons: [])
+            return item
+        }
+        let analysis = EvidenceAnalyzer.analyze(text: file.text, textStatus: file.textStatus, fileName: file.fileName)
+        let metadata = analysis.metadata
+        let source: ImportFactSource = file.usedOCR ? .ocr : .textLayer
+        let body = file.text.map(EvidenceText.fold) ?? ""
+
+        var facts: [ImportFact] = []
+        if let date = metadata.docDate {
+            // The same analysis without the file name: no date there means the file name's.
+            let fromText = !body.isEmpty
+                && EvidenceAnalyzer.analyze(text: file.text, textStatus: file.textStatus, fileName: "").metadata.docDate != nil
+            facts.append(ImportFact(field: .docDate, value: .date(date), source: fromText ? source : .fileName, confidence: .certain,
+                                    reason: "Date on the document"))
+        }
+        if let start = metadata.periodStart {
+            facts.append(ImportFact(field: .periodStart, value: .date(start), source: source, confidence: .certain, reason: "Period on the document"))
+        }
+        if let end = metadata.periodEnd {
+            facts.append(ImportFact(field: .periodEnd, value: .date(end), source: source, confidence: .certain, reason: "Period on the document"))
+        }
+        if let amount = metadata.amountMinorUnits, let currency = metadata.currency {
+            facts.append(ImportFact(field: .amount, value: .money(amount, currency), source: source, confidence: .certain,
+                                    reason: "Amount on the document"))
+        }
+        var item = ImportItem(file: file, recognition: recognition, title: kind.displayName, facts: facts,
+                              groupKey: "\(kind.displayName) documents")
+        item.placement = ImportNaming.placement(kind: recognition.kind, facts: facts, file: file, persons: [])
+        if let date = metadata.docDate { item.title = "\(kind.displayName) of \(isoDay(date))" }
+
+        // The link, by fixed rules: the user's target, a single clear match, else the user picks.
+        if let target = context.intent.target {
+            if let label = targetLabel {
+                item.links = [ProposedLink(entity: target.entity, role: target.role, label: label, confidence: .certain,
+                                           reasons: ["You added it to \(label)"])]
+            } else {
+                problem(&item, "The \(target.entity.type.displayName.lowercased()) you added it to no longer exists",
+                        offers: [.fileWithoutLink])
+            }
+            return item
+        }
+        let document = EvidenceDocument(sha256: file.sha256, storedRelativePath: "", originalFileName: file.fileName,
+                                        byteCount: file.byteCount, kind: kind, docDate: metadata.docDate,
+                                        periodStart: metadata.periodStart, periodEnd: metadata.periodEnd,
+                                        amountMinorUnits: metadata.amountMinorUnits, currency: metadata.currency,
+                                        textStatus: file.textStatus, extractedText: file.text, addedAt: context.now)
+        let suggestions = EvidenceMatcher.suggestions(document: document, index: index)
+        func candidate(_ suggestion: EvidenceMatcher.Suggestion) throws -> LinkCandidate {
+            LinkCandidate(entity: .transaction(suggestion.transactionId), label: try entityLabel(db: db, .transaction(suggestion.transactionId)),
+                          reasons: suggestion.reasons)
+        }
+        // A clear winner only: no other exact amount within `tieMargin` points of it.
+        let confident = EvidenceMatcher.confidentMatch(suggestions).flatMap { match in
+            suggestions.contains { $0.transactionId != match.transactionId && $0.amountMatched && match.score - $0.score <= Self.tieMargin }
+                ? nil : match
+        }
+        if let match = confident {
+            item.links = [ProposedLink(entity: .transaction(match.transactionId), label: try entityLabel(db: db, .transaction(match.transactionId)),
+                                       confidence: .certain, reasons: match.reasons)]
+        } else if suggestions.count == 1, let only = suggestions.first, only.amountMatched, !only.dateInWindow, !only.referenceMatched {
+            item.issues.append(ImportIssue(id: "chooseLink", kind: .chooseLink([try candidate(only)]), reason: "Matched on amount only",
+                                           offers: [.fileWithoutLink]))
+        } else if let best = suggestions.first {
+            let close = suggestions.filter { best.score - $0.score <= Self.tieMargin }
+            let reason = close.count >= 2 ? "\(close.count) transactions fit equally well: which one is it?"
+                : "A transaction may fit, but not surely: is it this one?"
+            item.issues.append(ImportIssue(id: "chooseLink", kind: .chooseLink(try suggestions.prefix(5).map(candidate)), reason: reason,
+                                           offers: [.fileWithoutLink]))
+        } else {
+            item.notes.append("Not linked: no matching transaction yet")
+        }
+        return item
+    }
+}

@@ -84,11 +84,18 @@ public enum UtilityInvoiceIntake {
         }
     }
 
-    /// Reads `text` with the property's providers' rules and proposes the debit.
+    /// Reads `text` with the property's providers' rules and proposes the debit; `providerId`
+    /// (one of the property's providers, chosen by the user) reads it with that provider's rules.
     public static func propose(db: Database, propertyId: Int64, documentId: Int64?, text: String?, fileName: String,
-                               textStatus: DocumentTextStatus, usedOCR: Bool = false) throws -> Proposal {
+                               textStatus: DocumentTextStatus, usedOCR: Bool = false, providerId: Int64? = nil) throws -> Proposal {
         let providers = try Recharges.providers(db: db, propertyId: propertyId)
-        let reading = UtilityInvoiceReader.read(text: text, fileName: fileName, providers: providers)
+        var reading: UtilityInvoiceReading
+        if let chosen = providers.first(where: { $0.id != nil && $0.id == providerId }) {
+            reading = UtilityInvoiceReader.read(text: text, fileName: fileName, rules: chosen.effectiveRules)
+            reading.providerId = chosen.id
+        } else {
+            reading = UtilityInvoiceReader.read(text: text, fileName: fileName, providers: providers)
+        }
         var proposal = Proposal(documentId: documentId, fileName: fileName, reading: reading, transactionId: nil,
                                 textStatus: textStatus, usedOCR: usedOCR)
         let provider = providers.first { $0.id == reading.providerId }

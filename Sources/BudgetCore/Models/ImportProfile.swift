@@ -1,11 +1,11 @@
 import GRDB
 
-public enum ImportFormat: String, Codable, CaseIterable {
+public enum ImportFormat: String, Codable, CaseIterable, Sendable {
     case csv
     case pdf
 }
 
-public struct ImportProfile: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord {
+public struct ImportProfile: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var id: Int64?
     public var accountId: Int64
     public var format: ImportFormat

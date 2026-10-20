@@ -8,9 +8,10 @@ import BudgetDemo
 //   MakeDemoDatabase <out.sqlite> [--evidence <dir>] [--force] [--long-tenancy <receipts>]
 //
 // The evidence PDFs go to `<dir>` (default: `Evidence` beside the database, where the app
-// looks). Refuses the app's own data folder. With `--force` it replaces an earlier demo: a
-// database carrying the demo id (`DemoMarker`) and an evidence folder holding the demo's
-// marker file (or empty) — never anything else.
+// looks), the document importer's samples (`DemoImportSamples`) to `ImportSamples` beside the
+// database. Refuses the app's own data folder. With `--force` it replaces an earlier demo: a
+// database carrying the demo id (`DemoMarker`), and evidence and samples folders holding the
+// demo's marker files (or empty) — never anything else.
 
 func fail(_ message: String, code: Int32 = 1) -> Never {
     FileHandle.standardError.write(Data("MakeDemoDatabase: \(message)\n".utf8))
@@ -45,7 +46,8 @@ let manager = FileManager.default
 let output = URL(fileURLWithPath: TaxRegression.resolvedPath(positional[0]))
 let evidence = URL(fileURLWithPath: TaxRegression.resolvedPath(evidencePath ?? output.deletingLastPathComponent()
     .appendingPathComponent("Evidence", isDirectory: true).path), isDirectory: true)
-if TaxRegression.isAppData(output.path) || TaxRegression.isAppData(evidence.path) {
+let samples = output.deletingLastPathComponent().appendingPathComponent("ImportSamples", isDirectory: true)
+if TaxRegression.isAppData(output.path) || TaxRegression.isAppData(evidence.path) || TaxRegression.isAppData(samples.path) {
     fail("refusing to write into the app's own data folder", code: 2)
 }
 
@@ -70,6 +72,15 @@ if manager.fileExists(atPath: evidence.path, isDirectory: &isDirectory) {
         replacesEvidence = true
     }
 }
+if manager.fileExists(atPath: samples.path, isDirectory: &isDirectory) {
+    guard isDirectory.boolValue else { fail("\(samples.path) is a file, not an import samples folder", code: 2) }
+    let contents = (try? manager.contentsOfDirectory(atPath: samples.path)) ?? []
+    if !contents.isEmpty {
+        guard force, contents.contains(DemoImportSamples.markerFileName) else {
+            fail("\(samples.path) holds files that aren't the demo's import samples: not replacing it", code: 2)
+        }
+    }
+}
 if replacesDatabase {
     for suffix in ["", "-wal", "-shm", "-journal"] { try? manager.removeItem(atPath: output.path + suffix) }
 }
@@ -81,6 +92,9 @@ do {
     let report = try DemoDatabase.build(at: output.path, evidenceRoot: evidence, longTenancyReceipts: longTenancyReceipts)
     print("Demo database: \(output.path)")
     print("Evidence: \(evidence.path)")
+    // The samples are made from the finished database; `write` replaces an earlier set.
+    let written = try DemoImportSamples.write(into: samples, databasePath: output.path)
+    print("Import samples: \(samples.path) (\(written.count) files)")
     print(report.summary)
 } catch {
     fail("\(error)")

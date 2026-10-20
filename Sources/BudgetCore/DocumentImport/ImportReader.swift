@@ -1,0 +1,65 @@
+import GRDB
+import Foundation
+
+/// What a reader may look at besides its files: the user's intent and the people, properties,
+/// accounts and providers on record.
+public struct ImportContext: Sendable {
+    public var intent: ImportIntent
+    public var properties: [Property]
+    public var people: [Person]
+    public var accounts: [Account]
+    public var providers: [UtilityProvider]
+    public var now: Date
+
+    public init(intent: ImportIntent = .none, properties: [Property] = [], people: [Person] = [], accounts: [Account] = [],
+                providers: [UtilityProvider] = [], now: Date = Date()) {
+        self.intent = intent
+        self.properties = properties
+        self.people = people
+        self.accounts = accounts
+        self.providers = providers
+        self.now = now
+    }
+
+    public static func load(db: Database, intent: ImportIntent, now: Date) throws -> ImportContext {
+        ImportContext(intent: intent, properties: try Properties.all(db: db), people: try Person.fetchAll(db),
+                      accounts: try Account.fetchAll(db), providers: try UtilityProvider.fetchAll(db), now: now)
+    }
+}
+
+/// Turns recognised files into proposed review items. Readers get every file of their kinds at
+/// once (batch-level planners).
+///
+/// Contract: the pipeline runs every reader inside one write transaction that always rolls back
+/// (`dbQueue.write { db in try db.inSavepoint { ...; return .rollback } }`). A reader may make
+/// changes only inside that pass (e.g. `RentReceiptImport.preview`); nothing it does persists.
+public protocol ImportReader: Sendable {
+    func handles(_ kind: ImportKind) -> Bool
+    func propose(_ files: [(file: ImportFile, recognition: ImportRecognition)], context: ImportContext, db: Database) throws -> [ImportItem]
+
+    /// Slow per-file reading (layout, OCR) a reader needs, done by the pipeline in the
+    /// file-reading stage (off the main actor, outside the write transaction) for each file
+    /// whose kind it handles; `propose` then only parses what is stored on the file.
+    /// Default: the file as it is.
+    func prepare(_ file: ImportFile, recognition: ImportRecognition) -> ImportFile
+}
+
+extension ImportReader {
+    public func prepare(_ file: ImportFile, recognition: ImportRecognition) -> ImportFile { file }
+}
+
+public enum ImportReaders {
+    /// Every built-in reader, in the order the pipeline asks them (the first that handles a
+    /// kind reads it).
+    public static func defaultReaders(providers: [UtilityProvider]) -> [any ImportReader] {
+        [
+            RentReceiptsExportReader(),
+            RentReceiptPDFReader(),
+            TransferAdviceReader(),
+            UtilityInvoiceImportReader(providers: providers),
+            PayrollFormImportReader(),
+            UKStatementReader(),
+            EvidenceDocumentReader()
+        ]
+    }
+}

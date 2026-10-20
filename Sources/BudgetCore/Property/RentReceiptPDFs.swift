@@ -133,15 +133,20 @@ public enum RentReceiptPDFs {
         public var textStatus: DocumentTextStatus
         public var usedOCR: Bool
         public var analysis: EvidenceAnalysis
+        /// The tenancy the user chose when the contract number is on several (ignored when it
+        /// isn't one of them).
+        public var tenancyId: Int64?
 
         public var fileName: String { fileURL.lastPathComponent }
 
-        public init(fileURL: URL, sha256: String, text: String?, textStatus: DocumentTextStatus, usedOCR: Bool = false) {
+        public init(fileURL: URL, sha256: String, text: String?, textStatus: DocumentTextStatus, usedOCR: Bool = false,
+                    tenancyId: Int64? = nil) {
             self.fileURL = fileURL
             self.sha256 = sha256
             self.text = text
             self.textStatus = textStatus
             self.usedOCR = usedOCR
+            self.tenancyId = tenancyId
             self.analysis = EvidenceAnalyzer.analyze(text: text, textStatus: textStatus, fileName: fileURL.lastPathComponent)
         }
     }
@@ -202,6 +207,8 @@ public enum RentReceiptPDFs {
         public var existingDocumentId: Int64?
         /// Other documents already linked to the receipt (another PDF of it).
         public var otherLinkedDocumentIds: [Int64]
+        /// NIF problems of this PDF (invalid or unreadable, or differing between PDFs of its contract).
+        public var nifProblems: [String] = []
     }
 
     public struct Plan: Equatable, Sendable {
@@ -287,7 +294,8 @@ public enum RentReceiptPDFs {
                 item.outcome = .noReceipt
                 continue
             }
-            guard tenancies.count == 1, let tenancy = tenancies.first else {
+            let chosen = tenancies.first { $0.id != nil && $0.id == input.tenancyId }
+            guard let tenancy = chosen ?? (tenancies.count == 1 ? tenancies.first : nil) else {
                 item.outcome = .ambiguousContract
                 continue
             }
@@ -332,26 +340,36 @@ public enum RentReceiptPDFs {
         var nifIssues: [String] = []
         var parties: [String] = []
         let parsedItems = items.filter { item in if case .duplicate = item.outcome { return false } else { return item.parsed != nil } }
+        var nifProblems: [String: [String]] = [:] // file hash → problems
         for (role, name, nif) in [("landlord", \Parsed.landlordName, \Parsed.landlordNIF), ("tenant", \Parsed.tenantName, \Parsed.tenantNIF)] {
+            let title = role.prefix(1).uppercased() + role.dropFirst()
             var byContract: [String: Set<String>] = [:]
             var invalid: [String: [String]] = [:]
+            var invalidShas: [String: [String]] = [:]
             for item in parsedItems {
                 let parsed = item.parsed!
                 let value = parsed[keyPath: nif] ?? "(none)"
                 byContract[parsed.contractNumber, default: []].insert(value)
-                if value != "(none)" && !isValidNIF(value) { invalid[value, default: []].append(item.fileName) }
-                else if value == "(none)" { invalid["(none)", default: []].append(item.fileName) }
+                if value != "(none)" && !isValidNIF(value) { invalid[value, default: []].append(item.fileName); invalidShas[value, default: []].append(item.sha256) }
+                else if value == "(none)" { invalid["(none)", default: []].append(item.fileName); invalidShas["(none)", default: []].append(item.sha256) }
                 let party = "\(role) \(parsed[keyPath: name] ?? "(unreadable)") NIF \(value) (contract \(parsed.contractNumber))"
                 if !parties.contains(party) { parties.append(party) }
             }
             for (contract, values) in byContract.sorted(by: { $0.key < $1.key }) where values.count > 1 {
+                for item in parsedItems where item.parsed?.contractNumber == contract {
+                    nifProblems[item.sha256, default: []].append("Contract \(contract) has \(values.count) different \(role) NIFs")
+                }
                 nifIssues.append("contract \(contract): \(values.count) different \(role) NIFs (\(values.sorted().joined(separator: ", ")))")
             }
             for (value, files) in invalid.sorted(by: { $0.key < $1.key }) {
+                for sha in invalidShas[value] ?? [] {
+                    nifProblems[sha, default: []].append(value == "(none)" ? "\(title) NIF unreadable" : "\(title) NIF \(value) fails the check digit")
+                }
                 nifIssues.append(value == "(none)" ? "\(role) NIF unreadable in \(files.count) PDF(s): \(files.joined(separator: ", "))"
                                  : "\(role) NIF \(value) fails the check digit (\(files.count) PDF(s))")
             }
         }
+        for index in items.indices { items[index].nifProblems = nifProblems[items[index].sha256] ?? [] }
         return Plan(items: items, receiptsWithoutPDF: receiptsWithoutPDF, cancelledReceipts: cancelled, nifIssues: nifIssues, parties: parties)
     }
 
