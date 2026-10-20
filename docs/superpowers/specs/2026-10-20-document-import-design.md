@@ -1,6 +1,6 @@
 # Import documents — one smart import for the whole app
 
-Status: design for approval (2026-10-20).
+Status: approved by the user 2026-10-20 (with the two additions marked "user, 2026-10-20").
 
 ## Intent and why
 
@@ -72,14 +72,14 @@ Other: anything else → archived with a user-chosen kind (and learnt).
 ## Calls made after the builder check (my calls — the user can overrule)
 
 1. **Undo reverts everything the batch did, or refuses.** Every write a batch makes (rows added, fields changed on existing records — employment figures, receipt/recharge matches, transfer links, evidence links — and documents filed) is recorded in a per-batch change log with before/after values. Undo puts all of it back. If anything the batch touched has been changed since (a transaction categorised or split, a link edited, a later batch building on it), undo refuses and lists what changed; no cascading. The existing `importBatch` table is extended (new migration) to hold this.
-2. **Filed or paid tax years.** An item whose effect would change any figure on a filed return is held in Needs you with the before/after figures and **cannot be confirmed**; the rest of the batch can still be confirmed. Figures that are information only (not on the return, e.g. the not-deductible line) may change and are listed in the item's preview. There is no in-app "accept a change to a filed figure" — consistent with the user's rule that filed returns cannot change. (Older statements that need filed-year set-up first are handled by setting the year up, then importing.)
+2. **Filed or paid tax years.** An item whose effect would change any figure on a filed return is held in Needs you and **cannot be confirmed**. It must explain the impact (user, 2026-10-20): which tax year and person, which return boxes and SA110 figures would change, before → after values and the tax difference (more or less to pay), and why (which transactions/documents cause it), so the user can decide what to do outside the import (e.g. ask the accountant, amend the return, mark the item not claimed); the rest of the batch can still be confirmed. Figures that are information only (not on the return, e.g. the not-deductible line) may change and are listed in the item's preview. There is no in-app "accept a change to a filed figure" — consistent with the user's rule that filed returns cannot change. (Older statements that need filed-year set-up first are handled by setting the year up, then importing.)
 3. **Statement decisions from today's review move into Needs you, per statement:**
    - a failed balance check is a Needs-you item; the user may import anyway only by giving a reason (recorded with the batch), as today's force option;
    - possible duplicate transactions appear as row-level Needs-you items under their statement (keep / skip each);
    - unparsed lines are listed under the statement as a Needs-you item;
    - saved category rules keep applying at import as today (auto-categorised rows still land as they do now; everything else is left for the Uncategorized screen);
    - a statement from a bank/layout with no saved profile becomes a Needs-you item that opens the existing CSV/PDF mapping step inside the review; once saved, the profile is reused next time.
-4. **A corrected figure** fixes that document; the user can tick "remember for this issuer", which stores a label/position rule for that issuer's layout (like the provider reading rules already used for utility invoices). Fixed values are not learnt.
+4. **A corrected figure** fixes that document; the user can tick "remember for this issuer", which stores a label/position rule for that issuer's layout (like the provider reading rules already used for utility invoices). Fixed values are not learnt. **All learnt import rules (document type, issuer, links, accounts, figure positions) appear on the app's Rules page** (user, 2026-10-20), alongside the existing transaction rules, consistent in look, where they can be reviewed, edited, disabled and deleted.
 5. **Source-folder scan** becomes a shortcut that sends the folder's new or changed files into the importer; the folder's new/changed/missing state is kept.
 6. **Account for a statement** that can't be detected (e.g. UK CSVs without an account number) is a Needs-you item to choose the account; the choice is learnt for files like it.
 
