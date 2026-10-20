@@ -55,7 +55,8 @@ public enum ImportApplyError: Error, Equatable {
 
 /// Applies a confirmed `ImportPlan` as one undoable run, in one write transaction: the run row,
 /// change capture (`ImportChangeCapture`, for `ImportUndo`), then for each Ready item its file
-/// filed in the library and `ImportEffects.applyRecords` (the effect, its certain links and the
+/// filed in the library (a file already there — a statement that still adds rows — gives that
+/// document: no second copy, nothing for Undo to remove) and `ImportEffects.applyRecords` (the effect, its certain links and the
 /// documents they replace unlinked — exactly what the filed-year guard simulated), and the
 /// source folder's record of the file given its document; then the
 /// follow-on matching once for every property the items touched (`ImportEffects.followOns`)
@@ -111,11 +112,31 @@ public struct ImportApplier: Sendable {
     // MARK: Which items
 
     /// The Ready items to apply, in plan order (a statement before the child holding its
-    /// already-imported rows): never left out (nor a child of a left-out item), duplicates or
-    /// items with issues.
+    /// already-imported rows) — except that the statements (UK and BBVA) of one account are
+    /// applied in date order (`StatementChecks.order`: period start, then closing day), each with
+    /// its children, in the places those statements hold: never
+    /// left out (nor a child of a left-out item), duplicates or items with issues.
     static func appliedItems(_ plan: ImportPlan) -> [ImportItem] {
         let leftOut = leftOutIds(plan)
-        return plan.items.filter { $0.section == .ready && !leftOut.contains($0.id) }
+        let ready = plan.items.filter { $0.section == .ready && !leftOut.contains($0.id) }
+        // Units: an item with the children that follow it (a child whose parent isn't applied stands alone).
+        let readyIds = Set(ready.map(\.id))
+        var units: [[ImportItem]] = []
+        for item in ready {
+            if let parent = item.parentId, readyIds.contains(parent), let index = units.lastIndex(where: { $0.first?.id == parent }) {
+                units[index].append(item)
+            } else {
+                units.append([item])
+            }
+        }
+        func account(_ unit: [ImportItem]) -> Int64? { unit.first.flatMap(StatementChecks.accountId) }
+        let byAccount = Dictionary(grouping: units.indices.filter { account(units[$0]) != nil }) { account(units[$0])! }
+        var ordered = units
+        for slots in byAccount.values where slots.count > 1 {
+            let sorted = slots.sorted { StatementChecks.order(units[$0][0], $0) < StatementChecks.order(units[$1][0], $1) }
+            for (slot, source) in zip(slots, sorted) { ordered[slot] = units[source] }
+        }
+        return ordered.flatMap { $0 }
     }
 
     /// Items left out, with the children of left-out items.
@@ -158,10 +179,22 @@ public struct ImportApplier: Sendable {
                 try require(Person.exists(db, key: confirmed.personId), item, "Its person")
             case .ukStatement(let statement):
                 try require(Account.exists(db, key: statement.accountId), item, "Its account")
-                for row in statement.staged + statement.batchOverlap {
+                for row in statement.staged {
                     if let id = row.replacesManual?.transactionId {
                         try require(Transaction.exists(db, key: id), item, "The manual entry it replaces")
                     }
+                }
+            case .bbvaStatement(let statement):
+                try require(Account.exists(db, key: statement.currentAccountId), item, "Its account")
+                if let id = statement.loanAccountId { try require(Account.exists(db, key: id), item, "Its mortgage account") }
+                if let id = statement.fundAccountId { try require(Account.exists(db, key: id), item, "Its fund account") }
+                for row in statement.staged {
+                    if let id = row.replacesManual?.transactionId {
+                        try require(Transaction.exists(db, key: id), item, "The manual entry it replaces")
+                    }
+                }
+                for estimate in statement.estimates {
+                    try require(Transaction.exists(db, key: estimate.transactionId), item, "The estimated interest it replaces")
                 }
             }
         }
@@ -246,6 +279,7 @@ public struct ImportApplier: Sendable {
                 case .recorded: summary.recorded += 1
                 case .transactions:
                     if case .ukStatement(let statement) = item.effect { summary.transactions += statement.staged.count }
+                    if case .bbvaStatement(let statement) = item.effect { summary.transactions += statement.staged.count }
                 default: break
                 }
             } else {
@@ -292,6 +326,9 @@ public struct ImportApplier: Sendable {
         func linkedLine() -> String { "Linked to " + (linked.isEmpty ? "its record" : linked.joined(separator: ", ")) }
         switch item.effect {
         case .ukStatement(let statement):
+            let n = statement.staged.count
+            return (.transactions, "\(n) transaction\(n == 1 ? "" : "s")")
+        case .bbvaStatement(let statement):
             let n = statement.staged.count
             return (.transactions, "\(n) transaction\(n == 1 ? "" : "s")")
         case .rentReceiptPDF, .transferAdvice:

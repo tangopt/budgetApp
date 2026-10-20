@@ -46,6 +46,21 @@ enum SnapshotCatalog {
             importReview("review_ready", "Imports: the samples, a rent receipt ready") { plan in
                 plan.items(in: .ready).first { $0.recognition.kind == .evidence(.rentReceipt) }?.id
             },
+            // The BBVA statement of Euro Current: its period, balances, rows and instalment leg.
+            importReview("review_statement", "Imports: the samples, a BBVA statement ready") { plan in
+                plan.items.first { $0.recognition.kind == .bbvaStatement && $0.parentId == nil }?.id
+            },
+            // The UK CSV no profile reads, its account chosen (Everyday Current): its columns to map.
+            SnapshotRoute(name: "imports-review_mapping", title: "Imports: the samples, a CSV's columns to map", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                var plan = try await center.snapshotPlan(try importSamples(context))
+                guard let csv = plan.items.first(where: { $0.recognition.kind == .bankStatementCSV }),
+                      let accountId = context.accountId("Everyday Current") else { throw SnapshotMissing("The sample CSV") }
+                plan = try await center.snapshotResolve(plan, itemId: csv.id, .chooseAccount(.current, accountId))
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(plan, selecting: csv.id)
+                })))
+            },
             SnapshotRoute(name: "imports-history", title: "Imports: the samples imported, in the history", settleFactor: 1.5) { context in
                 let center = context.environment.importCenter
                 center.discard()
@@ -153,7 +168,7 @@ enum SnapshotCatalog {
                 let demo = ImportReviewDemo.make(context)
                 context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.scanId)
             },
-            screen("imports", "review_statement", "Imports: review, a statement with lines not read", .imports, settle: 1.5) { _, context in
+            screen("imports", "review_unread_lines", "Imports: review, a statement with lines not read", .imports, settle: 1.5) { _, context in
                 let demo = ImportReviewDemo.make(context)
                 context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.statementId)
             },
@@ -175,6 +190,16 @@ enum SnapshotCatalog {
                 center.showSnapshotPlan(demo.plan, selecting: demo.insuranceId)
                 center.expandedPeeks = []
                 center.linkSearchItemId = demo.insuranceId
+            },
+            // A statement whose closing doesn't match (the figures, a reason, Import anyway), its
+            // row that looks already saved indented under it, one row skipped.
+            screen("imports", "review_balance", "Imports: review, a statement's closing that doesn't match", .imports, settle: 1.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.checkedId)
+            },
+            screen("imports", "review_row", "Imports: review, a statement's row to keep or skip", .imports, settle: 1.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.rowId)
             },
             // The statement left out: its rows already imported are out with it (no Put back of their own).
             screen("imports", "review_left_out_rows", "Imports: review, a statement's rows left out with it", .imports, settle: 1.5) { _, context in

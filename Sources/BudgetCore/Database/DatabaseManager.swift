@@ -107,5 +107,6 @@ public final class DatabaseManager {
         registerTaxAttributionRuleWindowShiftMigration(&migrator)
         registerTaxPolicyReceiptItemsMigration(&migrator)
         registerImportRunMigration(&migrator)
+        registerImportRuleMigration(&migrator)
     }
 }

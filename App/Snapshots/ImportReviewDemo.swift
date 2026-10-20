@@ -5,10 +5,11 @@ import BudgetCore
 import GRDB
 import struct BudgetCore.Transaction
 
-/// An invented review for the Imports routes (`imports-review_link`, `_kind`, `_statement`, `_figures`, `_left_out_rows`,
-/// `_peek`, `_link_search`):
+/// An invented review for the Imports routes (`imports-review_link`, `_kind`, `_unread_lines`, `_figures`, `_left_out_rows`,
+/// `_peek`, `_link_search`, `_balance`, `_row`):
 /// every section filled — a utility invoice with two possible debits, a P60 held by a filed
-/// return, an unknown scan, a statement with unread lines and rows already imported, ready rent
+/// return, an unknown scan, a statement with unread lines and rows already imported, a statement
+/// whose closing doesn't match with a row that looks already saved and one skipped, ready rent
 /// receipts and an insurance receipt, a duplicate and a file left out. Nothing is read or saved;
 /// every file shows the demo library's first rent receipt (for the thumbnail) under an invented name.
 @MainActor
@@ -23,6 +24,9 @@ enum ImportReviewDemo {
         /// The Ready insurance receipt, linked to a demo transaction (`linkedTransactionId`).
         let insuranceId: UUID
         let linkedTransactionId: Int64?
+        /// The statement whose closing doesn't match, and its row to keep or skip.
+        let checkedId: UUID
+        let rowId: UUID
     }
 
     static func day(_ year: Int, _ month: Int, _ day: Int) -> Date {
@@ -116,6 +120,44 @@ enum ImportReviewDemo {
             effect: .none, duplicate: ImportDuplicate(level: .transactions, of: "3 rows already imported"),
             parentId: statementId, groupKey: "Statements")
 
+        // A statement whose closing doesn't match: a row that looks like a saved one, one skipped.
+        func staged(_ day: Int, _ description: String, _ amount: Int) -> StagedTransaction {
+            StagedTransaction(parsed: ParsedTransaction(date: ImportReviewDemo.day(2026, 6, day), rawDescription: description, amountMinorUnits: amount),
+                              suggestedCategoryId: nil, source: .none, confidence: 0, fingerprint: "demo-\(day)-\(description)")
+        }
+        let checkedId = UUID()
+        let checkedFile = file("Rainy Day Saver June 2026.csv")
+        let checkedRows = [staged(3, "TRANSFER FROM CURRENT", 25_000), staged(12, "CARD PAYMENT CORNER GROCER", -1_840)]
+        let skippedRow = staged(18, "INTEREST PAID", 412)
+        var checkedEffect = UKStatementEffect(accountId: context.accountId("Rainy Day Saver") ?? 2, sourceFileName: checkedFile.fileName, staged: checkedRows,
+                                              statement: StatementFinish(closing: StatementClosing(date: day(2026, 6, 30), balanceMinorUnits: 623_572),
+                                                                         addAdjustment: false),
+                                              accountFill: nil, skipped: [skippedRow])
+        checkedEffect.certainDuplicates = ["demo-1", "demo-2", "demo-5", "demo-9"]
+        let mismatch = StatementMismatch(date: day(2026, 6, 30), statementMinorUnits: 623_572, computedMinorUnits: 623_160)
+        let checked = ImportItem(
+            id: checkedId, file: checkedFile, recognition: certain(.bankStatementCSV, "Matches the saved CSV profile of Rainy Day Saver"),
+            title: "Rainy Day Saver statement 1 Jun 2026–30 Jun 2026",
+            facts: [fact(.reference, .text("Rainy Day Saver")), fact(.periodStart, .date(day(2026, 6, 1))), fact(.periodEnd, .date(day(2026, 6, 30)))],
+            effect: .ukStatement(checkedEffect),
+            issues: [ImportIssue(id: "balance-2-2026-06-30", kind: .statement(.balanceMismatch(mismatch)),
+                                 reason: "The statement closes at £6,235.72 on 30 Jun 2026, but Rainy Day Saver would be at £6,231.60: "
+                                    + "import it anyway with a reason, or leave it out of this import"),
+                     ImportIssue(id: StatementChecks.rowsIssueId, kind: .readerProblem("Some rows look already saved: keep or skip each"),
+                                 reason: "Some rows look already saved: keep or skip each")],
+            groupKey: "Bank statements")
+        let rowId = UUID()
+        let row = ImportItem(
+            id: rowId, file: checkedFile, recognition: checked.recognition, title: "12 Jun 2026 CARD PAYMENT CORNER GROCER £18.40",
+            effect: .none,
+            issues: [ImportIssue(id: StatementChecks.possibleDuplicateIssueId,
+                                 kind: .statement(.possibleDuplicate(existingTransactionId: 1, existingLabel: "CORNER GROCER (11 Jun 2026, -£18.40)")),
+                                 reason: "Looks like “CORNER GROCER” of 11 Jun 2026 already saved", offers: [.keepRow, .skipRow])],
+            parentId: checkedId, groupKey: "Bank statements")
+        var skipped = ImportItem(file: checkedFile, recognition: checked.recognition, title: "18 Jun 2026 INTEREST PAID £4.12",
+                                 effect: .none, parentId: checkedId, groupKey: "Bank statements")
+        skipped.duplicate = ImportDuplicate(level: .transactions, of: StatementChecks.skippedNote)
+
         func receipt(_ number: Int, _ month: Int) -> ImportItem {
             ImportItem(file: file("Recibo \(number).pdf"), recognition: certain(.rentReceiptPDF, "Portal rent receipt layout"),
                        title: "Rent receipt nº \(number) · Tenancy 2",
@@ -164,11 +206,11 @@ enum ImportReviewDemo {
             file: file("Meeting notes.txt"), recognition: certain(.evidence(.other), "Plain text"),
             title: "Meeting notes", isLeftOut: true, groupKey: "Other documents")
 
-        let plan = ImportPlan(items: [invoice, held, figures, scan, statement, statementRows, receipt(51, 5), receipt(52, 6),
+        let plan = ImportPlan(items: [invoice, held, figures, scan, statement, statementRows, checked, row, skipped, receipt(51, 5), receipt(52, 6),
                                       insurance, duplicate, leftOut],
                               ignoredFiles: [".DS_Store"])
         return Demo(plan: plan, invoiceId: invoiceId, heldId: heldId, scanId: scanId, statementId: statementId, figuresId: figuresId,
-                    insuranceId: insuranceId, linkedTransactionId: debit?.transaction.id)
+                    insuranceId: insuranceId, linkedTransactionId: debit?.transaction.id, checkedId: checkedId, rowId: rowId)
     }
 }
 #endif

@@ -17,18 +17,23 @@ public final class ImportProfileStore {
 
     @discardableResult
     public func save(_ profile: ImportProfile) throws -> ImportProfile {
-        var mutableProfile = profile
-        try dbQueue.write { db in
-            if let existing = try ImportProfile
-                .filter(Column("accountId") == profile.accountId && Column("format") == profile.format.rawValue)
-                .fetchOne(db) {
-                mutableProfile.id = existing.id
-                try mutableProfile.update(db)
-            } else {
-                try mutableProfile.insert(db)
-            }
+        try dbQueue.write { db in try Self.save(db: db, profile) }
+    }
+
+    /// Saves the account's profile for its format in the caller's transaction: the existing one
+    /// replaced (keeping its id), else inserted.
+    @discardableResult
+    public static func save(db: Database, _ profile: ImportProfile) throws -> ImportProfile {
+        var saved = profile
+        if let existing = try ImportProfile
+            .filter(Column("accountId") == profile.accountId && Column("format") == profile.format.rawValue)
+            .fetchOne(db) {
+            saved.id = existing.id
+            try saved.update(db)
+        } else {
+            try saved.insert(db)
         }
-        return mutableProfile
+        return saved
     }
 
     /// Forgets the account's saved mapping (CSV) or layout (PDF) for `format`, so the next

@@ -4,16 +4,23 @@ import BudgetCore
 
 /// One question about a document and exactly the answers it takes (`ImportResolutions`): what
 /// its kind takes by default — a kind for "what is this?", one of the offered links, targets or
-/// a figure — plus what the issue offers; every issue can also be left out of the import. An
-/// item held by a filed return, a failed check or an unreadable file isn't asked this way: the
-/// preview shows its `ImportHoldBanner`s and one "Leave out of this import".
+/// a figure — plus what the issue offers; the item can also be left out of the import (one
+/// "Leave out of this import" after all its questions, drawn by the preview). An item held by
+/// a filed return, a failed check or an unreadable file isn't asked this way: the preview shows
+/// its `ImportHoldBanner`s and one "Leave out of this import".
 struct ImportIssueControls: View {
     let item: ImportItem
     let issue: ImportIssue
     let targetNames: ImportTargetNames
+    /// The accounts by id (a statement's account picker and its layout wizard).
+    var accounts: [Int64: Account] = [:]
+    /// Why the last answer to this question wasn't taken (shown with it).
+    var answerProblem: String? = nil
     let resolve: (ImportResolution) -> Void
 
     static let leaveOutTitle = "Leave out of this import"
+    /// A BBVA statement's "Replace the estimate?" question (`BBVAStatementReader`).
+    static let estimateIssuePrefix = "instalmentMismatch.estimate."
 
     var body: some View {
         if ImportResolutions.isFiledYearHold(issue) {
@@ -34,15 +41,16 @@ struct ImportIssueControls: View {
                 if !ImportResolutions.onlyLeavesOut(issue, in: item) {
                     answers
                 }
-                HStack(spacing: 6) {
-                    if !ImportResolutions.onlyLeavesOut(issue, in: item) {
-                        ForEach(Array(extraOffers.enumerated()), id: \.offset) { _, offer in
+                // Leaving the item out is offered once, after all its questions (the preview).
+                let offers = ImportResolutions.onlyLeavesOut(issue, in: item) ? [] : extraOffers
+                if !offers.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(Array(offers.enumerated()), id: \.offset) { _, offer in
                             Button(title(of: offer)) { resolve(offer) }
                         }
                     }
-                    leaveOutButton
+                    .controlSize(.small)
                 }
-                .controlSize(.small)
             }
         }
     }
@@ -81,7 +89,11 @@ struct ImportIssueControls: View {
                 ImportTargetChooser(kind: kind, options: options, names: targetNames, resolve: resolve)
                     .id("\(item.id)-\(issue.id)")
             }
-        case .readerProblem, .statement, .filedYear:
+        case .statement(let statement):
+            ImportStatementIssueAnswers(item: item, issue: issue, statement: statement, targetNames: targetNames,
+                                        accounts: accounts, answerProblem: answerProblem, resolve: resolve)
+                .id("\(item.id)-\(issue.id)")
+        case .readerProblem, .filedYear:
             EmptyView()
         }
     }
@@ -95,6 +107,10 @@ struct ImportIssueControls: View {
             case (.chooseLink(let entity), .chooseLink(let candidates)): return !candidates.contains { $0.entity == entity }
             case (.chooseKind, .unknownKind), (.chooseKind, .kindMismatch), (.acknowledge, .kindMismatch): return false
             case (.chooseTarget(let kind, let id), .chooseTarget(let asked, let options)): return !(kind == asked && options.contains(id))
+            // The account picker (statement plan, Task 7) makes these, not one button each.
+            case (.chooseAccount, .statement(.unknownAccount)), (.chooseAccount, .statement(.unknownLinkedAccount)): return false
+            // Its reason field and button make it.
+            case (.importAnyway, .statement(.balanceMismatch)): return false
             default: return true
             }
         }
@@ -105,6 +121,8 @@ struct ImportIssueControls: View {
         case .acknowledge:
             if case .kindMismatch(_, let found) = issue.kind { return "Keep as \(found.displayName)" }
             if issue.id == ImportDuplicates.correctedVersionIssueId { return "Import as the newer version" }
+            // A BBVA receipt whose interest the fund/mortgage tool estimated otherwise.
+            if issue.id.hasPrefix(Self.estimateIssuePrefix) { return "Replace the estimate" }
             return "Got it"
         case .fileWithoutLink:
             let documentOnly = [UtilityInvoiceImportReader.documentOnlyIssueId, ImportDuplicates.correctedVersionIssueId].contains(issue.id)
@@ -113,6 +131,11 @@ struct ImportIssueControls: View {
         case .chooseLink(let entity): return "Link to \(entity.type.displayName.lowercased()) #\(entity.id)"
         case .confirmFigure(let field, _): return "Use this \(field.displayName.lowercased())"
         case .chooseTarget(let kind, let id): return "Use \(targetNames.name(kind, id))"
+        case .chooseAccount(_, let id): return "Use \(targetNames.name(.account, id))"
+        case .importAnyway: return "Import anyway"
+        case .keepRow: return "Keep"
+        case .skipRow: return "Skip"
+        case .saveProfile: return "Use this layout"
         case .leaveOut: return Self.leaveOutTitle
         case .linkTransactions(let ids): return ids.count == 1 ? "Link to this transaction" : "Link to these \(ids.count) transactions"
         case .addTransactionLink: return "Link to this transaction too"
@@ -146,6 +169,207 @@ struct ImportIssueControls: View {
 }
 
 // MARK: Answers
+
+/// A bank statement's question answered in place: a closing that doesn't match (the figures,
+/// a reason and "Import anyway"), a row that looks already saved (the saved row; Keep / Skip
+/// are its offers), the lines not read, a layout to map ("Set up columns…" / "Set up
+/// layout…", the existing wizards as a sheet), the account to choose. Instalment and fund
+/// mismatches say why and take what they offer (or only Leave out).
+struct ImportStatementIssueAnswers: View {
+    let item: ImportItem
+    let issue: ImportIssue
+    let statement: StatementIssue
+    let targetNames: ImportTargetNames
+    let accounts: [Int64: Account]
+    let answerProblem: String?
+    let resolve: (ImportResolution) -> Void
+    @State private var reason = ""
+    @State private var chosenAccount: Int64?
+    @State private var mapping: Mapping?
+    @Environment(\.theme) private var theme
+
+    /// The wizard open over the review.
+    private struct Mapping: Identifiable {
+        let id = UUID()
+        let account: Account
+        let format: ImportFormat
+    }
+
+    /// Lines shown before the list scrolls.
+    static let visibleLines = 8
+
+    var body: some View {
+        switch statement {
+        case .balanceMismatch(let mismatch):
+            balanceMismatch(mismatch)
+        case .possibleDuplicate(_, let existingLabel):
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text("Saved row:").foregroundStyle(.secondary)
+                Text(existingLabel.figuresUnbroken).fixedSize(horizontal: false, vertical: true)
+            }
+            .font(.callout)
+        case .unparsedLines(let lines):
+            unparsed(lines)
+        case .noProfile(let format, let accountId):
+            layoutButton(format: format, accountId: accountId)
+        case .remap:
+            // No reader raises it yet, and `.saveProfile` answers only `noProfile`: its reason and Leave out.
+            EmptyView()
+        case .unknownAccount:
+            accountPicker(role: .current)
+        case .unknownLinkedAccount(let role):
+            accountPicker(role: role)
+        case .instalmentMismatch, .fundMismatch:
+            // The reason says it all; what it offers (if anything) is a button below.
+            EmptyView()
+        }
+    }
+
+    // MARK: Balance
+
+    /// The currency of the statement's account (else the item's figures').
+    private var currency: Currency {
+        switch item.effect {
+        case .ukStatement(let effect): if let account = accounts[effect.accountId] { return account.currency }
+        case .bbvaStatement(let effect): if let account = accounts[effect.currentAccountId] { return account.currency }
+        default: break
+        }
+        return ImportIssueControls.currency(of: item, field: .closingBalance)
+    }
+
+    @ViewBuilder
+    private func balanceMismatch(_ mismatch: StatementMismatch) -> some View {
+        let currency = currency
+        VStack(alignment: .leading, spacing: 6) {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 2) {
+                figureRow("Statement closing", mismatch.statementMinorUnits, currency)
+                figureRow("Computed balance", mismatch.computedMinorUnits, currency)
+                figureRow("Difference", mismatch.statementMinorUnits - mismatch.computedMinorUnits, currency)
+            }
+            if ImportResolutions.accepts(issue, .importAnyway(reason: "?")) {
+                HStack(spacing: 6) {
+                    TextField("Why import it anyway?", text: $reason)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(importAnyway)
+                    Button("Import anyway", action: importAnyway)
+                        .disabled(trimmedReason.isEmpty)
+                }
+                .controlSize(.small)
+            }
+            if let answerProblem {
+                Text(answerProblem.figuresUnbroken).font(.caption).foregroundStyle(theme.expense)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(.callout)
+    }
+
+    private var trimmedReason: String { reason.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private func importAnyway() {
+        guard !trimmedReason.isEmpty else { return }
+        resolve(.importAnyway(reason: reason))
+    }
+
+    private func figureRow(_ label: String, _ minorUnits: Int, _ currency: Currency) -> some View {
+        GridRow {
+            Text(label).foregroundStyle(.secondary).lineLimit(1)
+            MoneyText(minorUnits: minorUnits, currency: currency, font: .callout.monospacedDigit(), role: .neutral)
+                .figureText()
+                .gridColumnAlignment(.trailing)
+        }
+    }
+
+    // MARK: Lines not read
+
+    private func unparsed(_ lines: [String]) -> some View {
+        let lineHeight: CGFloat = 15
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                    Text(line).font(.caption.monospaced()).lineLimit(1).truncationMode(.tail)
+                        .frame(height: lineHeight, alignment: .leading)
+                        .help(line)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(4)
+        }
+        .frame(height: CGFloat(min(lines.count, Self.visibleLines)) * lineHeight + 8)
+        .background(RoundedRectangle(cornerRadius: 4).fill(.quaternary.opacity(0.5)))
+    }
+
+    // MARK: Layout
+
+    @ViewBuilder
+    private func layoutButton(format: ImportFormat, accountId: Int64) -> some View {
+        // Only where the question takes a layout for this account and format.
+        if let account = accounts[accountId], ImportResolutions.accepts(issue, .saveProfile(ImportProfile(accountId: accountId, format: format))) {
+            Button(format == .pdf ? "Set up layout…" : "Set up columns…") { mapping = Mapping(account: account, format: format) }
+                .controlSize(.small)
+                .sheet(item: $mapping) { request in
+                    switch request.format {
+                    case .pdf:
+                        PDFLayoutWizardView(account: request.account, sampleLines: sampleLines) { profile in
+                            mapping = nil
+                            resolve(.saveProfile(profile))
+                        }
+                    case .csv:
+                        CSVMappingWizardView(account: request.account, csvText: item.file.text ?? "", existingProfile: nil) { profile in
+                            mapping = nil
+                            resolve(.saveProfile(profile))
+                        }
+                    }
+                }
+        }
+    }
+
+    /// The PDF's text lines (what its layout is set up from).
+    private var sampleLines: [String] {
+        (item.file.text ?? "").split(whereSeparator: \.isNewline).map(String.init)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    }
+
+    // MARK: Accounts
+
+    /// The accounts the question offers for `role`, in its order (the remembered or plausible
+    /// ones first); a linked account's of the statement's bank region first.
+    private func offered(_ role: StatementAccountRole) -> [Int64] {
+        let ids = issue.offers.compactMap { offer -> Int64? in
+            if case .chooseAccount(let offeredRole, let id) = offer, offeredRole == role { return id }
+            return nil
+        }
+        guard case .unknownLinkedAccount = statement else { return ids }
+        let region: BankRegion = item.recognition.kind == .bbvaStatement ? .europe : .uk
+        return ids.enumerated().sorted { lhs, rhs in
+            let left = accounts[lhs.element]?.effectiveBankRegion == region ? 0 : 1
+            let right = accounts[rhs.element]?.effectiveBankRegion == region ? 0 : 1
+            return (left, lhs.offset) < (right, rhs.offset)
+        }.map(\.element)
+    }
+
+    @ViewBuilder
+    private func accountPicker(role: StatementAccountRole) -> some View {
+        let options = offered(role)
+        if !options.isEmpty {
+            let selection = Binding<Int64>(get: { chosenAccount.flatMap { options.contains($0) ? $0 : nil } ?? options[0] },
+                                           set: { chosenAccount = $0 })
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Picker("Account", selection: selection) {
+                        ForEach(options, id: \.self) { Text(targetNames.name(.account, $0)).tag($0) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    Button("Use this account") { resolve(.chooseAccount(role, selection.wrappedValue)) }
+                    Spacer(minLength: 0)
+                }
+                .controlSize(.small)
+                Text("Remembered for files like this").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
 
 /// "What is this?": the library's kinds by name, and "Use this kind" (with "Keep as …" when
 /// the file may stay what it was recognised as).
@@ -223,9 +447,9 @@ struct ImportFigureEditor: View {
     static func kind(of field: ImportFigureField) -> Kind {
         switch field {
         case .docDate, .periodStart, .periodEnd: return .date
-        case .amount, .pay, .taxDeducted: return .money
+        case .amount, .pay, .taxDeducted, .openingBalance, .closingBalance: return .money
         case .taxYear: return .year
-        case .currency, .invoiceNumber, .receiptNumber, .reference, .issuer, .person: return .text
+        case .currency, .invoiceNumber, .receiptNumber, .reference, .issuer, .person, .rows, .instalments, .fund: return .text
         }
     }
 

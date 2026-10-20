@@ -12,7 +12,7 @@ public struct ImportDetector: Sendable {
 
     public init(providers: [UtilityProvider]) {
         recognisers = [
-            Self.rentReceiptsExport, Self.rentReceiptPDF, Self.transferAdvice, Self.payrollForm,
+            Self.bbvaStatement, Self.rentReceiptsExport, Self.rentReceiptPDF, Self.transferAdvice, Self.payrollForm,
             Self.utilityInvoice(providers: providers), Self.bankStatement, Self.evidence
         ]
     }
@@ -52,6 +52,22 @@ public struct ImportDetector: Sendable {
     private static func kindFromText(_ file: ImportFile) -> DocumentKind {
         guard let text = text(file), !text.isEmpty else { return .other }
         return DocumentClassifier.classify(text: text, fileName: "")
+    }
+
+    /// A BBVA Portugal "extrato global": a PDF whose text says EXTRATO, BBVA and PERÍODO DE
+    /// (ignoring accents and case), with the month of its period.
+    private static let bbvaStatement: ImportRecogniser = { file in
+        guard file.fileExtension == "pdf", let text = text(file) else { return nil }
+        let options: String.CompareOptions = [.diacriticInsensitive, .caseInsensitive]
+        guard ["EXTRATO", "BBVA", "PERÍODO DE"].allSatisfy({ text.range(of: $0, options: options) != nil }) else { return nil }
+        let folded = text.folding(options: options, locale: nil)
+        var month = ""
+        if let range = folded.range(of: #"periodo de (\d{4})/(\d{2})/"#, options: .regularExpression) {
+            let digits = folded[range].filter(\.isNumber)
+            month = " " + digits.prefix(4) + "-" + digits.dropFirst(4).prefix(2)
+        }
+        // Read by text recognition: to check (`BBVAStatementReader.prepare` reads the glyphs again).
+        return ImportRecognition(kind: .bbvaStatement, confidence: file.usedOCR ? .needsReview : .certain, reason: "BBVA extrato global" + month)
     }
 
     private static let rentReceiptsExport: ImportRecogniser = { file in

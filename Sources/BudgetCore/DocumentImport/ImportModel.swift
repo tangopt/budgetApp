@@ -39,6 +39,9 @@ public enum ImportFactSource: String, Codable, Sendable {
 
 public enum ImportFigureField: String, Codable, CaseIterable, Sendable {
     case docDate, amount, currency, periodStart, periodEnd, invoiceNumber, receiptNumber, reference, issuer, person, taxYear, pay, taxDeducted
+    /// A statement's opening and closing balances, its row count, and its preview lines
+    /// (a BBVA statement's mortgage instalments and fund).
+    case openingBalance, closingBalance, rows, instalments, fund
 
     public var displayName: String {
         switch self {
@@ -55,6 +58,11 @@ public enum ImportFigureField: String, Codable, CaseIterable, Sendable {
         case .taxYear: return "Tax year"
         case .pay: return "Pay"
         case .taxDeducted: return "Tax deducted"
+        case .openingBalance: return "Opening balance"
+        case .closingBalance: return "Closing balance"
+        case .rows: return "Rows"
+        case .instalments: return "Instalments"
+        case .fund: return "Fund"
         }
     }
 }
@@ -154,9 +162,16 @@ public struct ImportIntent: Equatable, Sendable {
     public var target: Target?
     /// The utility provider whose invoice the files are (chosen in the review).
     public var providerId: Int64?
+    /// The accounts chosen in the review for a statement's current account, mortgage or fund
+    /// (`ImportResolution.chooseAccount`); learnt for files like it on Confirm import.
+    public var statementAccounts: [StatementAccountRole: Int64]
+    /// The layout mapped in the review for a statement's account (`ImportResolution.saveProfile`):
+    /// read with it, saved on Confirm import.
+    public var statementProfile: ImportProfile?
 
     public init(expected: ImportKind? = nil, propertyId: Int64? = nil, personId: Int64? = nil,
-                accountId: Int64? = nil, taxYear: Int? = nil, target: Target? = nil, providerId: Int64? = nil) {
+                accountId: Int64? = nil, taxYear: Int? = nil, target: Target? = nil, providerId: Int64? = nil,
+                statementAccounts: [StatementAccountRole: Int64] = [:], statementProfile: ImportProfile? = nil) {
         self.expected = expected
         self.propertyId = propertyId
         self.personId = personId
@@ -164,6 +179,8 @@ public struct ImportIntent: Equatable, Sendable {
         self.taxYear = taxYear
         self.target = target
         self.providerId = providerId
+        self.statementAccounts = statementAccounts
+        self.statementProfile = statementProfile
     }
 
     public static let none = ImportIntent()
@@ -201,11 +218,28 @@ public struct LinkCandidate: Equatable, Sendable {
     }
 }
 
+/// Which of a statement's accounts: the current account its rows are on, or the mortgage or
+/// fund its instalments and subscriptions are the other side of.
+public enum StatementAccountRole: String, Codable, Sendable {
+    case current, mortgage, fund
+}
+
 public enum StatementIssue: Equatable, Sendable {
     case unknownAccount
     case noProfile(format: ImportFormat, accountId: Int64)
     case balanceMismatch(StatementMismatch)
     case unparsedLines([String])
+    /// The statement's mortgage instalments or fund have no account to go to.
+    case unknownLinkedAccount(StatementAccountRole)
+    /// A row that looks like a saved one of another import (Task 5).
+    case possibleDuplicate(existingTransactionId: Int64, existingLabel: String)
+    /// An instalment debit without its settled receipt, or a receipt without its debit.
+    case instalmentMismatch(String)
+    /// A fund movement without its subscription debit (or the reverse), or a fund already
+    /// valued on the period end at another balance.
+    case fundMismatch(String)
+    /// The saved profile no longer reads the file ("Edit column mapping…").
+    case remap(format: ImportFormat, accountId: Int64)
 }
 
 public enum ImportIssueKind: Equatable, Sendable {
@@ -252,6 +286,15 @@ public enum ImportResolution: Equatable, Sendable {
     case confirmFigure(ImportFigureField, ImportFactValue)
     case chooseTarget(ImportTargetKind, Int64)
     case acknowledge
+    /// The account for a statement's role (`unknownAccount`: `.current`; `unknownLinkedAccount`).
+    case chooseAccount(StatementAccountRole, Int64)
+    /// Import a statement whose closing balance doesn't match, with the user's reason (Task 5).
+    case importAnyway(reason: String)
+    /// Keep or skip a possible duplicate row (Task 5).
+    case keepRow
+    case skipRow
+    /// Read the statement with this (not yet saved) profile (Task 6).
+    case saveProfile(ImportProfile)
     /// The document's transactions become these (one or more, the user's choice from a
     /// search), replacing the transaction links proposed; all of them are its payments.
     case linkTransactions([Int64])
@@ -273,19 +316,40 @@ public struct UKStatementEffect: Equatable, Sendable {
     /// The closing balance checked on commit (never adjusted here).
     public var statement: StatementFinish?
     public var accountFill: StatementAccountFill?
-    /// Rows an earlier statement of this import holds too (its staged rows): shown as already
-    /// imported, and added with this statement only when no row with their fingerprint is
-    /// saved by then (that statement was left out).
-    public var batchOverlap: [StagedTransaction]
+    /// Rows the user skipped in the review (possible duplicates): not added.
+    public var skipped: [StagedTransaction]
+    /// The fingerprints of the statement's rows already saved (certain duplicates): the saved
+    /// rows they match are never another row's lookalike (`StatementChecks`).
+    public var certainDuplicates: [String] = []
+    /// The account chosen in the review for files like this one (`StatementSignature`): learnt
+    /// on Confirm import, inside the run.
+    public var learnAccount: LearntAccount?
+    /// The layout mapped in the review: saved on Confirm import, before the rows.
+    public var profileToSave: ImportProfile?
+    /// The learnt rule that named the account: marked used on Confirm import.
+    public var rememberedRuleId: Int64?
+
+    /// A statement file signature's key and label, and the account chosen for it.
+    public struct LearntAccount: Equatable, Sendable {
+        public var key: String
+        public var label: String
+        public var accountId: Int64
+
+        public init(key: String, label: String, accountId: Int64) {
+            self.key = key
+            self.label = label
+            self.accountId = accountId
+        }
+    }
 
     public init(accountId: Int64, sourceFileName: String, staged: [StagedTransaction], statement: StatementFinish?,
-                accountFill: StatementAccountFill?, batchOverlap: [StagedTransaction] = []) {
+                accountFill: StatementAccountFill?, skipped: [StagedTransaction] = []) {
         self.accountId = accountId
         self.sourceFileName = sourceFileName
         self.staged = staged
         self.statement = statement
         self.accountFill = accountFill
-        self.batchOverlap = batchOverlap
+        self.skipped = skipped
     }
 
     /// Every row as suggested, learning no rule (categorising beyond rules happens later in the
@@ -294,6 +358,89 @@ public struct UKStatementEffect: Equatable, Sendable {
 
     static func decisions(for rows: [StagedTransaction]) -> [ImportDecision] {
         rows.map { ImportDecision(stagedId: $0.id, finalCategoryId: $0.suggestedCategoryId, learnRule: false, note: $0.replacesManual?.note) }
+    }
+}
+
+/// A BBVA Portugal "extrato global": the current account's new rows (certain duplicates left
+/// out, categorised by saved rules and transfer legs only), the instalments and subscriptions
+/// paired on them (`movementIndex` indexes `staged`), the closing balance checked, and the
+/// accounts chosen in the review, learnt on Confirm import.
+public struct BBVAStatementEffect: Equatable, Sendable {
+    public var statement: BBVAStatementParser.Statement
+    public var currentAccountId: Int64
+    public var loanAccountId: Int64?
+    public var fundAccountId: Int64?
+    public var staged: [StagedTransaction]
+    public var instalments: [BBVAStatementLegs.InstalmentMatch]
+    public var fundPairs: [BBVAStatementLegs.FundPair]
+    public var closing: StatementClosing
+    public var sourceFileName: String
+    public var learnAccounts: [StatementAccountRole: Int64]
+    /// Interest rows the fund/mortgage tool estimated ("Mortgage interest (derived)") for an
+    /// instalment already imported, whose receipt on this statement splits it otherwise: each
+    /// replaced by the receipt's split on Confirm import (the item asks first: "Replace the estimate?").
+    public var estimates: [Estimate]
+    /// What the earlier statements of the import (same mortgage, not left out) move the loan by
+    /// on their receipts' days, counted in this statement's mortgage check while they aren't
+    /// saved (`StatementChecks.recheck`), as `batchRows` is for the current account.
+    public var batchLoan: [BatchLoanRow]
+    /// Rows the user skipped in the review (possible duplicates): not added, no legs.
+    public var skipped: [StagedTransaction] = []
+    /// The fingerprints of the statement's rows already saved (as `UKStatementEffect.certainDuplicates`).
+    public var certainDuplicates: [String] = []
+    /// The learnt rules that named its accounts: marked used on Confirm import.
+    public var rememberedRuleIds: [Int64] = []
+    /// The fund's Market movement on the period end that confirming it adds (none valued that
+    /// day yet, and the saved balance with its fund legs isn't the statement's value): an
+    /// otherwise fully imported statement still adds it.
+    public var marketMovementMinorUnits: Int?
+
+    /// An earlier statement's net move of the loan on a receipt's day: an instalment's
+    /// +capital (its debit's `fingerprint` on `accountId` saved means it's written) or an
+    /// estimate's replacement (`estimateId` no longer the derived row means it's written).
+    public struct BatchLoanRow: Equatable, Sendable {
+        public var date: Date
+        public var amountMinorUnits: Int
+        public var accountId: Int64
+        public var fingerprint: String?
+        public var estimateId: Int64?
+
+        public init(date: Date, amountMinorUnits: Int, accountId: Int64, fingerprint: String? = nil, estimateId: Int64? = nil) {
+            self.date = date
+            self.amountMinorUnits = amountMinorUnits
+            self.accountId = accountId
+            self.fingerprint = fingerprint
+            self.estimateId = estimateId
+        }
+    }
+
+    /// A saved estimated interest row and the receipt that settles its instalment.
+    public struct Estimate: Equatable, Sendable {
+        public var transactionId: Int64
+        public var receipt: BBVAStatementParser.LoanReceipt
+
+        public init(transactionId: Int64, receipt: BBVAStatementParser.LoanReceipt) {
+            self.transactionId = transactionId
+            self.receipt = receipt
+        }
+    }
+
+    public init(statement: BBVAStatementParser.Statement, currentAccountId: Int64, loanAccountId: Int64?, fundAccountId: Int64?,
+                staged: [StagedTransaction], instalments: [BBVAStatementLegs.InstalmentMatch], fundPairs: [BBVAStatementLegs.FundPair],
+                closing: StatementClosing, sourceFileName: String, learnAccounts: [StatementAccountRole: Int64] = [:],
+                estimates: [Estimate] = [], batchLoan: [BatchLoanRow] = []) {
+        self.statement = statement
+        self.currentAccountId = currentAccountId
+        self.loanAccountId = loanAccountId
+        self.fundAccountId = fundAccountId
+        self.staged = staged
+        self.instalments = instalments
+        self.fundPairs = fundPairs
+        self.closing = closing
+        self.sourceFileName = sourceFileName
+        self.learnAccounts = learnAccounts
+        self.estimates = estimates
+        self.batchLoan = batchLoan
     }
 }
 
@@ -306,6 +453,7 @@ public enum ImportEffect: Equatable, Sendable {
     case utilityInvoice(UtilityInvoice)
     case payrollForm(PayrollFormImport.Confirmed)
     case ukStatement(UKStatementEffect)
+    case bbvaStatement(BBVAStatementEffect)
     case none
 
     /// Whether the effect is only a link of the document (a rent receipt PDF to its receipt, an
@@ -321,7 +469,7 @@ public enum ImportEffect: Equatable, Sendable {
     /// filing the document: a linked document can move a cost between years too).
     public var mayChangeTaxFigures: Bool {
         switch self {
-        case .rentReceiptsExport, .utilityInvoice, .payrollForm, .ukStatement, .rentReceiptPDF, .transferAdvice: return true
+        case .rentReceiptsExport, .utilityInvoice, .payrollForm, .ukStatement, .bbvaStatement, .rentReceiptPDF, .transferAdvice: return true
         case .file, .none: return false
         }
     }
@@ -348,6 +496,9 @@ public struct ImportItem: Equatable, Identifiable, Sendable {
     /// number per provider) when its effect no longer records the invoice (a corrected version
     /// filed as a document only). Nil: the effect's provider, if any.
     public var identityProviderId: Int64?
+    /// The user's reason for an answer that needs one (a statement imported anyway despite its
+    /// closing balance), kept with the run on Confirm import (`ImportPlan.resolutionReasons`).
+    public var resolutionNote: String? = nil
 
     public init(id: UUID = UUID(), file: ImportFile, recognition: ImportRecognition, title: String,
                 facts: [ImportFact] = [], placement: ImportPlacement? = nil, links: [ProposedLink] = [],
@@ -463,6 +614,16 @@ public struct ImportPlan: Equatable, Sendable {
             let rows = statements.reduce(0) { $0 + $1.staged.count }
             return "\(count("statement", "statements")) → \(rows) transaction\(rows == 1 ? "" : "s")"
         }
+        let bbva = members.compactMap { item -> BBVAStatementEffect? in
+            if case .bbvaStatement(let effect) = item.effect { return effect }
+            return nil
+        }
+        if !bbva.isEmpty, bbva.count == n {
+            let rows = bbva.reduce(0) { $0 + $1.staged.count }
+            let months = bbva.map(\.statement.label).sorted()
+            let span = months.first == months.last ? months[0] : "\(months[0])–\(months[months.count - 1])"
+            return "\(count("BBVA statement", "BBVA statements")) \(span) → \(rows) transaction\(rows == 1 ? "" : "s")"
+        }
         if kinds.allSatisfy({ $0 == .rentReceiptPDF }) {
             return n == 1 ? "1 rent receipt → linked to its receipt" : "\(n) rent receipts → linked to their receipts"
         }
@@ -526,6 +687,15 @@ public struct ImportPlan: Equatable, Sendable {
         return isAcronym ? name : name.prefix(1).lowercased() + name.dropFirst()
     }
 
+    /// The user's reasons per item (`ImportItem.resolutionNote`), for `ImportApplier.apply(reasons:)`.
+    public var resolutionReasons: [UUID: String] {
+        var reasons: [UUID: String] = [:]
+        for item in items where !item.isLeftOut {
+            if let note = item.resolutionNote { reasons[item.id] = note }
+        }
+        return reasons
+    }
+
     /// Nothing waits for the user and something is ready.
     public var canConfirm: Bool {
         items(in: .needsYou).isEmpty && !items(in: .ready).isEmpty
@@ -547,6 +717,9 @@ struct ImportPlanState: Equatable, Sendable {
     var settled: [UUID: Set<String>] = [:]
     /// Items whose kind the user chose (no intent mismatch is raised on them).
     var chosenKinds: Set<UUID> = []
+    /// Per account, the fingerprints of the rows the user skipped (possible duplicates): left out
+    /// of every statement of the account each time they are staged.
+    var skippedRows: [Int64: Set<String>] = [:]
 }
 
 extension ImportItem {

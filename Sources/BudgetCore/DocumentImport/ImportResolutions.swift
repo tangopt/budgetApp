@@ -7,6 +7,8 @@ public enum ImportResolutionError: Error, Equatable {
     case notOffered(ImportResolution)
     /// A transaction chosen to link to doesn't exist.
     case transactionNotFound(Int64)
+    /// Import anyway needs a reason that isn't blank.
+    case reasonRequired
 }
 
 /// The user's answers to an item's questions, as pure edits of the item. Only offered
@@ -15,7 +17,7 @@ public enum ImportResolutionError: Error, Equatable {
 /// filed year (`.filedYear`, `"filed-check"`) takes only what it offers: leave out.
 public enum ImportResolutions {
     /// The edited item, or `nil` when the item must be read again by its reader (`.chooseKind`,
-    /// `.chooseTarget`). `issueId` answers one issue only; without it the resolution answers
+    /// `.chooseTarget`, `.chooseAccount`, `.saveProfile`). `issueId` answers one issue only; without it the resolution answers
     /// every issue that takes it (`.acknowledge`: the first). Throws `notOffered` otherwise.
     ///
     /// - `.leaveOut`: in or out of the import (again: back in).
@@ -25,7 +27,8 @@ public enum ImportResolutions {
     /// - `.fileWithoutLink`: the issue goes with the links it questioned (and an effect's link);
     ///   on a corrected version, the document is filed only, linked where its original is.
     /// - `.confirmFigure`: the fact becomes the user's (`.user`, `.certain`); the placement and
-    ///   the effect's figure follow.
+    ///   the effect's figure follow. Never on a bank statement, nor for a statement's figures
+    ///   (opening and closing balance, rows, instalments, fund).
     /// - `.linkTransactions`, `.addTransactionLink`, `.unlink`: the item's transaction links as
     ///   the user set them (`withTransactionLinks`); `transactions` names each chosen
     ///   transaction that exists (`transactionNotFound` otherwise).
@@ -75,13 +78,38 @@ public enum ImportResolutions {
             guard issueId == nil, isCorrectable(item), let link = item.links.first(where: { $0.entity == entity }) else { throw refuse() }
             return try unlinked(item, link)
 
+        case .chooseAccount:
+            guard !accepting.isEmpty else { throw refuse() }
+            return nil
+
+        case .importAnyway(let reason):
+            // A closing balance that doesn't match, imported anyway: the reason is kept.
+            guard !accepting.isEmpty else { throw refuse() }
+            let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { throw ImportResolutionError.reasonRequired }
+            edited.issues.removeAll { accepting.contains($0) }
+            edited.resolutionNote = trimmed
+            return edited
+
+        case .keepRow, .skipRow:
+            // A possible duplicate row answered (the pipeline drops a skipped row from its statement).
+            guard !accepting.isEmpty else { throw refuse() }
+            edited.issues.removeAll { accepting.contains($0) }
+            return edited
+
+        case .saveProfile:
+            // The statement read again with the layout mapped (saved on Confirm import).
+            guard !accepting.isEmpty else { throw refuse() }
+            return nil
+
         case .acknowledge:
             guard let first = accepting.first, let index = edited.issues.firstIndex(of: first) else { throw refuse() }
             edited.issues.remove(at: index)
             return edited
 
         case .confirmFigure(let field, let value):
-            guard fits(value, field) else { throw refuse() }
+            // A statement's figures are what its rows and balances say: never typed over.
+            guard fits(value, field), !isStatementFigure(field), !isStatement(item) else { throw refuse() }
             let unsure = item.facts.contains { $0.field == field && $0.confidence == .needsReview }
             guard !accepting.isEmpty || (issueId == nil && (unsure || isCorrectable(item))) else { throw refuse() }
             edited.issues.removeAll { accepting.contains($0) }
@@ -379,6 +407,11 @@ public enum ImportResolutions {
             return candidates.contains { $0.entity == entity }
         case (.chooseTarget(let kind, let options), .chooseTarget(let chosen, let id)):
             return kind == chosen && options.contains(id)
+        case (.statement(.balanceMismatch), .importAnyway), (.statement(.possibleDuplicate), .keepRow), (.statement(.possibleDuplicate), .skipRow):
+            return true
+        case (.statement(.noProfile(let format, let accountId)), .saveProfile(let profile)):
+            // A layout for the statement's own account and format.
+            return profile.accountId == accountId && profile.format == format
         default:
             return false
         }
@@ -404,12 +437,27 @@ public enum ImportResolutions {
         return nil
     }
 
+    /// A bank statement's own figures (read from it, checked by its rows: never confirmed by hand).
+    static func isStatementFigure(_ field: ImportFigureField) -> Bool {
+        [.openingBalance, .closingBalance, .rows, .instalments, .fund].contains(field)
+    }
+
+    /// Whether the item is a staged bank statement (UK or BBVA).
+    static func isStatement(_ item: ImportItem) -> Bool {
+        switch item.effect {
+        case .ukStatement, .bbvaStatement: return true
+        default: return false
+        }
+    }
+
     /// Whether the value is of the figure's type.
     static func fits(_ value: ImportFactValue, _ field: ImportFigureField) -> Bool {
         switch (field, value) {
         case (.docDate, .date), (.periodStart, .date), (.periodEnd, .date): return true
         case (.amount, .money), (.pay, .money), (.taxDeducted, .money): return true
         case (.taxYear, .year): return true
+        case (.openingBalance, .money), (.closingBalance, .money): return true
+        case (.rows, .text), (.instalments, .text), (.fund, .text): return true
         case (.currency, .text), (.invoiceNumber, .text), (.receiptNumber, .text), (.reference, .text), (.issuer, .text),
              (.person, .text): return true
         default: return false

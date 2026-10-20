@@ -124,7 +124,11 @@ final class ImportBatchStatementsTests: XCTestCase {
                                                      (day: "05/04/2026", description: "SHOP D", amount: "-40.00", balance: "-70.00")])
         var plan = try await pipeline.plan([janToMar, febToApr], intent: intent)
         plan = try await pipeline.resolve(plan, itemId: try statementItem("jan-mar.csv", in: plan).id, .leaveOut)
-        _ = try applier.apply(plan, entryPoint: "Test")
+        // Its balance is checked again without the left-out one's rows (SHOP A is missing): imported anyway.
+        let later = try statementItem("feb-apr.csv", in: plan)
+        XCTAssertEqual(later.section, .needsYou)
+        plan = try await pipeline.resolve(plan, itemId: later.id, .importAnyway(reason: "SHOP A is on the other statement"))
+        _ = try applier.apply(plan, entryPoint: "Test", reasons: plan.resolutionReasons)
         let id = accountId!
         let saved = try await db.read { db in try Transaction.filter(Column("accountId") == id).fetchAll(db).map(\.rawDescription).sorted() }
         XCTAssertEqual(saved, ["SHOP B", "SHOP D"], "the row only the left-out statement added comes with the later one")

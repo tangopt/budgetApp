@@ -16,8 +16,10 @@ public enum ImportBackup {
         let ready = ImportApplier.appliedItems(plan)
         if ready.count >= itemThreshold { return true }
         return ready.contains { item in
-            if case .ukStatement = item.effect { return true }
-            return false
+            switch item.effect {
+            case .ukStatement, .bbvaStatement: return true
+            default: return false
+            }
         }
     }
 

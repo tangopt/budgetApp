@@ -1,4 +1,5 @@
 // App/DocumentImport/ImportCenterModel.swift
+import AppKit
 import Foundation
 import BudgetCore
 import GRDB
@@ -35,6 +36,14 @@ final class ImportCenterModel: ObservableObject {
         var lines: [String]
     }
 
+    /// Why an answer to one question wasn't taken, shown beside that question (the item stays
+    /// as it was): an "Import anyway" with a blank reason.
+    struct AnswerProblem: Equatable {
+        var itemId: UUID
+        var issueId: String?
+        var message: String
+    }
+
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var plan: ImportPlan? {
         // The review's sections are worked out once per plan, never while drawing.
@@ -55,6 +64,11 @@ final class ImportCenterModel: ObservableObject {
     /// The names of the properties, people, accounts, tenancies and providers a "which one?"
     /// question offers, read when a review opens.
     @Published private(set) var targetNames = ImportTargetNames()
+    /// The accounts by id, read with the target names: a statement's layout wizard and its
+    /// account picker (bank region first).
+    @Published private(set) var accounts: [Int64: Account] = [:]
+    /// The last answer refused beside its question (`AnswerProblem`).
+    @Published var answerProblem: AnswerProblem?
     @Published var selectedItemId: UUID?
     @Published private(set) var runs: [ImportRun] = []
     /// Each run's files (what became of each), by run.
@@ -92,12 +106,22 @@ final class ImportCenterModel: ObservableObject {
     /// The last queued resolution: the next one (and Confirm import) waits for it, so each
     /// works on the plan the previous one produced.
     private var resolutionChain: Task<Void, Never>?
+    /// Releases the planning copy when the app quits.
+    private var terminationObserver: NSObjectProtocol?
 
     init(dbQueue: DatabaseQueue, databasePath: String?, library: EvidenceLibrary, categorizationService: CategorizationService) {
         self.dbQueue = dbQueue
         self.library = library
         self.pipeline = ImportPipeline(dbQueue: dbQueue, library: library, categorizationService: categorizationService)
         self.applier = ImportApplier(dbQueue: dbQueue, databasePath: databasePath, library: library)
+        // The planning copy (a temporary file) never outlives the app.
+        let pipeline = pipeline
+        terminationObserver = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil,
+                                                                     queue: nil) { _ in pipeline.discardPlanningCopy() }
+    }
+
+    isolated deinit {
+        if let terminationObserver { NotificationCenter.default.removeObserver(terminationObserver) }
     }
 
     /// Whether a review is open (reading more files into it counts).
@@ -178,6 +202,8 @@ final class ImportCenterModel: ObservableObject {
                 selectedItemId = read.items(in: .needsYou).first?.id ?? read.items.first?.id
             }
         case .failure(let error) where error is CancellationError:
+            // No review to plan against: its copy of the database goes.
+            if plan == nil { pipeline.discardPlanningCopy() }
             phase = phaseBeforeReading
         case .failure(let error):
             logger.error("Reading the import failed: \(error.localizedDescription, privacy: .public)")
@@ -186,6 +212,7 @@ final class ImportCenterModel: ObservableObject {
                 phase = .review
                 problem = Problem(title: message, lines: [])
             } else {
+                pipeline.discardPlanningCopy()
                 phase = .failed(message)
             }
         }
@@ -201,6 +228,17 @@ final class ImportCenterModel: ObservableObject {
         readingTask?.cancel()
         queued.removeAll()
         phase = phaseBeforeReading
+        // No review to plan against: its copy of the database goes once the reading winds down
+        // (a reading started meanwhile keeps the copy it makes).
+        if plan == nil {
+            let pipeline = pipeline, generation = readingGeneration
+            let winding = readingTask
+            Task { [weak self] in
+                await winding?.value
+                guard let self, self.plan == nil, self.readingGeneration == generation else { return }
+                pipeline.discardPlanningCopy()
+            }
+        }
     }
 
     private func startQueued() {
@@ -232,6 +270,7 @@ final class ImportCenterModel: ObservableObject {
         let previous = resolutionChain
         let pipeline = pipeline
         isResolving = true
+        answerProblem = nil
         let task = Task { [weak self] in
             await previous?.value
             // A reading or Confirm import started meanwhile waits for this answer; a discarded
@@ -248,6 +287,15 @@ final class ImportCenterModel: ObservableObject {
             case .success(let resolved):
                 self.plan = resolved
                 self.problem = nil
+                // A statement's row answered leaves Needs you for a line under its statement: the statement shows.
+                if let id = self.selectedItemId, let row = resolved.items.first(where: { $0.id == id }), row.section != .needsYou,
+                   let parentId = row.parentId, let parent = resolved.items.first(where: { $0.id == parentId }),
+                   StatementChecks.isRowChild(row, of: parent) {
+                    self.selectedItemId = parentId
+                }
+            case .failure(ImportResolutionError.reasonRequired):
+                // Beside the question: the item stays in Needs you as it was.
+                self.answerProblem = AnswerProblem(itemId: itemId, issueId: issueId, message: "Write why it is imported anyway first")
             case .failure(let error):
                 self.logger.error("Resolving an import item failed: \(error.localizedDescription, privacy: .public)")
                 self.problem = Problem(title: "Couldn't apply that answer: \(error.localizedDescription)", lines: [])
@@ -277,7 +325,7 @@ final class ImportCenterModel: ObservableObject {
             await previous?.value
             guard let self, let plan = self.plan else { return }
             let result = await Task.detached(priority: .userInitiated) { () -> Result<ImportRunSummary, Error> in
-                Result { try applier.apply(plan, entryPoint: entryPoint, now: now) }
+                Result { try applier.apply(plan, entryPoint: entryPoint, reasons: plan.resolutionReasons, now: now) }
             }.value
             // The batch would move a filed return: every item is checked again so the holds
             // land on the items that cause it.
@@ -350,6 +398,7 @@ final class ImportCenterModel: ObservableObject {
         selectedItemId = nil
         reviewEntryPoint = nil
         problem = nil
+        answerProblem = nil
         phase = .idle
     }
 
@@ -417,11 +466,13 @@ final class ImportCenterModel: ObservableObject {
     private func loadTargetNames() {
         let dbQueue = dbQueue
         Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { () -> Result<ImportTargetNames, Error> in
-                Result { try dbQueue.read { db in try ImportTargetNames.read(db) } }
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<(ImportTargetNames, [Account]), Error> in
+                Result { try dbQueue.read { db in (try ImportTargetNames.read(db), try Account.fetchAll(db)) } }
             }.value
             switch result {
-            case .success(let names): self?.targetNames = names
+            case .success(let (names, accounts)):
+                self?.targetNames = names
+                self?.accounts = Dictionary(accounts.compactMap { account in account.id.map { ($0, account) } }, uniquingKeysWith: { first, _ in first })
             case .failure(let error):
                 self?.logger.error("Reading the import's target names failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -433,6 +484,12 @@ final class ImportCenterModel: ObservableObject {
     func snapshotPlan(_ urls: [URL]) async throws -> ImportPlan {
         let pipeline = pipeline
         return try await DetachedWork.run(priority: .userInitiated) { try await pipeline.plan(urls) }
+    }
+
+    /// `plan` with one answer (snapshot routes only).
+    func snapshotResolve(_ plan: ImportPlan, itemId: UUID, _ resolution: ImportResolution) async throws -> ImportPlan {
+        let pipeline = pipeline
+        return try await DetachedWork.run(priority: .userInitiated) { try await pipeline.resolve(plan, itemId: itemId, resolution) }
     }
 
     /// `plan` with every Needs-you item left out (snapshot routes only).
@@ -451,7 +508,7 @@ final class ImportCenterModel: ObservableObject {
     func snapshotApply(_ plan: ImportPlan, entryPoint: String) async throws {
         let applier = applier
         let now = AppClock.now
-        let summary = try await Task.detached(priority: .userInitiated) { try applier.apply(plan, entryPoint: entryPoint, now: now) }.value
+        let summary = try await Task.detached(priority: .userInitiated) { try applier.apply(plan, entryPoint: entryPoint, reasons: plan.resolutionReasons, now: now) }.value
         pipeline.discardPlanningCopy()
         self.plan = nil
         selectedItemId = nil

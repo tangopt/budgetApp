@@ -49,17 +49,20 @@ public struct StagedImport {
     /// The rows of `alreadyStaged` (an earlier statement of the same batch) this file holds
     /// too: counted in `duplicates`, as that statement's staged rows.
     public let batchDuplicates: [StagedTransaction]
+    /// The fingerprints of `duplicates` (with their occurrence index), as saved or staged.
+    public let duplicateFingerprints: [String]
 
     public var duplicateCount: Int { duplicates.count }
 
     public init(staged: [StagedTransaction], duplicates: [ParsedTransaction], unparsedLines: [String], statementBalances: StatementBalanceResult = .notProvided,
-                skippedRowCount: Int = 0, batchDuplicates: [StagedTransaction] = []) {
+                skippedRowCount: Int = 0, batchDuplicates: [StagedTransaction] = [], duplicateFingerprints: [String] = []) {
         self.staged = staged
         self.duplicates = duplicates
         self.unparsedLines = unparsedLines
         self.statementBalances = statementBalances
         self.skippedRowCount = skippedRowCount
         self.batchDuplicates = batchDuplicates
+        self.duplicateFingerprints = duplicateFingerprints
     }
 }
 
@@ -116,7 +119,7 @@ public final class ImportCoordinator {
         return StagedImport(
             staged: staged.staged, duplicates: staged.duplicates, unparsedLines: staged.unparsedLines,
             statementBalances: StatementBalanceExtractor.extract(from: parseResult.transactions),
-            skippedRowCount: parseResult.skippedRows, batchDuplicates: staged.batchDuplicates
+            skippedRowCount: parseResult.skippedRows, batchDuplicates: staged.batchDuplicates, duplicateFingerprints: staged.duplicateFingerprints
         )
     }
 
@@ -126,6 +129,13 @@ public final class ImportCoordinator {
         let parseResult = PDFLineParser.parse(lines: lines, config: config)
         return try await stage(parsed: parseResult.transactions, unparsedLines: parseResult.unparsedLines, accountId: accountId,
                                categorization: categorization, alreadyStaged: alreadyStaged, onProgress: onProgress)
+    }
+
+    /// Rows a reader parsed itself (a BBVA statement), staged as a CSV's or PDF's are.
+    public func stageParsedImport(_ parsed: [ParsedTransaction], unparsedLines: [String] = [], accountId: Int64,
+                                  categorization: Categorization = .full, alreadyStaged: [StagedTransaction] = []) async throws -> StagedImport {
+        try await stage(parsed: parsed, unparsedLines: unparsedLines, accountId: accountId, categorization: categorization,
+                        alreadyStaged: alreadyStaged, onProgress: { _, _ in })
     }
 
     /// Shared staging for every statement format: fingerprint (with a within-file
@@ -150,15 +160,18 @@ public final class ImportCoordinator {
         var earlier: [String: StagedTransaction] = [:]
         for row in alreadyStaged where earlier[row.fingerprint] == nil { earlier[row.fingerprint] = row }
         var duplicates: [ParsedTransaction] = []
+        var duplicateFingerprints: [String] = []
         var batchDuplicates: [StagedTransaction] = []
         var nonDuplicates: [(parsed: ParsedTransaction, fingerprint: String)] = []
         for (parsedTransaction, fingerprint) in zip(parsed, TransactionFingerprint.computeAll(accountId: accountId, transactions: parsed)) {
             if existingFingerprints.contains(fingerprint) {
                 duplicates.append(parsedTransaction)
+                duplicateFingerprints.append(fingerprint)
                 continue
             }
             if let row = earlier[fingerprint] {
                 duplicates.append(parsedTransaction)
+                duplicateFingerprints.append(fingerprint)
                 batchDuplicates.append(row)
                 continue
             }
@@ -186,7 +199,7 @@ public final class ImportCoordinator {
         }
         let withReplacements = try await withManualReplacements(staged, accountId: accountId, alreadyStaged: alreadyStaged)
         return StagedImport(staged: try await withTransfers(withReplacements, accountId: accountId), duplicates: duplicates, unparsedLines: unparsedLines,
-                            batchDuplicates: batchDuplicates)
+                            batchDuplicates: batchDuplicates, duplicateFingerprints: duplicateFingerprints)
     }
 
     /// A saved rule's category (source `.rule`, confidence 1), else uncategorised.
@@ -323,14 +336,16 @@ public final class ImportCoordinator {
     /// which do more in the same transaction): the same rows, rule learning, transfer matching
     /// and forecast refresh. `importRunId` stamps the batch row with the import run it belongs to.
     @discardableResult
+    /// `matchTransfers: false` leaves the transfer matching to the caller (the document importer
+    /// adds a BBVA statement's own legs first; its follow-ons match the rest).
     public static func commit(db: Database, accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision],
-                              statement: StatementFinish? = nil, importRunId: Int64? = nil) throws -> StatementFinishOutcome? {
+                              statement: StatementFinish? = nil, importRunId: Int64? = nil, matchTransfers: Bool = true) throws -> StatementFinishOutcome? {
         try commitRows(db: db, accountId: accountId, sourceFileName: sourceFileName, staged: staged, decisions: decisions, statement: statement,
-                       importRunId: importRunId)
+                       importRunId: importRunId, matchTransfers: matchTransfers)
     }
 
     private static func commitRows(db: Database, accountId: Int64, sourceFileName: String, staged: [StagedTransaction], decisions: [ImportDecision],
-                                   statement: StatementFinish?, importRunId: Int64? = nil) throws -> StatementFinishOutcome? {
+                                   statement: StatementFinish?, importRunId: Int64? = nil, matchTransfers: Bool = true) throws -> StatementFinishOutcome? {
         let decisionById = Dictionary(decisions.map { ($0.stagedId, $0.finalCategoryId) }, uniquingKeysWith: { _, last in last })
         let learnById = Dictionary(decisions.map { ($0.stagedId, $0.learnRule) }, uniquingKeysWith: { _, last in last })
         let noteById = Dictionary(decisions.map { ($0.stagedId, $0.note) }, uniquingKeysWith: { _, last in last })
@@ -367,7 +382,7 @@ public final class ImportCoordinator {
                 }
             }
             // Link transfers first, so the forecast refresh counts each one once.
-            try TransferMatcher.match(db: db)
+            if matchTransfers { try TransferMatcher.match(db: db) }
             let outcome = try statement.map { try StatementCheck.finish(db: db, accountId: accountId, sourceFileName: sourceFileName, statement: $0) }
             if statement == nil { try StatementCheck.recheckStoredMismatch(db: db, accountId: accountId) }
             try AutoForecastGenerator.refresh(db: db)

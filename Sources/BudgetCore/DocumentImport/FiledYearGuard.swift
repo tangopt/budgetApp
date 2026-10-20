@@ -107,8 +107,7 @@ public enum FiledYearGuard {
                 } catch let error as DatabaseError where error.resultCode == .SQLITE_INTERRUPT {
                     throw error
                 } catch {
-                    item.issues.append(ImportIssue(id: checkFailedIssueId, kind: .readerProblem(checkFailedReason), reason: checkFailedReason,
-                                                   offers: [.leaveOut], detail: String(describing: error)))
+                    item.issues.append(holdIssue(for: error))
                     result[index] = item
                     continue
                 }
@@ -125,6 +124,18 @@ public enum FiledYearGuard {
             return .rollback
         }
         return result
+    }
+
+    /// The hold of an item whose confirmation couldn't be simulated (`impacts` threw `error`):
+    /// what confirming it would refuse (`ImportApplyError.planOutdated`, e.g. a mortgage balance
+    /// the statement contradicts) said as is, anything else "Couldn't check…". Leave out only.
+    public static func holdIssue(for error: Error) -> ImportIssue {
+        if case ImportApplyError.planOutdated(let why) = error {
+            let reason = "\(why): leave it out of this import"
+            return ImportIssue(id: checkFailedIssueId, kind: .readerProblem(reason), reason: reason, offers: [.leaveOut])
+        }
+        return ImportIssue(id: checkFailedIssueId, kind: .readerProblem(checkFailedReason), reason: checkFailedReason,
+                           offers: [.leaveOut], detail: String(describing: error))
     }
 
     private static func isGuardIssue(_ issue: ImportIssue) -> Bool {
@@ -233,8 +244,10 @@ public enum FiledYearGuard {
     // MARK: Causes
 
     /// The item (`"<title>: <money and date facts>"`) and, for a statement, each row put in a
-    /// property's category (the rows the rental accounts read): `"<date> <description> <amount>"`.
-    private static func causes(db: Database, item: ImportItem) throws -> [String] {
+    /// property's category (the rows the rental accounts read): `"<date> <description> <amount>"`;
+    /// for a BBVA statement also each interest row it writes on the mortgage (an instalment's,
+    /// or an estimate's replacement): `"<date> Mortgage interest (instalment N) <amount>"`.
+    static func causes(db: Database, item: ImportItem) throws -> [String] {
         let facts = item.facts.compactMap { fact -> String? in
             let name = fact.field.displayName.lowercased()
             switch fact.value {
@@ -244,16 +257,31 @@ public enum FiledYearGuard {
             }
         }
         var causes = [facts.isEmpty ? item.title : "\(item.title): \(facts.joined(separator: ", "))"]
-        if case .ukStatement(let statement) = item.effect {
+        var statementRows: (accountId: Int64, rows: [StagedTransaction])?
+        switch item.effect {
+        case .ukStatement(let statement): statementRows = (statement.accountId, statement.staged)
+        case .bbvaStatement(let statement): statementRows = (statement.currentAccountId, statement.staged)
+        default: break
+        }
+        if let statement = statementRows {
             let currency = try Account.fetchOne(db, key: statement.accountId)?.currency ?? .gbp
             var propertyCategories = Set<Int64>()
             for property in try Property.fetchAll(db) {
                 guard let propertyId = property.id else { continue }
                 propertyCategories.formUnion(try TaxExpenseTypeMap.propertyCategories(db: db, propertyId: propertyId).compactMap(\.id))
             }
-            for row in statement.staged where row.suggestedCategoryId.map(propertyCategories.contains) == true {
+            for row in statement.rows where row.suggestedCategoryId.map(propertyCategories.contains) == true {
                 causes.append("\(EvidenceInitialImport.day(row.parsed.date)) \(row.parsed.rawDescription) "
                               + Money.format(row.parsed.amountMinorUnits, currency: currency))
+            }
+        }
+        if case .bbvaStatement(let statement) = item.effect, let loanId = statement.loanAccountId {
+            let currency = try Account.fetchOne(db, key: loanId)?.currency ?? .eur
+            for receipt in statement.instalments.map(\.receipt) + statement.estimates.map(\.receipt) {
+                let charges = BBVAStatementLegs.charges(receipt)
+                guard charges != 0 else { continue }
+                causes.append("\(EvidenceInitialImport.day(receipt.operationDate)) \(BBVAFundMortgageImport.interestCategoryName) "
+                              + "(instalment \(receipt.number)) \(Money.format(-charges, currency: currency))")
             }
         }
         return causes

@@ -16,6 +16,8 @@ struct ImportReviewState {
         var title: String? = nil
         let detail: String?
         let figure: ImportFactValue?
+        /// A statement's row (a possible duplicate) shown indented under its statement.
+        var isIndented = false
         var id: UUID { item.id }
     }
 
@@ -35,6 +37,10 @@ struct ImportReviewState {
     let items: [UUID: ImportItem]
     /// A statement's rows held apart from it (rows already imported), by the statement.
     let children: [UUID: [ImportItem]]
+    /// A statement's rows the checks ask about or the user answered (`StatementChecks.isRowChild`:
+    /// possible duplicates, kept and skipped rows), by the statement: shown under it, never as
+    /// documents of their own (a possible duplicate also as its own Needs-you row, indented).
+    let rows: [UUID: [ImportItem]]
     /// Left-out items that "Put back" brings back: not a statement's rows while the statement
     /// is out (they come back with it; Core refuses them alone).
     let canPutBack: Set<UUID>
@@ -47,28 +53,52 @@ struct ImportReviewState {
 
     init(_ plan: ImportPlan) {
         var byId: [UUID: ImportItem] = [:]
+        for item in plan.items { byId[item.id] = item }
         var bySection: [ImportSection: [ImportItem]] = [:]
         var children: [UUID: [ImportItem]] = [:]
+        var rows: [UUID: [ImportItem]] = [:]
+        var documents: [ImportItem] = []
         for item in plan.items {
-            byId[item.id] = item
+            if let parentId = item.parentId, let parent = byId[parentId], StatementChecks.isRowChild(item, of: parent) {
+                rows[parentId, default: []].append(item)
+                continue
+            }
+            documents.append(item)
             bySection[item.section, default: []].append(item)
             if let parentId = item.parentId { children[parentId, default: []].append(item) }
         }
         items = byId
         self.children = children
-        needsYou = (bySection[.needsYou] ?? []).map { Row(item: $0, detail: $0.needsYouReasons.first, figure: $0.headlineFigure) }
+        self.rows = rows
+        // A statement's rows to keep or skip right under it, indented.
+        var needsYou: [Row] = []
+        for item in bySection[.needsYou] ?? [] {
+            needsYou.append(Row(item: item, detail: item.needsYouReasons.first, figure: item.headlineFigure))
+            for row in rows[item.id] ?? [] where row.section == .needsYou {
+                needsYou.append(Row(item: row, detail: row.needsYouReasons.first, figure: nil, isIndented: true))
+            }
+        }
+        // (A statement's rows wait only while it does: never without it, but shown if so.)
+        let shown = Set(needsYou.map(\.id))
+        for item in plan.items where item.section == .needsYou && !shown.contains(item.id) {
+            if let parentId = item.parentId, rows[parentId]?.contains(where: { $0.id == item.id }) == true {
+                needsYou.append(Row(item: item, detail: item.needsYouReasons.first, figure: nil, isIndented: true))
+            }
+        }
+        self.needsYou = needsYou
         duplicates = (bySection[.duplicates] ?? []).map { Row(item: $0, title: $0.parentId == nil ? $0.file.fileName : $0.title, detail: $0.duplicate?.of, figure: nil) }
         canPutBack = Set((bySection[.leftOut] ?? []).filter { item in
             item.parentId.flatMap { byId[$0] }?.isLeftOut != true
         }.map(\.id))
         leftOut = (bySection[.leftOut] ?? []).map { Row(item: $0, detail: $0.recognition.kind.displayName, figure: $0.headlineFigure) }
-        ready = plan.readyGroups.map { group in
+        // Ready's groups and summaries without the statements' rows (a kept row is its statement's).
+        ready = ImportPlan(items: documents).readyGroups.map { group in
             Group(id: group.id, title: group.title, summary: group.summary,
                   rows: group.itemIds.compactMap { byId[$0] }.map { Row(item: $0, detail: $0.readyDetail, figure: $0.headlineFigure) })
         }
         canConfirm = plan.canConfirm
         ignoredFiles = plan.ignoredFiles
-        isEmpty = plan.items.isEmpty
+        isEmpty = documents.isEmpty
         readyCount = bySection[.ready]?.count ?? 0
         countsLine = Self.countsLine(ready: readyCount, needsYou: needsYou.count,
                                      duplicates: duplicates.count, leftOut: leftOut.count)
@@ -161,6 +191,7 @@ struct ImportReviewView: View {
                         .frame(minWidth: Self.listMinimumWidth, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     ImportPreviewPanel(item: center.selectedItemId.flatMap { review.items[$0] },
                                        children: center.selectedItemId.flatMap { review.children[$0] } ?? [],
+                                       rows: center.selectedItemId.flatMap { review.rows[$0] } ?? [],
                                        canPutBack: center.selectedItemId.map(review.canPutBack.contains) ?? false,
                                        targetNames: center.targetNames, isAnswerable: isAnswerable, center: center,
                                        resolve: { itemId, issueId, resolution in center.resolve(itemId, issueId: issueId, resolution) })
@@ -311,7 +342,8 @@ private struct ImportReviewList: View {
                                       @ViewBuilder accessory: () -> Accessory) -> some View {
         let item = row.item
         return ImportReviewRow(item: item, title: title ?? row.title ?? item.title, detail: row.detail, figure: row.figure, needsYou: needsYou,
-                               children: review.children[item.id] ?? [], isSelected: selectedItemId == item.id,
+                               isIndented: row.isIndented, children: review.children[item.id] ?? [], rows: review.rows[item.id] ?? [],
+                               isSelected: selectedItemId == item.id,
                                select: { selectedItemId = item.id }, accessory: accessory())
     }
 }
@@ -324,7 +356,9 @@ private struct ImportReviewRow<Accessory: View>: View {
     let detail: String?
     let figure: ImportFactValue?
     let needsYou: Bool
+    let isIndented: Bool
     let children: [ImportItem]
+    let rows: [ImportItem]
     let isSelected: Bool
     let select: () -> Void
     let accessory: Accessory
@@ -332,6 +366,12 @@ private struct ImportReviewRow<Accessory: View>: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if isIndented {
+                // A row of the statement above: under it, its own question.
+                Image(systemName: "arrow.turn.down.right").font(.caption).foregroundStyle(.secondary)
+                    .padding(.leading, 12)
+                    .accessibilityHidden(true)
+            }
             if needsYou {
                 StatusPill("Needs you", tone: .warning)
             }
@@ -341,7 +381,7 @@ private struct ImportReviewRow<Accessory: View>: View {
                     Text(detail.figuresUnbroken).font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                ImportStatementLines(item: item, children: children, listsUnparsedLines: false)
+                ImportStatementLines(item: item, children: children, rows: rows, listsUnparsedLines: false)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if let figure {
@@ -365,7 +405,17 @@ private struct ImportReviewRow<Accessory: View>: View {
 struct ImportStatementLines: View {
     let item: ImportItem
     let children: [ImportItem]
+    /// Its rows answered: skipped ("Skipped: not imported") and kept ones (the rows still
+    /// asked about are their own rows in Needs you).
+    var rows: [ImportItem] = []
     let listsUnparsedLines: Bool
+
+    /// "05/11/2026 SHOP €12.00 · Skipped: not imported", "… · Kept".
+    static func answeredLine(_ row: ImportItem) -> String? {
+        if StatementChecks.isSkippedRow(row) { return "\(row.title) · \(StatementChecks.skippedNote)" }
+        if row.section != .needsYou, !row.isLeftOut { return "\(row.title) · Kept" }
+        return nil
+    }
 
     private var unparsed: [String] {
         item.issues.flatMap { issue -> [String] in
@@ -376,12 +426,20 @@ struct ImportStatementLines: View {
 
     var body: some View {
         let unparsed = unparsed
-        if !children.isEmpty || !unparsed.isEmpty {
+        let answered = rows.compactMap { row in Self.answeredLine(row).map { (row.id, $0) } }
+        if !children.isEmpty || !unparsed.isEmpty || !answered.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(children) { child in
                     Label {
                         Text((child.duplicate?.of ?? child.title).figuresUnbroken)
                             .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "arrow.turn.down.right")
+                    }
+                }
+                ForEach(answered, id: \.0) { _, line in
+                    Label {
+                        Text(line.figuresUnbroken).fixedSize(horizontal: false, vertical: true)
                     } icon: {
                         Image(systemName: "arrow.turn.down.right")
                     }

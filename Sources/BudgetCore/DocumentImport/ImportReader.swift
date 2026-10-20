@@ -58,6 +58,7 @@ public enum ImportReaders {
             TransferAdviceReader(),
             UtilityInvoiceImportReader(providers: providers),
             PayrollFormImportReader(),
+            BBVAStatementReader(),
             UKStatementReader(),
             EvidenceDocumentReader()
         ]

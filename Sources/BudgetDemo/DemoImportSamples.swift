@@ -2,18 +2,20 @@ import Foundation
 import GRDB
 import BudgetCore
 
-/// Six synthetic files for the document importer, made from the demo database when it is built
+/// Eight synthetic files for the document importer, made from the demo database when it is built
 /// (`MakeDemoDatabase` writes them to `ImportSamples` beside it) for the Imports snapshot routes
 /// and for trying the importer by hand. Read by the real pipeline over the demo, they fill each
 /// section of the review:
 /// - Ready: the PDF of Tenancy 2's latest receipt (contract CT-0002), linked to its credit;
 ///   an insurance receipt of the latest condomínio debit without a document (its day and
-///   amount), linked to it.
+///   amount), linked to it; a BBVA-format "extrato global" of Euro Current for the month after
+///   its history (one mortgage instalment with its receipt, no fund), its balances matching.
 /// - Duplicates skipped: a copy of the library's energy certificate (the same file); an
 ///   Example utility invoice re-issued later under a recorded invoice's number (the same document).
 /// - Needs you: Person A's corrected P60 2024/25, pay £1,000 above the stored figure (possibly
 ///   a corrected version; the filed 2024/25 return holds it); `Letter.pdf`, with no wording any
-///   reader knows.
+///   reader knows; a UK bank CSV no account's saved profile reads (its account to choose, then
+///   its columns to map).
 /// Every name, number and figure is invented (the demo's own).
 public enum DemoImportSamples {
     /// The file a samples folder holds, so it is only ever replaced by the demo.
@@ -31,7 +33,7 @@ public enum DemoImportSamples {
         }
     }
 
-    /// Writes the six samples into `folder` (replacing an earlier set there; refusing a folder
+    /// Writes the eight samples into `folder` (replacing an earlier set there; refusing a folder
     /// that holds anything else), in the order above; returns their URLs.
     @discardableResult
     public static func write(into folder: URL, dbQueue: DatabaseQueue) throws -> [URL] {
@@ -47,7 +49,8 @@ public enum DemoImportSamples {
         try Data("Synthetic demo import samples (MakeDemoDatabase).\n".utf8).write(to: folder.appendingPathComponent(markerFileName))
 
         let samples = try dbQueue.read { db in
-            [try rentReceipt(db), try insuranceReceipt(db), copyOfLibraryDocument(), try reissuedInvoice(db), try p60(db), letter()]
+            [try rentReceipt(db), try insuranceReceipt(db), copyOfLibraryDocument(), try reissuedInvoice(db), try p60(db), letter(),
+             try bbvaStatement(db), try ukStatementCSV(db)]
         }
         var urls: [URL] = []
         for (name, data) in samples {
@@ -182,6 +185,112 @@ public enum DemoImportSamples {
             P("Employer PAYE reference", 20, 240), P(reference, 20, 225)
         ]
         return ("P60 \(startYear)-\(String((startYear + 1) % 100)) \(employment.employerName).pdf", DemoPDF.data(placed: items))
+    }
+
+    /// A UK bank's CSV export for the month after the demo's history, with no account details:
+    /// no account's saved profile reads it (the demo has none).
+    private static func ukStatementCSV(_ db: Database) throws -> Sample {
+        let (year, month) = try nextMonth(db, account: "Everyday Current")
+        func on(_ day: Int) -> String { String(format: "%02d/%02d/%04d", day, month, year) }
+        let rows = [
+            "Date,Description,Amount,Balance",
+            "\(on(3)),GREENLEAF MARKET,-42.18,2357.82",
+            "\(on(5)),CITY TRANSIT,-2.85,2354.97",
+            "\(on(9)),BEAN THERE COFFEE,-3.60,2351.37",
+            "\(on(14)),STREAMFLIX,-10.99,2340.38",
+            "\(on(25)),SALARY EXAMPLE EMPLOYER,3125.00,5465.38"
+        ]
+        return ("Demo Bank export \(String(format: "%04d-%02d", year, month)).csv", Data((rows.joined(separator: "\n") + "\n").utf8))
+    }
+
+    /// The month after `account`'s last transaction, as (year, month).
+    private static func nextMonth(_ db: Database, account name: String) throws -> (Int, Int) {
+        guard let account = try Account.filter(Column("name") == name).fetchOne(db), let accountId = account.id,
+              let last = try Transaction.filter(Column("accountId") == accountId).order(Column("date").desc).fetchOne(db) else {
+            throw SampleError.missing("transaction on \(name)")
+        }
+        let (year, month) = MonthRange.components(of: last.date)
+        return month == 12 ? (year + 1, 1) : (year, month + 1)
+    }
+
+    /// A BBVA Portugal "extrato global" of Euro Current for the month after its history, laid out
+    /// as BBVA prints it: the mortgage instalment on the 2nd (the demo's instalment and interest,
+    /// the Property Mortgage's capital owed after it), a shop payment and the maintenance fee; no
+    /// savings product. Its opening is Euro Current's balance then, so its closing matches.
+    private static func bbvaStatement(_ db: Database) throws -> Sample {
+        guard let current = try Account.filter(Column("name") == "Euro Current").fetchOne(db), let currentId = current.id,
+              let loan = try Account.filter(Column("name") == "Property Mortgage").fetchOne(db), let loanId = loan.id,
+              let instalment = try Transaction.filter(Column("accountId") == currentId && Column("rawDescription") == "LOAN INSTALMENT")
+                .order(Column("date").desc).fetchOne(db),
+              let interest = try Transaction.filter(Column("accountId") == loanId && Column("rawDescription") == "LOAN INTEREST")
+                .order(Column("date").desc).fetchOne(db) else {
+            throw SampleError.missing("mortgage instalment on Euro Current")
+        }
+        let (year, month) = try nextMonth(db, account: "Euro Current")
+        let calendar = DemoDatabase.calendar
+        let start = calendar.date(from: DateComponents(year: year, month: month, day: 1))!
+        let days = calendar.range(of: .day, in: .month, for: start)!.count
+        let receiptDay = calendar.date(from: DateComponents(year: year, month: month, day: 2))!
+        func balance(_ accountId: Int64, before day: Date) throws -> Int {
+            NetWorthCalculator.balance(accountId: accountId, at: day.addingTimeInterval(-1),
+                                       snapshots: try BalanceSnapshot.filter(Column("accountId") == accountId).fetchAll(db),
+                                       transactions: try Transaction.filter(Column("accountId") == accountId).fetchAll(db))?.native ?? 0
+        }
+        let opening = try balance(currentId, before: start)
+        let total = -instalment.amountMinorUnits, charges = -interest.amountMinorUnits, capital = total - charges
+        let owedAfter = -(try balance(loanId, before: receiptDay)) - capital
+
+        func pt(_ cents: Int) -> String {
+            let whole = abs(cents) / 100, fraction = abs(cents) % 100
+            var digits = String(whole), grouped = ""
+            while digits.count > 3 {
+                grouped = "." + digits.suffix(3) + grouped
+                digits = String(digits.dropLast(3))
+            }
+            return (cents < 0 ? "-" : "") + digits + grouped + "," + String(format: "%02d", fraction)
+        }
+        func md(_ day: Int) -> String { String(format: "%02d/%02d", month, day) }
+        func iso(_ day: Int, monthOffset: Int = 0) -> String {
+            let date = calendar.date(byAdding: .month, value: monthOffset, to: calendar.date(from: DateComponents(year: year, month: month, day: day))!)!
+            let (y, m) = MonthRange.components(of: date)
+            return String(format: "%04d-%02d-%02d", y, m, calendar.component(.day, from: date))
+        }
+        var running = opening
+        func movement(_ day: Int, _ description: String, _ amount: Int) -> String {
+            running += amount
+            return "\(md(day)) \(md(day)) \(description) \(pt(amount)) \(pt(running))"
+        }
+        let period = String(format: "%04d/%02d/01 A %04d/%02d/%02d", year, month, year, month, days)
+        let label = String(format: "%04d/%02d", year, month)
+        var lines = [
+            "EXTRATO GLOBAL",
+            "PERÍODO DE \(period)",
+            "ACTIVO",
+            "PASSIVO",
+            "EMPRÉSTIMOS \(pt(owedAfter))",
+            "Pág. 1/1 Extrato \(label)",
+            // The account core Euro Current's (synthetic) IBAN holds.
+            "Conta Nº: 000/000000000   EUR   CONTA BBVA",
+            "Saldo inicial \(pt(opening))",
+            movement(2, "COBR. REC. TOT 000 00-000000-0", -total),
+            movement(12, "PAGAMENTO LOJA EXEMPLO", -2_340),
+            movement(days - 2, "COMISSAO MANUTENCAO CONTA", -416)
+        ]
+        lines.insert("DEPÓSITOS À ORDEM \(pt(running))", at: 3)
+        lines += [
+            "Saldo final \(pt(running))",
+            "Saldo disponivel \(pt(running))",
+            "Conta Nº: 000/333333333 EUR HOME LOAN",
+            "Capital em Dívida \(pt(owedAfter))",
+            "COBRANÇAS EFECTUADAS",
+            "Nº. Recibo: 37/360 Data Inicio Liquidação: \(iso(2, monthOffset: -1)) Total recibo: \(pt(total))",
+            "Data Valor: \(iso(2)) Data Fim Liquidação: \(iso(2))",
+            "Data Oper. Capital Juros Comissões Juros de Mora Impostos Total EUR Total em atraso Capital em dívida",
+            "\(iso(2)) \(pt(capital)) \(pt(charges)) 0,00 0,00 0,00 \(pt(total)) 0,00 \(pt(owedAfter))"
+        ]
+        typealias P = DemoPDF.Placed
+        let placed = lines.enumerated().map { index, line in P(line, 20, 800 - Double(index) * 16, size: 8, bold: index == 0) }
+        return (String(format: "BBVA extrato %04d-%02d.pdf", year, month), DemoPDF.data(placed: placed))
     }
 
     /// A letter none of the readers knows.

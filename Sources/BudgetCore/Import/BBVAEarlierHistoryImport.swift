@@ -788,61 +788,38 @@ public enum BBVAEarlierHistoryImport {
             try addSnapshot(loanId, signed: -owedBefore, note: "Opening: owed before instalment \(firstReceipt.number) (statement \(firstStatement.label))")
             report.openings.append("BBVA mortgage: opening \(eur(-owedBefore)) on \(dayText(openingDay)) (owed before instalment \(firstReceipt.number))")
         }
-        var unclaimed = instalmentRows
-        for receipt in receipts {
-            guard let position = unclaimed.firstIndex(where: { savedRows[$0].date == receipt.operationDate && savedRows[$0].amountMinorUnits == -receipt.totalMinorUnits }) else {
-                throw ImportError.missing("the instalment row of receipt \(receipt.number) (\(dayText(receipt.operationDate)) \(eur(-receipt.totalMinorUnits)))")
-            }
-            let row = savedRows[unclaimed.remove(at: position)]
-            _ = try ManualTransactions.addOtherSide(db: db, transactionId: row.id!, accountId: loanId)
-            let charges = receipt.interestMinorUnits + receipt.feesMinorUnits + receipt.lateInterestMinorUnits + receipt.taxesMinorUnits
-            let resolved = BBVAFundMortgageImport.ResolvedInstalment(
-                instalment: BBVAFundMortgageImport.Instalment(date: receipt.operationDate, valueDate: receipt.valueDate, totalMinorUnits: receipt.totalMinorUnits, breakdown: nil),
-                capitalMinorUnits: receipt.capitalMinorUnits, interestMinorUnits: receipt.interestMinorUnits + receipt.lateInterestMinorUnits,
-                feesMinorUnits: receipt.feesMinorUnits, taxesMinorUnits: receipt.taxesMinorUnits, isEstimated: false, tan: receipt.tan,
-                outstandingBeforeMinorUnits: receipt.outstandingAfterMinorUnits + receipt.capitalMinorUnits, receipt: receipt.number,
-                source: "BBVA statement (COBRANÇAS EFECTUADAS)", remainingPayments: nil, residualMinorUnits: 0)
-            if charges != 0 {
-                try ManualTransactions.add(db: db, accountId: loanId, date: receipt.operationDate, description: "\(interestCategoryName) (instalment \(receipt.number))",
-                                           amountMinorUnits: -charges, categoryId: interestCategory, note: BBVAFundMortgageImport.note(for: resolved))
-            }
+        // The saved rows as statement movements (the pairing reads their day and amount).
+        let savedMovements = savedRows.map { BBVAStatementParser.Movement(date: $0.date, valueDate: $0.date, description: $0.rawDescription, amountMinorUnits: $0.amountMinorUnits, balanceAfterMinorUnits: nil) }
+        let instalments = BBVAStatementLegs.matchInstalments(movements: savedMovements, candidates: instalmentRows, receipts: receipts)
+        if let receipt = instalments.receiptsWithoutMovement.first {
+            throw ImportError.missing("the instalment row of receipt \(receipt.number) (\(dayText(receipt.operationDate)) \(eur(-receipt.totalMinorUnits)))")
+        }
+        for match in instalments.matches {
+            let receipt = match.receipt
+            try BBVAStatementLegs.addInstalment(db: db, instalmentRowId: savedRows[match.movementIndex].id!, receipt: receipt, loanAccountId: loanId, interestCategoryId: interestCategory)
             report.instalments.append(InstalmentReport(receipt: receipt.number, date: receipt.operationDate, valueDate: receipt.valueDate, totalMinorUnits: receipt.totalMinorUnits,
-                                                       capitalMinorUnits: receipt.capitalMinorUnits, chargesMinorUnits: charges, tan: receipt.tan,
+                                                       capitalMinorUnits: receipt.capitalMinorUnits, chargesMinorUnits: BBVAStatementLegs.charges(receipt), tan: receipt.tan,
                                                        owedAfterMinorUnits: receipt.outstandingAfterMinorUnits))
         }
 
         // 7. Fund: each subscription a transfer to it, then each month's value.
         let subscriptionRows = items.indices.filter { items[$0].target == .fundTransfer }
         // Each fund movement pairs with one subscription debit of its amount within a few days.
-        var unpaired = subscriptionRows
-        var pairs: [(row: Int, movement: BBVAStatementParser.FundMovement)] = []
-        for movement in statements.compactMap(\.fund).flatMap(\.movements) {
-            let window: TimeInterval = Double(fundPairingDays) * 86_400
-            let candidates = unpaired.filter { savedRows[$0].amountMinorUnits == -movement.amountMinorUnits
-                && abs(savedRows[$0].date.timeIntervalSince(movement.date)) <= window }
-            guard let best = candidates.min(by: { abs(savedRows[$0].date.timeIntervalSince(movement.date)) < abs(savedRows[$1].date.timeIntervalSince(movement.date)) }) else {
-                throw ImportError.badInput("the fund movement of \(dayText(movement.date)) \(eur(movement.amountMinorUnits)) has no subscription debit within \(fundPairingDays) days")
-            }
-            unpaired.removeAll { $0 == best }
-            pairs.append((best, movement))
+        let fundMovements = statements.compactMap(\.fund).flatMap(\.movements)
+        let fundPairs = BBVAStatementLegs.pairFundMovements(movements: savedMovements, candidates: subscriptionRows, fundMovements: fundMovements, pairingDays: fundPairingDays)
+        if let movement = fundPairs.unpairedFundMovements.first {
+            throw ImportError.badInput("the fund movement of \(dayText(movement.date)) \(eur(movement.amountMinorUnits)) has no subscription debit within \(fundPairingDays) days")
         }
-        guard unpaired.isEmpty else {
-            throw ImportError.badInput("subscription debits with no fund movement: " + unpaired.map { "\(dayText(savedRows[$0].date)) \(eur(savedRows[$0].amountMinorUnits))" }.joined(separator: ", "))
+        guard fundPairs.unpairedSubscriptions.isEmpty else {
+            throw ImportError.badInput("subscription debits with no fund movement: " + fundPairs.unpairedSubscriptions.map { "\(dayText(savedRows[$0].date)) \(eur(savedRows[$0].amountMinorUnits))" }.joined(separator: ", "))
         }
-        for pair in pairs { _ = try ManualTransactions.addOtherSide(db: db, transactionId: savedRows[pair.row].id!, accountId: fundId) }
+        for pair in fundPairs.pairs { try BBVAStatementLegs.addFundSubscription(db: db, subscriptionRowId: savedRows[pair.movementIndex].id!, fundAccountId: fundId) }
         if let firstFund = firstStatement.fund {
             try addSnapshot(fundId, signed: firstFund.openingMinorUnits, note: "Opening: \(firstFund.openingUnits) units at \(firstFund.openingPrice) (statement \(firstStatement.label))")
             report.openings.append("BBVA retirement fund: opening \(eur(firstFund.openingMinorUnits)) on \(dayText(openingDay)) (\(firstFund.openingUnits) units at \(firstFund.openingPrice))")
-            let market = try BuiltInCategories.category(db: db, role: .marketMovement)
             for statement in statements {
                 guard let value = statement.fund else { continue }
-                let held = try sumSince(db: db, accountId: fundId, after: openingDay, through: statement.periodEnd) + firstFund.openingMinorUnits
-                let movement = value.closingMinorUnits - held
-                if movement != 0 {
-                    try ManualTransactions.add(db: db, accountId: fundId, date: statement.periodEnd, description: market.name, amountMinorUnits: movement,
-                                               categoryId: market.id, note: "Statement \(statement.label): \(value.closingUnits) units at \(value.closingPrice) = \(eur(value.closingMinorUnits))",
-                                               allowBuiltIn: true)
-                }
+                let movement = try BBVAStatementLegs.marketMovement(db: db, fundAccountId: fundId, statement: statement, since: openingDay, openingMinorUnits: firstFund.openingMinorUnits)?.amountMinorUnits ?? 0
                 report.fundMovements.append("\(statement.label): value \(eur(value.closingMinorUnits)) (\(value.closingUnits) × \(value.closingPrice)); market movement \(eur(movement))")
             }
         }

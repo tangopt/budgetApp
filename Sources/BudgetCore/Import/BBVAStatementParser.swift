@@ -59,6 +59,26 @@ public enum BBVAStatementParser {
         public let outstandingAfterMinorUnits: Int
         /// The TAN (annual %) in force.
         public let tan: Double?
+        /// The loan contract it settles: the "Conta Nº" of the loan section it is listed in.
+        public let contract: String?
+
+        public init(number: Int, of: Int?, totalMinorUnits: Int, valueDate: Date, operationDate: Date, capitalMinorUnits: Int,
+                    interestMinorUnits: Int, feesMinorUnits: Int, lateInterestMinorUnits: Int, taxesMinorUnits: Int,
+                    outstandingAfterMinorUnits: Int, tan: Double?, contract: String? = nil) {
+            self.number = number
+            self.of = of
+            self.totalMinorUnits = totalMinorUnits
+            self.valueDate = valueDate
+            self.operationDate = operationDate
+            self.capitalMinorUnits = capitalMinorUnits
+            self.interestMinorUnits = interestMinorUnits
+            self.feesMinorUnits = feesMinorUnits
+            self.lateInterestMinorUnits = lateInterestMinorUnits
+            self.taxesMinorUnits = taxesMinorUnits
+            self.outstandingAfterMinorUnits = outstandingAfterMinorUnits
+            self.tan = tan
+            self.contract = contract
+        }
     }
 
     public struct Statement: Equatable, Sendable {
@@ -257,6 +277,8 @@ public enum BBVAStatementParser {
         for (offset, line) in lines.enumerated() {
             guard let r = match(collapse(line), #"^Nº\. Recibo: (\d+)(?:/(\d+))?.*Total recibo: ("# + amountPattern + #")$"#),
                   let number = Int(r[1]), let total = minorUnits(r[3]) else { continue }
+            // The loan section it is listed in.
+            let contract = lines[..<offset].lazy.reversed().compactMap { match($0, #"^Conta Nº:\s*(\S+)"#)?[1] }.first
             var valueDate: Date?
             var tan: Double?
             var found = false
@@ -272,7 +294,7 @@ public enum BBVAStatementParser {
                     guard lineTotal == total else { throw ParseError.unreadable("receipt " + String(number) + ": total " + String(lineTotal) + " ≠ " + String(total)) }
                     receipts.append(LoanReceipt(number: number, of: Int(r[2]), totalMinorUnits: total, valueDate: valueDate, operationDate: operation,
                                                 capitalMinorUnits: capital, interestMinorUnits: interest, feesMinorUnits: fees, lateInterestMinorUnits: late,
-                                                taxesMinorUnits: taxes, outstandingAfterMinorUnits: owed, tan: tan))
+                                                taxesMinorUnits: taxes, outstandingAfterMinorUnits: owed, tan: tan, contract: contract))
                     found = true
                     break
                 }

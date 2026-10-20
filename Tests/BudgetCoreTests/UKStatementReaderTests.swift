@@ -61,8 +61,9 @@ final class UKStatementReaderTests: XCTestCase {
 
     private func items(_ file: ImportFile, accountId: Int64, profile: ImportProfile, staged: StagedImport, context: ImportContext) throws -> [ImportItem] {
         try dbQueue.read { db in
-            try UKStatementReader.items(file: file, recognition: csvRecognition, accountId: accountId, profile: profile,
-                                        staged: staged, context: context, db: db)
+            // Checked as the pipeline checks the review (`StatementChecks`), here alone.
+            try StatementChecks.recheck(UKStatementReader.items(file: file, recognition: csvRecognition, accountId: accountId, profile: profile,
+                                                                staged: staged, context: context, db: db), db: db)
         }
     }
 
@@ -387,7 +388,7 @@ final class UKStatementReaderTests: XCTestCase {
     }
 
     func testPDFProfileWithoutLayoutIsNeedsYou() throws {
-        try pdfProfile(layout: false)
+        _ = try pdfProfile(layout: false)
         let file = pdfFile(URL(fileURLWithPath: "/tmp/statement.pdf"), text: nil)
         guard case .unresolved(let item) = try resolvePDF(file, context: try context(accountId: accountId)) else { return XCTFail("resolved") }
         XCTAssertEqual(item.section, .needsYou)

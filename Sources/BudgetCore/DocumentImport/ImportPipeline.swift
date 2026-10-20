@@ -24,7 +24,7 @@ public struct ImportProgress: Equatable, Sendable {
 ///
 /// Planning: collect (folders expanded) → copy the database → read the files off the main
 /// actor, at most 4 at once, progress after each (load, detect, the reader's `prepare`) → stage
-/// the UK statements (async, outside the transaction; several of one account in date order,
+/// the UK and BBVA statements (async, outside the transaction; several of one account in date order,
 /// each later one treating the earlier ones' rows as already imported) → in the rolled-back
 /// write: the readers, intent mismatches, `ImportDuplicates.annotate` over the whole plan,
 /// `FiledYearGuard.annotate`. Cancelling the task stops it with `CancellationError`.
@@ -76,18 +76,19 @@ public struct ImportPipeline: @unchecked Sendable {
             let now = Date()
             let context = try await queue.read { try ImportContext.load(db: $0, intent: intent, now: now) }
             let stageStart = Date()
-            let staged = try await stageStatements(entries, context: context, readers: readers, queue: queue,
+            let contexts = Array(repeating: context, count: entries.count)
+            let staged = try await stageStatements(entries, contexts: contexts, skipped: plan.state.skippedRows, readers: readers, queue: queue,
                                                    earlier: Self.batchRows(plan.items))
             timings?.add(.stage, Date().timeIntervalSince(stageStart))
             try Task.checkCancellation()
             let library = try timings.measure(.duplicates) { try copy.libraryIndex() }
             let existing = plan
-            return try await queue.write { db -> ImportPlan in
+            let planned = try await queue.write { db -> ImportPlan in
                 var result = existing
                 result.ignoredFiles += collected.ignored
                 try db.inSavepoint {
                     let added = try timings.measure(.readers) {
-                        try Self.propose(entries, staged: staged, context: context, readers: readers, db: db)
+                        try Self.propose(entries, staged: staged, contexts: contexts, readers: readers, db: db)
                             .map { Self.withReplacements($0, intent: intent) }
                     }
                     for item in added {
@@ -101,6 +102,12 @@ public struct ImportPipeline: @unchecked Sendable {
                 }
                 return result
             }
+            // A statement added to an account that already has some in the review: the
+            // account's statements are staged again together, in date order.
+            let before = Set(existing.items.map(\.id))
+            let accounts = Self.statementAccounts(existing.items)
+                .intersection(Self.statementAccounts(planned.items.filter { !before.contains($0.id) }))
+            return accounts.isEmpty ? planned : try await restage(planned, accounts: accounts)
         }
     }
 
@@ -148,13 +155,37 @@ public struct ImportPipeline: @unchecked Sendable {
 
     /// The plan with the user's answer to one item (`ImportResolutions.apply`); `issueId`
     /// answers one issue of it. `.chooseKind` / `.chooseTarget` read the item again with its
-    /// reader. Every change re-runs the duplicate pass over the plan and the filed-year guard
+    /// reader (`.chooseAccount`, `.saveProfile` too). Every change re-runs the duplicate pass over the plan and the filed-year guard
     /// on what changed, in a rolled-back write. Children (`parentId`) follow their parent in
     /// and out of the import.
     public func resolve(_ plan: ImportPlan, itemId: UUID, issueId: String? = nil,
                         _ resolution: ImportResolution) async throws -> ImportPlan {
         guard let index = plan.items.firstIndex(where: { $0.id == itemId }) else { throw ImportResolutionError.itemNotFound(itemId) }
         let item = plan.items[index]
+        // A statement's row that looks already saved: kept or skipped (Leave out skips it, or keeps it again).
+        if let (parent, fingerprint) = StatementChecks.row(of: item, in: plan.items), let accountId = StatementChecks.accountId(of: parent) {
+            guard ([.leaveOut, .keepRow, .skipRow] as [ImportResolution]).contains(resolution), !ImportApplier.leftOutIds(plan).contains(parent.id) else {
+                throw ImportResolutionError.notOffered(resolution)
+            }
+            let skipped = plan.state.skippedRows[accountId]?.contains(fingerprint) == true
+            let answer = resolution == .leaveOut ? (skipped ? ImportResolution.keepRow : .skipRow) : resolution
+            if answer == .skipRow, !skipped {
+                // Asked, or kept before: skipped on every statement of the account from now on.
+                var result = plan
+                result.state.skippedRows[accountId, default: []].insert(fingerprint)
+                result.state.settled[itemId] = nil
+                return try await restage(result, accounts: [accountId])
+            }
+            if answer == .keepRow, skipped {
+                var result = plan
+                result.state.skippedRows[accountId]?.remove(fingerprint)
+                result = try await restage(result, accounts: [accountId])
+                // Back among the rows, asked again: this is the answer.
+                guard result.items.contains(where: { $0.id == itemId && !$0.issues.isEmpty }) else { return result }
+                return try await resolve(result, itemId: itemId, .keepRow)
+            }
+            guard answer == resolution else { throw ImportResolutionError.notOffered(resolution) }
+        }
         // A child comes back only with its parent.
         if case .leaveOut = resolution, item.isLeftOut, let parentId = item.parentId,
            plan.items.contains(where: { $0.id == parentId && $0.isLeftOut }) {
@@ -183,7 +214,7 @@ public struct ImportPipeline: @unchecked Sendable {
             // A link the answer added (a chosen candidate) replaces what the intent says, as read ones do.
             edited = Self.withReplacements(edited, intent: plan.state.intents[itemId] ?? .none)
             result.items[index] = edited
-            let answered = item.issues.filter { issue in !edited.issues.contains(issue) && Self.isSettleable(issue.id) }
+            let answered = item.issues.filter { issue in !edited.issues.contains(issue) && Self.isSettleable(issue) }
             if !answered.isEmpty { result.state.settled[itemId, default: []].formUnion(answered.map(Self.settleKey)) }
             var changed: Set<UUID> = [itemId]
             if case .leaveOut = resolution {
@@ -191,6 +222,11 @@ public struct ImportPipeline: @unchecked Sendable {
                     result.items[j].isLeftOut = edited.isLeftOut
                     changed.insert(result.items[j].id)
                 }
+            }
+            // In or out of the import: the account's statements are staged again (the rows an
+            // earlier one held now come with a later one, or go back to it).
+            if case .leaveOut = resolution, item.parentId == nil, let accountId = StatementChecks.accountId(of: item) {
+                return try await restage(result, accounts: [accountId], checking: changed)
             }
             let edits = result, checking = changed
             let copy = try session.current(from: dbQueue)
@@ -243,10 +279,19 @@ public struct ImportPipeline: @unchecked Sendable {
             switch kind {
             case .property: intent.propertyId = id
             case .person: intent.personId = id
-            case .account: intent.accountId = id
+            case .account:
+                intent.accountId = id
+                // A statement's account chosen by the user: learnt for files like it on Confirm import.
+                if [.bankStatementCSV, .bankStatementPDF].contains(recognition.kind) { intent.statementAccounts[.current] = id }
             case .tenancy: intent.target = ImportIntent.Target(entity: .tenancy(id))
             case .provider: intent.providerId = id
             }
+        case .chooseAccount(let role, let id):
+            intent.statementAccounts[role] = id
+        case .saveProfile(var profile):
+            // A new mapping: never another row's id.
+            profile.id = nil
+            intent.statementProfile = profile
         default:
             break
         }
@@ -269,14 +314,15 @@ public struct ImportPipeline: @unchecked Sendable {
         let context = try await queue.read { [intent] in try ImportContext.load(db: $0, intent: intent, now: now) }
         // The statements before it in the review are the earlier ones of the batch.
         let before = plan.items.firstIndex { $0.id == item.id }.map { Array(plan.items[..<$0]) } ?? []
-        let staged = try await stageStatements(entries, context: context, readers: readers, queue: queue, earlier: Self.batchRows(before))
+        let staged = try await stageStatements(entries, contexts: [context], skipped: plan.state.skippedRows, readers: readers, queue: queue,
+                                               earlier: Self.batchRows(before))
         let chosenKind = result.state.chosenKinds.contains(item.id) || mismatchSettled
         let start = result, target = chosenTarget, readIntent = intent
         let library = try copy.libraryIndex()
-        return try await queue.write { db -> ImportPlan in
+        let reread = try await queue.write { db -> ImportPlan in
             var plan = start
             try db.inSavepoint {
-                var read = try Self.propose(entries, staged: staged, context: context, readers: readers, db: db)
+                var read = try Self.propose(entries, staged: staged, contexts: [context], readers: readers, db: db)
                     .map { Self.withReplacements($0, intent: readIntent) }
                 guard let first = read.firstIndex(where: { $0.parentId == nil }) else { return .rollback }
                 let newId = read[first].id
@@ -306,6 +352,82 @@ public struct ImportPipeline: @unchecked Sendable {
                 plan.items = items
                 plan.state.batchDuplicates.subtract(children.union([item.id]))
                 plan = try Self.annotate(plan, checking: Set(read.map(\.id)), db: db, library: library)
+                return .rollback
+            }
+            return plan
+        }
+        // A statement read again: the other statements of its account — the one it was on and the
+        // one it is on now — are staged again with it (rows it held, or now holds, move).
+        let accounts = [StatementChecks.accountId(of: item), reread.items.first { $0.id == item.id }.flatMap(StatementChecks.accountId)]
+            .compactMap { $0 }
+        func others(_ items: [ImportItem], _ id: Int64) -> Int {
+            items.filter { $0.parentId == nil && $0.id != item.id && StatementChecks.accountId(of: $0) == id }.count
+        }
+        let affected = Set(accounts.filter { others(plan.items, $0) > 0 || others(reread.items, $0) > 0 })
+        return affected.isEmpty ? reread : try await restage(reread, accounts: affected)
+    }
+
+    /// The accounts of the plan's staged statements.
+    static func statementAccounts(_ items: [ImportItem]) -> Set<Int64> {
+        Set(items.filter { $0.parentId == nil }.compactMap(StatementChecks.accountId))
+    }
+
+    /// Every statement of `accounts` in the plan staged and read again together, in date order
+    /// (`stageStatements`): each treats the rows of the earlier ones still in the import as
+    /// already imported, without the rows the user skipped, with its own intent. Each keeps its
+    /// id, place, Leave out and reason; its children are the new reading's. Then the batch
+    /// checks run again (`annotate`), the filed-year guard on what changed and `checking`.
+    private func restage(_ plan: ImportPlan, accounts: Set<Int64>, checking: Set<UUID> = []) async throws -> ImportPlan {
+        let targets = plan.items.filter { $0.parentId == nil && StatementChecks.accountId(of: $0).map(accounts.contains) == true }
+        let copy = try session.current(from: dbQueue)
+        let queue = copy.dbQueue
+        let providers = try await queue.read { try UtilityProvider.fetchAll($0) }
+        let readers = self.readers ?? ImportReaders.defaultReaders(providers: providers)
+        let leftOutIds = ImportApplier.leftOutIds(plan)
+        let base = try await queue.read { db in try ImportContext.load(db: db, intent: .none, now: Date()) }
+        var entries: [Entry] = [], contexts: [ImportContext] = [], leftOut: Set<Int> = []
+        for (n, item) in targets.enumerated() {
+            entries.append(Entry(file: item.file, recognition: item.recognition))
+            var context = base
+            context.intent = plan.state.intents[item.id] ?? .none
+            contexts.append(context)
+            if leftOutIds.contains(item.id) { leftOut.insert(n) }
+        }
+        let staged = try await stageStatements(entries, contexts: contexts, leftOut: leftOut, skipped: plan.state.skippedRows,
+                                               readers: readers, queue: queue, earlier: [:])
+        let library = try copy.libraryIndex()
+        let start = plan, read = entries, readContexts = contexts
+        return try await queue.write { db -> ImportPlan in
+            var plan = start
+            let entries = read, contexts = readContexts
+            try db.inSavepoint {
+                var changed = checking
+                for (n, old) in targets.enumerated() {
+                    guard let statement = staged[n] else { continue }
+                    let intent = contexts[n].intent
+                    var read = try Self.statementItems(entries[n], statement, context: contexts[n], db: db).map { Self.withReplacements($0, intent: intent) }
+                    guard let first = read.firstIndex(where: { $0.parentId == nil }) else { continue }
+                    let newId = read[first].id
+                    for i in read.indices {
+                        if i == first { read[i].id = old.id } else if read[i].parentId == newId { read[i].parentId = old.id }
+                        read[i].isLeftOut = old.isLeftOut
+                    }
+                    read[first].resolutionNote = old.resolutionNote
+                    if !plan.state.chosenKinds.contains(old.id) { read[first] = Self.withIntentIssue(read[first], intent: intent) }
+                    let children = Set(plan.items.filter { $0.parentId == old.id }.map(\.id))
+                    var items = plan.items
+                    items.removeAll { children.contains($0.id) }
+                    guard let at = items.firstIndex(where: { $0.id == old.id }) else { continue }
+                    items.replaceSubrange(at...at, with: read)
+                    for child in read where child.parentId == old.id {
+                        plan.state.intents[child.id] = intent
+                        plan.state.plannedIntents[child.id] = plan.state.plannedIntents[old.id]
+                    }
+                    plan.items = items
+                    plan.state.batchDuplicates.subtract(children.union([old.id]))
+                    changed.formUnion(read.map(\.id))
+                }
+                plan = try Self.annotate(plan, checking: changed, db: db, library: library)
                 return .rollback
             }
             return plan
@@ -374,11 +496,17 @@ public struct ImportPipeline: @unchecked Sendable {
 
     // MARK: Statements
 
-    /// A UK statement resolved to an account and staged (or why staging failed).
+    /// A statement resolved to an account and staged (or why staging failed).
     /// `@unchecked`: `StagedImport` is an immutable value not declared Sendable.
     struct StagedStatement: @unchecked Sendable {
+        /// What it is read with: a UK statement's saved profile, or the BBVA statement parsed.
+        enum Source: Sendable {
+            case uk(ImportProfile)
+            case bbva(BBVAStatementReader.Resolved)
+        }
+
         var accountId: Int64
-        var profile: ImportProfile
+        var source: Source
         var staged: StagedImport?
         var failure: String?
         /// The account's rows the earlier statements of the batch add (already imported for
@@ -386,6 +514,10 @@ public struct ImportPipeline: @unchecked Sendable {
         var batchRows: [StagedTransaction] = []
         /// Where its items go among the entries (statements of one account in date order).
         var position: Int?
+        /// The rows the user skipped, taken out of `staged`.
+        var skippedRows: [StagedTransaction] = []
+        /// The rows the earlier statements of the account (in the import) skipped, among `batchRows`.
+        var skippedEarlier: [StagedTransaction] = []
     }
 
     /// The rows each account's statements in `items` add (not left out), each fingerprint
@@ -395,31 +527,47 @@ public struct ImportPipeline: @unchecked Sendable {
         var rows: [Int64: [StagedTransaction]] = [:]
         var seen: [Int64: Set<String>] = [:]
         for item in items where !leftOut.contains(item.id) {
-            guard case .ukStatement(let effect) = item.effect else { continue }
-            for row in effect.staged + effect.batchOverlap where seen[effect.accountId, default: []].insert(row.fingerprint).inserted {
-                rows[effect.accountId, default: []].append(row)
+            let accountId: Int64, held: [StagedTransaction]
+            switch item.effect {
+            case .ukStatement(let effect): (accountId, held) = (effect.accountId, effect.staged)
+            case .bbvaStatement(let effect): (accountId, held) = (effect.currentAccountId, effect.staged)
+            default: continue
+            }
+            for row in held where seen[accountId, default: []].insert(row.fingerprint).inserted {
+                rows[accountId, default: []].append(row)
             }
         }
         return rows
     }
 
-    /// Each UK statement the reader can resolve, staged with saved rules only, outside the
+    /// Each statement (UK or BBVA) its reader can resolve, staged with saved rules only, outside the
     /// write transaction; keyed by entry index. Unresolved statements are left to `propose`.
     /// `earlier`: per account, the rows of statements already in the plan. Several statements
     /// of one account are staged in date order (first row, then last), each treating the rows
     /// of the earlier ones as already imported, and placed in that order.
-    private func stageStatements(_ entries: [Entry], context: ImportContext, readers: [any ImportReader], queue: DatabaseQueue,
+    /// `contexts`: each entry's (its intent); `leftOut`: entries whose rows no later one counts as
+    /// imported; `skipped`: per account, the fingerprints of the rows the user skipped — taken out
+    /// of every statement of the account, and held (a later statement counts them as handled).
+    private func stageStatements(_ entries: [Entry], contexts: [ImportContext], leftOut: Set<Int> = [], skipped: [Int64: Set<String>] = [:],
+                                 readers: [any ImportReader], queue: DatabaseQueue,
                                  earlier: [Int64: [StagedTransaction]]) async throws -> [Int: StagedStatement] {
         let statements = entries.indices.filter { index in
-            entries[index].failure == nil && readers.first { $0.handles(entries[index].recognition.kind) } is UKStatementReader
+            guard entries[index].failure == nil else { return false }
+            let reader = readers.first { $0.handles(entries[index].recognition.kind) }
+            return reader is UKStatementReader || reader is BBVAStatementReader
         }
         guard !statements.isEmpty else { return [:] }
-        let resolved = try await queue.read { db -> [Int: (accountId: Int64, profile: ImportProfile)] in
-            var found: [Int: (accountId: Int64, profile: ImportProfile)] = [:]
+        let resolved = try await queue.read { db -> [Int: (accountId: Int64, source: StagedStatement.Source)] in
+            var found: [Int: (accountId: Int64, source: StagedStatement.Source)] = [:]
             for index in statements {
-                if case .resolved(let accountId, let profile) = try UKStatementReader.resolve(file: entries[index].file, recognition: entries[index].recognition,
-                                                                                            context: context, db: db) {
-                    found[index] = (accountId, profile)
+                let file = entries[index].file, recognition = entries[index].recognition, context = contexts[index]
+                if readers.first(where: { $0.handles(recognition.kind) }) is BBVAStatementReader {
+                    if case .resolved(let statement) = try BBVAStatementReader.resolve(file: file, recognition: recognition, context: context, db: db) {
+                        found[index] = (statement.currentAccountId, .bbva(statement))
+                    }
+                } else if case .resolved(let accountId, let profile) = try UKStatementReader.resolve(file: file, recognition: recognition,
+                                                                                                   context: context, db: db) {
+                    found[index] = (accountId, .uk(profile))
                 }
             }
             return found
@@ -429,9 +577,24 @@ public struct ImportPipeline: @unchecked Sendable {
             try Task.checkCancellation()
             statement.batchRows = rows
             do {
-                statement.staged = try await UKStatementReader.stage(file: entries[index].file, recognition: entries[index].recognition,
-                                                                     accountId: statement.accountId, profile: statement.profile,
-                                                                     coordinator: coordinator, alreadyStaged: rows)
+                var result: StagedImport
+                switch statement.source {
+                case .uk(let profile):
+                    result = try await UKStatementReader.stage(file: entries[index].file, recognition: entries[index].recognition,
+                                                               accountId: statement.accountId, profile: profile,
+                                                               coordinator: coordinator, alreadyStaged: rows)
+                case .bbva(let resolved):
+                    result = try await BBVAStatementReader.stage(resolved, coordinator: coordinator, alreadyStaged: rows)
+                }
+                statement.skippedRows = []
+                if let skip = skipped[statement.accountId], !skip.isEmpty {
+                    statement.skippedRows = result.staged.filter { skip.contains($0.fingerprint) }
+                    result = StagedImport(staged: result.staged.filter { !skip.contains($0.fingerprint) }, duplicates: result.duplicates,
+                                          unparsedLines: result.unparsedLines, statementBalances: result.statementBalances,
+                                          skippedRowCount: result.skippedRowCount, batchDuplicates: result.batchDuplicates,
+                                          duplicateFingerprints: result.duplicateFingerprints)
+                }
+                statement.staged = result
                 statement.failure = nil
             } catch {
                 if Task.isCancelled { throw CancellationError() }
@@ -441,8 +604,8 @@ public struct ImportPipeline: @unchecked Sendable {
         }
         var staged: [Int: StagedStatement] = [:]
         for index in statements {
-            guard let (accountId, profile) = resolved[index] else { continue }
-            var statement = StagedStatement(accountId: accountId, profile: profile)
+            guard let (accountId, source) = resolved[index] else { continue }
+            var statement = StagedStatement(accountId: accountId, source: source)
             try await stage(index, &statement, after: earlier[accountId] ?? [])
             staged[index] = statement
         }
@@ -450,20 +613,30 @@ public struct ImportPipeline: @unchecked Sendable {
         let byAccount = Dictionary(grouping: staged.keys.sorted()) { staged[$0]!.accountId }
         for accountId in byAccount.keys.sorted() {
             guard let indices = byAccount[accountId], indices.count > 1 else { continue }
-            func period(_ index: Int) -> (Date, Date) {
-                guard let result = staged[index]?.staged else { return (.distantFuture, .distantFuture) }
-                let dates = (result.staged.map(\.parsed) + result.duplicates).map(\.date)
-                return (dates.min() ?? .distantFuture, dates.max() ?? .distantFuture)
+            func key(_ index: Int) -> (Date, Date, Int) {
+                guard let statement = staged[index], let result = statement.staged else { return StatementChecks.orderKey([], index) }
+                return StatementChecks.orderKey((result.staged + statement.skippedRows).map(\.parsed.date) + result.duplicates.map(\.date), index)
             }
-            let ordered = indices.sorted { (period($0).0, period($0).1, $0) < (period($1).0, period($1).1, $1) }
+            let ordered = indices.sorted { key($0) < key($1) }
             var held = earlier[accountId] ?? []
             var fingerprints = Set(held.map(\.fingerprint))
+            var heldSkipped: [StagedTransaction] = []
             for (rank, index) in ordered.enumerated() {
                 guard var statement = staged[index] else { continue }
                 statement.position = indices[rank]
                 // The first was already staged after the plan's own statements alone.
-                if rank > 0 { try await stage(index, &statement, after: held) }
-                for row in statement.staged?.staged ?? [] where fingerprints.insert(row.fingerprint).inserted { held.append(row) }
+                if rank > 0 {
+                    try await stage(index, &statement, after: held)
+                    statement.skippedEarlier = heldSkipped
+                }
+                // A statement left out holds nothing: the later ones add its rows.
+                // Its skipped rows are held too: handled, never added by a later one.
+                if !leftOut.contains(index) {
+                    for row in (statement.staged?.staged ?? []) + statement.skippedRows where fingerprints.insert(row.fingerprint).inserted {
+                        held.append(row)
+                    }
+                    heldSkipped += statement.skippedRows
+                }
                 staged[index] = statement
             }
         }
@@ -473,8 +646,8 @@ public struct ImportPipeline: @unchecked Sendable {
     // MARK: In the rolled-back write
 
     /// Every entry's items, in file order: each kind by the first reader handling it (all its
-    /// files at once), staged statements by `UKStatementReader.items`.
-    private static func propose(_ entries: [Entry], staged: [Int: StagedStatement], context: ImportContext,
+    /// files at once), staged statements by `UKStatementReader.items` / `BBVAStatementReader.items`.
+    private static func propose(_ entries: [Entry], staged: [Int: StagedStatement], contexts: [ImportContext],
                                 readers: [any ImportReader], db: Database) throws -> [ImportItem] {
         var byIndex: [Int: [ImportItem]] = [:]
         var order: [URL: Int] = [:]
@@ -484,17 +657,7 @@ public struct ImportPipeline: @unchecked Sendable {
             if let failure = entry.failure {
                 byIndex[index] = [failure]
             } else if let statement = staged[index] {
-                let slot = statement.position ?? index
-                if let result = statement.staged {
-                    byIndex[slot] = try UKStatementReader.items(file: entry.file, recognition: entry.recognition, accountId: statement.accountId,
-                                                                profile: statement.profile, staged: result, context: context, db: db,
-                                                                batchRows: statement.batchRows)
-                } else {
-                    let text = statement.failure ?? "The statement could not be read"
-                    byIndex[slot] = [ImportItem(file: entry.file, recognition: entry.recognition, title: entry.file.fileName, effect: .none,
-                                                 issues: [ImportIssue(id: "readerProblem", kind: .readerProblem(text), reason: text)],
-                                                 groupKey: UKStatementReader.groupKey)]
-                }
+                byIndex[statement.position ?? index] = try statementItems(entry, statement, context: contexts[index], db: db)
             } else if let reader = readers.firstIndex(where: { $0.handles(entry.recognition.kind) }) {
                 batches[reader, default: []].append(index)
             } else {
@@ -507,8 +670,9 @@ public struct ImportPipeline: @unchecked Sendable {
         var proposed: [ImportItem] = []
         for reader in batches.keys.sorted() {
             try Task.checkCancellation()
-            let files = (batches[reader] ?? []).map { (file: entries[$0].file, recognition: entries[$0].recognition) }
-            proposed += try readers[reader].propose(files, context: context, db: db)
+            let indices = batches[reader] ?? []
+            let files = indices.map { (file: entries[$0].file, recognition: entries[$0].recognition) }
+            proposed += try readers[reader].propose(files, context: contexts[indices[0]], db: db)
         }
         // Back in the order the files were handed in (a reader's children stay after their parent).
         let last = entries.count
@@ -517,6 +681,44 @@ public struct ImportPipeline: @unchecked Sendable {
             byIndex[entry.rank, default: []].append(entry.item)
         }
         return byIndex.keys.sorted().flatMap { byIndex[$0] ?? [] }
+    }
+
+    /// A staged statement's items (`UKStatementReader.items` / `BBVAStatementReader.items`), its
+    /// skipped rows on its effect; or why it couldn't be staged.
+    private static func statementItems(_ entry: Entry, _ statement: StagedStatement, context: ImportContext, db: Database) throws -> [ImportItem] {
+        var items: [ImportItem]
+        switch (statement.staged, statement.source) {
+        case (let result?, .uk(let profile)):
+            items = try UKStatementReader.items(file: entry.file, recognition: entry.recognition, accountId: statement.accountId,
+                                                profile: profile, staged: result, context: context, db: db,
+                                                skipped: statement.skippedRows)
+        case (let result?, .bbva(let resolved)):
+            items = try BBVAStatementReader.items(file: entry.file, recognition: entry.recognition, resolved: resolved,
+                                                  staged: result, context: context, db: db, batchRows: statement.batchRows,
+                                                  skipped: statement.skippedRows + statement.skippedEarlier)
+        case (nil, let source):
+            let text = statement.failure ?? "The statement could not be read"
+            let groupKey: String
+            if case .bbva = source { groupKey = BBVAStatementReader.groupKey } else { groupKey = UKStatementReader.groupKey }
+            return [ImportItem(file: entry.file, recognition: entry.recognition, title: entry.file.fileName, effect: .none,
+                               issues: [ImportIssue(id: "readerProblem", kind: .readerProblem(text), reason: text)],
+                               groupKey: groupKey)]
+        }
+        if !statement.skippedRows.isEmpty, let first = items.firstIndex(where: { $0.parentId == nil }) {
+            // Its rows are there, only skipped.
+            items[first].issues.removeAll { $0.id == "noTransactions" }
+            switch items[first].effect {
+            case .ukStatement(var effect):
+                effect.skipped = statement.skippedRows
+                items[first].effect = .ukStatement(effect)
+            case .bbvaStatement(var effect):
+                effect.skipped = statement.skippedRows
+                items[first].effect = .bbvaStatement(effect)
+            default:
+                break
+            }
+        }
+        return items
     }
 
     /// The item's links to the intent's target carry the documents the intent replaces there
@@ -553,10 +755,20 @@ public struct ImportPipeline: @unchecked Sendable {
     /// Issues raised again on every pass (duplicate pass, intent mismatch), whose answer is kept.
     static func isSettleable(_ id: String) -> Bool { isDuplicatePassIssue(id) || id == kindMismatchId }
 
-    /// What the user settled: the issue id, and for a possible duplicate or corrected version
-    /// also which document it matched and how (another match asks again).
+    /// `isSettleable`, or a statement's question (a closing balance, a possible duplicate row,
+    /// unread lines…): raised again whenever its statements are checked or staged again.
+    static func isSettleable(_ issue: ImportIssue) -> Bool { isSettleable(issue.id) || isStatementIssue(issue) }
+
+    private static func isStatementIssue(_ issue: ImportIssue) -> Bool {
+        if case .statement = issue.kind { return true }
+        return false
+    }
+
+    /// What the user settled: the issue id, and for a possible duplicate, a corrected version or
+    /// a statement's question also what it says (another match or another figure asks again).
     static func settleKey(_ issue: ImportIssue) -> String {
-        issue.id == "possibleDuplicate" || issue.id == ImportDuplicates.correctedVersionIssueId ? "\(issue.id)|\(issue.reason)" : issue.id
+        issue.id == "possibleDuplicate" || issue.id == ImportDuplicates.correctedVersionIssueId || isStatementIssue(issue)
+            ? "\(issue.id)|\(issue.reason)" : issue.id
     }
 
     /// The duplicate pass re-run over the whole plan (its earlier marks removed, what the user
@@ -567,20 +779,33 @@ public struct ImportPipeline: @unchecked Sendable {
                          timings: ImportPlanTimings? = nil) throws -> ImportPlan {
         var result = plan
         let previous = plan.items
-        let stripped = previous.map { strip($0, batchDuplicate: plan.state.batchDuplicates.contains($0.id)) }
+        // The statements' checks across the batch (balances, possible duplicate rows, mortgages),
+        // before the guard simulates them.
+        let stripped = try StatementChecks.recheck(previous.map { strip($0, batchDuplicate: plan.state.batchDuplicates.contains($0.id)) }, db: db)
         var items = try timings.measure(.duplicates) { try ImportDuplicates.annotate(stripped, db: db, library: library) }
         result.state.batchDuplicates = Set(items.indices.filter { stripped[$0].duplicate == nil && items[$0].duplicate != nil }.map { items[$0].id })
+        // An "import anyway" answers its mismatch only while it lasts: a statement whose balance
+        // now matches (or is left out) asks again for a reason the next time it doesn't.
+        for item in stripped where item.parentId == nil && StatementChecks.accountId(of: item) != nil
+            && !item.issues.contains(where: StatementChecks.isBalanceIssue) {
+            guard let keys = result.state.settled[item.id] else { continue }
+            let kept = keys.filter { !$0.hasPrefix(StatementChecks.balanceIssuePrefix) }
+            result.state.settled[item.id] = kept.isEmpty ? nil : kept
+        }
         for i in items.indices {
-            guard let settled = plan.state.settled[items[i].id], !settled.isEmpty else { continue }
+            guard let settled = result.state.settled[items[i].id], !settled.isEmpty else { continue }
             let answered = items[i].issues.filter { settled.contains(settleKey($0)) }
             items[i].issues.removeAll { settled.contains(settleKey($0)) }
             restoreLinks(&items[i], for: answered)
         }
+        // A statement waits while one of its rows does (those answered no longer do).
+        items = StatementChecks.holdParents(items)
         // Only what changed is guarded again (each item's check is independent of the others);
         // the confirm-time backstop (Task 13) re-checks the whole batch against the filed returns.
+        let before = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let check = items.indices.filter { i in
-            if let checking, !checking.contains(items[i].id) {
-                return withoutGuard(items[i]) != withoutGuard(previous[i])
+            if let checking, !checking.contains(items[i].id), let earlier = before[items[i].id] {
+                return withoutGuard(items[i]) != withoutGuard(earlier)
             }
             return true
         }

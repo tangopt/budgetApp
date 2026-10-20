@@ -397,6 +397,12 @@ public enum ImportDuplicates {
     /// corrected version of <the newest>: …": a payroll form may be imported as the newer
     /// version (acknowledge); any other document only filed, linked where the original is
     /// (`.fileWithoutLink`), or left out. The same file (hash) is a copy whatever it says.
+    /// A bank statement (UK or BBVA) whose file is already in the library is a duplicate only
+    /// when it adds nothing (`StatementChecks.writesSomething`) and contradicts nothing saved
+    /// (`StatementChecks.keepsFromDuplicates`: pure questions and filed-year holds aside); otherwise it is imported as any statement — its rows are what the batch's
+    /// later statements of the account count as imported — with the note "Document already in
+    /// the library as <name>", and filing it returns that document. A second copy of a
+    /// statement in the batch (checked before the library) is a duplicate unless it holds rows.
     /// The first of a pair stays as it was; items a reader already marked, child rows and
     /// left-out items are left alone. Then transaction claims: items of one kind certain of the same transaction
     /// all need the user, and a certain link to a transaction that already has a document of
@@ -411,6 +417,9 @@ public enum ImportDuplicates {
         var result = items
         // A left-out item isn't imported: it is no one's original (nor checked itself).
         for i in result.indices where result[i].parentId == nil && !result[i].isLeftOut {
+            // A statement's note of an earlier pass is said again below when it still holds.
+            let isStatement = StatementChecks.accountId(of: result[i]) != nil
+            if isStatement { result[i].notes.removeAll { $0.hasPrefix(libraryNotePrefix) } }
             let item = result[i]
             let identity = DocumentIdentity.identity(kind: item.recognition.kind, text: item.file.text, facts: item.facts,
                                                      providerId: providerId(item), personId: personId(item))
@@ -420,8 +429,23 @@ public enum ImportDuplicates {
                 // naming none isn't an original for later items.
                 guard let id = duplicate.existingDocumentId, let name = library.name(of: id) else { continue }
                 original = (name, id)
+            } else if isStatement, let earlier = batchFiles[item.file.sha256] {
+                // A second copy of a statement (of a library file too) adds nothing: the first
+                // holds its rows, estimates and valuation. One that still holds rows (never,
+                // while the first is in the import) isn't a copy.
+                if !StatementChecks.holdsRows(item) {
+                    result[i].duplicate = ImportDuplicate(level: .file, of: "Same file as \(earlier.label)", existingDocumentId: earlier.documentId)
+                }
+                original = earlier
             } else if let found = library.byHash[item.file.sha256] {
-                result[i].duplicate = ImportDuplicate(level: .file, of: "Already in the library as \(found.label)", existingDocumentId: found.documentId)
+                if isStatement, StatementChecks.writesSomething(item) || item.issues.contains(where: StatementChecks.keepsFromDuplicates) {
+                    // The statement reader decides: rows, legs, an estimate or a valuation still
+                    // to add (or saved data it contradicts) make it a statement like any other,
+                    // filed as the library's document (the library returns it: no second copy).
+                    result[i].notes.append("\(libraryNotePrefix)\(found.label)")
+                } else {
+                    result[i].duplicate = ImportDuplicate(level: .file, of: "Already in the library as \(found.label)", existingDocumentId: found.documentId)
+                }
                 original = (found.label, found.documentId)
             } else if let earlier = batchFiles[item.file.sha256] {
                 result[i].duplicate = ImportDuplicate(level: .file, of: "Same file as \(earlier.label)", existingDocumentId: earlier.documentId)
@@ -451,6 +475,10 @@ public enum ImportDuplicates {
         try annotateClaims(&result, db: db)
         return result
     }
+
+    /// The note of a statement whose file is already in the library but still adds something:
+    /// "Document already in the library as <name>".
+    public static let libraryNotePrefix = "Document already in the library as "
 
     /// Id of the issue of an item sharing a strong identity with a document whose figures differ.
     public static let correctedVersionIssueId = "correctedVersion"

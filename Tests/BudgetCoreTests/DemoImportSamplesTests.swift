@@ -4,8 +4,8 @@ import GRDB
 @testable import BudgetDemo
 
 /// The demo's import samples (`DemoImportSamples`, the Imports snapshot routes' files): read by
-/// the real pipeline over the demo database, they fill Ready, Duplicates and Needs you — two
-/// each, one of them held by a filed return.
+/// the real pipeline over the demo database, they fill Ready (three: a BBVA statement among
+/// them), Duplicates (two) and Needs you (three: one held by a filed return, a UK CSV with no account).
 final class DemoImportSamplesTests: XCTestCase {
     private var folder: URL!
 
@@ -26,7 +26,7 @@ final class DemoImportSamplesTests: XCTestCase {
         try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
         let samples = try DemoImportSamples.write(into: folder.appendingPathComponent("ImportSamples", isDirectory: true),
                                                   dbQueue: manager.dbQueue)
-        XCTAssertEqual(samples.count, 6)
+        XCTAssertEqual(samples.count, 8)
 
         let library = EvidenceLibrary(root: evidence, database: manager.dbQueue)
         let pipeline = ImportPipeline(dbQueue: manager.dbQueue, library: library,
@@ -35,14 +35,14 @@ final class DemoImportSamplesTests: XCTestCase {
         let described = plan.items.map { "\($0.file.fileName): \($0.section) \($0.needsYouReasons) \($0.duplicate?.of ?? "")" }
             .joined(separator: "\n")
 
-        XCTAssertEqual(plan.items(in: .ready).count, 2, described)
+        XCTAssertEqual(plan.items(in: .ready).count, 3, described)
         XCTAssertEqual(plan.items(in: .duplicates).count, 2, described)
-        XCTAssertEqual(plan.items(in: .needsYou).count, 2, described)
+        XCTAssertEqual(plan.items(in: .needsYou).count, 3, described)
         XCTAssertTrue(plan.items(in: .needsYou).contains { $0.issues.contains { if case .filedYear = $0.kind { true } else { false } } },
                       described)
         // Each sample where it is meant to be: the receipt and the insurance receipt linked,
         // the copy and the re-issued invoice skipped, the P60 held, the letter unknown.
-        XCTAssertTrue(plan.items(in: .ready).allSatisfy { !$0.links.isEmpty }, described)
+        XCTAssertTrue(plan.items(in: .ready).filter { $0.recognition.kind != .bbvaStatement }.allSatisfy { !$0.links.isEmpty }, described)
         XCTAssertEqual(Set(plan.items(in: .duplicates).compactMap { $0.duplicate?.level }), Set<ImportDuplicate.Level>([.file, .document]), described)
         XCTAssertTrue(plan.items(in: .needsYou).contains { $0.file.fileName == "Letter.pdf" && $0.recognition.kind == .unknown }, described)
         // The corrected P60 (the stored employer, pay £1,000 more) is not taken for a copy: it is
@@ -52,7 +52,20 @@ final class DemoImportSamplesTests: XCTestCase {
         XCTAssertTrue(p60.issues.contains { $0.id == ImportDuplicates.correctedVersionIssueId && $0.reason.hasSuffix("Pay £39,840.00 → £40,840.00") },
                       described)
         XCTAssertTrue(p60.issues.contains(where: ImportResolutions.isFiledYearHold), described)
-        // Written again (MakeDemoDatabase --force), the folder holds the same six.
+        // The BBVA statement of Euro Current: Ready, its instalment paired with its receipt on the
+        // Property Mortgage, no fund, its closing and the loan's capital owed matching.
+        let bbva = try XCTUnwrap(plan.items.first { $0.recognition.kind == .bbvaStatement && $0.parentId == nil }, described)
+        XCTAssertEqual(bbva.section, .ready, described)
+        guard case .bbvaStatement(let effect) = bbva.effect else { return XCTFail(described) }
+        XCTAssertEqual(effect.instalments.count, 1, described)
+        XCTAssertNil(effect.fundAccountId, described)
+        XCTAssertNotNil(effect.loanAccountId, described)
+        XCTAssertEqual(effect.staged.count, 3, described)
+        // The UK CSV: no account's profile reads it, its account to choose (GBP current accounts first).
+        let csv = try XCTUnwrap(plan.items.first { $0.recognition.kind == .bankStatementCSV }, described)
+        XCTAssertEqual(csv.section, .needsYou, described)
+        XCTAssertTrue(csv.issues.contains { $0.kind == .statement(.unknownAccount) && !$0.offers.isEmpty }, described)
+        // Written again (MakeDemoDatabase --force), the folder holds the same eight.
         XCTAssertEqual(try DemoImportSamples.write(into: folder.appendingPathComponent("ImportSamples", isDirectory: true),
                                                    dbQueue: manager.dbQueue).map(\.lastPathComponent),
                        samples.map(\.lastPathComponent))
