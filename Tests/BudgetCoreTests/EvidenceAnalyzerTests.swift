@@ -182,3 +182,61 @@ final class EvidenceAnalyzerTests: XCTestCase {
         XCTAssertEqual(analysis.metadata.currency, .eur)
     }
 }
+
+final class EvidenceAnalyzerSumTotalTests: XCTestCase {
+    private func analyze(_ text: String) -> EvidenceMetadata {
+        EvidenceAnalyzer.analyze(text: text, textStatus: .text, fileName: "document.pdf").metadata
+    }
+
+    func testTotalSplitFromItsLabelIsTheSumOfThePartsAbove() {
+        let text = """
+        Generali Seguros Fatura/Recibo Seguro Multirrisco
+        PRÉMIO COMERCIAL 355,73 €
+        SELO (*) 32,02 €
+        Prémio (Preço) total a pagar 13,69 €
+        401,44 €
+        Data de emissão: 2025-10-12
+        """
+        let metadata = analyze(text)
+        XCTAssertEqual(metadata.kind, .insuranceReceipt)
+        XCTAssertEqual(metadata.amountMinorUnits, 40_144)
+        XCTAssertEqual(metadata.note, "Total: the sum of the amounts above it")
+    }
+
+    func testNoSumMatchTakesTheLargestOfTheCompetingAmounts() {
+        let text = "Fatura/Recibo Seguro Generali Seguros\nPrémio comercial 50,00 €\nTotal a pagar 4,00 €\n60,00 €\nData de emissão: 2025-10-12"
+        let metadata = analyze(text)
+        XCTAssertEqual(metadata.amountMinorUnits, 6_000)
+        XCTAssertEqual(metadata.note, "Total: the largest amount after the total label")
+    }
+
+    func testSameLineAmountsKeepTheFirst() {
+        let text = "Fatura/Recibo Seguro Generali Seguros\nPrémio comercial 50,00 €\nTotal a pagar 4,00 € 60,00 €\nData de emissão: 2025-10-12"
+        XCTAssertEqual(analyze(text).amountMinorUnits, 400)
+    }
+
+    func testAmountBeyondTwoLinesAfterTheLabelIsIgnored() {
+        let text = "Fatura/Recibo Seguro Generali Seguros\nPrémio comercial 50,00 €\nTotal a pagar 4,00 €\nobservações\nreferência\n60,00 €"
+        XCTAssertEqual(analyze(text).amountMinorUnits, 400)
+    }
+
+    func testBroadLabelKeepsTheFirstAmountEvenWhenALargerFollows() {
+        let text = "Recibo de Renda Eletrónico N.º 12 Data de emissão: 2025-03-02\nValor da renda 750,00 €\nCaução 1.500,00 €"
+        let metadata = analyze(text)
+        XCTAssertEqual(metadata.kind, .rentReceipt)
+        XCTAssertEqual(metadata.amountMinorUnits, 75_000)
+    }
+
+    func testCandidateRepeatingOneAmountAboveIsNotASum() {
+        let text = "Fatura/Recibo Seguro Generali Seguros\nPrémio comercial 50,00 €\nTotal a pagar 4,00 €\n50,00 €"
+        // 50,00 repeats the single amount above; it is no sum, so the largest-of-total fallback decides.
+        XCTAssertNotEqual(analyze(text).note, "Total: the sum of the amounts above it")
+    }
+
+    func testSingleAmountAfterTheLabelIsUnchanged() {
+        let text = "Fatura/Recibo Seguro Generali Seguros\nPrémio comercial 50,00 €\nTotal a pagar\n60,00 €\nData de emissão: 2025-10-12"
+        let metadata = analyze(text)
+        XCTAssertEqual(metadata.amountMinorUnits, 6_000)
+        XCTAssertNil(metadata.note)
+    }
+}

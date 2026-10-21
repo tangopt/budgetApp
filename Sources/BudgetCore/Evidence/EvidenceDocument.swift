@@ -39,6 +39,9 @@ public enum DocumentKind: String, Codable, CaseIterable, Sendable {
     case ptIRSPaymentProof
     // Banking
     case bankTransferProof
+    /// A bank's advice of a debit from the account (BBVA "Pagamentos – Serviços/Compras",
+    /// "Débito Direto"): proof of a payment, never the payee's invoice.
+    case bankDebitAdvice
     case bankStatement
     case other
 }
@@ -77,6 +80,7 @@ extension DocumentKind {
         case .ptIRSPaymentNote: return "PT IRS payment note"
         case .ptIRSPaymentProof: return "PT IRS payment proof"
         case .bankTransferProof: return "Bank transfer proof"
+        case .bankDebitAdvice: return "Bank debit advice"
         case .bankStatement: return "Bank statement"
         case .other: return "Other"
         }

@@ -18,7 +18,7 @@ public struct ImportDetector: Sendable {
 
     /// The built-in recognisers, in order (before any learnt one).
     private static func builtIn(providers: [UtilityProvider]) -> [ImportRecogniser] {
-        [Self.bbvaStatement, Self.rentReceiptsExport, Self.rentReceiptPDF, Self.transferAdvice, Self.payrollForm,
+        [Self.bbvaStatement, Self.rentReceiptsExport, Self.rentReceiptPDF, Self.transferAdvice, Self.bbvaDebitAdvice, Self.payrollForm,
          Self.utilityInvoice(providers: providers), Self.bankStatement, Self.evidence]
     }
 
@@ -164,6 +164,14 @@ public struct ImportDetector: Sendable {
         let parts = MonthRange.calendar.dateComponents([.year, .month, .day], from: advice.date)
         let day = String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
         return ImportRecognition(kind: .transferAdvice, confidence: .certain, reason: "BBVA received-transfer advice of \(day)")
+    }
+
+    /// A BBVA debit advice ("Pagamentos – Serviços/Compras", "Débito Direto"): before utility
+    /// invoices, whose providers it names as the creditor; filed as a bank debit advice.
+    private static let bbvaDebitAdvice: ImportRecogniser = { file in
+        guard let text = text(file), let advice = BBVADebitAdvice.parse(text) else { return nil }
+        return ImportRecognition(kind: .evidence(.bankDebitAdvice), confidence: file.usedOCR ? .needsReview : .certain,
+                                 reason: "BBVA debit advice of \(PropertyDates.isoDay(advice.date))")
     }
 
     private static let payrollForm: ImportRecogniser = { file in

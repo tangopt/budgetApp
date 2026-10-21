@@ -19,7 +19,16 @@ public enum ImportEffects {
     /// filed-year guard calls it with a placeholder document, so it checks exactly what apply
     /// does. The batch's follow-on matching runs after all items (`followOns`).
     public static func applyRecords(db: Database, item: ImportItem, documentId: Int64?, importRunId: Int64?) throws {
-        try perform(db: db, item.effect, documentId: documentId, importRunId: importRunId)
+        do {
+            try perform(db: db, item.effect, documentId: documentId, importRunId: importRunId)
+        } catch let error as RechargeError where error == .duplicateInvoice || error == .invoiceForPeriodRecorded || error == .duplicateInvoiceNumber {
+            // An invoice recorded since it was read (or a corrected version recorded anyway):
+            // never a second record; review again.
+            guard case .utilityInvoice(let invoice) = item.effect else { throw error }
+            let providerName = try UtilityProvider.fetchOne(db, key: invoice.providerId)?.name ?? "the provider"
+            let what = error == .duplicateInvoiceNumber ? invoice.invoiceNumber.map { "invoice \($0) of \(providerName)" } : nil
+            throw ImportApplyError.planOutdated("\(item.title): \(what ?? "an i" + Recharges.invoiceLabel(invoice, providerName: providerName).dropFirst()) is already recorded")
+        }
         for link in item.links where link.confidence == .certain && !link.madeByEffect {
             guard let documentId else { throw ImportEffectsError.documentRequired }
             try EvidenceLinks.link(db: db, documentId: documentId, to: link.entity, role: link.role)
@@ -66,11 +75,16 @@ public enum ImportEffects {
     /// each property rent receipts to credits and utility recharges to payments, then receipt
     /// PDFs to the credits paying them, then the received-transfer advices already in the
     /// library to their credits (`.link` outcomes only, each property in turn, as
-    /// `RentCreditEvidence.run` does). `propertyIds` nil means every property; empty, nothing.
+    /// `RentCreditEvidence.run` does). Before any of the property matching, whatever
+    /// `propertyIds` is, the library's bank debit advices without a transaction are linked to
+    /// their debit when exactly one fits (`BBVADebitAdvice.linkLibraryAdvices`). `propertyIds` nil means every property; empty, nothing.
     /// The importer runs it once after the batch's items; the filed-year guard runs the same.
     public static func followOns(db: Database, propertyIds: Set<Int64>?,
                                  adviceCache: RentCreditEvidence.AdviceCache = RentCreditEvidence.AdviceCache()) throws {
         if propertyIds == nil { _ = try TransferMatcher.match(db: db) }
+        // Bank debit advices in the library still without their debit (one filed before the
+        // statement that holds it, even in the same batch): linked when exactly one debit fits.
+        try BBVADebitAdvice.linkLibraryAdvices(db: db, cache: adviceCache.debitAdvices)
         let ids = try propertyIds ?? Set(Property.fetchAll(db).compactMap(\.id))
         guard !ids.isEmpty else { return }
         for propertyId in ids.sorted() {

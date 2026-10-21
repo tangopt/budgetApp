@@ -548,7 +548,7 @@ public enum ImportResolutions {
         case (.docDate, .date), (.periodStart, .date), (.periodEnd, .date): return true
         case (.amount, .money), (.pay, .money), (.taxDeducted, .money): return true
         case (.taxYear, .year): return true
-        case (.openingBalance, .money), (.closingBalance, .money): return true
+        case (.openingBalance, .money), (.closingBalance, .money), (.accountTotal, .money): return true
         case (.rows, .text), (.instalments, .text), (.fund, .text): return true
         case (.currency, .text), (.invoiceNumber, .text), (.receiptNumber, .text), (.reference, .text), (.issuer, .text),
              (.person, .text), (.taxCode, .text): return true

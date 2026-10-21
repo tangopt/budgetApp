@@ -14,6 +14,9 @@ public enum RechargeError: Error, Equatable {
     /// Another invoice of the provider is the same one (same document text, ATCUD, or issue
     /// date, period and amount): a copy of a bill without an invoice number.
     case duplicateInvoice
+    /// Another invoice of the provider for the same period (one of them without an invoice
+    /// number) is recorded: possibly a corrected version, never a second record.
+    case invoiceForPeriodRecorded
     /// A period with only one end, or ending before it starts.
     case invalidPeriod
     /// Lines can only change while the statement is a draft.
@@ -116,7 +119,8 @@ public enum Recharges {
     // MARK: Invoices
 
     /// Inserts or updates the invoice: days normalised, period both-or-neither and in order,
-    /// invoice number trimmed and unique per provider.
+    /// invoice number trimmed and unique per provider; a new one that copies a recorded one
+    /// (`duplicate`) or is for a period already recorded (`recordedForPeriod`) is refused.
     public static func saveInvoice(db: Database, _ invoice: inout UtilityInvoice) throws {
         guard try UtilityProvider.exists(db, key: invoice.providerId) else { throw RechargeError.providerNotFound }
         invoice.invoiceNumber = Transaction.normalizedNote(invoice.invoiceNumber)
@@ -141,6 +145,8 @@ public enum Recharges {
             guard try other.fetchCount(db) == 0 else { throw RechargeError.transactionOnAnotherInvoice }
         }
         if invoice.id == nil, try duplicate(db: db, of: invoice) != nil { throw RechargeError.duplicateInvoice }
+        // Never a second record of one period's bill (one of them without a number).
+        if invoice.id == nil, try recordedForPeriod(db: db, of: invoice) != nil { throw RechargeError.invoiceForPeriodRecorded }
         let before = try invoice.id.flatMap { try UtilityInvoice.fetchOne(db, key: $0) }
         let recharged = before.map { $0.providerId != invoice.providerId || $0.amountMinorUnits != invoice.amountMinorUnits
             || $0.periodStart != invoice.periodStart || $0.periodEnd != invoice.periodEnd || $0.issueDate != invoice.issueDate
@@ -240,8 +246,10 @@ public enum Recharges {
 
     /// The provider's other invoice that `invoice` is a copy of: the same document, the same
     /// document text or ATCUD, or — when one of them has no document text or no ATCUD to tell
-    /// them apart — the same issue date, period and amount. Two different invoice numbers, or
-    /// two different ATCUDs, are never copies.
+    /// them apart — the same issue date, period and amount. When one of them has no invoice
+    /// number (old bills, recorded without one), the same amount and period (both ends), or the
+    /// same amount and issue date (periods not both known and different), is enough. Two
+    /// different invoice numbers, or two different ATCUDs, are never copies.
     public static func duplicate(db: Database, of invoice: UtilityInvoice) throws -> UtilityInvoice? {
         var others = UtilityInvoice.filter(Column("providerId") == invoice.providerId)
         if let id = invoice.id { others = others.filter(Column("id") != id) }
@@ -264,13 +272,55 @@ public enum Recharges {
                 continue
             }
             if let ownText, let otherText, ownText == otherText { return other }
-            if PropertyDates.day(other.issueDate) == PropertyDates.day(invoice.issueDate), other.amountMinorUnits == invoice.amountMinorUnits,
-               other.periodStart.map(PropertyDates.day) == invoice.periodStart.map(PropertyDates.day),
+            guard other.amountMinorUnits == invoice.amountMinorUnits else { continue }
+            let sameDay = PropertyDates.day(other.issueDate) == PropertyDates.day(invoice.issueDate)
+            if sameDay, other.periodStart.map(PropertyDates.day) == invoice.periodStart.map(PropertyDates.day),
                other.periodEnd.map(PropertyDates.day) == invoice.periodEnd.map(PropertyDates.day) {
                 return other
             }
+            if invoice.invoiceNumber == nil || other.invoiceNumber == nil {
+                switch Self.period(of: invoice, against: other) {
+                case .same: return other
+                case .unknown where sameDay: return other
+                default: break
+                }
+            }
         }
         return nil
+    }
+
+    /// How two invoices' periods compare: both known (both ends) and the same, both known and
+    /// different, or not known on one side.
+    enum PeriodComparison { case same, different, unknown }
+
+    static func period(of invoice: UtilityInvoice, against other: UtilityInvoice) -> PeriodComparison {
+        guard let start = invoice.periodStart, let end = invoice.periodEnd, let otherStart = other.periodStart,
+              let otherEnd = other.periodEnd else { return .unknown }
+        return PropertyDates.day(start) == PropertyDates.day(otherStart) && PropertyDates.day(end) == PropertyDates.day(otherEnd)
+            ? .same : .different
+    }
+
+    /// The provider's other invoice recorded for the same period (both ends) as `invoice`, of
+    /// the same sign (a credit note isn't the bill), when one of them has no invoice number:
+    /// the bill already recorded — a copy, or (another amount) possibly a corrected version,
+    /// never a second record. The oldest first.
+    public static func recordedForPeriod(db: Database, of invoice: UtilityInvoice) throws -> UtilityInvoice? {
+        guard invoice.periodStart != nil, invoice.periodEnd != nil else { return nil }
+        var others = UtilityInvoice.filter(Column("providerId") == invoice.providerId).order(Column("id"))
+        if let id = invoice.id { others = others.filter(Column("id") != id) }
+        return try others.fetchAll(db).first { other in
+            (invoice.invoiceNumber == nil || other.invoiceNumber == nil)
+                && (other.amountMinorUnits < 0) == (invoice.amountMinorUnits < 0)
+                && period(of: invoice, against: other) == .same
+        }
+    }
+
+    /// "Invoice of <provider> for 2019-01-01 – 2019-01-31", else "… issued 2019-02-05".
+    public static func invoiceLabel(_ invoice: UtilityInvoice, providerName: String) -> String {
+        if let start = invoice.periodStart, let end = invoice.periodEnd {
+            return "Invoice of \(providerName) for \(PropertyDates.isoDay(start)) – \(PropertyDates.isoDay(end))"
+        }
+        return "Invoice of \(providerName) issued \(PropertyDates.isoDay(invoice.issueDate))"
     }
 
     /// The tenancy's part of an invoice and why, `nil` when the invoice isn't the tenancy's.

@@ -104,6 +104,8 @@ public enum EvidenceAmountParser {
         /// The currency written next to it, if any.
         public var currency: Currency?
         public var range: NSRange
+        /// Why this amount was chosen, when it was picked by more than its position.
+        public var reason: String?
     }
 
     private static let pattern = try! NSRegularExpression(

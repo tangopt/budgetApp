@@ -134,6 +134,85 @@ final class DocumentImportReadersTests: XCTestCase {
         XCTAssertEqual(item.duplicate?.of, "Invoice FT 1/23 of Demo Power already recorded")
     }
 
+    // Old invoices recorded without a number (import-5 Task 1).
+
+    private static let unnumberedLines = Array(invoiceLines.dropLast())
+
+    @discardableResult
+    private func recordUnnumbered(issued: Date = date(2023, 3, 5), amount: Int = 10_000, period: (Date, Date)? = (date(2023, 1, 1), date(2023, 2, 28)),
+                                  transactionId: Int64? = nil) throws -> UtilityInvoice {
+        try db.write { db in
+            var invoice = UtilityInvoice(providerId: providerId, periodStart: period?.0, periodEnd: period?.1, issueDate: issued,
+                                         amountMinorUnits: amount, transactionId: transactionId)
+            try Recharges.saveInvoice(db: db, &invoice)
+            return invoice
+        }
+    }
+
+    func testUnnumberedInvoiceReimportedIsDuplicateByPeriod() throws {
+        // Its document deleted: the same file read again.
+        try recordUnnumbered()
+        let item = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice.pdf", lines: Self.unnumberedLines), .utilityInvoice))
+        XCTAssertEqual(item.section, .duplicates)
+        XCTAssertEqual(item.duplicate?.level, .document)
+        XCTAssertEqual(item.duplicate?.of, "Invoice of Demo Power for 2023-01-01 – 2023-02-28 already recorded")
+    }
+
+    func testResavedCopyOfUnnumberedInvoiceIsDuplicate() throws {
+        // Recorded with another issue date (typed by hand): the same provider, period and amount.
+        try recordUnnumbered(issued: Self.date(2023, 3, 20))
+        let resaved = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice copy.pdf", lines: Self.unnumberedLines), .utilityInvoice))
+        XCTAssertEqual(resaved.section, .duplicates)
+        XCTAssertEqual(resaved.duplicate?.of, "Invoice of Demo Power for 2023-01-01 – 2023-02-28 already recorded")
+        // A copy that prints a number the record never had is the same invoice too.
+        let numbered = try propose(UtilityInvoiceImportReader(), recognised(try textFile("numbered.pdf", lines: Self.invoiceLines), .utilityInvoice))
+        XCTAssertEqual(numbered.section, .duplicates)
+        XCTAssertEqual(numbered.duplicate?.of, "Invoice of Demo Power for 2023-01-01 – 2023-02-28 already recorded")
+    }
+
+    func testUnnumberedInvoiceRecordedWithoutPeriodIsDuplicateByIssueDateAndAmount() throws {
+        try recordUnnumbered(period: nil)
+        let item = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice.pdf", lines: Self.unnumberedLines), .utilityInvoice))
+        XCTAssertEqual(item.section, .duplicates)
+        XCTAssertEqual(item.duplicate?.of, "Invoice of Demo Power issued 2023-03-05 already recorded")
+    }
+
+    func testSamePeriodAnotherAmountIsCorrectedVersionNeverASecondRecord() throws {
+        let debit = try transaction(Self.date(2023, 3, 20), -9_000, "DEMO PWR DD 123", categoryId: utilitiesId)
+        try recordUnnumbered(amount: 9_000, transactionId: debit)
+        let item = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice.pdf", lines: Self.invoiceLines), .utilityInvoice))
+        XCTAssertNil(item.duplicate)
+        XCTAssertEqual(item.section, .needsYou)
+        let issue = try XCTUnwrap(item.issues.first { $0.id == ImportDuplicates.correctedVersionIssueId })
+        XCTAssertEqual(issue.reason, "Possibly a corrected version of Invoice of Demo Power for 2023-01-01 – 2023-02-28: Amount €90.00 → €100.00")
+        XCTAssertEqual(issue.offers, [.fileWithoutLink, .leaveOut])
+        // Filed only, linked where the recorded invoice is (its debit).
+        XCTAssertEqual(issue.documentOnlyLinks.map(\.entity), [.transaction(debit)])
+        let filed = try XCTUnwrap(try ImportResolutions.apply(.fileWithoutLink, to: item, issueId: issue.id))
+        XCTAssertEqual(filed.effect, .file)
+        XCTAssertEqual(filed.links.map(\.entity), [.transaction(debit)])
+        // Recording it anyway is refused, readably (the guard and apply share applyRecords).
+        try db.write { db in
+            XCTAssertThrowsError(try ImportEffects.applyRecords(db: db, item: item, documentId: nil, importRunId: nil)) { error in
+                XCTAssertEqual(error as? ImportApplyError,
+                               .planOutdated("\(item.title): an invoice of Demo Power for 2023-01-01 – 2023-02-28 is already recorded"))
+            }
+            XCTAssertEqual(try UtilityInvoice.fetchCount(db), 1)
+        }
+    }
+
+    func testUnnumberedInvoicesOfTwoMonthsAreBothRecorded() throws {
+        try recordUnnumbered(issued: Self.date(2023, 1, 5), period: (Self.date(2022, 11, 1), Self.date(2022, 12, 31)))
+        let item = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice.pdf", lines: Self.unnumberedLines), .utilityInvoice))
+        XCTAssertNil(item.duplicate)
+        XCTAssertFalse(item.issues.contains { $0.id == ImportDuplicates.correctedVersionIssueId })
+        guard case .utilityInvoice = item.effect else { return XCTFail("effect \(item.effect)") }
+        try db.write { db in
+            try ImportEffects.applyRecords(db: db, item: item, documentId: nil, importRunId: nil)
+            XCTAssertEqual(try UtilityInvoice.fetchCount(db), 2)
+        }
+    }
+
     func testInvoiceWithAnotherAmountDebitedIsNeedsYouWithWarning() throws {
         try transaction(Self.date(2023, 3, 20), -12_000, "DEMO PWR DD 123", categoryId: utilitiesId)
         let entry = recognised(try textFile("invoice.pdf", lines: Self.invoiceLines), .utilityInvoice)
@@ -144,6 +223,68 @@ final class DocumentImportReadersTests: XCTestCase {
             return false
         }, "\(item.issues)")
         XCTAssertEqual(item.links, [])
+    }
+
+    /// The 2017–2021 water layout prints the invoice's value and the account balance (earlier
+    /// invoices included) that gets debited: the invoice's value is recorded, the balance kept
+    /// apart, and its debit only offered.
+    func testOldWaterInvoiceRecordsItsOwnValueAndOffersTheAccountTotalsDebit() throws {
+        let waterId = try db.write { db -> Int64 in
+            var water = UtilityProvider(propertyId: propertyId, name: "Demo Water", kind: .water, bankDescriptionPattern: "DEMO WTR",
+                                        invoiceRules: UtilityInvoiceRules(textMarkers: ["DEMO WATER"], amountLabels: ["VALOR DA FATURA", "VALOR TOTAL", "TOTAL"]))
+            try Recharges.saveProvider(db: db, &water)
+            return water.id!
+        }
+        let debit = try transaction(Self.date(2017, 7, 6), -10_319, "SEPADD/DEMO WTR ADC/1", categoryId: utilitiesId)
+        let lines = [
+            "Demo Water services - Fatura", "2017.06.20", "Nº Ident. Fiscal", "500000000", "€", "45.39", "39.95",
+            "QUANTIDADE VALOR UNITÁRIO VALOR TOTAL VALOR A PAGAR IVA%", "45.39", "1.00 m3 0.5111 0.51 6.00",
+            "TOTAL 103.19", "103.19+", "Valor da Conta Cliente em 06.07.2017 103.19",
+            "Sr. Cliente, o valor de 103.19€ será debitado na conta bancária"
+        ]
+        let entry = recognised(try textFile("agua.pdf", lines: lines), .utilityInvoice)
+        let item = try propose(UtilityInvoiceImportReader(), entry)
+        XCTAssertEqual(item.facts.first { $0.field == .amount }?.value, .money(4_539, .eur))
+        let total = try XCTUnwrap(item.facts.first { $0.field == .accountTotal })
+        XCTAssertEqual(total.value, .money(10_319, .eur))
+        XCTAssertEqual(total.source, .textLayer)
+        XCTAssertEqual(ImportFigureField.accountTotal.displayName, "Account total debited")
+        XCTAssertTrue(item.notes.contains("The account total €103.19 includes earlier invoices"), "\(item.notes)")
+        guard case .utilityInvoice(let invoice) = item.effect else { return XCTFail("effect \(item.effect)") }
+        XCTAssertEqual(invoice.providerId, waterId)
+        XCTAssertEqual(invoice.amountMinorUnits, 4_539)
+        XCTAssertNil(invoice.transactionId)
+        // The account total's debit is offered, never certain; no "check the amount" warning.
+        XCTAssertEqual(item.links, [])
+        XCTAssertEqual(item.section, .needsYou)
+        let choose = try XCTUnwrap(item.issues.first { $0.id == "chooseLink" })
+        guard case .chooseLink(let offered) = choose.kind else { return XCTFail("\(choose.kind)") }
+        XCTAssertEqual(offered.map(\.entity), [.transaction(debit)])
+        XCTAssertEqual(offered.first?.reasons.first, "Debit of the account total €103.19 (includes earlier invoices)")
+        XCTAssertFalse(item.issues.contains {
+            if case .readerProblem(let text) = $0.kind { return text.contains("check the amount") }
+            return false
+        }, "\(item.issues)")
+    }
+
+    func testAnAmountThatIsTheAccountTotalUncheckedNeedsReview() throws {
+        try db.write { db in
+            var water = UtilityProvider(propertyId: propertyId, name: "Demo Water", kind: .water, bankDescriptionPattern: "DEMO WTR",
+                                        invoiceRules: UtilityInvoiceRules(textMarkers: ["DEMO WATER"], amountLabels: ["VALOR TOTAL", "TOTAL"]))
+            try Recharges.saveProvider(db: db, &water)
+        }
+        try transaction(Self.date(2022, 11, 28), -1_123, "SEPADD/DEMO WTR ADC/1", categoryId: utilitiesId)
+        let lines = [
+            "Demo Water services", "2022.11.07", "QUANTIDADE VALOR TOTAL VALOR A PAGAR IVA%", "4.44", "1.00 m3 0.5111 0.51 6.00",
+            "TOTAL 11.23", "Valor da Conta Cliente em 28.11.2022 11.23"
+        ]
+        let item = try propose(UtilityInvoiceImportReader(), recognised(try textFile("agua.pdf", lines: lines), .utilityInvoice))
+        let amount = try XCTUnwrap(item.facts.first { $0.field == .amount })
+        XCTAssertEqual(amount.value, .money(1_123, .eur))
+        XCTAssertEqual(amount.confidence, .needsReview)
+        XCTAssertNil(item.facts.first { $0.field == .accountTotal })
+        XCTAssertTrue(item.notes.contains(UtilityInvoiceReader.amountReviewNote), "\(item.notes)")
+        XCTAssertEqual(item.section, .needsYou)
     }
 
     // MARK: Payroll forms
@@ -409,10 +550,11 @@ final class DocumentImportReadersTests: XCTestCase {
         XCTAssertTrue(readers[0] is RentReceiptsExportReader)
         XCTAssertTrue(readers[1] is RentReceiptPDFReader)
         XCTAssertTrue(readers[2] is TransferAdviceReader)
-        XCTAssertTrue(readers[3] is UtilityInvoiceImportReader)
-        XCTAssertTrue(readers[4] is PayrollFormImportReader)
+        XCTAssertTrue(readers[3] is BBVADebitAdviceReader)
+        XCTAssertTrue(readers[4] is UtilityInvoiceImportReader)
+        XCTAssertTrue(readers[5] is PayrollFormImportReader)
         XCTAssertTrue(readers.last is EvidenceDocumentReader)
-        for kind: ImportKind in [.utilityInvoice, .payrollForm(.p45), .evidence(.insuranceReceipt), .unknown] {
+        for kind: ImportKind in [.utilityInvoice, .payrollForm(.p45), .evidence(.insuranceReceipt), .evidence(.bankDebitAdvice), .unknown] {
             XCTAssertEqual(readers.filter { $0.handles(kind) }.count, 1, "\(kind)")
         }
     }

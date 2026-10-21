@@ -63,6 +63,7 @@ public enum EvidenceAnalyzer {
 
         if let amount = amount(in: body, kind: kind) {
             metadata.amountMinorUnits = amount.minorUnits
+            if let reason = amount.reason { metadata.note = metadata.note ?? reason }
             metadata.currency = amount.currency ?? defaultCurrency(for: kind, text: body)
         }
         metadata.textStatus = textStatus
@@ -87,7 +88,7 @@ public enum EvidenceAnalyzer {
         case .accountantInvoice, .legalInvoice:
             return ["TOTALGBP", "TOTAL GBP", "TOTAL EUR", "QUANTIA DE", "TOTAL A PAGAR", "TOTAL DOCUMENTO", "TOTAL"]
         case .utilityInvoice: return ["QUANTO TENHO A PAGAR", "VALOR A PAGAR", "TOTAL A PAGAR", "MONTANTE", "TOTAL"]
-        case .bankTransferProof: return ["MONTANTE", "IMPORTANCIA", "VALOR"]
+        case .bankTransferProof, .bankDebitAdvice: return ["MONTANTE", "IMPORTANCIA", "VALOR"]
         case .hmrcPaymentProof: return ["AMOUNT"]
         default: return []
         }
@@ -127,11 +128,52 @@ public enum EvidenceAnalyzer {
         return text.substring(with: NSRange(location: start, length: min(length, text.length - start)))
     }
 
+    /// A layout can split a component and the total across the lines after a total label (the
+    /// insurance notice's "... total a pagar 13,69 €" then "401,44 €"). When amounts on at least two
+    /// of the label's own and next two lines compete, the one equal to the sum of the other
+    /// itemised amounts above it (at least two amounts) wins; failing that, a "total" label takes the largest. A single line's amounts (or a
+    /// single amount) keep the first-amount behaviour.
+    static func totalEqualToItsParts(after labelRange: NSRange, label: String, labels: [String], in text: NSString) -> EvidenceAmountParser.Found? {
+        let lines = window(after: labelRange, in: text, length: 240).components(separatedBy: "\n").prefix(3)
+        let region = lines.joined(separator: "\n") as NSString
+        let candidates = EvidenceAmountParser.amounts(in: region as String).filter { $0.minorUnits > 0 }
+        guard candidates.count >= 2 else { return nil }
+        func line(_ found: EvidenceAmountParser.Found) -> Int {
+            region.substring(to: found.range.location).filter { $0 == "\n" }.count
+        }
+        guard Set(candidates.map(line)).count >= 2 else { return nil }
+        // The block above the label: back to the previous total label, or the document start.
+        var blockStart = 0
+        for other in labels {
+            for range in occurrences(of: other, in: text) where range.location + range.length <= labelRange.location {
+                blockStart = max(blockStart, range.location + range.length)
+            }
+        }
+        let above = text.substring(with: NSRange(location: blockStart, length: labelRange.location - blockStart))
+        let aboveAmounts = EvidenceAmountParser.amounts(in: above).filter { $0.minorUnits > 0 }
+        let aboveSum = aboveAmounts.reduce(0) { $0 + $1.minorUnits }
+        let candidateSum = candidates.reduce(0) { $0 + $1.minorUnits }
+        // A sum needs at least two amounts: a candidate repeating one amount above is no total.
+        let matches = candidates.filter { candidate in
+            (aboveAmounts.count >= 2 && aboveSum == candidate.minorUnits)
+                || (aboveAmounts.count + candidates.count - 1 >= 2 && aboveSum + candidateSum - candidate.minorUnits == candidate.minorUnits)
+        }
+        if var match = matches.max(by: { $0.minorUnits < $1.minorUnits }) {
+            match.reason = "Total: the sum of the amounts above it"
+            return match
+        }
+        // Only a label that says "total" may take the largest; broad labels keep the first amount.
+        guard label.uppercased().contains("TOTAL"), var largest = candidates.max(by: { $0.minorUnits < $1.minorUnits }) else { return nil }
+        largest.reason = "Total: the largest amount after the total label"
+        return largest
+    }
+
     static func amount(in body: String, kind: DocumentKind) -> EvidenceAmountParser.Found? {
         guard !body.isEmpty else { return nil }
         let text = body as NSString
         for label in amountLabels(for: kind) {
             for found in occurrences(of: label, in: text) {
+                if let summed = totalEqualToItsParts(after: found, label: label, labels: amountLabels(for: kind), in: text) { return summed }
                 if let amount = EvidenceAmountParser.amounts(in: window(after: found, in: text)).first(where: { $0.minorUnits > 0 }) { return amount }
             }
         }

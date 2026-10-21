@@ -96,6 +96,8 @@ public enum EvidenceMatcher {
                                descriptionHints: ["EDP", "GDL", "LISBOAGAS", "SIMAR", "SMAS", "GALP", "AGUAS", "EPAL"], accountHint: bbva)
         case .bankTransferProof:
             return Expectation(direction: .either, window: -1...3)
+        case .bankDebitAdvice:
+            return Expectation(direction: .debit, window: -2...2, accountHint: bbva)
         case .hmrcPaymentProof:
             return Expectation(direction: .debit, window: -1...5, categoryHints: ["uk tax", "hmrc"], descriptionHints: ["HMRC"])
         default:

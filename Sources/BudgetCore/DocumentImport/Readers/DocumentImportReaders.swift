@@ -73,6 +73,24 @@ public struct UtilityInvoiceImportReader: ImportReader {
         return ImportIssue(id: documentOnlyIssueId, kind: .readerProblem(text), reason: text, offers: [.fileWithoutLink])
     }()
 
+    /// "Possibly a corrected version of Invoice of <provider> for <period>: Amount X → Y" for
+    /// an invoice whose period is recorded for another amount (`Recharges.recordedForPeriod`):
+    /// filed only, linked where the recorded invoice is (its document's links, its debit).
+    static func correctedVersionIssue(of recorded: UtilityInvoice, providerName: String, item: ImportItem, db: Database) throws -> ImportIssue {
+        var identity = DocumentIdentity.Identity()
+        identity.figures[.amount] = DocumentIdentity.Figure(amount: abs(recorded.amountMinorUnits), currency: nil)
+        let entry = DocumentIdentityIndex.Entry(documentId: recorded.documentId,
+                                                label: Recharges.invoiceLabel(recorded, providerName: providerName), identity: identity)
+        var issue = try ImportDuplicates.correctedVersion(of: entry, item: item, db: db)
+        // Without a document, the recorded invoice is where its debit is.
+        if recorded.documentId == nil, let transactionId = recorded.transactionId,
+           try EvidenceLinks.entityExists(db: db, .transaction(transactionId)) {
+            issue.documentOnlyLinks.append(ProposedLink(entity: .transaction(transactionId), label: try entityLabel(db: db, .transaction(transactionId)),
+                                                        confidence: .certain, reasons: ["\(entry.label) is paid by it"]))
+        }
+        return issue
+    }
+
     /// Providers to recognise invoices by when the context has none.
     public var providers: [UtilityProvider]
 
@@ -189,8 +207,17 @@ public struct UtilityInvoiceImportReader: ImportReader {
             facts.append(ImportFact(field: .periodEnd, value: .date(end), source: source, confidence: .certain, reason: "Period on the invoice"))
         }
         if let amount = reading.amountMinorUnits {
-            facts.append(ImportFact(field: .amount, value: .money(amount, currency), source: source, confidence: .certain,
-                                    reason: amount < 0 ? "Refund on the invoice" : "Amount due on the invoice"))
+            facts.append(ImportFact(field: .amount, value: .money(amount, currency), source: source,
+                                    confidence: reading.amountReviewNote == nil ? .certain : .needsReview,
+                                    reason: reading.amountReviewNote ?? (amount < 0 ? "Refund on the invoice" : "Amount due on the invoice")))
+            if let note = reading.amountReviewNote { item.notes.append(note) }
+        }
+        // The account balance printed beside the invoice's own value (earlier invoices included).
+        let accountTotal = reading.accountTotalMinorUnits.flatMap { $0 != reading.amountMinorUnits ? $0 : nil }
+        if let accountTotal {
+            facts.append(ImportFact(field: .accountTotal, value: .money(accountTotal, currency), source: source, confidence: .certain,
+                                    reason: "Account total on the invoice: what is debited"))
+            item.notes.append("The account total \(Money.format(accountTotal, currency: currency)) includes earlier invoices")
         }
         item.facts = facts
         item.placement = ImportNaming.placement(kind: .utilityInvoice, facts: facts, file: file, persons: [])
@@ -219,13 +246,21 @@ public struct UtilityInvoiceImportReader: ImportReader {
             item.issues.append(ImportIssue(id: "missingFigure.\(field.rawValue)", kind: .missingFigure(field), reason: reason))
         }
         if let copy = try proposal.duplicateOf.flatMap({ try UtilityInvoice.fetchOne(db, key: $0) }) {
-            let named = copy.invoiceNumber ?? reading.invoiceNumber
-            item.duplicate = ImportDuplicate(level: .document,
-                                             of: named.map { "Invoice \($0) of \(providerName) already recorded" }
-                                                 ?? "Invoice of \(isoDay(copy.issueDate)) of \(providerName) already recorded",
-                                             existingDocumentId: copy.documentId)
+            // Named by its number when both have one; else (an old bill recorded without one)
+            // by its period, else its issue date.
+            let of = copy.invoiceNumber.flatMap { number in reading.invoiceNumber == nil ? nil : "Invoice \(number) of \(providerName)" }
+                ?? Recharges.invoiceLabel(copy, providerName: providerName)
+            item.duplicate = ImportDuplicate(level: .document, of: of + " already recorded", existingDocumentId: copy.documentId)
         }
-        for warning in proposal.warnings where !(proposal.duplicateOf != nil && warning.hasPrefix("A copy of the invoice")) {
+        var correctedVersion = false
+        if proposal.duplicateOf == nil, let recorded = try proposal.correctedVersionOf.flatMap({ try UtilityInvoice.fetchOne(db, key: $0) }) {
+            // Another amount for a period already recorded (one of them without a number):
+            // possibly a corrected version — filed only, linked where the recorded one is.
+            item.issues.append(try Self.correctedVersionIssue(of: recorded, providerName: providerName, item: item, db: db))
+            correctedVersion = true
+        }
+        for warning in proposal.warnings where !(proposal.duplicateOf != nil && warning.hasPrefix("A copy of the invoice"))
+            && !(correctedVersion && warning.hasPrefix("An invoice for this period")) {
             problem(&item, warning)
         }
 
@@ -249,6 +284,12 @@ public struct UtilityInvoiceImportReader: ImportReader {
         let candidates = try UtilityInvoiceIntake.paymentCandidates(db: db, propertyId: propertyId, provider: provider,
                                                                     amountMinorUnits: invoice.amountMinorUnits, issueDate: invoice.issueDate)
         let qualifying = candidates.filter { why($0) != nil }
+        // The account total's debit (the provider's, or in a utility category) may have paid it
+        // with earlier invoices: offered, never certain.
+        let accountTotalDebits = try accountTotal.map { total in
+            try UtilityInvoiceIntake.paymentCandidates(db: db, propertyId: propertyId, provider: provider, amountMinorUnits: total,
+                                                       issueDate: invoice.issueDate).filter { why($0) != nil }
+        } ?? []
         if qualifying.count == 1, let payment = qualifying.first, let paymentId = payment.id, proposal.transactionId == paymentId,
            let reason = why(payment) {
             item.links = [ProposedLink(entity: .transaction(paymentId), label: transactionLabel(payment, currency: try accountCurrency(payment)),
@@ -257,19 +298,29 @@ public struct UtilityInvoiceImportReader: ImportReader {
                                        madeByEffect: true)]
         } else {
             invoice.transactionId = nil
-            if candidates.isEmpty {
+            if candidates.isEmpty && accountTotalDebits.isEmpty {
                 item.notes.append("Not linked: no matching debit yet")
             } else {
-                let offered = try candidates.prefix(5).compactMap { transaction -> LinkCandidate? in
+                var offered = try candidates.prefix(5).compactMap { transaction -> LinkCandidate? in
                     guard let id = transaction.id else { return nil }
                     let reason = why(transaction).map { "Booked on \(isoDay(transaction.date)) for exactly \(amountText); \($0)" }
                         ?? "Booked on \(isoDay(transaction.date)) for exactly \(amountText), but neither \(providerName)'s description nor a utility category"
                     return LinkCandidate(entity: .transaction(id), label: transactionLabel(transaction, currency: try accountCurrency(transaction)),
                                          reasons: [reason])
                 }
-                let reason = qualifying.count >= 2
+                let totalText = accountTotal.map { Money.format($0, currency: currency) } ?? ""
+                offered += try accountTotalDebits.prefix(5).compactMap { transaction -> LinkCandidate? in
+                    guard let id = transaction.id, let why = why(transaction) else { return nil }
+                    return LinkCandidate(entity: .transaction(id), label: transactionLabel(transaction, currency: try accountCurrency(transaction)),
+                                         reasons: ["Debit of the account total \(totalText) (includes earlier invoices)",
+                                                   "Booked on \(isoDay(transaction.date)); \(why)"])
+                }
+                let reason = candidates.isEmpty
+                    ? "No debit of \(amountText): \(providerName) debited the account total \(totalText), which includes earlier invoices. Did it pay this invoice?"
+                    : (qualifying.count >= 2
                     ? "\(qualifying.count) movements of \(amountText) look like \(providerName)'s: which one paid this invoice?"
-                    : "A movement of the amount fits, but nothing shows it is \(providerName)'s: which one paid it?"
+                    : "A movement of the amount fits, but nothing shows it is \(providerName)'s: which one paid it?")
+                    + (accountTotalDebits.isEmpty ? "" : " The debit of the account total \(totalText) (includes earlier invoices) is offered too.")
                 item.issues.append(ImportIssue(id: "chooseLink", kind: .chooseLink(offered), reason: reason, offers: [.fileWithoutLink]))
             }
         }
@@ -462,7 +513,9 @@ public struct EvidenceDocumentReader: ImportReader {
     public init() {}
 
     public func handles(_ kind: ImportKind) -> Bool {
-        if case .evidence = kind { return true }
+        // Bank debit advices have their own reader (`BBVADebitAdviceReader`), which hands back
+        // the ones it can't read.
+        if case .evidence(let documentKind) = kind { return documentKind != .bankDebitAdvice }
         return kind == .unknown
     }
 

@@ -23,6 +23,9 @@ public enum UtilityInvoiceIntake {
         public var warnings: [String] = []
         /// The recorded invoice this document is a copy of.
         public var duplicateOf: Int64?
+        /// The recorded invoice for the same period (one of them without a number) this
+        /// document's other amount possibly corrects: never recorded a second time.
+        public var correctedVersionOf: Int64?
 
         /// What the user still has to fill in before it can be recorded.
         public var missing: [String] {
@@ -100,6 +103,7 @@ public enum UtilityInvoiceIntake {
             reading = UtilityInvoiceReader.read(text: text, fileName: fileName, providers: providers)
         }
         adjust?(&reading)
+        if let total = reading.accountTotalMinorUnits, total == reading.amountMinorUnits { reading.accountTotalMinorUnits = nil }
         var proposal = Proposal(documentId: documentId, fileName: fileName, reading: reading, transactionId: nil,
                                 textStatus: textStatus, usedOCR: usedOCR)
         let provider = providers.first { $0.id == reading.providerId }
@@ -108,7 +112,9 @@ public enum UtilityInvoiceIntake {
                                                      issueDate: issueDate)?.id
             if proposal.transactionId == nil, let provider,
                let other = try debitsForAnotherAmount(db: db, propertyId: propertyId, provider: provider, amountMinorUnits: amount,
-                                                      issueDate: issueDate, dueDate: reading.dueDate).first {
+                                                      issueDate: issueDate, dueDate: reading.dueDate)
+                .first(where: { $0.amountMinorUnits != -(reading.accountTotalMinorUnits ?? 0) }) {
+                // The account total's debit (earlier invoices included) is no sign of a misread amount.
                 proposal.warnings.append("\(provider.name) debited \(Money.format(abs(other.amountMinorUnits), currency: .eur)) on "
                     + "\(PropertyDates.isoDay(other.date)), not the \(Money.format(abs(amount), currency: .eur)) read: check the amount")
             }
@@ -117,6 +123,10 @@ public enum UtilityInvoiceIntake {
             proposal.duplicateOf = copy.id
             proposal.warnings.append("A copy of the invoice of \(PropertyDates.isoDay(copy.issueDate)) for "
                 + "\(Money.format(copy.amountMinorUnits, currency: .eur)) already recorded")
+        } else if let invoice = proposal.invoice, let recorded = try Recharges.recordedForPeriod(db: db, of: invoice) {
+            proposal.correctedVersionOf = recorded.id
+            proposal.warnings.append("An invoice for this period is already recorded for "
+                + "\(Money.format(recorded.amountMinorUnits, currency: .eur)): possibly a corrected version")
         }
         return proposal
     }

@@ -240,6 +240,14 @@ public enum RechargeBackfill {
                 try discard(added)
                 outcomes.append(outcome)
                 continue
+            } catch RechargeError.invoiceForPeriodRecorded {
+                // Another amount for a period already recorded: possibly a corrected version,
+                // never a second record (import it through the importer to file it).
+                outcome.invoiceId = proposal.correctedVersionOf
+                outcome.reason = "an invoice for this period is already recorded (possibly a corrected version): not recorded"
+                try discard(added)
+                outcomes.append(outcome)
+                continue
             }
             // Paid: its debit, or the debits its document is linked to (paid in parts).
             let payments = try library.database.read { db in try Recharges.payments(db: db, invoice) }

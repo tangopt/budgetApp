@@ -42,6 +42,9 @@ public enum ImportFigureField: String, Codable, CaseIterable, Sendable {
     /// A statement's opening and closing balances, its row count, and its preview lines
     /// (a BBVA statement's mortgage instalments and fund).
     case openingBalance, closingBalance, rows, instalments, fund
+    /// A utility invoice's customer-account balance, debited instead of its own value (it
+    /// includes earlier invoices): kept apart from the amount.
+    case accountTotal
 
     public var displayName: String {
         switch self {
@@ -64,6 +67,7 @@ public enum ImportFigureField: String, Codable, CaseIterable, Sendable {
         case .rows: return "Rows"
         case .instalments: return "Instalments"
         case .fund: return "Fund"
+        case .accountTotal: return "Account total debited"
         }
     }
 }

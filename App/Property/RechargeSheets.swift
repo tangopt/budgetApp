@@ -1059,6 +1059,8 @@ enum RechargeMessages {
         switch error {
         case .duplicateInvoiceNumber: return "An invoice with that number is already recorded for this provider."
         case .duplicateInvoice: return "That invoice is already recorded for this provider (a copy of the same bill)."
+        case .invoiceForPeriodRecorded:
+            return "An invoice for that period is already recorded for this provider: correct that one instead of adding a second."
         case .duplicateName: return "There's already a provider with that name."
         case .invalidPeriod: return "The period's end is before its start."
         case .invoiceOnSentStatement: return "That invoice is on a sent statement: its amount and period can't change."

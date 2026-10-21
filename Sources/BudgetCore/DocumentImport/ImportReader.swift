@@ -71,6 +71,7 @@ public enum ImportReaders {
             RentReceiptsExportReader(),
             RentReceiptPDFReader(),
             TransferAdviceReader(),
+            BBVADebitAdviceReader(),
             UtilityInvoiceImportReader(providers: providers),
             PayrollFormImportReader(),
             BBVAStatementReader(),

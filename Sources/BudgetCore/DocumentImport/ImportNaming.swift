@@ -83,7 +83,7 @@ public enum ImportNaming {
             return "Property"
         case .p60, .p45, .p11d, .taxCodeNotice, .hmrcPaymentProof, .sa302, .taxReturn: return "Tax UK"
         case .ptIRSDeclaration, .ptIRSAssessment, .ptIRSPaymentNote, .ptIRSPaymentProof: return "Tax PT"
-        case .bankTransferProof, .bankStatement: return "Bank"
+        case .bankTransferProof, .bankDebitAdvice, .bankStatement: return "Bank"
         case .other: return "Other"
         }
     }

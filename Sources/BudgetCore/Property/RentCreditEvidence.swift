@@ -206,6 +206,8 @@ public enum RentCreditEvidence {
         private var advices: [Key: Advice?] = [:]
         /// Documents whose text was parsed (tests).
         public private(set) var parses = 0
+        /// The bank debit advices read in the same pass (`BBVADebitAdvice.linkLibraryAdvices`).
+        public let debitAdvices = BBVADebitAdvice.Cache()
 
         public init() {}
 
