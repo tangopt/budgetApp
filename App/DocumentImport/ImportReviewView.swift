@@ -517,7 +517,7 @@ extension ImportFactSource {
         case .user: return "You"
         case .matchedRecord: return "From the app"
         case .intent: return "Import target"
-        case .learntRule: return "Learnt rule"
+        case .learntRule: return "Learnt"
         case .model: return "Model"
         }
     }

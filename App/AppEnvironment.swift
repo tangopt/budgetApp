@@ -23,9 +23,12 @@ final class AppEnvironment: ObservableObject {
     let interestIndexAutoFetch: InterestIndexAutoFetch
     /// The one document importer (File ▸ Import…, the toolbar, a drop on the window, the
     /// Imports screen), made when first used.
+    /// Apple's on-device model is asked about documents nothing else recognises; never in
+    /// snapshot mode (its routes pass their own stand-in).
     lazy var importCenter: ImportCenterModel = ImportCenterModel(
         dbQueue: dbQueue, databasePath: databasePath, library: evidenceLibrary,
-        categorizationService: CategorizationService(categorizer: OnDeviceCategorizer.systemDefault()))
+        categorizationService: CategorizationService(categorizer: OnDeviceCategorizer.systemDefault()),
+        modelReader: SnapshotMode.isActive ? nil : FoundationModelsDocumentReader())
 
     private init(dbQueue: DatabaseQueue, databasePath: String?, evidenceRoot: URL) {
         self.dbQueue = dbQueue

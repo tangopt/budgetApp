@@ -28,7 +28,12 @@ public enum ImportResolutions {
     ///   on a corrected version, the document is filed only, linked where its original is.
     /// - `.confirmFigure`: the fact becomes the user's (`.user`, `.certain`); the placement and
     ///   the effect's figure follow. Never on a bank statement, nor for a statement's figures
-    ///   (opening and closing balance, rows, instalments, fund).
+    ///   (opening and closing balance, rows, instalments, fund). `.confirmFigureRemembering`: the same.
+    /// - `.setIssuer`: the issuer fact becomes the user's name (`.user`, "Named by you"); never on
+    ///   a statement, never blank.
+    /// - `.acceptModelReading`: the model's facts and proposed kind become the user's
+    ///   (`ImportModelProposals.accept`); correcting a model figure instead (`.confirmFigure`,
+    ///   `.setIssuer`) resolves the model's question once no model figure or kind is left.
     /// - `.linkTransactions`, `.addTransactionLink`, `.unlink`: the item's transaction links as
     ///   the user set them (`withTransactionLinks`); `transactions` names each chosen
     ///   transaction that exists (`transactionNotFound` otherwise).
@@ -82,6 +87,21 @@ public enum ImportResolutions {
             guard !accepting.isEmpty else { throw refuse() }
             return nil
 
+        case .setIssuer(let name):
+            // The issuer named by the user: this document's issuer fact (learnt for the issuer on Confirm import).
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !isStatement(item), !accepting.isEmpty || (issueId == nil && takesIssuerName(item)) else { throw refuse() }
+            edited.issues.removeAll { accepting.contains($0) }
+            edited.facts.removeAll { $0.field == .issuer }
+            edited.facts.append(ImportFact(field: .issuer, value: .text(trimmed), source: .user, confidence: .certain, reason: "Named by you"))
+            if edited.placement != nil {
+                edited.placement = ImportNaming.placement(kind: edited.recognition.kind, facts: edited.facts, file: edited.file,
+                                                          persons: item.placement?.metadata.persons ?? [])
+            }
+            edited.effect = effect(edited.effect, with: .issuer, .text(trimmed))
+            ImportModelProposals.settle(&edited)
+            return edited
+
         case .importAnyway(let reason):
             // A closing balance that doesn't match, imported anyway: the reason is kept.
             guard !accepting.isEmpty else { throw refuse() }
@@ -107,22 +127,47 @@ public enum ImportResolutions {
             edited.issues.remove(at: index)
             return edited
 
-        case .confirmFigure(let field, let value):
+        case .confirmFigureRemembering(let field, let value):
+            // Fixed as a confirmed figure; what it teaches is drafted by the pipeline (`ImportLearning.drafts`).
+            return try apply(.confirmFigure(field, value), to: item, issueId: issueId, transactions: transactions)
+
+        case .confirmFigure(let field, var value):
+            // An issuer's name is kept trimmed (as its learnt rule is), never blank.
+            if field == .issuer, case .text(let name) = value {
+                let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { throw refuse() }
+                value = .text(trimmed)
+            }
             // A statement's figures are what its rows and balances say: never typed over.
-            guard fits(value, field), !isStatementFigure(field), !isStatement(item) else { throw refuse() }
+            guard takes(value, field, on: item), !isStatementFigure(field), !isStatement(item) else { throw refuse() }
             let unsure = item.facts.contains { $0.field == field && $0.confidence == .needsReview }
             guard !accepting.isEmpty || (issueId == nil && (unsure || isCorrectable(item))) else { throw refuse() }
             edited.issues.removeAll { accepting.contains($0) }
             let existed = edited.facts.contains { $0.field == field }
             edited.facts.removeAll { $0.field == field }
             edited.facts.append(ImportFact(field: field, value: value, source: .user, confidence: .certain,
-                                           reason: existed ? "Checked by you" : "Entered by you"))
+                                           reason: existed ? "Checked by you" : enteredReason))
             if edited.placement != nil {
                 edited.placement = ImportNaming.placement(kind: edited.recognition.kind, facts: edited.facts, file: edited.file,
                                                           persons: item.placement?.metadata.persons ?? [])
             }
             edited.effect = effect(edited.effect, with: field, value)
+            // A model figure corrected: the model's reading resolved field by field.
+            ImportModelProposals.settle(&edited)
             return edited
+
+        case .acceptModelReading:
+            guard !accepting.isEmpty else { throw refuse() }
+            return ImportModelProposals.accept(item)
+
+        case .markChecked(let target):
+            // The undo record is the pipeline's (`ImportPipeline.resolve`); this is the tick alone.
+            guard issueId == nil else { throw refuse() }
+            return try ImportChecks.marked(target, on: item)
+
+        case .unmarkChecked, .markAllChecked, .unmarkAllChecked:
+            // Only the pipeline ticks several at once or takes ticks back (it keeps what was there before).
+            throw refuse()
 
         case .chooseLink(let entity):
             let unsure = item.links.contains { $0.entity == entity && $0.confidence == .needsReview }
@@ -220,6 +265,8 @@ public enum ImportResolutions {
     }
 
     static let chosenReason = "Chosen by you"
+    /// The reason of a figure the user entered where none was read.
+    static let enteredReason = "Entered by you"
     /// The reason a link or a choice made by the user carries.
     public static var chosenReasonText: String { chosenReason }
 
@@ -227,6 +274,13 @@ public enum ImportResolutions {
     /// a failed check, an unreadable file), not left out, not a duplicate.
     public static func isCorrectable(_ item: ImportItem) -> Bool {
         !item.isLeftOut && item.duplicate == nil && !isUnreadable(item) && !item.issues.contains { onlyLeavesOut($0, in: item) }
+    }
+
+    /// Whether the item takes an issuer's name from the user (`.setIssuer` as a correction): a
+    /// correctable document that isn't a bank statement (staged, or recognised as one).
+    public static func takesIssuerName(_ item: ImportItem) -> Bool {
+        guard isCorrectable(item), !isStatement(item) else { return false }
+        return ![.bankStatementCSV, .bankStatementPDF, .bbvaStatement].contains(item.recognition.kind)
     }
 
     /// The target a correction can change on the item (`.chooseTarget`), when its reader reads
@@ -399,10 +453,15 @@ public enum ImportResolutions {
         if case .filedYear = issue.kind { return false }
         if issue.id == FiledYearGuard.checkFailedIssueId { return false }
         switch (issue.kind, resolution) {
-        case (.unknownKind, .chooseKind), (.kindMismatch, .chooseKind), (.kindMismatch, .acknowledge):
+        case (.unknownKind, .chooseKind), (.kindMismatch, .chooseKind), (.kindMismatch, .acknowledge), (.confirmModelReading, .acceptModelReading):
             return true
         case (.confirmFigure(let field), .confirmFigure(let chosen, let value)), (.missingFigure(let field), .confirmFigure(let chosen, let value)):
             return field == chosen && fits(value, chosen)
+        case (.confirmFigure(let field), .confirmFigureRemembering(let chosen, let value)),
+             (.missingFigure(let field), .confirmFigureRemembering(let chosen, let value)):
+            return field == chosen && fits(value, chosen)
+        case (.confirmFigure(.issuer), .setIssuer), (.missingFigure(.issuer), .setIssuer):
+            return true
         case (.chooseLink(let candidates), .chooseLink(let entity)):
             return candidates.contains { $0.entity == entity }
         case (.chooseTarget(let kind, let options), .chooseTarget(let chosen, let id)):
@@ -464,8 +523,22 @@ public enum ImportResolutions {
         }
     }
 
+    /// Whether the item takes the value as the figure (confirmed by the user, or the model's
+    /// accepted): of the figure's type (`fits`) and, for a payroll form's reference, a PAYE
+    /// reference like 123/AB456 (its form couldn't be saved otherwise).
+    static func takes(_ value: ImportFactValue, _ field: ImportFigureField, on item: ImportItem) -> Bool {
+        guard fits(value, field) else { return false }
+        guard field == .reference, case .payrollForm = item.recognition.kind, case .text(let reference) = value else { return true }
+        do {
+            _ = try Employments.normalizedPAYEReference(reference)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// The effect with a confirmed figure: a utility invoice's or a payroll form's own field.
-    private static func effect(_ effect: ImportEffect, with field: ImportFigureField, _ value: ImportFactValue) -> ImportEffect {
+    static func effect(_ effect: ImportEffect, with field: ImportFigureField, _ value: ImportFactValue) -> ImportEffect {
         switch effect {
         case .utilityInvoice(var invoice):
             switch (field, value) {

@@ -194,6 +194,7 @@ extension DemoDatabase {
             try matchRent(db)
             try tax(db)
             try evidenceRules(db)
+            try importRules(db)
             try forecast(db)
             try uncategorised(db)
             _ = try TransferMatcher.match(db: db, today: asOf)
@@ -938,6 +939,31 @@ extension DemoDatabase {
         }
 
         // MARK: Evidence rules
+
+        /// Three learnt import rules for the Rules page (synthetic issuers and file layout,
+        /// matching none of `DemoImportSamples`): a document type, a link to the property, a
+        /// statement file's account.
+        func importRules(_ db: Database) throws {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            func json(_ action: some Encodable) throws -> String { String(decoding: try encoder.encode(action), as: UTF8.self) }
+            let rules = [
+                ImportRule(kind: .documentKind, matchKey: "nif:500100200", matchLabel: "Example Insurance, S.A.",
+                           actionJSON: try json(DocumentKindAction(kind: .insuranceReceipt)),
+                           actionLabel: "Kind: \(DocumentKind.insuranceReceipt.displayName)",
+                           createdAt: date(2026, 4, 12), lastUsedAt: date(2026, 10, 3), useCount: 12),
+                ImportRule(kind: .link, matchKey: "nif:500300400", matchLabel: "Example Condominium Admin",
+                           actionJSON: try json(LinkAction(entity: EvidenceEntity(type: .property, id: propertyId))),
+                           actionLabel: "Link to \(DemoDatabase.propertyName)",
+                           createdAt: date(2026, 5, 2), lastUsedAt: date(2026, 9, 14), useCount: 4),
+                ImportRule(kind: .statementAccount, matchKey: "csv:booking date|payee|amount",
+                           matchLabel: "CSV with columns Booking date, Payee, Amount",
+                           actionJSON: try json(StatementAccountAction(accountId: accounts["Rainy Day Saver"]!)),
+                           actionLabel: "Account: Rainy Day Saver", createdAt: date(2026, 6, 20))
+            ]
+            for var rule in rules { try rule.insert(db) }
+            count("import rules", rules.count)
+        }
 
         func evidenceRules(_ db: Database) throws {
             var rules = try EvidenceRequirementDefaults.seedPropertyRules(db: db, categoryGroupId: groups[DemoDatabase.propertyName]!,

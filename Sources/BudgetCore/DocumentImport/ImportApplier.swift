@@ -16,6 +16,8 @@ public struct ImportRunSummary: Equatable, Sendable {
     public var duplicates: Int
     public var leftOut: Int
     public var backupPath: String?
+    /// What the run didn't do and why ("Not learnt: different choices for …").
+    public var notes: [String] = []
 
     public init(runId: Int64, filed: Int, linked: Int, recorded: Int, transactions: Int, duplicates: Int, leftOut: Int,
                 backupPath: String?) {
@@ -30,7 +32,7 @@ public struct ImportRunSummary: Equatable, Sendable {
     }
 
     /// "3 documents filed, 2 linked, 142 transactions"; counts that are zero are left out
-    /// (except the documents), duplicates and left-out files last.
+    /// (except the documents), duplicates and left-out files last; then the run's notes.
     public var text: String {
         func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
         var parts = [plural(filed, "document", "documents") + " filed"]
@@ -39,7 +41,7 @@ public struct ImportRunSummary: Equatable, Sendable {
         if transactions > 0 { parts.append(plural(transactions, "transaction", "transactions")) }
         if duplicates > 0 { parts.append(plural(duplicates, "duplicate", "duplicates") + " skipped") }
         if leftOut > 0 { parts.append("\(leftOut) left out") }
-        return parts.joined(separator: ", ")
+        return ([parts.joined(separator: ", ")] + notes).joined(separator: ". ")
     }
 }
 
@@ -243,6 +245,15 @@ public struct ImportApplier: Sendable {
                                arguments: [documentId, folderId, item.file.sha256])
             }
         }
+        // What the review's corrections taught, and the learnt rules the items used: inside the run.
+        // Items that taught different things about one issuer (and family) teach none of them.
+        let (learnable, learningNotes) = ImportLearning.learnable(applied.flatMap(\.ruleDrafts))
+        for draft in learnable {
+            try ImportRuleStore.learn(db: db, kind: draft.kind, key: draft.key, matchLabel: draft.matchLabel,
+                                      actionJSON: draft.actionJSON, actionLabel: draft.actionLabel, now: now)
+        }
+        let used = applied.flatMap { $0.appliedRules.map(\.ruleId) }
+        if !used.isEmpty { try ImportRuleStore.markUsed(db: db, ids: used, now: now) }
         try ImportEffects.followOns(db: db, propertyIds: touched)
         try AutoForecastGenerator.refresh(db: db)
 
@@ -252,6 +263,7 @@ public struct ImportApplier: Sendable {
 
         var summary = ImportRunSummary(runId: runId, filed: 0, linked: 0, recorded: 0, transactions: 0, duplicates: 0, leftOut: 0,
                                        backupPath: backupPath)
+        summary.notes = learningNotes
         let leftOut = Self.leftOutIds(plan)
         let byId = Dictionary(uniqueKeysWithValues: plan.items.map { ($0.id, $0) })
         summary.filed = Set(documents.values).count

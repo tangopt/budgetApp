@@ -10,20 +10,35 @@ public struct ImportContext: Sendable {
     public var accounts: [Account]
     public var providers: [UtilityProvider]
     public var now: Date
+    /// The enabled learnt figure positions (`LearntFigures`), read by the readers.
+    public var learntFigures: [ImportRule]
+    /// The known parties' NIFs (`IssuerKey.knownParties`), never an issuer's key.
+    public var knownParties: Set<String>
 
     public init(intent: ImportIntent = .none, properties: [Property] = [], people: [Person] = [], accounts: [Account] = [],
-                providers: [UtilityProvider] = [], now: Date = Date()) {
+                providers: [UtilityProvider] = [], now: Date = Date(), learntFigures: [ImportRule] = [], knownParties: Set<String> = []) {
         self.intent = intent
         self.properties = properties
         self.people = people
         self.accounts = accounts
         self.providers = providers
         self.now = now
+        self.learntFigures = learntFigures
+        self.knownParties = knownParties
     }
 
     public static func load(db: Database, intent: ImportIntent, now: Date) throws -> ImportContext {
         ImportContext(intent: intent, properties: try Properties.all(db: db), people: try Person.fetchAll(db),
-                      accounts: try Account.fetchAll(db), providers: try UtilityProvider.fetchAll(db), now: now)
+                      accounts: try Account.fetchAll(db), providers: try UtilityProvider.fetchAll(db), now: now,
+                      learntFigures: try ImportLearning.figureRules(db: db), knownParties: try IssuerKey.knownParties(db: db))
+    }
+
+    /// The context without the learnt rules the user overrode on an item (`declined`).
+    func declining(_ declined: Set<Int64>) -> ImportContext {
+        guard !declined.isEmpty else { return self }
+        var context = self
+        context.learntFigures.removeAll { $0.id.map(declined.contains) ?? true }
+        return context
     }
 }
 

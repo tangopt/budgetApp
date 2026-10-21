@@ -61,6 +61,40 @@ enum SnapshotCatalog {
                     center.showSnapshotPlan(plan, selecting: csv.id)
                 })))
             },
+            // The letter nothing recognises, read by the on-device model's stand-in: its kind and
+            // figures to check ("Use these", or each corrected).
+            importReview("review_model", "Imports: the samples, a letter read by the on-device model",
+                         modelReader: SnapshotModelReader()) { plan in
+                plan.items.first { $0.file.fileName == "Letter.pdf" }?.id
+            },
+            // The letter's kind and issuer ticked off in place ("Checked", Undo), its date still to check.
+            SnapshotRoute(name: "imports-review_model_checked", title: "Imports: the samples, the model's kind and issuer checked", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                var plan = try await center.snapshotPlan(try importSamples(context), modelReader: SnapshotModelReader())
+                guard let letter = plan.items.first(where: { $0.file.fileName == "Letter.pdf" }) else { throw SnapshotMissing("The sample letter") }
+                plan = try await center.snapshotResolve(plan, itemId: letter.id, .markChecked(.recognition))
+                plan = try await center.snapshotResolve(plan, itemId: letter.id, .markChecked(.figure(.issuer)))
+                let checked = plan
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(checked, selecting: letter.id)
+                })))
+            },
+            // The letter's checks all ticked at once ("All checks marked", one undo for them all).
+            SnapshotRoute(name: "imports-review_model_all_checked", title: "Imports: the samples, every check of the letter marked at once", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                var plan = try await center.snapshotPlan(try importSamples(context), modelReader: SnapshotModelReader())
+                guard let letter = plan.items.first(where: { $0.file.fileName == "Letter.pdf" }) else { throw SnapshotMissing("The sample letter") }
+                plan = try await center.snapshotResolve(plan, itemId: letter.id, .markAllChecked)
+                let checked = plan
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(checked, selecting: letter.id)
+                })))
+            },
+            // The same letter with the model unavailable: why, and the kind to choose.
+            importReview("review_model_off", "Imports: the samples, the on-device model unavailable",
+                         modelReader: SnapshotModelReader(isAvailable: false)) { plan in
+                plan.items.first { $0.file.fileName == "Letter.pdf" }?.id
+            },
             SnapshotRoute(name: "imports-history", title: "Imports: the samples imported, in the history", settleFactor: 1.5) { context in
                 let center = context.environment.importCenter
                 center.discard()
@@ -86,10 +120,11 @@ enum SnapshotCatalog {
     }
 
     /// The samples read into a review, `select` choosing the document the preview shows.
-    static func importReview(_ tab: String, _ title: String, select: @escaping (ImportPlan) -> UUID?) -> SnapshotRoute {
+    static func importReview(_ tab: String, _ title: String, modelReader: (any DocumentModelReading)? = nil,
+                             select: @escaping (ImportPlan) -> UUID?) -> SnapshotRoute {
         SnapshotRoute(name: "imports-\(tab)", title: title, settleFactor: 1.5) { context in
             let center = context.environment.importCenter
-            let plan = try await center.snapshotPlan(try importSamples(context))
+            let plan = try await center.snapshotPlan(try importSamples(context), modelReader: modelReader)
             guard let selected = select(plan) else { throw SnapshotMissing("The sample for \(tab)") }
             return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
                 center.showSnapshotPlan(plan, selecting: selected)
@@ -145,6 +180,15 @@ enum SnapshotCatalog {
                 models.missingEvidence.missingOnly = false
             },
             screen("rules", "main", "Rules", .rules),
+            // The learnt import rules: a document type, a link, a statement account (demo).
+            screen("rules", "import", "Rules: Import rules", .rules) { models, _ in models.rules.tab = .importRules },
+            // "Show on Rules page" from an import's review: the Import rules tab, that rule selected.
+            screen("rules", "import_shown", "Rules: an import rule shown from the review", .rules) { models, context in
+                let id = (try? context.dbQueue.read { db in
+                    try Int64.fetchOne(db, sql: "SELECT id FROM \(ImportRule.databaseTableName) ORDER BY id DESC LIMIT 1")
+                }) ?? nil
+                if let id { models.rules.showImportRule(id) } else { models.rules.tab = .importRules }
+            },
             screen("categories", "main", "Categories", .categories),
             screen("uncategorized", "main", "Uncategorized", .uncategorized),
             // A statement staged for review (read only: nothing is saved until Finish import).
@@ -175,6 +219,12 @@ enum SnapshotCatalog {
             screen("imports", "review_figures", "Imports: review, a figure confirmed and one to check", .imports, settle: 1.5) { _, context in
                 let demo = ImportReviewDemo.make(context)
                 context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.figuresId)
+            },
+            // A receipt read with learnt rules (each with "Show on Rules page"), its date to check
+            // with "Remember for this issuer", and what Confirm import will remember.
+            screen("imports", "review_learnt", "Imports: review, learnt rules used and what will be remembered", .imports, settle: 1.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.learntId)
             },
             // A Ready receipt linked to a demo debit, its peek opened in place.
             screen("imports", "review_peek", "Imports: review, a linked transaction's peek opened", .imports, settle: 1.5) { _, context in

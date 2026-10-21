@@ -6,7 +6,7 @@ import GRDB
 import struct BudgetCore.Transaction
 
 /// An invented review for the Imports routes (`imports-review_link`, `_kind`, `_unread_lines`, `_figures`, `_left_out_rows`,
-/// `_peek`, `_link_search`, `_balance`, `_row`):
+/// `_peek`, `_link_search`, `_balance`, `_row`, `_learnt`):
 /// every section filled — a utility invoice with two possible debits, a P60 held by a filed
 /// return, an unknown scan, a statement with unread lines and rows already imported, a statement
 /// whose closing doesn't match with a row that looks already saved and one skipped, ready rent
@@ -27,6 +27,8 @@ enum ImportReviewDemo {
         /// The statement whose closing doesn't match, and its row to keep or skip.
         let checkedId: UUID
         let rowId: UUID
+        /// A receipt read with learnt rules, a date to check (with "Remember for this issuer") and what it will remember.
+        let learntId: UUID
     }
 
     static func day(_ year: Int, _ month: Int, _ day: Int) -> Date {
@@ -206,11 +208,58 @@ enum ImportReviewDemo {
             file: file("Meeting notes.txt"), recognition: certain(.evidence(.other), "Plain text"),
             title: "Meeting notes", isLeftOut: true, groupKey: "Other documents")
 
-        let plan = ImportPlan(items: [invoice, held, figures, scan, statement, statementRows, checked, row, skipped, receipt(51, 5), receipt(52, 6),
+        // Read with the issuer's learnt rules (its kind, name and where its amount sits), its date
+        // to check, a figure fixed for this document only, and a link the user chose to remember.
+        let learntId = UUID()
+        var learntFile = file("Seguro casa 2026.pdf")
+        learntFile.text = "Example Seguros, S.A. NIF 503504564\nRecibo de seguro\nValor a pagar: 42,10 €"
+        var learntRecognition = certain(.evidence(.insuranceReceipt), "Learnt: Example Seguros, S.A. → Insurance receipt")
+        learntRecognition.ruleId = 1
+        var learnt = ImportItem(
+            id: learntId, file: learntFile, recognition: learntRecognition,
+            title: "Insurance receipt · Example Seguros · 2026",
+            facts: [fact(.issuer, .text("Example Seguros"), .learntRule, "Learnt: Example Seguros, S.A. is named Example Seguros"),
+                    fact(.amount, .money(4210, .eur), .learntRule, "Learnt position: after “Valor a pagar”"),
+                    ImportFact(field: .docDate, value: .date(day(2026, 3, 5)), source: .ocr, confidence: .needsReview, reason: "Read by text recognition")],
+            placement: ImportPlacement(metadata: EvidenceMetadata(kind: .insuranceReceipt, docDate: day(2026, 3, 5), amountMinorUnits: 4210, currency: .eur),
+                                       canonicalName: "2026-03-05 Insurance receipt Example Seguros €42.10.pdf"),
+            issues: [ImportIssue(id: "confirmFigure.docDate", kind: .confirmFigure(.docDate), reason: "Date read by text recognition: check it")],
+            groupKey: "Other documents", notes: [LearntFigures.notPlacedNote])
+        learnt.appliedRules = [
+            ImportRuleUse(ruleId: 1, kind: .documentKind, label: "Learnt: Example Seguros, S.A. → Insurance receipt"),
+            ImportRuleUse(ruleId: 2, kind: .issuer, label: "Learnt: Example Seguros, S.A. is named Example Seguros"),
+            ImportRuleUse(ruleId: 3, kind: .figurePosition, label: "Learnt position: after “Valor a pagar”")
+        ]
+        learnt.ruleDrafts = [ImportRuleDraft(kind: .link, key: "nif:503504564#transaction", matchLabel: "Example Seguros, S.A.",
+                                             actionJSON: "{\"descriptionKey\":\"EXAMPLE SEGUROS\"}", actionLabel: "Paid by “EXAMPLE SEGUROS”",
+                                             replaces: "Paid by “EXAMPLE INSURANCE”")]
+
+        let plan = ImportPlan(items: [invoice, held, figures, scan, learnt, statement, statementRows, checked, row, skipped, receipt(51, 5), receipt(52, 6),
                                       insurance, duplicate, leftOut],
                               ignoredFiles: [".DS_Store"])
         return Demo(plan: plan, invoiceId: invoiceId, heldId: heldId, scanId: scanId, statementId: statementId, figuresId: figuresId,
-                    insuranceId: insuranceId, linkedTransactionId: debit?.transaction.id, checkedId: checkedId, rowId: rowId)
+                    insuranceId: insuranceId, linkedTransactionId: debit?.transaction.id, checkedId: checkedId, rowId: rowId,
+                    learntId: learntId)
+    }
+}
+
+/// The on-device model's stand-in for the snapshot routes (snapshot mode never asks the real one):
+/// a fixed guess for the demo's `Letter.pdf`, nothing for other files; or unavailable, with the
+/// message a Mac with Apple Intelligence turned off gives.
+struct SnapshotModelReader: DocumentModelReading {
+    var isAvailable = true
+
+    static let offMessage = "On-device model unavailable: Apple Intelligence is turned off"
+
+    func availability() -> DocumentModelAvailability { isAvailable ? .available : .unavailable(Self.offMessage) }
+
+    func read(text: String, fileName: String, kinds: [DocumentKind]) async throws -> DocumentModelGuess? {
+        guard isAvailable else { throw DocumentModelReadError.unavailable(Self.offMessage) }
+        guard fileName == "Letter.pdf" else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return DocumentModelGuess(kind: .condominioReceipt, issuer: "Residents' Association",
+                                  docDate: calendar.date(from: DateComponents(year: 2026, month: 9, day: 14)), reference: "Stairwell lights")
     }
 }
 #endif

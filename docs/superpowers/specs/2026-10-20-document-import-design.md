@@ -90,6 +90,10 @@ Other: anything else → archived with a user-chosen kind (and learnt).
 - **Ready items can be corrected too**: kind, figures, target and links can be changed or removed on any item, not only those in Needs you. A changed item goes through duplicates and the filed-year guard again and may move to Needs you.
 - *My calls:* a user-chosen link is certain with the reason "Chosen by you"; links can be removed ("Unlink"); several linked debits all count as the document's payments, with equal standing (user, 2026-10-20) — a utility invoice records its debit only when exactly one is linked; filed-year holds still allow only Leave out.
 
+- **"Check it" can be ticked off, and un-ticked (user, 2026-10-21).** Anything marked "Check it" (a figure or a recognition read by text recognition, the file name or the on-device model) can be confirmed as checked in place, without retyping: it becomes "Checked by you" (certain). A mistaken check can be undone in the review, which puts back exactly what was there before (value, source, confidence and the question it raised). Checking a model reading field by field counts as accepting those fields (and the rules learnt from them at Confirm).
+
+- **Check all, per document (user, 2026-10-21).** A document's preview has one "Mark all as checked" that ticks every "Check it" on that document at once (figures and recognition, model fields included — as "Use these" does). Questions that need a choice (which debit, which account, which tenancy, import anyway, keep or skip) and filed-year holds are not ticked; they stay as questions. The ticks it made can be undone together.
+
 ## Constraints
 
 - macOS 26 SwiftUI app + BudgetCore Swift package (GRDB). All detection, matching and planning logic in **BudgetCore** (future iOS/iPadOS clients); the App only presents.

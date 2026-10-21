@@ -62,6 +62,18 @@ private struct ImportPreviewContent: View {
     /// A statement's row (kept, skipped or asked about): a child with nothing of its own to do.
     private var isStatementRow: Bool { item.parentId != nil && item.effect == .none }
 
+    /// The document's issuer key ("Remember for this issuer" is offered only with one).
+    private var issuer: IssuerKey? { center.issuerKey(of: item) }
+
+    /// Whether `target` was ticked off in this review (it shows "Checked" and Undo).
+    private func isMarked(_ target: ImportCheckTarget) -> Bool { center.plan?.isMarkedChecked(item.id, target) == true }
+
+    /// Whether the model's reading is asked (its figures are corrected in that question's table).
+    private var modelReadingAsked: Bool { item.issues.contains { $0.kind == .confirmModelReading } }
+
+    /// The notes saying a corrected figure is fixed for this document only: shown with the figures.
+    private var fixedNotes: [String] { item.notes.filter(LearntFigures.fixedNotes.contains) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             DocumentThumbnail(url: item.file.url, height: 150)
@@ -72,6 +84,31 @@ private struct ImportPreviewContent: View {
                     Text(item.file.fileName).font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle).help(item.file.fileName)
                 }
+            }
+
+            // Every "Check it" of the document at once (questions that need a choice stay), or those ticks taken back together.
+            if center.plan?.isMarkedAllChecked(item.id) == true {
+                HStack(spacing: 4) {
+                    Label("All checks marked", systemImage: "checkmark.circle").font(.callout).foregroundStyle(.secondary)
+                    Button { resolve(item.id, nil, .unmarkAllChecked) } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                            .frame(width: 20, height: 18)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .foregroundStyle(.tint)
+                    .help("Undo all checks")
+                    .accessibilityLabel("Undo all checks")
+                }
+                .disabled(!isAnswerable)
+            }
+            // Offered whenever two checks or more can be ticked (again, after some were taken back).
+            if ImportChecks.canMarkAll(item) {
+                Button("Mark all as checked") { resolve(item.id, nil, .markAllChecked) }
+                    .controlSize(.small)
+                    .help("Tick every “Check it” on this document; questions that need a choice stay")
+                    .disabled(!isAnswerable)
             }
 
             if item.section == .needsYou {
@@ -100,11 +137,13 @@ private struct ImportPreviewContent: View {
                                 ImportIssueControls(item: item, issue: issue, targetNames: targetNames, accounts: center.accounts,
                                                     answerProblem: center.answerProblem.flatMap { problem in
                                                         problem.itemId == item.id && problem.issueId == issue.id ? problem.message : nil
-                                                    }) { resolution in
+                                                    },
+                                                    issuer: issuer,
+                                                    resolveItem: { resolve(item.id, nil, $0) }) { resolution in
                                     resolve(item.id, issue.id, resolution)
                                 }
                             }
-                            ImportItemChecks(item: item) { resolution in resolve(item.id, nil, resolution) }
+                            ImportItemChecks(item: item, issuer: issuer) { resolution in resolve(item.id, nil, resolution) }
                             // Once for the item, after its questions; a statement's row has Skip instead
                             // (the pipeline takes Leave out on it as Skip).
                             if !isStatementRow {
@@ -147,8 +186,9 @@ private struct ImportPreviewContent: View {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(item.recognition.reason.figuresUnbroken).fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)
-                        if item.recognition.confidence == .needsReview {
-                            StatusPill("Check it", tone: .warning)
+                        if item.recognition.confidence == .needsReview || isMarked(.recognition) {
+                            ImportCheckPill(title: "Check it", help: item.recognition.reason, target: .recognition,
+                                            item: item, plan: center.plan, isAnswerable: isAnswerable) { resolve(item.id, nil, $0) }
                         }
                     }
                     .font(.callout).foregroundStyle(.secondary)
@@ -173,9 +213,10 @@ private struct ImportPreviewContent: View {
                                     .lineLimit(1).truncationMode(.tail)
                                 ImportFactValueView(value: fact.value)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                StatusPill(fact.source.pillTitle, tone: fact.confidence == .needsReview ? .warning : .neutral,
-                                           help: fact.reason)
-                                if correctable {
+                                ImportCheckPill(title: fact.source.pillTitle, help: fact.reason, target: .figure(fact.field),
+                                                item: item, plan: center.plan, isAnswerable: isAnswerable) { resolve(item.id, nil, $0) }
+                                // A model figure is corrected in its question's table while asked (one edit path per field).
+                                if correctable, !(modelReadingAsked && fact.source == .model) {
                                     Button {
                                         editingField = editingField == fact.field ? nil : fact.field
                                     } label: {
@@ -191,13 +232,48 @@ private struct ImportPreviewContent: View {
                     if correctable, let field = editingField, let fact = item.facts.first(where: { $0.field == field }) {
                         ImportFigureEditor(field: field, current: fact.value,
                                            currency: ImportIssueControls.currency(of: item, field: field),
-                                           confirming: false) { resolution in
+                                           confirming: false,
+                                           remembers: LearntFigures.offersRemembering(item, field: field, issuer: issuer)) { resolution in
                             editingField = nil
                             resolve(item.id, nil, resolution)
                         }
                         .id("\(item.id)-edit-\(field.rawValue)")
                         .disabled(!isAnswerable)
                         .padding(.top, 4)
+                    }
+                    ForEach(fixedNotes, id: \.self) { note in
+                        Text(note.figuresUnbroken).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+
+            if !item.appliedRules.isEmpty {
+                block("Learnt rules used") {
+                    ImportAppliedRules(uses: item.appliedRules) { center.showImportRule($0) }
+                }
+            }
+
+            let recognisesItself = item.notes.contains(ImportLearning.recognisesItselfNote)
+            if !item.ruleDrafts.isEmpty || recognisesItself {
+                // What Confirm import will learn from the corrections made here (and the kind it won't).
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(item.ruleDrafts.enumerated()), id: \.offset) { _, draft in
+                        Label {
+                            Text(ImportAppliedRules.willRemember(draft).figuresUnbroken)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } icon: {
+                            Image(systemName: "wand.and.stars").foregroundStyle(.secondary)
+                        }
+                        .font(.callout).foregroundStyle(.secondary)
+                    }
+                    if recognisesItself {
+                        Label {
+                            Text(ImportLearning.recognisesItselfNote).fixedSize(horizontal: false, vertical: true)
+                        } icon: {
+                            Image(systemName: "wand.and.stars").foregroundStyle(.tertiary)
+                        }
+                        .font(.callout).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -224,9 +300,10 @@ private struct ImportPreviewContent: View {
                 }
             }
 
-            if !item.notes.isEmpty {
+            let notes = item.notes.filter { ($0 != ImportLearning.recognisesItselfNote) && (!LearntFigures.fixedNotes.contains($0) || figures.isEmpty) }
+            if !notes.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(item.notes.enumerated()), id: \.offset) { _, note in
+                    ForEach(Array(notes.enumerated()), id: \.offset) { _, note in
                         Text(note.figuresUnbroken).font(.callout).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -267,6 +344,86 @@ private struct ImportPreviewContent: View {
     }
 }
 
+
+// MARK: Checks
+
+/// A figure's source pill, or a recognition's "Check it": to check, it is a button that ticks it
+/// off in place ("Mark as checked", `.markChecked`); ticked off in this review, it says "Checked"
+/// with Undo (`.unmarkChecked`, exactly what was there before); otherwise the plain pill.
+struct ImportCheckPill: View {
+    let title: String
+    let help: String
+    let target: ImportCheckTarget
+    let item: ImportItem
+    let plan: ImportPlan?
+    let isAnswerable: Bool
+    let resolve: (ImportResolution) -> Void
+
+    static let markHelp = "Mark as checked"
+
+    var body: some View {
+        if plan?.isMarkedChecked(item.id, target) == true {
+            HStack(spacing: 4) {
+                StatusPill("Checked", tone: .positive, help: ImportChecks.checkedReason)
+                Button { resolve(.unmarkChecked(target)) } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                        // A comfortable hit area around a small glyph.
+                        .frame(width: 20, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .foregroundStyle(.tint)
+                .help("Undo")
+                .accessibilityLabel("Undo check")
+                .disabled(!isAnswerable)
+            }
+        } else if ImportChecks.canMark(target, on: item) {
+            Button { resolve(.markChecked(target)) } label: {
+                StatusPill(title, tone: .warning, systemImage: "checkmark.circle")
+            }
+            .buttonStyle(.plain)
+            .help(Self.markHelp)
+            .accessibilityLabel("\(Self.markHelp): \(title)")
+            .disabled(!isAnswerable)
+        } else {
+            let unsure = target == .recognition ? item.recognition.confidence == .needsReview
+                : item.facts.contains { if case .figure(let field) = target { return $0.field == field && $0.confidence == .needsReview }; return false }
+            StatusPill(title, tone: unsure ? .warning : .neutral, help: help)
+        }
+    }
+}
+
+// MARK: Learnt rules
+
+/// The learnt rules that shaped a document, each named as it was applied, with "Show on Rules
+/// page" (Rules ▸ Import rules, the rule selected).
+struct ImportAppliedRules: View {
+    let uses: [ImportRuleUse]
+    let show: (Int64) -> Void
+
+    /// "Will remember: Example Seguros → Kind: Insurance receipt": what Confirm import learns from a
+    /// correction, and the learnt rule it replaces ("(replaces: Paid by “OTHER”)").
+    static func willRemember(_ draft: ImportRuleDraft) -> String {
+        "Will remember: \(draft.matchLabel) → \(draft.actionLabel)" + (draft.replaces.map { " (replaces: \($0))" } ?? "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(uses.enumerated()), id: \.offset) { _, use in
+                // The link under its label: neither is squeezed.
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(use.label.figuresUnbroken).font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Show on Rules page") { show(use.ruleId) }
+                        .buttonStyle(.link)
+                        .controlSize(.small)
+                        .fixedSize()
+                }
+            }
+        }
+    }
+}
 
 // MARK: Statements
 

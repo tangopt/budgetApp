@@ -6,7 +6,19 @@ import GRDB
 
 @MainActor
 final class RulesViewModel: ObservableObject {
+    /// The Rules page's tabs.
+    enum Tab: String, CaseIterable, Hashable {
+        case transactionRules = "Transaction rules"
+        case importRules = "Import rules"
+    }
+
+    @Published var tab: Tab = .transactionRules
+    /// A learnt import rule to select on the Import rules tab ("Show on Rules page" in an import's
+    /// review); taken by the tab, then cleared.
+    @Published var focusedImportRuleId: Int64?
     @Published var rules: [Rule] = []
+    /// The learnt import rules ("Import rules" tab), oldest first.
+    @Published var importRules: [ImportRuleRow] = []
     @Published var categories: [Category] = []
     /// Category groups and recently used categories for the rule sheet's category picker.
     @Published var categoryGroups: [CategoryGroup] = []
@@ -23,14 +35,70 @@ final class RulesViewModel: ObservableObject {
 
     func load() throws {
         let since = Calendar.current.date(byAdding: .day, value: -90, to: AppClock.now) ?? AppClock.now
-        (rules, categories, categoryGroups, recentCategoryIds) = try dbQueue.read { db in
+        (rules, categories, categoryGroups, recentCategoryIds, importRules) = try dbQueue.read { db in
             (
                 try Rule.fetchAll(db).sorted { $0.priority > $1.priority },
                 try Category.fetchAll(db),
                 try CategoryGroup.fetchAll(db),
-                try CategoryShortlist.recent(db: db, since: since, limit: 5)
+                try CategoryShortlist.recent(db: db, since: since, limit: 5),
+                try ImportRuleEditing.rows(db: db)
             )
         }
+    }
+
+    // MARK: Import rules
+
+    /// The Import rules tab with the rule `id` selected.
+    func showImportRule(_ id: Int64) {
+        tab = .importRules
+        focusedImportRuleId = id
+    }
+
+    /// Learnt import rules are the user's to change outside an import run: written straight
+    /// away, like transaction-rule edits.
+    func setEnabled(importRuleId id: Int64, _ enabled: Bool) throws {
+        try dbQueue.write { db in try ImportRuleEditing.setEnabled(db: db, id: id, enabled) }
+        try reloadImportRules()
+    }
+
+    func delete(importRuleId id: Int64) throws {
+        try dbQueue.write { db in try ImportRuleEditing.delete(db: db, id: id) }
+        try reloadImportRules()
+    }
+
+    /// Saves the Edit Rule sheet's choice. Returns the error to show, or nil once saved.
+    func update(importRuleId id: Int64, edit: ImportRuleEdit) -> String? {
+        do {
+            try dbQueue.write { db in try ImportRuleEditing.update(db: db, id: id, edit: edit) }
+        } catch ImportRuleEditError.blank {
+            return "Enter a value."
+        } catch ImportRuleEditError.noLetters {
+            return "Enter text with at least one letter."
+        } catch ImportRuleEditError.missingTarget {
+            return "That record no longer exists: choose another."
+        } catch {
+            return "Couldn't save the rule: \(error.localizedDescription)"
+        }
+        try? reloadImportRules()
+        return nil
+    }
+
+    /// What the Edit Rule sheet needs: the rule's action as an edit, the accounts, the records a
+    /// link can go to.
+    func importRuleEditContext(id: Int64) throws -> ImportRuleEditContext? {
+        try dbQueue.read { db in
+            guard let rule = try ImportRule.fetchOne(db, key: id), let edit = ImportRuleEditing.currentEdit(rule) else { return nil }
+            var current: EvidenceEntity?
+            if case .link(let entity) = edit { current = entity }
+            let accounts = try Account.order(Column("name").collating(.localizedCaseInsensitiveCompare), Column("id")).fetchAll(db)
+                .compactMap { account in account.id.map { (id: $0, name: account.displayName) } }
+            return ImportRuleEditContext(ruleId: id, kind: rule.kind, when: rule.matchLabel, edit: edit, accounts: accounts,
+                                         linkTargets: try ImportRuleEditing.linkTargets(db: db, current: current))
+        }
+    }
+
+    private func reloadImportRules() throws {
+        importRules = try dbQueue.read { db in try ImportRuleEditing.rows(db: db) }
     }
 
     func delete(_ rule: Rule) throws {
@@ -79,4 +147,15 @@ final class RulesViewModel: ObservableObject {
         categories.append(category)
         return category
     }
+}
+
+/// The import Edit Rule sheet's starting point.
+struct ImportRuleEditContext: Identifiable {
+    let ruleId: Int64
+    let kind: ImportRuleKind
+    let when: String
+    let edit: ImportRuleEdit
+    let accounts: [(id: Int64, name: String)]
+    let linkTargets: [ImportRuleTarget]
+    var id: Int64 { ruleId }
 }

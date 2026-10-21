@@ -50,6 +50,9 @@ final class ImportCenterModel: ObservableObject {
         didSet {
             review = plan.map(ImportReviewState.init)
             loadLinkedTransactions()
+            // The issuer keys of files no longer in the review go.
+            let hashes = Set(plan?.items.map(\.file.sha256) ?? [])
+            issuerKeys = issuerKeys.filter { hashes.contains($0.key) }
         }
     }
     /// The transactions the open plan links to or offers, as the preview's peek shows them,
@@ -86,11 +89,21 @@ final class ImportCenterModel: ObservableObject {
     var onShow: (() -> Void)?
     /// An import was applied or undone: the screens showing what it changed re-read.
     var onDataChanged: (() -> Void)?
+    /// Shows a learnt rule on the Rules page (Rules ▸ Import rules, the rule selected): "Show on Rules page".
+    var onShowImportRule: ((Int64) -> Void)?
+    /// The people's and tenants' NIFs, never an issuer's (`IssuerKey.knownParties`): read with the target names.
+    /// Nil until first read: no issuer key is worked out before (a person's own NIF would key one).
+    private var knownParties: Set<String>?
+    /// The issuer keys worked out for the preview, by file hash.
+    private var issuerKeys: [String: IssuerKey?] = [:]
 
     private let dbQueue: DatabaseQueue
     private let library: EvidenceLibrary
     private let pipeline: ImportPipeline
     private let applier: ImportApplier
+    #if SNAPSHOTS
+    private let categorizationService: CategorizationService
+    #endif
     private let logger = Logger(subsystem: "com.personal.budget", category: "DocumentImport")
 
     /// The reading in progress, cancelled by `cancelReading()` / `discard()`.
@@ -109,10 +122,16 @@ final class ImportCenterModel: ObservableObject {
     /// Releases the planning copy when the app quits.
     private var terminationObserver: NSObjectProtocol?
 
-    init(dbQueue: DatabaseQueue, databasePath: String?, library: EvidenceLibrary, categorizationService: CategorizationService) {
+    /// `modelReader`: the on-device model asked about what nothing else recognises (nil: never asked).
+    init(dbQueue: DatabaseQueue, databasePath: String?, library: EvidenceLibrary, categorizationService: CategorizationService,
+         modelReader: (any DocumentModelReading)?) {
         self.dbQueue = dbQueue
         self.library = library
-        self.pipeline = ImportPipeline(dbQueue: dbQueue, library: library, categorizationService: categorizationService)
+        #if SNAPSHOTS
+        self.categorizationService = categorizationService
+        #endif
+        self.pipeline = ImportPipeline(dbQueue: dbQueue, library: library, categorizationService: categorizationService,
+                                       modelReader: modelReader)
         self.applier = ImportApplier(dbQueue: dbQueue, databasePath: databasePath, library: library)
         // The planning copy (a temporary file) never outlives the app.
         let pipeline = pipeline
@@ -462,15 +481,34 @@ final class ImportCenterModel: ObservableObject {
         return ids.compactMap { linkedTransactions[$0] }
     }
 
-    /// Re-reads the names a target question offers (off the main actor).
+    /// The item's issuer key (`IssuerKey.derive`, as the pipeline derives it): nil when it has none.
+    func issuerKey(of item: ImportItem) -> IssuerKey? {
+        // A statement has no issuer (`ImportResolutions.takesIssuerName`).
+        guard let knownParties, ![.bankStatementCSV, .bankStatementPDF, .bbvaStatement].contains(item.recognition.kind) else { return nil }
+        if let known = issuerKeys[item.file.sha256] { return known }
+        let key = IssuerKey.derive(text: item.file.text, fileName: item.file.fileName, ownNIFs: knownParties)
+        issuerKeys[item.file.sha256] = key
+        return key
+    }
+
+    /// "Show on Rules page": the learnt rule on the Rules page.
+    func showImportRule(_ id: Int64) {
+        onShowImportRule?(id)
+    }
+
+    /// Re-reads the names a target question offers and the known parties (off the main actor).
     private func loadTargetNames() {
         let dbQueue = dbQueue
         Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { () -> Result<(ImportTargetNames, [Account]), Error> in
-                Result { try dbQueue.read { db in (try ImportTargetNames.read(db), try Account.fetchAll(db)) } }
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<(ImportTargetNames, [Account], Set<String>), Error> in
+                Result { try dbQueue.read { db in (try ImportTargetNames.read(db), try Account.fetchAll(db), try IssuerKey.knownParties(db: db)) } }
             }.value
             switch result {
-            case .success(let (names, accounts)):
+            case .success(let (names, accounts, parties)):
+                if self?.knownParties != parties {
+                    self?.knownParties = parties
+                    self?.issuerKeys = [:]
+                }
                 self?.targetNames = names
                 self?.accounts = Dictionary(accounts.compactMap { account in account.id.map { ($0, account) } }, uniquingKeysWith: { first, _ in first })
             case .failure(let error):
@@ -480,9 +518,12 @@ final class ImportCenterModel: ObservableObject {
     }
 
     #if SNAPSHOTS
-    /// `urls` read by the real pipeline (snapshot routes only: the demo's import samples).
-    func snapshotPlan(_ urls: [URL]) async throws -> ImportPlan {
-        let pipeline = pipeline
+    /// `urls` read by the real pipeline (snapshot routes only: the demo's import samples);
+    /// `modelReader` stands in for the on-device model (snapshot mode has none).
+    func snapshotPlan(_ urls: [URL], modelReader: (any DocumentModelReading)? = nil) async throws -> ImportPlan {
+        let pipeline = modelReader.map { ImportPipeline(dbQueue: dbQueue, library: library, categorizationService: categorizationService,
+                                                        modelReader: $0) } ?? pipeline
+        defer { if modelReader != nil { pipeline.discardPlanningCopy() } }
         return try await DetachedWork.run(priority: .userInitiated) { try await pipeline.plan(urls) }
     }
 

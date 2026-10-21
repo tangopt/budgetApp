@@ -10,11 +10,22 @@ public struct ImportDetector: Sendable {
 
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "gif", "bmp"]
 
-    public init(providers: [UtilityProvider]) {
-        recognisers = [
-            Self.bbvaStatement, Self.rentReceiptsExport, Self.rentReceiptPDF, Self.transferAdvice, Self.payrollForm,
-            Self.utilityInvoice(providers: providers), Self.bankStatement, Self.evidence
-        ]
+    /// The built-in recognisers, then `learnt` (`ImportLearning.recogniser`: a certain built-in
+    /// recognition always wins), then the file-name fallback.
+    public init(providers: [UtilityProvider], learnt: [ImportRecogniser] = []) {
+        recognisers = Self.builtIn(providers: providers) + learnt + [Self.evidenceFromFileName]
+    }
+
+    /// The built-in recognisers, in order (before any learnt one).
+    private static func builtIn(providers: [UtilityProvider]) -> [ImportRecogniser] {
+        [Self.bbvaStatement, Self.rentReceiptsExport, Self.rentReceiptPDF, Self.transferAdvice, Self.payrollForm,
+         Self.utilityInvoice(providers: providers), Self.bankStatement, Self.evidence]
+    }
+
+    /// Whether a built-in recogniser reads `file` (sure or to check): a learnt kind would never
+    /// be asked about it, so none is learnt.
+    public static func recognisesItself(_ file: ImportFile, providers: [UtilityProvider]) -> Bool {
+        builtIn(providers: providers).contains { $0(file) != nil }
     }
 
     public func detect(_ file: ImportFile) -> ImportRecognition {
@@ -128,6 +139,11 @@ public struct ImportDetector: Sendable {
         if fromText != .other {
             return ImportRecognition(kind: .evidence(fromText), confidence: .certain, reason: "\(fromText.displayName) wording")
         }
+        return nil
+    }
+
+    /// The last resort: the kind the file name suggests, to check.
+    private static let evidenceFromFileName: ImportRecogniser = { file in
         let fromName = DocumentClassifier.classify(text: nil, fileName: file.fileName)
         if fromName != .other {
             return ImportRecognition(kind: .evidence(fromName), confidence: .needsReview, reason: "Recognised from the file name only")

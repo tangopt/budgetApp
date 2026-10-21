@@ -82,11 +82,20 @@ public struct UtilityInvoiceImportReader: ImportReader {
 
     public func handles(_ kind: ImportKind) -> Bool { kind == .utilityInvoice }
 
+    /// Each invoice read with its issuer's learnt figure positions (`LearntFigures`): the invoice
+    /// recorded, its debit and copies looked for with the figures read there.
     public func propose(_ files: [(file: ImportFile, recognition: ImportRecognition)], context: ImportContext, db: Database) throws -> [ImportItem] {
-        try files.map { try item(file: $0.file, recognition: $0.recognition, context: context, db: db) }
+        try files.map { entry in
+            var readings: [LearntFigures.Reading] = []
+            var item = try item(file: entry.file, recognition: entry.recognition, context: context, db: db, readings: &readings)
+            LearntFigures.apply(to: &item, readings: readings)
+            return item
+        }
     }
 
-    private func item(file: ImportFile, recognition: ImportRecognition, context: ImportContext, db: Database) throws -> ImportItem {
+    /// `readings`: the issuer's learnt positions, as read (once the property's currency is known).
+    private func item(file: ImportFile, recognition: ImportRecognition, context: ImportContext, db: Database,
+                      readings: inout [LearntFigures.Reading]) throws -> ImportItem {
         let groupKey = "Utility invoices"
         var item = ImportItem(file: file, recognition: recognition, title: "Utility invoice", groupKey: groupKey)
         let known = context.providers.isEmpty ? providers : context.providers
@@ -123,10 +132,24 @@ public struct UtilityInvoiceImportReader: ImportReader {
         }
 
         let proposal: UtilityInvoiceIntake.Proposal
+        readings = LearntFigures.readings(file, context: context) { _ in property.currency }
+        let learnt = LearntFigures.values(readings)
         do {
             proposal = try UtilityInvoiceIntake.propose(db: db, propertyId: propertyId, documentId: nil, text: file.text,
                                                         fileName: file.fileName, textStatus: file.textStatus, usedOCR: file.usedOCR,
-                                                        providerId: chosen?.id)
+                                                        providerId: chosen?.id, adjust: learnt.isEmpty ? nil : { reading in
+                for (field, value) in learnt {
+                    switch (field, value) {
+                    case (.amount, .money(let minor, _)):
+                        // A credit note's figure keeps its sign.
+                        reading.amountMinorUnits = (reading.amountMinorUnits ?? 0) < 0 ? -abs(minor) : abs(minor)
+                    case (.docDate, .date(let date)): reading.issueDate = date
+                    case (.periodStart, .date(let date)): reading.periodStart = date
+                    case (.periodEnd, .date(let date)): reading.periodEnd = date
+                    default: break
+                    }
+                }
+            })
         } catch {
             problem(&item, "The invoice could not be read: \(error.localizedDescription)")
             return item
@@ -272,8 +295,15 @@ public struct PayrollFormImportReader: ImportReader {
         return false
     }
 
+    /// Each form, a figure the form reader didn't find filled from its issuer's learnt positions
+    /// (`LearntFigures`; what the form reader read stays).
     public func propose(_ files: [(file: ImportFile, recognition: ImportRecognition)], context: ImportContext, db: Database) throws -> [ImportItem] {
-        try files.map { try item(file: $0.file, recognition: $0.recognition, context: context, db: db) }
+        try files.map { entry in
+            var filled: [LearntFigures.Reading] = []
+            var item = try item(file: entry.file, recognition: entry.recognition, context: context, db: db, filled: &filled)
+            LearntFigures.apply(to: &item, readings: filled)
+            return item
+        }
     }
 
     /// Reads the form's positioned words (OCR for a scan) into `file.payrollExtraction`. Called
@@ -294,14 +324,31 @@ public struct PayrollFormImportReader: ImportReader {
         "No pay and tax figures found.", "No leaving date found."
     ]
 
-    private func item(file: ImportFile, recognition: ImportRecognition, context: ImportContext, db: Database) throws -> ImportItem {
+    /// `filled`: the learnt positions that filled a figure the form reader didn't find.
+    private func item(file: ImportFile, recognition: ImportRecognition, context: ImportContext, db: Database,
+                      filled: inout [LearntFigures.Reading]) throws -> ImportItem {
         guard case .payrollForm(let kind) = recognition.kind else {
             return ImportItem(file: file, recognition: recognition, title: file.fileName, groupKey: "Payroll forms")
         }
         var item = ImportItem(file: file, recognition: recognition, title: kind.displayName, groupKey: "Payroll forms")
         // Only what `prepare` read: no file reading (let alone OCR) inside the write transaction.
-        let extraction = file.payrollExtraction ?? PayrollFormExtraction(kind: kind, entryMethod: .manual)
+        var extraction = file.payrollExtraction ?? PayrollFormExtraction(kind: kind, entryMethod: .manual)
         if file.payrollExtraction == nil { problem(&item, "The form was not read before the review: add it again") }
+        // Figures the form reader didn't find, from the issuer's learnt positions (its own readings stay).
+        for reading in LearntFigures.readings(file, context: context, defaultCurrency: { _ in .gbp }) {
+            switch (reading.action.field, reading.value) {
+            case (.pay, .money(let pay, _)?) where extraction.payMinorUnits == nil: extraction.payMinorUnits = pay
+            case (.taxDeducted, .money(let tax, _)?) where extraction.taxDeductedMinorUnits == nil: extraction.taxDeductedMinorUnits = tax
+            case (.docDate, .date(let date)?) where kind == .p45 && extraction.leavingDate == nil: extraction.leavingDate = date
+            default: continue
+            }
+            filled.append(reading)
+        }
+        // The reader's warnings about a figure now filled no longer hold.
+        if extraction.payMinorUnits != nil, extraction.taxDeductedMinorUnits != nil {
+            extraction.warnings.removeAll { $0 == "No pay and tax figures found." }
+        }
+        if extraction.leavingDate != nil { extraction.warnings.removeAll { $0 == "No leaving date found." } }
         let source: ImportFactSource = extraction.entryMethod == .ocr ? .ocr : .textLayer
 
         // The person: the import's target, else the one the NI number names, else the user picks.
@@ -417,15 +464,21 @@ public struct EvidenceDocumentReader: ImportReader {
         let index = EvidenceMatcher.Index(transactions: try Transaction.fetchAll(db), accounts: try Account.fetchAll(db),
                                           categories: try Category.fetchAll(db))
         let targetLabel = try context.intent.target.flatMap { try entityTitle(db: db, $0.entity) }
-        return try files.map { try item(file: $0.file, recognition: $0.recognition, context: context, index: index,
-                                         targetLabel: targetLabel, db: db) }
+        return try files.map { entry in
+            var readings: [LearntFigures.Reading] = []
+            var item = try item(file: entry.file, recognition: entry.recognition, context: context, index: index,
+                                targetLabel: targetLabel, db: db, readings: &readings)
+            LearntFigures.apply(to: &item, readings: readings)
+            return item
+        }
     }
 
     /// Suggestions this close to the best are as good: the user picks.
     static let tieMargin = 20
 
+    /// `readings`: the issuer's learnt positions, as read.
     private func item(file: ImportFile, recognition: ImportRecognition, context: ImportContext, index: EvidenceMatcher.Index,
-                      targetLabel: String?, db: Database) throws -> ImportItem {
+                      targetLabel: String?, db: Database, readings: inout [LearntFigures.Reading]) throws -> ImportItem {
         guard case .evidence(let kind) = recognition.kind else {
             var item = ImportItem(file: file, recognition: recognition, title: file.fileName, groupKey: "Other documents")
             item.issues.append(ImportIssue(id: "unknownKind", kind: .unknownKind(proposed: nil), reason: "What kind of document is this?"))
@@ -433,7 +486,19 @@ public struct EvidenceDocumentReader: ImportReader {
             return item
         }
         let analysis = EvidenceAnalyzer.analyze(text: file.text, textStatus: file.textStatus, fileName: file.fileName)
-        let metadata = analysis.metadata
+        var metadata = analysis.metadata
+        // The issuer's learnt positions, before the transaction is matched on them (`LearntFigures.apply` names them).
+        let currency = metadata.currency ?? .eur
+        readings = LearntFigures.readings(file, context: context) { _ in currency }
+        for (field, value) in LearntFigures.values(readings) {
+            switch (field, value) {
+            case (.amount, .money(let minor, let currency)): (metadata.amountMinorUnits, metadata.currency) = (minor, currency)
+            case (.docDate, .date(let date)): metadata.docDate = date
+            case (.periodStart, .date(let date)): metadata.periodStart = date
+            case (.periodEnd, .date(let date)): metadata.periodEnd = date
+            default: break
+            }
+        }
         let source: ImportFactSource = file.usedOCR ? .ocr : .textLayer
         let body = file.text.map(EvidenceText.fold) ?? ""
 

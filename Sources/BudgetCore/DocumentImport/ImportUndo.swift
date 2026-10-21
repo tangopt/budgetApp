@@ -47,17 +47,25 @@ public struct ImportUndoResult: Equatable, Sendable {
     public var rowsRemoved: Int
     public var rowsRestored: Int
     public var filesRemoved: Int
+    /// What the undo left as it is, and why (a learnt rule changed since the run).
+    public var notes: [String]
 
-    public init(rowsRemoved: Int, rowsRestored: Int, filesRemoved: Int) {
+    public init(rowsRemoved: Int, rowsRestored: Int, filesRemoved: Int, notes: [String] = []) {
         self.rowsRemoved = rowsRemoved
         self.rowsRestored = rowsRestored
         self.filesRemoved = filesRemoved
+        self.notes = notes
     }
 }
 
 /// Reverts everything an import run wrote, from its change log (`ImportChange`), in one write —
 /// or refuses, writing nothing, when something changed since that undoing would overwrite or
-/// break, or when it would move a filed return.
+/// break, or when it would move a filed return. Learnt import rules (`importRule`) are lenient:
+/// what happened to them since (a later run used one, the Rules page edited or deleted one)
+/// never refuses the undo; a rule is put back only while it is as the run left it (being used
+/// since is not a change), else
+/// it is left as it is and the result says so (`notes`) — its use count given back regardless,
+/// as far as it goes.
 public enum ImportUndo {
     private struct RowKey: Hashable {
         let table: String
@@ -122,6 +130,8 @@ public enum ImportUndo {
         let later = try laterTouches(db: db, runId: runId)
         for change in net {
             let key = RowKey(table: change.tableName, rowId: change.rowId)
+            // Learnt rules never refuse an undo (`revertRule`).
+            if key.table == ImportRule.databaseTableName { continue }
             if let laterRun = later[key] {
                 found.append(.laterImport(runId: laterRun, table: key.table, rowId: key.rowId))
                 continue
@@ -341,7 +351,8 @@ public enum ImportUndo {
             guard found.isEmpty else { throw ImportUndoError.refused(found) }
             let outcome = try revert(db: db, net: net)
             run.undoneAt = now
-            run.undoSummary = "Removed \(outcome.removed) row\(outcome.removed == 1 ? "" : "s"), restored \(outcome.restored)"
+            run.undoSummary = (["Removed \(outcome.removed) row\(outcome.removed == 1 ? "" : "s"), restored \(outcome.restored)"] + outcome.notes)
+                .joined(separator: ". ")
             try run.update(db)
             // The auto forecast reads every transaction: refreshed as after any import.
             try AutoForecastGenerator.refresh(db: db)
@@ -356,13 +367,14 @@ public enum ImportUndo {
             let url = library.fileURL(for: document)
             if fileManager.fileExists(atPath: url.path), (try? fileManager.removeItem(at: url)) != nil { filesRemoved += 1 }
         }
-        return ImportUndoResult(rowsRemoved: rowsRemoved, rowsRestored: rowsRestored, filesRemoved: filesRemoved)
+        return ImportUndoResult(rowsRemoved: rowsRemoved, rowsRestored: rowsRestored, filesRemoved: filesRemoved, notes: outcome.notes)
     }
 
     private struct Reverted {
         var removed = 0
         var restored = 0
         var removedDocuments: [EvidenceDocument] = []
+        var notes: [String] = []
     }
 
     /// Walks the net changes newest first: deletes inserted rows, puts updated columns back to
@@ -373,6 +385,14 @@ public enum ImportUndo {
         var outcome = Reverted()
         for change in net.sorted(by: { $0.seq > $1.seq }) {
             let table = quoted(change.tableName)
+            if change.tableName == ImportRule.databaseTableName {
+                if change.operation != .delete {
+                    try revertRule(db: db, change, into: &outcome)
+                    continue
+                }
+                // A rule the run removed that exists again: left as it is.
+                if try ImportChangeCapture.rowJSON(db: db, table: change.tableName, rowId: change.rowId) != nil { continue }
+            }
             switch change.operation {
             case .insert:
                 if change.tableName == EvidenceDocument.databaseTableName, let document = try EvidenceDocument.fetchOne(db, key: change.rowId) {
@@ -405,6 +425,57 @@ public enum ImportUndo {
             }
         }
         return outcome
+    }
+
+    /// The columns a learnt rule's use changes (`ImportRuleStore.markUsed`).
+    private static let ruleUseColumns: Set<String> = ["useCount", "lastUsedAt"]
+
+    /// A learnt rule the run added or changed, reverted leniently: removed or put back only while
+    /// it is as the run left it (its use since — `useCount`, `lastUsedAt` — doesn't count); else
+    /// left as it is (gone: nothing to do; changed: noted,
+    /// "Kept the learnt rule “<issuer> → <action>”: it changed since this import"), the uses the
+    /// run added given back as far as they go (the count never below zero; the last use put back
+    /// while it is still the run's).
+    private static func revertRule(db: Database, _ change: ImportChange, into outcome: inout Reverted) throws {
+        let table = quoted(change.tableName)
+        guard let current = try ImportChangeCapture.rowJSON(db: db, table: change.tableName, rowId: change.rowId) else { return }
+        let now = try values(db: db, current, table: change.tableName)
+        let before = try values(db: db, change.beforeJSON, table: change.tableName)
+        let after = try values(db: db, change.afterJSON, table: change.tableName)
+        let columns = try columnNames(db: db, change.tableName)
+        // Being used since (a later run's `markUsed`) is not a change: only the rule itself counts.
+        let unchanged = columns.allSatisfy { ruleUseColumns.contains($0) || after[$0] == nil || now[$0] == after[$0] }
+        let changedByRun = Set(columns.filter { before[$0] != after[$0] })
+        func note() {
+            let label = (String.fromDatabaseValue(now["matchLabel"] ?? .null) ?? "?") + " → " + (String.fromDatabaseValue(now["actionLabel"] ?? .null) ?? "?")
+            outcome.notes.append("Kept the learnt rule “\(label)”: it changed since this import")
+        }
+        if change.operation == .insert {
+            guard unchanged else { return note() }
+            try db.execute(sql: "DELETE FROM \(table) WHERE rowid = ?", arguments: [change.rowId])
+            if db.changesCount > 0 { outcome.removed += 1 }
+            return
+        }
+        var restore: [String: DatabaseValue] = [:]
+        if unchanged {
+            for column in changedByRun.subtracting(ruleUseColumns) { restore[column] = before[column] ?? .null }
+        } else if !changedByRun.isSubset(of: ruleUseColumns) {
+            note()
+        }
+        // The run's own uses given back, as far as they go.
+        let added = (Int64.fromDatabaseValue(after["useCount"] ?? .null) ?? 0) - (Int64.fromDatabaseValue(before["useCount"] ?? .null) ?? 0)
+        if added > 0, let count = Int64.fromDatabaseValue(now["useCount"] ?? .null) {
+            restore["useCount"] = max(0, count - added).databaseValue
+        }
+        if changedByRun.contains("lastUsedAt"), now["lastUsedAt"] == after["lastUsedAt"] {
+            restore["lastUsedAt"] = before["lastUsedAt"] ?? .null
+        }
+        guard !restore.isEmpty else { return }
+        let names = restore.keys.sorted()
+        var arguments = StatementArguments(names.map { restore[$0]! })
+        arguments += [change.rowId]
+        try db.execute(sql: "UPDATE \(table) SET \(names.map { "\(quoted($0)) = ?" }.joined(separator: ", ")) WHERE rowid = ?", arguments: arguments)
+        outcome.restored += 1
     }
 
     // MARK: JSON values

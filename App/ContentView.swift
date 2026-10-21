@@ -361,6 +361,10 @@ struct ContentView: View {
             propertyViewModel.onPropertiesChanged = { id in refreshProperties(select: id) }
             environment.importCenter.onShow = { sidebarSelectionChanged(to: .screen(.imports)) }
             environment.importCenter.onDataChanged = { documentImportChangedData() }
+            environment.importCenter.onShowImportRule = { id in
+                rulesViewModel.showImportRule(id)
+                sidebarSelectionChanged(to: .screen(.rules))
+            }
             refreshSharedState()
             snapshotSetup?.prepare(SnapshotScreenModels(
                 dashboard: dashboardViewModel, budgetGrid: budgetGridViewModel, scenarioLab: scenarioLabViewModel,

@@ -16,6 +16,11 @@ struct ImportIssueControls: View {
     var accounts: [Int64: Account] = [:]
     /// Why the last answer to this question wasn't taken (shown with it).
     var answerProblem: String? = nil
+    /// The document's issuer key, if it has one: "Remember for this issuer" is offered only then.
+    var issuer: IssuerKey? = nil
+    /// An answer for the item rather than this question (a model figure corrected field by
+    /// field); nil: `resolve`.
+    var resolveItem: ((ImportResolution) -> Void)? = nil
     let resolve: (ImportResolution) -> Void
 
     static let leaveOutTitle = "Leave out of this import"
@@ -32,12 +37,17 @@ struct ImportIssueControls: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                Label {
-                    Text(issue.reason.figuresUnbroken).fixedSize(horizontal: false, vertical: true)
-                } icon: {
-                    Image(systemName: "exclamationmark.circle").foregroundStyle(.secondary)
+                if ImportModelProposals.isUnavailableNotice(issue) {
+                    // Why the on-device model wasn't asked: the kind is the user's to choose.
+                    InlineBanner(.info, issue.reason)
+                } else {
+                    Label {
+                        Text(issue.reason.figuresUnbroken).fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "exclamationmark.circle").foregroundStyle(.secondary)
+                    }
+                    .font(.callout)
                 }
-                .font(.callout)
                 if !ImportResolutions.onlyLeavesOut(issue, in: item) {
                     answers
                 }
@@ -76,6 +86,7 @@ struct ImportIssueControls: View {
             ImportFigureEditor(field: field, current: item.facts.first { $0.field == field }?.value,
                                currency: Self.currency(of: item, field: field),
                                confirming: { if case .confirmFigure = issue.kind { return true } else { return false } }(),
+                               remembers: LearntFigures.offersRemembering(item, field: field, issuer: issuer),
                                resolve: resolve)
                 // Its own state per issue and figure: never another figure's typed value.
                 .id("\(item.id)-\(issue.id)-\(field.rawValue)")
@@ -92,6 +103,11 @@ struct ImportIssueControls: View {
         case .statement(let statement):
             ImportStatementIssueAnswers(item: item, issue: issue, statement: statement, targetNames: targetNames,
                                         accounts: accounts, answerProblem: answerProblem, resolve: resolve)
+                .id("\(item.id)-\(issue.id)")
+        case .confirmModelReading:
+            // What the model read, to take as it is or correct field by field (each an answer for the item).
+            ImportModelReading(item: item, issuer: issuer, accept: { resolve(.acceptModelReading) },
+                               resolve: resolveItem ?? resolve)
                 .id("\(item.id)-\(issue.id)")
         case .readerProblem, .filedYear:
             EmptyView()
@@ -129,7 +145,7 @@ struct ImportIssueControls: View {
             return documentOnly ? "File the document only" : "File without a link"
         case .chooseKind(let kind): return "File as \(kind.displayName)"
         case .chooseLink(let entity): return "Link to \(entity.type.displayName.lowercased()) #\(entity.id)"
-        case .confirmFigure(let field, _): return "Use this \(field.displayName.lowercased())"
+        case .confirmFigure(let field, _), .confirmFigureRemembering(let field, _): return "Use this \(field.displayName.lowercased())"
         case .chooseTarget(let kind, let id): return "Use \(targetNames.name(kind, id))"
         case .chooseAccount(_, let id): return "Use \(targetNames.name(.account, id))"
         case .importAnyway: return "Import anyway"
@@ -140,6 +156,12 @@ struct ImportIssueControls: View {
         case .linkTransactions(let ids): return ids.count == 1 ? "Link to this transaction" : "Link to these \(ids.count) transactions"
         case .addTransactionLink: return "Link to this transaction too"
         case .unlink: return "Unlink"
+        case .setIssuer(let name): return "Name the issuer \(name)"
+        case .acceptModelReading: return "Use these"
+        case .markChecked: return "Mark as checked"
+        case .unmarkChecked: return "Undo"
+        case .markAllChecked: return "Mark all as checked"
+        case .unmarkAllChecked: return "Undo all checks"
         }
     }
 
@@ -411,16 +433,22 @@ struct ImportFigureEditor: View {
     let field: ImportFigureField
     let currency: Currency
     let confirming: Bool
+    /// Whether "Remember for this issuer" is offered (`LearntFigures.offersRemembering`).
+    let remembers: Bool
     let resolve: (ImportResolution) -> Void
     @State private var date: Date
     @State private var amount: String
     @State private var year: Int
     @State private var text: String
+    @State private var remember = false
 
-    init(field: ImportFigureField, current: ImportFactValue?, currency: Currency, confirming: Bool,
+    static let rememberTitle = "Remember for this issuer"
+
+    init(field: ImportFigureField, current: ImportFactValue?, currency: Currency, confirming: Bool, remembers: Bool = false,
          resolve: @escaping (ImportResolution) -> Void) {
         self.field = field
         self.confirming = confirming
+        self.remembers = remembers
         self.resolve = resolve
         var currency = currency
         var date = PayCalendar.utcDay(sameDayAs: AppClock.now, in: .current)
@@ -469,7 +497,27 @@ struct ImportFigureEditor: View {
         return Array(Set(Array((current - 8)...(current + 1)) + [year])).sorted(by: >)
     }
 
+    /// The answer the typed value gives: an issuer's name names the issuer (`.setIssuer`); a
+    /// figure ticked "Remember for this issuer" is remembered (its position, never its value).
+    private func answer(_ value: ImportFactValue) -> ImportResolution {
+        if field == .issuer, case .text(let name) = value { return .setIssuer(name) }
+        return remembers && remember ? .confirmFigureRemembering(field, value) : .confirmFigure(field, value)
+    }
+
     var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            fields
+            if remembers {
+                Toggle(Self.rememberTitle, isOn: $remember)
+                    .toggleStyle(.checkbox)
+                    .help("Where this figure sits on the page is remembered for this issuer's next documents, never its value")
+            }
+        }
+        .controlSize(.small)
+        .font(.callout)
+    }
+
+    private var fields: some View {
         HStack(spacing: 6) {
             Text(field.displayName).foregroundStyle(.secondary).lineLimit(1)
             switch Self.kind(of: field) {
@@ -489,12 +537,10 @@ struct ImportFigureEditor: View {
                     .textFieldStyle(.roundedBorder)
             }
             Button(confirming ? "Confirm" : "Use this") {
-                if let value { resolve(.confirmFigure(field, value)) }
+                if let value { resolve(answer(value)) }
             }
             .disabled(value == nil)
         }
-        .controlSize(.small)
-        .font(.callout)
     }
 }
 
@@ -572,7 +618,14 @@ struct ImportTargetChooser: View {
 /// with the answers `ImportResolutions` takes for it (answering the item, not one issue).
 struct ImportItemChecks: View {
     let item: ImportItem
+    /// The document's issuer key, if any ("Remember for this issuer").
+    var issuer: IssuerKey? = nil
     let resolve: (ImportResolution) -> Void
+
+    /// Whether the model's reading is asked as a whole (its table: the model's figures and kind aren't asked again here).
+    private var modelReadingAsked: Bool {
+        item.issues.contains { $0.kind == .confirmModelReading }
+    }
 
     /// Figures to check that no issue already asks about.
     private var facts: [ImportFact] {
@@ -582,12 +635,14 @@ struct ImportItemChecks: View {
             default: return nil
             }
         })
-        return item.facts.filter { $0.confidence == .needsReview && !asked.contains($0.field) }
+        return item.facts.filter { $0.confidence == .needsReview && !asked.contains($0.field)
+            && !(modelReadingAsked && $0.source == .model) }
     }
 
     /// Whether the kind is unsure and no issue asks it.
     private var asksKind: Bool {
-        item.recognition.confidence == .needsReview && !item.issues.contains { issue in
+        item.recognition.confidence == .needsReview && !(modelReadingAsked && ImportModelProposals.isProposed(item.recognition))
+            && !item.issues.contains { issue in
             switch issue.kind {
             case .unknownKind, .kindMismatch: return true
             default: return false
@@ -618,7 +673,9 @@ struct ImportItemChecks: View {
                     check(Self.reason(fact)) {
                         ImportFigureEditor(field: fact.field, current: fact.value,
                                            currency: ImportIssueControls.currency(of: item, field: fact.field),
-                                           confirming: true, resolve: resolve)
+                                           confirming: true,
+                                           remembers: LearntFigures.offersRemembering(item, field: fact.field, issuer: issuer),
+                                           resolve: resolve)
                             // Its own state per figure: confirming one never hands its value to the next.
                             .id("\(item.id)-\(fact.field.rawValue)")
                     }
@@ -659,6 +716,79 @@ struct ImportItemChecks: View {
             .font(.callout)
             controls()
         }
+    }
+}
+
+// MARK: The model's reading
+
+/// What the on-device model read (`confirmModelReading`): its proposed kind and figures in a small
+/// table, each with a pencil to correct it (an answer for the item), and "Use these" to take them
+/// as they are (learnt for the issuer on Confirm import).
+struct ImportModelReading: View {
+    let item: ImportItem
+    let issuer: IssuerKey?
+    let accept: () -> Void
+    let resolve: (ImportResolution) -> Void
+    /// The row being corrected (nil: none); `kindRow` for the kind.
+    @State private var editing: String?
+
+    private static let kindRow = "kind"
+
+    private var facts: [ImportFact] { item.facts.filter { $0.source == .model } }
+    private var proposesKind: Bool { ImportModelProposals.isProposed(item.recognition) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 4) {
+                if proposesKind {
+                    GridRow {
+                        label("Kind")
+                        Text(item.recognition.kind.displayName).font(.callout).figureText()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        pencil(Self.kindRow, "kind")
+                    }
+                }
+                ForEach(facts, id: \.field) { fact in
+                    GridRow {
+                        label(fact.field.displayName)
+                        ImportFactValueView(value: fact.value)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        pencil(fact.field.rawValue, fact.field.displayName.lowercased())
+                    }
+                }
+            }
+            if editing == Self.kindRow {
+                ImportKindChooser(initial: ImportIssueControls.documentKind(item.recognition.kind) ?? .other, keep: nil) { resolution in
+                    editing = nil
+                    resolve(resolution)
+                }
+            } else if let editing, let fact = facts.first(where: { $0.field.rawValue == editing }) {
+                ImportFigureEditor(field: fact.field, current: fact.value,
+                                   currency: ImportIssueControls.currency(of: item, field: fact.field), confirming: true,
+                                   remembers: LearntFigures.offersRemembering(item, field: fact.field, issuer: issuer)) { resolution in
+                    self.editing = nil
+                    resolve(resolution)
+                }
+                .id("\(item.id)-model-\(editing)")
+            }
+            Button("Use these", action: accept)
+                .controlSize(.small)
+        }
+    }
+
+    private func label(_ text: String) -> some View {
+        Text(text).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+    }
+
+    private func pencil(_ row: String, _ name: String) -> some View {
+        Button {
+            editing = editing == row ? nil : row
+        } label: {
+            Image(systemName: "pencil").foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Change the \(name)")
+        .accessibilityLabel("Change the \(name)")
     }
 }
 

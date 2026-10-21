@@ -399,6 +399,13 @@ struct ImportCorrections: View {
     let resolve: (ImportResolution) -> Void
     @State private var changingKind = false
     @State private var changingTarget = false
+    @State private var namingIssuer = false
+
+    /// No issuer read: the user can name it (learnt for the issuer on Confirm import). One read is
+    /// changed with its pencil in Figures.
+    private var namesIssuer: Bool {
+        ImportResolutions.takesIssuerName(item) && !item.facts.contains { $0.field == .issuer }
+    }
 
     /// Whether a question already asks the kind.
     private var kindAsked: Bool {
@@ -426,6 +433,9 @@ struct ImportCorrections: View {
                 if let target, !options.isEmpty {
                     Button("Change \(target.rawValue)…") { changingTarget.toggle() }
                 }
+                if namesIssuer {
+                    Button("Name the issuer…") { namingIssuer.toggle() }
+                }
             }
             .controlSize(.small)
             if changingKind, !kindAsked {
@@ -433,6 +443,12 @@ struct ImportCorrections: View {
             }
             if changingTarget, let target, !options.isEmpty {
                 ImportTargetChooser(kind: target, options: options, names: targetNames, resolve: resolve)
+            }
+            if namingIssuer, namesIssuer {
+                ImportFigureEditor(field: .issuer, current: nil, currency: .eur, confirming: false) { resolution in
+                    namingIssuer = false
+                    resolve(resolution)
+                }
             }
         }
     }

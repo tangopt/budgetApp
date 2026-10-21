@@ -19,6 +19,38 @@ struct RulesView: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ScreenTabs("Rules section", selection: $viewModel.tab, tabs: RulesViewModel.Tab.allCases, label: \.rawValue)
+                .equatable()
+                .frame(minHeight: 28)
+                .padding([.horizontal, .top])
+            switch viewModel.tab {
+            case .transactionRules: transactionRules
+            case .importRules: ImportRulesTab(viewModel: viewModel, searchText: searchText)
+            }
+        }
+        .searchable(text: $searchText, prompt: viewModel.tab == .transactionRules ? "Search patterns" : "Search import rules")
+        // Each tab searches different text: a switch starts afresh.
+        .onChange(of: viewModel.tab) { searchText = ""; selection = [] }
+        // "Show on Rules page" from an import's review: the rule isn't hidden by an earlier search.
+        .onAppear { if viewModel.focusedImportRuleId != nil { searchText = "" } }
+        .onChange(of: viewModel.focusedImportRuleId) { if viewModel.focusedImportRuleId != nil { searchText = "" } }
+        .toolbar {
+            if viewModel.tab == .transactionRules {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { sheetDraft = RuleDraft() } label: { Label("Rule", systemImage: "plus") }
+                        .buttonStyle(.borderless)
+                        .help("New rule")
+                }
+                .sharedBackgroundVisibility(.hidden)
+            }
+        }
+        .sheet(item: $sheetDraft) { draft in
+            RuleSheet(draft: draft, viewModel: viewModel) { sheetDraft = nil }
+        }
+    }
+
+    private var transactionRules: some View {
         Table(filteredRules, selection: $selection) {
             TableColumn("Pattern") { rule in Text(rule.matchPattern) }
             TableColumn("Type") { rule in Text(rule.matchType.title) }
@@ -46,18 +78,6 @@ struct RulesView: View {
             if ids.count == 1, let rule = rule(ids.first ?? nil) { sheetDraft = RuleDraft(rule: rule) }
         }
         .padding()
-        .searchable(text: $searchText, prompt: "Search patterns")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { sheetDraft = RuleDraft() } label: { Label("Rule", systemImage: "plus") }
-                    .buttonStyle(.borderless)
-                    .help("New rule")
-            }
-            .sharedBackgroundVisibility(.hidden)
-        }
-        .sheet(item: $sheetDraft) { draft in
-            RuleSheet(draft: draft, viewModel: viewModel) { sheetDraft = nil }
-        }
     }
 
     private func rule(_ id: Int64?) -> Rule? {

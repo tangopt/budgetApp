@@ -77,6 +77,9 @@ public struct ImportFact: Equatable, Sendable {
     public var source: ImportFactSource
     public var confidence: ImportConfidence
     public var reason: String
+    /// A model figure the user accepted (`.user` now): kept when the item is read again, as the
+    /// reader can't read it (`ImportModelProposals.carry`).
+    public var fromModel = false
 
     /// Facts read by OCR, from the file name or by the model are always `.needsReview`.
     public init(field: ImportFigureField, value: ImportFactValue, source: ImportFactSource,
@@ -93,11 +96,53 @@ public struct ImportRecognition: Equatable, Sendable {
     public var kind: ImportKind
     public var confidence: ImportConfidence
     public var reason: String
+    /// The learnt `documentKind` rule that recognised the file (`ImportLearning.recogniser`), if one did.
+    public var ruleId: Int64?
+    /// The kind is the on-device model's guess (`ImportModelProposals`): to check while
+    /// `.needsReview`, the user's once accepted.
+    public var proposedByModel = false
 
-    public init(kind: ImportKind, confidence: ImportConfidence, reason: String) {
+    public init(kind: ImportKind, confidence: ImportConfidence, reason: String, ruleId: Int64? = nil) {
         self.kind = kind
         self.confidence = confidence
         self.reason = reason
+        self.ruleId = ruleId
+    }
+}
+
+/// A learnt rule applied to an item, named on it ("Learnt: Demo Power → Utility invoice");
+/// marked used on Confirm import.
+public struct ImportRuleUse: Equatable, Sendable {
+    public var ruleId: Int64
+    public var kind: ImportRuleKind
+    public var label: String
+
+    public init(ruleId: Int64, kind: ImportRuleKind, label: String) {
+        self.ruleId = ruleId
+        self.kind = kind
+        self.label = label
+    }
+}
+
+/// A rule a correction in the review would teach (`ImportLearning.drafts`): learnt on Confirm
+/// import, inside the run (`ImportRuleStore.learn`), only for applied items.
+public struct ImportRuleDraft: Equatable, Sendable {
+    public var kind: ImportRuleKind
+    public var key: String
+    public var matchLabel: String
+    public var actionJSON: String
+    public var actionLabel: String
+    /// The action of the learnt rule this draft will replace (its label), when there is one that
+    /// does something else: "Will remember … (replaces: …)".
+    public var replaces: String?
+
+    public init(kind: ImportRuleKind, key: String, matchLabel: String, actionJSON: String, actionLabel: String, replaces: String? = nil) {
+        self.kind = kind
+        self.key = key
+        self.matchLabel = matchLabel
+        self.actionJSON = actionJSON
+        self.actionLabel = actionLabel
+        self.replaces = replaces
     }
 }
 
@@ -252,6 +297,10 @@ public enum ImportIssueKind: Equatable, Sendable {
     case readerProblem(String)
     case filedYear(FiledYearImpact)
     case statement(StatementIssue)
+    /// The on-device model proposed what the document is or says (`ImportModelProposals`): its
+    /// `.model` facts and recognition wait for the user — accepted (`.acceptModelReading`) or
+    /// corrected field by field.
+    case confirmModelReading
 }
 
 public struct ImportIssue: Equatable, Identifiable, Sendable {
@@ -304,6 +353,24 @@ public enum ImportResolution: Equatable, Sendable {
     case addTransactionLink(Int64)
     /// A link (proposed or chosen) removed.
     case unlink(EvidenceEntity)
+    /// The issuer's name, as the user gave it (learnt for the issuer on Confirm import).
+    case setIssuer(String)
+    /// `.confirmFigure`, and "Remember for this issuer": where the figure sits on the page (its
+    /// label, never the value) is learnt for the issuer on Confirm import (`LearntFigures`).
+    case confirmFigureRemembering(ImportFigureField, ImportFactValue)
+    /// What the on-device model read, taken as it is: its facts and kind become the user's
+    /// (learnt for the issuer on Confirm import).
+    case acceptModelReading
+    /// A "Check it" ticked off without retyping (`ImportChecks`): the figure or recognition
+    /// becomes the user's, "Checked by you".
+    case markChecked(ImportCheckTarget)
+    /// A tick taken back while the review is open: exactly what was there before.
+    case unmarkChecked(ImportCheckTarget)
+    /// Every "Check it" of the document ticked off at once (`ImportChecks.tickable`): never a
+    /// question that needs a choice.
+    case markAllChecked
+    /// The ticks "Mark all as checked" made, taken back together.
+    case unmarkAllChecked
 }
 
 /// A UK bank statement's rows to add to its account (`ImportCoordinator.commit`), its closing
@@ -499,6 +566,10 @@ public struct ImportItem: Equatable, Identifiable, Sendable {
     /// The user's reason for an answer that needs one (a statement imported anyway despite its
     /// closing balance), kept with the run on Confirm import (`ImportPlan.resolutionReasons`).
     public var resolutionNote: String? = nil
+    /// The learnt rules that shaped the item (its kind, issuer, links): marked used on Confirm import.
+    public var appliedRules: [ImportRuleUse] = []
+    /// The rules the user's corrections teach: learnt on Confirm import when the item is applied.
+    public var ruleDrafts: [ImportRuleDraft] = []
 
     public init(id: UUID = UUID(), file: ImportFile, recognition: ImportRecognition, title: String,
                 facts: [ImportFact] = [], placement: ImportPlacement? = nil, links: [ProposedLink] = [],
@@ -720,6 +791,16 @@ struct ImportPlanState: Equatable, Sendable {
     /// Per account, the fingerprints of the rows the user skipped (possible duplicates): left out
     /// of every statement of the account each time they are staged.
     var skippedRows: [Int64: Set<String>] = [:]
+    /// Per item, the learnt rules the user overrode (a learnt link unlinked, a learnt kind or name
+    /// changed): not applied again when the item is read again.
+    var declinedRules: [UUID: Set<Int64>] = [:]
+    /// The on-device model's guess per file hash (`ImportModelProposals`): a file of the plan
+    /// is never asked twice.
+    var modelGuesses: [String: DocumentModelGuess] = [:]
+    /// Per item, the "Check it"s ticked off in this review (`ImportChecks`), to take back.
+    var checks: [UUID: [ImportCheckTarget: ImportCheckRecord]] = [:]
+    /// Per item, the last "Mark all as checked" (`ImportChecks`), to take back together.
+    var checkAlls: [UUID: ImportCheckAllRecord] = [:]
 }
 
 extension ImportItem {

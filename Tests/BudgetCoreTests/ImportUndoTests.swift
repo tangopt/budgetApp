@@ -438,4 +438,70 @@ final class ImportUndoTests: XCTestCase {
         XCTAssertEqual(try manager.dbQueue.read { try ForecastGroup.filter(Column("isSystemManaged") == true).fetchCount($0) }, 1,
                        "the forecast was refreshed after the undo")
     }
+
+    // MARK: Learnt rules are lenient
+
+    private func rule(_ id: Int64) throws -> ImportRule? { try manager.dbQueue.read { db in try ImportRule.fetchOne(db, key: id) } }
+
+    private func learnR(_ db: Database, kind: DocumentKind = .insuranceReceipt) throws -> ImportRule {
+        try ImportRuleStore.learn(db: db, kind: .documentKind, key: "nif:503504564", matchLabel: "Example Seguros",
+                                  action: DocumentKindAction(kind: kind), actionLabel: "Kind: \(kind.displayName)", now: Date())
+    }
+
+    func testARuleALaterRunOnlyUsedGoesWithItsRunAndTheLaterRunStillUndoes() throws {
+        var ruleId: Int64 = 0
+        let a = try run { db in ruleId = try learnR(db).id! }
+        let b = try run { db in try ImportRuleStore.markUsed(db: db, ids: [ruleId], now: Date()) }
+        XCTAssertEqual(try ImportUndo.conflicts(dbQueue: manager.dbQueue, runId: a), [], "a learnt rule never blocks an undo")
+        let result = try ImportUndo.undo(dbQueue: manager.dbQueue, library: library, runId: a)
+        XCTAssertEqual(result.notes, [], "being used since is not a change")
+        XCTAssertNil(try rule(ruleId), "removed with the run that learnt it")
+        // The run that used it still undoes: its rule is gone, nothing to give back.
+        XCTAssertEqual(try ImportUndo.conflicts(dbQueue: manager.dbQueue, runId: b), [])
+        XCTAssertEqual(try ImportUndo.undo(dbQueue: manager.dbQueue, library: library, runId: b).notes, [])
+    }
+
+    func testARuleChangedByARunAndUsedSinceIsPutBack() throws {
+        let original = try manager.dbQueue.write { db in try learnR(db, kind: .insurancePolicy) }
+        let a = try run { db in _ = try learnR(db, kind: .insuranceReceipt) }
+        _ = try run { db in try ImportRuleStore.markUsed(db: db, ids: [original.id!], now: Date()) }
+        let result = try ImportUndo.undo(dbQueue: manager.dbQueue, library: library, runId: a)
+        XCTAssertEqual(result.notes, [])
+        let back = try XCTUnwrap(try rule(original.id!))
+        XCTAssertEqual(back.actionJSON, "{\"kind\":\"insurancePolicy\"}", "the action before the run")
+        XCTAssertEqual(back.useCount, 1, "the later run's use stays")
+    }
+
+    func testAnUnchangedRuleGoesWithItsRunAndADeletedOneIsNoObstacle() throws {
+        var first: Int64 = 0
+        let a = try run { db in first = try learnR(db).id! }
+        XCTAssertEqual(try ImportUndo.undo(dbQueue: manager.dbQueue, library: library, runId: a).notes, [])
+        XCTAssertNil(try rule(first), "unchanged since: removed with the run")
+
+        var second: Int64 = 0
+        let b = try run { db in second = try learnR(db).id! }
+        // Deleted on the Rules page.
+        try manager.dbQueue.write { db in try ImportRuleEditing.delete(db: db, id: second) }
+        XCTAssertEqual(try ImportUndo.conflicts(dbQueue: manager.dbQueue, runId: b), [])
+        let result = try ImportUndo.undo(dbQueue: manager.dbQueue, library: library, runId: b)
+        XCTAssertEqual(result.notes, [])
+        XCTAssertNil(try rule(second))
+    }
+
+    func testARuleEditedSinceKeepsTheUsersEditAndGivesBackTheUse() throws {
+        let original = try manager.dbQueue.write { db in try learnR(db, kind: .insurancePolicy) }
+        let a = try run { db in
+            _ = try learnR(db, kind: .insuranceReceipt)
+            try ImportRuleStore.markUsed(db: db, ids: [original.id!], now: Date())
+        }
+        // Edited on the Rules page.
+        try manager.dbQueue.write { db in try ImportRuleEditing.update(db: db, id: original.id!, edit: .documentKind(.utilityInvoice)) }
+        XCTAssertEqual(try ImportUndo.conflicts(dbQueue: manager.dbQueue, runId: a), [])
+        let result = try ImportUndo.undo(dbQueue: manager.dbQueue, library: library, runId: a)
+        let kept = try XCTUnwrap(try rule(original.id!))
+        XCTAssertEqual(kept.actionJSON, "{\"kind\":\"utilityInvoice\"}", "the user's edit stays")
+        XCTAssertEqual(kept.useCount, 0, "the run's use is given back")
+        XCTAssertNil(kept.lastUsedAt)
+        XCTAssertEqual(result.notes.count, 1, "\(result.notes)")
+    }
 }

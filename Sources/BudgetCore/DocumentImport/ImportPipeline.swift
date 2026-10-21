@@ -23,10 +23,11 @@ public struct ImportProgress: Equatable, Sendable {
 /// when the plan is applied (`ImportApplier`: `.planOutdated` and the filed-return backstop).
 ///
 /// Planning: collect (folders expanded) → copy the database → read the files off the main
-/// actor, at most 4 at once, progress after each (load, detect, the reader's `prepare`) → stage
+/// actor, at most 4 at once, progress after each (load, detect, the reader's `prepare`) → what
+/// nothing recognised asked of the on-device model (`ImportModelProposals`, at most 2 at once) → stage
 /// the UK and BBVA statements (async, outside the transaction; several of one account in date order,
 /// each later one treating the earlier ones' rows as already imported) → in the rolled-back
-/// write: the readers, intent mismatches, `ImportDuplicates.annotate` over the whole plan,
+/// write: the readers, the learnt rules, the model's proposals, intent mismatches, `ImportDuplicates.annotate` over the whole plan,
 /// `FiledYearGuard.annotate`. Cancelling the task stops it with `CancellationError`.
 public struct ImportPipeline: @unchecked Sendable {
     // @unchecked: `EvidenceLibrary` and `CategorizationService` are classes with constant state
@@ -37,6 +38,10 @@ public struct ImportPipeline: @unchecked Sendable {
     private let categorizationService: CategorizationService
     private let readers: [any ImportReader]?
     private let detector: ImportDetector?
+    /// The on-device model asked about what nothing else recognises (`ImportModelProposals`); nil: never asked.
+    private let modelReader: (any DocumentModelReading)?
+    /// Each model call's deadline (tests shorten it).
+    var modelTimeoutNanoseconds = ImportModelProposals.timeoutNanoseconds
     /// The plan's private copy of the database (shared by copies of this pipeline).
     private let session = ImportPlanningSession()
 
@@ -44,8 +49,9 @@ public struct ImportPipeline: @unchecked Sendable {
     static let concurrentLoads = 4
 
     public init(dbQueue: DatabaseQueue, library: EvidenceLibrary, categorizationService: CategorizationService,
-                readers: [any ImportReader]? = nil, detector: ImportDetector? = nil) {
+                readers: [any ImportReader]? = nil, detector: ImportDetector? = nil, modelReader: (any DocumentModelReading)? = nil) {
         self.dbQueue = dbQueue
+        self.modelReader = modelReader
         self.library = library
         self.categorizationService = categorizationService
         self.readers = readers
@@ -68,10 +74,17 @@ public struct ImportPipeline: @unchecked Sendable {
             let collected = ImportFileCollector.collect(urls)
             let copy = try timings.measure(.copy) { try session.fresh(from: dbQueue) }
             let queue = copy.dbQueue
-            let providers = try await queue.read { try UtilityProvider.fetchAll($0) }
+            let (providers, rules, ownNIFs) = try await queue.read { db in
+                (try UtilityProvider.fetchAll(db), try ImportLearning.enabledRules(db: db), try IssuerKey.knownParties(db: db))
+            }
             let readers = self.readers ?? ImportReaders.defaultReaders(providers: providers)
-            let detector = self.detector ?? ImportDetector(providers: providers)
-            let entries = try await load(collected.files, detector: detector, readers: readers, timings: timings, progress: progress)
+            // Learnt kinds after the built-in recognisers (a given detector is used as it is).
+            let detector = self.detector ?? ImportDetector(providers: providers, learnt: [ImportLearning.recogniser(rules: rules, ownNIFs: ownNIFs)])
+            var loaded = try await load(collected.files, detector: detector, readers: readers, timings: timings, progress: progress)
+            try Task.checkCancellation()
+            // What nothing recognised, asked of the on-device model (outside the write, after the learnt rules).
+            let outcomes = try await askModel(&loaded, cached: plan.state.modelGuesses, readers: readers, progress: progress)
+            let entries = loaded
             try Task.checkCancellation()
             let now = Date()
             let context = try await queue.read { try ImportContext.load(db: $0, intent: intent, now: now) }
@@ -86,9 +99,13 @@ public struct ImportPipeline: @unchecked Sendable {
             let planned = try await queue.write { db -> ImportPlan in
                 var result = existing
                 result.ignoredFiles += collected.ignored
+                for (hash, outcome) in outcomes {
+                    if case .guess(let guess) = outcome { result.state.modelGuesses[hash] = guess }
+                }
                 try db.inSavepoint {
                     let added = try timings.measure(.readers) {
-                        try Self.propose(entries, staged: staged, contexts: contexts, readers: readers, db: db)
+                        try ImportLearning.apply(Self.propose(entries, staged: staged, contexts: contexts, readers: readers, db: db), db: db)
+                            .map { Self.withModelOutcome($0, outcomes) }
                             .map { Self.withReplacements($0, intent: intent) }
                     }
                     for item in added {
@@ -158,8 +175,230 @@ public struct ImportPipeline: @unchecked Sendable {
     /// reader (`.chooseAccount`, `.saveProfile` too). Every change re-runs the duplicate pass over the plan and the filed-year guard
     /// on what changed, in a rolled-back write. Children (`parentId`) follow their parent in
     /// and out of the import.
+    ///
+    /// A correction that teaches (`ImportLearning.drafts`: a kind, an issuer's name, a link) leaves
+    /// its rule drafts on the item, replacing the earlier ones of that kind (and the learnt rule
+    /// of that kind it overrides no longer counts as used); they are learnt on Confirm import.
+    /// A figure fixed by hand replaces that figure's position draft and learnt position; ticked
+    /// ("Remember for this issuer") but not remembered (no issuer, a kind whose positions aren't
+    /// learnt, not placeable on the page), the item says it is fixed for this document only.
     public func resolve(_ plan: ImportPlan, itemId: UUID, issueId: String? = nil,
                         _ resolution: ImportResolution) async throws -> ImportPlan {
+        switch resolution {
+        case .markChecked(let target):
+            guard issueId == nil else { throw ImportResolutionError.notOffered(resolution) }
+            return try await check(plan, itemId: itemId, target, mark: true)
+        case .unmarkChecked(let target):
+            guard issueId == nil else { throw ImportResolutionError.notOffered(resolution) }
+            return try await check(plan, itemId: itemId, target, mark: false)
+        case .markAllChecked, .unmarkAllChecked:
+            guard issueId == nil else { throw ImportResolutionError.notOffered(resolution) }
+            return try await checkAll(plan, itemId: itemId, mark: resolution == .markAllChecked)
+        default:
+            break
+        }
+        let result = try await answer(plan, itemId: itemId, issueId: issueId, resolution)
+        let replaced = ImportLearning.replacedKinds(by: resolution)
+        let figure = ImportLearning.correctedFigure(resolution)
+        let teaches = !replaced.isEmpty || figure != nil || resolution == .acceptModelReading
+        guard let before = plan.items.first(where: { $0.id == itemId }), teaches || !before.ruleDrafts.isEmpty,
+              let index = result.items.firstIndex(where: { $0.id == itemId }) else { return result }
+        var item = result.items[index]
+        var named = ImportResolutions.chosenTransactions(resolution)
+        if case .chooseLink(let entity) = resolution, entity.type == .transaction { named.append(entity.id) }
+        named += item.links.filter { $0.entity.type == .transaction && $0.confidence == .certain }.map(\.entity.id)
+        let ids = named
+        let linkRuleIds = Set((before.appliedRules + item.appliedRules).filter { $0.kind == .link }.map(\.ruleId))
+        let figureRuleIds = Set((before.appliedRules + item.appliedRules).filter { $0.kind == .figurePosition }.map(\.ruleId))
+        let copy = try session.current(from: dbQueue)
+        let (issuer, descriptions, linkRules, figureRules, learning) = try await copy.dbQueue.read {
+            db -> (IssuerKey?, [Int64: String], [Int64: LinkAction], [Int64: ImportFigureField], DraftContext) in
+            let learning = try Self.draftContext(of: before, db: db)
+            let issuer = learning.issuer
+            var descriptions: [Int64: String] = [:]
+            for transaction in try Transaction.fetchAll(db, keys: Set(ids)) {
+                if let id = transaction.id { descriptions[id] = transaction.rawDescription }
+            }
+            var linkRules: [Int64: LinkAction] = [:]
+            for rule in try ImportRule.fetchAll(db, keys: linkRuleIds) {
+                if let id = rule.id, let action = ImportLearning.decode(LinkAction.self, rule.actionJSON) { linkRules[id] = action }
+            }
+            var figureRules: [Int64: ImportFigureField] = [:]
+            for rule in try ImportRule.fetchAll(db, keys: figureRuleIds) {
+                if let id = rule.id, let action = ImportLearning.decode(FigurePositionAction.self, rule.actionJSON) { figureRules[id] = action.field }
+            }
+            return (issuer, descriptions, linkRules, figureRules, learning)
+        }
+        func position(_ draft: ImportRuleDraft) -> ImportFigureField? {
+            draft.kind == .figurePosition ? ImportLearning.decode(FigurePositionAction.self, draft.actionJSON)?.field : nil
+        }
+        // The earlier drafts the item still carries (a reread may have dropped their fact or link), then this answer's.
+        // A link answer replaces the link drafts of its family only (a payment never the record link).
+        let families = ImportLearning.replacedLinkFamilies(by: resolution, before: before, after: item)
+        let kept = ImportLearning.namingReplaced(before.ruleDrafts.filter { draft in
+            let replacedHere = draft.kind == .link ? ImportLearning.linkFamily(draft).map(families.contains) ?? true : replaced.contains(draft.kind)
+            return !replacedHere && (figure == nil || position(draft) != figure)
+                && ImportLearning.isCarried(draft, by: item, descriptions: descriptions)
+        }, rules: learning.rules)
+        if replaced.contains(.documentKind) || resolution == .acceptModelReading { item.notes.removeAll { $0 == ImportLearning.recognisesItselfNote } }
+        // Accepting the model's reading drafts what an earlier correction may have drafted already: once.
+        let drafted = ImportLearning.drafts(for: item, resolution: resolution, issuer: issuer, transactionDescriptions: descriptions)
+        let added = ImportLearning.finishing(drafted, on: &item, recognisesItself: learning.recognisesItself, rules: learning.rules)
+        item.ruleDrafts = kept + added.filter { !kept.contains($0) }
+        if let figure {
+            // Fixed by hand again: a ticked figure says why it isn't remembered, if it isn't.
+            item.notes.removeAll(where: LearntFigures.fixedNotes.contains)
+            if case .confirmFigureRemembering = resolution,
+               let note = LearntFigures.notRememberedNote(item, field: figure, issuer: issuer, drafts: item.ruleDrafts) {
+                item.notes.append(note)
+            }
+        }
+        // A learnt rule of the kind the user answered is overridden: not used, and not applied again on a
+        // reread — a learnt link only when its own link is gone (another link's change leaves it be).
+        let finalItem = item
+        func overrides(_ use: ImportRuleUse) -> Bool {
+            if use.kind == .figurePosition { return figure != nil && figureRules[use.ruleId] == figure }
+            guard replaced.contains(use.kind) else { return false }
+            guard use.kind == .link, let action = linkRules[use.ruleId] else { return true }
+            return !ImportLearning.carriesLink(action, item: finalItem, descriptions: descriptions)
+        }
+        let overridden = (before.appliedRules + item.appliedRules).filter(overrides).map(\.ruleId)
+        item.appliedRules.removeAll(where: overrides)
+        var updated = result
+        updated.items[index] = item
+        if !overridden.isEmpty { updated.state.declinedRules[itemId, default: []].formUnion(overridden) }
+        return updated
+    }
+
+    /// A "Check it" ticked off (`mark`) or taken back (`ImportChecks`): the tick, and the rules it
+    /// teaches (a model kind or issuer name), with what was there before kept in the plan's state;
+    /// un-ticked, that comes back (the whole item when nothing else changed since). Either way the
+    /// duplicate pass and the filed-year guard run again, as for every change.
+    private func check(_ plan: ImportPlan, itemId: UUID, _ target: ImportCheckTarget, mark: Bool) async throws -> ImportPlan {
+        guard let index = plan.items.firstIndex(where: { $0.id == itemId }) else { throw ImportResolutionError.itemNotFound(itemId) }
+        let item = plan.items[index]
+        var result = plan
+        var pending: ImportCheckRecord?
+        if mark {
+            let ticked = try Self.tick(target, on: item, learning: try await draftContext(of: item))
+            pending = ticked.record
+            result.items[index] = ticked.item
+        } else {
+            guard let record = plan.state.checks[itemId]?[target], ImportChecks.isStillChecked(record, target, on: item) else {
+                throw ImportResolutionError.notOffered(.unmarkChecked(target))
+            }
+            result.items[index] = ImportChecks.unmarked(record, target, on: item)
+            result.state.checks[itemId]?[target] = nil
+        }
+        var annotated = try await annotating(result, itemId: itemId)
+        if var record = pending, let after = annotated.items.first(where: { $0.id == itemId }) {
+            // Taken back whole only while the item is as the tick (and its checks) left it.
+            record.after = after
+            annotated.state.checks[itemId, default: [:]][target] = record
+        }
+        return annotated
+    }
+
+    /// "Mark all as checked" (`mark`): every tickable check of the item ticked in turn, as single
+    /// ticks are (drafts, effects), each with its own record; or those ticks taken back together —
+    /// the whole item as it was when nothing changed since, else each tick still there, last first.
+    private func checkAll(_ plan: ImportPlan, itemId: UUID, mark: Bool) async throws -> ImportPlan {
+        guard let index = plan.items.firstIndex(where: { $0.id == itemId }) else { throw ImportResolutionError.itemNotFound(itemId) }
+        let item = plan.items[index]
+        var result = plan
+        if mark {
+            let targets = ImportChecks.tickable(item)
+            guard targets.count >= 2 else { throw ImportResolutionError.notOffered(.markAllChecked) }
+            let learning = try await draftContext(of: item)
+            var current = item
+            var records: [ImportCheckTarget: ImportCheckRecord] = [:]
+            for target in targets {
+                let ticked = try Self.tick(target, on: current, learning: learning)
+                records[target] = ticked.record
+                current = ticked.item
+            }
+            result.items[index] = current
+            var annotated = try await annotating(result, itemId: itemId)
+            if let after = annotated.items.first(where: { $0.id == itemId }) {
+                annotated.state.checks[itemId, default: [:]].merge(records) { _, new in new }
+                // Marked all again while an earlier mark-all still has ticks in place: one record,
+                // so Undo all takes every tick back (the item as it was before the first).
+                if let earlier = plan.state.checkAlls[itemId], plan.isMarkedAllChecked(itemId) {
+                    annotated.state.checkAlls[itemId] = ImportCheckAllRecord(before: earlier.before, after: after,
+                                                                             targets: earlier.targets + targets.filter { !earlier.targets.contains($0) })
+                } else {
+                    annotated.state.checkAlls[itemId] = ImportCheckAllRecord(before: item, after: after, targets: targets)
+                }
+            }
+            return annotated
+        }
+        guard let all = plan.state.checkAlls[itemId], plan.isMarkedAllChecked(itemId) else {
+            throw ImportResolutionError.notOffered(.unmarkAllChecked)
+        }
+        var restored = item
+        if item == all.after {
+            restored = all.before
+        } else {
+            for target in all.targets.reversed() {
+                guard let record = plan.state.checks[itemId]?[target], ImportChecks.isStillChecked(record, target, on: restored) else { continue }
+                restored = ImportChecks.unmarked(record, target, on: restored)
+            }
+        }
+        result.items[index] = restored
+        for target in all.targets { result.state.checks[itemId]?[target] = nil }
+        result.state.checkAlls[itemId] = nil
+        return try await annotating(result, itemId: itemId)
+    }
+
+    /// `target` ticked off on `item`, with the rules it teaches and the record to take it back.
+    private static func tick(_ target: ImportCheckTarget, on item: ImportItem, learning: DraftContext) throws -> (item: ImportItem, record: ImportCheckRecord) {
+        var marked = try ImportChecks.marked(target, on: item)
+        let drafts = ImportChecks.drafts(target, before: item, after: marked, issuer: learning.issuer)
+        let added = ImportLearning.finishing(drafts, on: &marked, recognisesItself: learning.recognisesItself, rules: learning.rules)
+            .filter { !marked.ruleDrafts.contains($0) }
+        marked.ruleDrafts += added
+        let record = ImportCheckRecord(before: item, after: marked,
+                                       priorFact: { if case .figure(let field) = target { return item.facts.first { $0.field == field } }; return nil }(),
+                                       priorRecognition: target == .recognition ? item.recognition : nil,
+                                       removedIssues: item.issues.filter { !marked.issues.contains($0) }, addedDrafts: added)
+        return (marked, record)
+    }
+
+    /// What finishing an item's drafts needs: its issuer key, every learnt rule (to name the one a
+    /// draft replaces) and whether a built-in recogniser reads its file (no kind is learnt then).
+    struct DraftContext: Sendable {
+        var issuer: IssuerKey?
+        var rules: [ImportRule]
+        var recognisesItself: Bool
+    }
+
+    static func draftContext(of item: ImportItem, db: Database) throws -> DraftContext {
+        DraftContext(issuer: IssuerKey.derive(text: item.file.text, fileName: item.file.fileName, ownNIFs: try IssuerKey.knownParties(db: db)),
+                     rules: try ImportRuleStore.all(db: db),
+                     recognisesItself: ImportDetector.recognisesItself(item.file, providers: try UtilityProvider.fetchAll(db)))
+    }
+
+    /// `draftContext(of:db:)` on the planning copy.
+    private func draftContext(of item: ImportItem) async throws -> DraftContext {
+        let copy = try session.current(from: dbQueue)
+        return try await copy.dbQueue.read { db in try Self.draftContext(of: item, db: db) }
+    }
+
+    /// `plan` with the duplicate pass and the filed-year guard run again on the item, in a rolled-back write.
+    private func annotating(_ plan: ImportPlan, itemId: UUID) async throws -> ImportPlan {
+        let copy = try session.current(from: dbQueue)
+        let library = try copy.libraryIndex()
+        return try await copy.dbQueue.write { db -> ImportPlan in
+            var annotated = plan
+            try db.inSavepoint {
+                annotated = try Self.annotate(plan, checking: [itemId], db: db, library: library)
+                return .rollback
+            }
+            return annotated
+        }
+    }
+
+    private func answer(_ plan: ImportPlan, itemId: UUID, issueId: String?, _ resolution: ImportResolution) async throws -> ImportPlan {
         guard let index = plan.items.firstIndex(where: { $0.id == itemId }) else { throw ImportResolutionError.itemNotFound(itemId) }
         let item = plan.items[index]
         // A statement's row that looks already saved: kept or skipped (Leave out skips it, or keeps it again).
@@ -311,7 +550,8 @@ public struct ImportPipeline: @unchecked Sendable {
         if let reader { file = reader.prepare(file, recognition: recognition) }
         let entries = [Entry(file: file, recognition: recognition, failure: ImportResolutions.isUnreadable(item) ? item : nil)]
         let now = Date()
-        let context = try await queue.read { [intent] in try ImportContext.load(db: $0, intent: intent, now: now) }
+        let declined = plan.state.declinedRules[item.id] ?? []
+        let context = try await queue.read { [intent] in try ImportContext.load(db: $0, intent: intent, now: now).declining(declined) }
         // The statements before it in the review are the earlier ones of the batch.
         let before = plan.items.firstIndex { $0.id == item.id }.map { Array(plan.items[..<$0]) } ?? []
         let staged = try await stageStatements(entries, contexts: [context], skipped: plan.state.skippedRows, readers: readers, queue: queue,
@@ -322,9 +562,12 @@ public struct ImportPipeline: @unchecked Sendable {
         let reread = try await queue.write { db -> ImportPlan in
             var plan = start
             try db.inSavepoint {
-                var read = try Self.propose(entries, staged: staged, contexts: [context], readers: readers, db: db)
+                var read = try ImportLearning.apply(Self.propose(entries, staged: staged, contexts: [context], readers: readers, db: db), db: db,
+                                                    declined: plan.state.declinedRules[item.id] ?? [])
                     .map { Self.withReplacements($0, intent: readIntent) }
                 guard let first = read.firstIndex(where: { $0.parentId == nil }) else { return .rollback }
+                // What the model read, accepted or still to check, is kept (the model isn't asked again).
+                read[first] = ImportModelProposals.carry(from: item, to: read[first])
                 let newId = read[first].id
                 for i in read.indices {
                     if i == first { read[i].id = item.id } else if read[i].parentId == newId { read[i].parentId = item.id }
@@ -405,7 +648,9 @@ public struct ImportPipeline: @unchecked Sendable {
                 for (n, old) in targets.enumerated() {
                     guard let statement = staged[n] else { continue }
                     let intent = contexts[n].intent
-                    var read = try Self.statementItems(entries[n], statement, context: contexts[n], db: db).map { Self.withReplacements($0, intent: intent) }
+                    var read = try ImportLearning.apply(Self.statementItems(entries[n], statement, context: contexts[n], db: db), db: db,
+                                                        declined: plan.state.declinedRules[old.id] ?? [])
+                        .map { Self.withReplacements($0, intent: intent) }
                     guard let first = read.firstIndex(where: { $0.parentId == nil }) else { continue }
                     let newId = read[first].id
                     for i in read.indices {
@@ -413,6 +658,8 @@ public struct ImportPipeline: @unchecked Sendable {
                         read[i].isLeftOut = old.isLeftOut
                     }
                     read[first].resolutionNote = old.resolutionNote
+                    // The drafts it still carries as read again.
+                    read[first].ruleDrafts = try ImportLearning.carried(old.ruleDrafts, by: read[first], db: db)
                     if !plan.state.chosenKinds.contains(old.id) { read[first] = Self.withIntentIssue(read[first], intent: intent) }
                     let children = Set(plan.items.filter { $0.parentId == old.id }.map(\.id))
                     var items = plan.items
@@ -471,6 +718,67 @@ public struct ImportPipeline: @unchecked Sendable {
             }
         }
         return entries.compactMap { $0 }
+    }
+
+    /// Each entry nothing recognised (`ImportModelProposals.asks`) asked of the model — a file of
+    /// the plan already asked, from its guess — at most `ImportModelProposals.concurrentCalls` at
+    /// once, off the caller's actor, progress before each. A guessed kind becomes the entry's
+    /// recognition (prepared again by its reader). Keyed by file hash; empty without a model.
+    private func askModel(_ entries: inout [Entry], cached: [String: DocumentModelGuess], readers: [any ImportReader],
+                          progress: @Sendable (ImportProgress) -> Void) async throws -> [String: ImportModelProposals.Outcome] {
+        guard let modelReader else { return [:] }
+        let asked = entries.indices.filter { entries[$0].failure == nil && ImportModelProposals.asks(entries[$0].file, entries[$0].recognition) }
+        guard !asked.isEmpty else { return [:] }
+        var outcomes: [String: ImportModelProposals.Outcome] = [:]
+        var pending: [Int] = []
+        for index in asked {
+            let hash = entries[index].file.sha256
+            if outcomes[hash] != nil { continue }
+            if let guess = cached[hash] { outcomes[hash] = .guess(guess) } else { pending.append(index) }
+        }
+        if case .unavailable(let message) = modelReader.availability() {
+            for index in pending { outcomes[entries[index].file.sha256] = .unavailable(message) }
+        } else if !pending.isEmpty {
+            let files = pending.map { entries[$0].file }
+            let timeout = modelTimeoutNanoseconds
+            let total = entries.count
+            try await withThrowingTaskGroup(of: (String, ImportModelProposals.Outcome).self) { group in
+                var next = 0
+                func start() {
+                    let file = files[next]
+                    progress(ImportProgress(completed: total, total: total, currentFile: ImportModelProposals.progressText(file.fileName)))
+                    group.addTask {
+                        try Task.checkCancellation()
+                        return (file.sha256, try await ImportModelProposals.ask(modelReader, file: file, timeoutNanoseconds: timeout))
+                    }
+                    next += 1
+                }
+                while next < min(ImportModelProposals.concurrentCalls, files.count) { start() }
+                while let (hash, outcome) = try await group.next() {
+                    outcomes[hash] = outcome
+                    try Task.checkCancellation()
+                    if next < files.count { start() }
+                }
+            }
+            // Asked about every one: no file is being asked about any more.
+            progress(ImportProgress(completed: total, total: total))
+        }
+        // A guessed kind: read as that kind (its reader prepares the file for it).
+        for index in asked {
+            guard case .guess(let guess)? = outcomes[entries[index].file.sha256],
+                  let recognition = ImportModelProposals.recognition(for: guess, file: entries[index].file) else { continue }
+            var file = entries[index].file
+            if recognition.kind != entries[index].recognition.kind { file.payrollExtraction = nil }
+            entries[index].file = readers.first { $0.handles(recognition.kind) }?.prepare(file, recognition: recognition) ?? file
+            entries[index].recognition = recognition
+        }
+        return outcomes
+    }
+
+    /// A file the model was asked about, with what it said (`ImportModelProposals.apply`).
+    private static func withModelOutcome(_ item: ImportItem, _ outcomes: [String: ImportModelProposals.Outcome]) -> ImportItem {
+        guard item.parentId == nil, let outcome = outcomes[item.file.sha256] else { return item }
+        return ImportModelProposals.apply(outcome, to: item)
     }
 
     private static func read(_ url: URL, detector: ImportDetector, readers: [any ImportReader], timings: ImportPlanTimings?) -> Entry {

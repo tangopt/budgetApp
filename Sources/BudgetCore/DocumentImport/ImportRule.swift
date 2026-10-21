@@ -1,9 +1,17 @@
 import Foundation
 import GRDB
 
-/// What a learnt import rule is about. Plan 3 adds more kinds.
+/// What a learnt import rule is about.
 public enum ImportRuleKind: String, Codable, CaseIterable, Sendable {
     case statementAccount
+    /// Documents from an issuer are of a given kind.
+    case documentKind
+    /// A name for an issuer.
+    case issuer
+    /// Documents from an issuer link to a record.
+    case link
+    /// Where on the page an issuer's figure sits.
+    case figurePosition
 }
 
 /// Something the app learnt from a confirmed import, so the next one needs one decision fewer.
@@ -47,6 +55,90 @@ public struct StatementAccountAction: Codable, Equatable, Sendable {
     public init(accountId: Int64) { self.accountId = accountId }
 }
 
+/// The kind chosen for an issuer's documents.
+public struct DocumentKindAction: Codable, Equatable, Sendable {
+    public var kind: DocumentKind
+
+    public init(kind: DocumentKind) { self.kind = kind }
+}
+
+/// The name chosen for an issuer.
+public struct IssuerAction: Codable, Equatable, Sendable {
+    public var name: String
+
+    public init(name: String) { self.name = name }
+}
+
+/// Link to a fixed record (`entity`), or to the transaction whose `MerchantKey.make(description)` equals `descriptionKey`.
+public struct LinkAction: Codable, Equatable, Sendable {
+    public var entity: EvidenceEntity?
+    public var role: String?
+    public var descriptionKey: String?
+
+    public init(entity: EvidenceEntity? = nil, role: String? = nil, descriptionKey: String? = nil) {
+        self.entity = entity
+        self.role = role
+        self.descriptionKey = descriptionKey
+    }
+}
+
+/// Where a figure sits: the label before it and which occurrence of that label.
+public struct FigurePositionAction: Codable, Equatable, Sendable {
+    public var field: ImportFigureField
+    public var label: String
+    public var occurrence: Int
+
+    public init(field: ImportFigureField, label: String, occurrence: Int) {
+        self.field = field
+        self.label = label
+        self.occurrence = occurrence
+    }
+}
+
+/// What a learnt link points at: a fixed record, or the transactions of a merchant. An issuer has
+/// at most one link rule of each (`ImportRuleKind.linkKey`), so choosing a payment never replaces
+/// where its documents are filed.
+public enum ImportLinkFamily: String, CaseIterable, Sendable {
+    case record, transaction
+
+    /// The family of a link action: a record when it names one, else a merchant's transactions.
+    public static func of(_ action: LinkAction) -> ImportLinkFamily { action.entity == nil ? .transaction : .record }
+
+    /// The family of a link to `entity`.
+    public static func of(_ entity: EvidenceEntity) -> ImportLinkFamily { entity.type == .transaction ? .transaction : .record }
+}
+
+extension ImportRuleKind {
+    /// The match key for a `documentKind` or `issuer` rule about `issuer` (a `link` rule's is `linkKey`).
+    public static func matchKey(issuer: IssuerKey) -> String { issuer.key }
+
+    /// The match key for a `link` rule about `issuer`: one per family (`"<issuer>#record"`,
+    /// `"<issuer>#transaction"`). Rules learnt before had the bare issuer key (`linkIssuerKey`).
+    public static func linkKey(issuer: IssuerKey, family: ImportLinkFamily) -> String { linkKey(issuer.key, family: family) }
+
+    static func linkKey(_ issuerKey: String, family: ImportLinkFamily) -> String { "\(issuerKey)#\(family.rawValue)" }
+
+    /// The issuer key of a `link` rule's match key and its family when the key names one (nil: a
+    /// bare key learnt before families, whose family is its action's).
+    public static func linkIssuerKey(_ matchKey: String) -> (issuer: String, family: ImportLinkFamily?) {
+        for family in ImportLinkFamily.allCases where matchKey.hasSuffix("#" + family.rawValue) {
+            return (String(matchKey.dropLast(family.rawValue.count + 1)), family)
+        }
+        return (matchKey, nil)
+    }
+
+    /// The family of a `link` rule: its key's, else its action's.
+    static func linkFamily(_ rule: ImportRule) -> ImportLinkFamily? {
+        if let family = linkIssuerKey(rule.matchKey).family { return family }
+        return ImportLearning.decode(LinkAction.self, rule.actionJSON).map(ImportLinkFamily.of)
+    }
+
+    /// The match key for a `figurePosition` rule: one per issuer and field.
+    public static func figurePositionKey(issuer: IssuerKey, field: ImportFigureField) -> String {
+        "\(issuer.key)#\(field.rawValue)"
+    }
+}
+
 public enum ImportRuleStore {
     /// The enabled rule for `kind` and `key`, if any.
     public static func rule(db: Database, kind: ImportRuleKind, key: String) throws -> ImportRule? {
@@ -62,8 +154,31 @@ public enum ImportRuleStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let json = String(decoding: try encoder.encode(action), as: UTF8.self)
-        if var existing = try ImportRule
-            .filter(Column("kind") == kind.rawValue && Column("matchKey") == key).fetchOne(db) {
+        return try learn(db: db, kind: kind, key: key, matchLabel: matchLabel, actionJSON: json, actionLabel: actionLabel, now: now)
+    }
+
+    /// The rule a new one for `kind` and `key` replaces, enabled or not: the same pair, or for a
+    /// family-keyed link the issuer's bare-keyed link rule of that family (learnt before families).
+    public static func existing(db: Database, kind: ImportRuleKind, key: String) throws -> ImportRule? {
+        existing(in: try ImportRule.filter(Column("kind") == kind.rawValue).fetchAll(db), kind: kind, key: key)
+    }
+
+    /// `existing(db:kind:key:)` among `rules`.
+    public static func existing(in rules: [ImportRule], kind: ImportRuleKind, key: String) -> ImportRule? {
+        let ofKind = rules.filter { $0.kind == kind }
+        if let same = ofKind.first(where: { $0.matchKey == key }) { return same }
+        let (issuer, family) = ImportRuleKind.linkIssuerKey(key)
+        guard kind == .link, let family else { return nil }
+        return ofKind.first { $0.matchKey == issuer && ImportRuleKind.linkFamily($0) == family }
+    }
+
+    /// `learn` with the action already encoded (a draft's, `ImportRuleDraft`). A bare-keyed link
+    /// rule of the same family takes the family key.
+    @discardableResult
+    public static func learn(db: Database, kind: ImportRuleKind, key: String, matchLabel: String,
+                             actionJSON json: String, actionLabel: String, now: Date) throws -> ImportRule {
+        if var existing = try existing(db: db, kind: kind, key: key) {
+            existing.matchKey = key
             existing.matchLabel = matchLabel
             existing.actionJSON = json
             existing.actionLabel = actionLabel
