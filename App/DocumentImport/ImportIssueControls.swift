@@ -493,7 +493,7 @@ struct ImportFigureEditor: View {
     static func kind(of field: ImportFigureField) -> Kind {
         switch field {
         case .docDate, .periodStart, .periodEnd: return .date
-        case .amount, .pay, .taxDeducted, .openingBalance, .closingBalance: return .money
+        case .amount, .accountTotal, .pay, .taxDeducted, .openingBalance, .closingBalance: return .money
         case .taxYear: return .year
         case .currency, .invoiceNumber, .receiptNumber, .reference, .issuer, .person, .rows, .instalments, .fund, .taxCode: return .text
         }

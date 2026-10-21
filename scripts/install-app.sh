@@ -19,7 +19,7 @@ xcodebuild -project Budget.xcodeproj -scheme Budget -configuration Release \
     | grep -E "error:|warning:|BUILD" | grep -v appintents || true
 
 APP="$BUILD_DIR/Build/Products/Release/Budget.app"
-[[ -d "$APP" ]] || { echo "Build failed." >&2; exit 1; }
+[[ -x "$APP/Contents/MacOS/Budget" ]] || { echo "Build failed." >&2; exit 1; }
 
 rm -rf /Applications/Budget.app
 ditto "$APP" /Applications/Budget.app
