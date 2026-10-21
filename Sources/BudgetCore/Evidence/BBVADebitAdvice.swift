@@ -21,6 +21,9 @@ public enum BBVADebitAdvice {
         public var entity: String?
         /// The payment reference or direct-debit mandate ("Referência", "Autorização", "Mandato").
         public var reference: String?
+        /// The advice's words of eight or more digits (letters kept: "P1610001547259"): its
+        /// mandate, transaction and movement references, wherever the layout puts them.
+        public var longNumbers: Set<String> = []
 
         /// The words of the creditor, entity and reference (folded, uppercased): what a debit's
         /// description may name — never the letter's boilerplate or the client's name.
@@ -107,11 +110,16 @@ public enum BBVADebitAdvice {
                 break
             }
         }
+        // A SEPA order advice names the creditor unlabelled, alone on the line after "AVISO DE DÉBITO".
         let creditor = value(in: lines, labels: ["CREDOR", "BENEFICIARIO", "DESCRITIVO", "DESCRICAO"])
+            ?? lines.firstIndex(of: "AVISO DE DEBITO").flatMap { index in
+                index + 1 < lines.count ? lines[index + 1] : nil
+            }.flatMap { line in !line.contains(":") && line.contains(where: \.isLetter) ? line : nil }
         let entity = value(in: lines, labels: ["ENTIDADE"])
         let reference = value(in: lines, labels: ["REFERENCIA", "AUTORIZACAO", "MANDATO", "REF."], needsDigit: true)
         return Advice(date: date, amounts: amounts, amount: labelled ?? (amounts.count == 1 ? amounts.first : nil),
-                      creditor: creditor, entity: entity, reference: reference)
+                      creditor: creditor, entity: entity, reference: reference,
+                      longNumbers: Set(words.filter { $0.filter(\.isNumber).count >= 8 }))
     }
 
     /// The first date after a "Data … do movimento / operação / débito / valor" label, else the
@@ -165,7 +173,10 @@ public enum BBVADebitAdvice {
 
     /// The word of `description` the advice names: a word of three or more letters, or of four
     /// or more letters and digits (stopwords aside), among the creditor's, entity's and
-    /// reference's words, or a number of five or more digits in them; `nil` when none.
+    /// reference's words, or a number of five or more digits in them; else the direct debit's
+    /// mandate reference ("ADC/…", eight or more digits) within one of the advice's long numbers;
+    /// else the bank's short form of the creditor (`shortCreditor`) and the advice's creditor,
+    /// spaces removed, one a prefix of the other in five or more letters. `nil` when none.
     public static func namedWord(_ description: String, in advice: Advice) -> String? {
         let folded = folded(description)
         let named = advice.namedWords, compact = advice.namedCompact
@@ -178,7 +189,37 @@ public enum BBVADebitAdvice {
                 return token
             }
         }
+        if let mandate = mandateReference(folded), advice.longNumbers.contains(where: { $0.contains(mandate) }) {
+            return mandate
+        }
+        if let short = shortCreditor(folded), let creditor = advice.creditor {
+            let full = creditor.filter { $0.isLetter || $0.isNumber }
+            let common = short.count <= full.count ? short : full
+            if (full.hasPrefix(short) || short.hasPrefix(full)), common.filter(\.isLetter).count >= 5 { return short }
+        }
         return nil
+    }
+
+    /// A SEPA direct debit's mandate reference in a (folded) description: the word after "ADC/"
+    /// when it carries eight or more digits.
+    static func mandateReference(_ folded: String) -> String? {
+        guard let range = folded.range(of: "ADC/") else { return nil }
+        let word = String(folded[range.upperBound...].prefix { $0.isLetter || $0.isNumber })
+        return word.filter(\.isNumber).count >= 8 ? word : nil
+    }
+
+    /// The creditor as a direct debit's (folded) description shortens it: the words of letters
+    /// after "SEPADD/" or "DD ", up to the first with a digit or "ADC/", spaces removed
+    /// ("SEPADD/EDP COM ADC/…" → "EDPCOM").
+    static func shortCreditor(_ folded: String) -> String? {
+        let rest: Substring
+        if folded.hasPrefix("SEPADD/") { rest = folded.dropFirst("SEPADD/".count) }
+        else if folded.hasPrefix("DD ") { rest = folded.dropFirst("DD ".count) }
+        else { return nil }
+        let head = rest.range(of: "ADC/").map { rest[..<$0.lowerBound] } ?? rest
+        let words = head.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).prefix { $0.allSatisfy(\.isLetter) }
+        let short = words.joined()
+        return short.isEmpty ? nil : short
     }
 
     // MARK: Debits

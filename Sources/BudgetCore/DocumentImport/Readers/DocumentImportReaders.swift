@@ -67,6 +67,10 @@ public struct UtilityInvoiceImportReader: ImportReader {
     public static let documentOnlyIssueId = "noInvoiceRecord"
     /// The note of an invoice filed as a document only.
     public static let documentOnlyNote = "No invoice record: only the document is filed"
+    /// The note (and outcome line) of an invoice recorded without a document, whose document this is.
+    public static let attachedNote = "Invoice already recorded: the document is attached to it"
+    /// Id of the question "which recorded invoice is this a document of?" (several fit).
+    public static let chooseInvoiceIssueId = "chooseInvoice"
 
     static let documentOnlyIssue: ImportIssue = {
         let text = "No invoice record can be made from this file: choose its provider, or file the document only"
@@ -82,6 +86,9 @@ public struct UtilityInvoiceImportReader: ImportReader {
         let entry = DocumentIdentityIndex.Entry(documentId: recorded.documentId,
                                                 label: Recharges.invoiceLabel(recorded, providerName: providerName), identity: identity)
         var issue = try ImportDuplicates.correctedVersion(of: entry, item: item, db: db)
+        issue.id = ImportDuplicates.recordedCorrectedVersionIssueId
+        // Without a document, filed only it is attached to the recorded invoice.
+        if recorded.documentId == nil, let id = recorded.id { issue.documentOnlyEffect = .attachToInvoice(invoiceId: id) }
         // Without a document, the recorded invoice is where its debit is.
         if recorded.documentId == nil, let transactionId = recorded.transactionId,
            try EvidenceLinks.entityExists(db: db, .transaction(transactionId)) {
@@ -245,7 +252,43 @@ public struct UtilityInvoiceImportReader: ImportReader {
             }
             item.issues.append(ImportIssue(id: "missingFigure.\(field.rawValue)", kind: .missingFigure(field), reason: reason))
         }
-        if let copy = try proposal.duplicateOf.flatMap({ try UtilityInvoice.fetchOne(db, key: $0) }) {
+        // The recorded invoice it is a document of: the one it copies, else the one for its
+        // period (another amount). One recorded without a document (by hand, from the tracker,
+        // or its document deleted) — several fitting: the user's choice, never a guess.
+        var copy = try proposal.duplicateOf.flatMap { try UtilityInvoice.fetchOne(db, key: $0) }
+        var recorded = copy == nil ? try proposal.correctedVersionOf.flatMap { try UtilityInvoice.fetchOne(db, key: $0) } : nil
+        if let read = proposal.invoice, copy?.documentId == nil {
+            var candidates = try Recharges.recordedCandidates(db: db, of: read)
+            if let copy, !candidates.contains(where: { $0.id == copy.id }) { candidates.insert(copy, at: 0) }
+            if let id = context.intent.invoiceId, let chosen = candidates.first(where: { $0.id == id }) {
+                copy = chosen.amountMinorUnits == read.amountMinorUnits ? chosen : nil
+                recorded = copy == nil ? chosen : nil
+            } else if candidates.count >= 2 {
+                // A document of one of them, whichever: filed, never recorded a second time.
+                let options = candidates.compactMap(\.id)
+                let reason = "\(options.count) invoices of \(providerName) fit this one (\(Recharges.invoiceLabel(read, providerName: providerName))): "
+                    + "which one is it a document of?"
+                item.issues.append(ImportIssue(id: Self.chooseInvoiceIssueId, kind: .chooseTarget(.invoice, options: options), reason: reason,
+                                               offers: [.fileWithoutLink, .leaveOut]))
+                item.identityProviderId = read.providerId
+                item.effect = .file
+                return item
+            }
+        }
+        if let copy, let copyId = copy.id, copy.documentId == nil {
+            // Recorded without a document: this is it — attached, linked where the invoice is
+            // (its debit); no figure of the invoice changes.
+            item.effect = .attachToInvoice(invoiceId: copyId)
+            item.identityProviderId = copy.providerId
+            let label = Recharges.invoiceLabel(copy, providerName: providerName)
+            if let transactionId = copy.transactionId, try EvidenceLinks.entityExists(db: db, .transaction(transactionId)) {
+                item.links = [ProposedLink(entity: .transaction(transactionId), label: try entityLabel(db: db, .transaction(transactionId)),
+                                           confidence: .certain, reasons: ["\(label) is paid by it"])]
+            }
+            item.notes.append(Self.attachedNote)
+            return item
+        }
+        if let copy {
             // Named by its number when both have one; else (an old bill recorded without one)
             // by its period, else its issue date.
             let of = copy.invoiceNumber.flatMap { number in reading.invoiceNumber == nil ? nil : "Invoice \(number) of \(providerName)" }
@@ -253,14 +296,15 @@ public struct UtilityInvoiceImportReader: ImportReader {
             item.duplicate = ImportDuplicate(level: .document, of: of + " already recorded", existingDocumentId: copy.documentId)
         }
         var correctedVersion = false
-        if proposal.duplicateOf == nil, let recorded = try proposal.correctedVersionOf.flatMap({ try UtilityInvoice.fetchOne(db, key: $0) }) {
+        if copy == nil, let recorded {
             // Another amount for a period already recorded (one of them without a number):
             // possibly a corrected version — filed only, linked where the recorded one is.
             item.issues.append(try Self.correctedVersionIssue(of: recorded, providerName: providerName, item: item, db: db))
             correctedVersion = true
         }
-        for warning in proposal.warnings where !(proposal.duplicateOf != nil && warning.hasPrefix("A copy of the invoice"))
-            && !(correctedVersion && warning.hasPrefix("An invoice for this period")) {
+        // What the copy or corrected-version answer says already.
+        for warning in proposal.warnings where !((copy != nil || correctedVersion)
+            && (warning.hasPrefix("A copy of the invoice") || warning.hasPrefix("An invoice for this period"))) {
             problem(&item, warning)
         }
 

@@ -259,6 +259,86 @@ final class BBVADebitAdviceTests: XCTestCase {
         XCTAssertEqual(item.links.map(\.entity), [.transaction(debit)])
     }
 
+    // MARK: The bank's short form of the creditor, the mandate reference
+
+    /// A SEPA direct-debit order advice as BBVA's decoded text has it: the creditor alone on the
+    /// line after "AVISO DE DÉBITO", a creditor identifier, the transaction reference first and
+    /// the mandate ("NÚMERO AUTORIZAÇÃO") further down. `movement` is the statement's description
+    /// of the debit, when the advice repeats it.
+    static func sepaOrderLines(creditor: String = "DEMO WATERWORKS SA", authorisation: String? = "55500011122000",
+                               movement: String? = nil, date: String = "2024-03-05", amount: String = "30,00") -> [String] {
+        ["Exmo(a). Senhor(a)", "DATA: \(date)", "ORDEM DE DEBITO DIRECTO SEPA", "CLIENT ALPHA", "CONTA N  : 076",
+         "QUEIRA(M) NOTAR QUE, NESTA DATA, EFECTUÁMOS NA CONTA DE V.EXA(S) O(S) SEGUINTE(S) MOVIMENTO(S):",
+         "AVISO DE DÉBITO", creditor, "IVA 23,00 % : 0,00 EUR", "IDENTIFICAÇÃO CREDOR   : PT00ZZZ000002",
+         "NOME ÚLTIMO CREDOR :", "REFERÊNCIA TRANSAÇÃO   : 000111222333"]
+            + (movement.map { ["REFERÊNCIA MOVIMENTO   : \($0)"] } ?? [])
+            + (authorisation.map { ["NÚMERO AUTORIZAÇÃO : \($0)"] } ?? [])
+            + ["MONTANTE : \(amount) EUR DATA OPERAÇÃO : \(date)   DATA VALOR : \(date)", "DESPESAS EXPEDIENTE : 0,00 EUR"]
+    }
+
+    private func chooseCandidates(_ item: ImportItem) -> [EvidenceEntity]? {
+        item.issues.compactMap { issue -> [LinkCandidate]? in
+            if case .chooseLink(let candidates) = issue.kind { return candidates }
+            return nil
+        }.first?.map(\.entity)
+    }
+
+    func testParsesTheCreditorOfASEPAOrderAdvice() throws {
+        let advice = try XCTUnwrap(BBVADebitAdvice.parse(Self.sepaOrderLines().joined(separator: "\n")))
+        XCTAssertEqual(advice.creditor, "DEMO WATERWORKS SA")
+        XCTAssertEqual(advice.amount, 3_000)
+        XCTAssertEqual(advice.date, Self.date(2024, 3, 5))
+    }
+
+    func testDebitNamingTheCreditorInShortFormLinksWithCertainty() throws {
+        let debit = try transaction(Self.date(2024, 3, 5), -3_000, "SEPADD/DEMOWAT ADC/99988877766")
+        let item = try propose(file(Self.sepaOrderLines(authorisation: nil)))
+        XCTAssertEqual(item.section, .ready, "\(item.needsYouReasons)")
+        XCTAssertEqual(item.links.map(\.entity), [.transaction(debit)])
+        XCTAssertEqual(item.links.first?.confidence, .certain)
+        XCTAssertEqual(BBVADebitAdvice.namedWord("SEPADD/DEMOWAT ADC/99988877766",
+                                                 in: try XCTUnwrap(BBVADebitAdvice.parse(Self.sepaOrderLines(authorisation: nil).joined(separator: "\n")))),
+                       "DEMOWAT")
+        // The advice's creditor shorter than the description's: a prefix the other way.
+        let short = try XCTUnwrap(BBVADebitAdvice.parse(Self.sepaOrderLines(creditor: "DEMOW", authorisation: nil).joined(separator: "\n")))
+        XCTAssertEqual(BBVADebitAdvice.namedWord("DD DEMOWATERWORKS 0042", in: short), "DEMOWATERWORKS")
+    }
+
+    func testDebitCarryingTheMandateReferenceLinksWithCertainty() throws {
+        // The bank's short form names nothing of the creditor's name; the mandate is in the advice.
+        let debit = try transaction(Self.date(2024, 3, 6), -3_000, "SEPADD/XYZ CUR ADC/55500011122")
+        let item = try propose(file(Self.sepaOrderLines(creditor: "OTHER NAME (CURR)")))
+        XCTAssertEqual(item.section, .ready, "\(item.needsYouReasons)")
+        XCTAssertEqual(item.links.map(\.entity), [.transaction(debit)])
+        XCTAssertEqual(item.links.first?.confidence, .certain)
+        // A mandate with a letter in front, as the advice's authorisation carries it.
+        let lettered = try XCTUnwrap(BBVADebitAdvice.parse(Self.sepaOrderLines(creditor: "OTHER NAME", authorisation: "P123456789012")
+            .joined(separator: "\n")))
+        XCTAssertEqual(BBVADebitAdvice.namedWord("SEPADD/XYZ ADC/P1234567890", in: lettered), "P1234567890")
+    }
+
+    func testShortCreditorPrefixesAndReferencesNameNothing() throws {
+        let advice = try XCTUnwrap(BBVADebitAdvice.parse(Self.sepaOrderLines(creditor: "DEMOWATERWORKS", authorisation: "1234567000")
+            .joined(separator: "\n")))
+        XCTAssertNil(BBVADebitAdvice.namedWord("SEPADD/DEMO ADC/99988877766", in: advice), "four letters in common")
+        XCTAssertNil(BBVADebitAdvice.namedWord("SEPADD/XYZ ADC/1234567", in: advice), "seven digits")
+        let debit = try transaction(Self.date(2024, 3, 5), -3_000, "SEPADD/DEMO ADC/99988877766")
+        let item = try propose(file(Self.sepaOrderLines(creditor: "DEMOWATERWORKS", authorisation: nil)))
+        XCTAssertEqual(item.section, .needsYou)
+        XCTAssertEqual(item.links, [])
+        XCTAssertEqual(chooseCandidates(item), [.transaction(debit)])
+    }
+
+    func testTwoNamedDebitsStillAskToChoose() throws {
+        let first = try transaction(Self.date(2024, 3, 5), -3_000, "SEPADD/DEMOWAT ADC/55500011122")
+        let second = try transaction(Self.date(2024, 3, 6), -3_000, "SEPADD/DEMOWAT ADC/55500011122")
+        let item = try propose(file(Self.sepaOrderLines()))
+        XCTAssertEqual(item.section, .needsYou)
+        XCTAssertEqual(item.links, [])
+        XCTAssertEqual(Set(chooseCandidates(item) ?? []), [.transaction(first), .transaction(second)])
+        XCTAssertTrue(item.needsYouReasons.contains { $0.contains("2 debits fit") }, "\(item.needsYouReasons)")
+    }
+
     // MARK: Follow-on
 
     /// A debit advice filed in the library with `text`, no link.

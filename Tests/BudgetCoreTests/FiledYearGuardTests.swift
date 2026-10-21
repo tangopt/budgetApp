@@ -660,4 +660,86 @@ final class FiledYearGuardTests: XCTestCase {
         XCTAssertEqual(document?.extractedText, "Synthetic advice text")
         XCTAssertEqual(document?.textStatus, .text)
     }
+
+    // MARK: A document attached to a recorded invoice (import-6 Task 1)
+
+    /// An invoice of 2024/25 (filed), recorded without a document, paid in the year; and an
+    /// item reading it with `amount`, as the utility invoice reader proposes it.
+    private func recordedInvoiceInAFiledYear(amount: Int) throws -> (invoice: UtilityInvoice, item: ImportItem) {
+        let paymentId = try bankTransaction((2024, 12, 20), "POWER CO", -4_000, category: "utilities")
+        let invoice = try db.write { db -> UtilityInvoice in
+            var provider = UtilityProvider(propertyId: id("property"), name: "Power Co", kind: .electricity)
+            try provider.insert(db)
+            var invoice = UtilityInvoice(providerId: provider.id!, periodStart: Self.date(2024, 10, 1), periodEnd: Self.date(2024, 11, 30),
+                                         issueDate: Self.date(2024, 12, 5), amountMinorUnits: 4_000, transactionId: paymentId)
+            try Recharges.saveInvoice(db: db, &invoice)
+            return invoice
+        }
+        var read = invoice
+        read.id = nil
+        read.transactionId = nil
+        read.amountMinorUnits = amount
+        let link = ProposedLink(entity: .transaction(paymentId), label: "POWER CO", confidence: .certain, reasons: ["x"])
+        var item = ImportItem(file: file("invoice.pdf"), recognition: ImportRecognition(kind: .utilityInvoice, confidence: .certain, reason: "x"),
+                              title: "Invoice of Power Co", placement: placement(.utilityInvoice, date: Self.date(2024, 12, 5), amount: amount),
+                              effect: .utilityInvoice(read))
+        if amount == invoice.amountMinorUnits {
+            item.effect = .attachToInvoice(invoiceId: invoice.id!)
+            item.links = [link]
+        } else {
+            let reason = "Possibly a corrected version of the recorded invoice"
+            item.issues = [ImportIssue(id: ImportDuplicates.recordedCorrectedVersionIssueId, kind: .readerProblem(reason), reason: reason,
+                                       offers: [.fileWithoutLink, .leaveOut], documentOnlyLinks: [link],
+                                       documentOnlyEffect: .attachToInvoice(invoiceId: invoice.id!))]
+        }
+        return (invoice, item)
+    }
+
+    private func taxFigures() throws -> TaxFigures.Snapshot {
+        try db.read { try TaxFigures.snapshot(db: $0) }
+    }
+
+    func testDocumentAttachedToAnInvoiceOfAFiledYearChangesNoFigure() throws {
+        let (invoice, item) = try recordedInvoiceInAFiledYear(amount: 4_000)
+        let annotated = try db.write { db in try FiledYearGuard.annotate([item], db: db) }.first!
+        XCTAssertTrue(annotated.issues.isEmpty, "\(annotated.issues)")
+        XCTAssertEqual(annotated.section, .ready)
+        // Confirmed: the backstop finds no filed change, the invoice gets the document, its figures stay.
+        let documentId = try document("invoice.pdf", kind: .utilityInvoice)
+        let before = try taxFigures()
+        try db.write { db in
+            let raw = try TaxFigures.snapshot(db: db)
+            try ImportEffects.applyRecords(db: db, item: annotated, documentId: documentId, importRunId: nil)
+            try ImportEffects.followOns(db: db, propertyIds: try ImportEffects.touchedPropertyIds(db: db, item: annotated))
+            XCTAssertEqual(try FiledYearGuard.filedChanges(db: db, from: raw), [])
+        }
+        XCTAssertEqual(try taxFigures(), before)
+        let after = try XCTUnwrap(try db.read { try UtilityInvoice.fetchOne($0, key: invoice.id!) })
+        XCTAssertEqual(after.documentId, documentId)
+        var unchanged = after
+        unchanged.documentId = nil
+        XCTAssertEqual(unchanged, invoice)
+        XCTAssertEqual(try db.read { try EvidenceLinks.documents(db: $0, for: .transaction(invoice.transactionId!)).map(\.id) }, [documentId])
+    }
+
+    func testCorrectedVersionStillToAnswerIsCheckedAsFiledOnlyNotHeldAsRecorded() throws {
+        // Recording it would be refused (never a second record): checked as its default answer.
+        let (_, item) = try recordedInvoiceInAFiledYear(amount: 4_500)
+        let annotated = try db.write { db in try FiledYearGuard.annotate([item], db: db) }.first!
+        XCTAssertEqual(annotated.issues.map(\.id), [ImportDuplicates.recordedCorrectedVersionIssueId], "\(annotated.issues.map(\.reason))")
+        XCTAssertEqual(annotated.section, .needsYou)
+    }
+
+    func testAttachingToAnInvoiceThatHasADocumentByNowIsOutdated() throws {
+        let (invoice, item) = try recordedInvoiceInAFiledYear(amount: 4_000)
+        let other = try document("other.pdf", kind: .utilityInvoice)
+        let documentId = try document("invoice.pdf", kind: .utilityInvoice)
+        try db.write { db in
+            try db.execute(sql: "UPDATE utilityInvoice SET documentId = ? WHERE id = ?", arguments: [other, invoice.id!])
+            XCTAssertThrowsError(try ImportEffects.applyRecords(db: db, item: item, documentId: documentId, importRunId: nil)) { error in
+                XCTAssertEqual(error as? ImportApplyError,
+                               .planOutdated("Invoice of Power Co: the recorded invoice it is attached to has another document now"))
+            }
+        }
+    }
 }

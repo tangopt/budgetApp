@@ -126,6 +126,7 @@ struct ImportTargetNames: Equatable, Sendable {
         case .account: return "Account #\(id)"
         case .tenancy: return "Tenancy #\(id)"
         case .provider: return "Provider #\(id)"
+        case .invoice: return "Invoice #\(id)"
         }
     }
 
@@ -146,6 +147,11 @@ struct ImportTargetNames: Equatable, Sendable {
             // "EDP · Flat 1": a provider's name alone may be shared by two properties.
             .provider: byId(providers, \.id) { provider in
                 propertyNames[provider.propertyId].map { "\(provider.name) · \($0)" } ?? provider.name
+            },
+            // "€12.30 · 2019-01-01 – 2019-01-31 · no document" (`Recharges.choiceLabel`).
+            .invoice: byId(try UtilityInvoice.fetchAll(db), \.id) { invoice in
+                let provider = providers.first { $0.id == invoice.providerId }
+                return Recharges.choiceLabel(invoice, currency: properties.first { $0.id == provider?.propertyId }?.currency ?? .eur)
             }
         ])
     }

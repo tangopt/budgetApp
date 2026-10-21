@@ -233,9 +233,10 @@ public enum ImportResolutions {
                 if let id = transactionId(inIssueId: issue.id) { dropped.insert(.transaction(id)) }
             }
             edited.issues.removeAll { accepting.contains($0) }
-            if let corrected = accepting.first(where: { $0.id == ImportDuplicates.correctedVersionIssueId }) {
+            if let corrected = accepting.first(where: { ImportDuplicates.isCorrectedVersion($0.id) }) {
                 // A corrected version of a recorded invoice or receipt, filed only: linked where
-                // the original is, recording nothing (its figures stay as recorded).
+                // the original is, recording nothing (its figures stay as recorded); attached to
+                // a recorded invoice that has no document.
                 edited.issues.removeAll { issue in
                     switch issue.kind {
                     case .missingFigure, .chooseLink, .chooseTarget(.provider, _), .chooseTarget(.property, _): return true
@@ -244,7 +245,7 @@ public enum ImportResolutions {
                 }
                 // Still that invoice for the duplicate pass: a copy of it is a copy.
                 if case .utilityInvoice(let invoice) = item.effect { edited.identityProviderId = invoice.providerId }
-                edited.effect = .file
+                edited.effect = corrected.documentOnlyEffect ?? .file
                 edited.links = corrected.documentOnlyLinks
                 let note = correctedVersionNote(item.recognition.kind)
                 if !edited.notes.contains(note) { edited.notes.append(note) }
@@ -451,7 +452,12 @@ public enum ImportResolutions {
 
     /// Whether the item is a corrected version filed as a document only (its note says so).
     static func isFiledAsCorrectedVersion(_ item: ImportItem) -> Bool {
-        item.effect == .file && item.notes.contains(correctedVersionNote(item.recognition.kind))
+        let filedOnly: Bool
+        switch item.effect {
+        case .file, .attachToInvoice: filedOnly = true
+        default: filedOnly = false
+        }
+        return filedOnly && item.notes.contains(correctedVersionNote(item.recognition.kind))
     }
 
     /// The note of a corrected version filed as a document only.

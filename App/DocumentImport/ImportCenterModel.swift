@@ -51,6 +51,7 @@ final class ImportCenterModel: ObservableObject {
         didSet {
             review = plan.map(ImportReviewState.init)
             loadLinkedTransactions()
+            loadRuleFits()
             // The issuer keys of files no longer in the review go.
             let hashes = Set(plan?.items.map(\.file.sha256) ?? [])
             issuerKeys = issuerKeys.filter { hashes.contains($0.key) }
@@ -85,6 +86,26 @@ final class ImportCenterModel: ObservableObject {
     @Published var problem: Problem?
     /// A resolution is being worked out (the review shows it; further answers wait their turn).
     @Published private(set) var isResolving = false
+    /// Per document with a correction that drafts a rule, the other documents of the review the
+    /// rule fits (`ImportPipeline.ruleFits`), worked out off the main actor when a plan arrives.
+    @Published private(set) var ruleFits: [UUID: [ImportRuleFit]] = [:]
+    /// The document whose rule's fits are open for review (the sheet).
+    @Published var ruleFitsReview: RuleFitsReview?
+    /// An undo that would take back a rule other documents were changed by, waiting for the
+    /// user to say whether those changes go too.
+    @Published var pendingUndo: PendingUndo?
+
+    struct RuleFitsReview: Identifiable, Equatable {
+        let sourceId: UUID
+        var id: UUID { sourceId }
+    }
+
+    struct PendingUndo: Equatable {
+        let itemId: UUID
+        let resolution: ImportResolution
+        /// How many other documents the rule changed.
+        let others: Int
+    }
 
     /// Shows the Imports screen (ContentView selects it); called when an import starts.
     var onShow: (() -> Void)?
@@ -124,6 +145,8 @@ final class ImportCenterModel: ObservableObject {
     /// The last queued resolution: the next one (and Confirm import) waits for it, so each
     /// works on the plan the previous one produced.
     private var resolutionChain: Task<Void, Never>?
+    /// The rule fits being worked out (`loadRuleFits`), cancelled when a newer plan arrives.
+    private var ruleFitsTask: Task<Void, Never>?
     /// Releases the planning copy when the app quits.
     private var terminationObserver: NSObjectProtocol?
 
@@ -363,8 +386,68 @@ final class ImportCenterModel: ObservableObject {
         resolve(itemId, issueId: nil, resolution)
     }
 
-    /// `resolve` answering one issue of the item.
+    /// `resolve` answering one issue of the item. Taking back a tick that drafted a rule the
+    /// other documents were changed by (`ImportPlan.ruleChangesUndoneWith`) first asks whether
+    /// to undo those changes too (`pendingUndo`).
     func resolve(_ itemId: UUID, issueId: String?, _ resolution: ImportResolution) {
+        if issueId == nil, let plan, phase == .review {
+            let others = plan.ruleChangesUndoneWith(resolution, on: itemId)
+            if !others.isEmpty {
+                pendingUndo = PendingUndo(itemId: itemId, resolution: resolution, others: others.count)
+                return
+            }
+        }
+        perform(itemId: itemId, issueId: issueId) { pipeline, plan in
+            try await pipeline.resolve(plan, itemId: itemId, issueId: issueId, resolution)
+        }
+    }
+
+    /// The undo `pendingUndo` asked about: with the changes its rule made on the other
+    /// documents ("Undo all"), or the tick alone ("Keep them").
+    func finishPendingUndo(alsoOthers: Bool) {
+        guard let pending = pendingUndo else { return }
+        pendingUndo = nil
+        perform(itemId: pending.itemId, issueId: nil) { pipeline, plan in
+            let undone = try await pipeline.resolve(plan, itemId: pending.itemId, pending.resolution)
+            return alsoOthers ? try await pipeline.undoRuleChanges(undone, from: pending.itemId) : undone
+        }
+    }
+
+    /// The other documents the item's rule fits, opened for review (`ruleFits`).
+    func reviewRuleFits(_ sourceId: UUID) {
+        guard ruleFits[sourceId]?.isEmpty == false else { return }
+        ruleFitsReview = RuleFitsReview(sourceId: sourceId)
+    }
+
+    /// The source's rules applied to the ticked documents (`ImportPipeline.applyRule`).
+    func applyRule(from sourceId: UUID, to itemIds: Set<UUID>) {
+        ruleFitsReview = nil
+        guard !itemIds.isEmpty else { return }
+        // Worked out again for the plan the rule leaves.
+        ruleFits[sourceId] = nil
+        perform(itemId: sourceId, issueId: nil) { pipeline, plan in
+            try await pipeline.applyRule(plan, from: sourceId, to: itemIds)
+        }
+    }
+
+    /// The change a rule from another document made on the item, taken back.
+    func undoRuleChange(_ itemId: UUID) {
+        perform(itemId: itemId, issueId: nil) { pipeline, plan in
+            try await pipeline.undoRuleChange(plan, itemId: itemId)
+        }
+    }
+
+    /// Every change the item's rules made on the other documents, taken back.
+    func undoRuleChanges(from sourceId: UUID) {
+        perform(itemId: sourceId, issueId: nil) { pipeline, plan in
+            try await pipeline.undoRuleChanges(plan, from: sourceId)
+        }
+    }
+
+    /// Works out a change of the open plan off the main actor, after the ones queued before it,
+    /// each on the plan the previous one produced.
+    private func perform(itemId: UUID, issueId: String?,
+                         _ change: @escaping @Sendable (ImportPipeline, ImportPlan) async throws -> ImportPlan) {
         // The review is read only while files are read into it or it is being applied (the
         // screen disables it): an answer given then is refused out loud, never dropped.
         guard phase == .review, plan != nil else {
@@ -382,7 +465,7 @@ final class ImportCenterModel: ObservableObject {
             guard let self, let current = self.plan else { return }
             let result = await Result.catching {
                 try await DetachedWork.run(priority: .userInitiated) {
-                    try await pipeline.resolve(current, itemId: itemId, issueId: issueId, resolution)
+                    try await change(pipeline, current)
                 }
             }
             // Discarded (or replaced by a new reading) meanwhile: the answer no longer applies.
@@ -530,6 +613,37 @@ final class ImportCenterModel: ObservableObject {
         }
     }
 
+    /// Works out which other documents the plan's corrections' rules fit (off the main actor, on
+    /// the planning copy); a result for a plan replaced meanwhile is dropped.
+    private func loadRuleFits() {
+        guard let plan else {
+            ruleFitsTask?.cancel()
+            ruleFits = [:]
+            ruleFitsReview = nil
+            pendingUndo = nil
+            return
+        }
+        guard plan.items.contains(where: { !$0.ruleDrafts.isEmpty }) else {
+            ruleFitsTask?.cancel()
+            ruleFits = [:]
+            return
+        }
+        let pipeline = pipeline
+        // Only the latest plan's fits matter: the run for the one before stops.
+        ruleFitsTask?.cancel()
+        ruleFitsTask = Task { [weak self] in
+            do {
+                let fits = try await DetachedWork.run(priority: .userInitiated) { try await pipeline.ruleFits(plan) }
+                guard let self, !Task.isCancelled, self.plan == plan else { return }
+                self.ruleFits = fits
+            } catch is CancellationError {
+                return
+            } catch {
+                self?.logger.error("Checking where the review's rules fit failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
     /// Every transaction the plan's items link to or a "which one?" offers.
     static func transactionIds(in plan: ImportPlan) -> [Int64] {
         var ids: [Int64] = []
@@ -631,6 +745,18 @@ final class ImportCenterModel: ObservableObject {
     func snapshotResolve(_ plan: ImportPlan, itemId: UUID, _ resolution: ImportResolution) async throws -> ImportPlan {
         let pipeline = pipeline
         return try await DetachedWork.run(priority: .userInitiated) { try await pipeline.resolve(plan, itemId: itemId, resolution) }
+    }
+
+    /// The other documents each correction's rule fits in `plan` (snapshot routes only).
+    func snapshotRuleFits(_ plan: ImportPlan) async throws -> [UUID: [ImportRuleFit]] {
+        let pipeline = pipeline
+        return try await DetachedWork.run(priority: .userInitiated) { try await pipeline.ruleFits(plan) }
+    }
+
+    /// `plan` with the source's rules applied to `itemIds` (snapshot routes only).
+    func snapshotApplyRule(_ plan: ImportPlan, from sourceId: UUID, to itemIds: Set<UUID>) async throws -> ImportPlan {
+        let pipeline = pipeline
+        return try await DetachedWork.run(priority: .userInitiated) { try await pipeline.applyRule(plan, from: sourceId, to: itemIds) }
     }
 
     /// `plan` with every Needs-you item left out (snapshot routes only).

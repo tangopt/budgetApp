@@ -17,6 +17,8 @@ public enum RechargeError: Error, Equatable {
     /// Another invoice of the provider for the same period (one of them without an invoice
     /// number) is recorded: possibly a corrected version, never a second record.
     case invoiceForPeriodRecorded
+    /// The invoice has another document: a document is attached only to one recorded without.
+    case invoiceHasDocument
     /// A period with only one end, or ending before it starts.
     case invalidPeriod
     /// Lines can only change while the statement is a draft.
@@ -313,6 +315,36 @@ public enum Recharges {
                 && (other.amountMinorUnits < 0) == (invoice.amountMinorUnits < 0)
                 && period(of: invoice, against: other) == .same
         }
+    }
+
+    /// The provider's other invoices `invoice` may be a document of, when one of them has no
+    /// invoice number: of the same sign, for the same period (both ends), or — periods not both
+    /// known — issued the same day; whatever their amounts. The oldest first. More than one:
+    /// which it is can't be told from the reading.
+    public static func recordedCandidates(db: Database, of invoice: UtilityInvoice) throws -> [UtilityInvoice] {
+        var others = UtilityInvoice.filter(Column("providerId") == invoice.providerId).order(Column("id"))
+        if let id = invoice.id { others = others.filter(Column("id") != id) }
+        return try others.fetchAll(db).filter { other in
+            guard invoice.invoiceNumber == nil || other.invoiceNumber == nil,
+                  (other.amountMinorUnits < 0) == (invoice.amountMinorUnits < 0) else { return false }
+            switch period(of: invoice, against: other) {
+            case .same: return true
+            case .different: return false
+            case .unknown: return PropertyDates.day(other.issueDate) == PropertyDates.day(invoice.issueDate)
+            }
+        }
+    }
+
+    /// An invoice among others of its provider (the import's "which one?"): the amount first,
+    /// what tells them apart, then the period (else "issued <day>"), and "no document" when it
+    /// has none — "€12.30 · 2019-01-01 – 2019-01-31 · no document".
+    public static func choiceLabel(_ invoice: UtilityInvoice, currency: Currency) -> String {
+        var when = "issued \(PropertyDates.isoDay(invoice.issueDate))"
+        if let start = invoice.periodStart, let end = invoice.periodEnd {
+            when = "\(PropertyDates.isoDay(start)) – \(PropertyDates.isoDay(end))"
+        }
+        return [Money.format(invoice.amountMinorUnits, currency: currency), when, invoice.documentId == nil ? "no document" : nil]
+            .compactMap { $0 }.joined(separator: " · ")
     }
 
     /// "Invoice of <provider> for 2019-01-01 – 2019-01-31", else "… issued 2019-02-05".

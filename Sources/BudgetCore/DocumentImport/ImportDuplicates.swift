@@ -408,6 +408,8 @@ public enum ImportDuplicates {
     /// later statements of the account count as imported — with the note "Document already in
     /// the library as <name>", and filing it returns that document. A second copy of a
     /// statement in the batch (checked before the library) is a duplicate unless it holds rows.
+    /// Two items attaching their document to the same recorded invoice: the later one is a copy
+    /// of the earlier (`.document` "Same document as <file>").
     /// The first of a pair stays as it was; items a reader already marked, child rows and
     /// left-out items are left alone. Then transaction claims: items of one kind certain of the same transaction
     /// all need the user, and a certain link to a transaction that already has a document of
@@ -437,6 +439,8 @@ public enum ImportDuplicates {
         var batch = DocumentIdentityIndex()
         /// Hash → the original's name, library id and (when in the batch only) item.
         var batchFiles: [String: Original] = [:]
+        /// Recorded invoice → the item of the batch attaching its document (`.attachToInvoice`).
+        var attaching: [Int64: Original] = [:]
         var result = items
         // A left-out item isn't imported: it is no one's original (nor checked itself).
         for i in result.indices where result[i].parentId == nil && !result[i].isLeftOut {
@@ -509,6 +513,15 @@ public enum ImportDuplicates {
                                                         offers: [.acknowledge, .leaveOut]))
                 }
             }
+            if result[i].duplicate == nil, case .attachToInvoice(let invoiceId) = item.effect {
+                // A recorded invoice takes one document: another file of it in the batch is a copy.
+                if let earlier = attaching[invoiceId] {
+                    result[i].duplicate = earlier.duplicate(.document, "Same document as")
+                    result[i].issues.removeAll { $0.id == "possibleDuplicate" }
+                } else {
+                    attaching[invoiceId] = original
+                }
+            }
             if batchFiles[item.file.sha256] == nil { batchFiles[item.file.sha256] = original }
             batch.add(.init(documentId: original.documentId, label: original.label, identity: identity,
                             itemId: original.documentId == nil ? original.itemId : nil))
@@ -529,6 +542,15 @@ public enum ImportDuplicates {
 
     /// Id of the issue of an item sharing a strong identity with a document whose figures differ.
     public static let correctedVersionIssueId = "correctedVersion"
+    /// Id of the utility invoice reader's own "Possibly a corrected version" (another amount for
+    /// a period recorded without a number, `Recharges.recordedForPeriod`): not the pass's, so the
+    /// pass never strips it.
+    public static let recordedCorrectedVersionIssueId = "correctedVersion.recorded"
+
+    /// Whether the issue is a "Possibly a corrected version" (the pass's or the invoice reader's).
+    public static func isCorrectedVersion(_ issueId: String) -> Bool {
+        issueId == correctedVersionIssueId || issueId == recordedCorrectedVersionIssueId
+    }
 
     /// How `item`'s money figures differ from those `entry` holds ("Pay £39,840.00 →
     /// £40,840.00"): only figures both have are compared, and another currency is another

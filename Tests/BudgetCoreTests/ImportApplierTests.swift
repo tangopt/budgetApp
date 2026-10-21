@@ -330,6 +330,112 @@ final class ImportApplierTests: XCTestCase {
         }
     }
 
+    // MARK: Invoices recorded without a document (import-6 Task 1)
+
+    private static let waterRules = UtilityInvoiceRules(
+        textMarkers: ["DEMO WATER"], issueDateLabels: ["ISSUED ON"], periodLabels: ["BILLING PERIOD:"], amountLabels: ["AMOUNT DUE"])
+
+    /// Demo Water (Property A's provider) and its invoice for Jan–Feb 2024 recorded without a
+    /// number or a document (`amount`, paid by the €120.00 debit when it is that amount).
+    private func recordedWaterInvoice(amount: Int = 12_000, period: Bool = true) throws -> UtilityInvoice {
+        try db.write { db in
+            var provider = try UtilityProvider.filter(Column("name") == "Demo Water").fetchOne(db)
+                ?? UtilityProvider(propertyId: self.id("property"), name: "Demo Water", kind: .water, invoiceRules: Self.waterRules)
+            if provider.id == nil { try Recharges.saveProvider(db: db, &provider) }
+            var invoice = UtilityInvoice(providerId: provider.id!, periodStart: period ? Self.date(2024, 1, 1) : nil,
+                                         periodEnd: period ? Self.date(2024, 2, 29) : nil, issueDate: Self.date(2024, 3, 5),
+                                         amountMinorUnits: amount, transactionId: amount == 12_000 ? self.id("debit") : nil)
+            try Recharges.saveInvoice(db: db, &invoice)
+            return invoice
+        }
+    }
+
+    /// Its file, unnumbered, reading `amount` (synthetic).
+    private func waterInvoicePDF(_ amount: String = "120,00", name: String = "agua.pdf", extra: String? = nil) throws -> URL {
+        try drop(EvidenceTestPDFs.textPDF(["Demo Water - customer copy", "Issued on: 5 de março 2024",
+                                           "Billing period: 1 de janeiro a 29 de fevereiro 2024", "Amount due \(amount) EUR"] + [extra].compactMap { $0 },
+                                          name: name), as: name)
+    }
+
+    func testInvoiceRecordedWithoutDocumentGetsItAttachedAndUndoDetachesIt() async throws {
+        let invoice = try recordedWaterInvoice()
+        let plan = try await pipeline.plan([try waterInvoicePDF()])
+        let item = try XCTUnwrap(plan.items.first)
+        XCTAssertEqual(item.section, .ready, "\(item.needsYouReasons) \(String(describing: item.duplicate))")
+        XCTAssertEqual(item.effect, .attachToInvoice(invoiceId: invoice.id!))
+        XCTAssertTrue(item.notes.contains(UtilityInvoiceImportReader.attachedNote))
+        let before = try trackedDump()
+        let summary = try applier.apply(plan, entryPoint: "Import…")
+        try read { db in
+            let file = try XCTUnwrap(ImportRunFile.filter(Column("runId") == summary.runId).fetchOne(db))
+            XCTAssertEqual(file.outcome, .linked)
+            let documentId = try XCTUnwrap(file.documentId)
+            let after = try XCTUnwrap(UtilityInvoice.fetchOne(db, key: invoice.id!))
+            XCTAssertEqual(after.documentId, documentId)
+            XCTAssertEqual(after.amountMinorUnits, 12_000)
+            XCTAssertEqual(try UtilityInvoice.fetchCount(db), 1)
+            XCTAssertTrue(try DocumentLink.filter(Column("documentId") == documentId).fetchAll(db).contains { $0.entity == .transaction(self.id("debit")) })
+        }
+        _ = try ImportUndo.undo(dbQueue: db, library: library, runId: summary.runId)
+        let after = try trackedDump()
+        for table in before.keys.sorted() { XCTAssertEqual(after[table], before[table], "\(table) differs after the undo") }
+        XCTAssertNil(try read { try UtilityInvoice.fetchOne($0, key: invoice.id!)?.documentId })
+        XCTAssertTrue(storedFiles().isEmpty, "\(storedFiles())")
+    }
+
+    func testCorrectedVersionOfAnInvoiceWithoutDocumentIsAttachedOnly() async throws {
+        let invoice = try recordedWaterInvoice()
+        let plan = try await pipeline.plan([try waterInvoicePDF("130,00")])
+        let item = try XCTUnwrap(plan.items.first)
+        XCTAssertEqual(item.section, .needsYou)
+        // Only the question: never "already recorded: leave it out".
+        XCTAssertEqual(item.issues.map(\.id), [ImportDuplicates.recordedCorrectedVersionIssueId], "\(item.needsYouReasons)")
+        let answered = try await pipeline.resolve(plan, itemId: item.id, issueId: ImportDuplicates.recordedCorrectedVersionIssueId, .fileWithoutLink)
+        XCTAssertEqual(answered.items.first?.effect, .attachToInvoice(invoiceId: invoice.id!))
+        XCTAssertTrue(answered.canConfirm, "\(answered.items.first?.needsYouReasons ?? [])")
+        let summary = try applier.apply(answered, entryPoint: "Import…")
+        try read { db in
+            let documentId = try XCTUnwrap(ImportRunFile.filter(Column("runId") == summary.runId).fetchOne(db)?.documentId)
+            let after = try XCTUnwrap(UtilityInvoice.fetchOne(db, key: invoice.id!))
+            XCTAssertEqual(after.documentId, documentId)
+            XCTAssertEqual(after.amountMinorUnits, 12_000)
+            XCTAssertEqual(try UtilityInvoice.fetchCount(db), 1)
+        }
+    }
+
+    func testTwoRecordedInvoicesFittingAskWhichOneThenAttach() async throws {
+        let first = try recordedWaterInvoice()
+        _ = try recordedWaterInvoice(amount: 11_000, period: false)
+        let plan = try await pipeline.plan([try waterInvoicePDF()])
+        let item = try XCTUnwrap(plan.items.first)
+        XCTAssertEqual(item.section, .needsYou)
+        XCTAssertEqual(item.issues.map(\.id), [UtilityInvoiceImportReader.chooseInvoiceIssueId], "\(item.needsYouReasons)")
+        let chosen = try await pipeline.resolve(plan, itemId: item.id, issueId: UtilityInvoiceImportReader.chooseInvoiceIssueId,
+                                                .chooseTarget(.invoice, first.id!))
+        XCTAssertEqual(chosen.items.first?.effect, .attachToInvoice(invoiceId: first.id!))
+        XCTAssertEqual(chosen.items.first?.section, .ready, "\(chosen.items.first?.needsYouReasons ?? [])")
+    }
+
+    func testTwoFilesOfAnInvoiceWithoutDocumentAttachOnlyTheFirst() async throws {
+        let invoice = try recordedWaterInvoice()
+        let plan = try await pipeline.plan([try waterInvoicePDF(), try waterInvoicePDF(name: "agua-scan.pdf", extra: "Second copy")])
+        XCTAssertEqual(plan.items.map(\.effect), [.attachToInvoice(invoiceId: invoice.id!), .attachToInvoice(invoiceId: invoice.id!)])
+        XCTAssertEqual(plan.items.map(\.section), [.ready, .duplicates], "\(plan.items.map(\.needsYouReasons))")
+        XCTAssertEqual(plan.items.last?.duplicate?.of, "Same document as agua.pdf")
+        XCTAssertNoThrow(try applier.apply(plan, entryPoint: "Import…"))
+    }
+
+    func testInvoiceRecordedWithADocumentStaysADuplicate() async throws {
+        let invoice = try recordedWaterInvoice()
+        let added = try library.add(try waterInvoicePDF(name: "agua-original.pdf"), metadata: EvidenceMetadata(kind: .utilityInvoice))
+        try await db.write { db in
+            try db.execute(sql: "UPDATE utilityInvoice SET documentId = ? WHERE id = ?", arguments: [added.document.id!, invoice.id!])
+        }
+        let plan = try await pipeline.plan([try waterInvoicePDF("120,00", name: "agua-copia.pdf")])
+        XCTAssertEqual(plan.items.first?.section, .duplicates, "\(plan.items.first?.needsYouReasons ?? [])")
+        XCTAssertEqual(plan.items.first?.duplicate?.existingDocumentId, added.document.id!)
+    }
+
     func testApplyRefusesPlanWithNeedsYou() async throws {
         let plan = try await pipeline.plan([try receiptPDF(), try plainFile("note.txt", "Hello there. Nothing to recognise.")])
         XCTAssertFalse(plan.items(in: .needsYou).isEmpty)

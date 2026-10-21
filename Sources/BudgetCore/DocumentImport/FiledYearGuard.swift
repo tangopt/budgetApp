@@ -59,6 +59,7 @@ public enum FiledYearGuard {
     /// `impacts`, calling `onSnapshot` for each snapshot taken (tests count them).
     static func impacts(db: Database, item: ImportItem, filedYears: Set<Int>, onSnapshot: () -> Void) throws -> [FiledYearImpact] {
         guard !filedYears.isEmpty, needsCheck(item) else { return [] }
+        let item = asConfirmed(item)
         var impacts: [FiledYearImpact] = []
         let cache = RentCreditEvidence.AdviceCache()
         try db.inSavepoint {
@@ -97,13 +98,14 @@ public enum FiledYearGuard {
             let base = try baseline(db: db, cache: cache, onSnapshot: onSnapshot)
             for index in checked {
                 var item = result[index]
-                for impact in try matchingImpacts(db: db, item: item, baseline: base) {
+                let confirmed = asConfirmed(item)
+                for impact in try matchingImpacts(db: db, item: confirmed, baseline: base) {
                     item.issues.append(ImportIssue(id: "filed-\(impact.startYear)-\(impact.person)-matching", kind: .filedYear(impact),
                                                    reason: impact.headline, offers: [.leaveOut]))
                 }
                 let impacts: [FiledYearImpact]
                 do {
-                    impacts = try Self.impacts(db: db, item: item, before: base.before, cache: cache, onSnapshot: onSnapshot)
+                    impacts = try Self.impacts(db: db, item: confirmed, before: base.before, cache: cache, onSnapshot: onSnapshot)
                 } catch let error as DatabaseError where error.resultCode == .SQLITE_INTERRUPT {
                     throw error
                 } catch {
@@ -124,6 +126,16 @@ public enum FiledYearGuard {
             return .rollback
         }
         return result
+    }
+
+    /// The item as confirming it would apply it: a possibly corrected version of a recorded
+    /// invoice or receipt still to answer is checked as its default answer, "File the document
+    /// only" (it is never recorded a second time, which its own effect would be refused).
+    static func asConfirmed(_ item: ImportItem) -> ImportItem {
+        guard let issue = item.issues.first(where: { ImportDuplicates.isCorrectedVersion($0.id) }),
+              issue.offers.contains(.fileWithoutLink),
+              let answered = try? ImportResolutions.apply(.fileWithoutLink, to: item, issueId: issue.id) else { return item }
+        return answered
     }
 
     /// The hold of an item whose confirmation couldn't be simulated (`impacts` threw `error`):

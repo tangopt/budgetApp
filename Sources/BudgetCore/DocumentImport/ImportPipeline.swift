@@ -44,6 +44,8 @@ public struct ImportPipeline: @unchecked Sendable {
     var modelTimeoutNanoseconds = ImportModelProposals.timeoutNanoseconds
     /// The plan's private copy of the database (shared by copies of this pipeline).
     private let session = ImportPlanningSession()
+    /// Each file's issuer key and built-in recognition, for the rule fits (`ruleFits`, `applyRule`).
+    let ruleFitCache = ImportRuleFitCache()
 
     /// Files read at once.
     static let concurrentLoads = 4
@@ -255,8 +257,19 @@ public struct ImportPipeline: @unchecked Sendable {
     /// A figure fixed by hand replaces that figure's position draft and learnt position; ticked
     /// ("Remember for this issuer") but not remembered (no issuer, a kind whose positions aren't
     /// learnt, not placeable on the page), the item says it is fixed for this document only.
+    ///
+    /// An answer the user gives on a document a rule from another document changed
+    /// (`applyRule`) makes the change theirs: it is no longer undone on its own.
     public func resolve(_ plan: ImportPlan, itemId: UUID, issueId: String? = nil,
                         _ resolution: ImportResolution) async throws -> ImportPlan {
+        var result = try await answering(plan, itemId: itemId, issueId: issueId, resolution)
+        result.state.ruleChanges[itemId] = nil
+        return result
+    }
+
+    /// `resolve`, keeping a rule change's record (`applyRule` answers through it).
+    private func answering(_ plan: ImportPlan, itemId: UUID, issueId: String? = nil,
+                           _ resolution: ImportResolution) async throws -> ImportPlan {
         switch resolution {
         case .markChecked(let target):
             guard issueId == nil else { throw ImportResolutionError.notOffered(resolution) }
@@ -423,6 +436,136 @@ public struct ImportPipeline: @unchecked Sendable {
         return try await annotating(result, itemId: itemId)
     }
 
+    // MARK: Rules applied to the other documents
+
+    /// Every document with drafts of its own (a correction made on it) and the other documents
+    /// of the review its rules fit (`ImportRuleFits`), read on the planning copy.
+    public func ruleFits(_ plan: ImportPlan) async throws -> [UUID: [ImportRuleFit]] {
+        guard plan.items.contains(where: { !ImportRuleFits.drafts(of: $0, in: plan).isEmpty }) else { return [:] }
+        let context = try await ruleFitContext(plan)
+        return ImportRuleFits.allFits(in: plan, context: context)
+    }
+
+    /// The source's rules applied to the documents `itemIds` it fits now: on each, the changes
+    /// worked out again on the current plan (a kind first: the document is read again, then
+    /// what fits the new reading) and answered as the user would answer them (`resolve`'s path:
+    /// drafts, the duplicate pass and the filed-year guard as for any answer). A change no longer
+    /// offered is skipped. Each changed document keeps a record to undo it (`undoRuleChange`).
+    /// Nothing is learnt: the drafts are learnt on Confirm import, as every correction's.
+    public func applyRule(_ plan: ImportPlan, from sourceId: UUID, to itemIds: Set<UUID>) async throws -> ImportPlan {
+        guard let source = plan.items.first(where: { $0.id == sourceId }) else { throw ImportResolutionError.itemNotFound(sourceId) }
+        let sourceDrafts = ImportRuleFits.drafts(of: source, in: plan)
+        let rules = ImportRuleFits.rules(sourceDrafts)
+        var result = plan
+        // Read once: inside the loop only the target's own issuer key and offered transactions change.
+        var context = try await ruleFitContext(plan)
+        for target in plan.items where itemIds.contains(target.id) && target.id != sourceId {
+            let ids = Set([target.id] + result.items.filter { $0.parentId == target.id }.map(\.id))
+            let before = result.items.filter { ids.contains($0.id) }
+            let state = ImportItemStateSnapshot(result.state, ids: ids)
+            var applied: [ImportRuleChange] = []
+            var tried: Set<ImportRuleChange.Aspect> = []
+            while true {
+                guard let item = result.items.first(where: { $0.id == target.id }) else { break }
+                context = try await ruleFitContext(result, refreshing: item, in: context)
+                guard let change = ImportRuleFits.fit(of: item, rules: rules, plan: result, context: context)?
+                        .changes.first(where: { !tried.contains($0.aspect) }) else { break }
+                tried.insert(change.aspect)
+                do {
+                    result = try await answering(result, itemId: target.id, change.resolution)
+                    applied.append(change)
+                } catch ImportResolutionError.notOffered {
+                    continue
+                }
+            }
+            guard !applied.isEmpty, let after = result.items.first(where: { $0.id == target.id }) else { continue }
+            let earlier = before.first { $0.id == target.id }?.ruleDrafts ?? []
+            result.state.ruleChanges[target.id] = ImportRuleChangeRecord(
+                sourceId: sourceId, sourceName: source.file.fileName, sourceDrafts: sourceDrafts, before: before, state: state, after: after,
+                changes: applied, addedDrafts: after.ruleDrafts.filter { !earlier.contains($0) })
+        }
+        return result
+    }
+
+    /// A rule's change on the document taken back while it still holds: the document (and its
+    /// children) and what the plan remembered about them as they were before, then the duplicate
+    /// pass and the filed-year guard again.
+    public func undoRuleChange(_ plan: ImportPlan, itemId: UUID) async throws -> ImportPlan {
+        try await undoRuleChanges(plan, itemIds: [itemId])
+    }
+
+    /// Every change the source's rules made on other documents that can still be undone, taken back.
+    public func undoRuleChanges(_ plan: ImportPlan, from sourceId: UUID) async throws -> ImportPlan {
+        let ids = plan.ruleChangedItems(from: sourceId)
+        guard !ids.isEmpty else { return plan }
+        return try await undoRuleChanges(plan, itemIds: ids)
+    }
+
+    private func undoRuleChanges(_ plan: ImportPlan, itemIds: [UUID]) async throws -> ImportPlan {
+        var result = plan
+        var checking: Set<UUID> = []
+        for itemId in itemIds {
+            guard let record = result.state.ruleChanges[itemId], let item = result.items.first(where: { $0.id == itemId }),
+                  ImportRuleFits.isStillApplied(record, on: item) else {
+                throw ImportResolutionError.itemNotFound(itemId)
+            }
+            let current = Set([itemId] + result.items.filter { $0.parentId == itemId }.map(\.id))
+            guard let at = result.items.firstIndex(where: { $0.id == itemId }) else { continue }
+            var items = result.items
+            items.removeAll { current.contains($0.id) && $0.id != itemId }
+            let index = items.firstIndex { $0.id == itemId } ?? at
+            items.replaceSubrange(index...index, with: record.before)
+            result.items = items
+            record.state.restore(into: &result.state, removing: current)
+            result.state.ruleChanges[itemId] = nil
+            checking.formUnion(record.before.map(\.id))
+        }
+        return try await annotating(result, checking: checking)
+    }
+
+    /// What `ImportRuleFits` needs from the planning copy: the documents' issuer keys, the ones a
+    /// built-in recogniser reads (each file worked out once, `ruleFitCache`), and the merchant,
+    /// amount and currency of the transactions the "which one?" questions offer.
+    private func ruleFitContext(_ plan: ImportPlan) async throws -> ImportRuleFits.Context {
+        try await ruleFitContext(plan.items.filter { $0.parentId == nil && !ImportResolutions.isStatement($0) }, into: ImportRuleFits.Context())
+    }
+
+    /// `context` with `item` (as an answer left it) worked out again.
+    private func ruleFitContext(_ plan: ImportPlan, refreshing item: ImportItem, in context: ImportRuleFits.Context) async throws -> ImportRuleFits.Context {
+        var context = context
+        context.issuers[item.id] = nil
+        context.recognisesItself.remove(item.id)
+        return try await ruleFitContext(ImportResolutions.isStatement(item) ? [] : [item], into: context)
+    }
+
+    private func ruleFitContext(_ items: [ImportItem], into start: ImportRuleFits.Context) async throws -> ImportRuleFits.Context {
+        let copy = try session.current(from: dbQueue)
+        let cache = ruleFitCache
+        return try await copy.dbQueue.read { db in
+            let own = try IssuerKey.knownParties(db: db)
+            let providers = try UtilityProvider.fetchAll(db)
+            var context = start
+            var offered: Set<Int64> = []
+            for item in items {
+                let entry = cache.entry(for: item.file, ownNIFs: own, providers: providers)
+                if let issuer = entry.issuer { context.issuers[item.id] = issuer }
+                if entry.recognisesItself { context.recognisesItself.insert(item.id) }
+                for issue in item.issues {
+                    guard case .chooseLink(let candidates) = issue.kind else { continue }
+                    offered.formUnion(candidates.filter { $0.entity.type == .transaction && context.payments[$0.entity.id] == nil }.map(\.entity.id))
+                }
+            }
+            var currencies: [Int64: Currency] = [:]
+            for transaction in try Transaction.fetchAll(db, keys: offered) {
+                guard let id = transaction.id else { continue }
+                if currencies[transaction.accountId] == nil { currencies[transaction.accountId] = try Account.fetchOne(db, key: transaction.accountId)?.currency }
+                context.payments[id] = .init(merchant: MerchantKey.make(transaction.rawDescription), amountMinorUnits: transaction.amountMinorUnits,
+                                             currency: currencies[transaction.accountId])
+            }
+            return context
+        }
+    }
+
     /// `target` ticked off on `item`, with the rules it teaches and the record to take it back.
     private static func tick(_ target: ImportCheckTarget, on item: ImportItem, learning: DraftContext) throws -> (item: ImportItem, record: ImportCheckRecord) {
         var marked = try ImportChecks.marked(target, on: item)
@@ -459,12 +602,16 @@ public struct ImportPipeline: @unchecked Sendable {
 
     /// `plan` with the duplicate pass and the filed-year guard run again on the item, in a rolled-back write.
     private func annotating(_ plan: ImportPlan, itemId: UUID) async throws -> ImportPlan {
+        try await annotating(plan, checking: [itemId])
+    }
+
+    private func annotating(_ plan: ImportPlan, checking: Set<UUID>) async throws -> ImportPlan {
         let copy = try session.current(from: dbQueue)
         let library = try copy.libraryIndex()
         return try await copy.dbQueue.write { db -> ImportPlan in
             var annotated = plan
             try db.inSavepoint {
-                annotated = try Self.annotate(plan, checking: [itemId], db: db, library: library)
+                annotated = try Self.annotate(plan, checking: checking, db: db, library: library)
                 return .rollback
             }
             return annotated
@@ -568,6 +715,7 @@ public struct ImportPipeline: @unchecked Sendable {
         case .account: return try Account.exists(db, key: id)
         case .tenancy: return try Tenancy.exists(db, key: id)
         case .provider: return try UtilityProvider.exists(db, key: id)
+        case .invoice: return try UtilityInvoice.exists(db, key: id)
         }
     }
 
@@ -599,6 +747,7 @@ public struct ImportPipeline: @unchecked Sendable {
                 // A receipt the user added the file to stays its target (its reader never asks then).
                 if intent.target?.entity.type != .rentReceipt { intent.target = ImportIntent.Target(entity: .tenancy(id)) }
             case .provider: intent.providerId = id
+            case .invoice: intent.invoiceId = id
             }
         case .chooseAccount(let role, let id):
             intent.statementAccounts[role] = id

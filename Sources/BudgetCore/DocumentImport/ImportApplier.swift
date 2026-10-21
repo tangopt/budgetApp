@@ -210,6 +210,8 @@ public struct ImportApplier: Sendable {
             case .utilityInvoice(let invoice):
                 try require(UtilityProvider.exists(db, key: invoice.providerId), item, "Its provider")
                 if let id = invoice.transactionId { try require(Transaction.exists(db, key: id), item, "Its debit") }
+            case .attachToInvoice(let invoiceId):
+                try require(UtilityInvoice.exists(db, key: invoiceId), item, "The recorded invoice it is attached to")
             case .payrollForm(let confirmed):
                 try require(Person.exists(db, key: confirmed.personId), item, "Its person")
             case .ukStatement(let statement):
@@ -410,6 +412,8 @@ public struct ImportApplier: Sendable {
             return (.linked, linkedLine())
         case .utilityInvoice(let invoice):
             return invoice.transactionId != nil || !linked.isEmpty ? (.linked, linkedLine()) : (.recorded, "Recorded: \(item.title)")
+        case .attachToInvoice:
+            return (.linked, UtilityInvoiceImportReader.attachedNote)
         case .rentReceiptsExport, .payrollForm:
             return (.recorded, "Recorded: \(item.title)")
         case .file, .none:

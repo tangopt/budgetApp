@@ -121,10 +121,22 @@ final class DocumentImportReadersTests: XCTestCase {
         XCTAssertEqual(try db.read { try UtilityInvoice.fetchCount($0) }, 0)
     }
 
+    /// A library document (no file: only its row), as a recorded invoice's.
+    private func documentRow(_ name: String = "recorded.pdf") throws -> Int64 {
+        try db.write { db in
+            var document = EvidenceDocument(sha256: UUID().uuidString, storedRelativePath: "x/\(name)", originalFileName: name, byteCount: 1,
+                                            addedAt: Date())
+            try document.insert(db)
+            return document.id!
+        }
+    }
+
     func testInvoiceAlreadyRecordedIsDuplicate() throws {
+        let documentId = try documentRow()
         try db.write { db in
             var invoice = UtilityInvoice(providerId: providerId, invoiceNumber: "FT 1/23", periodStart: Self.date(2023, 1, 1),
-                                         periodEnd: Self.date(2023, 2, 28), issueDate: Self.date(2023, 3, 5), amountMinorUnits: 10_000)
+                                         periodEnd: Self.date(2023, 2, 28), issueDate: Self.date(2023, 3, 5), amountMinorUnits: 10_000,
+                                         documentId: documentId)
             try Recharges.saveInvoice(db: db, &invoice)
         }
         let entry = recognised(try textFile("invoice.pdf", lines: Self.invoiceLines), .utilityInvoice)
@@ -132,6 +144,19 @@ final class DocumentImportReadersTests: XCTestCase {
         XCTAssertEqual(item.section, .duplicates)
         XCTAssertEqual(item.duplicate?.level, .document)
         XCTAssertEqual(item.duplicate?.of, "Invoice FT 1/23 of Demo Power already recorded")
+        XCTAssertEqual(item.duplicate?.existingDocumentId, documentId)
+    }
+
+    func testInvoiceRecordedWithoutDocumentGetsThisOne() throws {
+        let invoice = try db.write { db -> UtilityInvoice in
+            var invoice = UtilityInvoice(providerId: providerId, invoiceNumber: "FT 1/23", periodStart: Self.date(2023, 1, 1),
+                                         periodEnd: Self.date(2023, 2, 28), issueDate: Self.date(2023, 3, 5), amountMinorUnits: 10_000)
+            try Recharges.saveInvoice(db: db, &invoice)
+            return invoice
+        }
+        let item = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice.pdf", lines: Self.invoiceLines), .utilityInvoice))
+        XCTAssertEqual(item.section, .ready, "\(item.needsYouReasons)")
+        XCTAssertEqual(item.effect, .attachToInvoice(invoiceId: invoice.id!))
     }
 
     // Old invoices recorded without a number (import-5 Task 1).
@@ -140,41 +165,92 @@ final class DocumentImportReadersTests: XCTestCase {
 
     @discardableResult
     private func recordUnnumbered(issued: Date = date(2023, 3, 5), amount: Int = 10_000, period: (Date, Date)? = (date(2023, 1, 1), date(2023, 2, 28)),
-                                  transactionId: Int64? = nil) throws -> UtilityInvoice {
+                                  transactionId: Int64? = nil, documentId: Int64? = nil) throws -> UtilityInvoice {
         try db.write { db in
             var invoice = UtilityInvoice(providerId: providerId, periodStart: period?.0, periodEnd: period?.1, issueDate: issued,
-                                         amountMinorUnits: amount, transactionId: transactionId)
+                                         amountMinorUnits: amount, documentId: documentId, transactionId: transactionId)
             try Recharges.saveInvoice(db: db, &invoice)
             return invoice
         }
     }
 
     func testUnnumberedInvoiceReimportedIsDuplicateByPeriod() throws {
-        // Its document deleted: the same file read again.
-        try recordUnnumbered()
+        // Recorded with its document: the same file read again is a copy.
+        let documentId = try documentRow()
+        try recordUnnumbered(documentId: documentId)
         let item = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice.pdf", lines: Self.unnumberedLines), .utilityInvoice))
         XCTAssertEqual(item.section, .duplicates)
         XCTAssertEqual(item.duplicate?.level, .document)
         XCTAssertEqual(item.duplicate?.of, "Invoice of Demo Power for 2023-01-01 – 2023-02-28 already recorded")
+        XCTAssertEqual(item.duplicate?.existingDocumentId, documentId)
     }
 
-    func testResavedCopyOfUnnumberedInvoiceIsDuplicate() throws {
+    // A recorded invoice without a document (import-6 Task 1): its document deleted, or
+    // recorded by hand or from the tracker.
+
+    func testUnnumberedInvoiceRecordedWithoutDocumentGetsItAttached() throws {
+        let debit = try transaction(Self.date(2023, 3, 20), -10_000, "DEMO PWR DD 123", categoryId: utilitiesId)
+        let recorded = try recordUnnumbered(transactionId: debit)
+        let item = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice.pdf", lines: Self.unnumberedLines), .utilityInvoice))
+        XCTAssertNil(item.duplicate)
+        XCTAssertEqual(item.section, .ready, "\(item.needsYouReasons)")
+        XCTAssertEqual(item.effect, .attachToInvoice(invoiceId: recorded.id!))
+        XCTAssertTrue(item.notes.contains(UtilityInvoiceImportReader.attachedNote))
+        // Linked where the invoice is: its debit.
+        XCTAssertEqual(item.links.map(\.entity), [.transaction(debit)])
+        XCTAssertEqual(item.links.first?.confidence, .certain)
+        XCTAssertEqual(item.links.first?.madeByEffect, false)
+        XCTAssertEqual(item.placement?.metadata.kind, .utilityInvoice)
+    }
+
+    func testResavedCopyOfUnnumberedInvoiceIsAttached() throws {
         // Recorded with another issue date (typed by hand): the same provider, period and amount.
-        try recordUnnumbered(issued: Self.date(2023, 3, 20))
+        let recorded = try recordUnnumbered(issued: Self.date(2023, 3, 20))
         let resaved = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice copy.pdf", lines: Self.unnumberedLines), .utilityInvoice))
-        XCTAssertEqual(resaved.section, .duplicates)
-        XCTAssertEqual(resaved.duplicate?.of, "Invoice of Demo Power for 2023-01-01 – 2023-02-28 already recorded")
+        XCTAssertEqual(resaved.section, .ready, "\(resaved.needsYouReasons)")
+        XCTAssertEqual(resaved.effect, .attachToInvoice(invoiceId: recorded.id!))
         // A copy that prints a number the record never had is the same invoice too.
         let numbered = try propose(UtilityInvoiceImportReader(), recognised(try textFile("numbered.pdf", lines: Self.invoiceLines), .utilityInvoice))
-        XCTAssertEqual(numbered.section, .duplicates)
-        XCTAssertEqual(numbered.duplicate?.of, "Invoice of Demo Power for 2023-01-01 – 2023-02-28 already recorded")
+        XCTAssertEqual(numbered.effect, .attachToInvoice(invoiceId: recorded.id!))
     }
 
-    func testUnnumberedInvoiceRecordedWithoutPeriodIsDuplicateByIssueDateAndAmount() throws {
-        try recordUnnumbered(period: nil)
+    func testUnnumberedInvoiceRecordedWithoutPeriodIsAttachedByIssueDateAndAmount() throws {
+        let recorded = try recordUnnumbered(period: nil)
         let item = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice.pdf", lines: Self.unnumberedLines), .utilityInvoice))
-        XCTAssertEqual(item.section, .duplicates)
-        XCTAssertEqual(item.duplicate?.of, "Invoice of Demo Power issued 2023-03-05 already recorded")
+        XCTAssertEqual(item.section, .ready, "\(item.needsYouReasons)")
+        XCTAssertEqual(item.effect, .attachToInvoice(invoiceId: recorded.id!))
+    }
+
+    /// The intent of an invoice chosen in the review.
+    private func invoiceIntent(_ id: Int64) -> ImportIntent {
+        var intent = ImportIntent()
+        intent.invoiceId = id
+        return intent
+    }
+
+    func testTwoRecordedInvoicesFittingAskWhichOne() throws {
+        // One for the period, one without a period issued the same day: which one is never guessed.
+        let first = try recordUnnumbered()
+        let second = try recordUnnumbered(amount: 9_000, period: nil)
+        let item = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice.pdf", lines: Self.unnumberedLines), .utilityInvoice))
+        XCTAssertEqual(item.section, .needsYou)
+        XCTAssertNil(item.duplicate)
+        XCTAssertEqual(item.effect, .file)
+        let issue = try XCTUnwrap(item.issues.first { $0.id == UtilityInvoiceImportReader.chooseInvoiceIssueId })
+        XCTAssertEqual(issue.kind, .chooseTarget(.invoice, options: [first.id!, second.id!]))
+        XCTAssertEqual(issue.reason, "2 invoices of Demo Power fit this one (Invoice of Demo Power for 2023-01-01 – 2023-02-28): which one is it a document of?")
+        // The choices, amount first.
+        XCTAssertEqual(Recharges.choiceLabel(first, currency: .eur), "€100.00 · 2023-01-01 – 2023-02-28 · no document")
+        XCTAssertEqual(Recharges.choiceLabel(second, currency: .eur), "€90.00 · issued 2023-03-05 · no document")
+        // Chosen: the same amount is attached; another amount is possibly a corrected version.
+        let chosen = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice.pdf", lines: Self.unnumberedLines), .utilityInvoice),
+                                 intent: invoiceIntent(first.id!))
+        XCTAssertEqual(chosen.section, .ready, "\(chosen.needsYouReasons)")
+        XCTAssertEqual(chosen.effect, .attachToInvoice(invoiceId: first.id!))
+        let other = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice.pdf", lines: Self.unnumberedLines), .utilityInvoice),
+                                intent: invoiceIntent(second.id!))
+        let corrected = try XCTUnwrap(other.issues.first { $0.id == ImportDuplicates.recordedCorrectedVersionIssueId }, "\(other.needsYouReasons)")
+        XCTAssertEqual(corrected.documentOnlyEffect, .attachToInvoice(invoiceId: second.id!))
     }
 
     func testSamePeriodAnotherAmountIsCorrectedVersionNeverASecondRecord() throws {
@@ -183,13 +259,16 @@ final class DocumentImportReadersTests: XCTestCase {
         let item = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice.pdf", lines: Self.invoiceLines), .utilityInvoice))
         XCTAssertNil(item.duplicate)
         XCTAssertEqual(item.section, .needsYou)
-        let issue = try XCTUnwrap(item.issues.first { $0.id == ImportDuplicates.correctedVersionIssueId })
+        let issue = try XCTUnwrap(item.issues.first { $0.id == ImportDuplicates.recordedCorrectedVersionIssueId })
         XCTAssertEqual(issue.reason, "Possibly a corrected version of Invoice of Demo Power for 2023-01-01 – 2023-02-28: Amount €90.00 → €100.00")
         XCTAssertEqual(issue.offers, [.fileWithoutLink, .leaveOut])
         // Filed only, linked where the recorded invoice is (its debit).
         XCTAssertEqual(issue.documentOnlyLinks.map(\.entity), [.transaction(debit)])
+        // Recorded without a document: filed only, it is attached to the recorded invoice.
+        let recordedId = try db.read { try UtilityInvoice.fetchOne($0)?.id }
+        XCTAssertEqual(issue.documentOnlyEffect, .attachToInvoice(invoiceId: try XCTUnwrap(recordedId)))
         let filed = try XCTUnwrap(try ImportResolutions.apply(.fileWithoutLink, to: item, issueId: issue.id))
-        XCTAssertEqual(filed.effect, .file)
+        XCTAssertEqual(filed.effect, .attachToInvoice(invoiceId: try XCTUnwrap(recordedId)))
         XCTAssertEqual(filed.links.map(\.entity), [.transaction(debit)])
         // Recording it anyway is refused, readably (the guard and apply share applyRecords).
         try db.write { db in
@@ -205,7 +284,7 @@ final class DocumentImportReadersTests: XCTestCase {
         try recordUnnumbered(issued: Self.date(2023, 1, 5), period: (Self.date(2022, 11, 1), Self.date(2022, 12, 31)))
         let item = try propose(UtilityInvoiceImportReader(), recognised(try textFile("invoice.pdf", lines: Self.unnumberedLines), .utilityInvoice))
         XCTAssertNil(item.duplicate)
-        XCTAssertFalse(item.issues.contains { $0.id == ImportDuplicates.correctedVersionIssueId })
+        XCTAssertFalse(item.issues.contains { $0.id == ImportDuplicates.recordedCorrectedVersionIssueId })
         guard case .utilityInvoice = item.effect else { return XCTFail("effect \(item.effect)") }
         try db.write { db in
             try ImportEffects.applyRecords(db: db, item: item, documentId: nil, importRunId: nil)

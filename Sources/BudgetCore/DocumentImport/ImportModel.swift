@@ -188,6 +188,8 @@ public enum ImportTargetKind: String, Sendable {
     case property, person, account, tenancy
     /// A utility provider (its invoice rules and property).
     case provider
+    /// A recorded utility invoice: the one a document of it is attached to.
+    case invoice
 }
 
 /// What the user said the files are, when the entry point knows (`ImportShortcut.intent`).
@@ -213,6 +215,9 @@ public struct ImportIntent: Equatable, Sendable {
     public var target: Target?
     /// The utility provider whose invoice the files are (chosen in the review).
     public var providerId: Int64?
+    /// The recorded utility invoice a file is a document of (chosen in the review when several
+    /// fit): attached to it, never recorded again.
+    public var invoiceId: Int64?
     /// The accounts chosen in the review for a statement's current account, mortgage or fund
     /// (`ImportResolution.chooseAccount`); learnt for files like it on Confirm import.
     public var statementAccounts: [StatementAccountRole: Int64]
@@ -347,15 +352,19 @@ public struct ImportIssue: Equatable, Identifiable, Sendable {
     /// What "File the document only" (`.fileWithoutLink`) links the document to instead of its
     /// effect: for a corrected version of a recorded invoice or receipt, what the original is linked to.
     public var documentOnlyLinks: [ProposedLink]
+    /// What "File the document only" does besides filing it (nil: nothing): for a corrected
+    /// version of a recorded invoice without a document, attaches it to that invoice.
+    public var documentOnlyEffect: ImportEffect?
 
     public init(id: String, kind: ImportIssueKind, reason: String, offers: [ImportResolution] = [], detail: String? = nil,
-                documentOnlyLinks: [ProposedLink] = []) {
+                documentOnlyLinks: [ProposedLink] = [], documentOnlyEffect: ImportEffect? = nil) {
         self.id = id
         self.kind = kind
         self.reason = reason
         self.offers = offers
         self.detail = detail
         self.documentOnlyLinks = documentOnlyLinks
+        self.documentOnlyEffect = documentOnlyEffect
     }
 }
 
@@ -553,6 +562,9 @@ public enum ImportEffect: Equatable, Sendable {
     case rentReceiptPDF(RentReceiptPDFs.Item)
     case transferAdvice(RentCreditEvidence.AdvicePlanItem)
     case utilityInvoice(UtilityInvoice)
+    /// The document attached to a utility invoice already recorded without one (its
+    /// `documentId`): no figure of the invoice changes (`UtilityInvoiceIntake.attach`).
+    case attachToInvoice(invoiceId: Int64)
     case payrollForm(PayrollFormImport.Confirmed)
     case ukStatement(UKStatementEffect)
     case bbvaStatement(BBVAStatementEffect)
@@ -571,7 +583,8 @@ public enum ImportEffect: Equatable, Sendable {
     /// filing the document: a linked document can move a cost between years too).
     public var mayChangeTaxFigures: Bool {
         switch self {
-        case .rentReceiptsExport, .utilityInvoice, .payrollForm, .ukStatement, .bbvaStatement, .rentReceiptPDF, .transferAdvice: return true
+        case .rentReceiptsExport, .utilityInvoice, .attachToInvoice, .payrollForm, .ukStatement, .bbvaStatement, .rentReceiptPDF, .transferAdvice:
+            return true
         case .file, .none: return false
         }
     }
@@ -842,6 +855,8 @@ struct ImportPlanState: Equatable, Sendable {
     var checks: [UUID: [ImportCheckTarget: ImportCheckRecord]] = [:]
     /// Per item, the last "Mark all as checked" (`ImportChecks`), to take back together.
     var checkAlls: [UUID: ImportCheckAllRecord] = [:]
+    /// Per item, the change a rule drafted on another document made there (`ImportRuleFits`), to take back.
+    var ruleChanges: [UUID: ImportRuleChangeRecord] = [:]
 }
 
 extension ImportItem {

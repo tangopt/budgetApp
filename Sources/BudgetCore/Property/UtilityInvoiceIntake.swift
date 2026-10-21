@@ -233,6 +233,19 @@ public enum UtilityInvoiceIntake {
         }
     }
 
+    /// Attaches document `documentId` to invoice `invoiceId`, recorded without one (by hand, from
+    /// the tracker, or its document deleted): its `documentId`, through `Recharges.saveInvoice`;
+    /// no figure of the invoice changes. Attached already: nothing. Refused when the invoice is
+    /// gone (`invoiceNotFound`) or has another document by now (`invoiceHasDocument`).
+    public static func attach(db: Database, documentId: Int64, toInvoice invoiceId: Int64) throws {
+        guard var invoice = try UtilityInvoice.fetchOne(db, key: invoiceId) else { throw RechargeError.invoiceNotFound }
+        guard invoice.documentId != documentId else { return }
+        guard invoice.documentId == nil else { throw RechargeError.invoiceHasDocument }
+        guard try EvidenceDocument.exists(db, key: documentId) else { throw RechargeError.documentNotFound }
+        invoice.documentId = documentId
+        try Recharges.saveInvoice(db: db, &invoice)
+    }
+
     /// The library's documents that read as the property's utility invoices and aren't
     /// recorded yet, oldest first: those a provider of the property recognises, and utility
     /// invoices recognised by none that aren't evidence of another account's transactions.

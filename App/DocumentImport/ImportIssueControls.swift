@@ -141,7 +141,8 @@ struct ImportIssueControls: View {
             if issue.id.hasPrefix(Self.estimateIssuePrefix) { return "Replace the estimate" }
             return "Got it"
         case .fileWithoutLink:
-            let documentOnly = [UtilityInvoiceImportReader.documentOnlyIssueId, ImportDuplicates.correctedVersionIssueId].contains(issue.id)
+            let documentOnly = issue.id == UtilityInvoiceImportReader.documentOnlyIssueId || ImportDuplicates.isCorrectedVersion(issue.id)
+                || issue.id == UtilityInvoiceImportReader.chooseInvoiceIssueId
             return documentOnly ? "File the document only" : "File without a link"
         case .chooseKind(let kind): return "File as \(kind.displayName)"
         case .chooseLink(let entity): return "Link to \(entity.type.displayName.lowercased()) #\(entity.id)"
@@ -600,7 +601,8 @@ struct ImportLinkChooser: View {
     }
 }
 
-/// Which property, person, account, tenancy or provider the document is for.
+/// Which property, person, account, tenancy, provider or recorded invoice the document is for.
+/// A recorded invoice's name (amount first) is never truncated: the picker takes its width.
 struct ImportTargetChooser: View {
     let kind: ImportTargetKind
     let options: [Int64]
@@ -617,12 +619,15 @@ struct ImportTargetChooser: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        // An invoice's choice (up to ~280 pt) takes the line; its button goes below.
+        let layout = kind == .invoice ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6)) : AnyLayout(HStackLayout(spacing: 6))
+        layout {
             Picker(kind.rawValue.capitalized, selection: $chosen) {
                 ForEach(options, id: \.self) { Text(names.name(kind, $0)).tag($0) }
             }
             .labelsHidden()
-            .frame(maxWidth: 200)
+            .frame(maxWidth: kind == .invoice ? nil : 200)
+            .fixedSize(horizontal: kind == .invoice, vertical: false)
             Button("Use this") { resolve(.chooseTarget(kind, chosen)) }
         }
         .controlSize(.small)

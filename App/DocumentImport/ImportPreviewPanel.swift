@@ -21,6 +21,15 @@ struct ImportPreviewPanel: View {
     /// (item, issue, answer).
     let resolve: (UUID, String?, ImportResolution) -> Void
 
+    private var pendingUndoShown: Binding<Bool> {
+        Binding(get: { center.pendingUndo != nil }, set: { if !$0 { center.pendingUndo = nil } })
+    }
+
+    private var undoTitle: String {
+        let count = center.pendingUndo?.others ?? 0
+        return "Also undo the changes on \(count) other document\(count == 1 ? "" : "s")?"
+    }
+
     var body: some View {
         Panel(padding: 12, fillsHeight: true) {
             if let item, center.linkSearchItemId == item.id {
@@ -40,6 +49,21 @@ struct ImportPreviewPanel: View {
                     .font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+        .sheet(item: $center.ruleFitsReview) { review in
+            let source = center.plan?.items.first { $0.id == review.sourceId }
+            ImportRuleFitsSheet(sourceName: source?.file.fileName ?? "this document",
+                                rules: center.plan?.appliedRuleDrafts(of: review.sourceId).map(\.actionLabel) ?? [],
+                                fits: center.ruleFits[review.sourceId] ?? [],
+                                apply: { center.applyRule(from: review.sourceId, to: $0) },
+                                cancel: { center.ruleFitsReview = nil })
+        }
+        .confirmationDialog(undoTitle, isPresented: pendingUndoShown, titleVisibility: .visible) {
+            Button("Undo all") { center.finishPendingUndo(alsoOthers: true) }
+            Button("Keep them") { center.finishPendingUndo(alsoOthers: false) }
+            Button("Cancel", role: .cancel) { center.pendingUndo = nil }
+        } message: {
+            Text("Undo all also reverts every change this document's rules made on the other documents of this import. Keep them leaves those changes as they are.")
         }
     }
 }
@@ -293,6 +317,9 @@ private struct ImportPreviewContent: View {
                 }
             }
 
+            // The correction's rule on the other documents of this import, and a rule's change here.
+            ImportRuleFitLines(item: item, center: center, isAnswerable: isAnswerable)
+
             if let placement = item.placement {
                 block("Filed as") {
                     Text(placement.canonicalName.figuresUnbroken).font(.callout)
@@ -405,6 +432,178 @@ struct ImportCheckPill: View {
             let unsure = target == .recognition ? item.recognition.confidence == .needsReview
                 : item.facts.contains { if case .figure(let field) = target { return $0.field == field && $0.confidence == .needsReview }; return false }
             StatusPill(title, tone: unsure ? .warning : .neutral, help: help)
+        }
+    }
+}
+
+// MARK: Rules on the other documents
+
+/// Under a correction's "Will remember": "This rule also fits N other documents in this import"
+/// with Review (the sheet), and once applied "Changed N other documents by this rule" with an
+/// undo for all of them; on a document a rule changed, "Changed by your rule from <name>" with
+/// the undo (that document only), as a ticked check has it.
+struct ImportRuleFitLines: View {
+    let item: ImportItem
+    @ObservedObject var center: ImportCenterModel
+    let isAnswerable: Bool
+
+    var body: some View {
+        let fits = center.ruleFits[item.id] ?? []
+        let changed = center.plan?.ruleChangedItems(from: item.id) ?? []
+        let source = center.plan?.ruleChangeSource(of: item.id)
+        if !fits.isEmpty || !changed.isEmpty || source != nil {
+            VStack(alignment: .leading, spacing: 4) {
+                if !fits.isEmpty {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        line(Self.fitsLine(fits.count), systemImage: "wand.and.stars")
+                        Button("Review") { center.reviewRuleFits(item.id) }
+                            .controlSize(.small)
+                            .fixedSize()
+                    }
+                }
+                if !changed.isEmpty {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        line(Self.changedLine(changed.count), systemImage: "checkmark.circle")
+                        undoButton(help: "Undo the changes on the other documents") { center.undoRuleChanges(from: item.id) }
+                    }
+                }
+                if let source {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        line("Changed by your rule from \(source.name)", systemImage: "wand.and.stars")
+                        undoButton(help: "Undo this change") { center.undoRuleChange(item.id) }
+                    }
+                }
+            }
+            .disabled(!isAnswerable)
+        }
+    }
+
+    static func fitsLine(_ count: Int) -> String {
+        "This rule also fits \(count) other document\(count == 1 ? "" : "s") in this import"
+    }
+
+    static func changedLine(_ count: Int) -> String {
+        "Changed \(count) other document\(count == 1 ? "" : "s") by this rule"
+    }
+
+    private func line(_ text: String, systemImage: String) -> some View {
+        Label {
+            Text(text.figuresUnbroken).fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: systemImage).foregroundStyle(.secondary)
+        }
+        .font(.callout).foregroundStyle(.secondary)
+    }
+
+    /// The undo icon of a ticked check (`ImportCheckPill`).
+    private func undoButton(help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "arrow.uturn.backward")
+                .frame(width: 20, height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .foregroundStyle(.tint)
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
+/// "Apply your rule to other documents": each document the correction's rule fits, its name then
+/// each change as before → after, ticked by default; Apply changes the ticked ones (as the user's
+/// answers there), Cancel nothing.
+struct ImportRuleFitsSheet: View {
+    let sourceName: String
+    let rules: [String]
+    let fits: [ImportRuleFit]
+    let apply: (Set<UUID>) -> Void
+    let cancel: () -> Void
+    @State private var unticked: Set<UUID> = []
+
+    private var ticked: Set<UUID> { Set(fits.map(\.itemId)).subtracting(unticked) }
+
+    var body: some View {
+        SheetScaffold(title: "Apply your rule to other documents",
+                      subtitle: subtitle,
+                      width: SheetMetrics.listWidth,
+                      onCancel: cancel,
+                      primary: SheetAction(ticked.isEmpty ? "Apply" : "Apply to \(ticked.count)", isEnabled: !ticked.isEmpty) { apply(ticked) }) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(fits.enumerated()), id: \.element.id) { index, fit in
+                        if index > 0 { Divider() }
+                        row(fit)
+                    }
+                }
+            }
+            .frame(maxHeight: 380)
+            .fixedSize(horizontal: false, vertical: true)
+            .sheetListFrame()
+        }
+    }
+
+    private var subtitle: String {
+        let what = rules.isEmpty ? "" : ": " + rules.joined(separator: "; ")
+        return "From \(sourceName)\(what). Nothing is learnt until you confirm the import."
+    }
+
+    private func row(_ fit: ImportRuleFit) -> some View {
+        let isOn = Binding(get: { !unticked.contains(fit.itemId) },
+                           set: { on in if on { unticked.remove(fit.itemId) } else { unticked.insert(fit.itemId) } })
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Toggle(fit.documentName, isOn: isOn)
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .accessibilityLabel(fit.documentName)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(fit.documentName.figuresUnbroken).font(.callout.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onTapGesture { isOn.wrappedValue.toggle() }
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 2) {
+                    ForEach(Array(fit.changes.enumerated()), id: \.offset) { _, change in
+                        GridRow {
+                            Text(change.label).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            // Side by side when both fit, else the new value under the old: never clipped.
+                            ViewThatFits(in: .horizontal) {
+                                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                                    value(change.before)
+                                    arrow
+                                    value(change.after)
+                                }
+                                VStack(alignment: .leading, spacing: 1) {
+                                    value(change.before)
+                                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                                        arrow
+                                        value(change.after)
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+
+    private var arrow: some View {
+        Text("→").font(.caption).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder private func value(_ value: ImportRuleChangeValue) -> some View {
+        switch value {
+        case .none:
+            Text("None").font(.caption).foregroundStyle(.secondary)
+        case .text(let text):
+            // Names and labels wrap as prose (figures in them stay whole); only figures never wrap.
+            Text(text.figuresUnbroken).font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+        case .figure(let fact):
+            ImportFactValueView(value: fact, font: .caption)
         }
     }
 }

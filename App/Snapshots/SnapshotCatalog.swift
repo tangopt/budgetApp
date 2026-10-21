@@ -1,6 +1,7 @@
 // App/Snapshots/SnapshotCatalog.swift
 #if SNAPSHOTS
 import SwiftUI
+import CoreText
 import BudgetCore
 import GRDB
 import struct BudgetCore.Transaction
@@ -31,6 +32,44 @@ enum SnapshotCatalog {
     static var routes: [SnapshotRoute] { screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + importRoutes }
 
     // MARK: Imports, from the demo's samples
+
+    /// Two invented letters of one insurer (written beside the demo copy), the first's kind and
+    /// issuer's name corrected: the plan, that letter and the other documents its rules fit.
+    @MainActor
+    static func correctedInsurerLetter(_ context: SnapshotContext) async throws -> (ImportPlan, UUID, [ImportRuleFit]) {
+        guard let path = context.environment.databasePath else { throw SnapshotMissing("The demo copy") }
+        let folder = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("RuleFitLetters", isDirectory: true)
+        try? FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let urls = try ["2025-06", "2025-09"].map { month -> URL in
+            let url = folder.appendingPathComponent("Example Seguros letter \(month).pdf")
+            try textPDF(["Example Seguros, S.A. NIF 503504564", "Rua Exemplo 1, Lisboa", "Apolice 0001 - aviso \(month)",
+                         "Synthetic demo document - not a real record."], to: url)
+            return url
+        }
+        let center = context.environment.importCenter
+        var plan = try await center.snapshotPlan(urls)
+        guard let source = plan.items.first(where: { $0.file.fileName == urls[0].lastPathComponent }) else { throw SnapshotMissing("The first letter") }
+        plan = try await center.snapshotResolve(plan, itemId: source.id, .chooseKind(.insurancePolicy))
+        plan = try await center.snapshotResolve(plan, itemId: source.id, .setIssuer("Example Seguros"))
+        guard let fits = try await center.snapshotRuleFits(plan)[source.id], !fits.isEmpty else { throw SnapshotMissing("A document the rules fit") }
+        return (plan, source.id, fits)
+    }
+
+    /// A one-page PDF of plain text lines (A4).
+    static func textPDF(_ lines: [String], to url: URL) throws {
+        var box = CGRect(x: 0, y: 0, width: 595, height: 842)
+        guard let pdf = CGContext(url as CFURL, mediaBox: &box, nil) else { throw SnapshotMissing("A PDF context") }
+        pdf.beginPDFPage(nil)
+        let font = CTFontCreateWithName("Helvetica" as CFString, 11, nil)
+        for (index, line) in lines.enumerated() {
+            let text = NSAttributedString(string: line, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])
+            pdf.textPosition = CGPoint(x: 50, y: 790 - CGFloat(index) * 16)
+            CTLineDraw(CTLineCreateWithAttributedString(text), pdf)
+        }
+        pdf.endPDFPage()
+        pdf.closePDF()
+    }
 
     /// The demo's import samples (`DemoImportSamples`, written to `ImportSamples` beside the
     /// demo database) read by the real pipeline: the review with the first Needs-you item, the
@@ -182,6 +221,25 @@ enum SnapshotCatalog {
                 guard let item = plan.items(in: .ready).first ?? plan.items.first else { throw SnapshotMissing("The sample invoice's item") }
                 return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
                     center.showSnapshotPlan(plan, selecting: item.id)
+                })))
+            },
+            // An insurer's letter with its kind and name corrected: its rules fit the insurer's
+            // other letter in the review ("This rule also fits 1 other document", Review).
+            SnapshotRoute(name: "imports-review_rule_fits", title: "Imports: a corrected letter, its rules fitting another", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                let (plan, source, _) = try await correctedInsurerLetter(context)
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(plan, selecting: source)
+                })))
+            },
+            // The rule applied to them: one of them, "Changed by your rule from …" with its undo.
+            SnapshotRoute(name: "imports-review_rule_applied", title: "Imports: a document changed by the rule of another", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                let (plan, source, fits) = try await correctedInsurerLetter(context)
+                let applied = try await center.snapshotApplyRule(plan, from: source, to: Set(fits.map(\.itemId)))
+                guard let changed = fits.first?.itemId else { throw SnapshotMissing("A document the rule fits") }
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(applied, selecting: changed)
                 })))
             },
             // Settings ▸ Evidence sources ▸ Scan Now on a temporary folder holding the samples
@@ -664,6 +722,36 @@ enum SnapshotCatalog {
                 }
                 guard let group else { throw SnapshotMissing("an expense group without rules") }
                 return AnyView(PropertyRulesSheet(viewModel: model, groupId: group.id))
+            },
+            // Imports: a correction's rule checked against the other documents of the review
+            // (invented documents: the sheet takes the fits as worked out, nothing is read).
+            sheet("import_rule_fits", "Apply your rule to other documents") { _ in
+                func fit(_ name: String, _ changes: [ImportRuleChange]) -> ImportRuleFit {
+                    ImportRuleFit(itemId: UUID(), documentName: name, changes: changes)
+                }
+                let kind = ImportRuleChange(aspect: .kind, label: "Kind", before: .text("Unknown"), after: .text("Insurance receipt"),
+                                            resolution: .chooseKind(.insuranceReceipt))
+                let name = ImportRuleChange(aspect: .name, label: "Name", before: .text("Example Seguros, S.A."),
+                                            after: .text("Seguradora Exemplo"), resolution: .setIssuer("Seguradora Exemplo"))
+                // A long name and a long payment label: they wrap, never clipped.
+                let longName = ImportRuleChange(aspect: .name, label: "Name",
+                                                before: .text("Example Seguros Companhia de Seguros Multirriscos e Habitação, S.A. (Sucursal Lisboa)"),
+                                                after: .text("Example Seguros Companhia de Seguros Multirriscos e Habitação"),
+                                                resolution: .setIssuer("Example Seguros Companhia de Seguros Multirriscos e Habitação"))
+                let record = ImportRuleChange(aspect: .link(.record), label: "Link", before: .text("To check: Property A"),
+                                              after: .text("Property A"), resolution: .chooseLink(.property(1)))
+                let amount = ImportRuleChange(aspect: .figure(.amount), label: "Amount", before: .figure(.money(966, .eur)),
+                                              after: .figure(.money(124_510, .eur)), resolution: .confirmFigure(.amount, .money(124_510, .eur)))
+                let paid = ImportRuleChange(aspect: .link(.transaction), label: "Paid by", before: .none,
+                                            after: .text("05/10/2025 · SEPA DD EXAMPLE SEGUROS COMPANHIA DE SEGUROS MULTIRRISCOS ADC/0000123456789 · −€1,245.10"),
+                                            resolution: .chooseLink(.transaction(1)))
+                return AnyView(ImportRuleFitsSheet(
+                    sourceName: "Insurance receipt 2025-03-05.pdf",
+                    rules: ["Kind: Insurance receipt", "Name: Seguradora Exemplo"],
+                    fits: [fit("Insurance receipt 2025-06-05.pdf", [kind, name]),
+                           fit("Example Seguros multi-risk home policy, second instalment 2025-09-05.pdf", [kind, name, amount]),
+                           fit("Letter 2025-10-01.pdf", [longName, record, paid])],
+                    apply: { _ in }, cancel: {}))
             },
             // Polished sheets, for comparison
             sheet("ref_add_account", "Reference: Add account") { context in

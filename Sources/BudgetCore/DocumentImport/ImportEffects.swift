@@ -28,6 +28,11 @@ public enum ImportEffects {
             let providerName = try UtilityProvider.fetchOne(db, key: invoice.providerId)?.name ?? "the provider"
             let what = error == .duplicateInvoiceNumber ? invoice.invoiceNumber.map { "invoice \($0) of \(providerName)" } : nil
             throw ImportApplyError.planOutdated("\(item.title): \(what ?? "an i" + Recharges.invoiceLabel(invoice, providerName: providerName).dropFirst()) is already recorded")
+        } catch let error as RechargeError where error == .invoiceNotFound || error == .invoiceHasDocument {
+            // The recorded invoice it is attached to deleted, or given another document, since it was read.
+            guard case .attachToInvoice = item.effect else { throw error }
+            throw ImportApplyError.planOutdated("\(item.title): the recorded invoice it is attached to "
+                                                + (error == .invoiceNotFound ? "no longer exists" : "has another document now"))
         }
         for link in item.links where link.confidence == .certain && !link.madeByEffect {
             guard let documentId else { throw ImportEffectsError.documentRequired }
@@ -68,6 +73,11 @@ public enum ImportEffects {
         case .rentReceiptPDF(let planned): return planned.tenancy.map { [$0.propertyId] } ?? nil
         case .utilityInvoice(let invoice):
             return try UtilityProvider.fetchOne(db, key: invoice.providerId).map { [$0.propertyId] } ?? nil
+        case .attachToInvoice(let invoiceId):
+            return try Int64.fetchOne(db, sql: """
+                SELECT utilityProvider.propertyId FROM utilityInvoice JOIN utilityProvider ON utilityProvider.id = utilityInvoice.providerId
+                WHERE utilityInvoice.id = ?
+                """, arguments: [invoiceId]).map { [$0] } ?? nil
         }
     }
 
@@ -109,6 +119,7 @@ public enum ImportEffects {
     /// - `.transferAdvice`: links the document to each credit (`RentCreditEvidence.adviceRole`)
     ///   and gives it the credit's amount when it has none, as `RentCreditEvidence.applyAdvices` does.
     /// - `.utilityInvoice`: `UtilityInvoiceIntake.record` with the document (proposed without one).
+    /// - `.attachToInvoice`: `UtilityInvoiceIntake.attach` (the invoice's debit is a link of the item).
     /// - `.payrollForm`: `PayrollFormImport.apply` with the document.
     /// - `.ukStatement`: the account's empty details filled, then the rows committed (a row an
     ///   earlier statement of the import holds is that one's; one left out, the pipeline stages
@@ -226,6 +237,9 @@ public enum ImportEffects {
         case .utilityInvoice(var invoice):
             if let documentId { invoice.documentId = documentId }
             try UtilityInvoiceIntake.record(db: db, &invoice)
+        case .attachToInvoice(let invoiceId):
+            guard let documentId else { throw ImportEffectsError.documentRequired }
+            try UtilityInvoiceIntake.attach(db: db, documentId: documentId, toInvoice: invoiceId)
         case .payrollForm(let confirmed):
             try PayrollFormImport.apply(db: db, confirmed, documentId: documentId)
         case .ukStatement(let statement):
