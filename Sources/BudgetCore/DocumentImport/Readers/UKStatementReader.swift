@@ -44,8 +44,9 @@ public struct UKStatementReader: ImportReader {
     /// that account is gone), else the one account with a saved profile of the file's format
     /// that fully matches the file's sort code / account number (CSV only, `fullMatch`), else
     /// unknown (the existing accounts offered). Then the layout mapped in the review for that
-    /// account and format, else its saved profile, else no profile; a PDF profile must hold a
-    /// readable layout.
+    /// account and format, else (asked again first when the intent says `remapStatement`, the
+    /// saved one offered as the starting point) its saved profile, else no profile; a PDF profile
+    /// must hold a readable layout.
     public static func resolve(file: ImportFile, recognition: ImportRecognition, context: ImportContext, db: Database) throws -> Resolution {
         let format = format(of: recognition.kind)
         let accounts = context.accounts.isEmpty ? try Account.fetchAll(db) : context.accounts
@@ -65,6 +66,15 @@ public struct UKStatementReader: ImportReader {
             return .unresolved(item)
         }
         let mapped = context.intent.statementProfile.flatMap { $0.accountId == accountId && $0.format == format ? $0 : nil }
+        // "Edit column mapping…": the saved mapping asked again, prefilled, until one is mapped here.
+        if context.intent.remapStatement, mapped == nil, let saved = try savedProfile(db: db, accountId: accountId, format: format) {
+            let name = accounts.first { $0.id == accountId }?.displayName ?? "This account"
+            var item = ImportItem(file: file, recognition: recognition, title: "\(name) statement", effect: .none, groupKey: groupKey)
+            item.issues.append(ImportIssue(id: "remap", kind: .statement(.remap(format: format, accountId: accountId)),
+                                           reason: "Check how \(name)'s \(format.rawValue.uppercased()) statements are read (the saved mapping is filled in) or leave it out of this import",
+                                           offers: [.saveProfile(saved)]))
+            return .unresolved(item)
+        }
         guard let profile = try mapped ?? savedProfile(db: db, accountId: accountId, format: format) else {
             let name = accounts.first { $0.id == accountId }?.displayName ?? "This account"
             var item = ImportItem(file: file, recognition: recognition, title: "\(name) statement", effect: .none, groupKey: groupKey)

@@ -1,20 +1,16 @@
 // App/Tax/TaxIncomeTab.swift
 import SwiftUI
-import UniformTypeIdentifiers
 import BudgetCore
 
 /// The person's income for the year (plan phase 4 Task 4, UI polish §4.2): the employments —
 /// each with the figures the return uses (pay, tax, benefits) and its sources as a table (the
 /// P60 / P45 / payslip rows and the P11D benefits, a pill for where each came from) — then
 /// other income and pension contributions side by side, and the HMRC payments with their
-/// proofs. A P60, P45 or P11D PDF is read and shown in a confirm sheet, editable before Save.
+/// proofs. A P60, P45 or P11D goes through the one importer (the Imports screen shows its review).
 /// Changes in sheets are written by Save.
 struct TaxIncomeTab: View {
     @ObservedObject var viewModel: TaxYearsViewModel
     let page: TaxOverview.YearPage
-    @State private var importing = false
-    @State private var reading = false
-    @State private var importDraft: TaxYearsViewModel.FormImportDraft?
     @State private var editingEmployment: Identified<Employment>?
     @State private var editingIncome: Identified<EmploymentIncome>?
     @State private var editingBenefit: Identified<BenefitInKind>?
@@ -51,27 +47,12 @@ struct TaxIncomeTab: View {
             }
             paymentsPanel
         }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .image], allowsMultipleSelection: false) { result in
-            guard case let .success(urls) = result, let url = urls.first else { return }
-            reading = true
-            Task {
-                let outcome = await viewModel.readForm(url, kind: nil)
-                reading = false
-                switch outcome {
-                case let .success(draft): importDraft = draft
-                case let .failure(error): viewModel.errorMessage = "Couldn't read “\(url.lastPathComponent)”: \(error.localizedDescription)"
-                }
-            }
-        }
-        .sheet(item: $importDraft) { draft in
-            PayrollFormConfirmSheet(viewModel: viewModel, draft: draft, personId: personId, defaultYear: startYear)
-        }
         .sheet(item: $editingEmployment) { EmploymentSheet(viewModel: viewModel, employment: $0.value) }
         .sheet(item: $editingIncome) { EmploymentIncomeSheet(viewModel: viewModel, income: $0.value) }
         .sheet(item: $editingBenefit) { BenefitSheet(viewModel: viewModel, benefit: $0.value) }
         .sheet(item: $editingOther) { OtherIncomeSheet(viewModel: viewModel, income: $0.value) }
         .sheet(item: $editingPension) { PensionSheet(viewModel: viewModel, contribution: $0.value) }
-        .sheet(item: $editingPayment) { HMRCPaymentSheet(viewModel: viewModel, payment: $0.value, yearStatus: page.row.status) }
+        .sheet(item: $editingPayment) { HMRCPaymentSheet(viewModel: viewModel, payment: $0.value, yearStatus: page.row.status, origin: .incomeRecord) }
         .confirmationDialog(deleting?.title ?? "", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
             Button("Delete", role: .destructive) {
                 deleting?.action()
@@ -87,17 +68,11 @@ struct TaxIncomeTab: View {
     private var employmentsPanel: some View {
         Panel("Employment", subtitle: "SA102: pay and tax from the P60, P45 or payslips; benefits from the P11D") {
             HStack(spacing: 8) {
-                if reading {
-                    ProgressView().controlSize(.small)
-                    Text("Reading…").font(.callout).foregroundStyle(.secondary)
-                }
                 Button("Add employment…") {
                     editingEmployment = Identified(Employment(startYear: startYear, personId: personId, employerName: ""))
                 }
-                Button("Import P60, P45 or P11D…") { importing = true }
-                    .buttonStyle(.borderedProminent).prominentTint()
-                    .disabled(reading)
-                    .help("Read a P60, P45 or P11D (PDF or image) and confirm its figures before saving")
+                ImportShortcutButton("Import P60, P45 or P11D…", shortcut: .payrollForms(personId: personId, taxYear: startYear), prominent: true)
+                    .help("Read a P60, P45 or P11D (PDF or image); the review opens in Imports and nothing is saved before Confirm import")
             }
             .controlSize(.small)
         } content: {
@@ -518,7 +493,7 @@ struct EmploymentSheet: View {
         self.viewModel = viewModel
         self.employment = employment
         let year = employment.ukTaxYear
-        _documents = StateObject(wrappedValue: StagedDocumentsModel(library: viewModel.library, entity: employment.id.map { .employment($0) }))
+        _documents = StateObject(wrappedValue: StagedDocumentsModel(library: viewModel.library, entity: employment.id.map { .employment($0) }, origin: .incomeRecord))
         _name = State(initialValue: employment.employerName)
         _reference = State(initialValue: employment.payeReference ?? "")
         _hasStart = State(initialValue: employment.startDate != nil)
@@ -531,7 +506,7 @@ struct EmploymentSheet: View {
     var body: some View {
         SheetScaffold(title: employment.id == nil ? "Add employment" : "Edit employment", subtitle: employment.ukTaxYear.label, error: error,
                       width: SheetMetrics.formWidth, onCancel: { dismiss() },
-                      primary: SheetAction("Save", isEnabled: !name.trimmingCharacters(in: .whitespaces).isEmpty && documents.addingCount == 0) { save() }) {
+                      primary: SheetAction("Save", isEnabled: !name.trimmingCharacters(in: .whitespaces).isEmpty) { save() }) {
             SheetForm {
                 LabeledContent("Employer") { TextField("Employer", text: $name, prompt: Text("e.g. Example Ltd")) }
                 LabeledContent("PAYE reference") { TextField("PAYE reference", text: $reference, prompt: Text("123/AB456")) }
@@ -584,7 +559,7 @@ struct EmploymentIncomeSheet: View {
         self.viewModel = viewModel
         self.income = income
         let isNew = income.id == nil
-        _documents = StateObject(wrappedValue: StagedDocumentsModel(library: viewModel.library, entity: income.id.map { .employmentIncome($0) }))
+        _documents = StateObject(wrappedValue: StagedDocumentsModel(library: viewModel.library, entity: income.id.map { .employmentIncome($0) }, origin: .incomeRecord))
         _source = State(initialValue: income.source)
         _payText = State(initialValue: text(income.payMinorUnits, isNew: isNew))
         _taxText = State(initialValue: text(income.taxDeductedMinorUnits, isNew: isNew))
@@ -597,7 +572,7 @@ struct EmploymentIncomeSheet: View {
     var body: some View {
         SheetScaffold(title: income.id == nil ? "Add pay and tax" : "Edit pay and tax", subtitle: "SA102 boxes 1 and 2", error: error, width: SheetMetrics.formWidth,
                       onCancel: { dismiss() },
-                      primary: SheetAction("Save", isEnabled: pence(payText) != nil && pence(taxText) != nil && documents.addingCount == 0) { save() }) {
+                      primary: SheetAction("Save", isEnabled: pence(payText) != nil && pence(taxText) != nil) { save() }) {
             SheetForm {
                 LabeledContent("From") {
                     Picker("From", selection: $source) {
@@ -700,7 +675,7 @@ struct OtherIncomeSheet: View {
         self.viewModel = viewModel
         self.income = income
         let isNew = income.id == nil
-        _documents = StateObject(wrappedValue: StagedDocumentsModel(library: viewModel.library, entity: income.id.map { .otherIncome($0) }))
+        _documents = StateObject(wrappedValue: StagedDocumentsModel(library: viewModel.library, entity: income.id.map { .otherIncome($0) }, origin: .incomeRecord))
         _kind = State(initialValue: income.kind)
         _payer = State(initialValue: income.payer ?? "")
         _amountText = State(initialValue: text(income.amountMinorUnits, isNew: isNew))
@@ -712,8 +687,7 @@ struct OtherIncomeSheet: View {
     var body: some View {
         SheetScaffold(title: income.id == nil ? "Add other income" : "Edit other income", subtitle: UKTaxYear(startYear: income.startYear).label,
                       error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
-                      primary: SheetAction("Save", isEnabled: (pence(amountText) ?? -1) >= 0 && (taxText.isEmpty || (pence(taxText) ?? -1) >= 0)
-                                           && documents.addingCount == 0) { save() }) {
+                      primary: SheetAction("Save", isEnabled: (pence(amountText) ?? -1) >= 0 && (taxText.isEmpty || (pence(taxText) ?? -1) >= 0)) { save() }) {
             SheetForm {
                 LabeledContent("Kind") {
                     Picker("Kind", selection: $kind) { ForEach(OtherIncomeKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }.fixedSize()
@@ -764,7 +738,7 @@ struct PensionSheet: View {
     init(viewModel: TaxYearsViewModel, contribution: PensionContribution) {
         self.viewModel = viewModel
         self.contribution = contribution
-        _documents = StateObject(wrappedValue: StagedDocumentsModel(library: viewModel.library, entity: contribution.id.map { .pensionContribution($0) }))
+        _documents = StateObject(wrappedValue: StagedDocumentsModel(library: viewModel.library, entity: contribution.id.map { .pensionContribution($0) }, origin: .incomeRecord))
         _kind = State(initialValue: contribution.kind)
         _provider = State(initialValue: contribution.provider ?? "")
         _paidText = State(initialValue: text(contribution.paidMinorUnits, isNew: contribution.id == nil))
@@ -774,7 +748,7 @@ struct PensionSheet: View {
     var body: some View {
         SheetScaffold(title: contribution.id == nil ? "Add pension contribution" : "Edit pension contribution",
                       subtitle: UKTaxYear(startYear: contribution.startYear).label, error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
-                      primary: SheetAction("Save", isEnabled: (pence(paidText) ?? -1) >= 0 && documents.addingCount == 0) { save() }) {
+                      primary: SheetAction("Save", isEnabled: (pence(paidText) ?? -1) >= 0) { save() }) {
             SheetForm {
                 LabeledContent("Kind") {
                     Picker("Kind", selection: $kind) { ForEach(PensionContributionKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }.fixedSize()
@@ -816,11 +790,13 @@ struct HMRCPaymentSheet: View {
     @State private var markPaid: Bool
     @State private var error: String?
 
-    init(viewModel: TaxYearsViewModel, payment: HMRCPayment, yearStatus: TaxYearStatus, markPaid: Bool = false) {
+    /// `origin`: the tab it was opened from (Income or Tax return), for Add document…'s entry point.
+    init(viewModel: TaxYearsViewModel, payment: HMRCPayment, yearStatus: TaxYearStatus, markPaid: Bool = false, origin: AttachOrigin) {
         self.viewModel = viewModel
         self.payment = payment
         self.yearStatus = yearStatus
-        _documents = StateObject(wrappedValue: StagedDocumentsModel(library: viewModel.library, entity: payment.id.map { .hmrcPayment($0) }))
+        _documents = StateObject(wrappedValue: StagedDocumentsModel(library: viewModel.library, entity: payment.id.map { .hmrcPayment($0) },
+                                                                        origin: origin))
         _kind = State(initialValue: payment.kind)
         _startYear = State(initialValue: payment.startYear)
         _date = State(initialValue: payment.date)
@@ -833,7 +809,7 @@ struct HMRCPaymentSheet: View {
     var body: some View {
         SheetScaffold(title: payment.id == nil ? "Record HMRC payment" : "Edit HMRC payment",
                       subtitle: "A payment to HMRC, or a refund from it, with its proof", error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
-                      primary: SheetAction("Save", isEnabled: (pence(amountText) ?? 0) > 0 && documents.addingCount == 0) { save() }) {
+                      primary: SheetAction("Save", isEnabled: (pence(amountText) ?? 0) > 0) { save() }) {
             SheetForm {
                 LabeledContent("Kind") {
                     Picker("Kind", selection: $kind) { ForEach(HMRCPaymentKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }.fixedSize()
@@ -873,177 +849,5 @@ struct HMRCPaymentSheet: View {
         let canMark = yearStatus == .filed || yearStatus == .paid || startYear != self.payment.startYear
         error = viewModel.savePayment(payment, documents: documents.staging.changes, markYear: markPaid && canMark && kind == .balancingPayment ? .paid : nil)
         if error == nil { dismiss() }
-    }
-}
-
-// MARK: - Form import
-
-/// What was read from a P60, P45 or P11D, editable before Save; the problems that stop it
-/// and the reader's warnings show as you go.
-struct PayrollFormConfirmSheet: View {
-    @ObservedObject var viewModel: TaxYearsViewModel
-    let draft: TaxYearsViewModel.FormImportDraft
-    let personId: Int64
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.theme) private var theme
-    @State private var kind: PayrollFormKind
-    @State private var startYear: Int
-    @State private var employer: String
-    @State private var reference: String
-    @State private var taxCode: String
-    @State private var payText: String
-    @State private var taxText: String
-    @State private var leaving: Date
-    @State private var benefits: [BenefitDraft]
-    @State private var error: String?
-
-    struct BenefitDraft: Identifiable {
-        let id = UUID()
-        var kind: BenefitKind
-        var amountText: String
-    }
-
-    init(viewModel: TaxYearsViewModel, draft: TaxYearsViewModel.FormImportDraft, personId: Int64, defaultYear: Int) {
-        self.viewModel = viewModel
-        self.draft = draft
-        self.personId = personId
-        let e = draft.extraction
-        _kind = State(initialValue: e.kind ?? .p60)
-        _startYear = State(initialValue: e.startYear ?? defaultYear)
-        _employer = State(initialValue: e.employerName ?? "")
-        _reference = State(initialValue: e.payeReference ?? "")
-        _taxCode = State(initialValue: e.taxCode ?? "")
-        _payText = State(initialValue: e.payMinorUnits.map(Money.formatInput) ?? "")
-        _taxText = State(initialValue: e.taxDeductedMinorUnits.map(Money.formatInput) ?? "")
-        _leaving = State(initialValue: e.leavingDate ?? UKTaxYear(startYear: e.startYear ?? defaultYear).lastDay)
-        _benefits = State(initialValue: e.benefits.map { BenefitDraft(kind: $0.kind, amountText: Money.formatInput($0.cashEquivalentMinorUnits)) })
-    }
-
-    private var confirmed: PayrollFormImport.Confirmed {
-        PayrollFormImport.Confirmed(kind: kind, personId: personId, startYear: startYear, employerName: employer, payeReference: reference,
-                                    taxCode: taxCode, payMinorUnits: pence(payText), taxDeductedMinorUnits: pence(taxText),
-                                    leavingDate: kind == .p45 ? leaving : nil,
-                                    benefits: benefits.compactMap { b in pence(b.amountText).map { .init(kind: b.kind, cashEquivalentMinorUnits: $0) } },
-                                    entryMethod: draft.extraction.entryMethod)
-    }
-
-    private var problems: [PayrollFormImport.Problem] { PayrollFormImport.problems(confirmed) }
-    /// Benefit rows whose amount doesn't read (Save stays off until they do).
-    private var hasInvalidBenefit: Bool { kind == .p11d && benefits.contains { pence($0.amountText).map { $0 < 0 } ?? true } }
-    @State private var saved = false
-
-    var body: some View {
-        sheet.onDisappear { if !saved { viewModel.discardImport(draft) } }
-    }
-
-    private var sheet: some View {
-        SheetScaffold(title: "Confirm \(kind.displayName)",
-                      subtitle: "Check what was read, then Save." + (draft.isNewDocument ? " Cancel takes the file out of the library again." : ""),
-                      error: error, width: SheetMetrics.listWidth, onCancel: { dismiss() },
-                      primary: SheetAction("Save", isEnabled: problems.isEmpty && !hasInvalidBenefit) { save() }) {
-            // The form's file, and how it was read (text recognition: check every figure).
-            HStack(spacing: 8) {
-                Label(draft.fileName, systemImage: "doc.text")
-                    .lineLimit(1).truncationMode(.middle)
-                    .help(draft.fileName)
-                StatusPill(draft.extraction.entryMethod.displayName, tone: draft.extraction.entryMethod == .ocr ? .warning : .neutral,
-                           help: draft.extraction.entryMethod == .ocr ? "Read by text recognition: check every figure" : nil)
-                Spacer(minLength: 0)
-            }
-            .font(.callout)
-            .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 8).fill(theme.sectionHeaderTint))
-            SheetForm {
-                LabeledContent("Form") {
-                    Picker("Form", selection: $kind) { ForEach(PayrollFormKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }
-                        .pickerStyle(.segmented).prominentTint().fixedSize()
-                }
-                LabeledContent("Tax year") {
-                    Picker("Tax year", selection: $startYear) {
-                        ForEach(UKTaxRules.knownYears.reversed(), id: \.self) { Text(UKTaxYear(startYear: $0).label).tag($0) }
-                    }
-                    .fixedSize()
-                }
-                LabeledContent("Employer") { TextField("Employer", text: $employer) }
-                LabeledContent("PAYE reference") { TextField("PAYE reference", text: $reference, prompt: Text("123/AB456")) }
-                if kind != .p11d {
-                    LabeledContent("Pay") { MoneyField("Pay", text: $payText, currency: .gbp, width: 140) }
-                    LabeledContent("Tax taken off") { MoneyField("Tax taken off", text: $taxText, currency: .gbp, width: 140) }
-                    LabeledContent("Tax code") { TextField("Tax code", text: $taxCode).frame(width: 120) }
-                }
-                if kind == .p45 {
-                    LabeledContent("Leaving date") { DatePicker("Leaving date", selection: utcDay($leaving), displayedComponents: .date).labelsHidden().fixedSize() }
-                }
-                if kind == .p11d {
-                    LabeledContent("Benefits") { benefitsEditor }
-                }
-                if let total = draft.extraction.totalPayMinorUnits, kind == .p60, draft.extraction.previousPayMinorUnits ?? 0 != 0 {
-                    SheetFormNote("Total for the year \(Money.format(total, currency: .gbp)) includes previous employments.")
-                }
-            }
-            messages
-        }
-    }
-
-    /// The P11D's benefits as a small table: the benefit (with its SA102 box), its cash
-    /// equivalent and a remove icon per row, then Add benefit.
-    private var benefitsEditor: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if benefits.isEmpty {
-                Text("None read: add each benefit the P11D lists.").font(.callout).foregroundStyle(.secondary)
-            } else {
-                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
-                    GridRow {
-                        Text("Benefit")
-                        Text("Cash equivalent").gridColumnAlignment(.trailing)
-                        Text(verbatim: "")
-                    }
-                    .font(.caption).foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                    ForEach($benefits) { $benefit in
-                        GridRow {
-                            Picker("Benefit", selection: $benefit.kind) {
-                                ForEach(BenefitKind.allCases, id: \.self) { Text("Box \($0.sa102Box) · \($0.displayName)").tag($0) }
-                            }
-                            .labelsHidden()
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            MoneyField("Cash equivalent", text: $benefit.amountText, currency: .gbp, width: 100)
-                            Button { benefits.removeAll { $0.id == benefit.id } } label: { Image(systemName: "minus.circle") }
-                                .buttonStyle(.borderless)
-                                .help("Remove this benefit")
-                                .accessibilityLabel("Remove \(benefit.kind.displayName)")
-                        }
-                    }
-                }
-            }
-            Button { benefits.append(BenefitDraft(kind: .medical, amountText: "")) } label: { Label("Add benefit", systemImage: "plus") }
-                .controlSize(.small)
-            SheetCaption("Saving replaces the benefits of an earlier P11D import; benefits typed in by hand stay.")
-        }
-    }
-
-    /// What stops Save (red), then the reader's warnings (amber), each as one banner.
-    @ViewBuilder
-    private var messages: some View {
-        let warnings = draft.personWarnings + draft.extraction.warnings
-        let blocking = (hasInvalidBenefit ? ["Enter each benefit's cash equivalent (or remove the row)."] : []) + problems.map(TaxIncomeMessages.text)
-        if !blocking.isEmpty {
-            InlineBanner(.error) {
-                VStack(alignment: .leading, spacing: 3) { ForEach(blocking, id: \.self) { Text($0.figuresUnbroken) } }
-            }
-        }
-        if !warnings.isEmpty {
-            InlineBanner(.warning) {
-                VStack(alignment: .leading, spacing: 3) { ForEach(warnings, id: \.self) { Text($0.figuresUnbroken) } }
-            }
-        }
-    }
-
-    private func save() {
-        error = viewModel.applyForm(confirmed, documentId: draft.documentId)
-        if error == nil {
-            saved = true
-            dismiss()
-        }
     }
 }

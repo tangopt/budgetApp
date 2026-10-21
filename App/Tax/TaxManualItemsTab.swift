@@ -1,6 +1,5 @@
 // App/Tax/TaxManualItemsTab.swift
 import SwiftUI
-import UniformTypeIdentifiers
 import BudgetCore
 import GRDB
 
@@ -161,19 +160,23 @@ struct ManualItemDraft: Identifiable {
     }
 }
 
-/// A record's documents while its sheet is open: saved links plus staged links and unlinks
-/// (`EvidenceLinkStaging`), which Save applies. A file added here is copied into the library
-/// at once and only its link is staged.
+/// A record's documents while its sheet is open: saved links plus staged unlinks
+/// (`EvidenceLinkStaging`), which Save applies. A file added here goes to the importer with
+/// the record as its link target (`shortcut`): Confirm import links it, not Save.
 @MainActor
 final class StagedDocumentsModel: ObservableObject {
     let library: EvidenceLibrary
+    /// What Add document… and a drop hand the importer: nil until the record is saved (nothing to link to yet).
+    let shortcut: ImportShortcut?
     @Published private(set) var staging = EvidenceLinkStaging(saved: [])
     @Published private(set) var documentsById: [Int64: EvidenceDocument] = [:]
-    @Published private(set) var addingCount = 0
-    @Published var errorMessage: String?
+    /// Files were handed to the importer from this sheet (their review opens once it closes).
+    @Published var sentToImports = false
 
-    init(library: EvidenceLibrary, entity: EvidenceEntity?) {
+    /// `origin`: where the sheet sits, for the run's entry point.
+    init(library: EvidenceLibrary, entity: EvidenceEntity?, origin: AttachOrigin) {
         self.library = library
+        shortcut = entity.map { .attach($0, role: nil, from: origin) }
         if let entity, let documents = try? library.documents(for: entity) {
             staging = EvidenceLinkStaging(saved: documents.compactMap(\.id))
             for document in documents { if let id = document.id { documentsById[id] = document } }
@@ -183,33 +186,6 @@ final class StagedDocumentsModel: ObservableObject {
     var shown: [EvidenceDocument] { staging.shownIds.compactMap { documentsById[$0] } }
 
     func toggleUnlink(_ id: Int64) { staging.toggleUnlink(id) }
-
-    func addFiles(_ urls: [URL]) {
-        let (files, _) = EvidenceFiles.files(urls)
-        guard !files.isEmpty else { return }
-        let library = library
-        addingCount += files.count
-        Task {
-            let outcome = await Task.detached(priority: .userInitiated) { () -> (added: [EvidenceDocument], failures: [String]) in
-                var added: [EvidenceDocument] = [], failures: [String] = []
-                for url in files {
-                    do {
-                        added.append(try EvidenceFiles.withAccess(url) { try library.addAnalyzing(url) }.document)
-                    } catch {
-                        failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
-                    }
-                }
-                return (added, failures)
-            }.value
-            addingCount -= files.count
-            for document in outcome.added {
-                guard let id = document.id else { continue }
-                documentsById[id] = document
-                staging.stageLink(id)
-            }
-            errorMessage = outcome.failures.isEmpty ? nil : "Couldn't add " + outcome.failures.joined(separator: "; ")
-        }
-    }
 
     func open(_ document: EvidenceDocument) {
         NSWorkspace.shared.open(library.fileURL(for: document))
@@ -235,7 +211,8 @@ struct TaxManualItemSheet: View {
         self.viewModel = viewModel
         self.draft = draft
         let item = draft.item
-        _documents = StateObject(wrappedValue: StagedDocumentsModel(library: viewModel.library, entity: item.id.map { .taxManualItem($0) }))
+        _documents = StateObject(wrappedValue: StagedDocumentsModel(library: viewModel.library, entity: item.id.map { .taxManualItem($0) },
+                                                                        origin: .manualItem))
         _label = State(initialValue: item.label)
         _expenseType = State(initialValue: item.expenseType)
         _currency = State(initialValue: item.currency)
@@ -248,7 +225,7 @@ struct TaxManualItemSheet: View {
 
     private var amount: Int? { Money.parseMinorUnits(amountText) }
     private var isValid: Bool {
-        !label.trimmingCharacters(in: .whitespaces).isEmpty && (amount ?? -1) >= 0 && documents.addingCount == 0
+        !label.trimmingCharacters(in: .whitespaces).isEmpty && (amount ?? -1) >= 0
     }
 
     var body: some View {
@@ -318,13 +295,11 @@ struct TaxManualItemSheet: View {
     }
 }
 
-/// A sheet's Documents row: the record's documents with staged links and unlinks, "Add
-/// document…" and a drop target (`StagedDocumentsModel`; Save applies the changes).
+/// A sheet's Documents row: the record's documents with staged unlinks (Save applies them),
+/// "Add document…" and a drop target handing files to the importer with the record as their
+/// link target (`StagedDocumentsModel.shortcut`; reviewed in Imports, linked by Confirm import).
 struct StagedDocumentsField: View {
     @ObservedObject var documents: StagedDocumentsModel
-    @State private var picking = false
-    @State private var dropTargeted = false
-    @Environment(\.theme) private var theme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -351,27 +326,25 @@ struct StagedDocumentsField: View {
                 }
                 .buttonStyle(.borderless)
             }
-            HStack(spacing: 8) {
-                Button("Add document…") { picking = true }.controlSize(.small)
-                if documents.addingCount > 0 {
-                    ProgressView().controlSize(.small)
-                } else {
+            if let shortcut = documents.shortcut {
+                HStack(spacing: 8) {
+                    ImportShortcutButton("Add document…", shortcut: shortcut) { documents.sentToImports = true }
+                        .controlSize(.small)
+                        .help("Import a file and link it to this record (reviewed in Imports)")
                     Text("or drop a file here").font(.caption).foregroundStyle(.secondary)
                 }
-            }
-            if let message = documents.errorMessage {
-                Text(message).font(.callout).foregroundStyle(theme.expense)
+                if documents.sentToImports {
+                    Text(ImportShortcutButton.opensWhenClosed).font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                // A new record: nothing to link a document to until it's saved.
+                Text("Save first to add documents").font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(4)
-        .background { RoundedRectangle(cornerRadius: 6).strokeBorder(dropTargeted ? theme.accent : Color.clear, lineWidth: 2) }
         .contentShape(Rectangle())
-        .dropDestination(for: URL.self) { urls, _ in
-            documents.addFiles(urls)
-            return !urls.isEmpty
-        } isTargeted: { dropTargeted = $0 }
-        .fileImporter(isPresented: $picking, allowedContentTypes: EvidenceFiles.contentTypes, allowsMultipleSelection: true) { result in
-            if case let .success(urls) = result { documents.addFiles(urls) }
+        .importDropTarget(documents.shortcut) {
+            documents.sentToImports = true
         }
     }
 }

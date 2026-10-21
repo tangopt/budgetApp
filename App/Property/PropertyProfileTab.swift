@@ -13,7 +13,6 @@ struct PropertyProfileTab: View {
     @State private var editingProperty: PropertyDraft?
     @State private var editingOwners = false
     @State private var linkingAccount = false
-    @State private var pickingDocument = false
     @State private var confirmingDelete = false
     @State private var editingPerson: Person?
     @State private var editingMortgageTerms = false
@@ -42,13 +41,6 @@ struct PropertyProfileTab: View {
         .sheet(item: $editingPerson) { PersonFormSheet(viewModel: viewModel, person: $0) }
         .sheet(isPresented: $linkingAccount) { LinkAccountSheet(viewModel: viewModel) }
         .sheet(isPresented: $editingMortgageTerms) { MortgageTermsSheet(viewModel: viewModel) }
-        .fileImporter(isPresented: $pickingDocument, allowedContentTypes: EvidenceFiles.contentTypes, allowsMultipleSelection: true) { result in
-            guard let id = viewModel.propertyId else { return }
-            switch result {
-            case .success(let urls): viewModel.addDocuments(urls, to: .property(id), role: nil)
-            case .failure(let error): viewModel.errorMessage = error.localizedDescription
-            }
-        }
         .confirmationDialog(snapshot.property.map { "Delete “\($0.name)”?" } ?? "Delete the property?", isPresented: $confirmingDelete) {
             Button("Delete property", role: .destructive) { viewModel.errorMessage = viewModel.deleteProperty() }
         } message: {
@@ -289,8 +281,10 @@ struct PropertyProfileTab: View {
 
     private func documentsPanel(_ snapshot: PropertyViewModel.Snapshot) -> some View {
         Panel("Documents", subtitle: "Deeds, licences, energy certificates, the mortgage contract") {
-            Button("Add document…") { pickingDocument = true }
-                .controlSize(.small)
+            if let id = viewModel.propertyId {
+                ImportShortcutButton("Add document…", shortcut: .attach(.property(id), role: nil, from: .property))
+                    .controlSize(.small)
+            }
         } content: {
             if snapshot.documents.isEmpty {
                 Text("No documents yet: add the deeds and certificates with Add document….").font(.callout).foregroundStyle(.secondary)

@@ -15,7 +15,7 @@ func entityLabel(db: Database, _ entity: EvidenceEntity) throws -> String {
 }
 
 /// The record's title; `nil` when it no longer exists (`.other` records are named by id).
-private func entityTitle(db: Database, _ entity: EvidenceEntity) throws -> String? {
+func entityTitle(db: Database, _ entity: EvidenceEntity) throws -> String? {
     switch entity.type {
     case .transaction:
         if let transaction = try Transaction.fetchOne(db, key: entity.id) {
@@ -365,6 +365,12 @@ public struct PayrollFormImportReader: ImportReader {
                 let owner = context.people.first { $0.id == suggested }?.name ?? "someone else"
                 item.issues.append(ImportIssue(id: "chooseTarget", kind: .chooseTarget(.person, options: [id, suggested]),
                                                reason: "National Insurance number \(ninoText) is \(owner)'s, not \(found.name)'s: whose form is this?"))
+            } else if suggested == nil, !ninoText.isEmpty, let stored = found.ukNino.map(PayrollFormImport.normalizedNINO),
+                      !stored.isEmpty, stored != ninoText {
+                // Nobody else's, but not the number stored for this person: theirs to confirm, or another person's form.
+                item.issues.append(ImportIssue(id: "chooseTarget", kind: .chooseTarget(.person, options: context.people.compactMap(\.id)),
+                                               reason: "The form's National Insurance number isn't the one stored for \(found.name)",
+                                               offers: [.acknowledge]))
             }
         } else if let suggested, let found = context.people.first(where: { $0.id == suggested }) {
             person = found
@@ -390,6 +396,7 @@ public struct PayrollFormImportReader: ImportReader {
             let total = extraction.benefits.reduce(0) { $0 + $1.cashEquivalentMinorUnits }
             if !extraction.benefits.isEmpty { add(.amount, .money(total, .gbp), "Cash equivalents of the benefits") }
         }
+        if let code = extraction.taxCode { add(.taxCode, .text(code), "Tax code on the \(kind.displayName)") }
         if kind == .p45, let leaving = extraction.leavingDate { add(.docDate, .date(leaving), "Leaving date on the P45") }
         if let person {
             facts.append(ImportFact(field: .person, value: .text(person.name), source: personSource, confidence: .certain, reason: personReason))
@@ -529,7 +536,7 @@ public struct EvidenceDocumentReader: ImportReader {
         if let target = context.intent.target {
             if let label = targetLabel {
                 item.links = [ProposedLink(entity: target.entity, role: target.role, label: label, confidence: .certain,
-                                           reasons: ["You added it to \(label)"])]
+                                           reasons: [context.intent.targetReason(label: label)])]
             } else {
                 problem(&item, "The \(target.entity.type.displayName.lowercased()) you added it to no longer exists",
                         offers: [.fileWithoutLink])

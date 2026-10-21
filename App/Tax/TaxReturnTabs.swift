@@ -343,10 +343,10 @@ struct TaxFilingTab: View {
                 }
             }
             .sheet(item: $recording) { item in
-                HMRCPaymentSheet(viewModel: viewModel, payment: item.value, yearStatus: page.row.status, markPaid: true)
+                HMRCPaymentSheet(viewModel: viewModel, payment: item.value, yearStatus: page.row.status, markPaid: true, origin: .taxReturn)
             }
             .sheet(item: $editing) { item in
-                HMRCPaymentSheet(viewModel: viewModel, payment: item.value, yearStatus: page.row.status)
+                HMRCPaymentSheet(viewModel: viewModel, payment: item.value, yearStatus: page.row.status, origin: .taxReturn)
             }
             .confirmationDialog("Delete this \(deleting?.kind.displayName.lowercased() ?? "payment")?",
                                 isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {

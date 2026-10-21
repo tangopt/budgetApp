@@ -15,7 +15,7 @@ public enum ImportEffects {
     /// What confirming the item writes besides filing its document, in the order the importer
     /// applies it: the effect (`perform`), then the item's certain proposed links the effect
     /// doesn't make itself, then the documents those certain links replace unlinked from their
-    /// record (never the item's own document; never deleted). The importer calls it after filing the document (`documentId`); the
+    /// record once the item's document is linked there (never the item's own document; never deleted). The importer calls it after filing the document (`documentId`); the
     /// filed-year guard calls it with a placeholder document, so it checks exactly what apply
     /// does. The batch's follow-on matching runs after all items (`followOns`).
     public static func applyRecords(db: Database, item: ImportItem, documentId: Int64?, importRunId: Int64?) throws {
@@ -24,7 +24,9 @@ public enum ImportEffects {
             guard let documentId else { throw ImportEffectsError.documentRequired }
             try EvidenceLinks.link(db: db, documentId: documentId, to: link.entity, role: link.role)
         }
-        for link in item.links where link.confidence == .certain {
+        for link in item.links where link.confidence == .certain && !link.replacing.isEmpty {
+            // Only once the new document is linked there (by the effect or the link above).
+            guard let documentId, try EvidenceLinks.links(db: db, for: documentId).contains(where: { $0.entity == link.entity }) else { continue }
             for replaced in link.replacing where replaced != documentId {
                 _ = try EvidenceLinks.unlink(db: db, documentId: replaced, from: link.entity)
             }
@@ -36,7 +38,22 @@ public enum ImportEffects {
     public static func touchedPropertyIds(db: Database, item: ImportItem) throws -> Set<Int64>? {
         if item.links.contains(where: { $0.entity.type == .transaction }) { return nil }
         switch item.effect {
-        case .file, .none, .payrollForm: return []
+        case .file:
+            // A rent receipt or contract filed on a receipt or tenancy: its property's matching
+            // (the receipt's document goes on the credits that paid it).
+            var ids: Set<Int64> = []
+            for link in item.links where link.confidence == .certain {
+                switch link.entity.type {
+                case .rentReceipt:
+                    if let receipt = try RentReceipt.fetchOne(db, key: link.entity.id),
+                       let tenancy = try Tenancy.fetchOne(db, key: receipt.tenancyId) { ids.insert(tenancy.propertyId) }
+                case .tenancy:
+                    if let tenancy = try Tenancy.fetchOne(db, key: link.entity.id) { ids.insert(tenancy.propertyId) }
+                default: break
+                }
+            }
+            return ids
+        case .none, .payrollForm: return []
         case .ukStatement, .bbvaStatement, .transferAdvice: return nil
         case .rentReceiptsExport(let propertyId, _): return [propertyId]
         case .rentReceiptPDF(let planned): return planned.tenancy.map { [$0.propertyId] } ?? nil

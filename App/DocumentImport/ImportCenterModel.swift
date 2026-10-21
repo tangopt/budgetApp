@@ -4,6 +4,7 @@ import Foundation
 import BudgetCore
 import GRDB
 import OSLog
+import UniformTypeIdentifiers
 
 /// The one document importer's state for the app (one per database): files handed in from any
 /// entry point (File ▸ Import…, the toolbar, a drop on the window, a screen's shortcut) are read
@@ -87,6 +88,8 @@ final class ImportCenterModel: ObservableObject {
 
     /// Shows the Imports screen (ContentView selects it); called when an import starts.
     var onShow: (() -> Void)?
+    /// Brings the window whose Imports screen `onShow` selects to the front (ContentView's own).
+    var onBringForward: (() -> Void)?
     /// An import was applied or undone: the screens showing what it changed re-read.
     var onDataChanged: (() -> Void)?
     /// Shows a learnt rule on the Rules page (Rules ▸ Import rules, the rule selected): "Show on Rules page".
@@ -99,6 +102,8 @@ final class ImportCenterModel: ObservableObject {
 
     private let dbQueue: DatabaseQueue
     private let library: EvidenceLibrary
+    /// How many library documents each library shortcut would bring (its "From library (N)").
+    let libraryCounts: ImportLibraryCounts
     private let pipeline: ImportPipeline
     private let applier: ImportApplier
     #if SNAPSHOTS
@@ -113,7 +118,7 @@ final class ImportCenterModel: ObservableObject {
     /// What the screen showed before the reading started: Cancel returns to it.
     private var phaseBeforeReading: Phase = .idle
     /// Files handed in while a reading or an apply was under way, read next.
-    private var queued: [(urls: [URL], intent: ImportIntent, entryPoint: String)] = []
+    private var queued: [(work: Reading, entryPoint: String)] = []
     /// The entry point that opened the review, recorded with the run.
     private var reviewEntryPoint: String?
     /// The last queued resolution: the next one (and Confirm import) waits for it, so each
@@ -127,6 +132,7 @@ final class ImportCenterModel: ObservableObject {
          modelReader: (any DocumentModelReading)?) {
         self.dbQueue = dbQueue
         self.library = library
+        self.libraryCounts = ImportLibraryCounts(dbQueue: dbQueue)
         #if SNAPSHOTS
         self.categorizationService = categorizationService
         #endif
@@ -148,6 +154,60 @@ final class ImportCenterModel: ObservableObject {
 
     // MARK: Reading
 
+    /// What a reading reads: files handed in with an intent (and library documents read again,
+    /// `ImportShortcut.libraryDocumentIds`), or a source folder's scanned files.
+    private enum Reading: Sendable {
+        case files([URL], library: [Int64], ImportIntent)
+        case folder(SourceFolder, [SourceFolderImport.Input])
+    }
+
+    /// Reads `urls` for a screen's import shortcut: its intent and entry point reach the run.
+    func start(_ urls: [URL], shortcut: ImportShortcut) {
+        start(urls, intent: shortcut.intent, entryPoint: shortcut.entryPoint)
+    }
+
+    /// The one open panel every import entry uses: returns the chosen URLs, or nil when cancelled.
+    static func chooseURLs(types: [UTType] = [], multiple: Bool, folders: Bool, message: String) -> [URL]? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = folders
+        panel.allowsMultipleSelection = multiple
+        if !types.isEmpty { panel.allowedContentTypes = types }
+        panel.prompt = "Import"
+        panel.message = message
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return nil }
+        return panel.urls
+    }
+
+    /// Asks for files with the shortcut's open panel (its file types, one or several), then reads
+    /// them. False when the panel was cancelled (nothing is read).
+    @discardableResult
+    func pickFiles(for shortcut: ImportShortcut) -> Bool {
+        guard let urls = Self.chooseURLs(types: shortcut.allowedContentTypes.compactMap { UTType($0) },
+                                         multiple: shortcut.allowsMultiple, folders: shortcut.allowsFolders,
+                                         message: "Nothing is saved until you confirm the import.") else { return false }
+        start(urls, shortcut: shortcut)
+        return true
+    }
+
+    /// The shortcut's library documents (`ImportShortcut.libraryDocumentIds`: Utility invoices…'s
+    /// "From library") read into a new review or the open one (those already in it skipped).
+    /// False when there are none.
+    @discardableResult
+    func startFromLibrary(_ shortcut: ImportShortcut) -> Bool {
+        let ids: [Int64]
+        do {
+            ids = try dbQueue.read { db in try shortcut.libraryDocumentIds(db: db) }
+        } catch {
+            logger.error("Finding the library's documents for the import failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+        guard !ids.isEmpty else { return false }
+        onShow?()
+        enqueue(.files([], library: ids, shortcut.intent), entryPoint: shortcut.entryPoint)
+        return true
+    }
+
     /// Reads `urls` (files and folders) into a new review, or into the open one
     /// (`plan(adding:)`), and shows the Imports screen. Files handed in while another reading
     /// or an apply is under way are read after it.
@@ -155,23 +215,38 @@ final class ImportCenterModel: ObservableObject {
         let files = urls.filter(\.isFileURL)
         guard !files.isEmpty else { return }
         onShow?()
+        enqueue(.files(files, library: [], intent), entryPoint: entryPoint)
+    }
+
+    /// Reads a source folder's new and changed files (`SourceFolderImport.inputs` of its scan)
+    /// as `ImportShortcut.sourceFolder` — into a new review, or into the open one (each file
+    /// keeping its own intent) — and shows the Imports screen. Read off the main actor inside
+    /// the folder's security scope (`ImportPipeline.plan(folder:scanner:inputs:to:)`).
+    func start(folder: SourceFolder, inputs: [SourceFolderImport.Input]) {
+        guard let folderId = folder.id, !inputs.isEmpty else { return }
+        onShow?()
+        enqueue(.folder(folder, inputs), entryPoint: ImportShortcut.sourceFolder(folderId: folderId, name: folder.name).entryPoint)
+    }
+
+    /// Reads now, or after the reading or apply under way.
+    private func enqueue(_ work: Reading, entryPoint: String) {
         switch phase {
         case .reading, .applying:
-            queued.append((files, intent, entryPoint))
+            queued.append((work, entryPoint))
             return
         default:
             break
         }
-        read(files, intent: intent, entryPoint: entryPoint)
+        read(work, entryPoint: entryPoint)
     }
 
-    private func read(_ urls: [URL], intent: ImportIntent, entryPoint: String) {
+    private func read(_ work: Reading, entryPoint: String) {
         phaseBeforeReading = phase
         problem = nil
         readingGeneration += 1
         let generation = readingGeneration
         phase = .reading(ImportProgress(completed: 0, total: 0))
-        let pipeline = pipeline
+        let pipeline = pipeline, scanner = SourceFolderScanner(library: library)
         let pendingResolutions = resolutionChain
         // Held only while the reading runs.
         let progress: @Sendable (ImportProgress) -> Void = { update in
@@ -190,10 +265,20 @@ final class ImportCenterModel: ObservableObject {
                 let existing = self?.plan
                 // Cancelling this task (Cancel, Discard) cancels the detached planning too.
                 result = .success(try await DetachedWork.run(priority: .userInitiated) {
-                    if let existing {
-                        return try await pipeline.plan(adding: urls, to: existing, intent: intent, progress: progress)
+                    switch work {
+                    case .files(let urls, let library, let intent):
+                        if !library.isEmpty {
+                            return try await pipeline.plan(adding: urls, libraryDocuments: library, to: existing ?? ImportPlan(items: []),
+                                                           intent: intent, progress: progress)
+                        }
+                        if let existing {
+                            return try await pipeline.plan(adding: urls, to: existing, intent: intent, progress: progress)
+                        }
+                        return try await pipeline.plan(urls, intent: intent, progress: progress)
+                    case .folder(let folder, let inputs):
+                        return try await pipeline.plan(folder: folder, scanner: scanner, inputs: inputs,
+                                                       to: existing ?? ImportPlan(items: []), progress: progress)
                     }
-                    return try await pipeline.plan(urls, intent: intent, progress: progress)
                 })
             } catch {
                 result = .failure(error)
@@ -267,7 +352,7 @@ final class ImportCenterModel: ObservableObject {
         default: break
         }
         let next = queued.removeFirst()
-        read(next.urls, intent: next.intent, entryPoint: next.entryPoint)
+        read(next.work, entryPoint: next.entryPoint)
     }
 
     // MARK: Reviewing
@@ -370,6 +455,7 @@ final class ImportCenterModel: ObservableObject {
             phase = .finished(summary)
             selectedRunId = summary.runId
             loadRuns()
+            libraryCounts.invalidate()
             onDataChanged?()
         case .failure(let error):
             phase = .review
@@ -520,11 +606,25 @@ final class ImportCenterModel: ObservableObject {
     #if SNAPSHOTS
     /// `urls` read by the real pipeline (snapshot routes only: the demo's import samples);
     /// `modelReader` stands in for the on-device model (snapshot mode has none).
-    func snapshotPlan(_ urls: [URL], modelReader: (any DocumentModelReading)? = nil) async throws -> ImportPlan {
+    func snapshotPlan(_ urls: [URL], intent: ImportIntent = .none, libraryDocuments: [Int64] = [],
+                      modelReader: (any DocumentModelReading)? = nil) async throws -> ImportPlan {
         let pipeline = modelReader.map { ImportPipeline(dbQueue: dbQueue, library: library, categorizationService: categorizationService,
                                                         modelReader: $0) } ?? pipeline
         defer { if modelReader != nil { pipeline.discardPlanningCopy() } }
-        return try await DetachedWork.run(priority: .userInitiated) { try await pipeline.plan(urls) }
+        return try await DetachedWork.run(priority: .userInitiated) {
+            try await pipeline.plan(adding: urls, libraryDocuments: libraryDocuments, to: ImportPlan(items: []), intent: intent)
+        }
+    }
+
+    /// The folder at `url` registered as a source folder, scanned, and its new and changed files
+    /// planned as Scan Now hands them over (snapshot routes only: it writes the folder to the demo copy).
+    func snapshotPlan(folder url: URL) async throws -> ImportPlan {
+        let scanner = SourceFolderScanner(library: library), pipeline = pipeline
+        return try await DetachedWork.run(priority: .userInitiated) {
+            let folder = try scanner.register(url)
+            let result = try scanner.scan(folder, options: .init(analyzeNewFiles: false))
+            return try await pipeline.plan(folder: result.folder, scanner: scanner, inputs: SourceFolderImport.inputs(from: result))
+        }
     }
 
     /// `plan` with one answer (snapshot routes only).
@@ -629,6 +729,7 @@ final class ImportCenterModel: ObservableObject {
         case .success:
             undoRefusals[runId] = nil
             loadRuns()
+            libraryCounts.invalidate()
             onDataChanged?()
             return []
         case .failure(ImportUndoError.refused(let conflicts)):

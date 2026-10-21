@@ -40,13 +40,78 @@ public struct ImportDetector: Sendable {
 
     /// `kindMismatch` when the user said what the files are and this one is something else.
     public static func intentIssue(_ recognition: ImportRecognition, intent: ImportIntent) -> ImportIssue? {
-        guard let expected = intent.expected, !matches(expected, recognition.kind) else { return nil }
+        guard let expected = intent.expected, !matches(expected, recognition.kind, byDocumentKind: intent.expectedByDocumentKind) else { return nil }
         return ImportIssue(id: "kindMismatch", kind: .kindMismatch(expected: expected, found: recognition.kind),
-                           reason: "Expected a \(expected.displayName), this looks like a \(recognition.kind.displayName)")
+                           reason: mismatchReason(expected: expected, found: recognition.kind))
     }
 
-    private static func matches(_ expected: ImportKind, _ found: ImportKind) -> Bool {
+    /// "Expected a <kind>, this looks like a <kind>"; when both kinds have the same name (the
+    /// importer's own kind and the library's evidence kind of it), the expected one by what sets
+    /// it apart: "Expected the portal's rent receipt, this looks like another rent receipt".
+    public static func mismatchReason(expected: ImportKind, found: ImportKind) -> String {
+        if found == .unknown { return "Expected a \(expected.displayName), but this file isn't recognised" }
+        guard expected.displayName.lowercased() == found.displayName.lowercased() else {
+            return "Expected a \(expected.displayName), this looks like a \(found.displayName)"
+        }
+        return "Expected \(specificName(expected)), this looks like another \(lowercasedName(found))"
+    }
+
+    /// A kind by what sets it apart from the kind of the same name.
+    private static func specificName(_ kind: ImportKind) -> String {
+        switch kind {
+        case .rentReceiptPDF: return "the portal's rent receipt"
+        case .utilityInvoice: return "a utility invoice the importer can read"
+        case .payrollForm(let form): return "a \(form.displayName) the payroll reader can read"
+        case .evidence: return "a \(lowercasedName(kind)) document for the library"
+        default: return "a \(lowercasedName(kind))"
+        }
+    }
+
+    /// The kind's name in a sentence (form names such as P60 keep their capitals).
+    private static func lowercasedName(_ kind: ImportKind) -> String {
+        switch kind {
+        case .payrollForm(let form): return form.displayName
+        case .evidence(let kind) where [.p60, .p45, .p11d].contains(kind): return kind.displayName
+        default: return kind.displayName.lowercased()
+        }
+    }
+
+    /// The kind the user declared, when a shortcut expects a plain evidence kind (Add contract…
+    /// → rent contract) and nothing recognised the file (unknown, "other", or the file name
+    /// only): that kind, certain, "You added it as a <kind> from <entry point>". Nil for a file
+    /// recognised as anything else (a `kindMismatch`), and for kinds with an effect (payroll
+    /// forms, utility invoices, statements, rent receipts): their readers must read them.
+    /// `read`: whether the file's text layer was read (not OCR, not unreadable); otherwise the
+    /// declared kind is to check ("Not read: check it's the <kind>").
+    public static func declared(_ recognition: ImportRecognition, intent: ImportIntent, read: Bool = true) -> ImportRecognition? {
+        // Payroll forms, utility invoices and statements read as their own kinds; a rent receipt as the portal's PDF.
+        guard case .evidence(let kind)? = intent.expected, kind != .other, kind != .rentReceipt,
+              case .evidence = ImportResolutions.importKind(for: kind, fileExtension: "") else { return nil }
+        // A learnt rule's kind is the user's own answer: never overridden.
+        guard recognition.ruleId == nil else { return nil }
+        let unrecognised: Bool
+        switch recognition.kind {
+        case .unknown, .evidence(.other): unrecognised = true
+        case .evidence: unrecognised = recognition.confidence == .needsReview && !recognition.proposedByModel
+        default: unrecognised = false
+        }
+        guard unrecognised else { return nil }
+        // Certain only when its text was read and says nothing else; a scan or an unreadable file
+        // may be anything (an unreadable P60 never goes Ready as a contract).
+        guard read else {
+            return ImportRecognition(kind: .evidence(kind), confidence: .needsReview, reason: "Not read: check it's the \(kind.displayName)")
+        }
+        let from = intent.entryPoint.map { " from \($0)" } ?? ""
+        return ImportRecognition(kind: .evidence(kind), confidence: .certain, reason: "You added it as a \(kind.displayName)\(from)")
+    }
+
+    private static func matches(_ expected: ImportKind, _ found: ImportKind, byDocumentKind: Bool) -> Bool {
+        if byDocumentKind, let kind = DocumentIdentity.documentKind(of: expected), kind != .other,
+           DocumentIdentity.documentKind(of: found) == kind { return true }
         if case .payrollForm = expected, case .payrollForm = found { return true }
+        // A rent receipt not in the portal's layout is still a rent receipt (Receipt ▸ Add/Replace
+        // PDF…): filed as evidence and linked to the receipt the user picked.
+        if Set([expected, found]) == Set([.rentReceiptPDF, .evidence(.rentReceipt)]) { return true }
         return expected == found
     }
 

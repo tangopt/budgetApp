@@ -165,6 +165,32 @@ public enum ImportResolutions {
             guard issueId == nil else { throw refuse() }
             return try ImportChecks.marked(target, on: item)
 
+        case .setBenefits(let rows):
+            // A P11D's benefit rows: its effect's benefits, and their total the user's figure.
+            guard issueId == nil, isCorrectable(item), case .payrollForm(var confirmed) = item.effect, confirmed.kind == .p11d,
+                  rows.allSatisfy({ $0.cashEquivalentMinorUnits >= 0 }) else { throw refuse() }
+            confirmed.benefits = rows
+            edited.effect = .payrollForm(confirmed)
+            edited.facts.removeAll { $0.field == .amount }
+            edited.issues.removeAll { $0.kind == .confirmFigure(.amount) || $0.kind == .missingFigure(.amount) || $0.id == noBenefitsIssueId }
+            if rows.isEmpty {
+                // Every row removed: saving it removes the employment's earlier P11D benefits.
+                edited.issues.append(ImportIssue(id: noBenefitsIssueId, kind: .readerProblem(noBenefitsWarning), reason: noBenefitsWarning,
+                                                 offers: [.acknowledge]))
+            } else {
+                // The reader's "No benefits found" no longer holds.
+                edited.issues.removeAll { $0.reason.hasPrefix("No benefits found") }
+                let total = rows.reduce(0) { $0 + $1.cashEquivalentMinorUnits }
+                edited.facts.append(ImportFact(field: .amount, value: .money(total, .gbp), source: .user, confidence: .certain,
+                                               reason: benefitsReason))
+            }
+            // Filed with the total the rows give (as a corrected figure is).
+            if edited.placement != nil {
+                edited.placement = ImportNaming.placement(kind: edited.recognition.kind, facts: edited.facts, file: edited.file,
+                                                          persons: item.placement?.metadata.persons ?? [])
+            }
+            return edited
+
         case .unmarkChecked, .markAllChecked, .unmarkAllChecked:
             // Only the pipeline ticks several at once or takes ticks back (it keeps what was there before).
             throw refuse()
@@ -267,6 +293,12 @@ public enum ImportResolutions {
     static let chosenReason = "Chosen by you"
     /// The reason of a figure the user entered where none was read.
     static let enteredReason = "Entered by you"
+    /// A P11D's total as the benefit rows the user set give it (`.setBenefits`): its own reason, so
+    /// a "Check it" ticked before isn't taken for still standing (and undone over the edited rows).
+    public static let benefitsReason = "Benefits set by you"
+    /// A P11D left with no benefit rows (`.setBenefits([])`): a warning to acknowledge.
+    static let noBenefitsIssueId = "noBenefits"
+    public static let noBenefitsWarning = "No benefits: the earlier benefits for this employment will be removed"
     /// The reason a link or a choice made by the user carries.
     public static var chosenReasonText: String { chosenReason }
 
@@ -468,7 +500,8 @@ public enum ImportResolutions {
             return kind == chosen && options.contains(id)
         case (.statement(.balanceMismatch), .importAnyway), (.statement(.possibleDuplicate), .keepRow), (.statement(.possibleDuplicate), .skipRow):
             return true
-        case (.statement(.noProfile(let format, let accountId)), .saveProfile(let profile)):
+        case (.statement(.noProfile(let format, let accountId)), .saveProfile(let profile)),
+             (.statement(.remap(let format, let accountId)), .saveProfile(let profile)):
             // A layout for the statement's own account and format.
             return profile.accountId == accountId && profile.format == format
         default:
@@ -518,7 +551,7 @@ public enum ImportResolutions {
         case (.openingBalance, .money), (.closingBalance, .money): return true
         case (.rows, .text), (.instalments, .text), (.fund, .text): return true
         case (.currency, .text), (.invoiceNumber, .text), (.receiptNumber, .text), (.reference, .text), (.issuer, .text),
-             (.person, .text): return true
+             (.person, .text), (.taxCode, .text): return true
         default: return false
         }
     }
@@ -557,6 +590,7 @@ public enum ImportResolutions {
             case (.reference, .text(let reference)): confirmed.payeReference = reference
             case (.pay, .money(let pay, _)): confirmed.payMinorUnits = pay
             case (.taxDeducted, .money(let tax, _)): confirmed.taxDeductedMinorUnits = tax
+            case (.taxCode, .text(let code)): confirmed.taxCode = code
             case (.docDate, .date(let date)) where confirmed.kind == .p45: confirmed.leavingDate = date
             default: break
             }

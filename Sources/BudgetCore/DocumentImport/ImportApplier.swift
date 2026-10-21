@@ -90,13 +90,17 @@ public struct ImportApplier: Sendable {
         let backupPath = try ImportBackup.backupIfNeeded(dbQueue: dbQueue, databasePath: databasePath, plan: plan, now: now)
         var placed: [URL] = []
         do {
-            return try dbQueue.write { db in
-                do {
-                    return try applyAll(db: db, plan: plan, applied: applied, entryPoint: entryPoint, reasons: reasons,
-                                     backupPath: backupPath, now: now, placed: &placed)
-                } catch {
-                    try? ImportChangeCapture.cancel(db: db)
-                    throw error
+            // Source folders' files are copied into the library inside their folders' security scopes.
+            let folderIds = Array(Set(applied.compactMap { $0.parentId == nil ? $0.file.sourceFolderId : nil })).sorted()
+            return try withSourceFolders(folderIds) { roots in
+                try dbQueue.write { db in
+                    do {
+                        return try applyAll(db: db, plan: plan, applied: applied, entryPoint: entryPoint, reasons: reasons,
+                                            backupPath: backupPath, folderRoots: roots, now: now, placed: &placed)
+                    } catch {
+                        try? ImportChangeCapture.cancel(db: db)
+                        throw error
+                    }
                 }
             }
         } catch {
@@ -110,6 +114,35 @@ public struct ImportApplier: Sendable {
     }
 
     private static let log = Logger(subsystem: "Budget", category: "Import")
+
+    /// Runs `body` inside the security scope of each source folder in `folderIds`, with where
+    /// each folder is now (its bookmark followed). A folder no longer registered refuses the plan.
+    private func withSourceFolders<T>(_ folderIds: [Int64], roots: [Int64: URL] = [:], _ body: ([Int64: URL]) throws -> T) throws -> T {
+        guard let folderId = folderIds.first else { return try body(roots) }
+        guard let folder = try dbQueue.read({ db in try SourceFolder.fetchOne(db, key: folderId) }) else {
+            throw ImportApplyError.planOutdated("A source folder of these files is no longer registered")
+        }
+        let resolved: SourceFolderScanner.ResolvedFolder
+        let stop: () -> Void
+        do {
+            (resolved, stop) = try SourceFolderScanner(library: library).access(folder)
+        } catch SourceFolderError.unavailable {
+            throw ImportApplyError.planOutdated("The folder \(folder.name) can't be found (\(folder.path)). Is its disk connected?")
+        }
+        defer { stop() }
+        var roots = roots
+        roots[folderId] = resolved.url
+        return try withSourceFolders(Array(folderIds.dropFirst()), roots: roots, body)
+    }
+
+    /// Where the item's file is read from when filed: a source folder's file at its path in the
+    /// folder as resolved now, any other where it was read.
+    static func fileURL(of item: ImportItem, folderRoots: [Int64: URL]) -> URL {
+        guard let folderId = item.file.sourceFolderId, let path = item.file.sourceRelativePath, let root = folderRoots[folderId] else {
+            return item.file.url
+        }
+        return root.appendingPathComponent(path)
+    }
 
     // MARK: Which items
 
@@ -205,7 +238,7 @@ public struct ImportApplier: Sendable {
     // MARK: The write
 
     private func applyAll(db: Database, plan: ImportPlan, applied: [ImportItem], entryPoint: String, reasons: [UUID: String],
-                       backupPath: String?, now: Date, placed: inout [URL]) throws -> ImportRunSummary {
+                       backupPath: String?, folderRoots: [Int64: URL], now: Date, placed: inout [URL]) throws -> ImportRunSummary {
         try Self.checkCurrent(db: db, applied)
         var run = ImportRun(confirmedAt: now, entryPoint: entryPoint, summary: "", backupPath: backupPath,
                             reasonsJSON: try Self.reasonsJSON(reasons))
@@ -225,7 +258,11 @@ public struct ImportApplier: Sendable {
                 // Part of a file already filed (a statement's child): the same document.
                 documentId = parentDocument
             } else {
-                let staged = try library.add(db: db, item.file.url, metadata: filing, analysis: nil, now: now)
+                let url = Self.fileURL(of: item, folderRoots: folderRoots)
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    throw ImportApplyError.planOutdated("\(item.file.fileName) is no longer where it was read (\(url.path))")
+                }
+                let staged = try library.add(db: db, url, metadata: filing, analysis: nil, now: now)
                 if let file = staged.placedFile { placed.append(file) }
                 guard staged.result.document.sha256 == item.file.sha256 else {
                     throw ImportApplyError.planOutdated("\(item.file.fileName) changed since it was read")
@@ -245,6 +282,7 @@ public struct ImportApplier: Sendable {
                                arguments: [documentId, folderId, item.file.sha256])
             }
         }
+        try Self.recordSourceFiles(db: db, plan: plan, documents: documents)
         // What the review's corrections taught, and the learnt rules the items used: inside the run.
         // Items that taught different things about one issuer (and family) teach none of them.
         let (learnable, learningNotes) = ImportLearning.learnable(applied.flatMap(\.ruleDrafts))
@@ -306,6 +344,31 @@ public struct ImportApplier: Sendable {
         run.summary = summary.text
         try run.update(db)
         return summary
+    }
+
+    /// The source folders' files of the plan (`ImportFile.sourceFolderId`), now that the user
+    /// has seen them: each scan record still holding the content read gets the document it was
+    /// filed as or duplicates (left-out files get none), and its pending change is acknowledged —
+    /// filed, duplicate and left-out files alike. Inside the run, so Undo restores both.
+    static func recordSourceFiles(db: Database, plan: ImportPlan, documents: [UUID: Int64]) throws {
+        let leftOut = leftOutIds(plan)
+        var seen: Set<String> = []
+        for item in plan.items where item.parentId == nil {
+            guard let folderId = item.file.sourceFolderId, let path = item.file.sourceRelativePath,
+                  seen.insert("\(folderId)/\(path)").inserted else { continue }
+            // Only while the record is of the content the review read (not changed again since).
+            guard let record = try SourceFile.filter(Column("folderId") == folderId && Column("relativePath") == path).fetchOne(db),
+                  record.sha256 == item.file.sha256 else { continue }
+            // A duplicate: the library document it copies, or the document its original in this batch was filed as.
+            let documentId = leftOut.contains(item.id) ? nil
+                : documents[item.id] ?? item.duplicate?.existingDocumentId ?? item.duplicate?.originalItemId.flatMap { documents[$0] }
+            if let documentId, record.documentId == nil {
+                try SourceFile.filter(key: record.id).updateAll(db, Column("documentId").set(to: documentId))
+            }
+            if record.hasPendingChange {
+                try SourceFolderScanner.acknowledgeChange(db: db, folderId: folderId, relativePath: path)
+            }
+        }
     }
 
     /// The library metadata the item is filed with: its placement, its name, its text, and the

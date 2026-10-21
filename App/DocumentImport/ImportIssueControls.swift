@@ -157,7 +157,7 @@ struct ImportIssueControls: View {
         case .addTransactionLink: return "Link to this transaction too"
         case .unlink: return "Unlink"
         case .setIssuer(let name): return "Name the issuer \(name)"
-        case .acceptModelReading: return "Use these"
+        case .acceptModelReading, .setBenefits: return "Use these"
         case .markChecked: return "Mark as checked"
         case .unmarkChecked: return "Undo"
         case .markAllChecked: return "Mark all as checked"
@@ -210,11 +210,20 @@ struct ImportStatementIssueAnswers: View {
     @State private var mapping: Mapping?
     @Environment(\.theme) private var theme
 
-    /// The wizard open over the review.
+    /// The wizard open over the review, prefilled from `existing` when the question offers a saved layout.
     private struct Mapping: Identifiable {
         let id = UUID()
         let account: Account
         let format: ImportFormat
+        let existing: ImportProfile?
+    }
+
+    /// The saved layout the question offers as its starting point (`.remap`).
+    private var offeredProfile: ImportProfile? {
+        issue.offers.lazy.compactMap { offer -> ImportProfile? in
+            if case .saveProfile(let profile) = offer { return profile }
+            return nil
+        }.first
     }
 
     /// Lines shown before the list scrolls.
@@ -234,9 +243,10 @@ struct ImportStatementIssueAnswers: View {
             unparsed(lines)
         case .noProfile(let format, let accountId):
             layoutButton(format: format, accountId: accountId)
-        case .remap:
-            // No reader raises it yet, and `.saveProfile` answers only `noProfile`: its reason and Leave out.
-            EmptyView()
+        case .remap(let format, let accountId):
+            // "Edit column mapping…": the wizard prefilled with the saved layout it offers ("Use
+            // this layout" keeps that one as it is).
+            layoutButton(format: format, accountId: accountId, existing: offeredProfile)
         case .unknownAccount:
             accountPicker(role: .current)
         case .unknownLinkedAccount(let role):
@@ -324,26 +334,34 @@ struct ImportStatementIssueAnswers: View {
     // MARK: Layout
 
     @ViewBuilder
-    private func layoutButton(format: ImportFormat, accountId: Int64) -> some View {
+    private func layoutButton(format: ImportFormat, accountId: Int64, existing: ImportProfile? = nil) -> some View {
         // Only where the question takes a layout for this account and format.
         if let account = accounts[accountId], ImportResolutions.accepts(issue, .saveProfile(ImportProfile(accountId: accountId, format: format))) {
-            Button(format == .pdf ? "Set up layout…" : "Set up columns…") { mapping = Mapping(account: account, format: format) }
+            Button(existing == nil ? (format == .pdf ? "Set up layout…" : "Set up columns…") : (format == .pdf ? "Edit layout…" : "Edit columns…")) {
+                mapping = Mapping(account: account, format: format, existing: existing)
+            }
                 .controlSize(.small)
                 .sheet(item: $mapping) { request in
                     switch request.format {
                     case .pdf:
-                        PDFLayoutWizardView(account: request.account, sampleLines: sampleLines) { profile in
+                        PDFLayoutWizardView(account: request.account, sampleLines: sampleLines, existingProfile: request.existing) { profile in
                             mapping = nil
-                            resolve(.saveProfile(profile))
+                            answer(profile)
                         }
                     case .csv:
-                        CSVMappingWizardView(account: request.account, csvText: item.file.text ?? "", existingProfile: nil) { profile in
+                        CSVMappingWizardView(account: request.account, csvText: item.file.text ?? "", existingProfile: request.existing) { profile in
                             mapping = nil
-                            resolve(.saveProfile(profile))
+                            answer(profile)
                         }
                     }
                 }
         }
+    }
+
+    /// The wizard's layout as the answer, only when the question takes it (this account and format).
+    private func answer(_ profile: ImportProfile) {
+        guard ImportResolutions.accepts(issue, .saveProfile(profile)) else { return }
+        resolve(.saveProfile(profile))
     }
 
     /// The PDF's text lines (what its layout is set up from).
@@ -477,7 +495,7 @@ struct ImportFigureEditor: View {
         case .docDate, .periodStart, .periodEnd: return .date
         case .amount, .pay, .taxDeducted, .openingBalance, .closingBalance: return .money
         case .taxYear: return .year
-        case .currency, .invoiceNumber, .receiptNumber, .reference, .issuer, .person, .rows, .instalments, .fund: return .text
+        case .currency, .invoiceNumber, .receiptNumber, .reference, .issuer, .person, .rows, .instalments, .fund, .taxCode: return .text
         }
     }
 

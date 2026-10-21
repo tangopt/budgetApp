@@ -9,7 +9,9 @@ import struct BudgetCore.Transaction
 /// ring with its figures, and each usual source's progress — then the checklist as a table
 /// grouped by source (collapsible strips), one line per item: status, date, what it is, the
 /// evidence it needs or has, the amount, and its actions (an icon for the main one, the rest
-/// in a ••• menu and the context menu). A file dropped on a row is added and linked to it.
+/// in a ••• menu and the context menu). A file dropped on a row, or added with Add document…,
+/// goes to the importer with the row's record as its link target (nothing is added before
+/// Confirm import).
 ///
 /// Standalone, Rules… and Export checklist… are in the toolbar. Embedded (`embedded`, the Tax
 /// years page's tab) the page picks the year and pads the content, so there is no period
@@ -21,10 +23,8 @@ struct MissingEvidenceView: View {
     /// Shown inside Tax years: no period picker, toolbar items or padding of its own.
     var embedded = false
     @Environment(\.theme) private var theme
+    @Environment(\.documentImport) private var documentImport
 
-    @State private var importing = false
-    /// The item Add document… adds to (kept until the importer completes).
-    @State private var importTarget: MissingEvidence.Item?
     @State private var linking: MissingEvidence.Item?
     @State private var waiving: MissingEvidence.Item?
     @State private var showingRules = false
@@ -70,16 +70,6 @@ struct MissingEvidenceView: View {
                     exportButton
                 }
                 .sharedBackgroundVisibility(.hidden)
-            }
-        }
-        // The target is read and cleared in the completion: the binding's setter runs before
-        // it, so it mustn't clear the target itself.
-        .fileImporter(isPresented: $importing, allowedContentTypes: EvidenceFiles.contentTypes, allowsMultipleSelection: true) { result in
-            guard let item = importTarget else { return }
-            importTarget = nil
-            switch result {
-            case .success(let urls): viewModel.add(urls, to: item)
-            case .failure(let error): viewModel.errorMessage = error.localizedDescription
             }
         }
         .fileExporter(isPresented: Binding(get: { exportDocument != nil }, set: { if !$0 { exportDocument = nil } }),
@@ -366,19 +356,16 @@ struct MissingEvidenceView: View {
         } else {
             ChecklistTable(groups: viewModel.groups, collapsed: $collapsed,
                            progress: { viewModel.progress(source: $0) },
-                           isAdding: { viewModel.addingItemIds.contains($0.id) },
                            actions: actions(for:))
         }
     }
 
     private func actions(for item: MissingEvidence.Item) -> MissingEvidenceRow.Actions {
         let transaction = item.target.entity.type == .transaction
+        // The importer captured here: the row's ••• and context menus may not inherit the environment.
+        let documentImport = documentImport
         return MissingEvidenceRow.Actions(
-            addFiles: {
-                importTarget = item
-                importing = true
-            },
-            drop: { urls in viewModel.add(urls, to: item) },
+            addFiles: documentImport.map { importer in { importer.pickShortcut(MissingEvidenceRow.shortcut(item)) } },
             linkExisting: { linking = item },
             waive: { waiving = item },
             removeWaiver: { viewModel.removeWaiver(item) },
@@ -422,7 +409,6 @@ private struct ChecklistTable: View {
     let groups: [MissingEvidence.SourceGroup]
     @Binding var collapsed: Set<String>
     let progress: (String) -> MissingEvidence.Progress
-    let isAdding: (MissingEvidence.Item) -> Bool
     let actions: (MissingEvidence.Item) -> MissingEvidenceRow.Actions
     @Environment(\.theme) private var theme
     /// The rows' height, so a short checklist's card ends with its last row.
@@ -441,7 +427,7 @@ private struct ChecklistTable: View {
                         Section {
                             if !collapsed.contains(group.source) {
                                 ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
-                                    MissingEvidenceRow(item: item, isAdding: isAdding(item), shaded: index % 2 == 1,
+                                    MissingEvidenceRow(item: item, shaded: index % 2 == 1,
                                                        evidenceWidth: evidenceWidth, actions: actions(item))
                                 }
                             }
@@ -534,8 +520,8 @@ private struct ChecklistTable: View {
 /// rest in the ••• menu (also the row's context menu). Files dropped on it are added and linked.
 struct MissingEvidenceRow: View {
     struct Actions {
-        let addFiles: () -> Void
-        let drop: ([URL]) -> Void
+        /// Add document…: the importer's open panel (nil: no importer).
+        let addFiles: (() -> Void)?
         let linkExisting: () -> Void
         let waive: () -> Void
         let removeWaiver: () -> Void
@@ -544,13 +530,19 @@ struct MissingEvidenceRow: View {
     }
 
     let item: MissingEvidence.Item
-    let isAdding: Bool
     var shaded = false
     /// The evidence column's width (the table's, `ChecklistColumns.evidence`).
     var evidenceWidth: CGFloat = ChecklistColumns.evidenceMin
     let actions: Actions
     @Environment(\.theme) private var theme
-    @State private var dropTargeted = false
+
+    /// What Add document… and a drop on the row hand the importer: the row's record as the link
+    /// target, the document kind it asks for (when it asks for one kind) as the expected kind,
+    /// and its slot (a periodic item) for a document without a period of its own.
+    static func shortcut(_ item: MissingEvidence.Item) -> ImportShortcut {
+        .attach(item.target.entity, role: nil, from: .missingEvidence,
+                expected: item.expectedKinds.count == 1 ? item.expectedKinds.first : nil, period: item.expectedPeriod)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -578,16 +570,8 @@ struct MissingEvidenceRow: View {
         .frame(minHeight: 28)
         .background(theme.rowBackground(shaded))
         .overlay(alignment: .bottom) { Rectangle().frame(height: 1).foregroundStyle(.separator.opacity(0.6)) }
-        .overlay {
-            if dropTargeted {
-                RoundedRectangle(cornerRadius: 4).strokeBorder(theme.accent, lineWidth: 2)
-            }
-        }
         .contentShape(Rectangle())
-        .dropDestination(for: URL.self) { urls, _ in
-            actions.drop(urls)
-            return !urls.isEmpty
-        } isTargeted: { dropTargeted = $0 }
+        .importDropTarget(Self.shortcut(item))
         .contextMenu { menuItems }
         .accessibilityElement(children: .contain)
     }
@@ -596,23 +580,16 @@ struct MissingEvidenceRow: View {
 
     @ViewBuilder
     private var status: some View {
-        if isAdding {
-            HStack(spacing: 4) {
-                ProgressView().controlSize(.mini)
-                Text("Adding…").font(.caption).foregroundStyle(.secondary)
-            }
-        } else {
-            switch item.status {
-            case .missing:
-                StatusPill("Missing", tone: .warning, systemImage: "circle.dashed")
-                    .help("Missing — drop a file on the row, or add or link one")
-            case .satisfied:
-                StatusPill("Done", tone: .positive, systemImage: "checkmark")
-                    .help("Has its document")
-            case .waived:
-                StatusPill(item.waiver?.reason == .other ? "Waived" : "Not available", tone: .neutral, systemImage: "minus.circle")
-                    .help("Counts as done; Remove waiver asks for a document again")
-            }
+        switch item.status {
+        case .missing:
+            StatusPill("Missing", tone: .warning, systemImage: "circle.dashed")
+                .help("Missing — drop a file on the row, or add or link one")
+        case .satisfied:
+            StatusPill("Done", tone: .positive, systemImage: "checkmark")
+                .help("Has its document")
+        case .waived:
+            StatusPill(item.waiver?.reason == .other ? "Waived" : "Not available", tone: .neutral, systemImage: "minus.circle")
+                .help("Counts as done; Remove waiver asks for a document again")
         }
     }
 
@@ -680,9 +657,9 @@ struct MissingEvidenceRow: View {
         HStack(spacing: 6) {
             switch item.status {
             case .missing:
-                Button(action: actions.addFiles) { Image(systemName: "doc.badge.plus") }
-                    .disabled(isAdding)
-                    .help("Add document…: add a file to the library and link it to this item")
+                Button { actions.addFiles?() } label: { Image(systemName: "doc.badge.plus") }
+                    .disabled(actions.addFiles == nil)
+                    .help("Add document…: import a file and link it to this item")
                     .accessibilityLabel("Add document for \(item.title)")
             case .waived:
                 Button(action: actions.removeWaiver) { Image(systemName: "arrow.uturn.backward.circle") }
@@ -709,7 +686,8 @@ struct MissingEvidenceRow: View {
 
     @ViewBuilder
     private var menuItems: some View {
-        Button(item.status == .satisfied ? "Add another document…" : "Add document…", action: actions.addFiles)
+        Button(item.status == .satisfied ? "Add another document…" : "Add document…") { actions.addFiles?() }
+            .disabled(actions.addFiles == nil)
         Button("Link existing…", action: actions.linkExisting)
         Divider()
         switch item.status {

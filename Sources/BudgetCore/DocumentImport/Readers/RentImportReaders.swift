@@ -103,17 +103,30 @@ public struct RentReceiptPDFReader: ImportReader {
     public func handles(_ kind: ImportKind) -> Bool { kind == .rentReceiptPDF }
 
     public func propose(_ files: [(file: ImportFile, recognition: ImportRecognition)], context: ImportContext, db: Database) throws -> [ImportItem] {
-        // A tenancy the user chose (a contract number on several tenancies).
-        let tenancyId = context.intent.target.flatMap { $0.entity.type == .tenancy ? $0.entity.id : nil }
+        // The receipt the user added it to (Receipt ▸ Add PDF… / Replace PDF…), if any.
+        let targetReceiptId = context.intent.target.flatMap { $0.entity.type == .rentReceipt ? $0.entity.id : nil }
+        let targetReceipt = try targetReceiptId.flatMap { try RentReceipt.fetchOne(db, key: $0) }
+        // A tenancy the user chose (a contract number on several tenancies), else the target receipt's.
+        let tenancyId = context.intent.target.flatMap { $0.entity.type == .tenancy ? $0.entity.id : nil } ?? targetReceipt?.tenancyId
         let inputs = files.map { RentReceiptPDFs.Input(fileURL: $0.file.url, sha256: $0.file.sha256, text: $0.file.text,
                                                         textStatus: $0.file.textStatus, usedOCR: $0.file.usedOCR, tenancyId: tenancyId) }
         let plan = try RentReceiptPDFs.plan(db: db, inputs: inputs)
+        let target = try targetReceiptId.map { id in
+            (id: id, label: try targetReceipt.map { receipt in
+                let contract = try Tenancy.fetchOne(db, key: receipt.tenancyId)?.contractNumber ?? "?"
+                return "receipt nº \(receipt.receiptNumber) of contract \(contract)"
+            })
+        }
         return try zip(files, plan.items).map { pair, planned in
-            try item(file: pair.file, recognition: pair.recognition, planned: planned, db: db)
+            try item(file: pair.file, recognition: pair.recognition, planned: planned, target: target, db: db)
         }
     }
 
-    private func item(file: ImportFile, recognition: ImportRecognition, planned: RentReceiptPDFs.Item, db: Database) throws -> ImportItem {
+    /// `target`: the receipt the user added the PDF to (its label nil when it no longer exists).
+    /// The matcher must agree (contract and receipt number): a PDF of another receipt is a
+    /// problem, never linked to the target (nor replacing its PDF).
+    private func item(file: ImportFile, recognition: ImportRecognition, planned: RentReceiptPDFs.Item,
+                      target: (id: Int64, label: String?)?, db: Database) throws -> ImportItem {
         let source: ImportFactSource = planned.usedOCR ? .ocr : .textLayer
         var facts: [ImportFact] = []
         var title = file.fileName
@@ -138,6 +151,22 @@ public struct RentReceiptPDFReader: ImportReader {
         func problem(_ text: String) {
             item.issues.append(ImportIssue(id: "readerProblem\(item.issues.count)", kind: .readerProblem(text), reason: text))
         }
+        // A PDF of another receipt than the one the user added it to (another receipt number, a
+        // contract the target's tenancy doesn't have, a receipt not imported): never the target's,
+        // never a question about another tenancy; Leave out is the answer.
+        let targetMismatch: String? = {
+            guard let target, planned.parsed != nil, planned.receipt?.id != target.id else { return nil }
+            switch planned.outcome {
+            case .link, .mismatch, .noReceipt, .ambiguousContract:
+                return target.label.map { "This PDF is \(label.prefix(1).lowercased() + label.dropFirst()), not \($0) that you added it to" }
+                    ?? "The rent receipt you added it to no longer exists"
+            case .alreadyLinked, .duplicate, .unreadable:
+                return nil
+            }
+        }()
+        func mismatchIssue(_ text: String) {
+            item.issues.append(ImportIssue(id: "receiptMismatch", kind: .readerProblem(text), reason: text))
+        }
         switch planned.outcome {
         case .link:
             for text in planned.nifProblems {
@@ -150,6 +179,7 @@ public struct RentReceiptPDFReader: ImportReader {
                                            reasons: ["Contract \(parsed.contractNumber), receipt nº \(parsed.receiptNumber), amounts agree"],
                                            madeByEffect: true)]
             }
+            if let targetMismatch { mismatchIssue(targetMismatch) }
         case .alreadyLinked:
             item.duplicate = ImportDuplicate(level: .document, of: "\(label) already has this PDF",
                                              existingDocumentId: planned.existingDocumentId)
@@ -160,10 +190,13 @@ public struct RentReceiptPDFReader: ImportReader {
                 let field = mismatch.field.prefix(1).uppercased() + mismatch.field.dropFirst()
                 problem("\(field): PDF \(mismatch.pdf), stored \(mismatch.stored)")
             }
+            if let targetMismatch { mismatchIssue(targetMismatch) }
         case .noReceipt:
+            if let targetMismatch { mismatchIssue(targetMismatch); break }
             let number = planned.parsed?.receiptNumber ?? "?", contract = planned.parsed?.contractNumber ?? "?"
             problem("No receipt nº \(number) for contract \(contract): import the portal export first")
         case .ambiguousContract:
+            if let targetMismatch { mismatchIssue(targetMismatch); break }
             let options: [Int64] = try planned.parsed.map { parsed in
                 try Tenancy.filter(Column("contractNumber") == parsed.contractNumber).fetchAll(db).compactMap(\.id)
             } ?? []

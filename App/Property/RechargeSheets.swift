@@ -1051,3 +1051,21 @@ struct UtilityProviderFormSheet: View {
         }
     }
 }
+
+/// Readable text for the recharges' errors.
+enum RechargeMessages {
+    static func text(for error: Error) -> String {
+        guard let error = error as? RechargeError else { return error.localizedDescription }
+        switch error {
+        case .duplicateInvoiceNumber: return "An invoice with that number is already recorded for this provider."
+        case .duplicateInvoice: return "That invoice is already recorded for this provider (a copy of the same bill)."
+        case .duplicateName: return "There's already a provider with that name."
+        case .invalidPeriod: return "The period's end is before its start."
+        case .invoiceOnSentStatement: return "That invoice is on a sent statement: its amount and period can't change."
+        case .transactionOnAnotherInvoice: return "That bank movement already settles another invoice."
+        case let .invalidPattern(pattern): return "“\(pattern)” isn't a valid regular expression."
+        case .laterStatementExists: return "A later month's statement exists: prepare the months in order."
+        default: return "Couldn't save (\(error))."
+        }
+    }
+}

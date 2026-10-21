@@ -187,6 +187,8 @@ final class SnapshotSession {
     }
 
     func run() async throws {
+        // The routes' temporary folders (the demo source folder) go when the run ends.
+        defer { SnapshotCatalog.removeTemporaryFolders() }
         try FileManager.default.createDirectory(at: options.outDir, withIntermediateDirectories: true)
         let environment = try await AppEnvironment.load()
         let context = SnapshotContext(environment: environment, settleSeconds: options.settle)

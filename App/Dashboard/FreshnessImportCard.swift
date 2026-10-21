@@ -8,10 +8,10 @@ struct FreshnessImportCard: View {
     let importedThrough: [Int64: Date]
     /// The stored EUR→GBP rate, for a non-GBP account's note (`NonGBPImportCaption`).
     let eurToGbpRate: Double
-    @ObservedObject var importViewModel: ImportViewModel
+    /// The window's importer: an import under way is shown here, with a link to the Imports screen.
+    @ObservedObject var importCenter: ImportCenterModel
     let accounts: [Account]
     @Binding var selectedAccountId: Int64?
-    let profileStore: ImportProfileStore
     let navigate: (AppScreen) -> Void
 
     private var tint: Color {
@@ -53,23 +53,16 @@ struct FreshnessImportCard: View {
         }
     }
 
-    /// The idle import controls only exist for a saved account while nothing is staging or
-    /// under review.
-    private var idleImportAccount: Account? {
-        guard !importViewModel.isStaging, !importViewModel.isReviewing, !accounts.isEmpty else { return nil }
-        return selectedAccount
-    }
-
     var body: some View {
-        // The import host (file pickers and wizard sheets, with their @State) wraps the whole
-        // card, outside the width-aware layout below: switching between the one-line and the
-        // stacked layout on a window resize must not tear down an open picker or wizard.
-        if let account = idleImportAccount {
-            ImportFlowHost(viewModel: importViewModel, account: account, profileStore: profileStore) { actions in
-                card { idleControls(actions: actions) }
+        if accounts.isEmpty {
+            card {
+                HStack {
+                    Text("Add an account to import into").font(.callout).foregroundStyle(.secondary)
+                    Button("Accounts ›") { navigate(.accounts) }.buttonStyle(.link).fixedSize()
+                }
             }
         } else {
-            card { otherControls }
+            card { importControls }
         }
     }
 
@@ -120,43 +113,20 @@ struct FreshnessImportCard: View {
         .frame(maxWidth: 220)
     }
 
-    /// Account picker plus the two import buttons. `actions` is nil when the selected id
-    /// doesn't match a saved account (the picker alone is shown to correct it). For an
-    /// account with a saved CSV mapping, Import CSV… is a pull-down whose menu holds
-    /// "Edit column mapping…" and "Reset column mapping…"; with a saved PDF layout, Import PDF…
-    /// holds "Reset PDF layout…".
-    private func idleControls(actions: ImportFlowActions?) -> some View {
+    /// Account picker plus the two import buttons: shortcuts into the one importer with the
+    /// picked account (the review is on the Imports screen; files picked while a review is open
+    /// join it). An import under way shows below, with a link to it.
+    private var importControls: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 accountPicker()
-                if let actions {
-                    // Never truncated ("Import CS…"): the layout above gives them room instead.
-                    if let editCSVMapping = actions.editCSVMapping {
-                        Menu("Import CSV…") {
-                            Button("Edit column mapping…") { editCSVMapping() }
-                            if let reset = actions.resetCSVMapping {
-                                Button("Reset column mapping…") { reset() }
-                            }
-                        } primaryAction: {
-                            actions.startCSV()
-                        }
-                        .fixedSize()
-                    } else {
-                        Button("Import CSV…") { actions.startCSV() }.fixedSize()
-                    }
-                    if let resetPDFLayout = actions.resetPDFLayout {
-                        Menu("Import PDF…") {
-                            Button("Reset PDF layout…") { resetPDFLayout() }
-                        } primaryAction: {
-                            actions.startPDF()
-                        }
-                        .fixedSize()
-                    } else {
-                        Button("Import PDF…") { actions.startPDF() }.fixedSize()
-                    }
-                }
-                // On the controls' line, so it adds no height to the card.
                 if let account = selectedAccount, let id = account.id {
+                    // Never truncated ("Import CS…"): the layout above gives them room instead.
+                    ImportShortcutButton("Import CSV…", shortcut: .statement(accountId: id, format: .csv, from: .dashboard))
+                        .fixedSize()
+                    ImportShortcutButton("Import PDF…", shortcut: .statement(accountId: id, format: .pdf, from: .dashboard))
+                        .fixedSize()
+                    // On the controls' line, so it adds no height to the card.
                     Text(importedThrough[id].map { "Imported up to \(DashboardFormat.day($0))" } ?? "Not imported yet")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -164,6 +134,7 @@ struct FreshnessImportCard: View {
                         .layoutPriority(-1)
                 }
             }
+            importStatus
             // Capped so a long caption wraps instead of widening the controls (which would
             // tip the card into its stacked layout earlier than the buttons need).
             NonGBPImportCaption(account: selectedAccount, eurToGbpRate: eurToGbpRate)
@@ -171,29 +142,24 @@ struct FreshnessImportCard: View {
         }
     }
 
+    /// The importer's progress (`ImportCenterModel.phase`): reading, or a review waiting.
     @ViewBuilder
-    private var otherControls: some View {
-        if importViewModel.isStaging {
+    private var importStatus: some View {
+        switch importCenter.phase {
+        case .reading, .applying:
             HStack {
                 ProgressView().controlSize(.small)
                 Text("Import in progress…").font(.callout)
-                Button("View progress ›") { navigate(.importReview) }.buttonStyle(.link).fixedSize()
+                Button("View progress ›") { navigate(.imports) }.buttonStyle(.link).fixedSize()
             }
-        } else if importViewModel.isReviewing {
+        case .review:
             HStack {
-                // Confirmed rows aren't saved until Finish import, so say so.
-                Text(importViewModel.confirmedCount > 0
-                     ? "Import in review · \(importViewModel.confirmedCount) confirmed, not saved yet"
-                     : "Import ready to review").font(.callout).figureText()
-                Button("Resume review ›") { navigate(.importReview) }.buttonStyle(.link).fixedSize()
+                // Nothing in a review is saved before Confirm import.
+                Text("Import in review, not saved yet").font(.callout)
+                Button("Resume review ›") { navigate(.imports) }.buttonStyle(.link).fixedSize()
             }
-        } else if accounts.isEmpty {
-            HStack {
-                Text("Add an account to import into").font(.callout).foregroundStyle(.secondary)
-                Button("Accounts ›") { navigate(.accounts) }.buttonStyle(.link).fixedSize()
-            }
-        } else {
-            idleControls(actions: nil)
+        case .idle, .finished, .failed:
+            EmptyView()
         }
     }
 }

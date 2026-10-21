@@ -7,9 +7,23 @@ struct PDFLayoutWizardView: View {
     let sampleLines: [String]
     let onSave: (ImportProfile) -> Void
 
-    @State private var regexPattern = #"^(\d{2} \w{3} \d{2})\s+(.+?)\s+([\d.]+)\s*(?:DR|CR)?$"#
-    @State private var dateFormat = "dd MMM yy"
+    @State private var regexPattern: String
+    @State private var dateFormat: String
     @Environment(\.dismiss) private var dismiss
+
+    static let defaultRegexPattern = #"^(\d{2} \w{3} \d{2})\s+(.+?)\s+([\d.]+)\s*(?:DR|CR)?$"#
+    static let defaultDateFormat = "dd MMM yy"
+
+    /// Opens prefilled from `existingProfile`'s layout when editing (one that can't be read
+    /// starts from the default).
+    init(account: Account, sampleLines: [String], existingProfile: ImportProfile? = nil, onSave: @escaping (ImportProfile) -> Void) {
+        self.account = account
+        self.sampleLines = sampleLines
+        self.onSave = onSave
+        let existing = existingProfile?.pdfLayoutConfig.flatMap { try? PDFLayoutConfig.decode($0) }
+        _regexPattern = State(initialValue: existing?.regexPattern ?? Self.defaultRegexPattern)
+        _dateFormat = State(initialValue: existing?.dateFormat ?? Self.defaultDateFormat)
+    }
 
     private var previewResult: PDFParseResult {
         PDFLineParser.parse(lines: Array(sampleLines.prefix(10)), config: PDFLayoutConfig(regexPattern: regexPattern, dateFormat: dateFormat))

@@ -69,9 +69,72 @@ public struct ImportPipeline: @unchecked Sendable {
     /// so a file added again later is a duplicate. The planning copy is taken afresh.
     public func plan(adding urls: [URL], to plan: ImportPlan, intent: ImportIntent, timings: ImportPlanTimings? = nil,
                      progress: @Sendable (ImportProgress) -> Void = { _ in }) async throws -> ImportPlan {
+        try await self.plan(adding: urls, to: plan, intent: intent, sources: [:], timings: timings, progress: progress)
+    }
+
+    /// `plan(adding:to:intent:)` with documents already in the library read too (a shortcut's
+    /// `ImportShortcut.libraryDocumentIds`): each read from its stored file under its original
+    /// name, so filing it on Confirm import returns that document (no second copy). Ids no
+    /// longer in the library, and documents whose file is already in `plan`, are skipped.
+    public func plan(adding urls: [URL], libraryDocuments documentIds: [Int64], to plan: ImportPlan, intent: ImportIntent,
+                     timings: ImportPlanTimings? = nil, progress: @Sendable (ImportProgress) -> Void = { _ in }) async throws -> ImportPlan {
+        // Ones already in the open review (brought before, or picked as a file) aren't read again.
+        let inReview = Set(plan.items.filter { $0.parentId == nil }.map(\.file.sha256))
+        let documents = try await dbQueue.read { db in try EvidenceDocument.filter(keys: documentIds).fetchAll(db) }
+            .filter { !inReview.contains($0.sha256) }
+        let byId = Dictionary(uniqueKeysWithValues: documents.compactMap { document in document.id.map { ($0, document) } })
+        var names: [String: String] = [:]
+        var all = urls
+        for id in documentIds {
+            guard let document = byId[id] else { continue }
+            let url = library.fileURL(for: document)
+            guard names[url.path] == nil else { continue }
+            names[url.path] = document.originalFileName
+            all.append(url)
+        }
+        return try await self.plan(adding: all, to: plan, intent: intent, sources: [:], names: names, timings: timings, progress: progress)
+    }
+
+    /// A source folder's new and changed files (`SourceFolderImport.inputs`) planned as
+    /// `ImportShortcut.sourceFolder` (its entry point): read inside the folder's security scope,
+    /// each file carrying the folder, its path there and its modification date (on the file and
+    /// its placement), so Confirm import records the document on its scan record and
+    /// acknowledges its change (`ImportApplier`). Inputs of other folders are left out; a file
+    /// gone since the scan is an unreadable item ("Gone from the folder since the scan").
+    /// Resolving the folder may refresh its stored bookmark and path (a write to the real
+    /// database's `sourceFolder`, as any scan does) — the only write planning makes.
+    /// `existing`: an open review the files join (as `plan(adding:)`: each item keeps its own intent).
+    public func plan(folder: SourceFolder, scanner: SourceFolderScanner, inputs: [SourceFolderImport.Input],
+                     to existing: ImportPlan = ImportPlan(items: []),
+                     timings: ImportPlanTimings? = nil, progress: @Sendable (ImportProgress) -> Void = { _ in }) async throws -> ImportPlan {
+        guard let folderId = folder.id else { throw SourceFolderError.folderNotFound }
+        let intent = ImportShortcut.sourceFolder(folderId: folderId, name: folder.name).intent
+        return try await scanner.withResolvedFolder(folder) { resolved in
+            // Where the folder is now (its bookmark followed), not where the scan found it.
+            var sources: [String: SourceFolderImport.Input] = [:]
+            var urls: [URL] = []
+            for var input in inputs where input.folderId == folderId {
+                input.url = resolved.url.appendingPathComponent(input.relativePath)
+                guard sources[input.url.path] == nil else { continue }
+                sources[input.url.path] = input
+                urls.append(input.url)
+            }
+            return try await self.plan(adding: urls, to: existing, intent: intent, sources: sources, timings: timings,
+                                       progress: progress)
+        }
+    }
+
+    /// `sources`: the source-folder files among `urls`, by path (their folder metadata).
+    /// `names`: the library files among them, by path, with the name each was added under.
+    private func plan(adding urls: [URL], to plan: ImportPlan, intent: ImportIntent, sources: [String: SourceFolderImport.Input],
+                      names: [String: String] = [:],
+                      timings: ImportPlanTimings?, progress: @Sendable (ImportProgress) -> Void) async throws -> ImportPlan {
         try await cancellable {
             try Task.checkCancellation()
             let collected = ImportFileCollector.collect(urls)
+            // A source folder's file gone since the scan is still an item (unreadable), not dropped.
+            let listed = Set(collected.files.map(\.path))
+            let files = collected.files + urls.filter { sources[$0.path] != nil && !listed.contains($0.path) }
             let copy = try timings.measure(.copy) { try session.fresh(from: dbQueue) }
             let queue = copy.dbQueue
             let (providers, rules, ownNIFs) = try await queue.read { db in
@@ -80,8 +143,18 @@ public struct ImportPipeline: @unchecked Sendable {
             let readers = self.readers ?? ImportReaders.defaultReaders(providers: providers)
             // Learnt kinds after the built-in recognisers (a given detector is used as it is).
             let detector = self.detector ?? ImportDetector(providers: providers, learnt: [ImportLearning.recogniser(rules: rules, ownNIFs: ownNIFs)])
-            var loaded = try await load(collected.files, detector: detector, readers: readers, timings: timings, progress: progress)
+            var loaded = try await load(files, sources: sources, names: names, detector: detector, readers: readers, timings: timings,
+                                        progress: progress)
             try Task.checkCancellation()
+            // The kind the shortcut declares for what nothing recognised: before the model (not asked about it).
+            for i in loaded.indices where loaded[i].failure == nil {
+                let file = loaded[i].file
+                let read = !file.usedOCR && file.textStatus == .text
+                    && file.text.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } == true
+                guard let declared = ImportDetector.declared(loaded[i].recognition, intent: intent, read: read) else { continue }
+                loaded[i].recognition = declared
+                loaded[i].file = readers.first { $0.handles(declared.kind) }?.prepare(loaded[i].file, recognition: declared) ?? loaded[i].file
+            }
             // What nothing recognised, asked of the on-device model (outside the write, after the learnt rules).
             let outcomes = try await askModel(&loaded, cached: plan.state.modelGuesses, readers: readers, progress: progress)
             let entries = loaded
@@ -106,7 +179,7 @@ public struct ImportPipeline: @unchecked Sendable {
                     let added = try timings.measure(.readers) {
                         try ImportLearning.apply(Self.propose(entries, staged: staged, contexts: contexts, readers: readers, db: db), db: db)
                             .map { Self.withModelOutcome($0, outcomes) }
-                            .map { Self.withReplacements($0, intent: intent) }
+                            .map { try Self.withTarget($0, intent: intent, db: db) }
                     }
                     for item in added {
                         result.state.intents[item.id] = intent
@@ -522,7 +595,9 @@ public struct ImportPipeline: @unchecked Sendable {
                 intent.accountId = id
                 // A statement's account chosen by the user: learnt for files like it on Confirm import.
                 if [.bankStatementCSV, .bankStatementPDF].contains(recognition.kind) { intent.statementAccounts[.current] = id }
-            case .tenancy: intent.target = ImportIntent.Target(entity: .tenancy(id))
+            case .tenancy:
+                // A receipt the user added the file to stays its target (its reader never asks then).
+                if intent.target?.entity.type != .rentReceipt { intent.target = ImportIntent.Target(entity: .tenancy(id)) }
             case .provider: intent.providerId = id
             }
         case .chooseAccount(let role, let id):
@@ -564,7 +639,7 @@ public struct ImportPipeline: @unchecked Sendable {
             try db.inSavepoint {
                 var read = try ImportLearning.apply(Self.propose(entries, staged: staged, contexts: [context], readers: readers, db: db), db: db,
                                                     declined: plan.state.declinedRules[item.id] ?? [])
-                    .map { Self.withReplacements($0, intent: readIntent) }
+                    .map { try Self.withTarget($0, intent: readIntent, db: db) }
                 guard let first = read.firstIndex(where: { $0.parentId == nil }) else { return .rollback }
                 // What the model read, accepted or still to check, is kept (the model isn't asked again).
                 read[first] = ImportModelProposals.carry(from: item, to: read[first])
@@ -650,7 +725,7 @@ public struct ImportPipeline: @unchecked Sendable {
                     let intent = contexts[n].intent
                     var read = try ImportLearning.apply(Self.statementItems(entries[n], statement, context: contexts[n], db: db), db: db,
                                                         declined: plan.state.declinedRules[old.id] ?? [])
-                        .map { Self.withReplacements($0, intent: intent) }
+                        .map { try Self.withTarget($0, intent: intent, db: db) }
                     guard let first = read.firstIndex(where: { $0.parentId == nil }) else { continue }
                     let newId = read[first].id
                     for i in read.indices {
@@ -692,7 +767,8 @@ public struct ImportPipeline: @unchecked Sendable {
 
     /// Each file loaded, detected and prepared by its reader, at most `concurrentLoads` at
     /// once, in the order given; progress after each.
-    private func load(_ urls: [URL], detector: ImportDetector, readers: [any ImportReader], timings: ImportPlanTimings?,
+    private func load(_ urls: [URL], sources: [String: SourceFolderImport.Input] = [:], names: [String: String] = [:], detector: ImportDetector,
+                      readers: [any ImportReader], timings: ImportPlanTimings?,
                       progress: @Sendable (ImportProgress) -> Void) async throws -> [Entry] {
         progress(ImportProgress(completed: 0, total: urls.count))
         var entries = [Entry?](repeating: nil, count: urls.count)
@@ -701,9 +777,10 @@ public struct ImportPipeline: @unchecked Sendable {
             func start() {
                 let index = next
                 let url = urls[index]
+                let source = sources[url.path], name = names[url.path]
                 group.addTask {
                     try Task.checkCancellation()
-                    return (index, Self.read(url, detector: detector, readers: readers, timings: timings))
+                    return (index, Self.read(url, source: source, name: name, detector: detector, readers: readers, timings: timings))
                 }
                 next += 1
             }
@@ -781,9 +858,18 @@ public struct ImportPipeline: @unchecked Sendable {
         return ImportModelProposals.apply(outcome, to: item)
     }
 
-    private static func read(_ url: URL, detector: ImportDetector, readers: [any ImportReader], timings: ImportPlanTimings?) -> Entry {
+    /// `source`: the file is a source folder's (it carries the folder's metadata).
+    /// `name`: the name a library file was added under (its stored file is named by its hash).
+    private static func read(_ url: URL, source: SourceFolderImport.Input?, name: String? = nil, detector: ImportDetector,
+                             readers: [any ImportReader], timings: ImportPlanTimings?) -> Entry {
         do {
-            let file = try timings.measure(.load) { try ImportFile.load(url) }
+            var file = try timings.measure(.load) { try ImportFile.load(url) }
+            if let name, !name.isEmpty { file.fileName = name }
+            if let source {
+                file.sourceFolderId = source.folderId
+                file.sourceRelativePath = source.relativePath
+                file.sourceModifiedAt = source.modifiedAt
+            }
             let recognition = timings.measure(.detect) { detector.detect(file) }
             let prepared = timings.measure(.prepare) {
                 readers.first { $0.handles(recognition.kind) }?.prepare(file, recognition: recognition) ?? file
@@ -792,15 +878,24 @@ public struct ImportPipeline: @unchecked Sendable {
         } catch {
             // No hash to compare: a key no other file has.
             let file = ImportFile(url: url, fileName: url.lastPathComponent, sha256: ImportResolutions.unreadableHashPrefix + UUID().uuidString, byteCount: 0,
-                                  fileExtension: url.pathExtension.lowercased(), text: nil, textStatus: .noText, usedOCR: false)
+                                  fileExtension: url.pathExtension.lowercased(), text: nil, textStatus: .noText, usedOCR: false,
+                                  sourceFolderId: source?.folderId, sourceRelativePath: source?.relativePath,
+                                  sourceModifiedAt: source?.modifiedAt)
             let recognition = ImportRecognition(kind: .unknown, confidence: .needsReview, reason: "The file could not be read")
-            let text = "The file could not be read: \(error.localizedDescription)"
+            let gone = source != nil && !FileManager.default.fileExists(atPath: url.path)
+            let text = gone ? Self.goneFromFolder : "The file could not be read: \(error.localizedDescription)"
             let item = ImportItem(file: file, recognition: recognition, title: file.fileName, effect: .none,
                                   issues: [ImportIssue(id: ImportResolutions.unreadableIssueId, kind: .readerProblem(text), reason: text)],
                                   groupKey: "Other documents")
             return Entry(file: file, recognition: recognition, failure: item)
         }
     }
+
+    /// The reason of a link a changed source-folder file takes from its previous version's document.
+    public static let previousVersionReason = "Links of the previous version"
+
+    /// A source folder's file deleted or moved between the scan and the review.
+    static let goneFromFolder = "Gone from the folder since the scan"
 
     // MARK: Statements
 
@@ -1029,6 +1124,105 @@ public struct ImportPipeline: @unchecked Sendable {
         return items
     }
 
+    /// The item with the intent's target linked (certain, `ImportIntent.targetReason`, made by
+    /// the importer); a link the reader made to it becomes certain and carries the reason too.
+    /// Then `withReplacements`. No new link
+    /// for a statement's rows, a file the shortcut's type contradicts (`kindMismatch`), nor a rent
+    /// receipt PDF added to a receipt or tenancy: its reader links the receipt it matched, and
+    /// only when it is the target (`RentReceiptPDFReader`; a tenancy is the one chosen for its
+    /// contract number). A target that no longer exists is a problem the user settles.
+    static func withTarget(_ item: ImportItem, intent: ImportIntent, db: Database) throws -> ImportItem {
+        guard let target = intent.target else { return item }
+        var item = item
+        let readerLinks = item.recognition.kind == .rentReceiptPDF && [.rentReceipt, .tenancy].contains(target.entity.type)
+        if item.parentId == nil, ImportDetector.intentIssue(item.recognition, intent: intent) == nil,
+           let index = item.links.firstIndex(where: { $0.entity == target.entity }) {
+            // The reader linked it too: certain, with the user's reason (the receipt its PDF matched).
+            let label = try entityTitle(db: db, target.entity) ?? item.links[index].label
+            let reason = intent.targetReason(label: label)
+            if item.links[index].confidence != .certain {
+                item.links[index].confidence = .certain
+                if let role = target.role { item.links[index].role = role }
+            }
+            if !item.links[index].reasons.contains(reason) { item.links[index].reasons.append(reason) }
+        } else if item.parentId == nil, !readerLinks, ImportDetector.intentIssue(item.recognition, intent: intent) == nil {
+            if let label = try entityTitle(db: db, target.entity) {
+                item.links.append(ProposedLink(entity: target.entity, role: target.role, label: label, confidence: .certain,
+                                               reasons: [intent.targetReason(label: label)]))
+            } else {
+                let text = "The \(target.entity.type.displayName.lowercased()) you added it to no longer exists"
+                if !item.issues.contains(where: { $0.reason == text }) {
+                    item.issues.append(ImportIssue(id: "targetGone", kind: .readerProblem(text), reason: text, offers: [.fileWithoutLink]))
+                }
+            }
+        }
+        if item.parentId == nil, intent.expected == .rentReceiptPDF, target.entity.type == .rentReceipt,
+           item.recognition.kind == .evidence(.rentReceipt) {
+            item = try withReceiptAgreement(item, receiptId: target.entity.id, db: db)
+        }
+        return withReplacements(withIntentPeriod(item, intent: intent), intent: intent)
+    }
+
+    /// A document filed for a record that asks for a period (`ImportIntent.period`) with no
+    /// period facts of its own: the record's period (certain, from the shortcut), its placement
+    /// named again with it. Not for a file the shortcut's type contradicts.
+    static func withIntentPeriod(_ item: ImportItem, intent: ImportIntent) -> ImportItem {
+        guard let period = intent.period, item.parentId == nil, item.placement != nil,
+              ImportDetector.intentIssue(item.recognition, intent: intent) == nil,
+              !item.facts.contains(where: { $0.field == .periodStart || $0.field == .periodEnd }) else { return item }
+        var item = item
+        let last = UKTaxYear.utcCalendar.date(byAdding: .day, value: -1, to: period.end) ?? period.start
+        let reason = "The period " + (intent.entryPoint.map { "\($0) asks for" } ?? "the record asks for")
+        item.facts.append(ImportFact(field: .periodStart, value: .date(period.start), source: .intent, confidence: .certain, reason: reason))
+        item.facts.append(ImportFact(field: .periodEnd, value: .date(max(last, period.start)), source: .intent, confidence: .certain, reason: reason))
+        item.placement = ImportNaming.placement(kind: item.recognition.kind, facts: item.facts, file: item.file,
+                                                persons: item.placement?.metadata.persons ?? [])
+        return item
+    }
+
+    /// A rent receipt that isn't the portal's PDF, added to a receipt (Receipt ▸ Add/Replace
+    /// PDF…): read by text recognition, its kind is to check; when its period (or, without one,
+    /// its date) or its amount disagrees with the receipt, the link to the receipt is to check,
+    /// saying what differs ("This receipt's amount differs from receipt nº 1").
+    static func withReceiptAgreement(_ item: ImportItem, receiptId: Int64, db: Database) throws -> ImportItem {
+        var item = item
+        if item.file.usedOCR, item.recognition.confidence == .certain {
+            item.recognition.confidence = .needsReview
+            item.recognition.reason = "Read by text recognition: check it's a rent receipt"
+        }
+        guard let receipt = try RentReceipt.fetchOne(db, key: receiptId),
+              let index = item.links.firstIndex(where: { $0.entity == .rentReceipt(receiptId) }) else { return item }
+        let calendar = MonthRange.calendar
+        func date(_ field: ImportFigureField) -> Date? {
+            for fact in item.facts where fact.field == field { if case .date(let day) = fact.value { return day } }
+            return nil
+        }
+        var differs: [String] = []
+        let start = date(.periodStart), end = date(.periodEnd)
+        if start != nil || end != nil {
+            if let start, !calendar.isDate(start, inSameDayAs: receipt.periodStart) { differs.append("period") }
+            else if let end, !calendar.isDate(end, inSameDayAs: receipt.periodEnd) { differs.append("period") }
+        } else if let day = date(.docDate) {
+            // Issued within a month of the rent period.
+            let from = calendar.date(byAdding: .month, value: -1, to: receipt.periodStart) ?? receipt.periodStart
+            let to = calendar.date(byAdding: .month, value: 1, to: receipt.periodEnd) ?? receipt.periodEnd
+            if day < calendar.startOfDay(for: from) || day > to.addingTimeInterval(86_399) { differs.append("date") }
+        }
+        let amounts = item.facts.compactMap { fact -> Int? in
+            guard fact.field == .amount, case .money(let minor, _) = fact.value else { return nil }
+            return abs(minor)
+        }
+        if let amount = amounts.first, ![receipt.amountMinorUnits, receipt.amountReceivedMinorUnits].contains(amount) {
+            differs.append("amount")
+        }
+        guard !differs.isEmpty else { return item }
+        let what = differs.joined(separator: " and ")
+        let reason = "This receipt's \(what) \(differs.count == 1 ? "differs" : "differ") from receipt nº \(receipt.receiptNumber)"
+        item.links[index].confidence = .needsReview
+        if !item.links[index].reasons.contains(reason) { item.links[index].reasons.insert(reason, at: 0) }
+        return item
+    }
+
     /// The item's links to the intent's target carry the documents the intent replaces there
     /// (`ProposedLink.replacing`), so the filed-year guard and the importer both unlink them.
     static func withReplacements(_ item: ImportItem, intent: ImportIntent) -> ImportItem {
@@ -1036,6 +1230,37 @@ public struct ImportPipeline: @unchecked Sendable {
         var item = item
         for i in item.links.indices where item.links[i].entity == target.entity {
             item.links[i].replacing = target.replacing
+        }
+        return item
+    }
+
+    /// A changed source-folder file whose previous version was filed (`SourceFile.previousDocumentId`
+    /// of its scan record, still holding the content read): the new document takes the previous
+    /// one's links — certain, `previousVersionReason`, same role — and replaces the previous
+    /// document there (`ProposedLink.replacing`: unlinked by `ImportEffects.applyRecords`, so the
+    /// filed-year guard simulates it; the previous document stays in the library). A link the
+    /// reader made to the same record keeps its confidence and gains the reason and the
+    /// replacement. Noted "New version of <name>", once: links the user removed since stay
+    /// removed. Not for a duplicate (the same document again), a left-out item or a statement's row.
+    static func withPreviousVersion(_ item: ImportItem, db: Database) throws -> ImportItem {
+        guard item.parentId == nil, item.duplicate == nil, !item.isLeftOut,
+              let folderId = item.file.sourceFolderId, let path = item.file.sourceRelativePath,
+              let record = try SourceFile.filter(Column("folderId") == folderId && Column("relativePath") == path).fetchOne(db),
+              record.sha256 == item.file.sha256, record.hasPendingChange, let previousId = record.previousDocumentId,
+              let previous = try EvidenceDocument.fetchOne(db, key: previousId) else { return item }
+        let note = "New version of \(previous.displayName)"
+        guard !item.notes.contains(note) else { return item }
+        var item = item
+        item.notes.append(note)
+        for link in try DocumentLink.filter(Column("documentId") == previousId).order(Column("id")).fetchAll(db)
+        where try EvidenceLinks.entityExists(db: db, link.entity) {
+            if let index = item.links.firstIndex(where: { $0.entity == link.entity }) {
+                if !item.links[index].reasons.contains(previousVersionReason) { item.links[index].reasons.append(previousVersionReason) }
+                if !item.links[index].replacing.contains(previousId) { item.links[index].replacing.append(previousId) }
+            } else {
+                item.links.append(ProposedLink(entity: link.entity, role: link.role, label: try entityLabel(db: db, link.entity),
+                                               confidence: .certain, reasons: [previousVersionReason], replacing: [previousId]))
+            }
         }
         return item
     }

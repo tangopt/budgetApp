@@ -38,7 +38,7 @@ public enum ImportFactSource: String, Codable, Sendable {
 }
 
 public enum ImportFigureField: String, Codable, CaseIterable, Sendable {
-    case docDate, amount, currency, periodStart, periodEnd, invoiceNumber, receiptNumber, reference, issuer, person, taxYear, pay, taxDeducted
+    case docDate, amount, currency, periodStart, periodEnd, invoiceNumber, receiptNumber, reference, issuer, person, taxYear, pay, taxDeducted, taxCode
     /// A statement's opening and closing balances, its row count, and its preview lines
     /// (a BBVA statement's mortgage instalments and fund).
     case openingBalance, closingBalance, rows, instalments, fund
@@ -58,6 +58,7 @@ public enum ImportFigureField: String, Codable, CaseIterable, Sendable {
         case .taxYear: return "Tax year"
         case .pay: return "Pay"
         case .taxDeducted: return "Tax deducted"
+        case .taxCode: return "Tax code"
         case .openingBalance: return "Opening balance"
         case .closingBalance: return "Closing balance"
         case .rows: return "Rows"
@@ -185,7 +186,8 @@ public enum ImportTargetKind: String, Sendable {
     case provider
 }
 
-/// What the user said the files are, when the entry point knows (plan 4 fills these in).
+/// What the user said the files are, when the entry point knows (`ImportShortcut.intent`).
+/// Intents are per file: each item keeps the one of the call that brought it (`ImportPlan.intent(of:)`).
 public struct ImportIntent: Equatable, Sendable {
     public struct Target: Equatable, Sendable {
         public var entity: EvidenceEntity
@@ -213,10 +215,23 @@ public struct ImportIntent: Equatable, Sendable {
     /// The layout mapped in the review for a statement's account (`ImportResolution.saveProfile`):
     /// read with it, saved on Confirm import.
     public var statementProfile: ImportProfile?
+    /// "Edit column mapping…": the statement's saved mapping is asked again, prefilled
+    /// (`StatementIssue.remap`), until one is mapped in the review (`statementProfile`).
+    public var remapStatement: Bool
+    /// The shortcut the files came from (`ImportShortcut.entryPoint`), when one did.
+    public var entryPoint: String?
+    /// `expected` names a library document kind (`.evidence`) that any reader's kind of that
+    /// document matches (Missing evidence ▸ Add: a P60 read by the payroll reader is the P60 the
+    /// item asks for; a BBVA extrato or a CSV is a bank statement).
+    public var expectedByDocumentKind = false
+    /// The period the target record asks a document for (`[start, end)`; Missing evidence ▸ Add's
+    /// slot): a filed document without period facts gets it (`ImportPipeline.withIntentPeriod`).
+    public var period: DateInterval?
 
     public init(expected: ImportKind? = nil, propertyId: Int64? = nil, personId: Int64? = nil,
                 accountId: Int64? = nil, taxYear: Int? = nil, target: Target? = nil, providerId: Int64? = nil,
-                statementAccounts: [StatementAccountRole: Int64] = [:], statementProfile: ImportProfile? = nil) {
+                statementAccounts: [StatementAccountRole: Int64] = [:], statementProfile: ImportProfile? = nil,
+                remapStatement: Bool = false, entryPoint: String? = nil) {
         self.expected = expected
         self.propertyId = propertyId
         self.personId = personId
@@ -226,9 +241,17 @@ public struct ImportIntent: Equatable, Sendable {
         self.providerId = providerId
         self.statementAccounts = statementAccounts
         self.statementProfile = statementProfile
+        self.remapStatement = remapStatement
+        self.entryPoint = entryPoint
     }
 
     public static let none = ImportIntent()
+
+    /// Why a file is linked to the intent's target (`label`): "You added it from <entry point>",
+    /// or "You added it to <label>" when no shortcut is named.
+    func targetReason(label: String) -> String {
+        entryPoint.map { "You added it from \($0)" } ?? "You added it to \(label)"
+    }
 }
 
 public enum ImportSection: String, CaseIterable, Sendable {
@@ -243,11 +266,15 @@ public struct ImportDuplicate: Equatable, Sendable {
     /// "Already in the library as …", "3 rows already imported").
     public var of: String
     public var existingDocumentId: Int64?
+    /// The item of the same import it duplicates, when its original is in the batch and not yet
+    /// in the library: Confirm import gives it that item's document (a source folder's record).
+    public var originalItemId: UUID?
 
-    public init(level: Level, of: String, existingDocumentId: Int64? = nil) {
+    public init(level: Level, of: String, existingDocumentId: Int64? = nil, originalItemId: UUID? = nil) {
         self.level = level
         self.of = of
         self.existingDocumentId = existingDocumentId
+        self.originalItemId = originalItemId
     }
 }
 
@@ -283,7 +310,8 @@ public enum StatementIssue: Equatable, Sendable {
     /// A fund movement without its subscription debit (or the reverse), or a fund already
     /// valued on the period end at another balance.
     case fundMismatch(String)
-    /// The saved profile no longer reads the file ("Edit column mapping…").
+    /// "Edit column mapping…": the saved mapping asked again (offered as `.saveProfile` to start
+    /// from), answered with the mapping set up in the review.
     case remap(format: ImportFormat, accountId: Int64)
 }
 
@@ -335,6 +363,9 @@ public enum ImportResolution: Equatable, Sendable {
     case confirmFigure(ImportFigureField, ImportFactValue)
     case chooseTarget(ImportTargetKind, Int64)
     case acknowledge
+    /// A P11D's benefit rows as the user set them (kind and amount per row, rows added or
+    /// removed): the payroll effect's benefits; counts as checking the benefits.
+    case setBenefits([PayrollFormExtraction.Benefit])
     /// The account for a statement's role (`unknownAccount`: `.current`; `unknownLinkedAccount`).
     case chooseAccount(StatementAccountRole, Int64)
     /// Import a statement whose closing balance doesn't match, with the user's reason (Task 5).
@@ -765,6 +796,12 @@ public struct ImportPlan: Equatable, Sendable {
             if let note = item.resolutionNote { reasons[item.id] = note }
         }
         return reasons
+    }
+
+    /// The intent the item is read with: its shortcut's (the call that brought the file, kept
+    /// when files are added to the review), with what the user chose in the review added.
+    public func intent(of itemId: UUID) -> ImportIntent {
+        state.intents[itemId] ?? .none
     }
 
     /// Nothing waits for the user and something is ready.

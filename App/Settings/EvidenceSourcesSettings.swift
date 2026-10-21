@@ -5,13 +5,15 @@ import BudgetCore
 
 /// Settings ▸ Evidence: the folders the app scans for evidence (spec 2026-10-16 §3) — add,
 /// remove, scan now, with each folder's last scan and counts. Scans only read the folders;
-/// what a scan found is reviewed and accepted from the Documents screen (Review a folder).
+/// Scan Now hands the new and changed files to the importer (the main window's Imports
+/// screen), where they're reviewed; nothing is added before Confirm import.
 struct EvidenceSourcesSettings: View {
     @ObservedObject private var current = AppEnvironment.Current.shared
 
     var body: some View {
         if let environment = current.environment {
-            EvidenceSourcesList(model: EvidenceSourcesModel(scanner: SourceFolderScanner(library: environment.evidenceLibrary)))
+            EvidenceSourcesList(model: EvidenceSourcesModel(scanner: SourceFolderScanner(library: environment.evidenceLibrary),
+                                                            importCenter: environment.importCenter))
         } else {
             ContentUnavailableView("Budget isn't open", systemImage: "folder.badge.questionmark",
                                    description: Text("Open the Budget window to manage evidence folders."))
@@ -28,6 +30,8 @@ final class EvidenceSourcesModel: ObservableObject {
     }
 
     let scanner: SourceFolderScanner
+    /// The importer the scanned files go to (nil: scans only count).
+    let importCenter: ImportCenterModel?
     @Published private(set) var folders: [SourceFolder] = []
     @Published private(set) var summaries: [Int64: SourceFolderScanner.Summary] = [:]
     /// This session's latest scan of each folder, for the counts the database doesn't keep
@@ -35,10 +39,13 @@ final class EvidenceSourcesModel: ObservableObject {
     @Published private(set) var results: [Int64: SourceFolderScanner.ScanResult] = [:]
     @Published private(set) var scanning: Scanning?
     @Published var errorMessage: String?
+    /// What the last scan handed to the importer ("3 files sent to Imports").
+    @Published private(set) var sentMessage: String?
     private var scanTask: Task<Void, Never>?
 
-    init(scanner: SourceFolderScanner) {
+    init(scanner: SourceFolderScanner, importCenter: ImportCenterModel? = nil) {
         self.scanner = scanner
+        self.importCenter = importCenter
         reload()
     }
 
@@ -79,6 +86,7 @@ final class EvidenceSourcesModel: ObservableObject {
         guard scanning == nil, let id = folder.id else { return }
         scanning = Scanning(folderId: id)
         errorMessage = nil
+        sentMessage = nil
         let scanner = scanner
         // Held only while the scan runs.
         let report: @Sendable (SourceFolderScanner.Progress) -> Void = { progress in
@@ -86,19 +94,35 @@ final class EvidenceSourcesModel: ObservableObject {
         }
         scanTask = Task { [weak self] in
             let detached = Task.detached(priority: .userInitiated) { () -> Result<SourceFolderScanner.ScanResult, Error> in
-                // Counts only: new files are analysed when they're reviewed (Documents).
+                // Counts only: the importer reads the new and changed files.
                 Result { try scanner.scan(folder, options: .init(analyzeNewFiles: false), progress: report) }
             }
             let outcome = await withTaskCancellationHandler { await detached.value } onCancel: { detached.cancel() }
             guard let self else { return }
             self.scanning = nil
             switch outcome {
-            case .success(let result): self.results[id] = result
+            case .success(let result):
+                self.results[id] = result
+                self.send(result)
             case .failure(is CancellationError): break
             case .failure(let error): self.errorMessage = error.localizedDescription
             }
             self.reload()
         }
+    }
+
+    /// Hands the scan's new and changed files to the importer.
+    private func send(_ result: SourceFolderScanner.ScanResult) {
+        let inputs = SourceFolderImport.inputs(from: result)
+        guard let importCenter else { return }
+        guard !inputs.isEmpty else {
+            sentMessage = "Nothing new or changed in \(result.folder.name)."
+            return
+        }
+        importCenter.start(folder: result.folder, inputs: inputs)
+        // The Budget window, now on Imports, in front of Settings.
+        importCenter.onBringForward?()
+        sentMessage = "\(inputs.count) file\(inputs.count == 1 ? "" : "s") from \(result.folder.name) sent to Imports to review."
     }
 
     private func showProgress(_ progress: SourceFolderScanner.Progress, folderId: Int64) {
@@ -119,7 +143,7 @@ private struct EvidenceSourcesList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Folders Budget looks in for receipts, notices and statements. Scanning only reads them; nothing in them is moved or changed. Review what a scan found from the Documents screen.")
+            Text("Folders Budget looks in for receipts, notices and statements. Scanning only reads them; nothing in them is moved or changed. Scan Now sends what's new or changed to Imports, in the Budget window, to review.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -143,6 +167,11 @@ private struct EvidenceSourcesList: View {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .font(.callout)
                         .foregroundStyle(theme.expense)
+                        .lineLimit(2)
+                } else if let message = model.sentMessage {
+                    Text(message)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
             }

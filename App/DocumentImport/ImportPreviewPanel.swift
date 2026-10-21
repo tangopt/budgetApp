@@ -56,6 +56,13 @@ private struct ImportPreviewContent: View {
     /// The figure being changed (its pencil in Figures).
     @State private var editingField: ImportFigureField?
 
+    /// A P11D's effect: its benefit rows are corrected in the Benefits table (the amount is their total).
+    private var p11d: PayrollFormImport.Confirmed? {
+        if case .payrollForm(let confirmed) = item.effect, confirmed.kind == .p11d { return confirmed }
+        return nil
+    }
+    private var isP11D: Bool { p11d != nil }
+
     /// A statement's row (kept, skipped or asked about) takes only Keep / Skip: no corrections.
     private var correctable: Bool { ImportResolutions.isCorrectable(item) && !isStatementRow }
 
@@ -216,7 +223,7 @@ private struct ImportPreviewContent: View {
                                 ImportCheckPill(title: fact.source.pillTitle, help: fact.reason, target: .figure(fact.field),
                                                 item: item, plan: center.plan, isAnswerable: isAnswerable) { resolve(item.id, nil, $0) }
                                 // A model figure is corrected in its question's table while asked (one edit path per field).
-                                if correctable, !(modelReadingAsked && fact.source == .model) {
+                                if correctable, !(modelReadingAsked && fact.source == .model), !(fact.field == .amount && isP11D) {
                                     Button {
                                         editingField = editingField == fact.field ? nil : fact.field
                                     } label: {
@@ -245,6 +252,14 @@ private struct ImportPreviewContent: View {
                         Text(note.figuresUnbroken).font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                }
+            }
+
+            if let confirmed = p11d, correctable {
+                block("Benefits") {
+                    ImportBenefitsEditor(benefits: confirmed.benefits) { resolve(item.id, nil, .setBenefits($0)) }
+                        .id("\(item.id)-benefits-" + confirmed.benefits.map { "\($0.kind.rawValue):\($0.cashEquivalentMinorUnits)" }.joined(separator: ","))
+                        .disabled(!isAnswerable)
                 }
             }
 

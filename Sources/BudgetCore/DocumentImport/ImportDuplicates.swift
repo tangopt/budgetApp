@@ -190,6 +190,8 @@ public struct DocumentIdentityIndex {
         var documentId: Int64?
         var label: String
         var identity: DocumentIdentity.Identity
+        /// The batch item it is (not for the library's documents).
+        var itemId: UUID? = nil
     }
 
     enum Match {
@@ -359,12 +361,13 @@ public struct DocumentIdentityIndex {
         return found
     }
 
-    /// The entry sharing a weak key with `identity` that nothing vetoes.
-    func possibleDocument(_ identity: DocumentIdentity.Identity) -> Entry? {
+    /// The entry sharing a weak key with `identity` that nothing vetoes (`excluding`: library
+    /// documents never offered).
+    func possibleDocument(_ identity: DocumentIdentity.Identity, excluding: Set<Int64> = []) -> Entry? {
         let own = identity.strongByType
         for key in identity.weak.sorted(by: { ($0.hasPrefix("ref:") ? 1 : 0, $0) < ($1.hasPrefix("ref:") ? 1 : 0, $1) }) {
             guard !sharedReferences.contains(key) else { continue }
-            for entry in entries[key] ?? [] {
+            for entry in entries[key] ?? [] where entry.documentId.map(excluding.contains) != true {
                 let other = entry.identity
                 // Two different values of the same strong identity: two documents.
                 if own.contains(where: { type, values in other.strongByType[type].map { $0.isDisjoint(with: values) } ?? false }) { continue }
@@ -396,9 +399,11 @@ public enum ImportDuplicates {
     /// recorded invoice or receipt's, the stored pay and tax — it is a Needs-you "Possibly a
     /// corrected version of <the newest>: …": a payroll form may be imported as the newer
     /// version (acknowledge); any other document only filed, linked where the original is
-    /// (`.fileWithoutLink`), or left out. The same file (hash) is a copy whatever it says.
+    /// (`.fileWithoutLink`), or left out. The same file (hash) is a copy whatever it says; the
+    /// library documents the item replaces (`ProposedLink.replacing`) are never its original.
     /// A bank statement (UK or BBVA) whose file is already in the library is a duplicate only
-    /// when it adds nothing (`StatementChecks.writesSomething`) and contradicts nothing saved
+    /// when its layout isn't waiting to be mapped (`StatementChecks.awaitsMapping`), it adds
+    /// nothing (`StatementChecks.writesSomething`: a mapping to save counts) and contradicts nothing saved
     /// (`StatementChecks.keepsFromDuplicates`: pure questions and filed-year holds aside); otherwise it is imported as any statement — its rows are what the batch's
     /// later statements of the account count as imported — with the note "Document already in
     /// the library as <name>", and filing it returns that document. A second copy of a
@@ -409,72 +414,114 @@ public enum ImportDuplicates {
     /// the same kind (in the library or this import) needs the user's go.
     /// `library`: the library's index when already read from `db` (the pipeline reads it once
     /// per planning copy); else it is read here.
+    /// What a later item may copy: a library document, or an item of the batch (`itemId`).
+    private struct Original {
+        var label: String
+        var documentId: Int64?
+        var itemId: UUID?
+
+        init(label: String, documentId: Int64?, itemId: UUID? = nil) {
+            self.label = label
+            self.documentId = documentId
+            self.itemId = itemId
+        }
+
+        func duplicate(_ level: ImportDuplicate.Level, _ prefix: String) -> ImportDuplicate {
+            ImportDuplicate(level: level, of: "\(prefix) \(label)", existingDocumentId: documentId,
+                            originalItemId: documentId == nil ? itemId : nil)
+        }
+    }
+
     public static func annotate(_ items: [ImportItem], db: Database, library: DocumentIdentityIndex? = nil) throws -> [ImportItem] {
         let library = try library ?? DocumentIdentityIndex.load(db: db)
         var batch = DocumentIdentityIndex()
-        /// Hash → the original's name and library id.
-        var batchFiles: [String: (label: String, documentId: Int64?)] = [:]
+        /// Hash → the original's name, library id and (when in the batch only) item.
+        var batchFiles: [String: Original] = [:]
         var result = items
         // A left-out item isn't imported: it is no one's original (nor checked itself).
         for i in result.indices where result[i].parentId == nil && !result[i].isLeftOut {
             // A statement's note of an earlier pass is said again below when it still holds.
             let isStatement = StatementChecks.accountId(of: result[i]) != nil
-            if isStatement { result[i].notes.removeAll { $0.hasPrefix(libraryNotePrefix) } }
+            // A statement whose layout is still to be mapped is answered, never skipped (Edit
+            // column mapping… with the file already imported saves the mapping).
+            let awaitsMapping = StatementChecks.awaitsMapping(result[i])
+            if isStatement || awaitsMapping { result[i].notes.removeAll { $0.hasPrefix(libraryNotePrefix) } }
+            result[i].notes.removeAll { $0 == libraryInvoiceNote }
             let item = result[i]
             let identity = DocumentIdentity.identity(kind: item.recognition.kind, text: item.file.text, facts: item.facts,
                                                      providerId: providerId(item), personId: personId(item))
-            var original: (label: String, documentId: Int64?) = (item.file.fileName, nil)
+            var original = Original(label: item.file.fileName, documentId: nil, itemId: item.id)
             if let duplicate = item.duplicate {
                 // A reader's duplicate is registered as the library document it names; one
                 // naming none isn't an original for later items.
                 guard let id = duplicate.existingDocumentId, let name = library.name(of: id) else { continue }
-                original = (name, id)
+                original = Original(label: name, documentId: id)
             } else if isStatement, let earlier = batchFiles[item.file.sha256] {
                 // A second copy of a statement (of a library file too) adds nothing: the first
                 // holds its rows, estimates and valuation. One that still holds rows (never,
                 // while the first is in the import) isn't a copy.
                 if !StatementChecks.holdsRows(item) {
-                    result[i].duplicate = ImportDuplicate(level: .file, of: "Same file as \(earlier.label)", existingDocumentId: earlier.documentId)
+                    result[i].duplicate = earlier.duplicate(.file, "Same file as")
                 }
                 original = earlier
             } else if let found = library.byHash[item.file.sha256] {
-                if isStatement, StatementChecks.writesSomething(item) || item.issues.contains(where: StatementChecks.keepsFromDuplicates) {
+                if awaitsMapping || isStatement && (StatementChecks.writesSomething(item) || item.issues.contains(where: StatementChecks.keepsFromDuplicates)) {
                     // The statement reader decides: rows, legs, an estimate or a valuation still
                     // to add (or saved data it contradicts) make it a statement like any other,
                     // filed as the library's document (the library returns it: no second copy).
                     result[i].notes.append("\(libraryNotePrefix)\(found.label)")
+                } else if try recordsNewInvoice(item, on: found.documentId, db: db) {
+                    // A utility invoice in the library not recorded yet (Utility invoices… "From
+                    // library"): read again and recorded on that document (the library returns it)
+                    // — once: a second copy of the file in the batch is that one's.
+                    if let earlier = batchFiles[item.file.sha256] {
+                        result[i].duplicate = earlier.duplicate(.file, "Same file as")
+                    } else {
+                        result[i].notes.append(libraryInvoiceNote)
+                    }
                 } else {
                     result[i].duplicate = ImportDuplicate(level: .file, of: "Already in the library as \(found.label)", existingDocumentId: found.documentId)
                 }
-                original = (found.label, found.documentId)
+                original = Original(label: found.label, documentId: found.documentId)
             } else if let earlier = batchFiles[item.file.sha256] {
-                result[i].duplicate = ImportDuplicate(level: .file, of: "Same file as \(earlier.label)", existingDocumentId: earlier.documentId)
+                result[i].duplicate = earlier.duplicate(.file, "Same file as")
                 original = earlier
             } else {
                 // Strong before weak. Of the documents sharing a strong identity (the library's,
                 // then the batch's), the first whose figures agree is the one this copies; when
                 // every one differs, it is possibly a corrected version of the newest.
-                let libraryStrong = library.sameDocuments(identity), batchStrong = batch.sameDocuments(identity)
+                // The documents the item replaces on its record (Replace PDF…) aren't what it copies.
+                let replaced = Set(item.links.flatMap(\.replacing))
+                let libraryStrong = library.sameDocuments(identity).filter { $0.documentId.map(replaced.contains) != true }
+                let batchStrong = batch.sameDocuments(identity)
                 let strong = libraryStrong + batchStrong
                 if let copied = strong.first(where: { changes(from: $0, to: item).isEmpty }) {
-                    result[i].duplicate = ImportDuplicate(level: .document, of: "Same document as \(copied.label)", existingDocumentId: copied.documentId)
-                    original = (copied.label, copied.documentId)
+                    let copy = Original(label: copied.label, documentId: copied.documentId, itemId: copied.itemId)
+                    result[i].duplicate = copy.duplicate(.document, "Same document as")
+                    original = copy
                 } else if let newest = batchStrong.last ?? libraryStrong.max(by: { ($0.documentId ?? 0) < ($1.documentId ?? 0) }) {
                     // Another amount, pay or tax than every original holds: the user decides
                     // (and the filed-year guard still sees it).
                     result[i].issues.append(try correctedVersion(of: newest, item: item, db: db))
-                } else if let entry = library.possibleDocument(identity) ?? batch.possibleDocument(identity) {
+                } else if let entry = library.possibleDocument(identity, excluding: replaced) ?? batch.possibleDocument(identity) {
                     let reason = "Possibly the same document as \(entry.label)"
                     result[i].issues.append(ImportIssue(id: "possibleDuplicate", kind: .readerProblem(reason), reason: reason,
                                                         offers: [.acknowledge, .leaveOut]))
                 }
             }
             if batchFiles[item.file.sha256] == nil { batchFiles[item.file.sha256] = original }
-            batch.add(.init(documentId: original.documentId, label: original.label, identity: identity))
+            batch.add(.init(documentId: original.documentId, label: original.label, identity: identity,
+                            itemId: original.documentId == nil ? original.itemId : nil))
         }
+        // A changed source-folder file takes its previous version's links before the claims are checked.
+        for i in result.indices { result[i] = try ImportPipeline.withPreviousVersion(result[i], db: db) }
         try annotateClaims(&result, db: db)
         return result
     }
+
+    /// The note of a utility invoice whose file is already in the library but isn't recorded as
+    /// an invoice yet: read again and recorded on that document.
+    public static let libraryInvoiceNote = "Already in the library: record it as an invoice"
 
     /// The note of a statement whose file is already in the library but still adds something:
     /// "Document already in the library as <name>".
@@ -519,6 +566,20 @@ public enum ImportDuplicates {
         }
         return ImportIssue(id: correctedVersionIssueId, kind: .readerProblem(reason), reason: reason, offers: [.fileWithoutLink, .leaveOut],
                            documentOnlyLinks: links)
+    }
+
+    /// Whether confirming `item` — the file of library document `documentId` — would record a
+    /// utility invoice (or could, once its provider is chosen) and no invoice is recorded on that document yet.
+    static func recordsNewInvoice(_ item: ImportItem, on documentId: Int64, db: Database) throws -> Bool {
+        guard item.recognition.kind == .utilityInvoice else { return false }
+        let records: Bool
+        if case .utilityInvoice = item.effect {
+            records = true
+        } else {
+            records = item.issues.contains { $0.id == UtilityInvoiceImportReader.documentOnlyIssueId }
+        }
+        guard records else { return false }
+        return try UtilityInvoice.filter(Column("documentId") == documentId).fetchCount(db) == 0
     }
 
     private static func providerId(_ item: ImportItem) -> Int64? {
@@ -574,7 +635,10 @@ public enum ImportDuplicates {
             // A corrected version filed only is linked where its original is, on purpose.
             guard let kind = claimingKind(items[i]), !ImportResolutions.isFiledAsCorrectedVersion(items[i]) else { continue }
             for link in items[i].links where link.entity.type == .transaction && link.confidence == .certain {
-                var existing = try EvidenceLinks.documents(db: db, for: link.entity).first { $0.kind == kind }?.displayName
+                // Never the item's own file, already in the library (read again to be recorded), nor a
+                // document the link replaces there (a previous version, a replaced PDF).
+                var existing = try EvidenceLinks.documents(db: db, for: link.entity)
+                    .first { $0.kind == kind && $0.sha256 != items[i].file.sha256 && !link.replacing.contains($0.id ?? 0) }?.displayName
                 if existing == nil {
                     existing = items.indices.first { j in
                         j != i && claimingKind(items[j]) == kind && items[j].links.contains { $0.entity == link.entity }

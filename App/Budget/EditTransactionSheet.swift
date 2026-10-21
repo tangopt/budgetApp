@@ -107,7 +107,7 @@ struct EditTransactionSheet: View {
     }
 
     private var canSave: Bool {
-        isChanged && (!editsManually || draft.isValid) && pendingProblem == nil && documentsModel.addingCount == 0
+        isChanged && (!editsManually || draft.isValid) && pendingProblem == nil
     }
 
     /// Why the pending Add the other side… no longer applies to what's entered (Save is off

@@ -111,7 +111,7 @@ final class ImportDuplicatesTests: XCTestCase {
     func testSameFileTwiceInOneBatchIsOneReadyOneDuplicate() throws {
         let annotated = try annotate([item("a.pdf", sha: "bbb"), item("copy of a.pdf", sha: "bbb")])
         XCTAssertEqual(annotated.map(\.section), [.ready, .duplicates])
-        XCTAssertEqual(annotated[1].duplicate, ImportDuplicate(level: .file, of: "Same file as a.pdf"))
+        XCTAssertEqual(annotated[1].duplicate, ImportDuplicate(level: .file, of: "Same file as a.pdf", originalItemId: annotated[0].id))
     }
 
     // MARK: Same document
@@ -243,7 +243,7 @@ final class ImportDuplicatesTests: XCTestCase {
         let annotated = try annotate([item("invoice-a.pdf", sha: "u1", text: "ATCUD:ABCD1234-77", facts: facts),
                                       item("invoice-b.pdf", sha: "u2", text: "ATCUD:ABCD1234-77", facts: facts)])
         XCTAssertEqual(annotated[0].needsYouReasons, ["Possibly the same document as Insurance March"])
-        XCTAssertEqual(annotated[1].duplicate, ImportDuplicate(level: .document, of: "Same document as invoice-a.pdf"))
+        XCTAssertEqual(annotated[1].duplicate, ImportDuplicate(level: .document, of: "Same document as invoice-a.pdf", originalItemId: annotated[0].id))
     }
 
     // MARK: Weak matches never skip
@@ -449,7 +449,8 @@ final class ImportDuplicatesTests: XCTestCase {
         }
         let annotated = try annotate([p60("P60 corrected.pdf", sha: "q1"), p60("P60 corrected scan.pdf", sha: "q2")])
         XCTAssertTrue(annotated[0].issues.contains { $0.id == "correctedVersion" })
-        XCTAssertEqual(annotated[1].duplicate, ImportDuplicate(level: .document, of: "Same document as P60 corrected.pdf"))
+        XCTAssertEqual(annotated[1].duplicate, ImportDuplicate(level: .document, of: "Same document as P60 corrected.pdf",
+                                                             originalItemId: annotated[0].id))
         XCTAssertFalse(annotated[1].issues.contains { $0.id == "correctedVersion" })
     }
 

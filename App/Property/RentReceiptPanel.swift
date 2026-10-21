@@ -19,9 +19,6 @@ struct RentReceiptPanel: View {
     @State private var documents: [EvidenceDocument] = []
     /// The receipt `documents` were read for (the panel stays as the open receipt changes).
     @State private var documentsReceiptId: Int64?
-    @State private var picking = false
-    @State private var replacing: [Int64] = []
-    @State private var pickingMany = true
 
     var body: some View {
         let currency = viewModel.currency
@@ -71,6 +68,8 @@ struct RentReceiptPanel: View {
                     }
                     Section {
                         pdfSection(row)
+                            // Files dropped here are this receipt's PDFs (added; none for a cancelled receipt).
+                            .importDropTarget(receiptPDF(), isEnabled: row.receipt.status != .cancelled)
                     } header: {
                         Text(row.documentCount > 1 ? "Receipt PDFs" : "Receipt PDF")
                     }
@@ -78,14 +77,6 @@ struct RentReceiptPanel: View {
                 .wrapProbeClips()
             }
             .sheet(item: $editing) { PropertyEditTransactionSheet(transaction: $0, dbQueue: viewModel.dbQueue) }
-            .fileImporter(isPresented: $picking, allowedContentTypes: EvidenceFiles.contentTypes, allowsMultipleSelection: pickingMany) { result in
-                let replaced = replacing
-                replacing = []
-                switch result {
-                case .success(let urls): viewModel.addDocuments(urls, to: .rentReceipt(receiptId), role: "Receipt", replacing: replaced)
-                case .failure(let error): viewModel.errorMessage = error.localizedDescription
-                }
-            }
             // Read off the main thread when the receipt changes or its links do (a PDF added,
             // replaced or unlinked).
             .task(id: DocumentsKey(receiptId: receiptId, documentIds: row.documentIds)) {
@@ -107,11 +98,10 @@ struct RentReceiptPanel: View {
         let documentIds: [Int64]
     }
 
-    /// Opens the file picker: one file when replacing, any number when adding.
-    private func pick(replacing ids: [Int64]) {
-        replacing = ids
-        pickingMany = ids.isEmpty
-        picking = true
+    /// The receipt's PDF shortcut: Add (`replacing` empty; several files) or Replace PDF… (the
+    /// documents linked now; one file), into the importer's review.
+    private func receiptPDF(replacing ids: [Int64] = []) -> ImportShortcut {
+        .receiptPDF(receiptId: receiptId, replacing: ids)
     }
 
     @ViewBuilder
@@ -131,7 +121,7 @@ struct RentReceiptPanel: View {
                         Image(systemName: "circle.dashed").foregroundStyle(theme.pending).accessibilityHidden(true)
                         Text("No receipt PDF yet.").foregroundStyle(.secondary)
                     }
-                    Button("Add the receipt PDF…") { pick(replacing: []) }
+                    ImportShortcutButton("Add the receipt PDF…", shortcut: receiptPDF())
                         .controlSize(.small)
                         .help("Download it from Portal das Finanças, then choose the file")
                         .accessibilityLabel("Add the PDF of receipt \(number)")
@@ -159,11 +149,11 @@ struct RentReceiptPanel: View {
             }
             HStack(spacing: 8) {
                 if documents.count == 1 {
-                    Button("Replace PDF…") { pick(replacing: documents.compactMap(\.id)) }
+                    ImportShortcutButton("Replace PDF…", shortcut: receiptPDF(replacing: documents.compactMap(\.id)))
                         .help("Choose another file for this receipt; the current one is unlinked and stays in the library")
                         .accessibilityLabel("Replace the PDF of receipt \(number)")
                 }
-                Button("Add another PDF…") { pick(replacing: []) }
+                ImportShortcutButton("Add another PDF…", shortcut: receiptPDF())
                     .help("Link one more file to this receipt")
                     .accessibilityLabel("Add another PDF to receipt \(number)")
             }

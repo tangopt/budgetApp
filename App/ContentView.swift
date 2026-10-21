@@ -6,7 +6,6 @@ import struct BudgetCore.Transaction
 import GRDB
 
 enum AppScreen: String, CaseIterable, Identifiable {
-    case importReview = "Import"
     /// The document importer: reading, review and the import history.
     case imports = "Imports"
     case dashboard = "Dashboard"
@@ -26,7 +25,6 @@ enum AppScreen: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
-        case .importReview: return "square.and.arrow.down"
         case .imports: return "tray.and.arrow.down"
         case .uncategorized: return "folder.badge.questionmark"
         case .dashboard: return "square.grid.2x2"
@@ -53,7 +51,7 @@ enum AppScreen: String, CaseIterable, Identifiable {
     /// distinct value first appears in `allCases` (not alphabetically).
     var sidebarSection: String {
         switch self {
-        case .importReview, .imports, .uncategorized: return "Workflow"
+        case .imports, .uncategorized: return "Workflow"
         case .dashboard, .search, .budgetGrid, .forecast, .accounts, .property: return "Overview"
         case .taxYears, .documents, .missingEvidence: return "Tax"
         case .rules, .categories: return "Settings"
@@ -70,6 +68,8 @@ enum SidebarItem: Hashable {
 struct ContentView: View {
     @ObservedObject var environment: AppEnvironment
     @State private var selection: AppScreen? = .dashboard
+    /// This view's window, which the importer brings forward (Settings ▸ Scan Now).
+    @State private var windowHolder = WindowHolder()
     /// What the sidebar List shows as selected. A click lands here first and is then either
     /// accepted into `selection` or reverted (see `sidebarSelectionChanged`), so the
     /// sidebar highlight always matches the screen on show.
@@ -79,12 +79,6 @@ struct ContentView: View {
     /// The split view's columns, toggled by the toolbar's own sidebar button (the system one
     /// can't drop its glass capsule).
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-    /// Where the sidebar was asked to go while confirmed import rows were still unsaved;
-    /// set while the "Save the N confirmed transactions?" alert is up.
-    @State private var pendingSelection: AppScreen?
-    /// The property row asked for with `pendingSelection` (applied on Save / Discard).
-    @State private var pendingPropertyId: Int64?
-    @State private var showUnsavedImportAlert = false
     @State private var selectedImportAccountId: Int64?
     @State private var accounts: [Account] = []
     @State private var categories: [Category] = []
@@ -102,7 +96,6 @@ struct ContentView: View {
     // stable reference, rather than reconstructed inline in the switch below on
     // every body evaluation — reconstructing inline would discard loaded state
     // (and any in-progress edits) every time ContentView's own @State changes.
-    @StateObject private var importViewModel: ImportViewModel
     @StateObject private var budgetGridViewModel: BudgetGridViewModel
     @StateObject private var scenarioLabViewModel: ScenarioLabViewModel
     @StateObject private var rulesViewModel: RulesViewModel
@@ -139,9 +132,6 @@ struct ContentView: View {
         }
         let profileStore = ImportProfileStore(dbQueue: environment.dbQueue)
         self.profileStore = profileStore
-        let categorizationService = CategorizationService(categorizer: OnDeviceCategorizer.systemDefault())
-        let coordinator = ImportCoordinator(dbQueue: environment.dbQueue, categorizationService: categorizationService)
-        _importViewModel = StateObject(wrappedValue: ImportViewModel(dbQueue: environment.dbQueue, coordinator: coordinator, profileStore: profileStore))
         _budgetGridViewModel = StateObject(wrappedValue: BudgetGridViewModel(dbQueue: environment.dbQueue))
         _scenarioLabViewModel = StateObject(wrappedValue: ScenarioLabViewModel(dbQueue: environment.dbQueue))
         _rulesViewModel = StateObject(wrappedValue: RulesViewModel(dbQueue: environment.dbQueue))
@@ -168,11 +158,10 @@ struct ContentView: View {
         return calendar.date(from: components) ?? AppClock.now
     }
 
-    /// Whether the screen has a sidebar row right now (spec §6): Import only while an
-    /// import is staging or in review, Uncategorized only while something needs a category.
+    /// Whether the screen has a sidebar row right now (spec §6): Uncategorized only while
+    /// something needs a category.
     private func isInSidebar(_ screen: AppScreen) -> Bool {
         switch screen {
-        case .importReview: return importViewModel.isStaging || importViewModel.isReviewing
         case .uncategorized: return uncategorizedCount > 0
         default: return true
         }
@@ -180,12 +169,12 @@ struct ContentView: View {
 
     /// The visible `AppScreen.allCases` grouped by `sidebarSection`, one entry per distinct
     /// section value in the order that value first appears in `allCases` — not
-    /// alphabetically, so "Workflow" → "Overview" → "Tax" → "Settings" (driven by `.importReview`
+    /// alphabetically, so "Workflow" → "Overview" → "Tax" → "Settings" (driven by `.imports`
     /// being first in `allCases`, `.dashboard` being the first `.sidebarSection ==
     /// "Overview"` case, etc.) stays stable regardless of where a section's later members
     /// (e.g. `.uncategorized`) happen to sit in `allCases`' own declaration order. A section
     /// with no visible screens (Workflow, when there's nothing to import or assign) is left
-    /// out, header and all.
+    /// out, header and all (Imports is always there, so Workflow always shows).
     private var sidebarSections: [(name: String, screens: [AppScreen])] {
         var order: [String] = []
         var grouped: [String: [AppScreen]] = [:]
@@ -232,16 +221,13 @@ struct ContentView: View {
                 switch selection {
                 case .dashboard:
                     DashboardView(
-                        viewModel: dashboardViewModel, importViewModel: importViewModel,
+                        viewModel: dashboardViewModel, importCenter: environment.importCenter,
                         accounts: accounts, selectedImportAccountId: $selectedImportAccountId,
-                        profileStore: profileStore, navigate: { selection = $0 }
+                        navigate: { selection = $0 }
                     )
                     .onAppear { dashboardViewModel.load() }
                 case .search:
                     SearchView(viewModel: searchViewModel, showInBudget: showInBudget)
-                case .importReview:
-                    // Account and file are picked on the Dashboard's import card (spec §6).
-                    ImportView(viewModel: importViewModel)
                 case .imports:
                     ImportsScreen(center: environment.importCenter)
                 case .budgetGrid:
@@ -262,7 +248,7 @@ struct ContentView: View {
                         .onAppear { try? uncategorizedViewModel.load() }
                 case .accounts:
                     AccountsView(viewModel: accountsViewModel, environment: environment,
-                                 importViewModel: importViewModel, profileStore: profileStore,
+                                 profileStore: profileStore,
                                  navigate: { selection = $0 })
                         .onAppear { accountsViewModel.load() }
                 case .taxYears:
@@ -289,15 +275,7 @@ struct ContentView: View {
             }
             // Files and folders dropped anywhere on a screen go to the document importer
             // (a screen's own drop target, e.g. Documents', takes its drops first).
-            .overlay {
-                if importDropTargeted {
-                    // The Documents drop zone's outline (no design-system token for it).
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(theme.accent, lineWidth: 2)
-                        .padding(4)
-                        .allowsHitTesting(false)
-                }
-            }
+            .modifier(ImportDropOutline(isTargeted: importDropTargeted))
             .dropDestination(for: URL.self) { urls, _ in
                 let files = urls.filter(\.isFileURL)
                 guard !files.isEmpty else { return false }
@@ -323,34 +301,7 @@ struct ContentView: View {
             }
         }
         .environment(\.documentImport, documentImport)
-        .alert(
-            "Save the \(importViewModel.confirmedCount) confirmed transaction\(importViewModel.confirmedCount == 1 ? "" : "s")?",
-            isPresented: $showUnsavedImportAlert
-        ) {
-            Button("Save") {
-                // Saves only the confirmed rows; on failure stay on the review to show why.
-                if importViewModel.finish(unconfirmed: .leaveOut) { applyPendingSelection() }
-            }
-            Button("Discard", role: .destructive) {
-                importViewModel.cancel()
-                applyPendingSelection()
-            }
-            Button("Keep reviewing", role: .cancel) {}
-        } message: {
-            Text("Nothing from this import has been saved yet. Unconfirmed transactions aren't saved either way.")
-        }
-        // A CSV for another account (spec 2026-10-15 §5), from the Dashboard or Accounts screen.
-        .alert(
-            "This statement looks like it's for a different account",
-            isPresented: Binding(get: { importViewModel.accountMismatch != nil }, set: { if !$0 { importViewModel.accountMismatch = nil } }),
-            presenting: importViewModel.accountMismatch
-        ) { prompt in
-            Button("Cancel", role: .cancel) { importViewModel.accountMismatch = nil }
-                .keyboardShortcut(.defaultAction)
-            Button("Import anyway") { Task { await importViewModel.importAnyway(prompt) } }
-        } message: { prompt in
-            Text(prompt.message)
-        }
+        .background(WindowReader { windowHolder.window = $0 })
         .onAppear {
             // An Edit transaction save (Budget grid, Categories panel) can add or clear an uncategorised one.
             budgetGridViewModel.onTransactionEdited = { refreshUncategorizedCount() }
@@ -360,6 +311,10 @@ struct ContentView: View {
             rulesViewModel.onTransactionsCategorised = { refreshUncategorizedCount() }
             propertyViewModel.onPropertiesChanged = { id in refreshProperties(select: id) }
             environment.importCenter.onShow = { sidebarSelectionChanged(to: .screen(.imports)) }
+            environment.importCenter.onBringForward = { [windowHolder] in
+                NSApp.activate()
+                windowHolder.window?.makeKeyAndOrderFront(nil)
+            }
             environment.importCenter.onDataChanged = { documentImportChangedData() }
             environment.importCenter.onShowImportRule = { id in
                 rulesViewModel.showImportRule(id)
@@ -370,15 +325,8 @@ struct ContentView: View {
                 dashboard: dashboardViewModel, budgetGrid: budgetGridViewModel, scenarioLab: scenarioLabViewModel,
                 accounts: accountsViewModel, categories: categoriesViewModel, search: searchViewModel,
                 documents: documentsViewModel, missingEvidence: missingEvidenceViewModel, property: propertyViewModel,
-                taxYears: taxYearsViewModel, rules: rulesViewModel, uncategorized: uncategorizedViewModel,
-                importReview: importViewModel))
+                taxYears: taxYearsViewModel, rules: rulesViewModel, uncategorized: uncategorizedViewModel))
         }
-        .onChange(of: importViewModel.isStaging) { _, staging in
-            // Staging starts from the Dashboard's import card or the Accounts screen: follow
-            // it to the Import screen, which has just appeared in the sidebar.
-            if staging { selection = .importReview } else { importActivityChanged() }
-        }
-        .onChange(of: importViewModel.isReviewing) { importActivityChanged() }
         .onChange(of: uncategorizedViewModel.transactions) {
             // Assigning on the Uncategorized screen removes rows; the last one hides the
             // screen and returns to the Dashboard.
@@ -450,10 +398,8 @@ struct ContentView: View {
         selection = .search
     }
 
-    /// The sidebar's selection, guarded: leaving the Import screen while confirmed rows are
-    /// unsaved asks first (confirming no longer saves anything — Finish import does). A
-    /// refused click is reverted on the next runloop turn, since the sidebar's outline view
-    /// keeps the clicked row highlighted if the change is just ignored.
+    /// The sidebar's selection (or a screen asked for in code, e.g. the importer showing the
+    /// Imports screen): the screen on show, and the property row with it.
     private func sidebarSelectionChanged(to item: SidebarItem?) {
         guard item != currentSidebarItem else { return }
         let newValue: AppScreen?
@@ -462,25 +408,12 @@ struct ContentView: View {
         case .property: newValue = .property
         case nil: newValue = nil
         }
-        if selection == .importReview, importViewModel.isReviewing, importViewModel.confirmedCount > 0 {
-            pendingSelection = newValue
-            if case let .property(id) = item { pendingPropertyId = id } else { pendingPropertyId = nil }
-            showUnsavedImportAlert = true
-            DispatchQueue.main.async { sidebarSelection = currentSidebarItem }
-        } else {
-            if case let .property(id) = item { propertyViewModel.propertyId = id }
-            if selection == newValue {
-                // Another property: the screen stays, the row follows.
-                sidebarSelection = currentSidebarItem
-            }
-            selection = newValue
+        if case let .property(id) = item { propertyViewModel.propertyId = id }
+        if selection == newValue {
+            // Another property: the screen stays, the row follows.
+            sidebarSelection = currentSidebarItem
         }
-    }
-
-    private func applyPendingSelection() {
-        if let id = pendingPropertyId { propertyViewModel.propertyId = id }
-        pendingPropertyId = nil
-        selection = pendingSelection
+        selection = newValue
     }
 
     /// The sidebar row of the screen on show.
@@ -504,29 +437,16 @@ struct ContentView: View {
         if sidebarSelection != currentSidebarItem { sidebarSelection = currentSidebarItem }
     }
 
-    /// An import finished, was cancelled, or failed to stage: the Import row leaves the
-    /// sidebar (back to the Dashboard if it was showing), and a saved import may have added
-    /// uncategorised transactions.
-    private func importActivityChanged() {
-        refreshUncategorizedCount()
-        // A finished (or discarded) import: the screen on show re-reads, so each account's
-        // "Imported up to" date reflects what was just saved.
-        guard !importViewModel.isStaging, !importViewModel.isReviewing else { return }
-        if selection == .dashboard { dashboardViewModel.load() }
-        if selection == .accounts { accountsViewModel.load() }
-    }
-
     private func refreshUncategorizedCount() {
         // A failed read keeps the last count rather than hiding the row.
         if let count = try? environment.dbQueue.read({ db in try UncategorizedTransactions.count(db: db) }) {
             uncategorizedCount = count
         }
-        // Also covers the import ending (`importActivityChanged`).
         ensureSelectionInSidebar()
     }
 
-    /// A selection whose row isn't in the sidebar (the import ended, the last uncategorised
-    /// transaction was assigned) falls back to the Dashboard.
+    /// A selection whose row isn't in the sidebar (the last uncategorised transaction was
+    /// assigned) falls back to the Dashboard.
     private func ensureSelectionInSidebar() {
         // SwiftUI's List may nil the selection when the selected row disappears.
         guard let selection else { self.selection = .dashboard; return }

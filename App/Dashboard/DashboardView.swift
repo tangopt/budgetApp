@@ -4,10 +4,10 @@ import BudgetCore
 
 struct DashboardView: View {
     @ObservedObject var viewModel: DashboardViewModel
-    @ObservedObject var importViewModel: ImportViewModel
+    /// The window's importer (the import card shows an import under way).
+    let importCenter: ImportCenterModel
     let accounts: [Account]
     @Binding var selectedImportAccountId: Int64?
-    let profileStore: ImportProfileStore
     let navigate: (AppScreen) -> Void
     @State private var closeTarget: CloseMonthTarget?
 
@@ -19,33 +19,8 @@ struct DashboardView: View {
                         .foregroundStyle(.red)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                // The import host reports picker and wizard failures through
-                // `importViewModel.errorMessage`, and a failed staging run lands back here
-                // (the Import screen leaves the sidebar), so this is the only banner for it.
-                // ReviewView shows it itself while reviewing, so skip it then.
-                if let error = importViewModel.errorMessage, !importViewModel.isReviewing {
-                    HStack(alignment: .top) {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-                        Text(error).foregroundStyle(.red)
-                        Spacer()
-                        Button("Dismiss") { importViewModel.errorMessage = nil }
-                            .buttonStyle(.borderless)
-                    }
-                    .font(.callout)
-                }
-                // A finished import returns here too: show what it saved.
-                if let status = importViewModel.statusMessage, !importViewModel.isReviewing, !importViewModel.isStaging {
-                    HStack(alignment: .top) {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                        Text(status)
-                        Spacer()
-                        Button("Dismiss") { importViewModel.statusMessage = nil }
-                            .buttonStyle(.borderless)
-                    }
-                    .font(.callout)
-                }
                 if let content = viewModel.content {
-                    FreshnessImportCard(freshness: content.freshness, importedThrough: content.importedThrough, eurToGbpRate: content.eurToGbpRate, importViewModel: importViewModel, accounts: accounts, selectedAccountId: $selectedImportAccountId, profileStore: profileStore, navigate: navigate)
+                    FreshnessImportCard(freshness: content.freshness, importedThrough: content.importedThrough, eurToGbpRate: content.eurToGbpRate, importCenter: importCenter, accounts: accounts, selectedAccountId: $selectedImportAccountId, navigate: navigate)
                     NetWorthCard(content: content, navigate: navigate)
                     TwoUpRow {
                         YearChangeCard(changes: content.yearChanges, navigate: navigate)

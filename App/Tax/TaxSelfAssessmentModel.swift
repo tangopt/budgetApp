@@ -68,74 +68,6 @@ extension TaxYearsViewModel {
         }
     }
 
-    // MARK: Form import
-
-    /// A form read and waiting for the user to confirm it.
-    struct FormImportDraft: Identifiable {
-        let id = UUID()
-        var documentId: Int64
-        var fileName: String
-        var extraction: PayrollFormExtraction
-        /// Whether the file was new to the library (Cancel removes it again).
-        var isNewDocument: Bool
-        /// Warnings about whose form it is (another person's NI number, or not this person's).
-        var personWarnings: [String]
-    }
-
-    /// Copies the file into the library and reads it (off the main thread).
-    func readForm(_ url: URL, kind: PayrollFormKind?) async -> Result<FormImportDraft, Error> {
-        let library = library
-        let personId = selection?.personId
-        let outcome = await Task.detached(priority: .userInitiated) { () -> Result<(EvidenceLibrary.AddResult, PayrollFormExtraction), Error> in
-            Result {
-                try EvidenceFiles.withAccess(url) {
-                    let added = try library.addAnalyzing(url)
-                    return (added, PayrollFormReader.read(library.fileURL(for: added.document), kind: kind))
-                }
-            }
-        }.value
-        switch outcome {
-        case let .failure(error):
-            return .failure(error)
-        case let .success((added, extraction)):
-            guard let documentId = added.document.id else { return .failure(PersonalIncomeError.employmentNotFound) }
-            let warnings = (try? await dbQueue.read { db -> [String] in
-                guard let number = extraction.nationalInsuranceNumber else { return [] }
-                if let suggested = try PayrollFormImport.suggestedPersonId(db: db, nationalInsuranceNumber: number), suggested != personId {
-                    return ["The form's National Insurance number is \(try Person.fetchOne(db, key: suggested)?.name ?? "another person")'s, not this person's."]
-                }
-                if let personId, let person = try Person.fetchOne(db, key: personId), let stored = person.ukNino,
-                   stored.uppercased().filter({ $0.isLetter || $0.isNumber }) != number {
-                    return ["The form's National Insurance number isn't the one stored for \(person.name)."]
-                }
-                return []
-            }) ?? []
-            return .success(FormImportDraft(documentId: documentId, fileName: url.lastPathComponent, extraction: extraction,
-                                            isNewDocument: added.isNew, personWarnings: warnings))
-        }
-    }
-
-    /// Cancel of the confirm sheet: a file the import added to the library goes again while
-    /// nothing links to it.
-    func discardImport(_ draft: FormImportDraft) {
-        guard draft.isNewDocument else { return }
-        let library = library
-        Task.detached(priority: .utility) { try? library.remove(draft.documentId) }
-    }
-
-    func applyForm(_ confirmed: PayrollFormImport.Confirmed, documentId: Int64) -> String? {
-        do {
-            let result = try dbQueue.write { db in try PayrollFormImport.apply(db: db, confirmed, documentId: documentId) }
-            infoMessage = "\(confirmed.kind.displayName) saved for \(result.employment.employerName)"
-                + (result.createdEmployment ? " (new employment)." : ".")
-            return nil
-        } catch let PayrollFormImport.ImportError.incomplete(problems) {
-            return problems.map(TaxIncomeMessages.text).joined(separator: " ")
-        } catch {
-            return TaxMessages.text(for: error)
-        }
-    }
-
     // MARK: Return and filing
 
     /// Puts a box's value on the clipboard as HMRC online takes it (`copyText`); the row's copy
@@ -148,19 +80,5 @@ extension TaxYearsViewModel {
     func showStep(_ title: String) {
         tab = .calculation
         focusedStep = StepRequest(title: title)
-    }
-}
-
-/// Readable text for the income tab's checks.
-enum TaxIncomeMessages {
-    static func text(_ problem: PayrollFormImport.Problem) -> String {
-        switch problem {
-        case .missingTaxYear: return "Choose the tax year."
-        case .missingEmployer: return "Enter the employer's name."
-        case .missingPayOrTax: return "Enter the pay and the tax taken off."
-        case .missingLeavingDate: return "Enter the leaving date."
-        case .leavingDateOutsideYear: return "The leaving date isn't in that tax year."
-        case .invalidPAYEReference: return "A PAYE reference looks like 123/AB456."
-        }
     }
 }

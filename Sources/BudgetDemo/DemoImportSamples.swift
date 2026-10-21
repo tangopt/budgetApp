@@ -2,14 +2,15 @@ import Foundation
 import GRDB
 import BudgetCore
 
-/// Eight synthetic files for the document importer, made from the demo database when it is built
+/// Nine synthetic files for the document importer, made from the demo database when it is built
 /// (`MakeDemoDatabase` writes them to `ImportSamples` beside it) for the Imports snapshot routes
 /// and for trying the importer by hand. Read by the real pipeline over the demo, they fill each
 /// section of the review:
 /// - Ready: the PDF of Tenancy 2's latest receipt (contract CT-0002), linked to its credit;
 ///   an insurance receipt of the latest condomínio debit without a document (its day and
 ///   amount), linked to it; a BBVA-format "extrato global" of Euro Current for the month after
-///   its history (one mortgage instalment with its receipt, no fund), its balances matching.
+///   its history (one mortgage instalment with its receipt, no fund), its balances matching;
+///   Example Water's next invoice (a new number, the month after its latest), not paid yet.
 /// - Duplicates skipped: a copy of the library's energy certificate (the same file); an
 ///   Example utility invoice re-issued later under a recorded invoice's number (the same document).
 /// - Needs you: Person A's corrected P60 2024/25, pay £1,000 above the stored figure (possibly
@@ -33,7 +34,7 @@ public enum DemoImportSamples {
         }
     }
 
-    /// Writes the eight samples into `folder` (replacing an earlier set there; refusing a folder
+    /// Writes the nine samples into `folder` (replacing an earlier set there; refusing a folder
     /// that holds anything else), in the order above; returns their URLs.
     @discardableResult
     public static func write(into folder: URL, dbQueue: DatabaseQueue) throws -> [URL] {
@@ -50,7 +51,7 @@ public enum DemoImportSamples {
 
         let samples = try dbQueue.read { db in
             [try rentReceipt(db), try insuranceReceipt(db), copyOfLibraryDocument(), try reissuedInvoice(db), try p60(db), letter(),
-             try bbvaStatement(db), try ukStatementCSV(db)]
+             try bbvaStatement(db), try ukStatementCSV(db), try nextInvoice(db)]
         }
         var urls: [URL] = []
         for (name, data) in samples {
@@ -150,6 +151,30 @@ public enum DemoImportSamples {
             ("Copy", "Re-issued at the customer's request")
         ])
         return ("\(provider.name) invoice \(number) reissued.pdf", DemoPDF.data(page))
+    }
+
+    /// Example Water's next invoice: the month after its latest recorded one (same amount, the
+    /// next number), issued after every debit, so it is recorded with no debit to link yet.
+    private static func nextInvoice(_ db: Database) throws -> Sample {
+        guard let provider = try UtilityProvider.filter(Column("name") == "Example Water").fetchOne(db), let providerId = provider.id,
+              let latest = try UtilityInvoice.filter(Column("providerId") == providerId)
+                .order(Column("issueDate").desc, Column("id").desc).fetchOne(db),
+              let start = latest.periodStart, let end = latest.periodEnd else {
+            throw SampleError.missing("Example Water invoice")
+        }
+        let calendar = DemoDatabase.calendar
+        func next(_ date: Date) -> Date { calendar.date(byAdding: .month, value: 1, to: date) ?? date }
+        let year = MonthRange.components(of: next(latest.issueDate)).year
+        let number = "\(provider.accountReference?.prefix(2) ?? "EW")-\(year)-0901"
+        let page = DemoDatabase.page(issuer: provider.name, title: "Invoice \(number)", lines: [
+            ("Account", provider.accountReference ?? ""),
+            ("Issued", day(next(latest.issueDate))),
+            // From the day after the latest invoice's period.
+            ("Period", "\(day(calendar.date(byAdding: .day, value: 1, to: end) ?? start)) – \(day(next(end)))"),
+            ("Amount due", money(latest.amountMinorUnits)),
+            ("Direct debit", "On the 20th")
+        ])
+        return ("\(provider.name) invoice \(number).pdf", DemoPDF.data(page))
     }
 
     // MARK: Needs you

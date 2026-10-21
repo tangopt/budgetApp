@@ -39,7 +39,7 @@ final class ImportDryRunTests: XCTestCase {
 
         let report = try await ImportDryRun.run(databasePath: databaseURL.path, files: [folder.appendingPathComponent("ImportSamples", isDirectory: true)])
 
-        XCTAssertEqual(report.sections[.ready], 3, report.text)
+        XCTAssertEqual(report.sections[.ready], 4, report.text)
         XCTAssertEqual(report.sections[.duplicates], 2, report.text)
         XCTAssertEqual(report.sections[.needsYou], 3, report.text)
         XCTAssertEqual(report.needsYou.count, 3, report.text)

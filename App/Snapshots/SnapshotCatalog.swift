@@ -39,15 +39,15 @@ enum SnapshotCatalog {
     /// its undo refused after a document it filed was changed.
     static var importRoutes: [SnapshotRoute] {
         [
-            importReview("review", "Imports: the demo samples in review") { $0.items(in: .needsYou).first?.id },
-            importReview("review_filed", "Imports: the samples, a P60 held by a filed return") { plan in
+            samplesReview("review", "Imports: the demo samples in review") { $0.items(in: .needsYou).first?.id },
+            samplesReview("review_filed", "Imports: the samples, a P60 held by a filed return") { plan in
                 plan.items(in: .needsYou).first { $0.issues.contains(where: ImportResolutions.isFiledYearHold) }?.id
             },
-            importReview("review_ready", "Imports: the samples, a rent receipt ready") { plan in
+            samplesReview("review_ready", "Imports: the samples, a rent receipt ready") { plan in
                 plan.items(in: .ready).first { $0.recognition.kind == .evidence(.rentReceipt) }?.id
             },
             // The BBVA statement of Euro Current: its period, balances, rows and instalment leg.
-            importReview("review_statement", "Imports: the samples, a BBVA statement ready") { plan in
+            samplesReview("review_statement", "Imports: the samples, a BBVA statement ready") { plan in
                 plan.items.first { $0.recognition.kind == .bbvaStatement && $0.parentId == nil }?.id
             },
             // The UK CSV no profile reads, its account chosen (Everyday Current): its columns to map.
@@ -63,7 +63,7 @@ enum SnapshotCatalog {
             },
             // The letter nothing recognises, read by the on-device model's stand-in: its kind and
             // figures to check ("Use these", or each corrected).
-            importReview("review_model", "Imports: the samples, a letter read by the on-device model",
+            samplesReview("review_model", "Imports: the samples, a letter read by the on-device model",
                          modelReader: SnapshotModelReader()) { plan in
                 plan.items.first { $0.file.fileName == "Letter.pdf" }?.id
             },
@@ -91,9 +91,109 @@ enum SnapshotCatalog {
                 })))
             },
             // The same letter with the model unavailable: why, and the kind to choose.
-            importReview("review_model_off", "Imports: the samples, the on-device model unavailable",
+            samplesReview("review_model_off", "Imports: the samples, the on-device model unavailable",
                          modelReader: SnapshotModelReader(isAvailable: false)) { plan in
                 plan.items.first { $0.file.fileName == "Letter.pdf" }?.id
+            },
+            // Dashboard ▸ Import CSV… with Everyday Current picked, given the sample CSV: the
+            // account pre-set (no account to choose), its columns to map.
+            SnapshotRoute(name: "imports-review_dashboard_csv", title: "Imports: Dashboard ▸ Import CSV…, the sample CSV", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                guard let csv = try importSamples(context).first(where: { $0.pathExtension.lowercased() == "csv" }),
+                      let accountId = context.accountId("Everyday Current") else { throw SnapshotMissing("The sample CSV") }
+                let shortcut = ImportShortcut.statement(accountId: accountId, format: .csv, from: .dashboard)
+                let plan = try await center.snapshotPlan([csv], intent: shortcut.intent)
+                guard let item = plan.items.first(where: { $0.recognition.kind == .bankStatementCSV }) else { throw SnapshotMissing("The sample CSV's item") }
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(plan, selecting: item.id)
+                })))
+            },
+            // Tax year ▸ Income ▸ Import P60, P45 or P11D… (Person A, 2024/25) given the sample P60:
+            // the filed year's hold stays, whatever year the shortcut pre-set.
+            SnapshotRoute(name: "imports-review_p60", title: "Imports: Income ▸ Import P60, P45 or P11D…, the sample P60", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                guard let pdf = try importSamples(context).first(where: { $0.lastPathComponent.hasPrefix("P60") }),
+                      let selection = context.taxYear("Person A", 2024) else { throw SnapshotMissing("The sample P60") }
+                let shortcut = ImportShortcut.payrollForms(personId: selection.personId, taxYear: selection.startYear)
+                let plan = try await center.snapshotPlan([pdf], intent: shortcut.intent)
+                guard let item = plan.items.first(where: { $0.issues.contains(where: ImportResolutions.isFiledYearHold) }) ?? plan.items.first
+                else { throw SnapshotMissing("The sample P60's item") }
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(plan, selecting: item.id)
+                })))
+            },
+            // Income ▸ Import P60, P45 or P11D… (Person A, 2026/27: no P11D yet) given the demo's P11D (read by OCR in the
+            // real thing): its benefit rows to check and correct in the Benefits table.
+            SnapshotRoute(name: "imports-review_p11d", title: "Imports: Income ▸ Import P60, P45 or P11D…, a P11D's benefits", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                guard let selection = context.taxYear("Person A", 2026),
+                      let document = try await context.dbQueue.read({ db in
+                          try EvidenceDocument.filter(Column("originalFileName") == "P11D 2025-26 Acme Widgets Ltd.pdf").fetchOne(db)
+                      }) else { throw SnapshotMissing("The demo P11D") }
+                let shortcut = ImportShortcut.payrollForms(personId: selection.personId, taxYear: selection.startYear)
+                // A copy with a stray byte, so it isn't "already in the library".
+                let folder = FileManager.default.temporaryDirectory.appendingPathComponent("p11d-\(UUID().uuidString)", isDirectory: true)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let copy = folder.appendingPathComponent("P11D 2025-26 Acme Widgets Ltd.pdf")
+                try (try Data(contentsOf: context.library.fileURL(for: document)) + Data("\n%".utf8)).write(to: copy)
+                var plan = try await center.snapshotPlan([copy], intent: shortcut.intent)
+                guard var item = plan.items.first else { throw SnapshotMissing("The demo P11D's item") }
+                // The demo PDF's layout isn't the reader's: filed as a P11D, read again with the person pre-set, and its
+                // benefits as the reader gives them for a form read by OCR.
+                plan = try await center.snapshotResolve(plan, itemId: item.id, .chooseKind(.p11d))
+                item = plan.items.first(where: { $0.id == item.id }) ?? item
+                plan = try await center.snapshotResolve(plan, itemId: item.id, .confirmFigure(.taxYear, .year(2026)))
+                item = plan.items.first(where: { $0.id == item.id }) ?? item
+                plan = try await center.snapshotResolve(plan, itemId: item.id, .setBenefits([.init(kind: .medical, cashEquivalentMinorUnits: 121_000),
+                                                                                              .init(kind: .carFuel, cashEquivalentMinorUnits: 0)]))
+                item = plan.items.first(where: { $0.id == item.id }) ?? item
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(plan, selecting: item.id)
+                })))
+            },
+            // Tenancies ▸ a receipt's Add the receipt PDF… given the sample receipt PDF (Tenancy 2's
+            // latest receipt): its link to that receipt pre-set ("You added it from Receipt ▸ Add PDF…").
+            SnapshotRoute(name: "imports-review_receipts", title: "Imports: Tenancies ▸ Add the receipt PDF…, the sample receipt", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                guard let pdf = try importSamples(context).first(where: { $0.lastPathComponent.hasPrefix("Rent receipt ") }),
+                      let receiptId = try await context.dbQueue.read({ db in
+                          try Int64.fetchOne(db, sql: """
+                              SELECT r.id FROM \(RentReceipt.databaseTableName) r JOIN \(Tenancy.databaseTableName) t ON t.id = r.tenancyId
+                              WHERE t.referenceLabel = 'Tenancy 2' ORDER BY r.periodStart DESC LIMIT 1
+                              """)
+                      }) else { throw SnapshotMissing("The sample receipt PDF") }
+                let shortcut = ImportShortcut.receiptPDF(receiptId: receiptId, replacing: [])
+                let plan = try await center.snapshotPlan([pdf], intent: shortcut.intent)
+                guard let item = plan.items.first else { throw SnapshotMissing("The sample receipt's item") }
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(plan, selecting: item.id)
+                })))
+            },
+            // Utility invoices… (Tenancies or Recharges) given the sample invoices, the property
+            // pre-set: Example Water's next invoice Ready (shown), the re-issued copy a duplicate;
+            // with them the property's library invoices not recorded yet ("From library").
+            SnapshotRoute(name: "imports-review_invoices", title: "Imports: Utility invoices…, the sample invoices", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                let invoices = try importSamples(context).filter { $0.lastPathComponent.localizedCaseInsensitiveContains("invoice") }
+                guard !invoices.isEmpty else { throw SnapshotMissing("The sample invoices") }
+                let shortcut = ImportShortcut.utilityInvoices(propertyId: try context.propertyId())
+                let pending = try await context.dbQueue.read { db in try shortcut.libraryDocumentIds(db: db) }
+                let plan = try await center.snapshotPlan(invoices, intent: shortcut.intent, libraryDocuments: pending)
+                guard let item = plan.items(in: .ready).first ?? plan.items.first else { throw SnapshotMissing("The sample invoice's item") }
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(plan, selecting: item.id)
+                })))
+            },
+            // Settings ▸ Evidence sources ▸ Scan Now on a temporary folder holding the samples
+            // (registered in the demo copy): its new files read as "Source folder ▸ Demo papers".
+            SnapshotRoute(name: "imports-review_folder", title: "Imports: Scan Now on a source folder, its new files", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                center.discard()
+                let plan = try await center.snapshotPlan(folder: try demoSourceFolder(context))
+                guard let item = plan.items(in: .needsYou).first ?? plan.items.first else { throw SnapshotMissing("The folder's items") }
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(plan, selecting: item.id)
+                })))
             },
             SnapshotRoute(name: "imports-history", title: "Imports: the samples imported, in the history", settleFactor: 1.5) { context in
                 let center = context.environment.importCenter
@@ -115,12 +215,47 @@ enum SnapshotCatalog {
                 }
                 try await center.snapshotRefusedUndo()
                 return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in })))
+            },
+            // Last (they save a column mapping for Everyday Current to the demo copy): Accounts ▸
+            // Edit column mapping… given the sample CSV, its saved mapping to check ("Edit
+            // columns…" opens the wizard prefilled; "Use this layout" keeps it).
+            SnapshotRoute(name: "imports-review_remap", title: "Imports: Accounts ▸ Edit column mapping…, the saved mapping to check", settleFactor: 1.5) { context in
+                let (plan, item, _) = try await remapReview(context)
+                let center = context.environment.importCenter
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(plan, selecting: item.id)
+                })))
+            },
+            // Its "Edit columns…": the column-mapping wizard over the review, prefilled with the saved mapping.
+            sheet("csv_remap", "Edit columns… (the saved mapping filled in)", settle: 1) { context in
+                let (_, item, saved) = try await remapReview(context)
+                guard let account = try await context.dbQueue.read({ db in try Account.fetchOne(db, key: saved.accountId) }) else {
+                    throw SnapshotMissing("Everyday Current")
+                }
+                return AnyView(CSVMappingWizardView(account: account, csvText: item.file.text ?? "", existingProfile: saved) { _ in })
             }
         ]
     }
 
+    /// The sample CSV read for Accounts ▸ Edit column mapping… on Everyday Current, after a
+    /// mapping for it is saved (to the demo copy): the review, its item and the saved mapping.
+    static func remapReview(_ context: SnapshotContext) async throws -> (ImportPlan, ImportItem, ImportProfile) {
+        guard let csv = try importSamples(context).first(where: { $0.pathExtension.lowercased() == "csv" }),
+              let accountId = context.accountId("Everyday Current") else { throw SnapshotMissing("The sample CSV") }
+        let store = ImportProfileStore(dbQueue: context.dbQueue)
+        let saved = try store.find(accountId: accountId, format: .csv)
+            ?? store.save(ImportProfile(accountId: accountId, format: .csv, csvDelimiter: ",", csvDateColumnIndex: 0,
+                                        csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2, csvBalanceColumnIndex: 3,
+                                        csvDateFormat: "dd/MM/yyyy"))
+        let center = context.environment.importCenter
+        center.discard()
+        let plan = try await center.snapshotPlan([csv], intent: ImportShortcut.editColumnMapping(accountId: accountId).intent)
+        guard let item = plan.items.first(where: { $0.issues.contains { $0.id == "remap" } }) else { throw SnapshotMissing("The sample CSV's mapping to check") }
+        return (plan, item, saved)
+    }
+
     /// The samples read into a review, `select` choosing the document the preview shows.
-    static func importReview(_ tab: String, _ title: String, modelReader: (any DocumentModelReading)? = nil,
+    static func samplesReview(_ tab: String, _ title: String, modelReader: (any DocumentModelReading)? = nil,
                              select: @escaping (ImportPlan) -> UUID?) -> SnapshotRoute {
         SnapshotRoute(name: "imports-\(tab)", title: title, settleFactor: 1.5) { context in
             let center = context.environment.importCenter
@@ -130,6 +265,27 @@ enum SnapshotCatalog {
                 center.showSnapshotPlan(plan, selecting: selected)
             })))
         }
+    }
+
+    /// Temporary folders routes made, removed when the run ends (`removeTemporaryFolders`).
+    private static var temporaryFolders: [URL] = []
+
+    static func removeTemporaryFolders() {
+        for folder in temporaryFolders { try? FileManager.default.removeItem(at: folder) }
+        temporaryFolders = []
+    }
+
+    /// A temporary folder named "Demo papers" holding copies of the samples, registered as a
+    /// source folder in the demo copy (a fresh one each time; removed when the run ends).
+    static func demoSourceFolder(_ context: SnapshotContext) throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("BudgetSnapshots-\(UUID().uuidString)", isDirectory: true)
+        temporaryFolders.append(root)
+        let folder = root.appendingPathComponent("Demo papers", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for sample in try importSamples(context) {
+            try FileManager.default.copyItem(at: sample, to: folder.appendingPathComponent(sample.lastPathComponent))
+        }
+        return folder
     }
 
     /// The files in `ImportSamples` beside the demo database, by name.
@@ -191,14 +347,6 @@ enum SnapshotCatalog {
             },
             screen("categories", "main", "Categories", .categories),
             screen("uncategorized", "main", "Uncategorized", .uncategorized),
-            // A statement staged for review (read only: nothing is saved until Finish import).
-            screen("import", "review", "Import: a statement in review", .importReview, settle: 3.5) { models, context in
-                guard let account = try? context.dbQueue.read({ db in try Account.filter(Column("name") == "Everyday Current").fetchOne(db) }) else { return }
-                Task { @MainActor in
-                    await models.importReview.stagePDF(lines: demoStatementLines, config: demoStatementLayout, account: account,
-                                                       sourceFileName: "Everyday Current October.pdf")
-                }
-            },
             // The document importer with nothing in progress (no import history yet: `imports-history` comes last).
             screen("imports", "main", "Imports", .imports),
             // An invented review with every section filled (read only): the invoice with two
@@ -264,29 +412,6 @@ enum SnapshotCatalog {
             SnapshotRoute(name: "settings-main", title: "Settings window") { _ in AnyView(SnapshotStandaloneCanvas(content: SettingsView())) }
         ]
     }
-
-    /// An invented statement for the Import route: merchants the demo's rules match or its
-    /// history knows by the same name (so nothing asks the on-device model), a long
-    /// description, a credit and a line that doesn't parse.
-    static let demoStatementLines = [
-        "02/10/2026 GREENLEAF MARKET LONDON 63.47",
-        "03/10/2026 CITY TRANSIT ZONE 1-2 2.85",
-        "04/10/2026 BEAN THERE COFFEE KINGS CROSS 4.35",
-        "05/10/2026 STREAMFLIX 10.99",
-        "06/10/2026 CORNER GROCER 17.62",
-        "06/10/2026 CORNER GROCER 8.14",
-        "07/10/2026 IRONWORKS GYM 39.00",
-        "08/10/2026 QUICKRIDE TRIP 23.15",
-        "09/10/2026 PEBBLE MOBILE 18.00",
-        "10/10/2026 FIBRELINE BROADBAND 32.00",
-        "12/10/2026 TUNEBOX MUSIC 11.99",
-        "13/10/2026 CLOUDVAULT STORAGE 2.99",
-        "14/10/2026 ACME WIDGETS LTD SALARY 3,412.88 CR",
-        "14/10/2026 GREENLEAF MARKET WESTFIELD STRATFORD CITY BRANCH 0412 CONTACTLESS 1,204.56",
-        "Balance carried forward 4,723.86"
-    ]
-    static let demoStatementLayout = PDFLayoutConfig(regexPattern: #"^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+([\d,]+\.\d{2})(?:\s+(?:DR|CR))?$"#,
-                                                     dateFormat: "dd/MM/yyyy")
 
     static var propertyTabs: [SnapshotRoute] {
         let august = DateInterval(start: MonthRange.of(year: 2026, month: 8).start, end: MonthRange.of(year: 2026, month: 9).start)
@@ -405,11 +530,6 @@ enum SnapshotCatalog {
                 let model = await context.propertyModel()
                 return AnyView(TenancyFormSheet(viewModel: model, draft: TenancyDraft(nil, rents: [], propertyId: try context.propertyId())))
             },
-            sheet("import_receipts", "Import rent receipts") { context in AnyView(ImportReceiptsSheet(viewModel: await context.propertyModel())) },
-            sheet("import_receipts_preview", "Import rent receipts (a file read)") { context in
-                let model = await context.propertyModel()
-                return AnyView(ImportReceiptsSheet(viewModel: model, preview: try await context.receiptsImportPreview()))
-            },
             sheet("tenancy_documents", "Tenancy documents") { context in
                 let model = await context.propertyModel()
                 guard let tenancy = model.snapshot.tenancies.last else { throw SnapshotMissing("a tenancy") }
@@ -438,30 +558,6 @@ enum SnapshotCatalog {
                     throw SnapshotMissing("a utility provider")
                 }
                 return AnyView(UtilityProviderFormSheet(dbQueue: context.dbQueue, provider: provider))
-            },
-            sheet("invoice_intake", "Utility invoice intake (empty)", settle: 1.5) { context in
-                AnyView(UtilityInvoiceIntakeSheet(dbQueue: context.dbQueue, library: context.library, propertyId: try context.propertyId(), currency: .eur))
-            },
-            sheet("invoice_intake_lines", "Utility invoice intake (a library invoice to check)", settle: 1.5) { context in
-                let model = UtilityInvoiceIntakeModel(dbQueue: context.dbQueue, library: context.library, propertyId: try context.propertyId(), currency: .eur)
-                model.loadProviders()
-                model.addFromLibrary()
-                await context.settle(1)
-                return AnyView(UtilityInvoiceIntakeSheet(model: model))
-            },
-            sheet("invoice_intake_problems", "Utility invoice intake (a scan that needs filling in)", settle: 1.5) { context in
-                let model = UtilityInvoiceIntakeModel(dbQueue: context.dbQueue, library: context.library, propertyId: try context.propertyId(), currency: .eur)
-                model.loadProviders()
-                model.addFromLibrary()
-                await context.settle(1)
-                // A second line as a phone scan would arrive: read by OCR, nothing found.
-                if var proposal = model.rows.first?.proposal {
-                    proposal.fileName = "Scan 2026-10-02 water bill.jpg"
-                    proposal.usedOCR = true
-                    model.rows.append(UtilityInvoiceIntakeModel.Row(proposal: proposal, include: true, providerId: nil, invoiceNumber: "",
-                                                                    issueDate: nil, amountText: "", transactionId: nil, candidates: []))
-                }
-                return AnyView(UtilityInvoiceIntakeSheet(model: model))
             },
             // Tax years
             sheet("tax_line_sources", "Rental accounts: line sources") { context in
@@ -528,32 +624,7 @@ enum SnapshotCatalog {
             sheet("hmrc_payment", "HMRC payment") { context in
                 let model = await context.taxModel()
                 guard let page = model.page, let payment = page.income.payments.first else { throw SnapshotMissing("an HMRC payment") }
-                return AnyView(HMRCPaymentSheet(viewModel: model, payment: payment, yearStatus: page.row.status))
-            },
-            // The P60 / P45 / P11D import's confirm sheet, over forms already in the library (so
-            // closing it removes nothing): a clean P60, and a P11D read by OCR with a warning.
-            sheet("payroll_confirm", "Confirm P60 (import)") { context in
-                let model = await context.taxModel(tab: .income)
-                let document = try await context.payrollDocument("P60 2025-26 Acme Widgets Ltd.pdf")
-                // As the reader gives a clean P60 (the demo PDF's layout isn't the reader's).
-                let extraction = PayrollFormExtraction(kind: .p60, entryMethod: .textLayer, startYear: 2025, employerName: "Acme Widgets Ltd",
-                                                       payeReference: "123/AB45678", taxCode: "1257L", payMinorUnits: 4_176_000,
-                                                       taxDeductedMinorUnits: 583_800, totalPayMinorUnits: 4_176_000, totalTaxMinorUnits: 583_800)
-                let draft = TaxYearsViewModel.FormImportDraft(documentId: document.id!, fileName: document.originalFileName, extraction: extraction,
-                                                              isNewDocument: false, personWarnings: [])
-                return AnyView(PayrollFormConfirmSheet(viewModel: model, draft: draft, personId: model.selection?.personId ?? 0, defaultYear: 2025))
-            },
-            sheet("payroll_confirm_p11d", "Confirm P11D (import, read by OCR)") { context in
-                let model = await context.taxModel(tab: .income)
-                let document = try await context.payrollDocument("P11D 2025-26 Acme Widgets Ltd.pdf")
-                let extraction = PayrollFormExtraction(kind: .p11d, entryMethod: .ocr, startYear: 2025, employerName: "Acme Widgets Ltd",
-                                                       payeReference: "123/AB45678",
-                                                       benefits: [.init(kind: .medical, cashEquivalentMinorUnits: 121_000),
-                                                                  .init(kind: .carFuel, cashEquivalentMinorUnits: 0)],
-                                                       warnings: ["Section F wasn't clear: check the car fuel figure."])
-                let draft = TaxYearsViewModel.FormImportDraft(documentId: document.id!, fileName: document.originalFileName, extraction: extraction,
-                                                              isNewDocument: false, personWarnings: [])
-                return AnyView(PayrollFormConfirmSheet(viewModel: model, draft: draft, personId: model.selection?.personId ?? 0, defaultYear: 2025))
+                return AnyView(HMRCPaymentSheet(viewModel: model, payment: payment, yearStatus: page.row.status, origin: .incomeRecord))
             },
             // Documents and Missing evidence
             sheet("link_transaction", "Link to transaction", settle: 1.2) { context in
@@ -593,9 +664,6 @@ enum SnapshotCatalog {
                 }
                 guard let group else { throw SnapshotMissing("an expense group without rules") }
                 return AnyView(PropertyRulesSheet(viewModel: model, groupId: group.id))
-            },
-            sheet("folder_review", "Review a source folder (a scan's result)", settle: 1.2) { context in
-                AnyView(FolderReviewSheet(model: try await context.folderReviewModel()))
             },
             // Polished sheets, for comparison
             sheet("ref_add_account", "Reference: Add account") { context in
@@ -672,14 +740,6 @@ extension SnapshotContext {
         return id
     }
 
-    /// A payroll form of the demo library, by its file name.
-    func payrollDocument(_ fileName: String) async throws -> EvidenceDocument {
-        guard let document = try await dbQueue.read({ db in
-            try EvidenceDocument.filter(Column("originalFileName") == fileName).fetchOne(db)
-        }), document.id != nil else { throw SnapshotMissing("“\(fileName)”") }
-        return document
-    }
-
     func documentId(kind: DocumentKind) -> Int64? {
         try? dbQueue.read { db in try EvidenceDocument.filter(Column("kind") == kind.rawValue).order(Column("id")).fetchOne(db)?.id }
     }
@@ -721,95 +781,6 @@ extension SnapshotContext {
         model.periodChoice = .taxYear(2025)
         model.start()
         await settle(0.8)
-        return model
-    }
-
-    /// What importing the portal's receipts export would do: every receipt the demo has, as the
-    /// file lists them, plus next month's for the latest tenancy (previewed in a savepoint that
-    /// is rolled back: nothing is written).
-    func receiptsImportPreview() async throws -> ReceiptsImportPreview {
-        let propertyId = try propertyId()
-        let utc: Calendar = {
-            var calendar = Calendar(identifier: .gregorian)
-            calendar.timeZone = TimeZone(identifier: "UTC")!
-            return calendar
-        }()
-        return try await dbQueue.write { db in
-            var rows: [RentReceiptsExport.Row] = []
-            let tenancies = try Tenancy.filter(Column("propertyId") == propertyId).order(Column("startDate")).fetchAll(db)
-            for tenancy in tenancies {
-                func row(_ receipt: RentReceipt) -> RentReceiptsExport.Row {
-                    RentReceiptsExport.Row(rowNumber: rows.count + 2, reference: tenancy.referenceLabel, contractNumber: tenancy.contractNumber ?? "",
-                                           receiptNumber: receipt.receiptNumber, tenant: tenancy.tenantName, periodStart: receipt.periodStart,
-                                           periodEnd: receipt.periodEnd, receiptDate: receipt.receiptDate, amountMinorUnits: receipt.amountMinorUnits,
-                                           withholdingMinorUnits: receipt.withholdingMinorUnits, amountReceivedMinorUnits: receipt.amountReceivedMinorUnits,
-                                           status: receipt.status)
-                }
-                let receipts = try RentReceipt.filter(Column("tenancyId") == tenancy.id!).order(Column("periodStart")).fetchAll(db)
-                rows += receipts.map(row)
-                // The latest tenancy's next receipt: new in this file.
-                if tenancy.id == tenancies.last?.id, var next = receipts.last {
-                    let parts = next.receiptNumber.split(separator: "-")
-                    if let last = parts.last, let number = Int(last) {
-                        next.receiptNumber = (parts.dropLast() + [Substring(String(format: "%03d", number + 1))]).joined(separator: "-")
-                    }
-                    next.periodStart = next.periodEnd.addingTimeInterval(86_400)
-                    next.periodEnd = utc.date(byAdding: DateComponents(month: 1, day: -1), to: next.periodStart)!
-                    next.receiptDate = next.periodStart
-                    next.amountReceivedMinorUnits = next.amountMinorUnits - next.withholdingMinorUnits
-                    rows.append(row(next))
-                }
-            }
-            let report = try RentReceiptImport.preview(db: db, propertyId: propertyId, rows: rows)
-            return ReceiptsImportPreview(fileName: "ListaRecibos.xlsx", rows: rows, report: report)
-        }
-    }
-
-    /// A source folder's review as a scan would leave it, made up from the demo's transactions
-    /// (no folder is read; the folder isn't registered): three new files — one matched
-    /// confidently (ticked), one with two candidates, a photo with none — a changed contract,
-    /// a missing file, and counts of the rest.
-    func folderReviewModel() async throws -> FolderReviewModel {
-        let ids = try ["EXAMPLE WATER DD", "CONDOMINIO EDIFICIO EXEMPLO", "EXAMPLE GAS DD"].map(transactionId(description:))
-        let transactions = try await dbQueue.read { db in try ids.map { id in try Transaction.fetchOne(db, key: id) } }.compactMap { $0 }
-        guard transactions.count == 3 else { throw SnapshotMissing("the utility transactions") }
-        let (water, condominio, gas) = (transactions[0], transactions[1], transactions[2])
-        let contractId = documentId(kind: .rentContract)
-        let folder = SourceFolder(id: -1, path: "/Volumes/Demo/Property A papers", bookmark: nil, name: "Property A papers", lastScanAt: AppClock.now)
-        let root = URL(fileURLWithPath: folder.path)
-        func file(_ path: String, size: Int64 = 182_000, analysis: EvidenceAnalysis? = nil, suggestions: [EvidenceMatcher.Suggestion] = [],
-                  documentId: Int64? = nil, previousDocumentId: Int64? = nil, changed: Date? = nil) -> SourceFolderScanner.ScannedFile {
-            SourceFolderScanner.ScannedFile(relativePath: path, url: root.appendingPathComponent(path), size: size, modifiedAt: AppClock.now,
-                                            sha256: String(repeating: "0", count: 64), documentId: documentId, previousDocumentId: previousDocumentId,
-                                            changeDetectedAt: changed, analysis: analysis, suggestions: suggestions)
-        }
-        func invoice(_ kind: DocumentKind, _ transaction: Transaction, status: DocumentTextStatus = .text) -> EvidenceAnalysis {
-            EvidenceAnalysis(metadata: EvidenceMetadata(kind: kind, docDate: transaction.date.addingTimeInterval(-3 * 86_400),
-                                                        amountMinorUnits: abs(transaction.amountMinorUnits), currency: .eur, textStatus: status),
-                             textStatus: status, extractedText: nil)
-        }
-        let new = [
-            file("Utilities/Water \(DocumentFormat.day(water.date)).pdf", analysis: invoice(.utilityInvoice, water),
-                 suggestions: [EvidenceMatcher.Suggestion(transactionId: water.id!, score: 190,
-                                                          reasons: ["Amount \(Money.format(abs(water.amountMinorUnits), currency: .eur))", "3 days after",
-                                                                    "Description mentions water"],
-                                                          amountMatched: true, dateInWindow: true)]),
-            file("Condominio/Quota receipt.pdf", analysis: invoice(.condominioReceipt, condominio),
-                 suggestions: [EvidenceMatcher.Suggestion(transactionId: condominio.id!, score: 120, reasons: ["Amount \(Money.format(abs(condominio.amountMinorUnits), currency: .eur))"],
-                                                          amountMatched: true),
-                               EvidenceMatcher.Suggestion(transactionId: gas.id!, score: 60, reasons: ["9 days after"], dateInWindow: true)]),
-            file("Scans/IMG_0412.jpg", size: 2_400_000,
-                 analysis: EvidenceAnalysis(metadata: EvidenceMetadata(textStatus: .image), textStatus: .image, extractedText: nil))
-        ]
-        let changed = contractId.map { [file("Contracts/Tenancy contract.pdf", documentId: nil, previousDocumentId: $0,
-                                             changed: AppClock.now.addingTimeInterval(-2 * 86_400))] } ?? []
-        let missing = [SourceFile(folderId: -1, relativePath: "Old/Insurance 2024.pdf", size: 90_000, modifiedAt: AppClock.now, sha256: "",
-                                  lastSeenAt: AppClock.now.addingTimeInterval(-40 * 86_400))]
-        let inLibrary = (1...38).map { file("Library/\($0).pdf", documentId: Int64($0)) }
-        let result = SourceFolderScanner.ScanResult(folder: folder, scannedAt: AppClock.now, new: new, changed: changed, missing: missing,
-                                                    inLibrary: inLibrary, notDownloaded: ["Archive/2023 statements.pdf"])
-        let model = FolderReviewModel(folder: folder, scanner: SourceFolderScanner(library: library), dbQueue: dbQueue)
-        model.showForSnapshot(result, catalog: try? await TransactionCatalog.load(dbQueue))
         return model
     }
 

@@ -1,6 +1,5 @@
 // App/Documents/LinkPickers.swift
 import SwiftUI
-import UniformTypeIdentifiers
 import BudgetCore
 
 /// Link to transaction… (Documents screen): the transactions the document may be evidence
@@ -87,14 +86,14 @@ struct LinkTransactionSheet: View {
 
 /// Link document… (Edit transaction): documents that would propose this transaction first,
 /// then any document found by searching (after a pause in typing, off the main thread); Add
-/// file… copies one into the library. Link only stages the link — Edit transaction's Save
+/// file… hands files to the importer with the transaction as their link target (reviewed in
+/// Imports, linked by Confirm import). Link only stages the link — Edit transaction's Save
 /// writes it, Cancel discards it.
 struct LinkDocumentSheet: View {
     @ObservedObject var model: TransactionDocumentsModel
     let transactionName: String
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
-    @State private var importing = false
     @State private var results: [EvidenceDocumentSearch.Entry] = []
 
     var body: some View {
@@ -102,8 +101,14 @@ struct LinkDocumentSheet: View {
                       cancelTitle: "Done", onCancel: { dismiss() }) {
             HStack(spacing: 8) {
                 SearchField("Search names, kinds, notes, text or an amount", text: $query)
-                Button("Add file…") { importing = true }
-                    .help("Add a file to the library and link it to this transaction")
+                if let shortcut = model.attachShortcut(from: .linkPicker) {
+                    ImportShortcutButton("Add file…", shortcut: shortcut) { model.sentToImports = true }
+                        .help("Import a file and link it to this transaction (reviewed in Imports)")
+                }
+            }
+            if model.sentToImports {
+                Text(ImportShortcutButton.opensWhenClosed).font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             List {
                 if model.pickerIndex == nil {
@@ -142,12 +147,6 @@ struct LinkDocumentSheet: View {
                 Array(EvidenceDocumentSearch.entries(index, filter: filter).prefix(100))
             }.value
             if !Task.isCancelled { results = found }
-        }
-        .fileImporter(isPresented: $importing, allowedContentTypes: EvidenceFiles.contentTypes, allowsMultipleSelection: true) { result in
-            switch result {
-            case .success(let urls): model.addFiles(urls)
-            case .failure(let error): model.errorMessage = error.localizedDescription
-            }
         }
     }
 

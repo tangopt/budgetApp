@@ -1,6 +1,7 @@
 // App/Accounts/AccountsView.swift
 import SwiftUI
 import Charts
+import Combine
 import BudgetCore
 
 /// Net worth and accounts on one screen: header total, banners, accounts grouped by kind
@@ -9,23 +10,22 @@ struct AccountsView: View {
     @ObservedObject var viewModel: AccountsViewModel
     @ObservedObject var environment: AppEnvironment
     @Environment(\.theme) private var theme
-    /// Import statement (spec 2026-10-15 §1): the shared import flow, started here with the
-    /// selected account; staging moves to the Import screen (`ContentView`).
-    @ObservedObject var importViewModel: ImportViewModel
+    /// Import statement's CSV…/PDF… and Edit column mapping… are shortcuts into the window's
+    /// importer (the review is on the Imports screen); the saved mapping and layout are reset here.
     let profileStore: ImportProfileStore
     let navigate: (AppScreen) -> Void
     @State private var activeSheet: AccountsSheet?
-    /// A row's Import statement ▸ CSV…/PDF…: selects the account, then the detail's import
-    /// host starts it once it shows that account.
-    @State private var pendingImport: PendingImport?
+    /// The formats the selected account has a saved import profile for.
+    @State private var savedProfiles: Set<ImportFormat> = []
+    /// The format whose saved mapping/layout the reset alert is asking about.
+    @State private var pendingReset: ImportFormat?
+    @State private var resetError: String?
     /// The account list's width, dragged on its divider and remembered between launches.
     @AppStorage("accounts.listWidth") private var listWidth: Double = 340
     /// `listWidth` when a divider drag began; nil when not dragging.
     @State private var dragStartWidth: Double?
     /// The list-and-detail row's width, which bounds the list's.
     @State private var availableWidth: Double = 0
-
-    private var importBusy: Bool { importViewModel.isStaging || importViewModel.isReviewing }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -36,11 +36,7 @@ struct AccountsView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         AccountsListView(groups: overview.groups, selection: $viewModel.selectedAccountId,
                                          importedThrough: viewModel.importedThrough,
-                                         onAddTransaction: addTransaction(in:), importDisabled: importBusy,
-                                         onImport: { id, format in
-                                             viewModel.selectedAccountId = id
-                                             pendingImport = PendingImport(accountId: id, format: format)
-                                         }, onSetMain: { viewModel.setMain($0) },
+                                         onAddTransaction: addTransaction(in:), onSetMain: { viewModel.setMain($0) },
                                          onSetIncludeInNetWorth: { viewModel.setIncludeInNetWorth($0, $1) }) { group, from, to in
                             viewModel.moveAccounts(ids: group.rows.map(\.id), fromOffsets: from, toOffset: to)
                         }
@@ -66,10 +62,27 @@ struct AccountsView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onChange(of: viewModel.selectedAccountId) { _, id in
-            // A different selection drops a request for another account (a row's Import
-            // statement sets both together, so its own request survives).
-            if let request = pendingImport, request.accountId != id { pendingImport = nil }
+        .task(id: viewModel.selectedAccountId) { refreshSavedProfiles() }
+        // A confirmed import may have saved a mapping or layout (mapped in its review).
+        // Only when an import ends (not on every reading-progress tick).
+        .onReceive(environment.importCenter.$phase.filter { phase in
+            switch phase {
+            case .finished, .idle: return true
+            default: return false
+            }
+        }.removeDuplicates()) { _ in refreshSavedProfiles() }
+        .alert(resetTitle, isPresented: Binding(get: { pendingReset != nil }, set: { if !$0 { pendingReset = nil } })) {
+            Button("Cancel", role: .cancel) { pendingReset = nil }
+            Button("Reset", role: .destructive) { resetProfile() }
+        } message: {
+            Text(pendingReset == .pdf
+                 ? "The next PDF import asks you to set up its layout again."
+                 : "The next CSV import asks you to map its columns again.")
+        }
+        .alert("Couldn't reset", isPresented: Binding(get: { resetError != nil }, set: { if !$0 { resetError = nil } })) {
+            Button("OK", role: .cancel) { resetError = nil }
+        } message: {
+            Text(resetError ?? "")
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -136,42 +149,44 @@ struct AccountsView: View {
             .accessibilityHidden(true)
     }
 
-    /// The detail panel, inside the import host for its account (file pickers, mapping and
-    /// layout sheets, reset confirmations) so its Import statement menu can start an import.
-    @ViewBuilder
     private var detail: some View {
-        if let row = viewModel.selectedRow, !importBusy {
-            ImportFlowHost(viewModel: importViewModel, account: row.account, profileStore: profileStore) { actions in
-                detailView(importActions: actions)
-                    .onChange(of: pendingImport, initial: true) { _, request in
-                        guard let request else { return }
-                        // Taken or dropped either way: a request that doesn't match the shown
-                        // account must not start an import later.
-                        pendingImport = nil
-                        guard request.accountId == row.account.id else { return }
-                        switch request.format {
-                        case .csv: actions.startCSV()
-                        case .pdf: actions.startPDF()
-                        }
-                    }
-            }
-        } else {
-            detailView(importActions: nil)
-        }
-    }
-
-    private func detailView(importActions: ImportFlowActions?) -> some View {
         AccountDetailView(
             row: viewModel.selectedRow,
             importedThrough: viewModel.selectedRow.flatMap { viewModel.importedThrough[$0.id] },
             history: viewModel.selectedHistory,
-            importActions: importActions,
-            importBusy: importBusy,
+            importCenter: environment.importCenter,
+            savedProfiles: savedProfiles,
             onUpdateBalance: { activeSheet = .updateOne($0) },
             onEdit: { activeSheet = .edit($0.account) },
             onAddTransaction: { addTransaction(in: $0.id) },
-            onResumeReview: { navigate(.importReview) }
+            onReset: { pendingReset = $0 },
+            onResumeReview: { navigate(.imports) }
         )
+    }
+
+    // MARK: Saved mapping and layout
+
+    private func refreshSavedProfiles() {
+        guard let accountId = viewModel.selectedRow?.account.id else { savedProfiles = []; return }
+        savedProfiles = Set([ImportFormat.csv, .pdf].filter { (try? profileStore.find(accountId: accountId, format: $0)) != nil })
+    }
+
+    private var resetTitle: String {
+        let name = viewModel.selectedRow?.account.displayName ?? "this account"
+        return pendingReset == .pdf ? "Reset the PDF layout for \(name)?" : "Reset the column mapping for \(name)?"
+    }
+
+    /// Deletes the selected account's saved mapping or layout (`ImportProfileStore.delete`).
+    private func resetProfile() {
+        guard let format = pendingReset else { return }
+        pendingReset = nil
+        guard let accountId = viewModel.selectedRow?.account.id else { return }
+        do {
+            _ = try profileStore.delete(accountId: accountId, format: format)
+        } catch {
+            resetError = "Couldn't reset the \(format == .pdf ? "PDF layout" : "column mapping"): \(error.localizedDescription)"
+        }
+        refreshSavedProfiles()
     }
 
     /// Add transaction… for an account (its row's menu, or the detail's button).
@@ -298,13 +313,6 @@ private enum AccountsSheet: Identifiable {
     }
 }
 
-/// A row's Import statement ▸ CSV…/PDF… waiting for the detail's import host.
-private struct PendingImport: Equatable {
-    let id = UUID()
-    let accountId: Int64
-    let format: ImportFormat
-}
-
 // MARK: - Banner
 
 private struct Banner<Content: View>: View {
@@ -337,14 +345,12 @@ private struct AccountsListView: View {
     let importedThrough: [Int64: Date]
     /// Add transaction… from a row's context menu.
     let onAddTransaction: (Int64) -> Void
-    /// True while an import is staging or in review: Import statement is disabled.
-    let importDisabled: Bool
-    /// Import statement ▸ CSV…/PDF… from a row's context menu.
-    let onImport: (Int64, ImportFormat) -> Void
     /// Set as main account / Unset main account (nil) from a row's context menu.
     let onSetMain: (Int64?) -> Void
     /// Count toward net worth on or off from a row's context menu.
     let onSetIncludeInNetWorth: (Int64, Bool) -> Void
+    /// The window's importer, read here and handed to the context menu's shortcuts.
+    @Environment(\.documentImport) private var documentImport
     /// A drag within a section (accounts reorder within their kind).
     let onMove: (AccountGroup, IndexSet, Int) -> Void
 
@@ -357,10 +363,12 @@ private struct AccountsListView: View {
                             .contextMenu {
                                 Button("Add transaction…") { onAddTransaction(row.id) }
                                 Menu("Import statement") {
-                                    Button("CSV…") { onImport(row.id, .csv) }
-                                    Button("PDF…") { onImport(row.id, .pdf) }
+                                    // Handed in: a context menu may not inherit the environment's importer.
+                                    ImportShortcutButton("CSV…", shortcut: .statement(accountId: row.id, format: .csv, from: .accounts),
+                                                         importer: documentImport)
+                                    ImportShortcutButton("PDF…", shortcut: .statement(accountId: row.id, format: .pdf, from: .accounts),
+                                                         importer: documentImport)
                                 }
-                                .disabled(importDisabled)
                                 Divider()
                                 if row.account.isMain {
                                     Button("Unset main account") { onSetMain(nil) }
@@ -522,12 +530,14 @@ private struct AccountDetailView: View {
     /// The account's latest imported transaction date; nil: nothing imported.
     let importedThrough: Date?
     let history: AccountHistory
-    /// The import host's actions for this account; nil while an import is staging or in review.
-    let importActions: ImportFlowActions?
-    let importBusy: Bool
+    /// The window's importer (an import under way links to its review).
+    let importCenter: ImportCenterModel
+    /// The formats the account has a saved mapping or layout for (their Edit and Reset items).
+    let savedProfiles: Set<ImportFormat>
     let onUpdateBalance: (AccountRow) -> Void
     let onEdit: (AccountRow) -> Void
     let onAddTransaction: (AccountRow) -> Void
+    let onReset: (ImportFormat) -> Void
     let onResumeReview: () -> Void
     @State private var showAllHistory = false
     @State private var selectedDate: Date?
@@ -578,7 +588,7 @@ private struct AccountDetailView: View {
                         Button("Edit…") { onEdit(row) }
                         Button("Add transaction…") { onAddTransaction(row) }
                     }
-                    importRow
+                    importRow(row)
                     AccountBankDetails(account: row.account, onAdd: { onEdit(row) })
                     chart(row)
                     historyList(row)
@@ -596,29 +606,27 @@ private struct AccountDetailView: View {
         }
     }
 
-    /// Import statement ▾ (spec 2026-10-15 §1): CSV…, PDF…, then the saved mapping/layout's
-    /// Edit and Reset items. Disabled, with a link to the review, while an import is under way.
-    private var importRow: some View {
+    /// Import statement ▾ (spec 2026-10-15 §1): CSV…, PDF… and, with a saved mapping, Edit
+    /// column mapping… (shortcuts into the importer), then the saved mapping/layout's Reset items.
+    /// An import under way links to its review.
+    private func importRow(_ row: AccountRow) -> some View {
         HStack {
             Menu("Import statement") {
-                if let actions = importActions {
-                    Button("CSV…") { actions.startCSV() }
-                    Button("PDF…") { actions.startPDF() }
-                    if actions.editCSVMapping != nil || actions.resetCSVMapping != nil || actions.resetPDFLayout != nil {
-                        Divider()
-                    }
-                    if let edit = actions.editCSVMapping { Button("Edit column mapping…") { edit() } }
-                    if let reset = actions.resetCSVMapping { Button("Reset column mapping…") { reset() } }
-                    if let reset = actions.resetPDFLayout { Button("Reset PDF layout…") { reset() } }
+                ImportShortcutButton("CSV…", shortcut: .statement(accountId: row.id, format: .csv, from: .accounts))
+                ImportShortcutButton("PDF…", shortcut: .statement(accountId: row.id, format: .pdf, from: .accounts))
+                if !savedProfiles.isEmpty {
+                    Divider()
+                }
+                if savedProfiles.contains(.csv) {
+                    ImportShortcutButton("Edit column mapping…", shortcut: .editColumnMapping(accountId: row.id))
+                    Button("Reset column mapping…") { onReset(.csv) }
+                }
+                if savedProfiles.contains(.pdf) {
+                    Button("Reset PDF layout…") { onReset(.pdf) }
                 }
             }
             .fixedSize()
-            .disabled(importBusy || importActions == nil)
-            if importBusy {
-                Button("Resume review ›", action: onResumeReview)
-                    .buttonStyle(.link)
-                    .fixedSize()
-            }
+            ImportUnderWayLink(center: importCenter, open: onResumeReview)
         }
     }
 
@@ -865,5 +873,22 @@ private struct NotInNetWorthBadge: View {
             .background(Capsule().fill(theme.neutralMoney.opacity(0.15)))
             .foregroundStyle(.secondary)
             .help(NetWorthToggle.help)
+    }
+}
+
+/// "Resume review ›" while the importer reads or holds a review (files imported here join it).
+private struct ImportUnderWayLink: View {
+    @ObservedObject var center: ImportCenterModel
+    let open: () -> Void
+
+    var body: some View {
+        switch center.phase {
+        case .reading, .review, .applying:
+            Button("Resume review ›", action: open)
+                .buttonStyle(.link)
+                .fixedSize()
+        case .idle, .finished, .failed:
+            EmptyView()
+        }
     }
 }

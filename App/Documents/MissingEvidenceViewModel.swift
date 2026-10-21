@@ -64,8 +64,6 @@ final class MissingEvidenceViewModel: ObservableObject {
     @Published var queryText = "" {
         didSet { if queryText != oldValue { refreshShown() } }
     }
-    /// Items files are being added to right now.
-    @Published private(set) var addingItemIds: Set<String> = []
     @Published var errorMessage: String?
     @Published var infoMessage: String?
     /// Only the items of rules concerning this property (`PropertyEvidence.relatedRequirementIds`).
@@ -199,41 +197,10 @@ final class MissingEvidenceViewModel: ObservableObject {
 
     // MARK: Adding and linking
 
-    /// Copies the files into the library (analysing each, off the main thread) and links them
-    /// to the item's record at once; a document's unknown kind, or missing period on a
-    /// periodic item, is filled in from the item so it counts. Says when one still doesn't.
-    func add(_ urls: [URL], to item: MissingEvidence.Item) {
-        let (files, folders) = EvidenceFiles.files(urls)
-        errorMessage = nil
-        infoMessage = EvidenceFiles.skippedMessage(folders)
-        guard !files.isEmpty else { return }
-        addingItemIds.insert(item.id)
-        let library = library
-        Task {
-            let outcome = await Task.detached(priority: .userInitiated) { () -> (notes: [String], failures: [String]) in
-                var notes: [String] = [], failures: [String] = []
-                for url in files {
-                    do {
-                        let result = try EvidenceFiles.withAccess(url) { try library.addAnalyzing(url) }
-                        guard let id = result.document.id else { continue }
-                        notes.append(try Self.linkFillingIn(library: library, documentId: id, item: item, isNew: result.isNew))
-                    } catch {
-                        failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
-                    }
-                }
-                return (notes, failures)
-            }.value
-            addingItemIds.remove(item.id)
-            if !outcome.failures.isEmpty { errorMessage = "Couldn't add " + outcome.failures.joined(separator: "; ") }
-            let info = [infoMessage].compactMap { $0 } + outcome.notes
-            infoMessage = info.isEmpty ? nil : info.joined(separator: " ")
-        }
-    }
-
     /// Links a library document to the item's record (Link existing…), filling in its kind
-    /// or period as `add` does, in one write. Returns what happened, for the caller to show.
+    /// or period, in one write. Returns what happened, for the caller to show.
     func link(documentId: Int64, to item: MissingEvidence.Item) -> Result<String, Error> {
-        Result { try Self.linkFillingIn(library: library, documentId: documentId, item: item, isNew: false) }
+        Result { try Self.linkFillingIn(library: library, documentId: documentId, item: item) }
     }
 
     func unlink(documentId: Int64, from item: MissingEvidence.Item) {
@@ -247,10 +214,10 @@ final class MissingEvidenceViewModel: ObservableObject {
 
     /// Links, fills in what's missing for the item (one write), and describes what happened.
     nonisolated private static func linkFillingIn(library: EvidenceLibrary, documentId: Int64,
-                                                  item: MissingEvidence.Item, isNew: Bool) throws -> String {
+                                                  item: MissingEvidence.Item) throws -> String {
         let outcome = try library.database.write { db in try MissingEvidence.link(db: db, documentId: documentId, to: item) }
         let name = outcome.document.displayName
-        var note = isNew ? "Added and linked “\(name)”." : "Linked “\(name)”."
+        var note = "Linked “\(name)”."
         if !outcome.filled.isEmpty { note += " Set its \(outcome.filled.joined(separator: " and ")) — change it in Documents if that's wrong." }
         if let shortfall = outcome.shortfall {
             note += " It doesn't count for this item yet: \(shortfall). Fix its details in Documents."

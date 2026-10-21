@@ -1,6 +1,5 @@
 // App/Property/PropertyTenanciesTab.swift
 import SwiftUI
-import UniformTypeIdentifiers
 import QuickLook
 import BudgetCore
 import struct BudgetCore.Transaction
@@ -18,16 +17,14 @@ struct PropertyTenanciesTab: View {
     let showDocument: (Int64) -> Void
     @Environment(\.theme) private var theme
 
+    /// The window's importer: Import receipts…, Add contract…, Utility invoices… and the
+    /// receipts' Add/Replace PDF… are shortcuts into it (handed explicitly to menu content).
+    @Environment(\.documentImport) private var documentImport
+
     @State private var editing: TenancyDraft?
-    @State private var importing = false
-    @State private var intakingInvoices = false
     @State private var deleting: Tenancy?
-    /// The record Add document… adds to (kept until the importer completes), and the
-    /// documents a Replace PDF… unlinks once the new file is in.
-    @State private var documentTarget: (entity: EvidenceEntity, role: String, replacing: [Int64])?
     /// The receipt PDF shown in Quick Look.
     @State private var quickLook: URL?
-    @State private var pickingDocument = false
     @State private var documentsOf: DocumentsTarget?
 
     struct DocumentsTarget: Identifiable {
@@ -56,15 +53,16 @@ struct PropertyTenanciesTab: View {
                     Divider()
                     Button("Match credits") { viewModel.matchCredits() }
                         .help("Link rent credits on the current account to the receipts they paid")
-                    Button("Utility invoices…") { intakingInvoices = true }
-                        .help("Add utility invoices (to recharge to the tenant) and match them to their debits")
+                    if let propertyId = viewModel.propertyId {
+                        ImportShortcutButton("Utility invoices…", shortcut: .utilityInvoices(propertyId: propertyId), importer: documentImport)
+                            .help("Add utility invoices (to recharge to the tenant) and match them to their debits")
+                    }
                 } label: {
                     Text("More")
                 }
                 .fixedSize()
                 .help("New tenancy…, Match credits, Utility invoices…")
-                Button("Import receipts…") { importing = true }
-                    .buttonStyle(.borderedProminent).prominentTint()
+                importReceiptsButton
                     .help("Import the Portal das Finanças receipts export (ListaRecibos .xlsx); credits are matched after")
             }
             if let tenancy = viewModel.selectedTenancy {
@@ -77,7 +75,7 @@ struct PropertyTenanciesTab: View {
                     EmptyState(systemImage: "person.2", title: "No tenancies yet",
                                message: "Import the portal's receipts export to create them, or add one by hand.") {
                         Button("New tenancy…") { editing = TenancyDraft(nil, rents: [], propertyId: viewModel.propertyId ?? 0) }
-                        Button("Import receipts…") { importing = true }.buttonStyle(.borderedProminent).prominentTint()
+                        importReceiptsButton
                     }
                     .inPanel()
                 }
@@ -85,15 +83,6 @@ struct PropertyTenanciesTab: View {
         }
         .sheet(item: $editing) { draft in
             TenancyFormSheet(viewModel: viewModel, draft: draft)
-        }
-        .sheet(isPresented: $importing) {
-            ImportReceiptsSheet(viewModel: viewModel)
-        }
-        .sheet(isPresented: $intakingInvoices) {
-            if let propertyId = viewModel.propertyId {
-                UtilityInvoiceIntakeSheet(dbQueue: viewModel.dbQueue, library: viewModel.library, propertyId: propertyId,
-                                          currency: viewModel.property?.currency ?? .eur)
-            }
         }
         .sheet(item: $documentsOf) { target in
             PropertyDocumentsSheet(viewModel: viewModel, entity: target.entity, title: target.title)
@@ -106,21 +95,22 @@ struct PropertyTenanciesTab: View {
         } message: { _ in
             Text("Its rent history, receipts and their credit links go too. Linked documents stay in the library. This can't be undone.")
         }
-        .fileImporter(isPresented: $pickingDocument, allowedContentTypes: EvidenceFiles.contentTypes,
-                      allowsMultipleSelection: documentTarget?.replacing.isEmpty ?? true) { result in
-            guard let target = documentTarget else { return }
-            documentTarget = nil
-            switch result {
-            case .success(let urls): viewModel.addDocuments(urls, to: target.entity, role: target.role, replacing: target.replacing)
-            case .failure(let error): viewModel.errorMessage = error.localizedDescription
-            }
-        }
         .quickLookPreview($quickLook)
     }
 
-    private func addDocument(_ entity: EvidenceEntity, role: String, replacing: [Int64] = []) {
-        documentTarget = (entity, role, replacing)
-        pickingDocument = true
+    /// Import receipts…: the receipts export, into the importer (its review shows what the file
+    /// creates and updates; credits are matched on Confirm import).
+    @ViewBuilder
+    private var importReceiptsButton: some View {
+        if let propertyId = viewModel.propertyId {
+            ImportShortcutButton("Import receipts…", shortcut: .rentReceiptsExport(propertyId: propertyId), prominent: true)
+        }
+    }
+
+    /// A receipt's Add the receipt PDF… / Add another PDF… (`replacing` empty) or Replace PDF…
+    /// (the documents linked now), from a table cell or a row's actions menu.
+    private func pickReceiptPDF(_ receiptId: Int64, replacing: [Int64] = []) {
+        documentImport?.pickShortcut(.receiptPDF(receiptId: receiptId, replacing: replacing))
     }
 
     /// A receipt's linked documents, read when acted on.
@@ -169,7 +159,7 @@ struct PropertyTenanciesTab: View {
                 .accessibilityLabel("Edit \(tenancy.referenceLabel)")
                 Menu {
                     Button("Edit…") { editing = TenancyDraft(tenancy, rents: rents, propertyId: tenancy.propertyId) }
-                    Button("Add contract…") { addDocument(.tenancy(id), role: "Contract") }
+                    ImportShortcutButton("Add contract…", shortcut: .tenancyContract(tenancyId: id), importer: documentImport)
                     if contracts > 0 {
                         Button("Contract documents…") {
                             documentsOf = DocumentsTarget(entity: .tenancy(id), title: "\(tenancy.referenceLabel): documents")
@@ -227,7 +217,7 @@ struct PropertyTenanciesTab: View {
                                 HStack(spacing: 8) {
                                     if contracts == 0 {
                                         StatusPill("None yet", tone: .warning, systemImage: "circle.dashed")
-                                        Button("Add contract…") { addDocument(.tenancy(id), role: "Contract") }
+                                        ImportShortcutButton("Add contract…", shortcut: .tenancyContract(tenancyId: id))
                                             .controlSize(.small)
                                     } else {
                                         Button {
@@ -386,7 +376,7 @@ struct PropertyTenanciesTab: View {
                                          documents: { receiptDocuments(row) }, preview: preview,
                                          openInPreview: viewModel.openInPreview, show: { $0.id.map(showDocument) })
                     } else if row.receipt.status != .cancelled {
-                        Button { addDocument(.rentReceipt(row.receipt.id!), role: "Receipt") } label: {
+                        Button { pickReceiptPDF(row.receipt.id!) } label: {
                             Image(systemName: "circle.dashed").foregroundStyle(theme.pending)
                         }
                         .buttonStyle(.borderless)
@@ -497,11 +487,11 @@ struct PropertyTenanciesTab: View {
         }
         if row.documentCount == 1 {
             actions.append(DataTableAction("Replace PDF…", systemImage: "arrow.triangle.2.circlepath") {
-                addDocument(.rentReceipt(receipt.id!), role: "Receipt", replacing: receiptDocuments(row).compactMap(\.id))
+                pickReceiptPDF(receipt.id!, replacing: receiptDocuments(row).compactMap(\.id))
             })
         }
         actions.append(DataTableAction(row.documentCount == 0 ? "Add the receipt PDF…" : "Add another PDF…", systemImage: "paperclip") {
-            addDocument(.rentReceipt(receipt.id!), role: "Receipt")
+            pickReceiptPDF(receipt.id!)
         })
         if row.documentCount > 0 {
             actions.append(DataTableAction("Documents…", systemImage: "doc.on.doc") {

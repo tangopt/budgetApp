@@ -8,7 +8,7 @@ import GRDB
 
 /// The Documents screen (spec 2026-10-16 §2–§3): the evidence library searched and filtered
 /// (`EvidenceDocumentSearch`), the selected document with its links and the transactions it
-/// may be evidence for (`EvidenceMatcher`), adding files, and editing details and links.
+/// may be evidence for (`EvidenceMatcher`), scanning a source folder for the importer, and editing details and links.
 /// Owned by ContentView, so the search and filters last while the app runs.
 @MainActor
 final class DocumentsViewModel: ObservableObject {
@@ -56,10 +56,10 @@ final class DocumentsViewModel: ObservableObject {
     @Published private(set) var catalog: TransactionCatalog?
     @Published private(set) var accounts: [Account] = []
     @Published private(set) var sourceFolders: [SourceFolder] = []
-    /// Files being added right now.
-    @Published private(set) var addingCount = 0
+    /// The source folder being scanned for Review a folder (its name).
+    @Published private(set) var scanningFolder: String?
     @Published var errorMessage: String?
-    /// A note about the last add ("Already in the library: …").
+    /// A note about the last folder review ("Nothing new or changed in …").
     @Published var infoMessage: String?
 
     private var queryTask: Task<Void, Never>?
@@ -266,41 +266,27 @@ final class DocumentsViewModel: ObservableObject {
         Set(links.filter { $0.link.entityType == .transaction }.map(\.link.entityId))
     }
 
-    // MARK: Adding
+    // MARK: Source folders
 
-    /// Copies the files into the library (analysing each), then selects the last one added
-    /// so its suggested transactions show. Files already in the library are pointed out.
-    func add(_ urls: [URL]) {
-        let (files, folders) = EvidenceFiles.files(urls)
+    /// Scans `folder` (counts only, off the main thread) for Review a folder: its new and
+    /// changed files for the importer, or nil when the scan failed (the error shown).
+    func scanForImport(_ folder: SourceFolder) async -> [SourceFolderImport.Input]? {
+        guard scanningFolder == nil else { return nil }
+        scanningFolder = folder.name
         errorMessage = nil
-        infoMessage = EvidenceFiles.skippedMessage(folders)
-        guard !files.isEmpty else { return }
-        addingCount += files.count
-        let library = library
-        Task {
-            let outcome = await Task.detached(priority: .userInitiated) { () -> (added: [EvidenceDocument], existing: [EvidenceDocument], failures: [String]) in
-                var added: [EvidenceDocument] = [], existing: [EvidenceDocument] = [], failures: [String] = []
-                for url in files {
-                    do {
-                        let result = try EvidenceFiles.withAccess(url) { try library.addAnalyzing(url) }
-                        if result.isNew { added.append(result.document) } else { existing.append(result.document) }
-                    } catch {
-                        failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
-                    }
-                }
-                return (added, existing, failures)
-            }.value
-            addingCount -= files.count
-            if !outcome.failures.isEmpty {
-                errorMessage = "Couldn't add " + outcome.failures.joined(separator: "; ")
-            }
-            if !outcome.existing.isEmpty {
-                let names = outcome.existing.map(\.displayName).joined(separator: ", ")
-                infoMessage = [infoMessage, "Already in the library: \(names)"].compactMap { $0 }.joined(separator: " ")
-            }
-            // A filter could hide what was just added.
-            if !filter.isDefault, !outcome.added.isEmpty { filter = EvidenceDocumentSearch.Filter() ; queryText = "" }
-            reloadIndex(select: (outcome.added.last ?? outcome.existing.last)?.id)
+        infoMessage = nil
+        let scanner = scanner
+        let outcome = await Task.detached(priority: .userInitiated) {
+            Result { try scanner.scan(folder, options: .init(analyzeNewFiles: false)) }
+        }.value
+        scanningFolder = nil
+        load()
+        switch outcome {
+        case .success(let result):
+            return SourceFolderImport.inputs(from: result)
+        case .failure(let error):
+            errorMessage = "Couldn't scan \(folder.name): \(error.localizedDescription)"
+            return nil
         }
     }
 

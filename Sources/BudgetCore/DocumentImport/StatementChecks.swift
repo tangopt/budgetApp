@@ -128,10 +128,11 @@ public enum StatementChecks {
     static func accountId(of item: ImportItem) -> Int64? { statement(item)?.accountId }
 
     /// Whether confirming the statement adds anything: rows (and with them the loan and fund
-    /// legs), an estimated interest replaced, the fund's market movement. True for anything else.
+    /// legs), an estimated interest replaced, the fund's market movement, a layout mapped in the
+    /// review to save. True for anything else.
     static func writesSomething(_ item: ImportItem) -> Bool {
         switch item.effect {
-        case .ukStatement(let effect): return !effect.staged.isEmpty
+        case .ukStatement(let effect): return !effect.staged.isEmpty || effect.profileToSave != nil
         case .bbvaStatement(let effect): return !effect.staged.isEmpty || !effect.estimates.isEmpty || effect.marketMovementMinorUnits != nil
         default: return true
         }
@@ -148,6 +149,17 @@ public enum StatementChecks {
         default:
             return [BBVAStatementReader.accountMismatchIssueId, "unknownLinkedAccount", "noTransferCategory", "noInterestCategory"]
                 .contains { issue.id.hasPrefix($0) }
+        }
+    }
+
+    /// Whether the item is a statement whose layout is still to be mapped (no saved profile, or
+    /// "Edit column mapping…" asking again): a question to answer, never a duplicate of its file.
+    static func awaitsMapping(_ item: ImportItem) -> Bool {
+        item.issues.contains { issue in
+            switch issue.kind {
+            case .statement(.noProfile), .statement(.remap): return true
+            default: return false
+            }
         }
     }
 

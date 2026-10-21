@@ -255,9 +255,8 @@ struct RechargeStatementTarget: Identifiable {
 /// and the statements as a table by year with totals.
 struct PropertyRechargesTab: View {
     @ObservedObject var viewModel: PropertyViewModel
-    @State private var intaking = false
     @State private var editingProviders = false
-    /// Bumped when a sheet that changes invoices or providers closes, so the months reload.
+    /// Bumped when a sheet that changes providers closes, so the months reload.
     @State private var refreshToken = 0
 
     var body: some View {
@@ -265,15 +264,10 @@ struct PropertyRechargesTab: View {
             if let tenancy = viewModel.selectedTenancy, let propertyId = viewModel.propertyId {
                 // A view per tenancy: its model is made once (not on every update of the page).
                 RechargesTenancyView(viewModel: viewModel, tenancy: tenancy, propertyId: propertyId, refreshToken: refreshToken,
-                                     openIntake: { intaking = true }, openProviders: { editingProviders = true })
+                                     openProviders: { editingProviders = true })
                     .id(tenancy.id)
             } else {
                 emptyState
-            }
-        }
-        .sheet(isPresented: $intaking, onDismiss: { refreshToken += 1 }) {
-            if let propertyId = viewModel.propertyId {
-                UtilityInvoiceIntakeSheet(dbQueue: viewModel.dbQueue, library: viewModel.library, propertyId: propertyId, currency: viewModel.currency)
             }
         }
         .sheet(isPresented: $editingProviders, onDismiss: { refreshToken += 1 }) {
@@ -288,7 +282,9 @@ struct PropertyRechargesTab: View {
             EmptyState(systemImage: "bolt.horizontal", title: "No tenancies yet",
                        message: "Utilities are recharged to a tenancy's tenant: add the tenancy on Tenancies first. Providers and invoices can be set up now.") {
                 Button("Providers…") { editingProviders = true }
-                Button("Utility invoices…") { intaking = true }
+                if let propertyId = viewModel.propertyId {
+                    ImportShortcutButton("Utility invoices…", shortcut: .utilityInvoices(propertyId: propertyId))
+                }
             }
             .inPanel()
         }
@@ -300,21 +296,21 @@ struct RechargesTenancyView: View {
     @StateObject private var model: RechargesModel
     let tenancy: Tenancy
     let refreshToken: Int
-    let openIntake: () -> Void
     let openProviders: () -> Void
+    /// The window's importer: Utility invoices… is a shortcut into it (handed explicitly to the More menu).
+    @Environment(\.documentImport) private var documentImport
     @State private var opened: RechargeStatementTarget?
     /// The year the figures and the chart cover (`nil`: `RechargesModel.defaultYear`).
     @State private var chosenYear: Int?
 
     init(viewModel: PropertyViewModel, tenancy: Tenancy, propertyId: Int64, refreshToken: Int,
-         openIntake: @escaping () -> Void, openProviders: @escaping () -> Void) {
+         openProviders: @escaping () -> Void) {
         self.viewModel = viewModel
         // `StateObject(wrappedValue:)` takes an autoclosure: the model is made once per view.
         _model = StateObject(wrappedValue: RechargesModel(dbQueue: viewModel.dbQueue, library: viewModel.library, propertyId: propertyId,
                                                           tenancyId: tenancy.id!, currency: viewModel.currency))
         self.tenancy = tenancy
         self.refreshToken = refreshToken
-        self.openIntake = openIntake
         self.openProviders = openProviders
     }
 
@@ -368,12 +364,13 @@ struct RechargesTenancyView: View {
     private func headerActions(invoicesInMenu: Bool) -> some View {
         HStack(spacing: 8) {
             if !invoicesInMenu {
-                Button("Utility invoices…", action: openIntake)
-                    .help("Add utility invoices (files, the library or the source folders) and match them to their debits")
+                ImportShortcutButton("Utility invoices…", shortcut: .utilityInvoices(propertyId: model.propertyId))
+                    .help("Add utility invoices (to recharge to the tenant) and match them to their debits")
             }
             Menu {
                 if invoicesInMenu {
-                    Button("Utility invoices…", action: openIntake)
+                    ImportShortcutButton("Utility invoices…", shortcut: .utilityInvoices(propertyId: model.propertyId),
+                                         importer: documentImport)
                     Divider()
                 }
                 Button("Providers…", action: openProviders)

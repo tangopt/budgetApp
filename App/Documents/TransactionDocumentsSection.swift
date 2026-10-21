@@ -7,8 +7,8 @@ import GRDB
 /// A transaction's documents (spec 2026-10-16 §2) while Edit transaction is open: the saved
 /// links plus links and unlinks staged until Save (`EvidenceLinkStaging`), which writes them
 /// with the transaction (`TransactionEditChanges.documents`). Cancel discards them. A file
-/// added here is copied into the library at once (so Save has a document to link) and only
-/// staged; after Cancel it stays in the library, unlinked.
+/// dropped here (or Link document… ▸ Add file…) goes to the importer with the transaction as
+/// its link target (`attachShortcut`): Confirm import files and links it, not Save.
 @MainActor
 final class TransactionDocumentsModel: ObservableObject {
     let transactionId: Int64?
@@ -17,9 +17,9 @@ final class TransactionDocumentsModel: ObservableObject {
     @Published private(set) var staging = EvidenceLinkStaging(saved: [])
     /// Every document shown (saved and staged), by id.
     @Published private(set) var documentsById: [Int64: EvidenceDocument] = [:]
-    @Published private(set) var addingCount = 0
     @Published var errorMessage: String?
-    @Published var infoMessage: String?
+    /// Files were handed to the importer from Edit transaction (their review opens once it closes).
+    @Published var sentToImports = false
     /// Link document…'s data: every document, and the ones that would propose this transaction.
     @Published private(set) var pickerIndex: EvidenceDocumentSearch.Index?
     @Published private(set) var pickerSuggestions: [EvidenceMatcher.DocumentSuggestion] = []
@@ -39,6 +39,11 @@ final class TransactionDocumentsModel: ObservableObject {
     }
 
     var isAvailable: Bool { transactionId != nil && library != nil }
+
+    /// What a file added here hands the importer (`origin`: the drop or Link document…'s Add file…).
+    func attachShortcut(from origin: AttachOrigin) -> ImportShortcut? {
+        transactionId.map { .attach(.transaction($0), role: nil, from: origin) }
+    }
 
     /// The documents to list: saved ones (those being unlinked included), then staged ones.
     var shown: [EvidenceDocument] { staging.shownIds.compactMap { documentsById[$0] } }
@@ -101,37 +106,6 @@ final class TransactionDocumentsModel: ObservableObject {
         staging.toggleUnlink(documentId)
     }
 
-    /// Copies each file into the library now (analysing it, off the main thread) and stages
-    /// its link. Folders are skipped and named.
-    func addFiles(_ urls: [URL]) {
-        guard let library else { return }
-        let (files, folders) = EvidenceFiles.files(urls)
-        infoMessage = EvidenceFiles.skippedMessage(folders)
-        guard !files.isEmpty else { return }
-        addingCount += files.count
-        Task {
-            let outcome = await Task.detached(priority: .userInitiated) { () -> (added: [EvidenceDocument], failures: [String]) in
-                var added: [EvidenceDocument] = [], failures: [String] = []
-                for url in files {
-                    do {
-                        added.append(try EvidenceFiles.withAccess(url) { try library.addAnalyzing(url) }.document)
-                    } catch {
-                        failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
-                    }
-                }
-                return (added, failures)
-            }.value
-            addingCount -= files.count
-            for document in outcome.added {
-                guard let id = document.id else { continue }
-                documentsById[id] = document
-                staging.stageLink(id)
-            }
-            errorMessage = outcome.failures.isEmpty ? nil : "Couldn't add " + outcome.failures.joined(separator: "; ")
-            if pickerIndex != nil { loadPicker() }
-        }
-    }
-
     func open(_ document: EvidenceDocument) {
         guard let library else { return }
         NSWorkspace.shared.open(library.fileURL(for: document))
@@ -140,13 +114,12 @@ final class TransactionDocumentsModel: ObservableObject {
 
 /// Edit transaction's Documents row: each document (Open; Unlink, or Undo of a staged
 /// change, shown as "will be linked" / "will be unlinked"), Link document…, and a drop target
-/// for files to add. Everything is written by the sheet's Save.
+/// handing files to the importer (linked by Confirm import). The rest is written by the sheet's Save.
 struct TransactionDocumentsSection: View {
     @ObservedObject var model: TransactionDocumentsModel
     let transactionName: String
     @Environment(\.theme) private var theme
     @State private var picking = false
-    @State private var dropTargeted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -156,16 +129,11 @@ struct TransactionDocumentsSection: View {
             HStack(spacing: 8) {
                 Button("Link document…") { picking = true }
                     .controlSize(.small)
-                if model.addingCount > 0 {
-                    ProgressView().controlSize(.small)
-                    Text("Adding…").font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text(model.shown.isEmpty ? "or drop a file here" : "Drop a file to add it")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+                Text(model.shown.isEmpty ? "or drop a file here" : "Drop a file to add it")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            if let info = model.infoMessage {
-                Text(info).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if model.sentToImports {
+                Text(ImportShortcutButton.opensWhenClosed).font(.caption).foregroundStyle(.secondary)
             }
             if let error = model.errorMessage {
                 Text(error).font(.callout).foregroundStyle(theme.expense).fixedSize(horizontal: false, vertical: true)
@@ -173,15 +141,8 @@ struct TransactionDocumentsSection: View {
         }
         .padding(4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(dropTargeted ? theme.accent : Color.clear, lineWidth: 2)
-        }
         .contentShape(Rectangle())
-        .dropDestination(for: URL.self) { urls, _ in
-            model.addFiles(urls)
-            return !urls.isEmpty
-        } isTargeted: { dropTargeted = $0 }
+        .importDropTarget(model.attachShortcut(from: .transaction)) { model.sentToImports = true }
         .onAppear { model.load() }
         .sheet(isPresented: $picking) {
             LinkDocumentSheet(model: model, transactionName: transactionName)

@@ -148,7 +148,8 @@ final class ImportPipelineTests: XCTestCase {
         let plan = try await pipeline.plan(adding: [copy], to: first, intent: .none)
         XCTAssertEqual(plan.items.count, 2)
         XCTAssertEqual(plan.items(in: .ready).map(\.file.fileName), ["r1.pdf"])
-        XCTAssertEqual(plan.items(in: .duplicates).first?.duplicate, ImportDuplicate(level: .file, of: "Same file as r1.pdf"))
+        XCTAssertEqual(plan.items(in: .duplicates).first?.duplicate,
+                       ImportDuplicate(level: .file, of: "Same file as r1.pdf", originalItemId: plan.items(in: .ready).first?.id))
         XCTAssertTrue(plan.canConfirm)
     }
 

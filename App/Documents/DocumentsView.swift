@@ -8,17 +8,15 @@ import struct BudgetCore.Transaction
 /// context menu, double-click opens), taking the width, and beside it a column of fixed width
 /// with the selected document's inspector (first page, links, suggested transactions,
 /// details) — or, with nothing selected, the library at a glance. Add documents… and Review
-/// folder… are in the toolbar.
+/// folder… are in the toolbar; both, and files dropped on the list, go to the importer (the
+/// Imports screen's review; nothing is added before Confirm import).
 struct DocumentsView: View {
     @ObservedObject var viewModel: DocumentsViewModel
     /// Shows a linked transaction: Search, on its day and account, with its row selected.
     let openTransaction: (Transaction) -> Void
-    @Environment(\.theme) private var theme
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.documentImport) private var documentImport
 
-    @State private var importing = false
-    @State private var reviewing: SourceFolder?
-    @State private var dropTargeted = false
     /// The document the list's Link… and Remove… act on.
     @State private var linkingFromList = false
     @State private var removing: EvidenceDocument?
@@ -50,10 +48,10 @@ struct DocumentsView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { importing = true } label: {
-                    Label("Add documents…", systemImage: "doc.badge.plus")
-                        .labelStyle(.titleAndIcon)
-                }
+                // The importer handed in: toolbar content may not inherit the environment.
+                ImportShortcutButton("Add documents…", systemImage: "doc.badge.plus", shortcut: .documents(dropped: false),
+                                     importer: documentImport)
+                .labelStyle(.titleAndIcon)
                 .buttonStyle(.borderless)
                 .help("Add documents…: copy files into the library")
                 .accessibilityLabel("Add documents")
@@ -65,7 +63,8 @@ struct DocumentsView: View {
                         Text("No evidence folders yet")
                     }
                     ForEach(viewModel.sourceFolders) { folder in
-                        Button(folder.name) { reviewing = folder }
+                        Button(folder.name) { review(folder) }
+                            .disabled(viewModel.scanningFolder != nil || documentImport == nil)
                     }
                     Divider()
                     Button("Manage folders…") { openSettings() }
@@ -76,18 +75,22 @@ struct DocumentsView: View {
                 .menuStyle(.button)
                 .buttonStyle(.borderless)
                 .menuIndicator(.hidden)
-                .help("Review a folder: add and link the files it has that aren't in the library")
+                .help("Review a folder: import the files it has that aren't in the library")
             }
             .sharedBackgroundVisibility(.hidden)
         }
-        .fileImporter(isPresented: $importing, allowedContentTypes: EvidenceFiles.contentTypes, allowsMultipleSelection: true) { result in
-            switch result {
-            case .success(let urls): viewModel.add(urls)
-            case .failure(let error): viewModel.errorMessage = error.localizedDescription
+    }
+
+    /// Scans `folder`, then hands its new and changed files to the importer.
+    private func review(_ folder: SourceFolder) {
+        guard let documentImport else { return }
+        Task {
+            guard let inputs = await viewModel.scanForImport(folder) else { return }
+            if inputs.isEmpty {
+                viewModel.infoMessage = "Nothing new or changed in \(folder.name)."
+            } else {
+                documentImport.startFolder(folder, inputs)
             }
-        }
-        .sheet(item: $reviewing, onDismiss: { viewModel.load() }) { folder in
-            FolderReviewSheet(folder: folder, scanner: viewModel.scanner, dbQueue: viewModel.dbQueue)
         }
     }
 
@@ -100,17 +103,7 @@ struct DocumentsView: View {
             messages
             DocumentsTable(viewModel: viewModel, actions: listActions)
                 .overlay { emptyState }
-                .overlay {
-                    if dropTargeted {
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(theme.accent, lineWidth: 2)
-                            .allowsHitTesting(false)
-                    }
-                }
-                .dropDestination(for: URL.self) { urls, _ in
-                    viewModel.add(urls)
-                    return !urls.isEmpty
-                } isTargeted: { dropTargeted = $0 }
+                .importDropTarget(.documents(dropped: true))
             footer
         }
         .padding(ScreenMetrics.padding)
@@ -146,9 +139,9 @@ struct DocumentsView: View {
             Text(shown == total ? "\(total) document\(total == 1 ? "" : "s")" : "\(shown) of \(total) documents")
                 .monospacedDigit()
                 .figureText()
-            if viewModel.addingCount > 0 {
+            if let name = viewModel.scanningFolder {
                 ProgressView().controlSize(.small)
-                Text("Adding \(viewModel.addingCount)…").figureText()
+                Text("Scanning \(name)…").lineLimit(1).truncationMode(.middle)
             }
             Spacer()
         }
@@ -176,7 +169,7 @@ struct DocumentsView: View {
             DocumentInspector(viewModel: viewModel, document: document, openTransaction: openTransaction)
                 .id(document.id)
         } else {
-            DocumentsOverview(viewModel: viewModel, addDocuments: { importing = true })
+            DocumentsOverview(viewModel: viewModel)
         }
     }
 }
@@ -393,7 +386,6 @@ private struct DocumentFilterBar: View {
 /// documents…. An empty library gets the one thing to do.
 private struct DocumentsOverview: View {
     @ObservedObject var viewModel: DocumentsViewModel
-    let addDocuments: () -> Void
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -411,8 +403,7 @@ private struct DocumentsOverview: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
                     Panel("Library", subtitle: "Select a document to see and link it") {
-                        Button("Add documents…", action: addDocuments)
-                            .buttonStyle(.borderedProminent).prominentTint()
+                        ImportShortcutButton("Add documents…", shortcut: .documents(dropped: false), prominent: true)
                     } content: {
                         FigureStrip([
                             FigureTile(title: "Documents", value: .text("\(overview.total)")),
@@ -483,8 +474,7 @@ private struct DocumentsOverview: View {
     private var emptyLibrary: some View {
         EmptyState(systemImage: "doc.on.doc", title: "No documents yet",
                    message: "Add receipts, notices and statements, or drop them on the list. Budget keeps its own copy; your files aren't changed.") {
-            Button("Add documents…", action: addDocuments)
-                .buttonStyle(.borderedProminent).prominentTint()
+            ImportShortcutButton("Add documents…", shortcut: .documents(dropped: false), prominent: true)
         }
         .fillingScreen()
         .padding(ScreenMetrics.padding)

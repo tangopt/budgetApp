@@ -488,99 +488,7 @@ final class PropertyViewModel: ObservableObject {
         }
     }
 
-    // MARK: Receipts import
-
-    /// Reads the portal export (off the main thread) and previews the import.
-    func previewImport(_ url: URL) async -> Result<ReceiptsImportPreview, Error> {
-        guard let propertyId else { return .failure(PropertyError.propertyNotFound) }
-        let dbQueue = dbQueue
-        return await Task.detached(priority: .userInitiated) {
-            Result {
-                let data = try EvidenceFiles.withAccess(url) { try Data(contentsOf: url) }
-                let rows = try RentReceiptsExport.parse(xlsx: data)
-                let report = try dbQueue.write { db in try RentReceiptImport.preview(db: db, propertyId: propertyId, rows: rows) }
-                return ReceiptsImportPreview(fileName: url.lastPathComponent, rows: rows, report: report)
-            }
-        }.value
-    }
-
-    /// Imports the previewed rows and matches credits.
-    func applyImport(_ preview: ReceiptsImportPreview) -> String? {
-        guard let propertyId else { return nil }
-        do {
-            let (report, matched) = try dbQueue.write { db in
-                let report = try RentReceiptImport.run(db: db, propertyId: propertyId, rows: preview.rows)
-                let matched = try RentReceiptMatching.match(db: db, propertyId: propertyId)
-                return (report, matched)
-            }
-            infoMessage = "Imported \(preview.fileName): \(report.createdReceipts) new, \(report.updatedReceipts) updated, "
-                + "\(report.cancelledReceipts) cancelled. Linked \(matched.created.count) credit\(matched.created.count == 1 ? "" : "s")."
-            errorMessage = nil
-            return nil
-        } catch {
-            return PropertyMessages.text(for: error)
-        }
-    }
-
     // MARK: Documents
-
-    /// Adds files to the library and links them to `entity`. A tenancy's file is its contract
-    /// and a receipt's its PDF (whatever the classifier would say), so the property's evidence
-    /// rules count them. `replacing`: documents unlinked from `entity` once every file is in
-    /// and linked (Replace PDF…); they stay in the library.
-    func addDocuments(_ urls: [URL], to entity: EvidenceEntity, role: String?, replacing: [Int64] = []) {
-        let kind: DocumentKind? = switch entity.type {
-        case .tenancy: .rentContract
-        case .rentReceipt: .rentReceipt
-        default: nil
-        }
-        let (files, folders) = EvidenceFiles.files(urls)
-        infoMessage = EvidenceFiles.skippedMessage(folders)
-        guard !files.isEmpty else { return }
-        let library = library
-        Task {
-            let failures = await Task.detached(priority: .userInitiated) { () -> [String] in
-                var failures: [String] = []
-                var linked: Set<Int64> = []
-                for url in files {
-                    do {
-                        let metadata = kind.map { EvidenceMetadata(kind: $0) } ?? EvidenceMetadata()
-                        let result = try EvidenceFiles.withAccess(url) { try library.addAnalyzing(url, metadata: metadata) }
-                        guard let id = result.document.id else { continue }
-                        if let kind, result.document.kind != kind {
-                            // Already in the library under another kind: it's this record's now.
-                            try library.database.write { db in
-                                try db.execute(sql: "UPDATE document SET kind = ? WHERE id = ?", arguments: [kind.rawValue, id])
-                            }
-                        }
-                        _ = try library.link(id, to: entity, role: role)
-                        linked.insert(id)
-                    } catch {
-                        failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
-                    }
-                }
-                if failures.isEmpty, !linked.isEmpty {
-                    for id in replacing where !linked.contains(id) {
-                        do { _ = try library.unlink(id, from: entity) } catch {
-                            failures.append("unlinking the old file: \(error.localizedDescription)")
-                        }
-                    }
-                }
-                if entity.type == .rentReceipt, !linked.isEmpty {
-                    // A receipt's PDF is also the evidence of the credits that paid it.
-                    do {
-                        try library.database.write { db in
-                            try RentCreditEvidence.linkReceiptDocuments(db: db, receiptIds: [entity.id])
-                        }
-                    } catch {
-                        failures.append("linking the PDF to the rent credit: \(error.localizedDescription)")
-                    }
-                }
-                return failures
-            }.value
-            errorMessage = failures.isEmpty ? nil : "Couldn't add " + failures.joined(separator: "; ")
-        }
-    }
 
     func unlinkDocument(_ document: EvidenceDocument, from entity: EvidenceEntity) {
         guard let id = document.id else { return }
@@ -709,24 +617,13 @@ final class PropertyViewModel: ObservableObject {
     }
 }
 
-/// What the import sheet shows before applying.
-struct ReceiptsImportPreview: Sendable {
-    let fileName: String
-    let rows: [RentReceiptsExport.Row]
-    let report: RentReceiptImport.Report
-
-    var contractCount: Int { Set(rows.map(\.contractNumber)).count }
-}
-
 /// Readable text for the property area's errors.
 enum PropertyMessages {
     static func text(for error: Error) -> String {
         switch error {
         case let error as PropertyError: return text(error)
-        case let error as RentReceiptsExport.ExportError: return text(error)
         case let error as RentPaymentError: return text(error)
         case let error as MortgageTermsError: return text(error)
-        case is ZipArchiveReader.ZipError, is XLSXReader.XLSXError: return "That file isn't a readable .xlsx spreadsheet."
         default: return error.localizedDescription
         }
     }
@@ -769,15 +666,6 @@ enum PropertyMessages {
         case .invalidCount: return "Enter between 1 and 1,200 instalments (and 0–10 business days, 0–6 decimals)."
         case .finalBeforeFirst: return "The final instalment is before the first."
         case .invalidAmountBorrowed: return "The amount borrowed must be more than the balloon."
-        }
-    }
-
-    static func text(_ error: RentReceiptsExport.ExportError) -> String {
-        switch error {
-        case .missingColumns: return "That spreadsheet doesn't look like the Portal das Finanças receipts export (no contract, receipt, period, value and status columns)."
-        case let .badValue(row, column, value): return "Row \(row): “\(value)” isn't a valid \(column)."
-        case let .missingValue(row, column): return "Row \(row) has no \(column)."
-        case let .duplicateReceipt(row, contract, receipt): return "Row \(row) repeats receipt \(receipt) of contract \(contract)."
         }
     }
 

@@ -94,35 +94,55 @@ public struct SourceFolderScanner: Sendable {
     /// the bookmark resolves, covers the existence check and any bookmark refresh, and is held
     /// until `body` returns.
     func withResolvedFolder<T>(_ folder: SourceFolder, _ body: (ResolvedFolder) throws -> T) throws -> T {
+        let (resolved, stop) = try access(folder)
+        defer { stop() }
+        return try body(resolved)
+    }
+
+    /// `withResolvedFolder` for asynchronous work (an import's planning reads the files inside
+    /// the scope): access is held until `body` finishes.
+    func withResolvedFolder<T>(_ folder: SourceFolder, _ body: (ResolvedFolder) async throws -> T) async throws -> T {
+        let (resolved, stop) = try access(folder)
+        defer { stop() }
+        return try await body(resolved)
+    }
+
+    /// The folder resolved, with its security scope started; `stop` ends it (already ended when
+    /// this throws).
+    func access(_ folder: SourceFolder) throws -> (ResolvedFolder, stop: () -> Void) {
         var isStale = false
         let resolvedURL = folder.bookmark.flatMap { Self.resolveBookmark($0, isStale: &isStale) }
         // The resolved URL carries the scope, so access starts on it (not a copy).
         let url = resolvedURL ?? URL(fileURLWithPath: folder.path, isDirectory: true)
         if resolvedURL == nil { isStale = true }
         let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-            throw SourceFolderError.unavailable(path: folder.path)
-        }
-        let path = url.standardizedFileURL.path
-        var updated = folder
-        var refreshed = false
-        if isStale, let bookmark = try? Self.bookmark(for: url) {
-            updated.bookmark = bookmark
-            refreshed = true
-        }
-        updated.path = path
-        if updated != folder, let id = folder.id {
-            let toSave = updated
-            try database.write { db in
-                // Another registered folder already has this path: keep the stored one.
-                guard try SourceFolder.filter(Column("path") == toSave.path && Column("id") != id).fetchCount(db) == 0 else { return }
-                try toSave.update(db)
+        let stop = { if accessing { url.stopAccessingSecurityScopedResource() } }
+        do {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                throw SourceFolderError.unavailable(path: folder.path)
             }
+            let path = url.standardizedFileURL.path
+            var updated = folder
+            var refreshed = false
+            if isStale, let bookmark = try? Self.bookmark(for: url) {
+                updated.bookmark = bookmark
+                refreshed = true
+            }
+            updated.path = path
+            if updated != folder, let id = folder.id {
+                let toSave = updated
+                try database.write { db in
+                    // Another registered folder already has this path: keep the stored one.
+                    guard try SourceFolder.filter(Column("path") == toSave.path && Column("id") != id).fetchCount(db) == 0 else { return }
+                    try toSave.update(db)
+                }
+            }
+            return (ResolvedFolder(url: url, folder: updated, bookmarkWasRefreshed: refreshed), stop)
+        } catch {
+            stop()
+            throw error
         }
-        return try body(ResolvedFolder(url: url, folder: updated, bookmarkWasRefreshed: refreshed))
     }
 
     static func resolveBookmark(_ bookmark: Data, isStale: inout Bool) -> URL? {
@@ -308,7 +328,9 @@ public struct SourceFolderScanner: Sendable {
                     continue
                 }
             }
-            let documentId = documentsBySha[hash]
+            // Unchanged content keeps the document recorded for it (an import that found it to be
+            // a document already in the library under other bytes).
+            let documentId = documentsBySha[hash] ?? (record?.sha256 == hash ? record?.documentId : nil)
             var row = SourceFile(id: record?.id, folderId: folderId, relativePath: entry.relativePath, size: entry.size,
                                  modifiedAt: entry.modifiedAt, sha256: hash, documentId: documentId, lastSeenAt: now,
                                  previousSha256: record?.previousSha256, previousDocumentId: record?.previousDocumentId,
@@ -427,11 +449,15 @@ public struct SourceFolderScanner: Sendable {
     /// later scans compare with its current content. `false` when there was none.
     @discardableResult
     public func acknowledgeChange(folderId: Int64, relativePath: String) throws -> Bool {
-        try database.write { db in
-            try SourceFile.filter(Column("folderId") == folderId && Column("relativePath") == relativePath && Column("changeDetectedAt") != nil)
-                .updateAll(db, Column("previousSha256").set(to: nil), Column("previousDocumentId").set(to: nil),
-                           Column("changeDetectedAt").set(to: nil)) > 0
-        }
+        try database.write { db in try Self.acknowledgeChange(db: db, folderId: folderId, relativePath: relativePath) }
+    }
+
+    /// `acknowledgeChange` inside a write already open (an import's Confirm, captured for its undo).
+    @discardableResult
+    public static func acknowledgeChange(db: Database, folderId: Int64, relativePath: String) throws -> Bool {
+        try SourceFile.filter(Column("folderId") == folderId && Column("relativePath") == relativePath && Column("changeDetectedAt") != nil)
+            .updateAll(db, Column("previousSha256").set(to: nil), Column("previousDocumentId").set(to: nil),
+                       Column("changeDetectedAt").set(to: nil)) > 0
     }
 
     // MARK: Summaries

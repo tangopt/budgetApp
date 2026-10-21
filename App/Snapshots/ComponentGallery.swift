@@ -76,6 +76,24 @@ private struct GalleryComponents: View {
                             InlineBanner(.error, "The statement couldn't be saved: September already has one.") {}
                         }
                     }
+                    Panel("ImportShortcutButton · importDropTarget", subtitle: "A screen's import shortcut and its drop zone (at rest, then targeted)") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 8) {
+                                ImportShortcutButton("Import CSV…", systemImage: "square.and.arrow.down", shortcut: .statement(accountId: 1, format: .csv, from: .accounts))
+                                ImportShortcutButton("Add documents…", shortcut: .documents(dropped: false), prominent: true)
+                            }
+                            HStack(spacing: 10) {
+                                Text("Drop files here").frame(maxWidth: .infinity, minHeight: 44)
+                                    .importDropTarget(.documents(dropped: true))
+                                Text("Drop files here").frame(maxWidth: .infinity, minHeight: 44)
+                                    .modifier(ImportDropOutline(isTargeted: true))
+                            }
+                            .foregroundStyle(.secondary)
+                        }
+                        // The gallery has no importer: inert actions keep the buttons enabled.
+                        .environment(\.documentImport, DocumentImportAction(
+                            start: { _, _, _ in }, pickFiles: { _, _ in }, pickShortcut: { _ in }, startShortcut: { _, _ in }))
+                    }
                     Panel("StatusPill") {
                         HStack(spacing: 8) {
                             StatusPill("Draft")

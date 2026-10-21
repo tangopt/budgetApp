@@ -4,8 +4,8 @@ import GRDB
 @testable import BudgetDemo
 
 /// The demo's import samples (`DemoImportSamples`, the Imports snapshot routes' files): read by
-/// the real pipeline over the demo database, they fill Ready (three: a BBVA statement among
-/// them), Duplicates (two) and Needs you (three: one held by a filed return, a UK CSV with no account).
+/// the real pipeline over the demo database, they fill Ready (four: a BBVA statement and a new
+/// utility invoice among them), Duplicates (two) and Needs you (three: one held by a filed return, a UK CSV with no account).
 final class DemoImportSamplesTests: XCTestCase {
     private var folder: URL!
 
@@ -26,7 +26,7 @@ final class DemoImportSamplesTests: XCTestCase {
         try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
         let samples = try DemoImportSamples.write(into: folder.appendingPathComponent("ImportSamples", isDirectory: true),
                                                   dbQueue: manager.dbQueue)
-        XCTAssertEqual(samples.count, 8)
+        XCTAssertEqual(samples.count, 9)
 
         let library = EvidenceLibrary(root: evidence, database: manager.dbQueue)
         let pipeline = ImportPipeline(dbQueue: manager.dbQueue, library: library,
@@ -35,14 +35,20 @@ final class DemoImportSamplesTests: XCTestCase {
         let described = plan.items.map { "\($0.file.fileName): \($0.section) \($0.needsYouReasons) \($0.duplicate?.of ?? "")" }
             .joined(separator: "\n")
 
-        XCTAssertEqual(plan.items(in: .ready).count, 3, described)
+        XCTAssertEqual(plan.items(in: .ready).count, 4, described)
         XCTAssertEqual(plan.items(in: .duplicates).count, 2, described)
         XCTAssertEqual(plan.items(in: .needsYou).count, 3, described)
         XCTAssertTrue(plan.items(in: .needsYou).contains { $0.issues.contains { if case .filedYear = $0.kind { true } else { false } } },
                       described)
         // Each sample where it is meant to be: the receipt and the insurance receipt linked,
         // the copy and the re-issued invoice skipped, the P60 held, the letter unknown.
-        XCTAssertTrue(plan.items(in: .ready).filter { $0.recognition.kind != .bbvaStatement }.allSatisfy { !$0.links.isEmpty }, described)
+        XCTAssertTrue(plan.items(in: .ready).filter { ![.bbvaStatement, .utilityInvoice].contains($0.recognition.kind) }
+                          .allSatisfy { !$0.links.isEmpty }, described)
+        // Example Water's next invoice: recorded (a new number), no debit to link yet.
+        let invoice = try XCTUnwrap(plan.items(in: .ready).first { $0.recognition.kind == .utilityInvoice }, described)
+        guard case .utilityInvoice(let recorded) = invoice.effect else { return XCTFail(described) }
+        XCTAssertNil(recorded.transactionId, described)
+        XCTAssertTrue(invoice.notes.contains("Not linked: no matching debit yet"), described)
         XCTAssertEqual(Set(plan.items(in: .duplicates).compactMap { $0.duplicate?.level }), Set<ImportDuplicate.Level>([.file, .document]), described)
         XCTAssertTrue(plan.items(in: .needsYou).contains { $0.file.fileName == "Letter.pdf" && $0.recognition.kind == .unknown }, described)
         // The corrected P60 (the stored employer, pay £1,000 more) is not taken for a copy: it is
@@ -65,7 +71,7 @@ final class DemoImportSamplesTests: XCTestCase {
         let csv = try XCTUnwrap(plan.items.first { $0.recognition.kind == .bankStatementCSV }, described)
         XCTAssertEqual(csv.section, .needsYou, described)
         XCTAssertTrue(csv.issues.contains { $0.kind == .statement(.unknownAccount) && !$0.offers.isEmpty }, described)
-        // Written again (MakeDemoDatabase --force), the folder holds the same eight.
+        // Written again (MakeDemoDatabase --force), the folder holds the same nine.
         XCTAssertEqual(try DemoImportSamples.write(into: folder.appendingPathComponent("ImportSamples", isDirectory: true),
                                                    dbQueue: manager.dbQueue).map(\.lastPathComponent),
                        samples.map(\.lastPathComponent))
