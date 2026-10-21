@@ -98,7 +98,7 @@ public enum ImportDryRun {
     }
 
     /// No category suggestions (statements are staged with saved rules only anyway).
-    private struct NoSuggestions: Categorizing {
+    struct NoSuggestions: Categorizing {
         func suggestCategory(description: String, candidateCategoryNames: [String]) async throws -> CategorySuggestion? { nil }
         func suggestCategories(descriptions: [String], candidateCategoryNames: [String]) async throws -> [CategorySuggestion?] {
             descriptions.map { _ in nil }
