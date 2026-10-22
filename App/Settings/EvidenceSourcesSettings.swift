@@ -120,7 +120,7 @@ final class EvidenceSourcesModel: ObservableObject {
             return
         }
         importCenter.start(folder: result.folder, inputs: inputs)
-        // The Budget window, now on Imports, in front of Settings.
+        // The Mango window, now on Imports, in front of Settings.
         importCenter.onBringForward?()
         sentMessage = "\(inputs.count) file\(inputs.count == 1 ? "" : "s") from \(result.folder.name) sent to Imports to review."
     }

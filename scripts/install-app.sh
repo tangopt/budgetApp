@@ -62,24 +62,27 @@ else
     [[ -x "$APP/Contents/MacOS/Mango" ]] || { echo "Build failed." >&2; exit 1; }
 fi
 
-# The app used to be called Budget (renamed Mango): remove the old copy once, and unregister it so
-# Spotlight and Launchpad offer only Mango. Nothing else in /Applications is touched.
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+
+rm -rf /Applications/Mango.app
+ditto "$APP" /Applications/Mango.app
+[[ -x /Applications/Mango.app/Contents/MacOS/Mango ]] || { echo "Install failed." >&2; exit 1; }
+
+# The app used to be called Budget (renamed Mango): now that Mango is in place, remove the old copy
+# once and unregister it so Spotlight and Launchpad offer only Mango. Nothing else in /Applications
+# is touched.
 if [[ -d /Applications/Budget.app ]]; then
     "$LSREGISTER" -u /Applications/Budget.app 2>/dev/null || true
     rm -rf /Applications/Budget.app
     echo "Removed the old /Applications/Budget.app"
 fi
 
-rm -rf /Applications/Mango.app
-ditto "$APP" /Applications/Mango.app
-
 # Point macOS at the installed copy (icon, Spotlight, Open With), not a build folder.
 "$LSREGISTER" -u "$APP" 2>/dev/null || true
 
 # Remove Xcode's own builds of the app so Spotlight and Launchpad only offer the installed one.
 # Xcode rebuilds them the next time you run from Xcode (only the .app is removed, not the cache).
-for old in ~/Library/Developer/Xcode/DerivedData/Mango-*/Build/Products/*/Mango.app(N); do
+for old in ~/Library/Developer/Xcode/DerivedData/Mango-*/Build/Products/*/Mango.app(N) ~/Library/Developer/Xcode/DerivedData/Budget-*/Build/Products/*/Budget.app(N); do
     "$LSREGISTER" -u "$old" 2>/dev/null || true
     rm -rf "$old"
     echo "Removed Xcode build: $old"
