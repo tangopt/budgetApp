@@ -392,12 +392,13 @@ final class ImportSessionTests: XCTestCase {
         // A late report of an earlier stage (files finish out of order) never takes the count back.
         session.start([try pdf("late.pdf", ["Nothing to see"])], entryPoint: "More")
         guard case .reading(let shown) = session.phase else { return XCTFail("\(session.phase)") }
-        session.readingProgressed(ImportProgress(.filedYears), generation: session.currentReadingGeneration)
-        session.readingProgressed(ImportProgress(completed: 0, total: 1), generation: session.currentReadingGeneration)
+        let generation = session.currentReadingGeneration
+        // A report of a reading no longer under way is ignored, even one that would move the phase on.
+        session.readingProgressed(ImportProgress(.duplicates), generation: generation - 1)
+        XCTAssertEqual(session.phase, .reading(shown), "a stale reading's later stage")
+        session.readingProgressed(ImportProgress(.filedYears), generation: generation)
+        session.readingProgressed(ImportProgress(completed: 0, total: 1), generation: generation)
         XCTAssertEqual(session.phase, .reading(ImportProgress(.filedYears)))
-        // A report of a reading no longer under way is ignored.
-        session.readingProgressed(ImportProgress(completed: 1, total: 1), generation: session.currentReadingGeneration - 1)
-        XCTAssertNotEqual(session.phase, .reading(shown))
         await session.settled()
         XCTAssertEqual(session.phase, .review)
     }
