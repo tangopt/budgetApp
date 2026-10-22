@@ -41,6 +41,27 @@ final class AuthModelTests: XCTestCase {
         XCTAssertNil(RecoveryKey.normalised(String(key.dropLast())))
     }
 
+    func testMalformedHashesAreRejectedWithoutCrashing() {
+        let good = PasswordHasher.hash("a long password", rounds: 1_000)
+        let tail = good.split(separator: "$").dropFirst(2).joined(separator: "$")
+        for bad in ["pbkdf2-sha256$99999999999$\(tail)", "pbkdf2-sha256$0$\(tail)", "pbkdf2-sha256$-5$\(tail)",
+                    "pbkdf2-sha512$1000$\(tail)", "pbkdf2-sha256$1000$AAAA", "pbkdf2-sha256$1000$!!!$!!!", ""] {
+            XCTAssertFalse(PasswordHasher.verify("a long password", against: bad), bad)
+            XCTAssertTrue(PasswordHasher.needsRehash(bad), bad)
+        }
+    }
+
+    func testEmptyPasswordDoesNotCrash() {
+        XCTAssertFalse(PasswordHasher.verify("", against: PasswordHasher.hash("a long password", rounds: 1_000)))
+        XCTAssertTrue(PasswordHasher.verify("", against: PasswordHasher.hash("", rounds: 1_000)))
+    }
+
+    func testRecoveryKeyNormalisedStripsAllWhitespace() {
+        let key = RecoveryKey.generate()
+        XCTAssertEqual(RecoveryKey.normalised(" " + RecoveryKey.formatted(key) + "\n"), key)
+        XCTAssertEqual(RecoveryKey.normalised("\t" + key.lowercased() + "\r\n"), key)
+    }
+
     func testMigrationAddsTablesAndLeavesRowsUnchanged() throws {
         let manager = try DatabaseManager(path: nil)
         try manager.migrate(upTo: "createImportRule")

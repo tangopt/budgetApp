@@ -32,13 +32,14 @@ public enum PasswordHasher {
 
     static func pbkdf2(password: String, salt: Data, rounds: Int) -> Data {
         var derived = [UInt8](repeating: 0, count: hashLength)
-        let passwordBytes = Array(password.utf8)
+        // utf8CString ends in a NUL, so the pointer is valid even for an empty password.
+        let passwordBytes = password.utf8CString
         let saltBytes = Array(salt)
         let status = passwordBytes.withUnsafeBufferPointer { pw in
             CCKeyDerivationPBKDF(
                 CCPBKDFAlgorithm(kCCPBKDF2),
-                UnsafeRawPointer(pw.baseAddress)?.assumingMemoryBound(to: Int8.self), passwordBytes.count,
-                saltBytes, saltBytes.count,
+                pw.baseAddress!, pw.count - 1,
+                saltBytes.isEmpty ? [0] : saltBytes, saltBytes.count,
                 CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256), UInt32(rounds),
                 &derived, derived.count)
         }
@@ -48,7 +49,7 @@ public enum PasswordHasher {
 
     private static func parse(_ encoded: String) -> (rounds: Int, salt: Data, hash: Data)? {
         let parts = encoded.split(separator: "$", omittingEmptySubsequences: false)
-        guard parts.count == 4, parts[0] == scheme, let rounds = Int(parts[1]), rounds > 0,
+        guard parts.count == 4, parts[0] == scheme, let rounds = Int(parts[1]), (1...10_000_000).contains(rounds),
               let salt = Data(base64Encoded: String(parts[2])), !salt.isEmpty,
               let hash = Data(base64Encoded: String(parts[3])), !hash.isEmpty else { return nil }
         return (rounds, salt, hash)

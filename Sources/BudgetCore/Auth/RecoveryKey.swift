@@ -25,7 +25,7 @@ public enum RecoveryKey {
 
     /// The key as typed (any case, with spaces or hyphens) in canonical form; nil when it can't be a key.
     public static func normalised(_ input: String) -> String? {
-        let cleaned = input.uppercased().filter { $0 != " " && $0 != "-" }
+        let cleaned = input.uppercased().filter { !$0.isWhitespace && $0 != "-" }
         guard cleaned.count == length, cleaned.allSatisfy({ alphabet.contains($0) }) else { return nil }
         return cleaned
     }
