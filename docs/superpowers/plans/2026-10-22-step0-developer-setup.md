@@ -81,6 +81,30 @@ Certificates, Identifiers & Profiles:
    the Mac app ID and the entitlements. Sync can poll instead of push on the Mac. Report what happened
    so the spec records it.
 
+## Result (2026-10-22, on the user's Mac)
+
+- **Verified:**
+  - `/install` archived, exported as Developer ID and notarised: notarytool status `Accepted`, ticket
+    stapled.
+  - `spctl` gives `accepted`, `source=Notarized Developer ID`.
+  - `codesign -d --entitlements -` lists the application identifier, `iCloud.ubberninja.mango`, CloudKit,
+    the `Production` environment and the keychain access group.
+  - `scripts/render-snapshots.sh` still renders with a team set (0 wrap violations).
+- **Notarisation credentials:** an App Store Connect **team API key** (Developer role), not an
+  app-specific password. It is stored as the `mango-notary` keychain profile, and the `.p8` sits outside
+  the repo, readable by its owner only.
+- **Extra steps that were needed:**
+  - **This Mac registered as a device** (Devices ▸ macOS, its Provisioning UDID). Automatic signing
+    archives with a Mac development profile, which must list a device. Without it: "Your team has no
+    devices…".
+  - **The Developer ID Application certificate** was created in Xcode ▸ Settings ▸ Accounts ▸ Manage
+    Certificates. The website route (CSR from Keychain Access) works too.
+- **Push on the Mac:** `App/Mango.entitlements` has no `aps-environment`, so the Developer ID export
+  had nothing to refuse. Push stays registered on the Mac app ID for later. If the sync step adds it and
+  the export rejects it, the Mac polls instead (sync spec).
+- **Not yet verified:** the user opening the installed app on their data (C.2). Also the UK
+  `encryptedValues` question (sync spec §9), which moves to build step 3, where CloudKit is first used.
+
 ## Then
 
 Build step 1: desktop authentication, per `2026-10-21-authentication-design.md` plus the accepted
