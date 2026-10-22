@@ -193,10 +193,10 @@ Composer layer):
 - **The artwork (revised by the user, 2026-10-22):** drawn after the user's reference image as original
   vector artwork. The reference is a watermarked stock preview, so it isn't used itself.
   - **The fruit (ripe, revised 2026-10-22):** a glossy, plump mango leaning right, with the rounded beak at the
-    lower left, centred in the icon. A gradient runs from red-orange on the right (`#D93A1A` →
-    `#EE6A1C`, mirrored on 2026-10-22) through orange (`#FAA21E`) to gold (`#FFD43A`) and a touch of
-    yellow-green on the left (`#D9D63A`). On top: a deep red blush on the right, a soft green flush at the
-    lower-left beak, darker edges for roundness, and a gloss highlight upper left.
+    lower left, centred in the icon. A gradient runs from deep red-orange at the lower right (`#D93A1A` →
+    `#EE6A1C`) through orange (`#FAA21E`) to gold (`#FFD43A` → `#F4D64A`) at the upper left. On top: a
+    deep red blush along the lower-right curve of the fruit, a barely-there olive warmth at the beak,
+    darker edges for roundness, and a gloss highlight upper left (revised 2026-10-22).
   - **The stem:** curved, brown (`#7A4A22`), rising up and to the left.
   - **The leaf:** one broad leaf, deep green (`#5FB23E` → `#2A6E25`), with a pale midrib and veins. It starts
     at the stem and falls to the right over the shoulder of the fruit.

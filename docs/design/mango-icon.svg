@@ -8,19 +8,19 @@
       <stop offset="0" stop-color="#16406A"/>
       <stop offset="1" stop-color="#0A2440"/>
     </linearGradient>
-    <linearGradient id="fruit" x1="1" y1="0.25" x2="0" y2="0.75">
+    <linearGradient id="fruit" x1="0.85" y1="1" x2="0.15" y2="0.05">
       <stop offset="0" stop-color="#D93A1A"/>
       <stop offset="0.3" stop-color="#EE6A1C"/>
       <stop offset="0.55" stop-color="#FAA21E"/>
       <stop offset="0.8" stop-color="#FFD43A"/>
-      <stop offset="1" stop-color="#D9D63A"/>
+      <stop offset="1" stop-color="#F4D64A"/>
     </linearGradient>
     <radialGradient id="blush" cx="0.5" cy="0.5" r="0.5">
       <stop offset="0" stop-color="#C42A14" stop-opacity="0.75"/>
       <stop offset="1" stop-color="#C42A14" stop-opacity="0"/>
     </radialGradient>
     <radialGradient id="green" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0" stop-color="#6DAE2A" stop-opacity="0.45"/>
+      <stop offset="0" stop-color="#B3B83A" stop-opacity="0.22"/>
       <stop offset="1" stop-color="#6DAE2A" stop-opacity="0"/>
     </radialGradient>
     <radialGradient id="edge" cx="0.5" cy="0.48" r="0.56">
@@ -41,7 +41,7 @@
   <g id="shadow" transform="translate(-48 -34)"><ellipse cx="530" cy="880" rx="270" ry="40" fill="#000000" opacity="0.35" filter="url(#soft)"/></g>
   <g id="fruit" transform="translate(-48 -34)"><path d="M585 300C720 300 800 400 790 540C780 680 700 790 580 840C470 885 330 880 270 820C220 770 230 700 290 650C350 600 360 560 370 500C385 380 460 300 585 300Z" fill="url(#fruit)"/></g>
   <g id="shading" transform="translate(-48 -34)" clip-path="url(#fruitClip)">
-    <ellipse cx="690" cy="520" rx="190" ry="270" transform="rotate(-15 690 520)" fill="url(#blush)"/>
+    <ellipse cx="640" cy="720" rx="170" ry="290" transform="rotate(42 640 720)" fill="url(#blush)"/>
     <ellipse cx="330" cy="790" rx="200" ry="130" fill="url(#green)"/>
     <rect x="200" y="280" width="620" height="620" fill="url(#edge)"/>
     <ellipse cx="660" cy="370" rx="130" ry="60" fill="#8A3A10" opacity="0.4" filter="url(#soft)"/>
