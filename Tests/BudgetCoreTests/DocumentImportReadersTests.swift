@@ -304,34 +304,37 @@ final class DocumentImportReadersTests: XCTestCase {
         XCTAssertEqual(item.links, [])
     }
 
-    /// The 2017–2021 water layout prints the invoice's value and the account balance (earlier
-    /// invoices included) that gets debited: the invoice's value is recorded, the balance kept
-    /// apart, and its debit only offered.
-    func testOldWaterInvoiceRecordsItsOwnValueAndOffersTheAccountTotalsDebit() throws {
+    /// The 2017–2021 water layout prints the invoice's total and the account balance that gets
+    /// debited: when the balance differs (an earlier invoice unpaid), the total is recorded, to
+    /// be checked, the balance kept apart, and its debit only offered.
+    func testOldWaterInvoiceRecordsItsTotalAndOffersADifferingAccountTotalsDebit() throws {
         let waterId = try db.write { db -> Int64 in
             var water = UtilityProvider(propertyId: propertyId, name: "Demo Water", kind: .water, bankDescriptionPattern: "DEMO WTR",
                                         invoiceRules: UtilityInvoiceRules(textMarkers: ["DEMO WATER"], amountLabels: ["VALOR DA FATURA", "VALOR TOTAL", "TOTAL"]))
             try Recharges.saveProvider(db: db, &water)
             return water.id!
         }
-        let debit = try transaction(Self.date(2017, 7, 6), -10_319, "SEPADD/DEMO WTR ADC/1", categoryId: utilitiesId)
+        let debit = try transaction(Self.date(2016, 3, 10), -8_800, "SEPADD/DEMO WTR ADC/1", categoryId: utilitiesId)
         let lines = [
-            "Demo Water services - Fatura", "2017.06.20", "Nº Ident. Fiscal", "500000000", "€", "45.39", "39.95",
-            "QUANTIDADE VALOR UNITÁRIO VALOR TOTAL VALOR A PAGAR IVA%", "45.39", "1.00 m3 0.5111 0.51 6.00",
-            "TOTAL 103.19", "103.19+", "Valor da Conta Cliente em 06.07.2017 103.19",
-            "Sr. Cliente, o valor de 103.19€ será debitado na conta bancária"
+            "Demo Water services - Fatura", "2016.03.01", "Nº Ident. Fiscal", "500000000", "€", "21.37", "40.18",
+            "QUANTIDADE VALOR UNITÁRIO VALOR TOTAL VALOR A PAGAR IVA%", "21.37", "1.00 m3 0.4321 0.43 6.00",
+            "TOTAL 61.55", "61.55+", "Valor da Conta Cliente em 10.03.2016 88.00",
+            "Sr. Cliente, o valor de 88.00€ será debitado na conta bancária"
         ]
         let entry = recognised(try textFile("agua.pdf", lines: lines), .utilityInvoice)
         let item = try propose(UtilityInvoiceImportReader(), entry)
-        XCTAssertEqual(item.facts.first { $0.field == .amount }?.value, .money(4_539, .eur))
+        let amount = try XCTUnwrap(item.facts.first { $0.field == .amount })
+        XCTAssertEqual(amount.value, .money(6_155, .eur))
+        XCTAssertEqual(amount.confidence, .needsReview)
+        XCTAssertTrue(item.notes.contains(UtilityInvoiceReader.amountReviewNote), "\(item.notes)")
         let total = try XCTUnwrap(item.facts.first { $0.field == .accountTotal })
-        XCTAssertEqual(total.value, .money(10_319, .eur))
+        XCTAssertEqual(total.value, .money(8_800, .eur))
         XCTAssertEqual(total.source, .textLayer)
         XCTAssertEqual(ImportFigureField.accountTotal.displayName, "Account total debited")
-        XCTAssertTrue(item.notes.contains("The account total €103.19 includes earlier invoices"), "\(item.notes)")
+        XCTAssertTrue(item.notes.contains("The account total €88.00 includes earlier invoices or credits"), "\(item.notes)")
         guard case .utilityInvoice(let invoice) = item.effect else { return XCTFail("effect \(item.effect)") }
         XCTAssertEqual(invoice.providerId, waterId)
-        XCTAssertEqual(invoice.amountMinorUnits, 4_539)
+        XCTAssertEqual(invoice.amountMinorUnits, 6_155)
         XCTAssertNil(invoice.transactionId)
         // The account total's debit is offered, never certain; no "check the amount" warning.
         XCTAssertEqual(item.links, [])
@@ -339,14 +342,16 @@ final class DocumentImportReadersTests: XCTestCase {
         let choose = try XCTUnwrap(item.issues.first { $0.id == "chooseLink" })
         guard case .chooseLink(let offered) = choose.kind else { return XCTFail("\(choose.kind)") }
         XCTAssertEqual(offered.map(\.entity), [.transaction(debit)])
-        XCTAssertEqual(offered.first?.reasons.first, "Debit of the account total €103.19 (includes earlier invoices)")
+        XCTAssertEqual(offered.first?.reasons.first, "Debit of the account total €88.00 (includes earlier invoices or credits)")
         XCTAssertFalse(item.issues.contains {
             if case .readerProblem(let text) = $0.kind { return text.contains("check the amount") }
             return false
         }, "\(item.issues)")
     }
 
-    func testAnAmountThatIsTheAccountTotalUncheckedNeedsReview() throws {
+    /// The 2022 layout: the "VALOR TOTAL" column starts with the water charge; the invoice's
+    /// total equal to the account balance is certain.
+    func testATotalEqualToTheAccountBalanceIsCertain() throws {
         try db.write { db in
             var water = UtilityProvider(propertyId: propertyId, name: "Demo Water", kind: .water, bankDescriptionPattern: "DEMO WTR",
                                         invoiceRules: UtilityInvoiceRules(textMarkers: ["DEMO WATER"], amountLabels: ["VALOR TOTAL", "TOTAL"]))
@@ -360,10 +365,9 @@ final class DocumentImportReadersTests: XCTestCase {
         let item = try propose(UtilityInvoiceImportReader(), recognised(try textFile("agua.pdf", lines: lines), .utilityInvoice))
         let amount = try XCTUnwrap(item.facts.first { $0.field == .amount })
         XCTAssertEqual(amount.value, .money(1_123, .eur))
-        XCTAssertEqual(amount.confidence, .needsReview)
+        XCTAssertEqual(amount.confidence, .certain)
         XCTAssertNil(item.facts.first { $0.field == .accountTotal })
-        XCTAssertTrue(item.notes.contains(UtilityInvoiceReader.amountReviewNote), "\(item.notes)")
-        XCTAssertEqual(item.section, .needsYou)
+        XCTAssertFalse(item.notes.contains(UtilityInvoiceReader.amountReviewNote), "\(item.notes)")
     }
 
     // MARK: Payroll forms

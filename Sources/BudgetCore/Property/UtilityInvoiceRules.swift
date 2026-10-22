@@ -137,11 +137,10 @@ public struct UtilityInvoiceReading: Equatable, Sendable {
     public var amountMinorUnits: Int?
     /// When the debit is due (the rules' due-date labels).
     public var dueDate: Date?
-    /// The customer account's balance the invoice prints apart from its own value (an older
-    /// water layout: earlier unpaid invoices included), which is what gets debited.
+    /// The customer account's balance the invoice prints when it differs from the invoice's
+    /// total (an older water layout: earlier unpaid invoices included), which is what gets debited.
     public var accountTotalMinorUnits: Int?
-    /// Why the amount read must be checked (it is the account balance and the invoice's own
-    /// value couldn't be told for sure).
+    /// Why the amount read must be checked (the account balance printed differs from it).
     public var amountReviewNote: String?
 
     public init(providerId: Int64? = nil, invoiceNumber: String? = nil, issueDate: Date? = nil, periodStart: Date? = nil,
@@ -217,7 +216,7 @@ public enum UtilityInvoiceReader {
 
     // MARK: Account balance
 
-    /// The customer account's balance some layouts print beside the invoice's own value: "Valor
+    /// The customer account's balance some layouts print beside the invoice's total: "Valor
     /// da Conta Cliente em 06.07.2017 103.19", "o valor de 103.19€ será debitado" (capture group
     /// 1 on the normalized text).
     static let accountTotalPatterns: [NSRegularExpression] = [
@@ -225,17 +224,9 @@ public enum UtilityInvoiceReader {
         #"VALOR DE\s*(\d[\d.,]*\d)\s*(?:€|EUR)?\s*SERA DEBITADO"#
     ].map { try! NSRegularExpression(pattern: $0) }
 
-    /// The invoice's own value printed apart from the account balance: the first amount after
-    /// the "VALOR TOTAL" column heading, else the € value in the header after the tax number.
-    private static let headerValue = try! NSRegularExpression(pattern: #"FISCAL\s*:?\s*\d{9}\s*€\s*(\d[\d.,]*\d)"#)
-
     static func accountTotal(in body: String) -> Int? {
-        firstCapturedAmount(accountTotalPatterns, in: body)
-    }
-
-    private static func firstCapturedAmount(_ patterns: [NSRegularExpression], in body: String) -> Int? {
         let text = body as NSString
-        for pattern in patterns {
+        for pattern in accountTotalPatterns {
             for match in pattern.matches(in: body, range: NSRange(location: 0, length: text.length)) {
                 if let found = EvidenceAmountParser.amount(text.substring(with: match.range(at: 1))), found.minorUnits > 0 {
                     return found.minorUnits
@@ -245,41 +236,30 @@ public enum UtilityInvoiceReader {
         return nil
     }
 
-    /// When the text shows the account balance (it includes earlier invoices: what is debited)
-    /// and the amount read is that balance:
-    /// - an explicit invoice value ("Valor da Fatura") equal to it: nothing earlier is owed;
-    /// - else the invoice's own value replaces it only when the header € value and the first
-    ///   "VALOR TOTAL" column figure agree and the balance is strictly greater;
-    /// - else the amount is kept, to be checked (`amountReviewNote`), unless every own value
-    ///   printed equals it.
-    /// The balance is kept apart whenever it is greater than the amount.
-    public static let amountReviewNote = "The amount read is the account total, which may include earlier invoices: check the invoice's own value"
+    /// When the text shows the account balance (what is debited) and it differs from the
+    /// invoice's total read, the balance is kept apart and the amount is to be checked: the
+    /// account holds earlier invoices or credits. A balance equal to the total is no separate
+    /// figure. (The amount is always the invoice's total: the first figures of these layouts'
+    /// summary and "VALOR TOTAL" column are the water charge, one line of it.)
+    public static let amountReviewNote = "The account total differs from the invoice's total (earlier invoices or credits on the account): check the invoice's own value"
 
     static func separateAccountTotal(_ reading: inout UtilityInvoiceReading, in body: String) {
-        guard let total = accountTotal(in: body) else { return }
-        let source = body as NSString
-        if let amount = reading.amountMinorUnits, amount == total,
-           labelledAmount(["VALOR DA FATURA"], in: source, positiveOnly: true) != total {
-            let column = labelled(["VALOR TOTAL"], in: source, length: 70, positiveAmount)
-            let header = firstCapturedAmount([headerValue], in: body)
-            if let column, let header, column == header, column < total {
-                reading.amountMinorUnits = column
-            } else {
-                let printed = [column, header].compactMap { $0 }
-                if printed.isEmpty || printed.contains(where: { $0 != amount }) {
-                    reading.amountReviewNote = amountReviewNote
-                }
-            }
-        }
-        if let amount = reading.amountMinorUnits, amount > 0, amount < total {
-            reading.accountTotalMinorUnits = total
-        }
+        guard let total = accountTotal(in: body), let amount = reading.amountMinorUnits, amount > 0, amount != total else { return }
+        reading.accountTotalMinorUnits = total
+        reading.amountReviewNote = amountReviewNote
     }
 
     /// The amount right after one of the labels (only spaces, `:`, a currency or a minus sign
     /// between: negative with the sign), trying the labels in order; else the first (positive,
     /// when `positiveOnly`) amount in the 70 characters after one, as before.
     static func labelledAmount(_ labels: [String], in text: NSString, positiveOnly: Bool) -> Int? {
+        rightAfterAmount(labels, in: text, positiveOnly: positiveOnly)
+            ?? labelled(labels, in: text, length: 70, positiveOnly ? positiveAmount : firstAmount)
+    }
+
+    /// The amount right after one of the labels (only spaces, `:`, a currency or a minus sign
+    /// between), trying the labels in order.
+    static func rightAfterAmount(_ labels: [String], in text: NSString, positiveOnly: Bool) -> Int? {
         for label in labels {
             let key = EvidenceText.normalized(label)
             guard !key.isEmpty else { continue }
@@ -293,7 +273,7 @@ public enum UtilityInvoiceReader {
                 return gap.contains("-") || gap.contains("−") ? -first.minorUnits : first.minorUnits
             }
         }
-        return labelled(labels, in: text, length: 70, positiveOnly ? positiveAmount : firstAmount)
+        return nil
     }
 
     /// Whether the label found at `range` is a word of its own (not "TOTAL" inside "SUBTOTAL").
