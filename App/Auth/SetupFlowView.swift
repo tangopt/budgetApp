@@ -20,6 +20,8 @@ final class SetupModel: ObservableObject {
     @Published var step: Step = .who
     @Published private(set) var people: [Person] = []
     @Published var personId: Int64?
+    /// Nobody to pick (a new, empty database): the admin types their name and setup adds them as a person.
+    @Published var newPersonName = ""
     @Published var password = ""
     @Published var confirmation = ""
     @Published var useTouchID = true
@@ -29,6 +31,8 @@ final class SetupModel: ObservableObject {
     let session: SessionModel
     let biometrics: any BiometricUnlocker
     private var admin: AppUser?
+    /// Snapshot routes give their own people (possibly none); the app reads them.
+    private var peopleLoaded = false
 
     init(session: SessionModel, biometrics: (any BiometricUnlocker)? = nil, people: [Person]? = nil) {
         self.session = session
@@ -36,26 +40,36 @@ final class SetupModel: ObservableObject {
         if let people {
             self.people = people
             personId = people.first?.id
+            peopleLoaded = true
         }
     }
 
+    private var trimmedNewName: String { newPersonName.trimmingCharacters(in: .whitespacesAndNewlines) }
+
     var touchIDAvailable: Bool { biometrics.isAvailable }
     var strength: PasswordStrength { PasswordStrength.assess(password) }
-    var canCreate: Bool { personId != nil && strength.isAcceptable && password == confirmation && !isWorking }
+    var canCreate: Bool {
+        let someone = people.isEmpty ? !trimmedNewName.isEmpty : personId != nil
+        return someone && strength.isAcceptable && password == confirmation && !isWorking
+    }
 
     func load() async {
-        guard people.isEmpty else { return }
+        guard !peopleLoaded else { return }
         people = (try? await session.dbQueue.read { try AppUserStore.unclaimedPeople($0) }) ?? []
+        peopleLoaded = true
         if personId == nil { personId = people.first?.id }
     }
 
     /// Step 1's Continue: the admin and their password (PBKDF2 off the main thread), Touch ID if chosen.
     func createAdmin() async {
-        guard canCreate, let person = people.first(where: { $0.id == personId }), let personId else { return }
+        guard canCreate else { return }
+        // A person picked, or (nobody to pick) the name typed, added as a person with the admin.
+        let picked = people.first { $0.id == personId }
+        guard picked != nil || people.isEmpty else { return }
         isWorking = true
         defer { isWorking = false }
         do {
-            let (user, key) = try await create(personId: personId, name: person.name, isAdmin: true)
+            let (user, key) = try await create(personId: picked?.id, name: picked?.name ?? trimmedNewName, isAdmin: true)
             admin = user
             if useTouchID && touchIDAvailable, let id = user.id {
                 do { try await biometrics.enrol(appUserId: id) } catch {
@@ -85,11 +99,11 @@ final class SetupModel: ObservableObject {
 
     /// They typed their own password: they get their own recovery key, and the admin stays the one signed in.
     func createOther(_ person: Person) async {
-        guard let personId = person.id, strength.isAcceptable, password == confirmation, !isWorking else { return }
+        guard person.id != nil, strength.isAcceptable, password == confirmation, !isWorking else { return }
         isWorking = true
         defer { isWorking = false }
         do {
-            let (_, key) = try await create(personId: personId, name: person.name, isAdmin: false)
+            let (_, key) = try await create(personId: person.id, name: person.name, isAdmin: false)
             step = .recoveryKey(key: key, owner: person.name)
         } catch {
             self.error = SignInErrorText.describe(error)
@@ -105,10 +119,18 @@ final class SetupModel: ObservableObject {
         }
     }
 
-    private func create(personId: Int64, name: String, isAdmin: Bool) async throws -> (AppUser, String) {
+    /// `personId` nil: the person is added first, in the same transaction.
+    private func create(personId: Int64?, name: String, isAdmin: Bool) async throws -> (AppUser, String) {
         let password = self.password
         let result = try await session.dbQueue.write { db in
-            try AppUserStore.create(db, personId: personId, displayName: name, password: password, isAdmin: isAdmin, now: Date())
+            var id = personId
+            if id == nil {
+                var person = Person(name: name)
+                try person.insert(db)
+                id = person.id
+            }
+            guard let id else { throw AppUserStoreError.unknownPerson }
+            return try AppUserStore.create(db, personId: id, displayName: name, password: password, isAdmin: isAdmin, now: Date())
         }
         self.password = ""; confirmation = ""
         return (result.0, result.recoveryKey)
@@ -177,8 +199,11 @@ struct SetupFlowView: View {
         VStack(alignment: .leading, spacing: SheetMetrics.spacing) {
             Text("Who are you?").font(.headline)
             if model.people.isEmpty {
-                Text("Everyone in this database can already sign in.")
+                Text("There's no one in this database yet. Type your name and Mango adds you.")
                     .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                TextField("Your name", text: $model.newPersonName)
+                    .textFieldStyle(.roundedBorder)
             } else {
                 Picker("Who are you?", selection: $model.personId) {
                     ForEach(model.people) { person in

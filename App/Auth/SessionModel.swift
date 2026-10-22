@@ -111,6 +111,9 @@ final class SessionModel: ObservableObject {
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private lazy var idleMonitor = IdleMonitor { [weak self] in self?.lock() }
 
+    /// The last person signed in, kept through a lock: what the lock covered was theirs (`SheetCovers`).
+    private(set) var lastSignedInId: Int64?
+
     /// The user Confirm import and rule learning record (nil while locked or not set up).
     var currentAppUserId: Int64? {
         if case .signedIn(let user) = state { return user.id }
@@ -145,7 +148,7 @@ final class SessionModel: ObservableObject {
         }
         state = isSetUp ? .locked : .notSetUp
         observeSystemLocks()
-        SheetCovers.shared.trackPopovers()
+        SheetCovers.shared.trackTransients()
         Task { await refreshCandidates() }
     }
 
@@ -232,6 +235,7 @@ final class SessionModel: ObservableObject {
     #if SNAPSHOTS
     /// Snapshot routes only: signs in as `user` without a password (the demo's synthetic users).
     func snapshotSignIn(_ user: AppUser) {
+        lastSignedInId = user.id
         state = .signedIn(user)
     }
 
@@ -266,6 +270,7 @@ final class SessionModel: ObservableObject {
         guard let user else { throw AppUserStoreError.noSuchUser }
         // Set before the state changes, so no window shows its content in between.
         afterSignIn = step
+        lastSignedInId = user.id
         state = .signedIn(user)
         idleMonitor.start(timeout: lockTimeout.seconds)
         await refreshCandidates()

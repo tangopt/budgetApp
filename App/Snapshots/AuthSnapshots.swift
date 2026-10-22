@@ -21,6 +21,12 @@ enum AuthSnapshots {
                 model.snapshotShow(.who, password: demoPassword)
                 return AnyView(SetupFlowView(model: model))
             },
+            SnapshotRoute(name: "auth-setup_first_person", title: "Set up Mango on an empty database: your name") { context in
+                let model = SetupModel(session: context.environment.session, biometrics: StandInTouchID(enrolled: []), people: [])
+                model.snapshotShow(.who, password: demoPassword)
+                model.newPersonName = "Person A"
+                return AnyView(SetupFlowView(model: model))
+            },
             SnapshotRoute(name: "auth-recovery-key", title: "Set up Mango: the recovery key, shown once") { context in
                 let model = SetupModel(session: context.environment.session, biometrics: StandInTouchID(enrolled: []),
                                        people: try await people(context))

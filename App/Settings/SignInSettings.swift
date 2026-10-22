@@ -81,6 +81,22 @@ final class SignInSettingsModel: ObservableObject {
     var touchIDAvailable: Bool { biometrics.isAvailable }
     var hasChanges: Bool { touchID != savedTouchID || timeout != savedTimeout }
 
+    /// Who the open sheets and dialogs were for.
+    private var shownFor: Int64?
+
+    /// Someone else signed in: the sheets and dialogs open here were the last person's (a recovery key, a
+    /// half-typed password, a confirmation), so they go. The same person again keeps them.
+    func userChanged(to id: Int64?) {
+        guard let id else { return }
+        if let shownFor, shownFor != id {
+            sheet = nil
+            removing = nil
+            confirmingRegenerate = false
+            error = nil
+        }
+        shownFor = id
+    }
+
     /// Someone else signed in (or the same person again): the edits waiting for Save were theirs, so they go.
     func discardEdits() async {
         savedTimeout = session.lockTimeout
@@ -252,8 +268,14 @@ struct SignInSettingsContent: View {
         }
         .formStyle(.grouped)
         .frame(height: 520)
-        .task { await model.load() }
-        .onChange(of: session.currentUser?.id) { Task { await model.discardEdits() } }
+        .task {
+            model.userChanged(to: session.currentUser?.id)
+            await model.load()
+        }
+        .onChange(of: session.currentUser?.id) { _, id in
+            model.userChanged(to: id)
+            Task { await model.discardEdits() }
+        }
         // Touch ID turned on from the offer after signing in.
         .onChange(of: session.afterSignIn) { Task { await model.load() } }
         .sheet(item: $model.sheet) { sheet in

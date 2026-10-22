@@ -659,8 +659,10 @@ enum SignInErrorText {
 ///   and put back with the first responder it had;
 /// - open and save panels (modal or sheets, ours or SwiftUI's `fileImporter`/`fileExporter`) are cancelled,
 ///   so nothing chosen in them is used;
-/// - popovers are closed through their `NSPopover`, so SwiftUI's `isPresented` follows.
-/// The sheets come back as they were when the cover lifts.
+/// - popovers are closed through their `NSPopover`, so SwiftUI's `isPresented` follows, and open menus
+///   (the menu bar's, context menus) stop tracking.
+/// When the cover lifts, the sheets come back as they were if the same person signed in again, and end
+/// otherwise (`LockCoverPolicy`): someone else never sees another person's recovery key or half-typed form.
 @MainActor
 final class SheetCovers {
     static let shared = SheetCovers()
@@ -673,12 +675,17 @@ final class SheetCovers {
     private var covers: [ObjectIdentifier: Cover] = [:]
     private var observer: NSObjectProtocol?
     private weak var session: SessionModel?
-    /// The popovers on show, followed from launch (`trackPopovers`).
+    /// The popovers on show and the menus tracking, followed from launch (`trackTransients`).
     private let popovers = NSHashTable<NSPopover>.weakObjects()
+    private let menus = NSHashTable<NSMenu>.weakObjects()
     private var popoverObservers: [NSObjectProtocol] = []
+    /// Who was signed in when the cover went up (nil while nothing is covered).
+    private var coveredFor: Int64?
+    private var isCovering = false
 
-    /// Follows every popover shown from now on, so a lock can close them. Called once, by the session.
-    func trackPopovers() {
+    /// Follows every popover shown and menu opened from now on, so a lock can close them. Called once, by
+    /// the session.
+    func trackTransients() {
         guard popoverObservers.isEmpty, !SnapshotMode.isActive else { return }
         let center = NotificationCenter.default
         popoverObservers.append(center.addObserver(forName: NSPopover.didShowNotification, object: nil, queue: .main) { [weak self] note in
@@ -694,12 +701,29 @@ final class SheetCovers {
                 if let popover = note.object as? NSPopover { self?.popovers.remove(popover) }
             }
         })
+        popoverObservers.append(center.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                if let menu = note.object as? NSMenu { self?.menus.add(menu) }
+            }
+        })
+        popoverObservers.append(center.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                if let menu = note.object as? NSMenu { self?.menus.remove(menu) }
+            }
+        })
     }
 
     func update(covered: Bool, session: SessionModel) {
         guard !SnapshotMode.isActive else { return }
         self.session = session
         if covered {
+            if !isCovering {
+                isCovering = true
+                coveredFor = session.lastSignedInId
+            }
+            // A menu open when the lock fires would act on hidden content.
+            NSApp.mainMenu?.cancelTrackingWithoutAnimation()
+            for menu in menus.allObjects { menu.cancelTrackingWithoutAnimation() }
             for popover in popovers.allObjects where popover.isShown { Self.close(popover) }
             for window in NSApp.windows { coverOrCancel(window) }
             if observer == nil {
@@ -712,14 +736,23 @@ final class SheetCovers {
                 }
             }
         } else {
+            let outcome = LockCoverPolicy.onUncover(coveredFor: coveredFor, signedIn: session.currentAppUserId)
             for cover in covers.values {
                 guard let window = cover.window else { continue }
-                let frame = window.frame
-                window.contentView = cover.original
-                window.setFrame(frame, display: true)
-                window.makeFirstResponder(cover.firstResponder ?? cover.original)
+                switch outcome {
+                case .restore:
+                    let frame = window.frame
+                    window.contentView = cover.original
+                    window.setFrame(frame, display: true)
+                    window.makeFirstResponder(cover.firstResponder ?? cover.original)
+                case .dismiss:
+                    // Ended still showing the lock screen: what it held is never shown again.
+                    if let parent = window.sheetParent { parent.endSheet(window, returnCode: .cancel) } else { window.close() }
+                }
             }
             covers = [:]
+            isCovering = false
+            coveredFor = nil
             if let observer { NotificationCenter.default.removeObserver(observer) }
             observer = nil
         }
