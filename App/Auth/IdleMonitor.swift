@@ -36,9 +36,12 @@ final class IdleMonitor {
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: Self.events) { [weak self] _ in
             MainActor.assumeIsolated { self?.lastInput = Date() }
         }
-        timer = Timer.scheduledTimer(withTimeInterval: min(15, timeout), repeats: true) { [weak self] _ in
+        // Common modes, so it still fires while a menu is open or a window is being resized.
+        let timer = Timer(timeInterval: min(15, timeout), repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.check() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
 
     func stop() {

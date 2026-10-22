@@ -3,30 +3,36 @@ import Foundation
 import LocalAuthentication
 import Security
 import BudgetCore
+import OSLog
 
 /// Picks how Touch ID works on this build (auth spec §8). The decisions live in BudgetCore
 /// (`KeychainBiometricEnrolment`, `DefaultsBiometricEnrolment`); this file holds only the Keychain and
 /// `LAContext` calls.
 @MainActor
 enum BiometricUnlock {
-    /// Probes the data-protection Keychain once with a throwaway item. Without a team signature it answers
-    /// `errSecMissingEntitlement`, and the `LAContext`-only fallback is used instead.
-    static func make(defaults: UserDefaults = .standard) -> any BiometricUnlocker {
-        if KeychainBiometricUnlock.probe() {
-            let keychain = KeychainBiometricUnlock()
-            return KeychainBiometricEnrolment(store: keychain, isAvailable: { LAContextBiometricUnlock.canUseBiometrics() })
+    /// Probes the data-protection Keychain once with a throwaway item. Only `errSecMissingEntitlement`
+    /// (no team signature) selects the `LAContext`-only fallback; any other failure is logged and the
+    /// Keychain is still used. `scope` is the database's `LocalSetting.databaseId`.
+    static func make(scope: String, defaults: UserDefaults = .standard) -> any BiometricUnlocker {
+        let status = KeychainBiometricUnlock.probe()
+        if status == errSecMissingEntitlement {
+            return DefaultsBiometricEnrolment(defaults: defaults, scope: scope, biometry: LAContextBiometricUnlock())
         }
-        return DefaultsBiometricEnrolment(defaults: defaults, biometry: LAContextBiometricUnlock())
+        if status != errSecSuccess {
+            Logger(subsystem: "com.personal.budget", category: "Auth").error("Keychain probe failed with \(status, privacy: .public); keeping Keychain-bound Touch ID")
+        }
+        return KeychainBiometricEnrolment(store: KeychainBiometricUnlock(), scope: scope,
+                                          isAvailable: { LAContextBiometricUnlock.canUseBiometrics() })
     }
 
     /// For the snapshot build: never touches the Keychain or asks for Touch ID.
-    static func snapshot(defaults: UserDefaults) -> any BiometricUnlocker {
-        DefaultsBiometricEnrolment(defaults: defaults, biometry: LAContextBiometricUnlock())
+    static func snapshot(scope: String, defaults: UserDefaults) -> any BiometricUnlocker {
+        DefaultsBiometricEnrolment(defaults: defaults, scope: scope, biometry: LAContextBiometricUnlock())
     }
 }
 
 /// One `.biometryCurrentSet` item per enrolled app user in the data-protection Keychain: service
-/// `ubberninja.mango.unlock`, account `"<appUserId>"`, holding a random 32-byte secret.
+/// `ubberninja.mango.unlock`, account `"<databaseId>:<appUserId>"`, holding a random 32-byte secret.
 @MainActor
 final class KeychainBiometricUnlock: BiometricSecretStore {
     nonisolated static let service = "ubberninja.mango.unlock"
@@ -49,8 +55,8 @@ final class KeychainBiometricUnlock: BiometricSecretStore {
         return query
     }
 
-    /// True when this build can use the data-protection Keychain (it has a team signature).
-    static func probe() -> Bool {
+    /// The status of adding a throwaway item: `errSecMissingEntitlement` means no team signature.
+    static func probe() -> OSStatus {
         var add = baseQuery(service: probeService)
         add[kSecAttrAccount] = "probe"
         add[kSecValueData] = Data([0])
@@ -60,28 +66,29 @@ final class KeychainBiometricUnlock: BiometricSecretStore {
         var delete = baseQuery(service: probeService)
         delete[kSecAttrAccount] = "probe"
         SecItemDelete(delete as CFDictionary)
-        return status == errSecSuccess
+        return status
     }
 
-    func add(secret: Data, appUserId: Int64) throws {
+    func add(secret: Data, account: String) throws {
         var error: Unmanaged<CFError>?
         guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
                                                            .biometryCurrentSet, &error) else {
-            throw BiometricUnlockError.keychain(errSecParam)
+            let code = error.map { CFErrorGetCode($0.takeRetainedValue()) } ?? Int(errSecParam)
+            throw BiometricUnlockError.keychain(OSStatus(truncatingIfNeeded: code))
         }
         var query = Self.baseQuery()
-        query[kSecAttrAccount] = String(appUserId)
+        query[kSecAttrAccount] = account
         query[kSecValueData] = secret
         query[kSecAttrAccessControl] = access
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else { throw BiometricUnlockError.keychain(status) }
     }
 
-    func read(appUserId: Int64, reason: String) async throws -> BiometricSecretRead {
+    func read(account: String, reason: String) async throws -> BiometricSecretRead {
         let context = LAContext()
         context.localizedReason = reason
         var query = Self.baseQuery()
-        query[kSecAttrAccount] = String(appUserId)
+        query[kSecAttrAccount] = account
         query[kSecReturnData] = true
         query[kSecMatchLimit] = kSecMatchLimitOne
         query[kSecUseAuthenticationContext] = context
@@ -100,13 +107,13 @@ final class KeychainBiometricUnlock: BiometricSecretStore {
         }
     }
 
-    func delete(appUserId: Int64) {
+    func delete(account: String) {
         var query = Self.baseQuery()
-        query[kSecAttrAccount] = String(appUserId)
+        query[kSecAttrAccount] = account
         SecItemDelete(query as CFDictionary)
     }
 
-    func storedIds() -> Set<Int64> {
+    func storedAccounts() -> Set<String> {
         let context = LAContext()
         context.interactionNotAllowed = true
         var query = Self.baseQuery()
@@ -116,7 +123,7 @@ final class KeychainBiometricUnlock: BiometricSecretStore {
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let items = result as? [[String: Any]] else { return [] }
-        return Set(items.compactMap { ($0[kSecAttrAccount as String] as? String).flatMap(Int64.init) })
+        return Set(items.compactMap { $0[kSecAttrAccount as String] as? String })
     }
 }
 

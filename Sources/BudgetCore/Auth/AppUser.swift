@@ -62,6 +62,11 @@ func registerAppUserMigration(_ migrator: inout DatabaseMigrator) {
             t.column("passwordHash", .text).notNull()
             t.column("recoveryKeyHash", .text).notNull()
         }
+        // Settings that belong to this database file on this Mac and never sync (the database id).
+        try db.create(table: "localSetting") { t in
+            t.primaryKey("key", .text)
+            t.column("value", .text).notNull()
+        }
         try db.alter(table: "importRun") { t in
             t.add(column: "appUserId", .integer).references("appUser", onDelete: .setNull)
         }
@@ -69,5 +74,22 @@ func registerAppUserMigration(_ migrator: inout DatabaseMigrator) {
             t.add(column: "createdByAppUserId", .integer).references("appUser", onDelete: .setNull)
             t.add(column: "lastLearntByAppUserId", .integer).references("appUser", onDelete: .setNull)
         }
+    }
+}
+
+/// Values that belong to this database file and never sync (auth spec §3: device-local, like
+/// `localCredential`).
+public enum LocalSetting {
+    static let databaseIdKey = "databaseId"
+
+    /// A random id made the first time it's asked for. Touch ID enrolment on this Mac is keyed by it as well as
+    /// by the app user id, so another database whose users share ids can't be unlocked by this enrolment.
+    public static func databaseId(_ db: Database) throws -> String {
+        if let id = try String.fetchOne(db, sql: "SELECT value FROM localSetting WHERE key = ?", arguments: [databaseIdKey]) {
+            return id
+        }
+        let id = UUID().uuidString
+        try db.execute(sql: "INSERT INTO localSetting (key, value) VALUES (?, ?)", arguments: [databaseIdKey, id])
+        return id
     }
 }

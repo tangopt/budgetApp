@@ -18,17 +18,17 @@ private final class FakeBiometry: BiometryCheck {
 /// items when the fingerprints change: they read as not found.
 @MainActor
 private final class FakeSecretStore: BiometricSecretStore {
-    var secrets: [Int64: Data] = [:]
-    var invalidated: Set<Int64> = []
+    var secrets: [String: Data] = [:]
+    var invalidated: Set<String> = []
     var cancelNext = false
-    func add(secret: Data, appUserId: Int64) throws { secrets[appUserId] = secret }
-    func read(appUserId: Int64, reason: String) async throws -> BiometricSecretRead {
+    func add(secret: Data, account: String) throws { secrets[account] = secret }
+    func read(account: String, reason: String) async throws -> BiometricSecretRead {
         if cancelNext { cancelNext = false; return .cancelled }
-        guard let secret = secrets[appUserId], !invalidated.contains(appUserId) else { return .notFound }
+        guard let secret = secrets[account], !invalidated.contains(account) else { return .notFound }
         return .secret(secret)
     }
-    func delete(appUserId: Int64) { secrets[appUserId] = nil; invalidated.remove(appUserId) }
-    func storedIds() -> Set<Int64> { Set(secrets.keys) }
+    func delete(account: String) { secrets[account] = nil; invalidated.remove(account) }
+    func storedAccounts() -> Set<String> { Set(secrets.keys) }
     func invalidateAll() { invalidated = Set(secrets.keys) }
 }
 
@@ -50,7 +50,7 @@ final class BiometricEnrolmentTests: XCTestCase {
 
     func testChangedBiometryDropsEnrolment() async throws {
         let biometry = FakeBiometry()
-        let enrolment = DefaultsBiometricEnrolment(defaults: defaults, biometry: biometry)
+        let enrolment = DefaultsBiometricEnrolment(defaults: defaults, scope: "db-a", biometry: biometry)
         try await enrolment.enrol(appUserId: 7)
         XCTAssertEqual(enrolment.enrolledIds(), [7])
         let unlocked = try await enrolment.unlock(appUserId: 7, reason: "test")
@@ -70,41 +70,79 @@ final class BiometricEnrolmentTests: XCTestCase {
     }
 
     func testEnrolmentIsPerMacNotInDatabase() async throws {
-        // Enrolment lives only in this Mac's defaults: a database (a copy, or a new one) whose users share
-        // ids carries none of it, and another Mac's defaults have none.
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
-        let enrolment = DefaultsBiometricEnrolment(defaults: defaults, biometry: FakeBiometry())
-        try await enrolment.enrol(appUserId: 1)
-        let tables = try await manager.dbQueue.read { db in
-            try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'table'")
-        }
-        for table in tables {
-            let sql = try await manager.dbQueue.read { db in
-                try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE name = ?", arguments: [table]) ?? ""
+        // Two databases whose app users share ids: enrolling user 1 of A on this Mac doesn't enrol user 1 of B
+        // (a new database, or another household's), and another Mac's defaults have no enrolment at all.
+        func database() throws -> (DatabaseManager, String, Int64) {
+            let manager = try DatabaseManager(path: nil)
+            try manager.migrate()
+            return try manager.dbQueue.write { db in
+                var person = Person(name: "Sam Example")
+                try person.insert(db)
+                let (user, _) = try AppUserStore.create(db, personId: person.id!, displayName: "Sam", password: "synthetic pass 1",
+                                                        isAdmin: true, now: Date(timeIntervalSince1970: 0), rounds: 1_000)
+                return (manager, try LocalSetting.databaseId(db), user.id!)
             }
-            XCTAssertFalse(sql.localizedCaseInsensitiveContains("biometr"), table)
-            XCTAssertFalse(sql.localizedCaseInsensitiveContains("enrol"), table)
+        }
+        let (_, idA, userA) = try database()
+        let (_, idB, userB) = try database()
+        XCTAssertEqual(userA, userB)
+        XCTAssertNotEqual(idA, idB)
+
+        let biometry = FakeBiometry()
+        let onA = DefaultsBiometricEnrolment(defaults: defaults, scope: idA, biometry: biometry)
+        let onB = DefaultsBiometricEnrolment(defaults: defaults, scope: idB, biometry: biometry)
+        try await onA.enrol(appUserId: userA)
+        XCTAssertEqual(onA.enrolledIds(), [userA])
+        XCTAssertEqual(onB.enrolledIds(), [])
+        do {
+            _ = try await onB.unlock(appUserId: userB, reason: "test")
+            XCTFail("another database's user must not unlock")
+        } catch {
+            XCTAssertEqual(error as? BiometricUnlockError, .notEnrolled)
+        }
+        onB.remove(appUserId: userB)
+        XCTAssertEqual(onA.enrolledIds(), [userA], "removing B's user leaves A's enrolment")
+
+        let store = FakeSecretStore()
+        let keychainA = KeychainBiometricEnrolment(store: store, scope: idA, isAvailable: { true })
+        let keychainB = KeychainBiometricEnrolment(store: store, scope: idB, isAvailable: { true })
+        try await keychainA.enrol(appUserId: userA)
+        XCTAssertEqual(keychainB.enrolledIds(), [])
+        do {
+            _ = try await keychainB.unlock(appUserId: userB, reason: "test")
+            XCTFail("another database's user must not unlock")
+        } catch {
+            XCTAssertEqual(error as? BiometricUnlockError, .notEnrolled)
         }
 
         let otherSuite = "BiometricEnrolmentTests.other.\(UUID().uuidString)"
         let otherDefaults = UserDefaults(suiteName: otherSuite)!
         defer { otherDefaults.removePersistentDomain(forName: otherSuite) }
-        let otherMac = DefaultsBiometricEnrolment(defaults: otherDefaults, biometry: FakeBiometry())
-        XCTAssertEqual(otherMac.enrolledIds(), [])
+        XCTAssertEqual(DefaultsBiometricEnrolment(defaults: otherDefaults, scope: idA, biometry: biometry).enrolledIds(), [])
+    }
 
-        let keychainMac = KeychainBiometricEnrolment(store: FakeSecretStore(), isAvailable: { true })
-        XCTAssertEqual(keychainMac.enrolledIds(), [])
-        do {
-            _ = try await keychainMac.unlock(appUserId: 1, reason: "test")
-            XCTFail("no enrolment on this Mac")
-        } catch {
-            XCTAssertEqual(error as? BiometricUnlockError, .notEnrolled)
-        }
+    func testDatabaseIdIsStableAndLocal() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        let first = try manager.dbQueue.write { try LocalSetting.databaseId($0) }
+        let again = try manager.dbQueue.write { try LocalSetting.databaseId($0) }
+        XCTAssertEqual(first, again)
+        XCTAssertNotNil(UUID(uuidString: first))
+    }
+
+    func testUnavailableBiometryKeepsEnrolment() async throws {
+        // Locked out, or the Touch ID sensor unavailable for now: no state to compare, nothing is dropped.
+        let biometry = FakeBiometry()
+        let enrolment = DefaultsBiometricEnrolment(defaults: defaults, scope: "db-a", biometry: biometry)
+        try await enrolment.enrol(appUserId: 3)
+        biometry.domainState = nil
+        XCTAssertEqual(enrolment.enrolledIds(), [])
+        biometry.domainState = Data([1, 2, 3])
+        XCTAssertEqual(enrolment.enrolledIds(), [3])
     }
 
     func testRemoveClearsEnrolment() async throws {
-        let enrolment = DefaultsBiometricEnrolment(defaults: defaults, biometry: FakeBiometry())
+        let enrolment = DefaultsBiometricEnrolment(defaults: defaults, scope: "db-a", biometry: FakeBiometry())
         try await enrolment.enrol(appUserId: 1)
         try await enrolment.enrol(appUserId: 2)
         enrolment.remove(appUserId: 1)
@@ -113,7 +151,7 @@ final class BiometricEnrolmentTests: XCTestCase {
         XCTAssertEqual(enrolment.enrolledIds(), [])
 
         let store = FakeSecretStore()
-        let keychain = KeychainBiometricEnrolment(store: store, isAvailable: { true })
+        let keychain = KeychainBiometricEnrolment(store: store, scope: "db-a", isAvailable: { true })
         try await keychain.enrol(appUserId: 3)
         keychain.remove(appUserId: 3)
         XCTAssertEqual(keychain.enrolledIds(), [])
@@ -122,7 +160,7 @@ final class BiometricEnrolmentTests: XCTestCase {
 
     func testFallbackUnlockFollowsTheTouchIDAnswer() async throws {
         let biometry = FakeBiometry()
-        let enrolment = DefaultsBiometricEnrolment(defaults: defaults, biometry: biometry)
+        let enrolment = DefaultsBiometricEnrolment(defaults: defaults, scope: "db-a", biometry: biometry)
         try await enrolment.enrol(appUserId: 4)
         biometry.answer = false
         let unlocked = try await enrolment.unlock(appUserId: 4, reason: "test")
@@ -133,7 +171,7 @@ final class BiometricEnrolmentTests: XCTestCase {
     func testUnavailableBiometryRefusesEnrolment() async throws {
         let biometry = FakeBiometry()
         biometry.isAvailable = false
-        let enrolment = DefaultsBiometricEnrolment(defaults: defaults, biometry: biometry)
+        let enrolment = DefaultsBiometricEnrolment(defaults: defaults, scope: "db-a", biometry: biometry)
         do {
             try await enrolment.enrol(appUserId: 1)
             XCTFail("no Touch ID, no enrolment")
@@ -147,11 +185,11 @@ final class BiometricEnrolmentTests: XCTestCase {
 
     func testKeychainEnrolStoresA32ByteSecretPerUser() async throws {
         let store = FakeSecretStore()
-        let keychain = KeychainBiometricEnrolment(store: store, isAvailable: { true })
+        let keychain = KeychainBiometricEnrolment(store: store, scope: "db-a", isAvailable: { true })
         try await keychain.enrol(appUserId: 1)
         try await keychain.enrol(appUserId: 2)
-        XCTAssertEqual(store.secrets[1]?.count, 32)
-        XCTAssertNotEqual(store.secrets[1], store.secrets[2])
+        XCTAssertEqual(store.secrets["db-a:1"]?.count, 32)
+        XCTAssertNotEqual(store.secrets["db-a:1"], store.secrets["db-a:2"])
         XCTAssertEqual(keychain.enrolledIds(), [1, 2])
         let unlocked = try await keychain.unlock(appUserId: 2, reason: "test")
         XCTAssertTrue(unlocked)
@@ -159,7 +197,7 @@ final class BiometricEnrolmentTests: XCTestCase {
 
     func testChangedBiometryDropsKeychainEnrolment() async throws {
         let store = FakeSecretStore()
-        let keychain = KeychainBiometricEnrolment(store: store, isAvailable: { true })
+        let keychain = KeychainBiometricEnrolment(store: store, scope: "db-a", isAvailable: { true })
         try await keychain.enrol(appUserId: 5)
         store.invalidateAll()   // errSecItemNotFound from here on
         do {
@@ -177,7 +215,7 @@ final class BiometricEnrolmentTests: XCTestCase {
 
     func testKeychainCancelKeepsEnrolment() async throws {
         let store = FakeSecretStore()
-        let keychain = KeychainBiometricEnrolment(store: store, isAvailable: { true })
+        let keychain = KeychainBiometricEnrolment(store: store, scope: "db-a", isAvailable: { true })
         try await keychain.enrol(appUserId: 6)
         store.cancelNext = true
         let unlocked = try await keychain.unlock(appUserId: 6, reason: "test")

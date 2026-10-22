@@ -45,9 +45,10 @@ final class AppEnvironment: ObservableObject {
         self.evidenceRoot = evidenceRoot
         // The snapshot build never touches the Keychain or the app's own preferences.
         self.session = SnapshotMode.isActive
-            ? SessionModel(dbQueue: dbQueue, isSetUp: auth.isSetUp, biometrics: BiometricUnlock.snapshot(defaults: SnapshotMode.defaults),
+            ? SessionModel(dbQueue: dbQueue, isSetUp: auth.isSetUp,
+                           biometrics: BiometricUnlock.snapshot(scope: auth.databaseId, defaults: SnapshotMode.defaults),
                            defaults: SnapshotMode.defaults, snapshotUser: auth.snapshotUser)
-            : SessionModel(dbQueue: dbQueue, isSetUp: auth.isSetUp, biometrics: BiometricUnlock.make())
+            : SessionModel(dbQueue: dbQueue, isSetUp: auth.isSetUp, biometrics: BiometricUnlock.make(scope: auth.databaseId))
         self.hmrcRateAutoFetch = HMRCRateAutoFetch(dbQueue: dbQueue)
         self.interestIndexAutoFetch = InterestIndexAutoFetch(dbQueue: dbQueue)
 
@@ -100,8 +101,8 @@ final class AppEnvironment: ObservableObject {
             } catch {
                 Logger(subsystem: "com.personal.budget", category: "Transfers").error("Transfer matching at launch failed: \(error.localizedDescription, privacy: .public)")
             }
-            let auth = try manager.dbQueue.read { db in
-                LaunchAuth(isSetUp: try AppUserStore.isSetUp(db),
+            let auth = try manager.dbQueue.write { db in
+                LaunchAuth(isSetUp: try AppUserStore.isSetUp(db), databaseId: try LocalSetting.databaseId(db),
                            snapshotUser: SnapshotMode.isActive ? try LaunchAuth.snapshotUser(db) : nil)
             }
             return (manager.dbQueue, dbPath, auth)
@@ -119,6 +120,8 @@ final class AppEnvironment: ObservableObject {
     /// What the session needs from the database at launch, read with the migration off the main thread.
     private struct LaunchAuth: Sendable {
         let isSetUp: Bool
+        /// Scopes this Mac's Touch ID enrolment to this database.
+        let databaseId: String
         let snapshotUser: AppUser?
 
         /// The demo database's first app user, else a stand-in for its first person (snapshot build only).

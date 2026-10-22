@@ -52,7 +52,14 @@ final class SessionModel: ObservableObject {
         case wrongPassword
         /// Too many wrong attempts: try again after this many seconds.
         case throttled(TimeInterval)
+        /// Another attempt is still being checked.
+        case busy
         case failed(String)
+    }
+
+    enum SessionError: Error {
+        /// `signInAfterSetUp` outside first-launch setup: adding a user never signs you in as them.
+        case alreadySetUp
     }
 
     enum BiometricSignInResult: Equatable {
@@ -72,7 +79,8 @@ final class SessionModel: ObservableObject {
     let dbQueue: DatabaseQueue
     let biometrics: any BiometricUnlocker
     private let defaults: UserDefaults
-    private var throttle = SignInThrottle()
+    /// Password and recovery-key attempts share it: one throttle, one check at a time.
+    private let gate: SignInGate
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private lazy var idleMonitor = IdleMonitor { [weak self] in self?.lock() }
 
@@ -103,6 +111,7 @@ final class SessionModel: ObservableObject {
         self.dbQueue = dbQueue
         self.biometrics = biometrics
         self.defaults = defaults
+        self.gate = SignInGate(dbQueue: dbQueue)
         if SnapshotMode.isActive, let snapshotUser {
             state = .signedIn(snapshotUser)
             return
@@ -114,22 +123,24 @@ final class SessionModel: ObservableObject {
     // MARK: Signing in
 
     func signIn(appUserId: Int64, password: String) async -> SignInResult {
-        await attempt(appUserId: appUserId) { db in
-            try AppUserStore.verifyPassword(db, appUserId: appUserId, password: password)
-        }
+        await finish(appUserId: appUserId, await gate.password(appUserId: appUserId, password: password, now: Date()))
     }
 
     /// "Forgot password?": the recovery key signs the user in so they can set a new password (auth spec §7).
     func signIn(appUserId: Int64, recoveryKey: String) async -> SignInResult {
-        await attempt(appUserId: appUserId) { db in
-            try AppUserStore.verifyRecoveryKey(db, appUserId: appUserId, key: recoveryKey)
-        }
+        await finish(appUserId: appUserId, await gate.recoveryKey(appUserId: appUserId, key: recoveryKey, now: Date()))
     }
 
     @discardableResult
     func signInWithBiometrics(appUserId: Int64) async -> BiometricSignInResult {
         guard !SnapshotMode.isActive else { return .cancelled }
         do {
+            // Only someone who can sign in on this Mac with a password too.
+            let candidates = try await dbQueue.read { try AppUserStore.signInCandidates($0) }
+            guard candidates.contains(where: { $0.id == appUserId }) else {
+                biometrics.remove(appUserId: appUserId)
+                return .notEnrolled
+            }
             guard try await biometrics.unlock(appUserId: appUserId, reason: "unlock Mango") else { return .cancelled }
             try await begin(appUserId: appUserId)
             return .signedIn
@@ -140,9 +151,16 @@ final class SessionModel: ObservableObject {
         }
     }
 
-    /// After setup (or adding a user), the new user is signed in without asking again.
+    /// After first-launch setup only, the new admin is signed in without asking again. Adding another user
+    /// later never signs you in as them.
     func signInAfterSetUp(appUserId: Int64) async throws {
+        guard state == .notSetUp else { throw SessionError.alreadySetUp }
         try await begin(appUserId: appUserId)
+    }
+
+    /// Settings ▸ Sign-in's remove-user path (and turning Touch ID off): drops this Mac's enrolment.
+    func removeBiometricEnrolment(appUserId: Int64) {
+        biometrics.remove(appUserId: appUserId)
     }
 
     // MARK: Locking
@@ -156,22 +174,18 @@ final class SessionModel: ObservableObject {
 
     // MARK: Private
 
-    /// Password and recovery-key checks share the throttle. PBKDF2 runs off the main thread (the
-    /// database queue's), and a successful check may upgrade the hash, hence a write.
-    private func attempt(appUserId: Int64, _ verify: @escaping @Sendable (Database) throws -> Bool) async -> SignInResult {
-        let wait = throttle.delay(now: Date())
-        guard wait <= 0 else { return .throttled(wait) }
-        do {
-            guard try await dbQueue.write(verify) else {
-                throttle.recordFailure(now: Date())
-                let wait = throttle.delay(now: Date())
-                return wait > 0 ? .throttled(wait) : .wrongPassword
+    private func finish(appUserId: Int64, _ outcome: SignInGate.Outcome) async -> SignInResult {
+        switch outcome {
+        case .rejected: return .wrongPassword
+        case .throttled(let wait): return .throttled(wait)
+        case .busy: return .busy
+        case .accepted:
+            do {
+                try await begin(appUserId: appUserId)
+                return .signedIn
+            } catch {
+                return .failed(error.localizedDescription)
             }
-            throttle.reset()
-            try await begin(appUserId: appUserId)
-            return .signedIn
-        } catch {
-            return .failed(error.localizedDescription)
         }
     }
 
@@ -187,7 +201,9 @@ final class SessionModel: ObservableObject {
 
     private func observeSystemLocks() {
         let workspace = NSWorkspace.shared.notificationCenter
-        for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.willSleepNotification] {
+        // Fast user switching counts as leaving the Mac.
+        for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.willSleepNotification,
+                     NSWorkspace.sessionDidResignActiveNotification] {
             observe(workspace, name)
         }
         observe(DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsLocked"))
