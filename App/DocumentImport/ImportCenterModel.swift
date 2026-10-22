@@ -204,6 +204,8 @@ final class ImportCenterModel: ObservableObject {
         panel.prompt = "Import"
         panel.message = message
         guard panel.runModal() == .OK, !panel.urls.isEmpty else { return nil }
+        // Mango locked while the panel was open (the lock cancels it, but a choice may have just landed).
+        guard SessionModel.appCanActOnData else { return nil }
         return panel.urls
     }
 

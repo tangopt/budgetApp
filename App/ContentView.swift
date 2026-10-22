@@ -289,8 +289,8 @@ struct ContentView: View {
             .modifier(ImportDropOutline(isTargeted: importDropTargeted))
             .dropDestination(for: URL.self) { urls, _ in
                 let files = urls.filter(\.isFileURL)
-                // Nothing reaches the importer while Mango is locked.
-                guard !files.isEmpty, environment.session.currentUser != nil else { return false }
+                // Nothing reaches the importer while Mango is locked or a step after signing in is open.
+                guard !files.isEmpty, environment.session.canActOnData else { return false }
                 environment.importCenter.start(files, intent: .none, entryPoint: "Drop")
                 return true
             } isTargeted: { importDropTargeted = $0 }
@@ -492,17 +492,18 @@ struct ContentView: View {
     }
 }
 
-/// The window's menu actions, published only while someone is signed in: a locked window's menus do nothing.
+/// The window's menu actions, published only while someone is signed in and nothing covers the window
+/// (locked, or the new password after a recovery key, the Touch ID offer): a covered window's menus do nothing.
 private struct SignedInCommands: ViewModifier {
     @ObservedObject var session: SessionModel
     let search: TransactionSearchAction
     let documentImport: DocumentImportAction
 
     func body(content: Content) -> some View {
-        let signedIn = session.currentUser != nil
+        let usable = session.canActOnData
         content
-            .focusedSceneValue(\.transactionSearch, signedIn ? search : nil)
-            .focusedSceneValue(\.documentImport, signedIn ? documentImport : nil)
+            .focusedSceneValue(\.transactionSearch, usable ? search : nil)
+            .focusedSceneValue(\.documentImport, usable ? documentImport : nil)
     }
 }
 

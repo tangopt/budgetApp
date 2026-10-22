@@ -650,37 +650,64 @@ enum SignInErrorText {
     }
 }
 
-// MARK: - Sheets and popovers
+// MARK: - Sheets, panels and popovers
 
 /// Sheets and alerts are windows of their own. While Mango is covered:
 /// - each sheet's own content view is taken out of it and an opaque lock screen put in its place (and made
 ///   the first responder), so nothing in it shows, Return and Esc can't reach its Save or Cancel, and the
 ///   window that holds the sheet can still be unlocked from it. The content view is kept, with its state,
-///   and put back;
-/// - popovers are closed.
-/// Everything comes back as it was when the cover lifts.
+///   and put back with the first responder it had;
+/// - open and save panels (modal or sheets, ours or SwiftUI's `fileImporter`/`fileExporter`) are cancelled,
+///   so nothing chosen in them is used;
+/// - popovers are closed through their `NSPopover`, so SwiftUI's `isPresented` follows.
+/// The sheets come back as they were when the cover lifts.
 @MainActor
 final class SheetCovers {
     static let shared = SheetCovers()
     private struct Cover {
         weak var window: NSWindow?
         let original: NSView
+        /// What had the keyboard in the sheet (a view inside `original`, or the window).
+        weak var firstResponder: NSResponder?
     }
     private var covers: [ObjectIdentifier: Cover] = [:]
     private var observer: NSObjectProtocol?
     private weak var session: SessionModel?
+    /// The popovers on show, followed from launch (`trackPopovers`).
+    private let popovers = NSHashTable<NSPopover>.weakObjects()
+    private var popoverObservers: [NSObjectProtocol] = []
+
+    /// Follows every popover shown from now on, so a lock can close them. Called once, by the session.
+    func trackPopovers() {
+        guard popoverObservers.isEmpty, !SnapshotMode.isActive else { return }
+        let center = NotificationCenter.default
+        popoverObservers.append(center.addObserver(forName: NSPopover.didShowNotification, object: nil, queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let popover = note.object as? NSPopover else { return }
+                self?.popovers.add(popover)
+                // One that opens while covered (from a background task) goes at once.
+                if self?.session?.isCovered == true { Self.close(popover) }
+            }
+        })
+        popoverObservers.append(center.addObserver(forName: NSPopover.didCloseNotification, object: nil, queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                if let popover = note.object as? NSPopover { self?.popovers.remove(popover) }
+            }
+        })
+    }
 
     func update(covered: Bool, session: SessionModel) {
         guard !SnapshotMode.isActive else { return }
         self.session = session
         if covered {
-            for window in NSApp.windows { coverOrClose(window) }
+            for popover in popovers.allObjects where popover.isShown { Self.close(popover) }
+            for window in NSApp.windows { coverOrCancel(window) }
             if observer == nil {
-                // A sheet or popover that opens while covered (an alert from a background task).
+                // A sheet or panel that opens while covered (an alert from a background task).
                 observer = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] note in
                     MainActor.assumeIsolated {
                         guard let window = note.object as? NSWindow else { return }
-                        self?.coverOrClose(window)
+                        self?.coverOrCancel(window)
                     }
                 }
             }
@@ -690,7 +717,7 @@ final class SheetCovers {
                 let frame = window.frame
                 window.contentView = cover.original
                 window.setFrame(frame, display: true)
-                window.makeFirstResponder(cover.original)
+                window.makeFirstResponder(cover.firstResponder ?? cover.original)
             }
             covers = [:]
             if let observer { NotificationCenter.default.removeObserver(observer) }
@@ -698,27 +725,33 @@ final class SheetCovers {
         }
     }
 
-    private func coverOrClose(_ window: NSWindow) {
-        if window.isSheet {
-            cover(window)
-        } else if Self.isPopover(window) {
-            window.close()
-        }
+    private static func close(_ popover: NSPopover) {
+        popover.performClose(nil)
+        // A popover whose delegate refuses closes anyway.
+        if popover.isShown { popover.close() }
     }
 
-    /// A popover's window (or any other window hung off one of ours that isn't a sheet).
-    private static func isPopover(_ window: NSWindow) -> Bool {
-        window.className.contains("Popover") || (window.parent != nil && window.isVisible)
+    private func coverOrCancel(_ window: NSWindow) {
+        if let panel = window as? NSSavePanel {
+            // NSOpenPanel too. Never swapped: the panel's own views must stay its own.
+            if panel.isVisible { panel.cancel(nil) }
+        } else if window.isSheet {
+            cover(window)
+        }
     }
 
     private func cover(_ window: NSWindow) {
         guard let session, covers[ObjectIdentifier(window)] == nil, let content = window.contentView else { return }
         let frame = window.frame
+        // A field being typed in has the shared field editor as first responder: keep the field itself.
+        var previous = window.firstResponder
+        if let editor = previous as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSResponder { previous = field }
         let host = NSHostingView(rootView: LockScreenHost(session: session).themedRoot())
         // The sheet keeps its size: the lock screen scrolls if it needs more.
         host.sizingOptions = []
         host.frame = content.frame
-        covers[ObjectIdentifier(window)] = Cover(window: window, original: content)
+        let keeps = previous === window || (previous as? NSView)?.isDescendant(of: content) == true
+        covers[ObjectIdentifier(window)] = Cover(window: window, original: content, firstResponder: keeps ? previous : nil)
         window.contentView = host
         window.setFrame(frame, display: true)
         window.makeFirstResponder(host)

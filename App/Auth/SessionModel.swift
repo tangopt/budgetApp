@@ -87,6 +87,13 @@ final class SessionModel: ObservableObject {
         case offerTouchID
     }
 
+    /// Someone is signed in and nothing covers the windows: menus, drops and panels may act on the data.
+    var canActOnData: Bool { currentUser != nil && !isCovered }
+
+    /// The app's session (`AppEnvironment.Current`), for code with no session of its own (an open panel that
+    /// has just returned): false when there is none.
+    static var appCanActOnData: Bool { AppEnvironment.Current.shared.environment?.session.canActOnData ?? false }
+
     /// The windows, sheets and popovers stay covered: locked, or signed in with a step still to do.
     var isCovered: Bool {
         switch state {
@@ -138,6 +145,7 @@ final class SessionModel: ObservableObject {
         }
         state = isSetUp ? .locked : .notSetUp
         observeSystemLocks()
+        SheetCovers.shared.trackPopovers()
         Task { await refreshCandidates() }
     }
 
@@ -217,6 +225,8 @@ final class SessionModel: ObservableObject {
         guard case .signedIn = state, !SnapshotMode.isActive else { return }
         idleMonitor.stop()
         state = .locked
+        // Straight away, not on the windows' next update: an open or save panel running modally has to go now.
+        SheetCovers.shared.update(covered: true, session: self)
     }
 
     #if SNAPSHOTS

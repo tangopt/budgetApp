@@ -179,7 +179,8 @@ private struct EvidenceSourcesList: View {
         .padding(.vertical, 8)
         .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
             switch result {
-            case .success(let url): model.add(url)
+            // Not if Mango locked while the panel was open (the lock cancels it, but a choice may have just landed).
+            case .success(let url): if SessionModel.appCanActOnData { model.add(url) }
             case .failure(let error): model.errorMessage = error.localizedDescription
             }
         }

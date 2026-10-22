@@ -254,6 +254,8 @@ struct SignInSettingsContent: View {
         .frame(height: 520)
         .task { await model.load() }
         .onChange(of: session.currentUser?.id) { Task { await model.discardEdits() } }
+        // Touch ID turned on from the offer after signing in.
+        .onChange(of: session.afterSignIn) { Task { await model.load() } }
         .sheet(item: $model.sheet) { sheet in
             sheetView(sheet)
         }
