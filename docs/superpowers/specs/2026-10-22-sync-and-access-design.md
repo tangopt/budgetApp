@@ -486,3 +486,86 @@ Integration, with two simulators and a development container:
 - an iPad import is blocked while the Mac holds the lease;
 - the member's private account never reaches the admin's devices (checked by querying the admin's
   zones).
+
+## 13. Alternative without a developer membership: the Mac as the hub server
+
+Asked by the user (2026-10-22), who may not renew the Apple Developer Program every year. **Pending the
+user's choice** between CloudKit (§3) and this.
+
+### 13.1 What a membership is needed for, and what isn't
+- **CloudKit and push notifications** need a paid team. Without one there's no iCloud sync at all: free
+  teams can't use iCloud, CloudKit or iCloud Drive containers.
+- **Installing a native app on an iPhone or iPad** needs a signature. A free Apple Account signs for
+  7 days, for up to 3 apps per device. **SideStore** (or AltStore) re-signs automatically: its helper
+  runs on the Mac, re-signs over home Wi-Fi before the 7 days run out, and doesn't need a cable after the
+  first pairing.
+- **Face ID, Vision, PDFKit, Foundation Models and local notifications** all work with a free
+  signature.
+- **Widgets and the share extension** need App Groups, which free signing may not provide. Treat them as
+  "may not be available" on this path.
+
+### 13.2 Design: sync through the household Mac instead of iCloud
+**The transport becomes swappable (my call; build it this way whichever path is chosen).**
+- Everything in §4–§6 stays: `syncRecord` UUIDs, zones, batches, the import lease, sharing levels,
+  permissions.
+- Only the transport changes. A `SyncTransport` protocol in BudgetCore has two implementations:
+  `CloudKitTransport` (§3) and `HubTransport` (below).
+
+**The hub.**
+- The admin's Mac runs **Budget Hub**: a small login-item helper bundled with the Mac app. It keeps
+  running when the app is closed.
+- It stores every zone's records and documents in its own folder. It serves them over HTTPS on the home
+  network (found with Bonjour) and, away from home, over **Tailscale**. Tailscale's free personal plan
+  creates a private network between your devices, with no ports opened on the router.
+- **The hub only ever sees ciphertext.** Every record's synced fields and every document are encrypted on
+  the device with the zone's key (§9.1, generalised from documents to all fields).
+  - The household key is held by both people's devices.
+  - Each private zone's key is held only by its owner's devices.
+  - So the member's private data sits on the admin's Mac as unreadable blobs, and owner privacy (§6.1)
+    holds. The hub stores and forwards, nothing more.
+
+**Pairing replaces iCloud identity.**
+- A new device shows a QR code. The admin scans it on the Mac and picks which person the device belongs
+  to.
+- The devices exchange public keys (Curve25519, CryptoKit). Each device signs its requests with its
+  key.
+- The zone keys are sent to the new device encrypted to its public key:
+  - the household key is sent to any device of either person;
+  - a private zone's key goes only to that owner's own devices, approved on one of them.
+- `appUser.cloudKitUserRecordName` (§11.1) becomes optional. A `pairedDevice(appUserId, publicKey, name,
+  pairedAt)` table links devices to people.
+
+**Behaviour.**
+- **While the Mac is reachable:** devices sync in the background when the app is open or iOS gives it
+  background time. Without push, nothing wakes the app instantly; the app syncs on open and on
+  background refresh.
+- **While the Mac is asleep or off:** devices work offline, as in §5.5. The Mac's Energy settings should
+  allow "Wake for network access".
+- **The import lease, batches and filed-year checks** work as in §5. The hub enforces the lease's
+  compare-and-set.
+- **Backups:** Time Machine covers the hub folder (ciphertext) as well as the Mac's own database.
+- **The member's macOS user** on the same Mac is just another client of the hub, over `localhost`.
+
+### 13.3 Comparison
+
+| | CloudKit (§3) | Mac hub + SideStore |
+|---|---|---|
+| Membership | Needed every year for the mobile apps | Not needed |
+| Installing on phones and iPads | TestFlight, automatic updates, 90-day builds | SideStore: refreshes every 7 days over home Wi-Fi. If it isn't refreshed in time the app won't open until it is; data is safe |
+| Sync away from home | Anywhere | Through Tailscale, only while the Mac is awake |
+| Who stores the data | Apple (encrypted fields; documents encrypted by us) | Your Mac only (everything encrypted by us) |
+| Instant updates (push) | Yes | No: sync on open and in the background |
+| Widgets, share extension | Yes | Possibly not (App Groups) |
+| Extra to build | CloudKit wrapper | Hub server, pairing, field encryption, transport |
+| Risk if the Mac dies | None for sync; restore the Mac from iCloud | Phones and iPads keep their copies; restore the hub from Time Machine |
+
+### 13.4 Recommendation
+- **Build the swappable transport whichever path is chosen.** It's cheap at build step 3 and keeps the
+  choice open.
+- **If you'll keep renewing:** CloudKit. It's simpler to live with: no Mac uptime, push, widgets,
+  TestFlight.
+- **If you won't, or want the data never to leave home:** the Mac hub with SideStore. While you do have
+  a membership, the hub path can still use TestFlight for installs; it just doesn't need it.
+- **Not recommended:**
+  - a web app served by the Mac (no install problem, but not native, which you asked for);
+  - a third-party backend (§10).

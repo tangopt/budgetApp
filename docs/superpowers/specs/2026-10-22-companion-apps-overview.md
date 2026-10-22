@@ -135,6 +135,26 @@ The name is private and non-commercial, so there are no trademark worries.
   read at 16 pt in the Mac's menu bar and Spotlight.
 - **No lettering** ("6d"), no shoes, no confetti.
 
+### 2.2 Funny ones (asked for, 2026-10-22)
+
+| Name | Why |
+|---|---|
+| **Moneypenny** | Bond's unflappable secretary: keeps everything in order and knows where every penny went. |
+| **Quids In** | British for "in profit". Optimistic, cheeky. |
+| **Ledger Zeppelin** | A whole lotta budget. |
+| **The Damage** | "What's the damage?": the British way to ask for the bill. |
+| **Pastel de Cash** | For a household with a flat in Lisbon. |
+| Tosta Mista | The Portuguese ham-and-cheese toast: two fillings, one sandwich, i.e. joint finances. |
+| Skint | British for broke. Honest. |
+| Brassic | Also British for broke ("boracic lint", rhyming slang). |
+| Sum of Us | "Some of us" do the categorising. |
+| Where Did It Go? | The question every Month screen answers. |
+| Penny Dreadful | For the months that read like a horror story. |
+| Cha-Ching | Says what it does. |
+
+**Funny favourite: Moneypenny.** It's a joke that wears a suit: it works as a daily app name without
+getting old, and an icon of a single elegant penny, or a monogrammed "M", is easy.
+
 ## 3. Private distribution
 
 | Option | Cost | Expiry | Updates | CloudKit / push / Sign-in | Verdict |
@@ -157,6 +177,17 @@ The name is private and non-commercial, so there are no trademark worries.
   - CloudKit.
 - **Two private-distribution routes don't fit:** the App Store's "unlisted app" needs review and a public
   listing page, and Custom Apps need Apple Business Manager.
+
+### 3.0 Without any membership (asked, 2026-10-22)
+There is a path that needs no membership; it's in the sync spec's §13:
+- **Sync through the household Mac** (Budget Hub, reachable away from home through Tailscale's free
+  plan) instead of iCloud.
+- **Install on iPhones and iPads with a free Apple Account through SideStore,** which re-signs the app
+  every 7 days over home Wi-Fi.
+
+The trade-offs: the Mac has to be awake for sync, there's no push, widgets may be unavailable, and there
+is more to build. The data never leaves your devices. The sync transport is built to be swappable, so
+the choice can wait until build step 3.
 
 ### 3.1 If the membership isn't renewed (asked, 2026-10-22)
 
@@ -228,6 +259,7 @@ Settled on 2026-10-22:
 - **Two people on the Mac:** one macOS user each (sync spec §3.1).
 
 Still open:
+0. Sync path: CloudKit with a yearly membership, or the Mac hub without one (sync spec §13).
 1. Pick the name. My recommendation is Sixpence; Escudo is the runner-up.
 2. Default sharing level for the existing accounts: everything stays "Everything" until you change it
    in build step 5.
