@@ -61,8 +61,8 @@ final class MigrationBackupTests: XCTestCase {
         let manager = try DatabaseManager(path: dbPath)
         try manager.migrate(upTo: "createPayMonthClose")
         let pendingBefore = try manager.migrationStatus().pending
-        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
-        XCTAssertThrowsError(try MigrationBackup.backUpIfNeeded(manager: manager, databasePath: dbPath, now: Date()))
+        XCTAssertThrowsError(try MigrationBackup.backUpThenMigrate(
+            manager: manager, databasePath: dbPath, now: Date(), writeBackup: { _, _ in throw Boom() }))
         XCTAssertEqual(try manager.migrationStatus().pending, pendingBefore)
         XCTAssertTrue(try backups().isEmpty)
     }
@@ -120,15 +120,45 @@ final class MigrationBackupTests: XCTestCase {
         XCTAssertEqual(try copy.read { try String.fetchOne($0, sql: "SELECT v FROM marker") }, "wal-row")
     }
 
+    private struct Boom: Error {}
+
     func testFailingBackupMeansMigrateIsNotCalled() throws {
         let manager = try DatabaseManager(path: dbPath)
         try manager.migrate(upTo: "createPayMonthClose")
-        let pendingBefore = try manager.migrationStatus().pending
-        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
-        XCTAssertThrowsError(try MigrationBackup.backUpThenMigrate(manager: manager, databasePath: dbPath, now: Date()))
-        XCTAssertEqual(try manager.migrationStatus().pending, pendingBefore)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
-        _ = try MigrationBackup.backUpThenMigrate(manager: manager, databasePath: dbPath, now: Date())
+        var migrateCalls = 0
+        XCTAssertThrowsError(try MigrationBackup.backUpThenMigrate(
+            manager: manager, databasePath: dbPath, now: Date(),
+            writeBackup: { _, _ in throw Boom() }, migrate: { migrateCalls += 1 }))
+        XCTAssertEqual(migrateCalls, 0)
+        XCTAssertTrue(try backups().isEmpty)
+    }
+
+    func testMigrateRunsAfterASuccessfulBackup() throws {
+        let manager = try DatabaseManager(path: dbPath)
+        try manager.migrate(upTo: "createPayMonthClose")
+        var backupExistedWhenMigrating = false
+        var migrateCalls = 0
+        let url = try MigrationBackup.backUpThenMigrate(manager: manager, databasePath: dbPath, now: Date(), migrate: {
+            migrateCalls += 1
+            backupExistedWhenMigrating = ((try? self.backups().count) ?? 0) == 1
+            try manager.migrate()
+        })
+        XCTAssertNotNil(url)
+        XCTAssertEqual(migrateCalls, 1)
+        XCTAssertTrue(backupExistedWhenMigrating)
         XCTAssertTrue(try manager.migrationStatus().pending.isEmpty)
+    }
+
+    func testStalePartialAndSidecarsAreCleared() throws {
+        let manager = try DatabaseManager(path: dbPath)
+        try manager.migrate(upTo: "createPayMonthClose")
+        let now = Date()
+        let first = try XCTUnwrap(try MigrationBackup.backUpIfNeeded(manager: manager, databasePath: dbPath, now: now))
+        try FileManager.default.removeItem(at: first)
+        for suffix in [".partial", ".partial-wal", ".partial-shm", ".partial-journal"] {
+            try Data("x".utf8).write(to: dir.appendingPathComponent(first.lastPathComponent + suffix))
+        }
+        _ = try MigrationBackup.backUpIfNeeded(manager: manager, databasePath: dbPath, now: now)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: dir.path).contains { $0.contains(".partial") })
     }
 }

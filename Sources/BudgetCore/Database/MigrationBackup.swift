@@ -14,17 +14,38 @@ public enum MigrationBackup {
     /// The whole launch sequence: back up if migrations are pending, then migrate. A backup
     /// that can't be made throws before `migrate()` runs, leaving the database untouched.
     @discardableResult
-    public static func backUpThenMigrate(manager: DatabaseManager, databasePath: String, now: Date) throws -> URL? {
-        let url = try backUpIfNeeded(manager: manager, databasePath: databasePath, now: now)
-        try manager.migrate()
+    public static func backUpThenMigrate(
+        manager: DatabaseManager, databasePath: String, now: Date,
+        writeBackup: BackupWriter = copyDatabase,
+        migrate: (() throws -> Void)? = nil
+    ) throws -> URL? {
+        let url = try backUpIfNeeded(manager: manager, databasePath: databasePath, now: now, writeBackup: writeBackup)
+        try (migrate ?? { try manager.migrate() })()
         return url
+    }
+
+    /// Copies the open database into the file at the given URL. Injectable so tests can fail the copy.
+    public typealias BackupWriter = (DatabaseManager, URL) throws -> Void
+
+    public static let copyDatabase: BackupWriter = { manager, partial in
+        let destination = try DatabaseQueue(path: partial.path)
+        // The SQLite backup API from the open queue, so anything still in the WAL is included.
+        try manager.dbQueue.backup(to: destination)
+        try destination.close()
+    }
+
+    private static func removePartial(_ partial: URL) {
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            try? FileManager.default.removeItem(atPath: partial.path + suffix)
+        }
     }
 
     /// Returns the backup's URL, or nil when nothing is pending or the database file doesn't
     /// exist yet (a first launch). Throws if the copy can't be made, so launch stops with the
     /// database untouched.
     public static func backUpIfNeeded(
-        manager: DatabaseManager, databasePath: String, now: Date, keep: Int = 5
+        manager: DatabaseManager, databasePath: String, now: Date, keep: Int = 5,
+        writeBackup: BackupWriter = copyDatabase
     ) throws -> URL? {
         let fm = FileManager.default
         guard fm.fileExists(atPath: databasePath), try manager.hasPendingMigrations() else { return nil }
@@ -48,26 +69,26 @@ public enum MigrationBackup {
         // crash never leaves a truncated file under a backup name.
         let partial = target.appendingPathExtension("partial")
         do {
-            try? fm.removeItem(at: partial)
-            let destination = try DatabaseQueue(path: partial.path)
-            // The SQLite backup API from the open queue, so anything still in the WAL is included.
-            try manager.dbQueue.backup(to: destination)
-            try destination.close()
+            removePartial(partial)
+            try writeBackup(manager, partial)
             try fm.moveItem(at: partial, to: target)
         } catch {
-            for suffix in ["", "-wal", "-shm", "-journal"] {
-                try? fm.removeItem(atPath: partial.path + suffix)
-            }
+            removePartial(partial)
             throw error
         }
         log.info("Pre-migration backup written: \(target.path, privacy: .public)")
 
-        let existing = try fm.contentsOfDirectory(atPath: directory.path)
-            .filter { $0.range(of: namePattern, options: .regularExpression) != nil && $0 != target.lastPathComponent }
-            .sorted(by: >)
-        for name in existing.dropFirst(max(keep, 1) - 1) {
-            do { try fm.removeItem(at: directory.appendingPathComponent(name)) }
-            catch { log.error("Couldn't remove old backup \(name, privacy: .public): \(error.localizedDescription, privacy: .public)") }
+        // The backup exists; tidying old ones must never stop launch.
+        do {
+            let existing = try fm.contentsOfDirectory(atPath: directory.path)
+                .filter { $0.range(of: namePattern, options: .regularExpression) != nil && $0 != target.lastPathComponent }
+                .sorted(by: >)
+            for name in existing.dropFirst(max(keep, 1) - 1) {
+                do { try fm.removeItem(at: directory.appendingPathComponent(name)) }
+                catch { log.error("Couldn't remove old backup \(name, privacy: .public): \(error.localizedDescription, privacy: .public)") }
+            }
+        } catch {
+            log.error("Couldn't list old backups: \(error.localizedDescription, privacy: .public)")
         }
         return target
     }
