@@ -1,0 +1,6 @@
+// Signing for the Mac app (build step 0, docs/superpowers/plans/2026-10-22-step0-developer-setup.md).
+//
+// The values that identify the developer account live in Signing.local.xcconfig, which is never
+// committed: copy Signing.local.xcconfig.example and fill in your team ID. Without that file the app
+// builds exactly as before: signed to run locally, no team, no iCloud entitlements.
+#include? "Signing.local.xcconfig"

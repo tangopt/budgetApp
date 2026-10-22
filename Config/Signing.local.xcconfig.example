@@ -1,0 +1,7 @@
+// Copy to Config/Signing.local.xcconfig (ignored by git) and put in your own team ID
+// (developer.apple.com ▸ Account ▸ Membership details ▸ Team ID).
+DEVELOPMENT_TEAM = YOURTEAMID
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_ENTITLEMENTS = App/Mango.entitlements
+// Notarisation requires the hardened runtime.
+ENABLE_HARDENED_RUNTIME = YES

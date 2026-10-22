@@ -12,6 +12,10 @@ targets:
     sources: [App]
     dependencies:
       - package: BudgetCore
+    # Signing (build step 0): Config/Signing.xcconfig includes the uncommitted Signing.local.xcconfig.
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
     info:
       path: App/Info.plist
       properties:
@@ -27,3 +31,9 @@ targets:
         CURRENT_PROJECT_VERSION: "3"
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        # Read by App/Mango.entitlements (only used when a team is configured).
+        Debug:
+          CLOUDKIT_ENVIRONMENT: Development
+        Release:
+          CLOUDKIT_ENVIRONMENT: Production
