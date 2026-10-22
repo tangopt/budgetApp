@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Used only when Config/Signing.local.xcconfig names a team (build step 0). Registered now so the
+	     signing and notarisation path is proven before sync needs it (sync spec §3, auth spec §8). -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.ubberninja.mango</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<!-- Development for Debug builds, Production for Release (Developer ID requires Production). -->
+	<key>com.apple.developer.icloud-container-environment</key>
+	<string>$(CLOUDKIT_ENVIRONMENT)</string>
+	<!-- The data-protection keychain, for the Touch ID-bound unlock the auth spec moves to once the app
+	     has a team signature (auth spec §8). -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)ubberninja.mango</string>
+	</array>
+</dict>
+</plist>

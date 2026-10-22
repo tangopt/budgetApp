@@ -79,8 +79,10 @@ trap cleanup EXIT INT TERM
 echo "Building the app (Debug, snapshot build)…"
 BUILD_LOG="$SCRATCH/render-build.log"
 xcodegen generate >/dev/null
+# Always signed to run locally, never with the team (its own bundle id has no registered profile).
 if ! xcodebuild -project Budget.xcodeproj -scheme Budget -configuration Debug -destination 'platform=macOS,arch=arm64' \
         -derivedDataPath "$DERIVED" PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+        DEVELOPMENT_TEAM= CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- CODE_SIGN_ENTITLEMENTS= ENABLE_HARDENED_RUNTIME=NO \
         SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) SNAPSHOTS' build > "$BUILD_LOG" 2>&1 \
    || ! grep -q "\*\* BUILD SUCCEEDED \*\*" "$BUILD_LOG"; then
     grep -E "error:" "$BUILD_LOG" | sort -u | head -20 >&2 || true

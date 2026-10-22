@@ -63,7 +63,7 @@ if TaxRegression.isAppData(sourcePath) && !allowAppData {
     fail("Refusing to open the app's own database (\(sourcePath)): pass a copy, or --allow-app-data.")
 }
 // The app holds the database open and would overwrite or miss the change.
-if apply && !forceRunning && !NSRunningApplication.runningApplications(withBundleIdentifier: "com.personal.budget").isEmpty {
+if apply && !forceRunning && AppIdentity.macBundleIdentifiers.contains(where: { !NSRunningApplication.runningApplications(withBundleIdentifier: $0).isEmpty }) {
     fail("Budget is running: quit it before --apply (or pass --force-running).")
 }
 

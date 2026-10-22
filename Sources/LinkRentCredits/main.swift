@@ -109,7 +109,7 @@ if !dryRun {
     for folder in folders where isInside(folder, library) { fail("The folder \(folder) is inside the library: pick the user's own folder.") }
 }
 // The app holds the database open and would overwrite or miss the links.
-if !dryRun && !forceRunning && !NSRunningApplication.runningApplications(withBundleIdentifier: "com.personal.budget").isEmpty {
+if !dryRun && !forceRunning && AppIdentity.macBundleIdentifiers.contains(where: { !NSRunningApplication.runningApplications(withBundleIdentifier: $0).isEmpty }) {
     fail("Budget is running: quit it before a real run (or pass --force-running).")
 }
 if let reportPath {
