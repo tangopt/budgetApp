@@ -3,14 +3,30 @@
 # Re-run after pulling new changes to update the installed copy. Your data stays where it is
 # (~/Library/Application Support/Budget), shared by every copy of the app.
 #
-# With Config/Signing.local.xcconfig (build step 0) the app is archived with your team, exported as a
-# Developer ID app, notarised by Apple and stapled, so it runs anywhere with no expiry. It needs a
-# notarytool keychain profile, by default "mango-notary" (NOTARY_PROFILE overrides it); see
-# docs/superpowers/plans/2026-10-22-step0-developer-setup.md. Without that file it builds as before:
-# signed to run locally on this Mac only.
+# With Config/Signing.local.xcconfig (build step 0) the app is archived with your team and exported as
+# a Developer ID app (Touch ID's Keychain item and iCloud need that signature). That is enough for this
+# Mac: a locally built app isn't quarantined, so Gatekeeper never asks for notarisation.
+#   scripts/install-app.sh              Developer ID, not notarised: for this Mac (a minute or two)
+#   scripts/install-app.sh --notarise   also notarised by Apple and stapled: for another Mac
+# Notarising needs a notarytool keychain profile, by default "mango-notary" (NOTARY_PROFILE overrides
+# it), and must run in a session that can read the login keychain. See
+# docs/superpowers/plans/2026-10-22-step0-developer-setup.md. Without the signing file it builds as
+# before: signed to run locally on this Mac only.
 set -euo pipefail
 
+NOTARISE=0
+for arg in "$@"; do
+    case "$arg" in
+        --notarise|--notarize) NOTARISE=1 ;;
+        *) echo "Usage: scripts/install-app.sh [--notarise]" >&2; exit 2 ;;
+    esac
+done
+
 cd "$(dirname "$0")/.."
+# Xcode's build cache is kept between runs (outside ~/Documents, which iCloud tags with attributes
+# that break code signing), so only what changed is rebuilt. Archives and exports are temporary.
+CACHE_DIR="$HOME/Library/Caches/Mango-install"
+mkdir -p "$CACHE_DIR"
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
@@ -28,7 +44,7 @@ TEAM=""
 if [[ -n "$TEAM" ]]; then
     NOTARY_PROFILE="${NOTARY_PROFILE:-mango-notary}"
     xcodebuild -project Mango.xcodeproj -scheme Mango -configuration Release \
-        -destination 'generic/platform=macOS' -derivedDataPath "$BUILD_DIR/dd" \
+        -destination 'generic/platform=macOS' -derivedDataPath "$CACHE_DIR/team" \
         -archivePath "$BUILD_DIR/Mango.xcarchive" -allowProvisioningUpdates archive \
         | grep -E "error:|warning:|ARCHIVE" | grep -v appintents || true
     [[ -d "$BUILD_DIR/Mango.xcarchive" ]] || { echo "Archive failed." >&2; exit 1; }
@@ -50,15 +66,17 @@ PLIST
     APP="$BUILD_DIR/export/Mango.app"
     [[ -x "$APP/Contents/MacOS/Mango" ]] || { echo "Export failed." >&2; exit 1; }
 
-    echo "Notarising (usually a few minutes)…"
-    ditto -c -k --keepParent "$APP" "$BUILD_DIR/Mango.zip"
-    xcrun notarytool submit "$BUILD_DIR/Mango.zip" --keychain-profile "$NOTARY_PROFILE" --wait
-    xcrun stapler staple "$APP"
+    if (( NOTARISE )); then
+        echo "Notarising (usually a few minutes)…"
+        ditto -c -k --keepParent "$APP" "$BUILD_DIR/Mango.zip"
+        xcrun notarytool submit "$BUILD_DIR/Mango.zip" --keychain-profile "$NOTARY_PROFILE" --wait
+        xcrun stapler staple "$APP"
+    fi
 else
     xcodebuild -project Mango.xcodeproj -scheme Mango -configuration Release \
-        -destination 'platform=macOS' -derivedDataPath "$BUILD_DIR" build \
+        -destination 'platform=macOS' -derivedDataPath "$CACHE_DIR/local" build \
         | grep -E "error:|warning:|BUILD" | grep -v appintents || true
-    APP="$BUILD_DIR/Build/Products/Release/Mango.app"
+    APP="$CACHE_DIR/local/Build/Products/Release/Mango.app"
     [[ -x "$APP/Contents/MacOS/Mango" ]] || { echo "Build failed." >&2; exit 1; }
 fi
 
@@ -90,7 +108,7 @@ done
 
 "$LSREGISTER" -f /Applications/Mango.app
 
-if [[ -n "$TEAM" ]]; then
+if [[ -n "$TEAM" ]] && (( NOTARISE )); then
     # Gatekeeper's verdict on the installed copy: expect "accepted, source=Notarized Developer ID".
     spctl --assess --type execute -vv /Applications/Mango.app 2>&1 || true
 fi
