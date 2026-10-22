@@ -155,6 +155,33 @@ The name is private and non-commercial, so there are no trademark worries.
 **Funny favourite: Moneypenny.** It's a joke that wears a suit: it works as a daily app name without
 getting old, and an icon of a single elegant penny, or a monogrammed "M", is easy.
 
+### 2.3 Argentine ones (asked for, 2026-10-22)
+
+| Name | Why |
+|---|---|
+| **Vaquita** | "Hacer una vaquita" means everyone chips in to a shared pot. It's the household kitty in Argentine. |
+| **Plata** | Money in Argentina, silver, the Río de la Plata, and the root of the country's name (*argentum*). |
+| **Tango** | It takes two. Two people, one budget, moving together. |
+| **Mate** | Passed around a circle and shared. In Britain it means a friend. Works in both your countries. |
+| Chanchito | The Argentine piggy bank. |
+| Guita | Porteño slang for money ("la guita"). |
+| Ombú | The pampas tree with deep roots and wide shade: what savings are for. |
+| Pampa | Flat, endless horizon: the long forecast. |
+| **Colchón** (funny) | The mattress every Argentine keeps dollars under. The app is a better mattress. |
+| **Dólar Blue** (funny) | The parallel exchange rate. The app does exchange rates too, legally. |
+| **Mango** (funny) | Slang for a peso: "no tengo un mango". The icon is a mango. |
+| **Alfajor** (funny) | Two biscuits, one dulce de leche filling: joint finances. |
+| Doce Cuotas (funny) | "Twelve interest-free instalments": the national pastime. |
+
+**Argentine favourite: Vaquita.**
+- It describes exactly what the app is for: two people's money in one pot, with each person's own
+  share kept apart.
+- It's affectionate and short.
+- Its icon is obvious and fun: a small cow-shaped money box (a vaquita instead of a chanchito), white on
+  navy, with a coin slot on its back and the three rising bars as its spots.
+
+**Runner-up: Plata.** One word that ties Argentina, money and the "silver" of Sixpence together.
+
 ## 3. Private distribution
 
 | Option | Cost | Expiry | Updates | CloudKit / push / Sign-in | Verdict |
@@ -257,9 +284,10 @@ Settled on 2026-10-22:
 - **No Advanced Data Protection (not available in the UK).** The app encrypts documents itself instead
   (sync spec §9.1).
 - **Two people on the Mac:** one macOS user each (sync spec §3.1).
+- **Sync path: CloudKit for now.** The transport is built swappable; the Mac hub (sync spec §13) is the
+  fallback if the membership lapses.
 
 Still open:
-0. Sync path: CloudKit with a yearly membership, or the Mac hub without one (sync spec §13).
 1. Pick the name. My recommendation is Sixpence; Escudo is the runner-up.
 2. Default sharing level for the existing accounts: everything stays "Everything" until you change it
    in build step 5.

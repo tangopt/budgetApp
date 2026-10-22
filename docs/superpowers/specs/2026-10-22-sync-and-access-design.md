@@ -489,8 +489,11 @@ Integration, with two simulators and a development container:
 
 ## 13. Alternative without a developer membership: the Mac as the hub server
 
-Asked by the user (2026-10-22), who may not renew the Apple Developer Program every year. **Pending the
-user's choice** between CloudKit (§3) and this.
+Asked by the user (2026-10-22), who may not renew the Apple Developer Program every year.
+**Decision (user, 2026-10-22): CloudKit for now.**
+- This section stays as the documented fallback.
+- The transport is still built swappable (§13.2) at build step 3, so the switch stays cheap if the
+  membership lapses later.
 
 ### 13.1 What a membership is needed for, and what isn't
 - **CloudKit and push notifications** need a paid team. Without one there's no iCloud sync at all: free
