@@ -4,6 +4,13 @@ import BudgetCore
 import GRDB
 import OSLog
 
+struct LaunchBackupError: LocalizedError {
+    let underlying: Error
+    var errorDescription: String? {
+        "Mango couldn't back up your data before updating it, so it didn't update anything. \(underlying.localizedDescription)"
+    }
+}
+
 @MainActor
 final class AppEnvironment: ObservableObject {
     let dbQueue: DatabaseQueue
@@ -25,15 +32,26 @@ final class AppEnvironment: ObservableObject {
     /// Imports screen), made when first used.
     /// Apple's on-device model is asked about documents nothing else recognises; never in
     /// snapshot mode (its routes pass their own stand-in).
+    /// Who is signed in, shared by every window (the Settings scene reaches it through `Current.shared`).
+    let session: SessionModel
     lazy var importCenter: ImportCenterModel = ImportCenterModel(
         dbQueue: dbQueue, databasePath: databasePath, library: evidenceLibrary,
         categorizationService: CategorizationService(categorizer: OnDeviceCategorizer.systemDefault()),
-        modelReader: SnapshotMode.isActive ? nil : FoundationModelsDocumentReader())
+        modelReader: SnapshotMode.isActive ? nil : FoundationModelsDocumentReader(),
+        // Read when Confirm import is pressed: whoever is signed in then (auth spec §6).
+        currentAppUserId: { [weak self] in self?.session.currentAppUserId })
 
-    private init(dbQueue: DatabaseQueue, databasePath: String?, evidenceRoot: URL) {
+    private init(dbQueue: DatabaseQueue, databasePath: String?, evidenceRoot: URL, auth: LaunchAuth, session existing: SessionModel?) {
         self.dbQueue = dbQueue
         self.databasePath = databasePath
         self.evidenceRoot = evidenceRoot
+        // A second window on the same database shares the first one's session: one sign-in for every window.
+        // The snapshot build never touches the Keychain or the app's own preferences.
+        self.session = existing ?? (SnapshotMode.isActive
+            ? SessionModel(dbQueue: dbQueue, isSetUp: auth.isSetUp,
+                           biometrics: BiometricUnlock.snapshot(scope: auth.databaseId, defaults: SnapshotMode.defaults),
+                           defaults: SnapshotMode.defaults, snapshotUser: auth.snapshotUser)
+            : SessionModel(dbQueue: dbQueue, isSetUp: auth.isSetUp, biometrics: BiometricUnlock.make(scope: auth.databaseId)))
         self.hmrcRateAutoFetch = HMRCRateAutoFetch(dbQueue: dbQueue)
         self.interestIndexAutoFetch = InterestIndexAutoFetch(dbQueue: dbQueue)
 
@@ -50,8 +68,14 @@ final class AppEnvironment: ObservableObject {
     /// Opens, migrates and seeds the database off the main thread so the window can show
     /// `LaunchView` straight away instead of blocking launch. Throws on any setup failure;
     /// `LaunchView` shows the error instead of crashing.
+    /// How many times `load()` has run in this process: once per main window. The lock overlay must not
+    /// make a window load twice (the snapshot route `auth-launch_loads_once` checks it).
+    private(set) static var loadCount = 0
+
     static func load() async throws -> AppEnvironment {
-        let (dbQueue, dbPath) = try await Task.detached(priority: .userInitiated) {
+        loadCount += 1
+        Logger(subsystem: "com.personal.budget", category: "Launch").info("Loading the environment (load #\(loadCount, privacy: .public))")
+        let (dbQueue, dbPath, auth) = try await Task.detached(priority: .userInitiated) {
             let dbPath: String
             if let override = ProcessInfo.processInfo.environment["BUDGET_DB_PATH"], !override.isEmpty {
                 // Lets the app run against a copy of the database for safe manual testing.
@@ -64,7 +88,13 @@ final class AppEnvironment: ObservableObject {
             }
 
             let manager = try DatabaseManager(path: dbPath)
-            try manager.migrate()
+            // A copy first, so no migration ever runs on the only copy. If it can't be made,
+            // launch stops here with the database untouched.
+            do {
+                try MigrationBackup.backUpThenMigrate(manager: manager, databasePath: dbPath, now: Date())
+            } catch {
+                throw LaunchBackupError(underlying: error)
+            }
             try manager.dbQueue.write { db in
                 try CategorySeeder.seedDefaults(db)
             }
@@ -80,16 +110,36 @@ final class AppEnvironment: ObservableObject {
             } catch {
                 Logger(subsystem: "com.personal.budget", category: "Transfers").error("Transfer matching at launch failed: \(error.localizedDescription, privacy: .public)")
             }
-            return (manager.dbQueue, dbPath)
+            let auth = try manager.dbQueue.write { db in
+                LaunchAuth(isSetUp: try AppUserStore.isSetUp(db), databaseId: try LocalSetting.databaseId(db),
+                           snapshotUser: SnapshotMode.isActive ? try LaunchAuth.snapshotUser(db) : nil)
+            }
+            return (manager.dbQueue, dbPath, auth)
         }.value
         // `Evidence` next to the database: `Application Support/Budget/Evidence` normally, and
         // beside a `BUDGET_DB_PATH` copy when testing against one.
         let evidenceRoot = URL(fileURLWithPath: dbPath).deletingLastPathComponent().appendingPathComponent("Evidence", isDirectory: true)
-        let environment = AppEnvironment(dbQueue: dbQueue, databasePath: dbPath, evidenceRoot: evidenceRoot)
+        let existing = Current.shared.environment.flatMap { $0.databasePath == dbPath ? $0.session : nil }
+        let environment = AppEnvironment(dbQueue: dbQueue, databasePath: dbPath, evidenceRoot: evidenceRoot, auth: auth, session: existing)
         AppEnvironment.Current.shared.environment = environment
         // Every transaction's paperclip count, kept current from here on.
         TransactionDocumentCounts.shared.start(dbQueue: dbQueue)
         return environment
+    }
+
+    /// What the session needs from the database at launch, read with the migration off the main thread.
+    private struct LaunchAuth: Sendable {
+        let isSetUp: Bool
+        /// Scopes this Mac's Touch ID enrolment to this database.
+        let databaseId: String
+        let snapshotUser: AppUser?
+
+        /// The demo database's first app user, else a stand-in for its first person (snapshot build only).
+        static func snapshotUser(_ db: Database) throws -> AppUser? {
+            if let user = try AppUserStore.signInCandidates(db).first { return user }
+            guard let person = try Person.order(Column("id")).fetchOne(db), let personId = person.id else { return nil }
+            return AppUser(personId: personId, displayName: person.name, isAdmin: true, createdAt: AppClock.now)
+        }
     }
 
     /// The most recently loaded environment, for scenes without a main window of their own

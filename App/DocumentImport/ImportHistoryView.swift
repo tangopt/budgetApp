@@ -50,6 +50,7 @@ struct ImportHistoryView: View {
                     .frame(minWidth: Self.tableMinimumWidth, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     if let run = selectedRun, let runId = run.id {
                         ImportRunDetailPanel(run: run, files: center.runFiles[runId] ?? [],
+                                             confirmedBy: run.appUserId.flatMap { center.userNames[$0] },
                                              conflicts: center.undoRefusals[runId] ?? [],
                                              undo: { _ = try await center.undo(runId) },
                                              dismissConflicts: { center.dismissUndoRefusal(runId) },
@@ -106,6 +107,8 @@ struct ImportHistoryTable: View {
 struct ImportRunDetailPanel: View {
     let run: ImportRun
     let files: [ImportRunFile]
+    /// Who confirmed it (nil: unknown, or the user is gone).
+    var confirmedBy: String?
     /// Why the last undo was refused (what changed since).
     let conflicts: [ImportUndoConflict]
     /// Undoes the run, or records why it can't be; throws when the run is gone or already undone.
@@ -172,6 +175,9 @@ struct ImportRunDetailPanel: View {
                     Text("· \(run.entryPoint)").font(.caption).lineLimit(1)
                 }
                 .foregroundStyle(.secondary)
+                if let confirmedBy {
+                    Text("Confirmed by \(confirmedBy)").font(.caption).foregroundStyle(.secondary)
+                }
                 if run.undoneAt != nil {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         StatusPill("Undone", tone: .neutral)

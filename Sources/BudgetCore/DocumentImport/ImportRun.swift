@@ -12,10 +12,12 @@ public struct ImportRun: Codable, Equatable, Identifiable, FetchableRecord, Muta
     public var reasonsJSON: String?
     public var undoneAt: Date?
     public var undoSummary: String?
+    /// Who confirmed the run; nil for the CLI tools and for runs before sign-in existed.
+    public var appUserId: Int64?
 
     public init(id: Int64? = nil, confirmedAt: Date, entryPoint: String, summary: String,
                 backupPath: String? = nil, reasonsJSON: String? = nil,
-                undoneAt: Date? = nil, undoSummary: String? = nil) {
+                undoneAt: Date? = nil, undoSummary: String? = nil, appUserId: Int64? = nil) {
         self.id = id
         self.confirmedAt = confirmedAt
         self.entryPoint = entryPoint
@@ -24,6 +26,7 @@ public struct ImportRun: Codable, Equatable, Identifiable, FetchableRecord, Muta
         self.reasonsJSON = reasonsJSON
         self.undoneAt = undoneAt
         self.undoSummary = undoSummary
+        self.appUserId = appUserId
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }

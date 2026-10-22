@@ -16,9 +16,32 @@ public struct ImportRuleRow: Equatable, Identifiable, Sendable {
     public var isEnabled: Bool
     /// Its account or record no longer exists: every applier skips it.
     public var targetMissing: Bool
+    /// Display names of who taught it and who last re-taught it (nil: unknown, or the user is gone).
+    public var createdByName: String?
+    public var lastLearntByName: String?
+    /// The users behind those names; compared as ids, since two users can share a name.
+    public var createdByAppUserId: Int64?
+    public var lastLearntByAppUserId: Int64?
+
+    /// "Learnt from Ana's correction", plus " · updated by Ben" when another user taught it last;
+    /// "Updated by Ben" when the creator is unknown; nil when no one is known.
+    public var attributionLabel: String? {
+        switch (createdByName, lastLearntByName) {
+        case let (creator?, last):
+            let text = "Learnt from \(creator)'s correction"
+            guard let last, lastLearntByAppUserId != createdByAppUserId else { return text }
+            return text + " · updated by \(last)"
+        case let (nil, last?):
+            return "Updated by \(last)"
+        case (nil, nil):
+            return nil
+        }
+    }
 
     public init(id: Int64, kind: ImportRuleKind, kindLabel: String, when: String, then: String, useCount: Int,
-                lastUsedAt: Date?, isEnabled: Bool, targetMissing: Bool) {
+                lastUsedAt: Date?, isEnabled: Bool, targetMissing: Bool,
+                createdByName: String? = nil, lastLearntByName: String? = nil,
+                createdByAppUserId: Int64? = nil, lastLearntByAppUserId: Int64? = nil) {
         self.id = id
         self.kind = kind
         self.kindLabel = kindLabel
@@ -28,6 +51,10 @@ public struct ImportRuleRow: Equatable, Identifiable, Sendable {
         self.lastUsedAt = lastUsedAt
         self.isEnabled = isEnabled
         self.targetMissing = targetMissing
+        self.createdByName = createdByName
+        self.lastLearntByName = lastLearntByName
+        self.createdByAppUserId = createdByAppUserId
+        self.lastLearntByAppUserId = lastLearntByAppUserId
     }
 }
 
@@ -95,12 +122,16 @@ public enum ImportRuleEditing {
 
     /// Every learnt rule, oldest first.
     public static func rows(db: Database) throws -> [ImportRuleRow] {
-        try ImportRuleStore.all(db: db).compactMap { rule in
+        let names = Dictionary(uniqueKeysWithValues: try AppUser.fetchAll(db).compactMap { user in user.id.map { ($0, user.displayName) } })
+        return try ImportRuleStore.all(db: db).compactMap { rule in
             guard let id = rule.id else { return nil }
             let missing = try targetMissing(db: db, rule)
             return ImportRuleRow(id: id, kind: rule.kind, kindLabel: kindLabel(rule.kind), when: rule.matchLabel,
                                  then: missing ? rule.actionLabel : try currentLabel(db: db, rule) ?? rule.actionLabel,
-                                 useCount: rule.useCount, lastUsedAt: rule.lastUsedAt, isEnabled: rule.isEnabled, targetMissing: missing)
+                                 useCount: rule.useCount, lastUsedAt: rule.lastUsedAt, isEnabled: rule.isEnabled, targetMissing: missing,
+                                 createdByName: rule.createdByAppUserId.flatMap { names[$0] },
+                                 lastLearntByName: rule.lastLearntByAppUserId.flatMap { names[$0] },
+                                 createdByAppUserId: rule.createdByAppUserId, lastLearntByAppUserId: rule.lastLearntByAppUserId)
         }
     }
 

@@ -78,6 +78,10 @@ final class ImportCenterModel: ObservableObject {
     @Published private(set) var runs: [ImportRun] = []
     /// Each run's files (what became of each), by run.
     @Published private(set) var runFiles: [Int64: [ImportRunFile]] = [:]
+    /// Display names of the app users, for "Confirmed by <name>" in the history.
+    @Published private(set) var userNames: [Int64: String] = [:]
+    /// The signed-in app user, read when Confirm is pressed (Task 6 wires it to the session); nil: nobody.
+    private let currentAppUserId: () -> Int64?
     /// The run whose details the history shows beside it.
     @Published var selectedRunId: Int64?
     /// Why the last Undo import… of a run was refused (what changed since), shown with its
@@ -152,8 +156,9 @@ final class ImportCenterModel: ObservableObject {
 
     /// `modelReader`: the on-device model asked about what nothing else recognises (nil: never asked).
     init(dbQueue: DatabaseQueue, databasePath: String?, library: EvidenceLibrary, categorizationService: CategorizationService,
-         modelReader: (any DocumentModelReading)?) {
+         modelReader: (any DocumentModelReading)?, currentAppUserId: @escaping () -> Int64? = { nil }) {
         self.dbQueue = dbQueue
+        self.currentAppUserId = currentAppUserId
         self.library = library
         self.libraryCounts = ImportLibraryCounts(dbQueue: dbQueue)
         #if SNAPSHOTS
@@ -199,6 +204,8 @@ final class ImportCenterModel: ObservableObject {
         panel.prompt = "Import"
         panel.message = message
         guard panel.runModal() == .OK, !panel.urls.isEmpty else { return nil }
+        // Mango locked while the panel was open (the lock cancels it, but a choice may have just landed).
+        guard SessionModel.appCanActOnData else { return nil }
         return panel.urls
     }
 
@@ -507,13 +514,15 @@ final class ImportCenterModel: ObservableObject {
         let pipeline = pipeline
         let entryPoint = reviewEntryPoint ?? "Import"
         let now = AppClock.now
+        // Whoever is signed in now, not whoever opened the review (the lock may have changed hands).
+        let confirmedBy = currentAppUserId()
         phase = .applying
         problem = nil
         Task { [weak self] in
             await previous?.value
             guard let self, let plan = self.plan else { return }
             let result = await Task.detached(priority: .userInitiated) { () -> Result<ImportRunSummary, Error> in
-                Result { try applier.apply(plan, entryPoint: entryPoint, reasons: plan.resolutionReasons, now: now) }
+                Result { try applier.apply(plan, entryPoint: entryPoint, reasons: plan.resolutionReasons, confirmedBy: confirmedBy, now: now) }
             }.value
             // The batch would move a filed return: every item is checked again so the holds
             // land on the items that cause it.
@@ -825,17 +834,19 @@ final class ImportCenterModel: ObservableObject {
     /// `loadRuns`, finished when the history is read.
     func reloadRuns() async {
         let dbQueue = dbQueue
-        let result = await Task.detached(priority: .userInitiated) { () -> Result<([ImportRun], [ImportRunFile]), Error> in
+        let result = await Task.detached(priority: .userInitiated) { () -> Result<([ImportRun], [ImportRunFile], [Int64: String]), Error> in
             Result {
                 try dbQueue.read { db in
                     (try ImportRun.order(Column("confirmedAt").desc, Column("id").desc).fetchAll(db),
-                     try ImportRunFile.order(Column("runId"), Column("id")).fetchAll(db))
+                     try ImportRunFile.order(Column("runId"), Column("id")).fetchAll(db),
+                     Dictionary(uniqueKeysWithValues: try AppUser.fetchAll(db).compactMap { user in user.id.map { ($0, user.displayName) } }))
                 }
             }
         }.value
         switch result {
-        case .success(let (runs, files)):
+        case .success(let (runs, files, names)):
             self.runs = runs
+            userNames = names
             runFiles = Dictionary(grouping: files, by: \.runId)
             if let selected = selectedRunId, !runs.contains(where: { $0.id == selected }) { selectedRunId = nil }
         case .failure(let error):

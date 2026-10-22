@@ -18,9 +18,10 @@ public enum ImportEffects {
     /// record once the item's document is linked there (never the item's own document; never deleted). The importer calls it after filing the document (`documentId`); the
     /// filed-year guard calls it with a placeholder document, so it checks exactly what apply
     /// does. The batch's follow-on matching runs after all items (`followOns`).
-    public static func applyRecords(db: Database, item: ImportItem, documentId: Int64?, importRunId: Int64?) throws {
+    public static func applyRecords(db: Database, item: ImportItem, documentId: Int64?, importRunId: Int64?,
+                                    confirmedBy appUserId: Int64? = nil) throws {
         do {
-            try perform(db: db, item.effect, documentId: documentId, importRunId: importRunId)
+            try perform(db: db, item.effect, documentId: documentId, importRunId: importRunId, confirmedBy: appUserId)
         } catch let error as RechargeError where error == .duplicateInvoice || error == .invoiceForPeriodRecorded || error == .duplicateInvoiceNumber {
             // An invoice recorded since it was read (or a corrected version recorded anyway):
             // never a second record; review again.
@@ -142,7 +143,7 @@ public enum ImportEffects {
     /// (`StatementCheck.compare`), else `ImportApplyError.planOutdated("BBVA mortgage balance …")`.
     /// Last, the accounts chosen in the review are learnt (`ImportRuleStore.learn`, inside the run)
     /// and the learnt rules that named its accounts marked used.
-    static func performBBVA(db: Database, _ statement: BBVAStatementEffect, importRunId: Int64?) throws {
+    static func performBBVA(db: Database, _ statement: BBVAStatementEffect, importRunId: Int64?, confirmedBy appUserId: Int64? = nil) throws {
         let sourceFileName = "BBVA extrato \(statement.statement.label)"
         let finish = StatementFinish(closing: statement.closing, addAdjustment: false)
         if statement.staged.isEmpty {
@@ -198,7 +199,7 @@ public enum ImportEffects {
             guard let accountId = statement.learnAccounts[role], let (key, label) = BBVAStatementReader.ruleKey(role, statement.statement) else { continue }
             let name = accounts.first { $0.id == accountId }?.displayName ?? "Account #\(accountId)"
             try ImportRuleStore.learn(db: db, kind: .statementAccount, key: key, matchLabel: label, action: StatementAccountAction(accountId: accountId),
-                                      actionLabel: "Account: \(name)", now: Date())
+                                      actionLabel: "Account: \(name)", now: Date(), by: appUserId)
         }
         if !statement.rememberedRuleIds.isEmpty {
             try ImportRuleStore.markUsed(db: db, ids: statement.rememberedRuleIds, now: Date())
@@ -216,12 +217,13 @@ public enum ImportEffects {
                                             + "\(found.loan?.displayName ?? "the mortgage") would owe \(Money.format(-found.mismatch.computedMinorUnits, currency: currency))")
     }
 
-    public static func perform(db: Database, _ effect: ImportEffect, documentId: Int64?, importRunId: Int64?) throws {
+    public static func perform(db: Database, _ effect: ImportEffect, documentId: Int64?, importRunId: Int64?,
+                               confirmedBy appUserId: Int64? = nil) throws {
         switch effect {
         case .file, .none:
             return
         case .bbvaStatement(let statement):
-            try performBBVA(db: db, statement, importRunId: importRunId)
+            try performBBVA(db: db, statement, importRunId: importRunId, confirmedBy: appUserId)
         case .rentReceiptsExport(let propertyId, let rows):
             try RentReceiptImport.run(db: db, propertyId: propertyId, rows: rows)
         case .rentReceiptPDF(let planned):
@@ -264,7 +266,7 @@ public enum ImportEffects {
             if let learn = statement.learnAccount {
                 let name = try Account.fetchOne(db, key: learn.accountId)?.displayName ?? "Account #\(learn.accountId)"
                 try ImportRuleStore.learn(db: db, kind: .statementAccount, key: learn.key, matchLabel: learn.label,
-                                          action: StatementAccountAction(accountId: learn.accountId), actionLabel: "Account: \(name)", now: Date())
+                                          action: StatementAccountAction(accountId: learn.accountId), actionLabel: "Account: \(name)", now: Date(), by: appUserId)
             }
             if let ruleId = statement.rememberedRuleId {
                 try ImportRuleStore.markUsed(db: db, ids: [ruleId], now: Date())

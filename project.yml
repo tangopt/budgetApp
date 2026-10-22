@@ -1,11 +1,11 @@
-name: Budget
+name: Mango
 options:
   bundleIdPrefix: ubberninja
 packages:
   BudgetCore:
     path: .
 targets:
-  Budget:
+  Mango:
     type: application
     platform: macOS
     deploymentTarget: "26.0"
@@ -21,14 +21,15 @@ targets:
       properties:
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.personal.budget.account-reference
-            UTTypeDescription: Budget account reference
+            UTTypeDescription: Mango account reference
             UTTypeConformsTo: [public.data]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ubberninja.mango
+        PRODUCT_NAME: Mango
         MARKETING_VERSION: "0.2.0"
         # Bump on icon changes: macOS caches app icons per bundle id + version.
-        CURRENT_PROJECT_VERSION: "3"
+        CURRENT_PROJECT_VERSION: "4"
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:

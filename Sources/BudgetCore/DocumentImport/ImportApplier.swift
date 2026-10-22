@@ -79,7 +79,10 @@ public struct ImportApplier: Sendable {
     }
 
     /// `reasons`: the user's reason per item (by item id), kept with the run and on each file.
-    public func apply(_ plan: ImportPlan, entryPoint: String, reasons: [UUID: String] = [:], now: Date = Date()) throws -> ImportRunSummary {
+    /// `confirmedBy`: the app user signed in when Confirm was pressed (nil: a tool), kept with the run
+    /// and on the rules it learns.
+    public func apply(_ plan: ImportPlan, entryPoint: String, reasons: [UUID: String] = [:], confirmedBy appUserId: Int64? = nil,
+                      now: Date = Date()) throws -> ImportRunSummary {
         guard plan.canConfirm else { throw ImportApplyError.notConfirmable }
         let applied = Self.appliedItems(plan)
         // A file that couldn't be read has no real hash: it is never filed.
@@ -95,7 +98,7 @@ public struct ImportApplier: Sendable {
             return try withSourceFolders(folderIds) { roots in
                 try dbQueue.write { db in
                     do {
-                        return try applyAll(db: db, plan: plan, applied: applied, entryPoint: entryPoint, reasons: reasons,
+                        return try applyAll(db: db, plan: plan, applied: applied, entryPoint: entryPoint, reasons: reasons, appUserId: appUserId,
                                             backupPath: backupPath, folderRoots: roots, now: now, placed: &placed)
                     } catch {
                         try? ImportChangeCapture.cancel(db: db)
@@ -239,11 +242,11 @@ public struct ImportApplier: Sendable {
 
     // MARK: The write
 
-    private func applyAll(db: Database, plan: ImportPlan, applied: [ImportItem], entryPoint: String, reasons: [UUID: String],
+    private func applyAll(db: Database, plan: ImportPlan, applied: [ImportItem], entryPoint: String, reasons: [UUID: String], appUserId: Int64?,
                        backupPath: String?, folderRoots: [Int64: URL], now: Date, placed: inout [URL]) throws -> ImportRunSummary {
         try Self.checkCurrent(db: db, applied)
         var run = ImportRun(confirmedAt: now, entryPoint: entryPoint, summary: "", backupPath: backupPath,
-                            reasonsJSON: try Self.reasonsJSON(reasons))
+                            reasonsJSON: try Self.reasonsJSON(reasons), appUserId: appUserId)
         try run.insert(db)
         let runId = run.id!
         try ImportChangeCapture.begin(db: db)
@@ -278,7 +281,7 @@ public struct ImportApplier: Sendable {
             } else {
                 touched = nil
             }
-            try ImportEffects.applyRecords(db: db, item: item, documentId: documentId, importRunId: runId)
+            try ImportEffects.applyRecords(db: db, item: item, documentId: documentId, importRunId: runId, confirmedBy: appUserId)
             if let folderId = filing.sourceFolderId {
                 try db.execute(sql: "UPDATE sourceFile SET documentId = ? WHERE folderId = ? AND sha256 = ? AND documentId IS NULL",
                                arguments: [documentId, folderId, item.file.sha256])
@@ -290,7 +293,7 @@ public struct ImportApplier: Sendable {
         let (learnable, learningNotes) = ImportLearning.learnable(applied.flatMap(\.ruleDrafts))
         for draft in learnable {
             try ImportRuleStore.learn(db: db, kind: draft.kind, key: draft.key, matchLabel: draft.matchLabel,
-                                      actionJSON: draft.actionJSON, actionLabel: draft.actionLabel, now: now)
+                                      actionJSON: draft.actionJSON, actionLabel: draft.actionLabel, now: now, by: appUserId)
         }
         let used = applied.flatMap { $0.appliedRules.map(\.ruleId) }
         if !used.isEmpty { try ImportRuleStore.markUsed(db: db, ids: used, now: now) }

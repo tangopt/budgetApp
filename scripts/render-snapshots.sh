@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Renders every screen, tab and main sheet of Budget to PNGs from the synthetic demo database
+# Renders every screen, tab and main sheet of Mango to PNGs from the synthetic demo database
 # (the UI snapshot harness: App/Snapshots, Sources/BudgetDemo). This is the only way to run the
 # app binary from a script: a snapshot build (compiled with SNAPSHOTS, its own bundle id) that
 # runs nothing but the harness, always on a freshly built demo database, in an off-screen
@@ -56,7 +56,7 @@ if [[ -e "$OUT" ]]; then
     fi
 fi
 mkdir -p "$OUT"
-echo "Budget UI snapshots (scripts/render-snapshots.sh)." > "$MARKER"
+echo "Mango UI snapshots (scripts/render-snapshots.sh)." > "$MARKER"
 
 cd "$(dirname "$0")/.."
 SCRATCH="${SNAPSHOT_SCRATCH:-${TMPDIR:-/tmp}/budget-snapshots}"
@@ -64,13 +64,13 @@ mkdir -p "$SCRATCH"
 DERIVED="$SCRATCH/dd-ui.noindex"
 BUNDLE_ID="com.personal.budget.snapshots"
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-APP="$DERIVED/Build/Products/Debug/Budget.app"
+APP="$DERIVED/Build/Products/Debug/Mango.app"
 cleanup() {
     "$LSREGISTER" -u "$APP" 2>/dev/null || true
     defaults delete "$BUNDLE_ID" 2>/dev/null || true
     defaults delete com.personal.budget.snapshot-storage 2>/dev/null || true
     # The snapshot build runs nothing but the harness; it isn't left lying around either.
-    if [[ "$APP" == "$DERIVED/Build/Products/Debug/Budget.app" && -d "$APP" ]]; then
+    if [[ "$APP" == "$DERIVED/Build/Products/Debug/Mango.app" && -d "$APP" ]]; then
         rm -rf "$APP"
     fi
 }
@@ -80,7 +80,7 @@ echo "Building the app (Debug, snapshot build)…"
 BUILD_LOG="$SCRATCH/render-build.log"
 xcodegen generate >/dev/null
 # Always signed to run locally, never with the team (its own bundle id has no registered profile).
-if ! xcodebuild -project Budget.xcodeproj -scheme Budget -configuration Debug -destination 'platform=macOS,arch=arm64' \
+if ! xcodebuild -project Mango.xcodeproj -scheme Mango -configuration Debug -destination 'platform=macOS,arch=arm64' \
         -derivedDataPath "$DERIVED" PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
         DEVELOPMENT_TEAM= CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- CODE_SIGN_ENTITLEMENTS= ENABLE_HARDENED_RUNTIME=NO \
         SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) SNAPSHOTS' build > "$BUILD_LOG" 2>&1 \
@@ -89,7 +89,7 @@ if ! xcodebuild -project Budget.xcodeproj -scheme Budget -configuration Debug -d
     echo "Build failed (log: $BUILD_LOG)." >&2
     exit 1
 fi
-[[ -x "$APP/Contents/MacOS/Budget" ]] || { echo "Build failed: no app at $APP." >&2; exit 1; }
+[[ -x "$APP/Contents/MacOS/Mango" ]] || { echo "Build failed: no app at $APP." >&2; exit 1; }
 
 echo "Building the demo database…"
 SPM_LOG="$SCRATCH/render-spm.log"
@@ -108,5 +108,5 @@ if (( ! ${@[(Ie)--only]} )); then
     rm -f "$OUT"/*.png(N) "$OUT/index.html" "$OUT/wrap-report.txt"
 fi
 echo "Rendering…"
-BUDGET_DB_PATH="$OUT/demo.sqlite" "$APP/Contents/MacOS/Budget" --render-snapshots "$OUT" "$@"
+BUDGET_DB_PATH="$OUT/demo.sqlite" "$APP/Contents/MacOS/Mango" --render-snapshots "$OUT" "$@"
 echo "Open $OUT/index.html"

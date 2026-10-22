@@ -323,7 +323,8 @@ final class TaxYearsViewModel: ObservableObject {
         panel.canCreateDirectories = true
         panel.prompt = "Export here"
         panel.message = "Choose where to put the evidence folder."
-        guard panel.runModal() == .OK, let parent = panel.url else { return }
+        // Nothing is written if Mango locked while the panel was open.
+        guard panel.runModal() == .OK, let parent = panel.url, SessionModel.appCanActOnData else { return }
         let files: [TaxEvidencePack.File]
         do {
             files = try dbQueue.read { db in try TaxEvidencePack.files(db: db, accounts: accounts, taxYearId: page.row.taxYearId) }
@@ -374,7 +375,8 @@ final class TaxYearsViewModel: ObservableObject {
         panel.nameFieldStringValue = suggestedName
         panel.allowedContentTypes = [type]
         panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        // Nothing is written if Mango locked while the panel was open.
+        guard panel.runModal() == .OK, let url = panel.url, SessionModel.appCanActOnData else { return }
         do {
             try data.write(to: url, options: .atomic)
             infoMessage = "Saved “\(url.lastPathComponent)”."

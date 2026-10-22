@@ -94,6 +94,8 @@ struct ContentView: View {
     /// Files are being dragged over the window (the import drop target's outline).
     @State private var importDropTargeted = false
     @Environment(\.theme) private var theme
+    /// The lock screen covers this window (`lockOverlay`).
+    @Environment(\.isLockCovered) private var lockCovered
 
     // Each screen's view model is owned once by ContentView and handed down as a
     // stable reference, rather than reconstructed inline in the switch below on
@@ -214,13 +216,16 @@ struct ContentView: View {
             // The sidebar's selection keeps the system accent whatever the theme.
             .tint(nil)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                SidebarSettingsButton()
+                SidebarFooter(session: environment.session)
             }
             // The whole column, title bar and Settings button included: without it the sidebar is
             // the content area's colour in dark mode (see `SidebarMaterial`).
             .background { SidebarMaterial().ignoresSafeArea() }
             // Replaced by the borderless toggle below.
             .toolbar(removing: .sidebarToggle)
+            // The sidebar column is hosted apart from the window's root, so the lock overlay's own hiding
+            // doesn't reach it: it hides itself while covered.
+            .opacity(lockCovered ? 0 : 1)
         } detail: {
             Group {
                 switch selection {
@@ -274,7 +279,8 @@ struct ContentView: View {
                     Text("Select a screen from the sidebar.")
                 }
             }
-            .navigationTitle(selection == .property ? (propertyName ?? "Property") : (selection?.rawValue ?? "Budget"))
+            // "Mango" while covered: the screen's name would say what's under the lock.
+            .navigationTitle(lockCovered ? "Mango" : selection == .property ? (propertyName ?? "Property") : (selection?.rawValue ?? "Mango"))
             .onReceive(propertyViewModel.$snapshot) { snapshot in
                 if snapshot.property?.name != propertyName { propertyName = snapshot.property?.name }
             }
@@ -283,26 +289,30 @@ struct ContentView: View {
             .modifier(ImportDropOutline(isTargeted: importDropTargeted))
             .dropDestination(for: URL.self) { urls, _ in
                 let files = urls.filter(\.isFileURL)
-                guard !files.isEmpty else { return false }
+                // Nothing reaches the importer while Mango is locked or a step after signing in is open.
+                guard !files.isEmpty, environment.session.canActOnData else { return false }
                 environment.importCenter.start(files, intent: .none, entryPoint: "Drop")
                 return true
             } isTargeted: { importDropTargeted = $0 }
             // The theme's window colour behind every screen (clear for Classic).
             .background(theme.windowBackground.ignoresSafeArea())
             .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    SidebarToggleButton(columnVisibility: $columnVisibility)
-                }
-                .sharedBackgroundVisibility(.hidden)
-                ToolbarItem(placement: .primaryAction) {
-                    Button { documentImport.pickFiles(.none, "Toolbar") } label: {
-                        Label("Import…", systemImage: "square.and.arrow.down.on.square")
+                // None while the lock screen covers the window.
+                if !lockCovered {
+                    ToolbarItem(placement: .navigation) {
+                        SidebarToggleButton(columnVisibility: $columnVisibility)
                     }
-                    .buttonStyle(.borderless)
-                    .help("Import documents (⇧⌘I)")
-                    .accessibilityLabel("Import documents")
+                    .sharedBackgroundVisibility(.hidden)
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { documentImport.pickFiles(.none, "Toolbar") } label: {
+                            Label("Import…", systemImage: "square.and.arrow.down.on.square")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Import documents (⇧⌘I)")
+                        .accessibilityLabel("Import documents")
+                    }
+                    .sharedBackgroundVisibility(.hidden)
                 }
-                .sharedBackgroundVisibility(.hidden)
             }
         }
         .environment(\.documentImport, documentImport)
@@ -340,13 +350,11 @@ struct ContentView: View {
         .onChange(of: sidebarSelection) { _, newValue in sidebarSelectionChanged(to: newValue) }
         // Observes the phase alone, so the window isn't redrawn by every progress tick.
         .onReceive(environment.importCenter.$phase.map(Self.isActiveImport).removeDuplicates()) { importActive = $0 }
-        // ⌘F (Edit ▸ Search Transactions) in this window: the Search screen, its field focused.
-        .focusedSceneValue(\.transactionSearch, TransactionSearchAction {
+        // ⌘F (Edit ▸ Search Transactions) and File ▸ Import… (⇧⌘I) in this window, only while signed in.
+        .modifier(SignedInCommands(session: environment.session, search: TransactionSearchAction {
             sidebarSelectionChanged(to: .screen(.search))
             searchViewModel.requestFocus()
-        })
-        // File ▸ Import… (⇧⌘I) in this window.
-        .focusedSceneValue(\.documentImport, documentImport)
+        }, documentImport: documentImport))
         .onChange(of: selection) {
             // Screens can also be changed in code (the Dashboard's links, the alert below).
             if sidebarSelection != currentSidebarItem { sidebarSelection = currentSidebarItem }
@@ -484,24 +492,57 @@ struct ContentView: View {
     }
 }
 
+/// The window's menu actions, published only while someone is signed in and nothing covers the window
+/// (locked, or the new password after a recovery key, the Touch ID offer): a covered window's menus do nothing.
+private struct SignedInCommands: ViewModifier {
+    @ObservedObject var session: SessionModel
+    let search: TransactionSearchAction
+    let documentImport: DocumentImportAction
 
-/// The sidebar's foot: opens the Settings window (also Budget ▸ Settings…, ⌘,).
-private struct SidebarSettingsButton: View {
+    func body(content: Content) -> some View {
+        let usable = session.canActOnData
+        content
+            .focusedSceneValue(\.transactionSearch, usable ? search : nil)
+            .focusedSceneValue(\.documentImport, usable ? documentImport : nil)
+    }
+}
+
+/// The sidebar's foot: who is signed in (their initials), the lock button (auth spec §6) and Settings.
+private struct SidebarFooter: View {
+    @ObservedObject var session: SessionModel
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        Button {
-            openSettings()
-        } label: {
-            Image(systemName: "gearshape")
-                .imageScale(.large)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+        HStack(spacing: 8) {
+            // Initials only: the sidebar is narrow, and the name is in the help.
+            if let user = session.currentUser {
+                UserAvatar(name: user.displayName, size: 24)
+                    .help("Signed in as \(user.displayName)")
+                    .accessibilityElement()
+                    .accessibilityLabel("Signed in as \(user.displayName)")
+            }
+            Spacer(minLength: 4)
+            Button { session.lock() } label: {
+                Image(systemName: "lock")
+                    .imageScale(.large)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Lock Mango (⌃⌘L)")
+            .accessibilityLabel("Lock")
+            Button {
+                openSettings()
+            } label: {
+                Image(systemName: "gearshape")
+                    .imageScale(.large)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Settings")
+            .accessibilityLabel("Settings")
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .help("Settings")
-        .accessibilityLabel("Settings")
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 14)

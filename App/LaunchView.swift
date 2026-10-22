@@ -3,7 +3,8 @@ import SwiftUI
 import AppKit
 
 /// Root view of the main window. Shows the splash (icon, name, spinner) while
-/// `AppEnvironment.load()` opens the database, then cross-fades to `ContentView`.
+/// `AppEnvironment.load()` opens the database, then cross-fades to `ContentView` — or to the setup
+/// flow while nobody can sign in yet (auth spec §6). The lock overlay is the root's (`lockOverlay`).
 /// A setup failure stays on this screen with the error and a Quit button.
 struct LaunchView: View {
     private enum Phase {
@@ -28,7 +29,7 @@ struct LaunchView: View {
                 }
                 .transition(.opacity)
             case .ready(let environment):
-                ContentView(environment: environment)
+                SessionRoot(environment: environment, session: environment.session)
                     .transition(.opacity)
             case .failed(let message):
                 splash(iconSize: 64, showsName: false) {
@@ -65,12 +66,28 @@ struct LaunchView: View {
                 .interpolation(.high)
                 .frame(width: iconSize, height: iconSize)
             if showsName {
-                Text("Budget")
+                Text("Mango")
                     .font(.title2.weight(.medium))
             }
             footer()
         }
         .padding(32)
         .frame(minWidth: 560, maxWidth: .infinity, minHeight: 360, maxHeight: .infinity)
+    }
+}
+
+/// Setup until someone can sign in, then the content (under the lock overlay while locked).
+private struct SessionRoot: View {
+    let environment: AppEnvironment
+    @ObservedObject var session: SessionModel
+
+    var body: some View {
+        if session.state == .notSetUp {
+            SetupFlowView(model: SetupModel(session: session))
+                .transition(.opacity)
+        } else {
+            ContentView(environment: environment)
+                .transition(.opacity)
+        }
     }
 }

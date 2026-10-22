@@ -36,6 +36,11 @@ public final class DatabaseManager {
         return (known.filter { !applied.contains($0) }, applied.filter { !known.contains($0) }.sorted())
     }
 
+    /// Whether this build has migrations the database hasn't run yet.
+    public func hasPendingMigrations() throws -> Bool {
+        try !migrationStatus().pending.isEmpty
+    }
+
     /// Individual model files append their own migration in an extension
     /// on this function via `registerMigrations(_:)` overloads is not
     /// possible in Swift, so each model file defines a free function
@@ -108,5 +113,6 @@ public final class DatabaseManager {
         registerTaxPolicyReceiptItemsMigration(&migrator)
         registerImportRunMigration(&migrator)
         registerImportRuleMigration(&migrator)
+        registerAppUserMigration(&migrator)
     }
 }

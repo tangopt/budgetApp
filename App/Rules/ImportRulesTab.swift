@@ -49,6 +49,9 @@ struct ImportRulesTab: View {
             TableColumn("Then") { row in
                 HStack(spacing: 6) {
                     Text(row.then).lineLimit(1).truncationMode(.tail).help(row.then)
+                    if let who = row.attributionLabel {
+                        Text(who).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(who)
+                    }
                     if row.targetMissing {
                         StatusPill("Target missing", tone: .warning,
                                    help: "Its account or record no longer exists: the importer skips this rule. Edit it or delete it.")
