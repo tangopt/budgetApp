@@ -191,7 +191,7 @@ final class BudgetGridViewModel: ObservableObject {
         // Accounts and the rate before `transactions`: the actuals are converted to GBP with them.
         accounts = try dbQueue.read { db in try Account.fetchAll(db) }.sortedForDisplay()
         exchangeRate = try dbQueue.read { db in try ExchangeRateSetting.currentOrDefault(db: db) }
-        transactions = try dbQueue.read { db in try Transaction.fetchAll(db) }
+        transactions = try dbQueue.read { db in try LocalActualsSource().transactions(db) }
         forecastEntries = try dbQueue.read { db in try ForecastEntry.budget(db) }
         forecastGroups = try dbQueue.read { db in try ForecastGroup.fetchAll(db) }
         exceptions = try dbQueue.read { db in try PlannedOccurrenceException.fetchAll(db) }
