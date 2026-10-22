@@ -5,3 +5,11 @@ DerivedData/
 .DS_Store
 .superpowers/
 Config/Signing.local.xcconfig
+
+# Signing and API keys never go into the repo
+keys/
+*.p8
+*.p12
+*.cer
+*.mobileprovision
+*.provisionprofile
