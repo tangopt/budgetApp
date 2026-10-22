@@ -28,9 +28,14 @@ public struct ImportRule: Codable, Equatable, Identifiable, FetchableRecord, Mut
     public var createdAt: Date
     public var lastUsedAt: Date?
     public var useCount: Int
+    /// Set on insert, kept on update; nil for the CLI tools and for rules learnt before sign-in existed.
+    public var createdByAppUserId: Int64?
+    /// Set on insert and on every re-learn.
+    public var lastLearntByAppUserId: Int64?
 
     public init(id: Int64? = nil, kind: ImportRuleKind, matchKey: String, matchLabel: String, actionJSON: String,
-                actionLabel: String, isEnabled: Bool = true, createdAt: Date, lastUsedAt: Date? = nil, useCount: Int = 0) {
+                actionLabel: String, isEnabled: Bool = true, createdAt: Date, lastUsedAt: Date? = nil, useCount: Int = 0,
+                createdByAppUserId: Int64? = nil, lastLearntByAppUserId: Int64? = nil) {
         self.id = id
         self.kind = kind
         self.matchKey = matchKey
@@ -41,6 +46,8 @@ public struct ImportRule: Codable, Equatable, Identifiable, FetchableRecord, Mut
         self.createdAt = createdAt
         self.lastUsedAt = lastUsedAt
         self.useCount = useCount
+        self.createdByAppUserId = createdByAppUserId
+        self.lastLearntByAppUserId = lastLearntByAppUserId
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }

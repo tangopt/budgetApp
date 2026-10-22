@@ -113,5 +113,6 @@ public final class DatabaseManager {
         registerTaxPolicyReceiptItemsMigration(&migrator)
         registerImportRunMigration(&migrator)
         registerImportRuleMigration(&migrator)
+        registerAppUserMigration(&migrator)
     }
 }
