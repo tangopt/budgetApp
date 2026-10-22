@@ -12,8 +12,10 @@ says otherwise. Data, sync and access: `2026-10-22-sync-and-access-design.md`.
 - categorising;
 - the monthly utility recharges for the tenancy.
 
-Forecasting, scenarios, tax preparation and complex set-up (accounts, properties, bank layouts,
-categories, rules editing) stay on the Mac. The iPad shows their results read-only where useful.
+Forecasting, scenarios, tax preparation and complex set-up (properties, bank layouts, categories,
+rules editing) stay on the Mac. **Your own accounts can be added and edited on the iPad** (sync spec
+§3.1), so a private account never needs the Mac for routine use: Accounts ▸ + opens a form sheet with the
+Mac's fields, including the sharing level, and saves on Save. The iPad shows their results read-only where useful.
 
 **Native iPadOS 26:** a sidebar, split views, multiple windows, drag and drop with Files and Mail,
 keyboard shortcuts, the document camera, and Apple Pencil where it helps.

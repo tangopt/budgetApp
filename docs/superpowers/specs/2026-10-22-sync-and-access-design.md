@@ -13,7 +13,9 @@ spec", with the reason, for the authentication spec's owner to fold in.
 ## 1. What the user decided
 
 - **Who uses what (user, 2026-10-21):** one household Mac, used by the admin. The other person uses an
-  iPhone and an iPad, each with her own Apple Account; she will rarely or never use the Mac. The admin also
+  iPhone and an iPad, each with her own Apple Account. **Revised (user, 2026-10-22):** because the
+  mobile apps lack Mac features, the Mac app must support both people with private data; see §3.1. The
+  admin also
   uses the iPhone and iPad apps.
 - **Statement import is in scope on the iPad (user, 2026-10-21).** So the iPad is a second "heavy writer"
   next to the Mac.
@@ -85,6 +87,43 @@ Anti-goals (a failure even if it "works")
   - the filed-year regression after sync (§5.4).
 
   Other devices still compute everything they display.
+
+  On a Mac with two macOS users (§3.1), only the admin's runs the hub jobs; the other runs as an ordinary
+  device. Settings ▸ Sync shows which one is the hub.
+
+### 3.1 Two people on one Mac (user, 2026-10-22)
+
+The iPad and iPhone don't have everything the Mac has: account set-up, new bank layouts, forecast and tax
+are Mac-only. So a person with private accounts needs the full desktop app too. That means **multiple
+accounts on the Mac** with real privacy, not just a lock screen.
+
+**How: each person uses their own macOS user on the household Mac, signed in to their own Apple Account
+(my call, forced by CloudKit).**
+- **On macOS, CloudKit always acts as the iCloud account of the logged-in macOS user.** An app can't
+  sign in to a second iCloud account. So an in-app "switch person" on the admin's macOS user could never
+  fetch the member's private zone, which lives in *her* iCloud.
+- **Separate macOS users give real separation for free:**
+  - each has its own `~/Library/Application Support/Budget` database and evidence library;
+  - macOS file permissions keep each user's files out of the other's reach;
+  - FileVault covers both;
+  - Fast User Switching lets both stay logged in.
+- **The member's Budget on her macOS user** syncs `household` (through the share, like her iPad) plus her
+  own private zone. It has every Mac feature for what she can see and edit: add accounts, map new bank
+  layouts, import, and look at the forecast and her own tax years. Hidden tax years therefore become
+  possible too (§6.1).
+- **The admin's Budget** is unchanged: `household` plus the admin's private zone. It never receives the
+  member's private data.
+- **Imports from both macOS users are coordinated by the import lease** (§5.2), as with any two devices.
+- **Desktop sign-in on each macOS user** is the authentication spec as written. Each app has one person:
+  Touch ID or a password, and the same lock rules. The auth spec's in-app "Switch User" stays for a Mac
+  where both people share one macOS user. In that case private data is simply not available for the
+  person whose macOS user it isn't, and the app says so.
+
+**iPad parity for routine private use (my call).** So that a private account doesn't force a trip to the
+Mac, the iPad also gets:
+- **adding and editing your own accounts:** name, currency, kind, bank details, sharing level. This is a
+  form sheet with the Mac's fields and Save.
+- New bank layout mapping stays on the Mac; she can do it on her macOS user.
 
 ## 4. Records and identity
 
@@ -212,8 +251,8 @@ Two layers, because data that reaches a device can always be read there.
   - **Net worth:** every level except Hidden counts, through `accountBalancePoint`.
   - **Hidden:** not in the other person's household figures at all. Each person's net worth view says
     "Includes everything you can see".
-- **Imports of private accounts happen on the owner's devices** (my call, forced by design). The
-  member's private statements are imported on her iPad; the Mac never receives them.
+- **Imports of private accounts happen on the owner's devices** (my call, forced by design). That
+  means her iPad, or her own macOS user on the Mac (§3.1). The admin's Mac never receives them.
 - **Changing a level:**
   - Lowering it (Everything → Category totals) moves the records from `household` to the owner's private
     zone and deletes them from `household`. The other person's devices delete their copies when that
@@ -221,9 +260,8 @@ Two layers, because data that reaches a device can always be read there.
   - Raising it moves them back.
   - The app warns that a copy may already exist on the other person's devices or in their backups from
     before; lowering can't recall data already shared.
-- **Tax years at "Hidden" can't be prepared on the Mac**, because the Mac belongs to the admin and tax is
-  Mac-only. If the member ever wants a hidden tax year, she would need the desktop app under her own
-  macOS user and Apple Account. Today's answer is the user's: taxes transparent.
+- **A tax year at "Hidden"** is prepared by its owner on their own macOS user (§3.1), since tax is
+  Mac-only. Today's answer is the user's: taxes transparent.
 
 ### 6.2 Layer 2: permissions (set by the admin, on shared data)
 
@@ -361,11 +399,14 @@ Builds on the authentication spec's pre-migration backup (its §6).
      permissions.
 4. **Permissions beyond admin.** Keep `isAdmin`; add `memberPermission` (§6.2). The "at least one admin"
    invariant is unchanged.
-5. **The member may never use the Mac (user, 2026-10-21).**
-   - On the Mac, "Add <other person>" during setup stays optional.
-   - Her app user is normally created when she accepts the share on her iPhone. The admin confirms which
-     `person` she is.
-   - She has no Mac password unless the admin adds one later.
+5. **Each person has their own macOS user (user, 2026-10-22, superseding 2026-10-21's "rarely or
+   never on the Mac").**
+   - The Mac app normally holds one app user per macOS user (§3.1).
+   - Her app user is created when she accepts the share, on her iPhone or her macOS user, whichever comes
+     first. The admin confirms which `person` she is.
+   - On her macOS user, setup asks her for her own Mac password and Touch ID, as the auth spec's §6
+     setup does.
+   - "Add <other person>" and "Switch User" stay for a shared macOS user, without private data (§3.1).
 6. **Secrets must not sync.** `appUser` syncs (in `household`), but `passwordHash` and
    `recoveryKeyHash` must never leave the Mac.
    - Request: move them into a local-only `localCredential(appUserId, passwordHash, recoveryKeyHash)`

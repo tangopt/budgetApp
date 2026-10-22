@@ -22,13 +22,14 @@ Full = everything the Mac does. **Light** = view plus the listed small edits. Vi
 | **Identity & security** | | | |
 | Lock (Touch ID / Face ID) | Full | Full | Full |
 | Household members, invite | Full (admin) | View | Accept invite |
+| Two people on the Mac | One macOS user each, with real privacy | — | — |
 | Sharing level of my accounts | Full | Full | View |
 | Member permissions per area | Full (admin) | Full (admin) | View |
 | Security check (ADP, FileVault) | Full | Full | Full |
 | **Overview** | | | |
 | Dashboard | Full | Full | Glance |
 | Accounts & net worth | Full | Light: update a manual balance | Light: update a manual balance |
-| Add / edit accounts, bank details | Full | — | — |
+| Add / edit accounts, bank details | Full (each person on their own macOS user) | Full (your own accounts) | — |
 | Net worth & year-on-year charts | Full | View | View |
 | This pay month vs budget | Full grid | Month + read-only grid | Month view |
 | Plan amounts, planned items | Full | — | — |
