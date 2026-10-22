@@ -56,7 +56,7 @@ final class DashboardViewModel: ObservableObject {
                     today: today,
                     accounts: try Account.fetchAll(db),
                     snapshots: try BalanceSnapshot.fetchAll(db),
-                    transactions: try Transaction.fetchAll(db),
+                    transactions: try LocalActualsSource().transactions(db),
                     categories: try Category.fetchAll(db),
                     categoryGroups: try CategoryGroup.fetchAll(db),
                     forecastEntries: try ForecastEntry.budget(db),

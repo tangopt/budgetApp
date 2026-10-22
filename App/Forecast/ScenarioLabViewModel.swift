@@ -248,7 +248,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
                 plans[scenario.id!] = plan(try ForecastEntry.inScenario(db, id: scenario.id!))
             }
             return Loaded(manualCloses: try PayMonthClose.fetchAll(db), categories: try Category.fetchAll(db),
-                          categoryGroups: try CategoryGroup.fetchAll(db), transactions: try Transaction.fetchAll(db),
+                          categoryGroups: try CategoryGroup.fetchAll(db), transactions: try LocalActualsSource().transactions(db),
                           transferLinks: try TransferLink.fetchAll(db), transferCounterparts: try TransferLinks.counterparts(db: db), accounts: try Account.fetchAll(db), snapshots: try BalanceSnapshot.fetchAll(db),
                           rate: try ExchangeRateSetting.currentOrDefault(db: db), groups: groups, scenarios: scenarios,
                           budgetPlan: plan(try ForecastEntry.budget(db)), scenarioPlans: plans)
@@ -589,7 +589,7 @@ final class ScenarioLabViewModel: ObservableObject, GridCellPanelModel {
         let calendar: PayCalendar
         do {
             let fresh = try dbQueue.read { db in
-                (closes: try PayMonthClose.fetchAll(db), transactions: try Transaction.fetchAll(db), categories: try Category.fetchAll(db))
+                (closes: try PayMonthClose.fetchAll(db), transactions: try LocalActualsSource().transactions(db), categories: try Category.fetchAll(db))
             }
             calendar = PayCalendar.forData(transactions: fresh.transactions, categories: fresh.categories, manualCloses: fresh.closes, today: AppClock.now)
         } catch {

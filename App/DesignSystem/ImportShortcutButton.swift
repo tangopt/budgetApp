@@ -68,12 +68,12 @@ struct ImportShortcutButton: View {
 }
 
 /// A library shortcut's button as a menu: "Choose files…" (the open panel) and, when the
-/// library holds documents for it, "From library (N)". Observes the counts so N stays current.
+/// library holds documents for it, "From library (N)". Observes the counts (Observation) so N stays current.
 private struct LibraryShortcutMenu: View {
     let title: String
     let systemImage: String?
     let shortcut: ImportShortcut
-    @ObservedObject var counts: ImportLibraryCounts
+    let counts: ImportLibraryCounts
     let choose: () -> Void
     let fromLibrary: () -> Void
 

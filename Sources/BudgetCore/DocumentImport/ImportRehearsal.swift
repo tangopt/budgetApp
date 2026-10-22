@@ -66,10 +66,12 @@ public enum ImportRehearsal {
 
     /// The database (a file), library (a folder) and report folder normalised, or the reason
     /// they are refused: the app's own database or library without `allowAppData`, a report
-    /// folder inside the app's data or the library (ever).
+    /// folder inside the app's data or the library (ever). `isAppData` is the guard (tests
+    /// pass a stand-in app folder, so they never need the real one to exist).
     @discardableResult
     public static func checkPaths(databasePath: String, libraryPath: String, outPath: String?,
-                                  allowAppData: Bool) throws -> (database: String, library: String, out: String?) {
+                                  allowAppData: Bool,
+                                  isAppData: (String) -> Bool = { TaxRegression.isAppData($0) }) throws -> (database: String, library: String, out: String?) {
         let fileManager = FileManager.default
         let database = normalized(databasePath)
         let library = normalized(libraryPath)
@@ -79,14 +81,14 @@ public enum ImportRehearsal {
         guard fileManager.fileExists(atPath: library, isDirectory: &isFolder) else { throw PathError.missing(library) }
         guard isFolder.boolValue else { throw PathError.notAFolder(library) }
         if !allowAppData {
-            for path in [database, library] where TaxRegression.isAppData(path) { throw PathError.appData(path) }
+            for path in [database, library] where isAppData(path) { throw PathError.appData(path) }
         }
         var out: String?
         if let outPath {
             let path = normalized(outPath)
             let resolvedLibrary = URL(fileURLWithPath: library).resolvingSymlinksInPath().path.lowercased()
             let resolvedOut = URL(fileURLWithPath: path).resolvingSymlinksInPath().path.lowercased()
-            if TaxRegression.isAppData(path) || resolvedOut == resolvedLibrary || resolvedOut.hasPrefix(resolvedLibrary + "/") {
+            if isAppData(path) || resolvedOut == resolvedLibrary || resolvedOut.hasPrefix(resolvedLibrary + "/") {
                 throw PathError.reportPlacement(path)
             }
             out = path

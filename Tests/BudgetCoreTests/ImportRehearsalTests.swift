@@ -78,11 +78,23 @@ final class ImportRehearsalTests: XCTestCase {
         try Data().write(to: database)
         let library = folder.appendingPathComponent("Library", isDirectory: true)
         try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
-        // Only paths are compared: nothing of the app's is opened.
-        XCTAssertThrowsError(try ImportRehearsal.checkPaths(databasePath: database.path, libraryPath: EvidenceLibrary.defaultRoot.path,
-                                                            outPath: nil, allowAppData: false)) { error in
-            XCTAssertEqual(error as? ImportRehearsal.PathError, .appData(EvidenceLibrary.defaultRoot.standardizedFileURL.path))
+        // A stand-in for the app's data, so the test needn't find the real one on this machine.
+        let app = folder.appendingPathComponent("Application Support/Budget", isDirectory: true)
+        let appLibrary = app.appendingPathComponent("Evidence", isDirectory: true)
+        try FileManager.default.createDirectory(at: appLibrary, withIntermediateDirectories: true)
+        let isAppData: (String) -> Bool = { TaxRegression.isAppDatabase($0, folders: [app]) }
+        XCTAssertThrowsError(try ImportRehearsal.checkPaths(databasePath: database.path, libraryPath: appLibrary.path,
+                                                            outPath: nil, allowAppData: false, isAppData: isAppData)) { error in
+            XCTAssertEqual(error as? ImportRehearsal.PathError, .appData(appLibrary.standardizedFileURL.path))
         }
+        XCTAssertNoThrow(try ImportRehearsal.checkPaths(databasePath: database.path, libraryPath: appLibrary.path,
+                                                        outPath: nil, allowAppData: true, isAppData: isAppData))
+        XCTAssertThrowsError(try ImportRehearsal.checkPaths(databasePath: database.path, libraryPath: library.path,
+                                                            outPath: app.appendingPathComponent("out").path, allowAppData: true,
+                                                            isAppData: isAppData),
+                             "a report is never written into the app's data")
+        // The default guard counts the app's real library as its data (paths only: nothing is opened).
+        XCTAssertTrue(TaxRegression.isAppData(EvidenceLibrary.defaultRoot.path))
         XCTAssertThrowsError(try ImportRehearsal.checkPaths(databasePath: database.path, libraryPath: library.path,
                                                             outPath: EvidenceLibrary.defaultRoot.path, allowAppData: true),
                              "a report is never written into the app's data")

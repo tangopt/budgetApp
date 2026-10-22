@@ -437,10 +437,12 @@ public enum TaxRegression {
         if let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             folders.append(support.appendingPathComponent("Budget", isDirectory: true))
         }
+        #if os(macOS)
         let containers = fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Containers", isDirectory: true)
         for container in (try? fileManager.contentsOfDirectory(at: containers, includingPropertiesForKeys: nil)) ?? [] {
             folders.append(container.appendingPathComponent("Data/Library/Application Support/Budget", isDirectory: true))
         }
+        #endif
         return folders
     }
 
@@ -457,9 +459,17 @@ public enum TaxRegression {
     }
 
     /// The account's home folder from the user database, whatever the environment says.
+    /// Mac only: it guards the command-line tools when `HOME` is redirected. On iOS/iPadOS the
+    /// app's only data is in its own sandbox, which `appDataFolders(fileManager:)` already
+    /// covers, and `getpwuid` answers differently on the simulator (nil) and a device
+    /// (`/var/mobile`), so iOS gets nil on both.
     public static var realHomeDirectory: URL? {
+        #if os(macOS)
         guard let entry = getpwuid(getuid()), let directory = entry.pointee.pw_dir else { return nil }
         return URL(fileURLWithPath: String(cString: directory), isDirectory: true)
+        #else
+        return nil
+        #endif
     }
 
     /// `isAppDatabase` against both the process's data folders and the real home's.
