@@ -595,4 +595,55 @@ final class ImportDuplicatesTests: XCTestCase {
         let annotated = try annotate([item("insurance.pdf", sha: "n2", links: [link])])
         XCTAssertEqual(annotated[0].section, .ready)
     }
+
+    // MARK: A receipt and the bank's advice of its debit (rule-issuer)
+
+    func testAReceiptAndTheBanksDebitAdviceMayShareADebit() throws {
+        let transactionId = try transaction(-1000, "XYZ 1234567890123")
+        let link = ProposedLink(entity: .transaction(transactionId), label: "XYZ −€10.00", confidence: .certain, reasons: ["test"])
+        let advice = IssuerKeyTests.bareDebitAdvice.joined(separator: "\n")
+        // Recognised as a debit advice, or filed by the user as a receipt: either way the bank's advice.
+        for kind in [ImportKind.evidence(.bankDebitAdvice), .evidence(.insuranceReceipt)] {
+            let annotated = try annotate([item("receipt.pdf", sha: "r1-\(kind)", text: "Demo Seguros SA\nRecibo\nTotal 10,00", links: [link]),
+                                          item("advice.pdf", sha: "r2-\(kind)", kind: kind, text: advice, links: [link])])
+            XCTAssertEqual(annotated.map(\.section), [.ready, .ready], "\(kind): \(annotated.map(\.needsYouReasons))")
+        }
+        // A utility invoice and its debit advice too.
+        let annotated = try annotate([item("invoice.pdf", sha: "r3", kind: .utilityInvoice, text: "Demo Water\nTotal 10,00", links: [link]),
+                                      item("advice.pdf", sha: "r4", kind: .evidence(.bankDebitAdvice), text: advice, links: [link])])
+        XCTAssertFalse(annotated.flatMap(\.needsYouReasons).contains { $0.contains("claim the same transaction") }, "\(annotated.map(\.needsYouReasons))")
+    }
+
+    func testTwoReceiptsOrTwoAdvicesOnOneDebitStillNeedYou() throws {
+        let transactionId = try transaction(-1000, "XYZ 1234567890123")
+        let link = ProposedLink(entity: .transaction(transactionId), label: "XYZ −€10.00", confidence: .certain, reasons: ["test"])
+        let receipts = try annotate([item("a.pdf", sha: "q1", text: "Demo Seguros SA\nTotal 10,00", links: [link]),
+                                     item("b.pdf", sha: "q2", text: "Demo Seguros SA\nTotal 10,00 (2)", links: [link])])
+        XCTAssertEqual(receipts.map(\.needsYouReasons), [["2 documents in this import claim the same transaction"],
+                                                         ["2 documents in this import claim the same transaction"]])
+        let advice = IssuerKeyTests.bareDebitAdvice.joined(separator: "\n")
+        let advices = try annotate([item("a.pdf", sha: "q3", kind: .evidence(.insuranceReceipt), text: advice, links: [link]),
+                                    item("b.pdf", sha: "q4", kind: .evidence(.insuranceReceipt), text: advice + "\n", links: [link])])
+        XCTAssertTrue(advices.allSatisfy { $0.needsYouReasons.contains("2 documents in this import claim the same transaction") },
+                      "\(advices.map(\.needsYouReasons))")
+    }
+
+    func testALibraryReceiptBesideAnAdviceFiledAsAReceiptIsFine() throws {
+        let transactionId = try transaction(-1000, "XYZ 1234567890123")
+        let receipt = try libraryDocument(sha: "p0", name: "Insurance receipt", text: "Demo Seguros SA\nTotal 10,00")
+        try db.write { db in _ = try EvidenceLinks.link(db: db, documentId: receipt, to: .transaction(transactionId)) }
+        let link = ProposedLink(entity: .transaction(transactionId), label: "XYZ −€10.00", confidence: .certain, reasons: ["test"])
+        let annotated = try annotate([item("advice.pdf", sha: "p1", text: IssuerKeyTests.bareDebitAdvice.joined(separator: "\n"), links: [link])])
+        XCTAssertEqual(annotated[0].section, .ready, "\(annotated[0].needsYouReasons)")
+    }
+
+    func testTheSameAdviceFiledAgainUnderAnotherKindIsStillCaught() throws {
+        let transactionId = try transaction(-1000, "XYZ 1234567890123")
+        let advice = IssuerKeyTests.bareDebitAdvice.joined(separator: "\n")
+        let filed = try libraryDocument(sha: "o0", name: "Debit advice", kind: .bankDebitAdvice, text: advice)
+        try db.write { db in _ = try EvidenceLinks.link(db: db, documentId: filed, to: .transaction(transactionId)) }
+        let link = ProposedLink(entity: .transaction(transactionId), label: "XYZ −€10.00", confidence: .certain, reasons: ["test"])
+        let annotated = try annotate([item("advice.pdf", sha: "o1", text: advice + "\n", links: [link])])
+        XCTAssertEqual(annotated[0].needsYouReasons, ["That transaction already has a bank debit advice (Debit advice)"])
+    }
 }

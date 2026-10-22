@@ -57,17 +57,26 @@ public struct IssuerKey: Hashable, Codable, Sendable {
     /// a UK VAT number, a company number, else the first line that names a company. Nil when none is found.
     public static func derive(text: String?, fileName: String, ownNIFs: Set<String>) -> IssuerKey? {
         guard let text else { return nil }
+        // A bank's own letter (an advice, a notice) names the bank and the client, never who is paid:
+        // the creditor a debit advice names, else nobody.
+        if isBankLetter(text) { return bankLetterIssuer(text) }
         let names = ownNIFs.filter { $0.hasPrefix(namePrefix) }.map { words(String($0.dropFirst(namePrefix.count))) }
+        func namesOwn(_ line: String) -> Bool { names.contains(where: { Self.names($0, in: words(line)) }) }
+        let lines = text.components(separatedBy: .newlines).map { EvidenceText.normalized($0) }
+        // The addressee block: a greeting or one of ours, and the address lines under it.
+        let addressee = addresseeLines(lines, namesOwn: namesOwn)
         func companyName(_ line: String) -> String? {
             guard let name = Self.companyName(line) else { return nil }
-            return names.contains(where: { Self.names($0, in: words(line)) }) ? nil : name
+            return namesOwn(line) ? nil : name
+        }
+        func companyName(at index: Int) -> String? {
+            addressee.contains(index) ? nil : companyName(lines[index])
         }
         func nearestLabel(lines: [String], to index: Int) -> String? {
-            let candidates = lines.indices.compactMap { i in companyName(lines[i]).map { (i, $0) } }
+            let candidates = lines.indices.compactMap { i in companyName(at: i).map { (i, $0) } }
             if let before = candidates.last(where: { $0.0 <= index }) { return titled(before.1) }
             return candidates.first.map { titled($0.1) }
         }
-        let lines = text.components(separatedBy: .newlines).map { EvidenceText.normalized($0) }
         let joined = lines.joined(separator: "\n")
         var lineStarts: [Int] = []
         var offset = 0
@@ -79,7 +88,7 @@ public struct IssuerKey: Hashable, Codable, Sendable {
             // The issuer's name may share the line with the number ("Demo Power, S.A. NIPC 5..."): the text before the label.
             let before = (joined as NSString).substring(with: NSRange(location: lineStarts[line], length: matchLocation - lineStarts[line]))
                 .trimmingCharacters(in: CharacterSet(charactersIn: " ,;:-|/\u{2013}\u{2014}"))
-            let own = companyName(before).map(titled)
+            let own = addressee.contains(line) ? nil : companyName(before).map(titled)
             return IssuerKey(key: key, label: own ?? nearestLabel(lines: lines, to: line) ?? key)
         }
 
@@ -93,6 +102,11 @@ public struct IssuerKey: Hashable, Codable, Sendable {
             let index = lineIndex(label.location)
             let context = [lines[index], index > 0 ? lines[index - 1] : "", window].joined(separator: "\n")
             if partyWords.contains(where: context.contains) { continue }
+            // The client's number: in the addressee block or right under it, or beside a loan or
+            // account number ("NIF: … / Empréstimo: …").
+            if addressee.contains(index) || addressee.contains(index - 1) { continue }
+            let next = index + 1 < lines.count ? lines[index + 1] : ""
+            if [lines[index], next].contains(where: { line in clientAccountWords.contains { words(line).starts(with: $0) } }) { continue }
             for digits in matches(#"(?<!\d)\d{3} ?\d{3} ?\d{3}(?!\d)"#, in: window) {
                 let value = (window as NSString).substring(with: digits).filter(\.isNumber)
                 if RentReceiptPDFs.isValidNIF(value), !anonymousNIFs.contains(value), !ownNIFs.contains(value) {
@@ -126,10 +140,163 @@ public struct IssuerKey: Hashable, Codable, Sendable {
             return make(key: "crn:" + ns.substring(with: match.range(at: 1)), matchLocation: match.range.location)
         }
         // First line that names a company.
-        for line in lines {
-            if let name = companyName(line) { return IssuerKey(key: "line:" + name, label: titled(name)) }
+        for index in lines.indices {
+            if let name = companyName(at: index) { return IssuerKey(key: "line:" + name, label: titled(name)) }
         }
         return nil
+    }
+
+    // MARK: Greetings, addressees and bank letters
+
+    /// Words a greeting or a form of address starts with ("Exmo(a). Senhor(a)", "Exmos. Senhores",
+    /// "Ex.mo Sr.", "Caro cliente", "Dear Sir/Madam", "Dear Ana"): never who issued the document.
+    static let salutationWords: Set<String> = [
+        "EXMO", "EXMA", "EXMOS", "EXMAS", "CARO", "CARA", "CAROS", "CARAS", "PREZADO", "PREZADA",
+        "PREZADOS", "PREZADAS", "ESTIMADO", "ESTIMADA", "ESTIMADOS", "ESTIMADAS", "SENHOR", "SENHORA", "SENHORES", "SENHORAS",
+        "SR", "SRA", "SRS", "SRAS", "DEAR", "MR", "MRS", "MS", "MISS",
+    ]
+
+    /// Closing lines of a letter ("Com os nossos melhores cumprimentos", "Não carece de assinatura",
+    /// "Yours sincerely"): never a name.
+    static let closingWords: Set<String> = ["CUMPRIMENTOS", "ASSINATURA", "ATENCIOSAMENTE", "REGARDS", "SINCERELY", "FAITHFULLY"]
+
+    /// Words of an address line: a street, a floor, a country.
+    static let addressWords: Set<String> = [
+        "RUA", "AV", "AVENIDA", "TRAVESSA", "LARGO", "PRACA", "ESTRADA", "ALAMEDA", "URB", "URBANIZACAO", "LOTE", "ANDAR", "DTO", "ESQ",
+        "AVENUE", "ROAD", "RD", "STREET", "LANE", "CLOSE", "DRIVE", "GARDENS", "TERRACE", "CRESCENT", "SQUARE", "WAY", "FLAT", "APARTMENT",
+        "PORTUGAL", "REINO", "UNIDO", "UNITED", "KINGDOM", "ESPANHA", "SPAIN", "ENGLAND",
+    ]
+
+    /// First words of a line naming the client's loan or account next to a number ("Empréstimo: …").
+    static let clientAccountWords: [[String]] = [["EMPRESTIMO"], ["CONTA", "N"], ["CONTA", "NO"]]
+
+    /// Whether the line is a greeting or a form of address ("EXMO(A). SENHOR(A)", "EX.MO SR.", "DEAR SIR/MADAM").
+    static func isSalutation(_ line: String) -> Bool {
+        let words = words(EvidenceText.normalized(line))
+        guard let first = words.first else { return false }
+        if salutationWords.contains(first) { return true }
+        // "EX.MO", "EX.MA", "EX.MOS".
+        return first == "EX" && words.count > 1 && ["MO", "MA", "MOS", "MAS"].contains(words[1])
+    }
+
+    /// Whether the line closes a letter ("COM OS NOSSOS MELHORES CUMPRIMENTOS").
+    static func isClosing(_ line: String) -> Bool {
+        !closingWords.isDisjoint(with: words(EvidenceText.normalized(line)))
+    }
+
+    /// Whether the line is part of an address: a street or country word, or a Portuguese or UK postcode.
+    /// Words of a company's legal form or trade ("S.A.", "Lda", "Seguros", "(Portugal)"): a line
+    /// with one names a company, never an address.
+    static let companyFormWords: Set<String> = ["SA", "LDA", "LTD", "LIMITED", "PLC", "INC", "LLC", "GMBH", "UNIPESSOAL", "SGPS",
+                                                "SEGUROS", "SEGURADORA", "COMPANHIA", "BANCO", "BANK"]
+
+    /// Whether the line names a company by its form ("DEMO SEGUROS, S.A.", "DEMO (PORTUGAL) LDA").
+    static func namesCompanyForm(_ line: String) -> Bool {
+        let lineWords = words(line)
+        if !companyFormWords.isDisjoint(with: lineWords) || line.contains("(PORTUGAL)") { return true }
+        // "S.A." split into its letters.
+        return zip(lineWords, lineWords.dropFirst()).contains { $0 == "S" && $1 == "A" }
+    }
+
+    static func isAddressLine(_ line: String) -> Bool {
+        if namesCompanyForm(line) { return false }
+        if !addressWords.isDisjoint(with: words(line)) { return true }
+        return line.range(of: #"(?<!\d)\d{4}-\d{3}(?!\d)"#, options: .regularExpression) != nil
+            || line.range(of: #"(?<![A-Z0-9])[A-Z]{1,2}\d[A-Z0-9]? ?\d[A-Z]{2}(?![A-Z0-9])"#, options: .regularExpression) != nil
+    }
+
+    /// The lines of the letter's addressee: each greeting and closing line, each line naming one
+    /// of ours (`namesOwn`), and under a greeting or one of ours the address lines and bare place
+    /// names that follow (up to six lines).
+    static func addresseeLines(_ lines: [String], namesOwn: (String) -> Bool) -> Set<Int> {
+        var found: Set<Int> = []
+        var index = 0
+        while index < lines.count {
+            let line = lines[index]
+            guard isSalutation(line) || isClosing(line) || namesOwn(line) else { index += 1; continue }
+            found.insert(index)
+            var next = index + 1
+            if !isClosing(line) {
+                while next < lines.count, next - index <= 6 {
+                    let candidate = lines[next]
+                    // A bare place name ("LISBOA") under the address.
+                    let placeName = !candidate.contains(":") && words(candidate).count == 1 && candidate.filter(\.isNumber).isEmpty
+                        && !namesCompanyForm(candidate)
+                    guard isSalutation(candidate) || namesOwn(candidate) || isAddressLine(candidate) || placeName else { break }
+                    found.insert(next)
+                    next += 1
+                }
+            }
+            index = max(next, index + 1)
+        }
+        return found
+    }
+
+    /// Phrases of a bank's own letter: its wording of a movement on the client's account, or its
+    /// letterhead. A bank named as where a receipt is paid or who mediates a policy is not enough.
+    static let bankLetterWording = ["QUEIRA M NOTAR", "QUEIRAM NOTAR", "QUEIRA NOTAR", "NA CONTA DE V EXA", "NA CONTA DE V EXAS", "NA CONTA DE VEXA"]
+    static let bankLetterheads = ["BANCO BILBAO VIZCAYA ARGENTARIA S A SUCURSAL EM PORTUGAL"]
+
+    /// Lines at each end of a letter that count as its head or foot.
+    static let letterEnds = 5
+
+    /// Whether the text is a bank's own letter (a debit or credit advice, a notice): the bank's
+    /// wording of a movement on the client's account anywhere; or its letterhead in the letter's
+    /// head or foot (`letterEnds` lines), or beside a greeting. A receipt or policy whose body names
+    /// the bank as its mediator or where it is paid is not the bank's letter.
+    public static func isBankLetter(_ text: String) -> Bool {
+        if isBankMovementAdvice(text) { return true }
+        let lines = text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        func hasLetterhead(_ part: some Sequence<String>) -> Bool {
+            let spaced = spacedWords(part.joined(separator: "\n"))
+            return bankLetterheads.contains { spaced.contains(" \($0) ") }
+        }
+        guard hasLetterhead(lines) else { return false }
+        if hasLetterhead(lines.prefix(letterEnds)) || hasLetterhead(lines.suffix(letterEnds)) { return true }
+        return lines.contains(where: isSalutation)
+    }
+
+    /// Whether the text is a bank's advice of a movement on the client's account ("Queira(m) notar
+    /// que, nesta data, efetuámos na conta de V.Exa(s)…"), whatever kind it was filed as.
+    public static func isBankMovementAdvice(_ text: String) -> Bool {
+        let spaced = spacedWords(text)
+        return bankLetterWording.contains { spaced.contains(" \($0) ") }
+    }
+
+    /// Folded, uppercased, every run of punctuation and spaces one space, a space at each end.
+    private static func spacedWords(_ text: String) -> String {
+        " " + BBVADebitAdvice.folded(text).map { $0.isLetter || $0.isNumber ? $0 : " " }
+            .split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ") + " "
+    }
+
+    /// The issuer of a bank's letter: the creditor a debit advice names (`BBVADebitAdvice`), keyed
+    /// `creditor:<NAME>`; nil when it names none, or only a code, a bank or a greeting.
+    static func bankLetterIssuer(_ text: String) -> IssuerKey? {
+        guard let creditor = BBVADebitAdvice.parse(text)?.creditor, !isSalutation(creditor) else { return nil }
+        let name = words(EvidenceText.normalized(creditor)).joined(separator: " ")
+        guard name.filter(\.isLetter).count >= 4, !isTitleLine(name), !isBankName(name) else { return nil }
+        return IssuerKey(key: "creditor:" + name, label: titled(name))
+    }
+
+    /// Words of an insurer or other business a bank's group runs under its name ("BBVA Seguros").
+    static let bankGroupBusinessWords: Set<String> = ["SEGUROS", "SEGURO", "INSURANCE", "SEG", "VIDA"]
+    /// Bank names that head a bank's letters.
+    static let bankNames: Set<String> = ["BBVA", "HSBC", "BARCLAYS", "SANTANDER", "NATWEST", "LLOYDS", "MONZO", "REVOLUT", "MILLENNIUM",
+                                         "BANKINTER", "NOVOBANCO", "ACTIVOBANK", "MONTEPIO", "CGD"]
+
+    /// Whether `name` (normalised) names a bank itself ("BANCO BILBAO VIZCAYA ARGENTARIA", "BBVA
+    /// (PORTUGAL)", "HSBC UK BANK PLC"), not a business of its group ("BBVA SEGUROS").
+    static func isBankName(_ name: String) -> Bool {
+        let named = Set(words(EvidenceText.normalized(name)))
+        guard named.isDisjoint(with: bankGroupBusinessWords) else { return false }
+        return !named.isDisjoint(with: ["BANCO", "BANK", "BANQUE"]) || !named.isDisjoint(with: bankNames)
+    }
+
+    /// Whether the issuer is a bank's own letterhead (keyed by its number or its name): no kind,
+    /// name or link is learnt about it, since every letter the bank sends would match.
+    public static func isBankLetterhead(_ issuer: IssuerKey) -> Bool {
+        if issuer.key.hasPrefix("creditor:") { return false }
+        return isBankName(issuer.label) || (isLineKey(issuer.key) && isBankName(String(issuer.key.dropFirst("line:".count))))
     }
 
     /// The line's words with letters ("N.º 123" → "N", "º"), digits dropped.
@@ -171,7 +338,13 @@ public struct IssuerKey: Hashable, Codable, Sendable {
         // "RECIBO VERDE LDA" is.
         if isTitleLine(line) { return nil }
         if partyWords.contains(where: phrase.contains) { return nil }
-        if ["DATA", "DATE", "TOTAL", "IVA", "MORADA", "ADDRESS", "PAGE", "PAGINA"].contains(first) { return nil }
+        if ["DATA", "DATE", "TOTAL", "IVA", "MORADA", "ADDRESS", "PAGE", "PAGINA", "ATCUD", "NIB", "IBAN", "SWIFT", "BIC",
+            "APOLICE", "POLICY", "CONTRATO", "ASSUNTO", "SUBJECT", "PERIODO", "PERIOD"].contains(first) { return nil }
+        // Codes and unreadable glyphs ("IT#ENC:A(BEVI"): never a name.
+        if line.contains(where: { "#@*=<>{}[]|\\^~$%".contains($0) }) || line.filter({ $0 == "(" }).count != line.filter({ $0 == ")" }).count {
+            return nil
+        }
+        if isSalutation(line) || isClosing(line) { return nil }
         let labelWords: Set<String> = ["NIF", "NIPC", "CONTRIBUINTE", "VAT"]
         if !labelWords.isDisjoint(with: words) { return nil }
         if phrase.contains("COMPANY NO") || phrase.contains("COMPANY NUMBER") || phrase.contains("COMPANY REGISTRATION") { return nil }

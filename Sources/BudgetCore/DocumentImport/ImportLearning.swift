@@ -23,10 +23,12 @@ public enum ImportLearning {
     /// occurrence, never the value; nothing when it can't be placed, nor on a kind whose positions
     /// aren't learnt, `LearntFigures.learns`); `.acceptModelReading` → the kind and name the
     /// model read, now the user's. Nothing else teaches,
-    /// and nothing is drafted without an issuer key (the correction still fixes this document).
+    /// and nothing is drafted without an issuer key, nor for a bank's own letterhead
+    /// (`IssuerKey.isBankLetterhead`: every letter the bank sends would match) — the correction
+    /// still fixes this document. A merchant is drafted only when it names one (`isMerchantPattern`).
     public static func drafts(for item: ImportItem, resolution: ImportResolution, issuer: IssuerKey?,
                               transactionDescriptions: [Int64: String] = [:]) -> [ImportRuleDraft] {
-        guard let issuer else { return [] }
+        guard let issuer, !IssuerKey.isBankLetterhead(issuer) else { return [] }
         let key = ImportRuleKind.matchKey(issuer: issuer)
         func draft(_ kind: ImportRuleKind, _ action: some Encodable, _ label: String, key: String = key) -> [ImportRuleDraft] {
             guard let json = encode(action) else { return [] }
@@ -35,6 +37,7 @@ public enum ImportLearning {
         func paidBy(_ id: Int64) -> [ImportRuleDraft] {
             guard let description = transactionDescriptions[id] else { return [] }
             let merchant = MerchantKey.make(description)
+            guard isMerchantPattern(merchant, description: description) else { return [] }
             return draft(.link, LinkAction(descriptionKey: merchant), "Paid by “\(merchant)”",
                          key: ImportRuleKind.linkKey(issuer: issuer, family: .transaction))
         }
@@ -83,6 +86,28 @@ public enum ImportLearning {
         case .confirmFigure(let field, _), .confirmFigureRemembering(let field, _): return field == .issuer ? nil : field
         default: return nil
         }
+    }
+
+    /// Bank prefixes and codes of a description ("SEPADD/", "DD ", "TRF", "PG", "MB"): they say how
+    /// it was paid, not to whom.
+    static let bankDescriptionWords: Set<String> = BBVADebitAdvice.descriptionStopwords
+        .union(["DD", "PG", "MB", "SD", "GE", "TRANSFERENCIA", "TRANSFER", "DIRECT", "DEBIT", "STANDING", "ORDER", "SO", "BGC", "FPI", "FPO"])
+
+    /// Whether a merchant key (`MerchantKey.make` of `description`) names a merchant: a word of
+    /// three or more letters that isn't a bank's prefix or code or a generic word ("EDP", "MEO",
+    /// "DEMO SEGUROS"), and a description that isn't only a short code and a long reference
+    /// ("SMR 3402…": a reference that changes with every debit is never a pattern).
+    static func isMerchantPattern(_ key: String, description: String) -> Bool {
+        let words = EvidenceText.normalized(key).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+            .filter { word in
+                !word.contains(where: \.isNumber) && !bankDescriptionWords.contains(word)
+                    && !MerchantKey.genericTokens.contains(word) && !MerchantKey.processorTokens.contains(word)
+            }
+        guard words.contains(where: { $0.filter(\.isLetter).count >= 3 }) else { return false }
+        let tokens = EvidenceText.normalized(description).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+        let referenceOnly = tokens.count == 2 && tokens[0].count <= 3 && tokens[0].allSatisfy(\.isLetter)
+            && tokens[1].allSatisfy(\.isNumber) && tokens[1].count >= 10
+        return !referenceOnly
     }
 
     /// The draft kinds an answer replaces on the item (its earlier drafts of that kind, and the
