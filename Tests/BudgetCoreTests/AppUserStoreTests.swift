@@ -87,9 +87,9 @@ final class AppUserStoreTests: XCTestCase {
 
     func testSignInCandidatesAdminFirstThenByName() throws {
         try manager.dbQueue.write { db in
+            try make(db, "Mo", admin: true)
             try make(db, "Zed", admin: false)
             try make(db, "Bea", admin: false)
-            try make(db, "Mo", admin: true)
             XCTAssertEqual(try AppUserStore.signInCandidates(db).map(\.displayName), ["Mo", "Bea", "Zed"])
         }
     }
@@ -243,6 +243,86 @@ final class AppUserStoreTests: XCTestCase {
             let later = now.addingTimeInterval(60)
             try AppUserStore.recordSignIn(db, appUserId: user.id!, now: later)
             XCTAssertEqual(try AppUser.fetchOne(db, key: user.id!)?.lastSignInAt, later)
+        }
+    }
+
+    func testFirstUserIsForcedAdmin() throws {
+        try manager.dbQueue.write { db in
+            let first = try make(db, "Alex", admin: false).user
+            XCTAssertTrue(first.isAdmin)
+            XCTAssertTrue(try AppUser.fetchOne(db, key: first.id!)!.isAdmin)
+            // With an admin present, a non-admin stays one.
+            XCTAssertFalse(try make(db, "Sam", admin: false).user.isAdmin)
+        }
+        // An admin who has no credential doesn't count.
+        try manager.dbQueue.write { db in
+            let other = try DatabaseManager(path: nil)
+            try other.migrate()
+            try other.dbQueue.write { db2 in
+                var ghost = AppUser(personId: try person(db2, "Kit"), displayName: "Kit", isAdmin: true, createdAt: now)
+                try ghost.insert(db2)
+                XCTAssertTrue(try make(db2, "Lee", admin: false).user.isAdmin)
+            }
+        }
+    }
+
+    func testCreateRejectsBlankNameAndUnknownPerson() throws {
+        try manager.dbQueue.write { db in
+            let personId = try person(db, "Alex")
+            XCTAssertThrowsError(try AppUserStore.create(db, personId: personId, displayName: "  \n", password: "synthetic pass 1",
+                                                         isAdmin: true, now: now, rounds: fast)) {
+                XCTAssertEqual($0 as? AppUserStoreError, .emptyName)
+            }
+            XCTAssertThrowsError(try AppUserStore.create(db, personId: 9_999, displayName: "Ghost", password: "synthetic pass 1",
+                                                         isAdmin: true, now: now, rounds: fast)) {
+                XCTAssertEqual($0 as? AppUserStoreError, .unknownPerson)
+            }
+        }
+    }
+
+    func testMissingTargetThrowsNoSuchUser() throws {
+        try manager.dbQueue.write { db in
+            let admin = try make(db, "Alex", admin: true).user
+            XCTAssertThrowsError(try AppUserStore.remove(db, 9_999, by: admin.id!)) {
+                XCTAssertEqual($0 as? AppUserStoreError, .noSuchUser)
+            }
+            XCTAssertThrowsError(try AppUserStore.setAdmin(db, 9_999, true, by: admin.id!)) {
+                XCTAssertEqual($0 as? AppUserStoreError, .noSuchUser)
+            }
+        }
+    }
+
+    func testDemoteWhenOtherAdminHasNoCredentialIsLastAdmin() throws {
+        try manager.dbQueue.write { db in
+            let admin = try make(db, "Alex", admin: true).user
+            var ghost = AppUser(personId: try person(db, "Kit"), displayName: "Kit", isAdmin: true, createdAt: now)
+            try ghost.insert(db)
+            XCTAssertThrowsError(try AppUserStore.setAdmin(db, admin.id!, false, by: admin.id!)) {
+                XCTAssertEqual($0 as? AppUserStoreError, .lastAdmin)
+            }
+        }
+    }
+
+    func testRemoveNullsImportRunAttribution() throws {
+        try manager.dbQueue.write { db in
+            let admin = try make(db, "Alex", admin: true).user
+            let member = try make(db, "Sam", admin: false).user
+            var run = ImportRun(confirmedAt: now, entryPoint: "test", summary: "s", appUserId: member.id)
+            try run.insert(db)
+            try AppUserStore.remove(db, member.id!, by: admin.id!)
+            XCTAssertNil(try ImportRun.fetchOne(db, key: run.id!)!.appUserId)
+        }
+    }
+
+    func testRehashLeavesRecoveryKeyHashAlone() throws {
+        try manager.dbQueue.write { db in
+            let (user, key) = try make(db, "Alex", admin: true)
+            try db.execute(sql: "UPDATE localCredential SET passwordHash = ? WHERE appUserId = ?",
+                           arguments: [PasswordHasher.hash("synthetic pass 1", rounds: 1_000), user.id!])
+            let before = try LocalCredential.fetchOne(db, key: user.id!)!.recoveryKeyHash
+            XCTAssertTrue(try AppUserStore.verifyPassword(db, appUserId: user.id!, password: "synthetic pass 1"))
+            XCTAssertEqual(try LocalCredential.fetchOne(db, key: user.id!)!.recoveryKeyHash, before)
+            XCTAssertTrue(try AppUserStore.verifyRecoveryKey(db, appUserId: user.id!, key: key))
         }
     }
 }

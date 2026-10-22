@@ -11,6 +11,9 @@ public enum AppUserStoreError: Error, Equatable, Sendable {
     case personAlreadyHasUser
     /// The user has no password on this Mac (a user synced from another device).
     case noCredential
+    case emptyName
+    case unknownPerson
+    case noSuchUser
 }
 
 /// Everything that creates, checks or changes app users and their local credentials. The "at least one
@@ -46,18 +49,24 @@ public enum AppUserStore {
 
     // MARK: Creating
 
-    /// Writes the user and its credential together. `rounds` is for tests; the app uses today's.
+    /// Writes the user and its credential together. While no admin can sign in, the new user is made
+    /// admin whatever `isAdmin` says, so the household is never left without one. `rounds` is for tests;
+    /// the app uses today's.
     public static func create(_ db: Database, personId: Int64, displayName: String, password: String, isAdmin: Bool,
                               now: Date, rounds: Int = PasswordHasher.currentRounds) throws -> (AppUser, recoveryKey: String) {
         try requireValid(password)
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw AppUserStoreError.emptyName }
+        guard try Person.fetchOne(db, key: personId) != nil else { throw AppUserStoreError.unknownPerson }
         guard try AppUser.filter(Column("personId") == personId).fetchCount(db) == 0 else {
             throw AppUserStoreError.personAlreadyHasUser
         }
         let recoveryKey = RecoveryKey.generate()
         let passwordHash = PasswordHasher.hash(password, rounds: rounds)
         let recoveryKeyHash = PasswordHasher.hash(recoveryKey, rounds: rounds)
-        var user = AppUser(personId: personId, displayName: displayName, isAdmin: isAdmin, createdAt: now)
+        var user = AppUser(personId: personId, displayName: name, isAdmin: isAdmin, createdAt: now)
         try db.inSavepoint {
+            if try !anyAdminWithCredential(db) { user.isAdmin = true }
             try user.insert(db)
             try LocalCredential(appUserId: user.id!, passwordHash: passwordHash, recoveryKeyHash: recoveryKeyHash).insert(db)
             return .commit
@@ -70,11 +79,12 @@ public enum AppUserStore {
     /// Also upgrades a hash made with fewer rounds than today's. A failed upgrade (a read-only connection)
     /// never fails the sign-in.
     public static func verifyPassword(_ db: Database, appUserId: Int64, password: String) throws -> Bool {
-        guard var credential = try LocalCredential.fetchOne(db, key: appUserId),
+        guard let credential = try LocalCredential.fetchOne(db, key: appUserId),
               PasswordHasher.verify(password, against: credential.passwordHash) else { return false }
         if PasswordHasher.needsRehash(credential.passwordHash) {
-            credential.passwordHash = PasswordHasher.hash(password)
-            try? credential.update(db)
+            // Only the password hash, so a stale fetch can't overwrite the recovery key hash.
+            try? db.execute(sql: "UPDATE localCredential SET passwordHash = ? WHERE appUserId = ?",
+                            arguments: [PasswordHasher.hash(password), appUserId])
         }
         return true
     }
@@ -91,7 +101,8 @@ public enum AppUserStore {
 
     // MARK: Changing
 
-    /// The caller has already proved who they are (old password, Touch ID or recovery key).
+    /// The caller must already have verified the user (old password, Touch ID or recovery key); the UI
+    /// enforces that, this method does not.
     public static func changePassword(_ db: Database, appUserId: Int64, newPassword: String,
                                       rounds: Int = PasswordHasher.currentRounds) throws {
         try requireValid(newPassword)
@@ -106,7 +117,8 @@ public enum AppUserStore {
         try changePassword(db, appUserId: appUserId, newPassword: newPassword, rounds: rounds)
     }
 
-    /// Invalidates the old key.
+    /// Invalidates the old key. The caller must already have verified the user (password, Touch ID or
+    /// recovery key); the UI enforces that, this method does not.
     public static func regenerateRecoveryKey(_ db: Database, appUserId: Int64,
                                              rounds: Int = PasswordHasher.currentRounds) throws -> String {
         guard var credential = try LocalCredential.fetchOne(db, key: appUserId) else { throw AppUserStoreError.noCredential }
@@ -119,7 +131,7 @@ public enum AppUserStore {
     public static func remove(_ db: Database, _ appUserId: Int64, by actorId: Int64) throws {
         try requireAdmin(db, actorId)
         guard appUserId != actorId else { throw AppUserStoreError.cannotRemoveSelf }
-        guard try AppUser.fetchOne(db, key: appUserId) != nil else { return }
+        guard try AppUser.fetchOne(db, key: appUserId) != nil else { throw AppUserStoreError.noSuchUser }
         guard try otherAdminsWithCredential(db, besides: appUserId) > 0 || !isAdminWithCredential(db, appUserId) else {
             throw AppUserStoreError.lastAdmin
         }
@@ -132,7 +144,7 @@ public enum AppUserStore {
 
     public static func setAdmin(_ db: Database, _ appUserId: Int64, _ isAdmin: Bool, by actorId: Int64) throws {
         try requireAdmin(db, actorId)
-        guard try AppUser.fetchOne(db, key: appUserId) != nil else { return }
+        guard try AppUser.fetchOne(db, key: appUserId) != nil else { throw AppUserStoreError.noSuchUser }
         if !isAdmin, try isAdminWithCredential(db, appUserId), try otherAdminsWithCredential(db, besides: appUserId) == 0 {
             throw AppUserStoreError.lastAdmin
         }
@@ -147,6 +159,12 @@ public enum AppUserStore {
 
     private static func requireAdmin(_ db: Database, _ appUserId: Int64) throws {
         guard try AppUser.fetchOne(db, key: appUserId)?.isAdmin == true else { throw AppUserStoreError.notAdmin }
+    }
+
+    private static func anyAdminWithCredential(_ db: Database) throws -> Bool {
+        try Bool.fetchOne(db, sql: """
+            SELECT EXISTS (SELECT 1 FROM appUser JOIN localCredential ON appUserId = id WHERE isAdmin)
+            """) ?? false
     }
 
     private static func isAdminWithCredential(_ db: Database, _ appUserId: Int64) throws -> Bool {
