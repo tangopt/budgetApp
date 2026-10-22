@@ -8,19 +8,28 @@
       <stop offset="0" stop-color="#16406A"/>
       <stop offset="1" stop-color="#0A2440"/>
     </linearGradient>
-    <radialGradient id="fruit" cx="0.36" cy="0.32" r="0.78">
-      <stop offset="0" stop-color="#FFE477"/>
-      <stop offset="0.38" stop-color="#FFC838"/>
-      <stop offset="0.72" stop-color="#F9A21E"/>
-      <stop offset="1" stop-color="#E8741A"/>
+    <linearGradient id="fruit" x1="0" y1="0.25" x2="1" y2="0.75">
+      <stop offset="0" stop-color="#D93A1A"/>
+      <stop offset="0.3" stop-color="#EE6A1C"/>
+      <stop offset="0.55" stop-color="#FAA21E"/>
+      <stop offset="0.8" stop-color="#FFD43A"/>
+      <stop offset="1" stop-color="#D9D63A"/>
+    </linearGradient>
+    <radialGradient id="blush" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#C42A14" stop-opacity="0.75"/>
+      <stop offset="1" stop-color="#C42A14" stop-opacity="0"/>
     </radialGradient>
-    <radialGradient id="rim" cx="0.75" cy="0.85" r="0.45">
-      <stop offset="0" stop-color="#D9621A" stop-opacity="0.55"/>
-      <stop offset="1" stop-color="#D9621A" stop-opacity="0"/>
+    <radialGradient id="green" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#6DAE2A" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#6DAE2A" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="edge" cx="0.5" cy="0.48" r="0.56">
+      <stop offset="0.62" stop-color="#7A2A0A" stop-opacity="0"/>
+      <stop offset="1" stop-color="#7A2A0A" stop-opacity="0.5"/>
     </radialGradient>
     <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#8ED257"/>
-      <stop offset="1" stop-color="#3F9A2F"/>
+      <stop offset="0" stop-color="#5FB23E"/>
+      <stop offset="1" stop-color="#2A6E25"/>
     </linearGradient>
     <clipPath id="fruitClip">
       <path d="M585 300C720 300 800 400 790 540C780 680 700 790 580 840C470 885 330 880 270 820C220 770 230 700 290 650C350 600 360 560 370 500C385 380 460 300 585 300Z"/>
@@ -29,21 +38,23 @@
     <filter id="softer" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="8"/></filter>
   </defs>
   <g id="background"><rect width="1024" height="1024" fill="url(#bg)"/></g>
-  <g id="shadow" transform="translate(-48 12)"><ellipse cx="530" cy="880" rx="270" ry="40" fill="#000000" opacity="0.35" filter="url(#soft)"/></g>
-  <g id="fruit" transform="translate(-48 12)"><path d="M585 300C720 300 800 400 790 540C780 680 700 790 580 840C470 885 330 880 270 820C220 770 230 700 290 650C350 600 360 560 370 500C385 380 460 300 585 300Z" fill="url(#fruit)"/></g>
-  <g id="shading" transform="translate(-48 12)" clip-path="url(#fruitClip)">
-    <ellipse cx="700" cy="760" rx="300" ry="240" fill="url(#rim)"/>
-    <ellipse cx="660" cy="370" rx="120" ry="60" fill="#C9661A" opacity="0.35" filter="url(#soft)"/>
+  <g id="shadow" transform="translate(-48 -34)"><ellipse cx="530" cy="880" rx="270" ry="40" fill="#000000" opacity="0.35" filter="url(#soft)"/></g>
+  <g id="fruit" transform="translate(-48 -34)"><path d="M585 300C720 300 800 400 790 540C780 680 700 790 580 840C470 885 330 880 270 820C220 770 230 700 290 650C350 600 360 560 370 500C385 380 460 300 585 300Z" fill="url(#fruit)"/></g>
+  <g id="shading" transform="translate(-48 -34)" clip-path="url(#fruitClip)">
+    <ellipse cx="380" cy="470" rx="190" ry="260" transform="rotate(20 380 470)" fill="url(#blush)"/>
+    <ellipse cx="700" cy="800" rx="240" ry="170" fill="url(#green)"/>
+    <rect x="200" y="280" width="620" height="620" fill="url(#edge)"/>
+    <ellipse cx="660" cy="370" rx="130" ry="60" fill="#8A3A10" opacity="0.4" filter="url(#soft)"/>
   </g>
-  <g id="highlight" transform="translate(-48 12)" clip-path="url(#fruitClip)">
+  <g id="highlight" transform="translate(-48 -34)" clip-path="url(#fruitClip)">
     <path d="M430 420C470 360 540 340 580 350C520 380 470 450 440 540C420 600 380 640 360 640C370 560 390 480 430 420Z" fill="#FFFFFF" opacity="0.42" filter="url(#softer)"/>
     <ellipse cx="560" cy="372" rx="22" ry="14" fill="#FFFFFF" opacity="0.7" filter="url(#softer)"/>
   </g>
-  <g id="stem" transform="translate(-48 12)">
+  <g id="stem" transform="translate(-48 -34)">
     <path d="M588 306C584 250 562 204 516 170" stroke="#7A4A22" stroke-width="28" stroke-linecap="round" fill="none"/>
     <path d="M578 290C574 248 556 214 524 186" stroke="#B07A45" stroke-width="7" stroke-linecap="round" fill="none" opacity="0.8"/>
   </g>
-  <g id="leaf" transform="translate(-48 12)">
+  <g id="leaf" transform="translate(-48 -34)">
     <path d="M592 270C680 214 800 246 846 358C872 428 862 508 846 562C800 502 722 470 662 420C616 382 596 324 592 270Z" fill="url(#leaf)"/>
     <path d="M604 276C704 300 800 420 842 548" stroke="#D3F0AE" stroke-width="8" stroke-linecap="round" fill="none" opacity="0.85"/>
     <g stroke="#D3F0AE" stroke-width="5" stroke-linecap="round" fill="none" opacity="0.55">

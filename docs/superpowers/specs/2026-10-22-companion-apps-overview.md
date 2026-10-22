@@ -192,11 +192,13 @@ Composer layer):
 - **Ground:** deep navy (`#16406A` → `#0A2440`), the app's tint family.
 - **The artwork (revised by the user, 2026-10-22):** drawn after the user's reference image as original
   vector artwork. The reference is a watermarked stock preview, so it isn't used itself.
-  - **The fruit:** a glossy, ripe mango leaning right, plump, with the rounded beak at the lower left.
-    A radial gradient runs yellow (`#FFE477`) → golden (`#FFC838`) → orange (`#F9A21E` → `#E8741A`),
-    with a soft orange rim lower right, a gloss highlight upper left and a soft shadow beneath.
+  - **The fruit (ripe, revised 2026-10-22):** a glossy, plump mango leaning right, with the rounded beak at the
+    lower left, centred in the icon. A gradient runs from red-orange on the left (`#D93A1A` →
+    `#EE6A1C`) through orange (`#FAA21E`) to gold (`#FFD43A`) and a touch of yellow-green on the right
+    (`#D9D63A`). On top: a deep red blush upper left, a green flush lower right, darker edges for
+    roundness, and a gloss highlight upper left.
   - **The stem:** curved, brown (`#7A4A22`), rising up and to the left.
-  - **The leaf:** one broad leaf, green (`#8ED257` → `#3F9A2F`), with a pale midrib and veins. It starts
+  - **The leaf:** one broad leaf, deep green (`#5FB23E` → `#2A6E25`), with a pale midrib and veins. It starts
     at the stem and falls to the right over the shoulder of the fruit.
 - **Appearances:** default, dark (near-black ground), tinted (a one-colour silhouette that takes the
   system tint), clear (a glass silhouette).
