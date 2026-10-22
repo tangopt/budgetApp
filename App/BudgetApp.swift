@@ -27,16 +27,48 @@ struct BudgetApp: App {
     var body: some Scene {
         WindowGroup {
             LaunchView()
+                .lockOverlay(.main)
                 .themedRoot()
         }
         .commands {
+            SessionCommands()
             SearchCommands()
             ImportCommands()
         }
-        // Budget ▸ Settings… (⌘,): Appearance and Theme.
+        // Budget ▸ Settings… (⌘,): Appearance, Theme, Evidence and Sign-in.
         Settings {
             SettingsView()
+                .lockOverlay(.settings)
                 .themedRoot()
+        }
+    }
+}
+
+/// Mango ▸ Lock (⌃⌘L) and Mango ▸ Switch User…, after Settings…. Switch User… shows only when more than one
+/// person can sign in on this Mac (a shared macOS user); both lock, Switch User… to the avatars.
+struct SessionCommands: Commands {
+    @ObservedObject private var current = AppEnvironment.Current.shared
+
+    var body: some Commands {
+        CommandGroup(after: .appSettings) {
+            if let session = current.environment?.session {
+                SessionMenuItems(session: session)
+            }
+        }
+    }
+}
+
+private struct SessionMenuItems: View {
+    @ObservedObject var session: SessionModel
+
+    var body: some View {
+        Divider()
+        Button("Lock") { session.lock() }
+            .keyboardShortcut("l", modifiers: [.control, .command])
+            .disabled(session.currentUser == nil)
+        if session.signInCandidates.count > 1 {
+            Button("Switch User…") { session.lock() }
+                .disabled(session.currentUser == nil)
         }
     }
 }

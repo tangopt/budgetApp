@@ -4,18 +4,31 @@ import BudgetCore
 
 /// Budget ▸ Settings… (⌘,): Appearance (System / Light / Dark) and Theme (the swatch grid) —
 /// both apply immediately, app-wide, and are remembered (`appAppearance`, `appTheme`) — and
-/// Evidence (the source folders scanned for documents).
+/// Evidence (the source folders scanned for documents) and Sign-in (auth spec §6).
 struct SettingsView: View {
+    enum Pane: Hashable { case appearance, theme, evidence, signIn }
+    @State private var pane: Pane
+    private let signInModel: SignInSettingsModel?
+
+    /// `signInModel`: snapshot routes only.
+    init(pane: Pane = .appearance, signInModel: SignInSettingsModel? = nil) {
+        _pane = State(initialValue: pane)
+        self.signInModel = signInModel
+    }
+
     var body: some View {
-        TabView {
-            Tab("Appearance", systemImage: "circle.lefthalf.filled") {
+        TabView(selection: $pane) {
+            Tab("Appearance", systemImage: "circle.lefthalf.filled", value: Pane.appearance) {
                 AppearanceSettings()
             }
-            Tab("Theme", systemImage: "paintpalette") {
+            Tab("Theme", systemImage: "paintpalette", value: Pane.theme) {
                 ThemeSettings()
             }
-            Tab("Evidence", systemImage: "folder.badge.gearshape") {
+            Tab("Evidence", systemImage: "folder.badge.gearshape", value: Pane.evidence) {
                 EvidenceSourcesSettings()
+            }
+            Tab("Sign-in", systemImage: "person.badge.key", value: Pane.signIn) {
+                SignInSettings(model: signInModel)
             }
         }
         .scenePadding()

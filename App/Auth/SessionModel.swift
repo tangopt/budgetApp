@@ -75,6 +75,9 @@ final class SessionModel: ObservableObject {
     @Published private(set) var state: State
     /// Bumped when Settings changes the timeout so views reading `lockTimeout` refresh.
     @Published private(set) var lockTimeoutRevision = 0
+    /// Who can sign in on this Mac (the lock screen's avatars). More than one means a shared macOS user,
+    /// and Mango ▸ Switch User… shows. Re-read by `refreshCandidates()` after setup and Settings changes.
+    @Published private(set) var signInCandidates: [AppUser] = []
 
     let dbQueue: DatabaseQueue
     let biometrics: any BiometricUnlocker
@@ -118,6 +121,17 @@ final class SessionModel: ObservableObject {
         }
         state = isSetUp ? .locked : .notSetUp
         observeSystemLocks()
+        Task { await refreshCandidates() }
+    }
+
+    /// Re-reads `signInCandidates` off the main thread.
+    func refreshCandidates() async {
+        guard let candidates = try? await dbQueue.read({ try AppUserStore.signInCandidates($0) }) else { return }
+        if candidates != signInCandidates { signInCandidates = candidates }
+        // The signed-in user's name or admin flag may have changed.
+        if case .signedIn(let user) = state, let fresh = candidates.first(where: { $0.id == user.id }), fresh != user {
+            state = .signedIn(fresh)
+        }
     }
 
     // MARK: Signing in
@@ -172,6 +186,13 @@ final class SessionModel: ObservableObject {
         state = .locked
     }
 
+    #if SNAPSHOTS
+    /// Snapshot routes only: signs in as `user` without a password (the demo's synthetic users).
+    func snapshotSignIn(_ user: AppUser) {
+        state = .signedIn(user)
+    }
+    #endif
+
     // MARK: Private
 
     private func finish(appUserId: Int64, _ outcome: SignInGate.Outcome) async -> SignInResult {
@@ -197,6 +218,7 @@ final class SessionModel: ObservableObject {
         guard let user else { throw AppUserStoreError.noSuchUser }
         state = .signedIn(user)
         idleMonitor.start(timeout: lockTimeout.seconds)
+        await refreshCandidates()
     }
 
     private func observeSystemLocks() {

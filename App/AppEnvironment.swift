@@ -37,18 +37,21 @@ final class AppEnvironment: ObservableObject {
     lazy var importCenter: ImportCenterModel = ImportCenterModel(
         dbQueue: dbQueue, databasePath: databasePath, library: evidenceLibrary,
         categorizationService: CategorizationService(categorizer: OnDeviceCategorizer.systemDefault()),
-        modelReader: SnapshotMode.isActive ? nil : FoundationModelsDocumentReader())
+        modelReader: SnapshotMode.isActive ? nil : FoundationModelsDocumentReader(),
+        // Read when Confirm import is pressed: whoever is signed in then (auth spec §6).
+        currentAppUserId: { [weak self] in self?.session.currentAppUserId })
 
-    private init(dbQueue: DatabaseQueue, databasePath: String?, evidenceRoot: URL, auth: LaunchAuth) {
+    private init(dbQueue: DatabaseQueue, databasePath: String?, evidenceRoot: URL, auth: LaunchAuth, session existing: SessionModel?) {
         self.dbQueue = dbQueue
         self.databasePath = databasePath
         self.evidenceRoot = evidenceRoot
+        // A second window on the same database shares the first one's session: one sign-in for every window.
         // The snapshot build never touches the Keychain or the app's own preferences.
-        self.session = SnapshotMode.isActive
+        self.session = existing ?? (SnapshotMode.isActive
             ? SessionModel(dbQueue: dbQueue, isSetUp: auth.isSetUp,
                            biometrics: BiometricUnlock.snapshot(scope: auth.databaseId, defaults: SnapshotMode.defaults),
                            defaults: SnapshotMode.defaults, snapshotUser: auth.snapshotUser)
-            : SessionModel(dbQueue: dbQueue, isSetUp: auth.isSetUp, biometrics: BiometricUnlock.make(scope: auth.databaseId))
+            : SessionModel(dbQueue: dbQueue, isSetUp: auth.isSetUp, biometrics: BiometricUnlock.make(scope: auth.databaseId)))
         self.hmrcRateAutoFetch = HMRCRateAutoFetch(dbQueue: dbQueue)
         self.interestIndexAutoFetch = InterestIndexAutoFetch(dbQueue: dbQueue)
 
@@ -110,7 +113,8 @@ final class AppEnvironment: ObservableObject {
         // `Evidence` next to the database: `Application Support/Budget/Evidence` normally, and
         // beside a `BUDGET_DB_PATH` copy when testing against one.
         let evidenceRoot = URL(fileURLWithPath: dbPath).deletingLastPathComponent().appendingPathComponent("Evidence", isDirectory: true)
-        let environment = AppEnvironment(dbQueue: dbQueue, databasePath: dbPath, evidenceRoot: evidenceRoot, auth: auth)
+        let existing = Current.shared.environment.flatMap { $0.databasePath == dbPath ? $0.session : nil }
+        let environment = AppEnvironment(dbQueue: dbQueue, databasePath: dbPath, evidenceRoot: evidenceRoot, auth: auth, session: existing)
         AppEnvironment.Current.shared.environment = environment
         // Every transaction's paperclip count, kept current from here on.
         TransactionDocumentCounts.shared.start(dbQueue: dbQueue)

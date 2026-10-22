@@ -28,8 +28,11 @@ struct SnapshotMissing: Error, CustomStringConvertible {
 /// link the demo builder (`BudgetDemo`).
 @MainActor
 enum SnapshotCatalog {
-    /// `importRoutes` last: `imports-history` writes to the demo copy.
-    static var routes: [SnapshotRoute] { screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + importRoutes }
+    /// `importRoutes` last: `imports-history` writes to the demo copy; the attribution check after them
+    /// (it imports too). `settings-sign-in` and the check add synthetic app users to the demo copy.
+    static var routes: [SnapshotRoute] {
+        screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + AuthSnapshots.routes + importRoutes + [AuthSnapshots.attributionRoute]
+    }
 
     // MARK: Imports, from the demo's samples
 

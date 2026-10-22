@@ -214,7 +214,7 @@ struct ContentView: View {
             // The sidebar's selection keeps the system accent whatever the theme.
             .tint(nil)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                SidebarSettingsButton()
+                SidebarFooter(session: environment.session)
             }
             // The whole column, title bar and Settings button included: without it the sidebar is
             // the content area's colour in dark mode (see `SidebarMaterial`).
@@ -283,7 +283,8 @@ struct ContentView: View {
             .modifier(ImportDropOutline(isTargeted: importDropTargeted))
             .dropDestination(for: URL.self) { urls, _ in
                 let files = urls.filter(\.isFileURL)
-                guard !files.isEmpty else { return false }
+                // Nothing reaches the importer while Mango is locked.
+                guard !files.isEmpty, environment.session.currentUser != nil else { return false }
                 environment.importCenter.start(files, intent: .none, entryPoint: "Drop")
                 return true
             } isTargeted: { importDropTargeted = $0 }
@@ -340,13 +341,11 @@ struct ContentView: View {
         .onChange(of: sidebarSelection) { _, newValue in sidebarSelectionChanged(to: newValue) }
         // Observes the phase alone, so the window isn't redrawn by every progress tick.
         .onReceive(environment.importCenter.$phase.map(Self.isActiveImport).removeDuplicates()) { importActive = $0 }
-        // ⌘F (Edit ▸ Search Transactions) in this window: the Search screen, its field focused.
-        .focusedSceneValue(\.transactionSearch, TransactionSearchAction {
+        // ⌘F (Edit ▸ Search Transactions) and File ▸ Import… (⇧⌘I) in this window, only while signed in.
+        .modifier(SignedInCommands(session: environment.session, search: TransactionSearchAction {
             sidebarSelectionChanged(to: .screen(.search))
             searchViewModel.requestFocus()
-        })
-        // File ▸ Import… (⇧⌘I) in this window.
-        .focusedSceneValue(\.documentImport, documentImport)
+        }, documentImport: documentImport))
         .onChange(of: selection) {
             // Screens can also be changed in code (the Dashboard's links, the alert below).
             if sidebarSelection != currentSidebarItem { sidebarSelection = currentSidebarItem }
@@ -484,24 +483,56 @@ struct ContentView: View {
     }
 }
 
+/// The window's menu actions, published only while someone is signed in: a locked window's menus do nothing.
+private struct SignedInCommands: ViewModifier {
+    @ObservedObject var session: SessionModel
+    let search: TransactionSearchAction
+    let documentImport: DocumentImportAction
 
-/// The sidebar's foot: opens the Settings window (also Budget ▸ Settings…, ⌘,).
-private struct SidebarSettingsButton: View {
+    func body(content: Content) -> some View {
+        let signedIn = session.currentUser != nil
+        content
+            .focusedSceneValue(\.transactionSearch, signedIn ? search : nil)
+            .focusedSceneValue(\.documentImport, signedIn ? documentImport : nil)
+    }
+}
+
+/// The sidebar's foot: who is signed in (their initials), the lock button (auth spec §6) and Settings.
+private struct SidebarFooter: View {
+    @ObservedObject var session: SessionModel
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        Button {
-            openSettings()
-        } label: {
-            Image(systemName: "gearshape")
-                .imageScale(.large)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+        HStack(spacing: 8) {
+            // Initials only: the sidebar is narrow, and the name is in the help.
+            if let user = session.currentUser {
+                UserAvatar(name: user.displayName, size: 24)
+                    .help("Signed in as \(user.displayName)")
+                    .accessibilityElement()
+                    .accessibilityLabel("Signed in as \(user.displayName)")
+            }
+            Spacer(minLength: 4)
+            Button { session.lock() } label: {
+                Image(systemName: "lock")
+                    .imageScale(.large)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Lock Mango (⌃⌘L)")
+            .accessibilityLabel("Lock")
+            Button {
+                openSettings()
+            } label: {
+                Image(systemName: "gearshape")
+                    .imageScale(.large)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Settings")
+            .accessibilityLabel("Settings")
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .help("Settings")
-        .accessibilityLabel("Settings")
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 14)
