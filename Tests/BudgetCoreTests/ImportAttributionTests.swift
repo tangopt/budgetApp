@@ -165,4 +165,30 @@ final class ImportAttributionTests: XCTestCase {
         XCTAssertEqual(row.createdByName, "User A")
         XCTAssertEqual(row.lastLearntByName, "User B")
     }
+
+    func testReLearnWithNoUserKeepsTheLastLearner() throws {
+        try db.write { db in
+            try ImportRuleStore.learn(db: db, kind: .documentKind, key: "k", matchLabel: "L",
+                                      action: DocumentKindAction(kind: .insuranceReceipt), actionLabel: "Kind", now: Date(), by: userA)
+            try ImportRuleStore.learn(db: db, kind: .documentKind, key: "k", matchLabel: "L",
+                                      action: DocumentKindAction(kind: .insurancePolicy), actionLabel: "Kind 2", now: Date())
+        }
+        let rule = try onlyRule()
+        XCTAssertEqual(rule.actionLabel, "Kind 2")
+        XCTAssertEqual(rule.lastLearntByAppUserId, userA)
+    }
+
+    func testAttributionLabelComparesIdsNotNames() {
+        func row(_ c: (String, Int64)?, _ l: (String, Int64)?) -> ImportRuleRow {
+            ImportRuleRow(id: 1, kind: .documentKind, kindLabel: "", when: "", then: "", useCount: 0, lastUsedAt: nil,
+                          isEnabled: true, targetMissing: false, createdByName: c?.0, lastLearntByName: l?.0,
+                          createdByAppUserId: c?.1, lastLearntByAppUserId: l?.1)
+        }
+        XCTAssertEqual(row(("Sam", 1), ("Sam", 1)).attributionLabel, "Learnt from Sam's correction")
+        XCTAssertEqual(row(("Sam", 1), ("Sam", 2)).attributionLabel, "Learnt from Sam's correction · updated by Sam",
+                       "same name, different users")
+        XCTAssertEqual(row(("Sam", 1), ("Kim", 2)).attributionLabel, "Learnt from Sam's correction · updated by Kim")
+        XCTAssertEqual(row(nil, ("Kim", 2)).attributionLabel, "Updated by Kim")
+        XCTAssertNil(row(nil, nil).attributionLabel)
+    }
 }

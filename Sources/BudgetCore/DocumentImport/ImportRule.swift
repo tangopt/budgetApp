@@ -191,7 +191,7 @@ public enum ImportRuleStore {
             existing.actionJSON = json
             existing.actionLabel = actionLabel
             existing.isEnabled = true
-            existing.lastLearntByAppUserId = appUserId
+            if let appUserId { existing.lastLearntByAppUserId = appUserId }
             try existing.update(db)
             return existing
         }

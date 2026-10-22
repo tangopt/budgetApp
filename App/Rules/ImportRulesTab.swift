@@ -49,7 +49,7 @@ struct ImportRulesTab: View {
             TableColumn("Then") { row in
                 HStack(spacing: 6) {
                     Text(row.then).lineLimit(1).truncationMode(.tail).help(row.then)
-                    if let who = Self.learntBy(row) {
+                    if let who = row.attributionLabel {
                         Text(who).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(who)
                     }
                     if row.targetMissing {
@@ -118,15 +118,6 @@ struct ImportRulesTab: View {
 
     private func perform(_ action: () throws -> Void) {
         do { try action() } catch { self.error = error.localizedDescription }
-    }
-
-    /// "Learnt from Ana's correction", plus " · updated by Ben" when someone else taught it last; nil when
-    /// the teacher is unknown (a rule from before sign-in, or a user since removed).
-    static func learntBy(_ row: ImportRuleRow) -> String? {
-        guard let creator = row.createdByName else { return nil }
-        var text = "Learnt from \(creator)'s correction"
-        if let last = row.lastLearntByName, last != creator { text += " · updated by \(last)" }
-        return text
     }
 
     /// "12 × · 3 Oct" (the year too when it isn't this one); "Not yet" before its first use.
