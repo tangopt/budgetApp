@@ -84,7 +84,7 @@
   - `struct LocalCredential: Codable, FetchableRecord, PersistableRecord`, with `appUserId: Int64`, `passwordHash: String` and `recoveryKeyHash: String`. The table is `localCredential`, and `appUserId` is its primary key, with ON DELETE CASCADE.
   - `ImportRun.appUserId: Int64?`, and `ImportRule.createdByAppUserId: Int64?` and `ImportRule.lastLearntByAppUserId: Int64?`. These are new columns, each `REFERENCES appUser(id) ON DELETE SET NULL`.
   - `PasswordHasher.hash(_ password: String, rounds: Int = 600_000) -> String`, `PasswordHasher.verify(_ password: String, against encoded: String) -> Bool`, and `PasswordHasher.needsRehash(_ encoded: String) -> Bool`.
-  - `RecoveryKey.generate() -> String` (24 characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`), `RecoveryKey.formatted(_:) -> String` ("XXXX-XXXX-…"), and `RecoveryKey.normalised(_ input: String) -> String` (uppercase; strips spaces and hyphens; maps O→0 and I/L→1 only if those characters can't appear, otherwise rejects them).
+  - `RecoveryKey.generate() -> String` (24 characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`), `RecoveryKey.formatted(_:) -> String` ("XXXX-XXXX-…"), and `RecoveryKey.normalised(_ input: String) -> String?` (uppercase; strips spaces and hyphens; nil if any character falls outside the alphabet or the length isn't 24).
 
 - [ ] **Step 1: Write failing tests:**
   - `testPBKDF2KnownVector`: the RFC 6070-style PBKDF2-HMAC-SHA256 vector ("password", "salt", 1 round) gives the known hex `120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b`.
