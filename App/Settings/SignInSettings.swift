@@ -81,7 +81,14 @@ final class SignInSettingsModel: ObservableObject {
     var touchIDAvailable: Bool { biometrics.isAvailable }
     var hasChanges: Bool { touchID != savedTouchID || timeout != savedTimeout }
 
-    func load() async {
+    /// Someone else signed in (or the same person again): the edits waiting for Save were theirs, so they go.
+    func discardEdits() async {
+        savedTimeout = session.lockTimeout
+        timeout = savedTimeout
+        await load(discardingEdits: true)
+    }
+
+    func load(discardingEdits: Bool = false) async {
         let read = try? await session.dbQueue.read { db in
             (try AppUserStore.appUsers(db), Set(try LocalCredential.fetchAll(db).map(\.appUserId)), try AppUserStore.unclaimedPeople(db))
         }
@@ -89,7 +96,7 @@ final class SignInSettingsModel: ObservableObject {
             appUsers = users; withPassword = credentials; unclaimed = people
         }
         let enrolled = me?.id.map { biometrics.enrolledIds().contains($0) } ?? false
-        if savedTouchID == touchID { touchID = enrolled }
+        if discardingEdits || savedTouchID == touchID { touchID = enrolled }
         savedTouchID = enrolled
     }
 
@@ -246,7 +253,7 @@ struct SignInSettingsContent: View {
         .formStyle(.grouped)
         .frame(height: 520)
         .task { await model.load() }
-        .onChange(of: session.state) { Task { await model.load() } }
+        .onChange(of: session.currentUser?.id) { Task { await model.discardEdits() } }
         .sheet(item: $model.sheet) { sheet in
             sheetView(sheet)
         }

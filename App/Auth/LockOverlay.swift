@@ -1,104 +1,148 @@
 // App/Auth/LockOverlay.swift
 import SwiftUI
 import AppKit
+import Combine
 import BudgetCore
 
 /// Which window a lock overlay sits on: the main window shows the setup flow itself while Mango isn't set
-/// up (`LaunchView`), so only the Settings window is covered then.
+/// up (`LaunchView`), so only the Settings window is covered then — and whenever it has no session yet.
 enum LockOverlayScene {
     case main
     case settings
 }
 
 extension View {
-    /// The lock screen over this window while Mango is locked (auth spec §6): opaque, so the content under
-    /// it is hidden, not blurred; the window's toolbar goes and its content takes no clicks or focus.
-    /// The session is the app's (`AppEnvironment.Current`), shared by every window.
-    func lockOverlay(_ scene: LockOverlayScene) -> some View {
-        modifier(LockOverlayModifier(scene: scene))
+    /// The lock screen over this window while Mango is locked (auth spec §6). It's opaque, so the content
+    /// under it is hidden, not blurred. The content is also disabled: it takes no clicks, focus, typing or
+    /// keyboard shortcuts, and the window toolbar goes. The session is the app's (`AppEnvironment.Current`),
+    /// shared by every window; snapshot routes pass one of their own.
+    func lockOverlay(_ scene: LockOverlayScene, session: SessionModel? = nil) -> some View {
+        modifier(LockOverlayModifier(scene: scene, fixedSession: session))
+    }
+}
+
+extension EnvironmentValues {
+    /// The lock screen covers this window: views hosted apart from the root (the sidebar column, the
+    /// toolbar, the title) hide themselves.
+    @Entry var isLockCovered = false
+}
+
+/// The session a window's overlay follows, re-published whenever it changes. It's an object rather than an
+/// `if let` over the content, so the content keeps its identity when the environment arrives (an `if` would
+/// rebuild `LaunchView` and load the environment a second time).
+@MainActor
+private final class LockGate: ObservableObject {
+    @Published private(set) var session: SessionModel?
+    private var environmentSubscription: AnyCancellable?
+    private var sessionSubscription: AnyCancellable?
+
+    init(fixed: SessionModel?) {
+        if let fixed {
+            attach(fixed)
+        } else {
+            environmentSubscription = AppEnvironment.Current.shared.$environment
+                .map { $0?.session }
+                .removeDuplicates { $0 === $1 }
+                .sink { [weak self] session in
+                    MainActor.assumeIsolated { self?.attach(session) }
+                }
+        }
+    }
+
+    private func attach(_ session: SessionModel?) {
+        self.session = session
+        sessionSubscription = session?.objectWillChange.sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.objectWillChange.send() }
+        }
     }
 }
 
 private struct LockOverlayModifier: ViewModifier {
     let scene: LockOverlayScene
-    @ObservedObject private var current = AppEnvironment.Current.shared
+    @StateObject private var gate: LockGate
 
-    func body(content: Content) -> some View {
-        if let session = current.environment?.session {
-            content.modifier(SessionLockOverlay(scene: scene, session: session))
-        } else {
-            content
-        }
-    }
-}
-
-private struct SessionLockOverlay: ViewModifier {
-    let scene: LockOverlayScene
-    @ObservedObject var session: SessionModel
-    @StateObject private var model: LockScreenModel
-
-    init(scene: LockOverlayScene, session: SessionModel) {
+    init(scene: LockOverlayScene, fixedSession: SessionModel?) {
         self.scene = scene
-        self.session = session
-        _model = StateObject(wrappedValue: LockScreenModel(session: session))
+        _gate = StateObject(wrappedValue: LockGate(fixed: fixedSession))
     }
 
     private var covers: Bool {
-        switch session.state {
-        case .locked: true
-        case .notSetUp: scene == .settings
-        // A step after signing in (a new password after the recovery key, the Touch ID offer) keeps it up.
-        case .signedIn: model.holdsOverlay
-        }
+        guard let session = gate.session else { return scene == .settings }
+        if session.state == .notSetUp { return scene == .settings }
+        return session.isCovered
     }
 
     func body(content: Content) -> some View {
         content
+            .environment(\.isLockCovered, covers)
+            .disabled(covers)
             .opacity(covers ? 0 : 1)
             .allowsHitTesting(!covers)
             .accessibilityHidden(covers)
             .toolbar(covers ? .hidden : .automatic, for: .windowToolbar)
             .overlay {
                 if covers {
-                    Group {
-                        if session.state == .notSetUp {
-                            NotSetUpCover()
-                        } else {
-                            LockScreen(model: model)
-                        }
-                    }
-                    .transition(.opacity)
+                    cover.transition(.opacity)
                 }
             }
-            .onChange(of: session.state, initial: true) { _, state in
-                if state == .locked { model.prepare() }
-                SheetCovers.shared.update(locked: state == .locked, session: session)
+            .onChange(of: gate.session?.isCovered ?? false, initial: true) { _, covered in
+                if let session = gate.session { SheetCovers.shared.update(covered: covered, session: session) }
             }
-            // At launch the people are read after the first lock: pick the only one once they're in.
-            .onChange(of: session.signInCandidates) {
-                if session.state == .locked && model.selectedId == nil { model.prepare() }
-            }
+    }
+
+    @ViewBuilder private var cover: some View {
+        if let session = gate.session, session.state != .notSetUp {
+            LockScreenHost(session: session)
+        } else if gate.session == nil {
+            PlainCover(title: "Mango", message: "Open Mango to change settings.")
+        } else {
+            PlainCover(title: "Set up Mango", message: "Finish setting up in Mango's window first.")
+        }
     }
 }
 
-/// The Settings window before setup: nothing to change until someone can sign in.
-private struct NotSetUpCover: View {
+/// The Settings window with nothing to change yet: before setup, or before Mango's window has opened the
+/// database (or after it couldn't).
+private struct PlainCover: View {
+    let title: String
+    let message: String
+
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "lock.fill").font(.largeTitle).foregroundStyle(.secondary)
-            Text("Set up Mango").font(.title3.weight(.semibold))
-            Text("Finish setting up in Mango's window first.").font(.callout).foregroundStyle(.secondary)
+            Text(title).font(.title3.weight(.semibold))
+            Text(message).font(.callout).foregroundStyle(.secondary)
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
+        .focusable()
+    }
+}
+
+/// A fresh lock screen each time a window is covered: nothing typed before survives a lock.
+struct LockScreenHost: View {
+    @StateObject private var model: LockScreenModel
+    @ObservedObject private var session: SessionModel
+
+    init(session: SessionModel) {
+        self.session = session
+        _model = StateObject(wrappedValue: LockScreenModel(session: session))
+    }
+
+    var body: some View {
+        LockScreen(model: model)
+            // At launch the people are read after the first lock: pick the only one once they're in.
+            .onChange(of: session.signInCandidates) {
+                if model.selectedId == nil { model.prepare() }
+            }
     }
 }
 
 // MARK: - The lock screen
 
 /// One window's lock screen: who is picked and what they're typing. Every window has its own; the session
-/// they sign in to is shared.
+/// they sign in to is shared, and so are the steps after signing in (`SessionModel.afterSignIn`).
 @MainActor
 final class LockScreenModel: ObservableObject {
     enum Step: Equatable {
@@ -107,10 +151,6 @@ final class LockScreenModel: ObservableObject {
         case password
         /// "Forgot password?".
         case recoveryKey
-        /// Signed in with the recovery key: a new password before the content shows.
-        case newPassword
-        /// Signed in with a password on a Mac with Touch ID they haven't turned on here.
-        case offerTouchID
     }
 
     @Published var selectedId: Int64?
@@ -135,17 +175,17 @@ final class LockScreenModel: ObservableObject {
         self.session = session
         self.biometrics = biometrics ?? session.biometrics
         self.fixedCandidates = candidates
-        refreshEnrolment()
+        prepare()
     }
 
     var candidates: [AppUser] { fixedCandidates ?? session.signInCandidates }
     var selected: AppUser? { candidates.first { $0.id == selectedId } }
-    var holdsOverlay: Bool { step == .newPassword || step == .offerTouchID }
     func isEnrolled(_ user: AppUser) -> Bool { user.id.map(enrolled.contains) ?? false }
 
-    /// Called whenever Mango locks: back to the avatars, nothing typed kept. One person is picked already.
+    /// Back to the avatars, nothing typed kept. One person is picked already.
     func prepare() {
-        refreshEnrolment()
+        enrolled = biometrics.enrolledIds()
+        touchIDAvailable = biometrics.isAvailable
         password = ""; recoveryKey = ""; newPassword = ""; confirmPassword = ""
         message = nil
         if candidates.count == 1, let only = candidates.first {
@@ -171,13 +211,22 @@ final class LockScreenModel: ObservableObject {
         }
     }
 
+    /// The avatar row's arrow keys: moves the pick without signing in.
+    func movePick(by offset: Int) {
+        guard !candidates.isEmpty, !isWorking else { return }
+        let index = candidates.firstIndex { $0.id == selectedId }.map { $0 + offset } ?? (offset > 0 ? 0 : candidates.count - 1)
+        selectedId = candidates[min(max(index, 0), candidates.count - 1)].id
+        step = .choose
+        message = nil
+    }
+
     func useTouchID() async {
         guard let id = selectedId, !isWorking else { return }
         isWorking = true
         defer { isWorking = false }
         switch await session.signInWithBiometrics(appUserId: id) {
         case .signedIn:
-            finish()
+            message = nil
         case .cancelled:
             break
         case .notEnrolled:
@@ -201,31 +250,27 @@ final class LockScreenModel: ObservableObject {
         message = nil
     }
 
+    private func offersTouchID(_ id: Int64) -> Bool { touchIDAvailable && !enrolled.contains(id) }
+
     func submitPassword() async {
         guard let id = selectedId, !password.isEmpty, !isWorking, !isThrottled else { return }
         isWorking = true
-        let result = await session.signIn(appUserId: id, password: password)
+        let result = await session.signIn(appUserId: id, password: password, offerTouchID: offersTouchID(id))
         isWorking = false
         password = ""
-        switch result {
-        case .signedIn:
-            if touchIDAvailable && !enrolled.contains(id) { message = nil; step = .offerTouchID } else { finish() }
-        default:
-            handleFailure(result, wrong: "Wrong password.")
-        }
+        if result == .signedIn { message = nil } else { handleFailure(result, wrong: "Wrong password.") }
     }
 
+    /// Signed in, every window then asks for a new password (`SessionModel.afterSignIn`).
     func submitRecoveryKey() async {
         guard let id = selectedId, !recoveryKey.isEmpty, !isWorking, !isThrottled else { return }
         isWorking = true
         let result = await session.signIn(appUserId: id, recoveryKey: recoveryKey)
         isWorking = false
-        switch result {
-        case .signedIn:
+        if result == .signedIn {
             recoveryKey = ""
             message = nil
-            step = .newPassword
-        default:
+        } else {
             handleFailure(result, wrong: "That recovery key doesn't match.")
         }
     }
@@ -238,32 +283,33 @@ final class LockScreenModel: ObservableObject {
         guard canSaveNewPassword, let id = session.currentAppUserId else { return }
         isWorking = true
         defer { isWorking = false }
-        let password = newPassword
         do {
-            // PBKDF2 runs on the database queue, off the main thread.
-            try await session.dbQueue.write { try AppUserStore.changePassword($0, appUserId: id, newPassword: password) }
+            try await session.chooseNewPassword(newPassword, thenOfferTouchID: offersTouchID(id))
             newPassword = ""; confirmPassword = ""
-            if touchIDAvailable && !enrolled.contains(id) { message = nil; step = .offerTouchID } else { finish() }
+            message = nil
         } catch {
             message = SignInErrorText.describe(error)
         }
     }
 
     func turnOnTouchID() async {
-        guard let id = session.currentAppUserId else { finish(); return }
+        guard let id = session.currentAppUserId else { session.finishOffer(); return }
         isWorking = true
         defer { isWorking = false }
         do {
             try await biometrics.enrol(appUserId: id)
-            finish()
+            enrolled.insert(id)
+            message = nil
+            session.finishOffer()
         } catch {
+            // Shown on the offer, which stays up so it's read; "Not Now" carries on.
             message = "Touch ID couldn't be turned on: \(error.localizedDescription)"
         }
     }
 
-    func finish() {
+    func notNow() {
         message = nil
-        step = .choose
+        session.finishOffer()
     }
 
     var isThrottled: Bool { (throttledUntil ?? .distantPast) > Date() }
@@ -284,18 +330,36 @@ final class LockScreenModel: ObservableObject {
         case .busy, .signedIn: break
         }
     }
-
-    private func refreshEnrolment() {
-        enrolled = biometrics.enrolledIds()
-        touchIDAvailable = biometrics.isAvailable
-    }
 }
 
 /// "Mango is locked": the app's icon, an avatar per person who can sign in on this Mac and the step in hand.
+/// The keyboard is always somewhere on it (the avatars, a field or the offer), never in the hidden content.
 struct LockScreen: View {
     @ObservedObject var model: LockScreenModel
+    @ObservedObject private var session: SessionModel
     @Environment(\.theme) private var theme
-    @FocusState private var focused: Bool
+    @FocusState private var focus: Field?
+
+    private enum Field: Hashable { case avatars, password, recoveryKey, offer }
+
+    /// What this window shows: a step after signing in (shared by every window) or the lock screen's own.
+    private enum Shown: Equatable {
+        case lock(LockScreenModel.Step)
+        case newPassword
+        case offerTouchID
+    }
+
+    init(model: LockScreenModel) {
+        self.model = model
+        self.session = model.session
+    }
+
+    private var shown: Shown {
+        if case .signedIn = session.state, let after = session.afterSignIn {
+            return after == .newPassword ? .newPassword : .offerTouchID
+        }
+        return .lock(model.step)
+    }
 
     var body: some View {
         ScrollView {
@@ -305,10 +369,10 @@ struct LockScreen: View {
                         .resizable()
                         .interpolation(.high)
                         .frame(width: 72, height: 72)
-                    Text(model.step == .newPassword || model.step == .offerTouchID ? "Mango" : "Mango is locked")
+                    Text(shown == .newPassword || shown == .offerTouchID ? "Mango" : "Mango is locked")
                         .font(.title2.weight(.semibold))
                 }
-                if model.step != .newPassword && model.step != .offerTouchID {
+                if case .lock = shown {
                     avatars
                 }
                 stepContent
@@ -321,9 +385,24 @@ struct LockScreen: View {
         .scrollBounceBehavior(.basedOnSize)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
-        .onAppear { if model.selectedId == nil && model.step == .choose { model.prepare() } }
+        .onChange(of: shown, initial: true) { _, shown in
+            // After the step's view is in, so the field exists to take the focus.
+            DispatchQueue.main.async { focus = Self.field(for: shown) }
+        }
     }
 
+    private static func field(for shown: Shown) -> Field? {
+        switch shown {
+        case .lock(.choose): .avatars
+        case .lock(.password): .password
+        case .lock(.recoveryKey): .recoveryKey
+        // The new-password fields take it themselves (`NewPasswordFields.focusFirst`).
+        case .newPassword: nil
+        case .offerTouchID: .offer
+        }
+    }
+
+    /// Clickable, and focusable as one row: ←/→ move the pick, Return or Space signs in as them.
     private var avatars: some View {
         HStack(alignment: .top, spacing: 24) {
             ForEach(model.candidates) { user in
@@ -339,15 +418,26 @@ struct LockScreen: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .focusable(false)
                 .help(model.isEnrolled(user) && model.touchIDAvailable ? "Sign in as \(user.displayName) with Touch ID" : "Sign in as \(user.displayName)")
                 .accessibilityLabel("Sign in as \(user.displayName)")
             }
         }
+        .padding(6)
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focus, equals: .avatars)
+        .onKeyPress(.leftArrow) { model.movePick(by: -1); return .handled }
+        .onKeyPress(.rightArrow) { model.movePick(by: 1); return .handled }
+        .onKeyPress(keys: [.return, .space]) { _ in
+            if let user = model.selected ?? model.candidates.first { model.select(user) }
+            return .handled
+        }
     }
 
     @ViewBuilder private var stepContent: some View {
-        switch model.step {
-        case .choose:
+        switch shown {
+        case .lock(.choose):
             if let user = model.selected, model.isEnrolled(user), model.touchIDAvailable {
                 VStack(spacing: 10) {
                     Button { Task { await model.useTouchID() } } label: { Label("Use Touch ID", systemImage: "touchid") }
@@ -358,12 +448,12 @@ struct LockScreen: View {
                     messageLine
                 }
             }
-        case .password:
+        case .lock(.password):
             VStack(spacing: 10) {
                 HStack(spacing: 8) {
                     SecureField("Password", text: $model.password)
                         .textFieldStyle(.roundedBorder)
-                        .focused($focused)
+                        .focused($focus, equals: .password)
                         .onSubmit { Task { await model.submitPassword() } }
                     Button("Sign In") { Task { await model.submitPassword() } }
                         .buttonStyle(.borderedProminent).prominentTint()
@@ -380,8 +470,7 @@ struct LockScreen: View {
                 .buttonStyle(.link)
                 .font(.callout)
             }
-            .onAppear { focused = true }
-        case .recoveryKey:
+        case .lock(.recoveryKey):
             VStack(spacing: 10) {
                 Text("Enter your recovery key").font(.headline)
                 Text("The 24 characters you saved when you set up Mango. Dashes and spaces don't matter.")
@@ -392,20 +481,20 @@ struct LockScreen: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.body.monospaced())
                     .multilineTextAlignment(.center)
-                    .focused($focused)
+                    .focused($focus, equals: .recoveryKey)
                     .onSubmit { Task { await model.submitRecoveryKey() } }
                 messageLine
                 HStack(spacing: 16) {
                     Button("Use password") { model.usePassword() }
                         .buttonStyle(.link)
                         .font(.callout)
+                        .keyboardShortcut(.cancelAction)
                     Button("Continue") { Task { await model.submitRecoveryKey() } }
                         .buttonStyle(.borderedProminent).prominentTint()
                         .keyboardShortcut(.defaultAction)
                         .disabled(model.recoveryKey.isEmpty || model.isWorking || model.isThrottled)
                 }
             }
-            .onAppear { focused = true }
         case .newPassword:
             VStack(spacing: 10) {
                 Text("Choose a password").font(.headline)
@@ -413,7 +502,7 @@ struct LockScreen: View {
                     .font(.callout).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                NewPasswordFields(password: $model.newPassword, confirmation: $model.confirmPassword)
+                NewPasswordFields(password: $model.newPassword, confirmation: $model.confirmPassword, focusFirst: true)
                 messageLine
                 Button("Save") { Task { await model.saveNewPassword() } }
                     .buttonStyle(.borderedProminent).prominentTint()
@@ -430,13 +519,17 @@ struct LockScreen: View {
                     .fixedSize(horizontal: false, vertical: true)
                 messageLine
                 HStack(spacing: 8) {
-                    Button("Not Now") { model.finish() }
+                    Button("Not Now") { model.notNow() }
+                        .keyboardShortcut(.cancelAction)
                     Button("Turn On") { Task { await model.turnOnTouchID() } }
                         .buttonStyle(.borderedProminent).prominentTint()
                         .keyboardShortcut(.defaultAction)
                         .disabled(model.isWorking)
                 }
             }
+            .focusable()
+            .focusEffectDisabled()
+            .focused($focus, equals: .offer)
         }
     }
 
@@ -486,7 +579,10 @@ struct UserAvatar: View {
 struct NewPasswordFields: View {
     @Binding var password: String
     @Binding var confirmation: String
+    /// Puts the keyboard in the first field when shown (the lock screen's new-password step).
+    var focusFirst = false
     @Environment(\.theme) private var theme
+    @FocusState private var firstFocused: Bool
 
     private var strength: PasswordStrength { PasswordStrength.assess(password) }
     private var mismatch: Bool { !confirmation.isEmpty && confirmation != password }
@@ -495,6 +591,8 @@ struct NewPasswordFields: View {
         VStack(alignment: .leading, spacing: 8) {
             SecureField("New password", text: $password)
                 .textFieldStyle(.roundedBorder)
+                .focused($firstFocused)
+                .onAppear { if focusFirst { firstFocused = true } }
             SecureField("Type it again", text: $confirmation)
                 .textFieldStyle(.roundedBorder)
             HStack(spacing: 6) {
@@ -552,45 +650,77 @@ enum SignInErrorText {
     }
 }
 
-// MARK: - Sheets
+// MARK: - Sheets and popovers
 
-/// Sheets and alerts are windows of their own: while Mango is locked each gets an opaque lock screen over
-/// it, so nothing in them shows and the window that holds the sheet can still be unlocked from it.
+/// Sheets and alerts are windows of their own. While Mango is covered:
+/// - each sheet's own content view is taken out of it and an opaque lock screen put in its place (and made
+///   the first responder), so nothing in it shows, Return and Esc can't reach its Save or Cancel, and the
+///   window that holds the sheet can still be unlocked from it. The content view is kept, with its state,
+///   and put back;
+/// - popovers are closed.
+/// Everything comes back as it was when the cover lifts.
 @MainActor
 final class SheetCovers {
     static let shared = SheetCovers()
-    private var covers: [ObjectIdentifier: NSView] = [:]
+    private struct Cover {
+        weak var window: NSWindow?
+        let original: NSView
+    }
+    private var covers: [ObjectIdentifier: Cover] = [:]
     private var observer: NSObjectProtocol?
     private weak var session: SessionModel?
 
-    func update(locked: Bool, session: SessionModel) {
+    func update(covered: Bool, session: SessionModel) {
         guard !SnapshotMode.isActive else { return }
         self.session = session
-        if locked {
-            for window in NSApp.windows where window.isSheet { cover(window) }
+        if covered {
+            for window in NSApp.windows { coverOrClose(window) }
             if observer == nil {
-                // A sheet that opens while locked (an alert from a background task).
+                // A sheet or popover that opens while covered (an alert from a background task).
                 observer = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] note in
                     MainActor.assumeIsolated {
-                        guard let window = note.object as? NSWindow, window.isSheet else { return }
-                        self?.cover(window)
+                        guard let window = note.object as? NSWindow else { return }
+                        self?.coverOrClose(window)
                     }
                 }
             }
         } else {
-            for cover in covers.values { cover.removeFromSuperview() }
+            for cover in covers.values {
+                guard let window = cover.window else { continue }
+                let frame = window.frame
+                window.contentView = cover.original
+                window.setFrame(frame, display: true)
+                window.makeFirstResponder(cover.original)
+            }
             covers = [:]
             if let observer { NotificationCenter.default.removeObserver(observer) }
             observer = nil
         }
     }
 
+    private func coverOrClose(_ window: NSWindow) {
+        if window.isSheet {
+            cover(window)
+        } else if Self.isPopover(window) {
+            window.close()
+        }
+    }
+
+    /// A popover's window (or any other window hung off one of ours that isn't a sheet).
+    private static func isPopover(_ window: NSWindow) -> Bool {
+        window.className.contains("Popover") || (window.parent != nil && window.isVisible)
+    }
+
     private func cover(_ window: NSWindow) {
         guard let session, covers[ObjectIdentifier(window)] == nil, let content = window.contentView else { return }
-        let host = NSHostingView(rootView: LockScreen(model: LockScreenModel(session: session)).themedRoot())
-        host.frame = content.bounds
-        host.autoresizingMask = [.width, .height]
-        content.addSubview(host, positioned: .above, relativeTo: nil)
-        covers[ObjectIdentifier(window)] = host
+        let frame = window.frame
+        let host = NSHostingView(rootView: LockScreenHost(session: session).themedRoot())
+        // The sheet keeps its size: the lock screen scrolls if it needs more.
+        host.sizingOptions = []
+        host.frame = content.frame
+        covers[ObjectIdentifier(window)] = Cover(window: window, original: content)
+        window.contentView = host
+        window.setFrame(frame, display: true)
+        window.makeFirstResponder(host)
     }
 }

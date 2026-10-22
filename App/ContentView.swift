@@ -94,6 +94,8 @@ struct ContentView: View {
     /// Files are being dragged over the window (the import drop target's outline).
     @State private var importDropTargeted = false
     @Environment(\.theme) private var theme
+    /// The lock screen covers this window (`lockOverlay`).
+    @Environment(\.isLockCovered) private var lockCovered
 
     // Each screen's view model is owned once by ContentView and handed down as a
     // stable reference, rather than reconstructed inline in the switch below on
@@ -221,6 +223,9 @@ struct ContentView: View {
             .background { SidebarMaterial().ignoresSafeArea() }
             // Replaced by the borderless toggle below.
             .toolbar(removing: .sidebarToggle)
+            // The sidebar column is hosted apart from the window's root, so the lock overlay's own hiding
+            // doesn't reach it: it hides itself while covered.
+            .opacity(lockCovered ? 0 : 1)
         } detail: {
             Group {
                 switch selection {
@@ -274,7 +279,8 @@ struct ContentView: View {
                     Text("Select a screen from the sidebar.")
                 }
             }
-            .navigationTitle(selection == .property ? (propertyName ?? "Property") : (selection?.rawValue ?? "Budget"))
+            // "Mango" while covered: the screen's name would say what's under the lock.
+            .navigationTitle(lockCovered ? "Mango" : selection == .property ? (propertyName ?? "Property") : (selection?.rawValue ?? "Budget"))
             .onReceive(propertyViewModel.$snapshot) { snapshot in
                 if snapshot.property?.name != propertyName { propertyName = snapshot.property?.name }
             }
@@ -291,19 +297,22 @@ struct ContentView: View {
             // The theme's window colour behind every screen (clear for Classic).
             .background(theme.windowBackground.ignoresSafeArea())
             .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    SidebarToggleButton(columnVisibility: $columnVisibility)
-                }
-                .sharedBackgroundVisibility(.hidden)
-                ToolbarItem(placement: .primaryAction) {
-                    Button { documentImport.pickFiles(.none, "Toolbar") } label: {
-                        Label("Import…", systemImage: "square.and.arrow.down.on.square")
+                // None while the lock screen covers the window.
+                if !lockCovered {
+                    ToolbarItem(placement: .navigation) {
+                        SidebarToggleButton(columnVisibility: $columnVisibility)
                     }
-                    .buttonStyle(.borderless)
-                    .help("Import documents (⇧⌘I)")
-                    .accessibilityLabel("Import documents")
+                    .sharedBackgroundVisibility(.hidden)
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { documentImport.pickFiles(.none, "Toolbar") } label: {
+                            Label("Import…", systemImage: "square.and.arrow.down.on.square")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Import documents (⇧⌘I)")
+                        .accessibilityLabel("Import documents")
+                    }
+                    .sharedBackgroundVisibility(.hidden)
                 }
-                .sharedBackgroundVisibility(.hidden)
             }
         }
         .environment(\.documentImport, documentImport)

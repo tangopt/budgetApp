@@ -159,7 +159,11 @@ struct SetupFlowView: View {
             switch model.step {
             case .who: whoStep
             case .recoveryKey(let key, let owner):
-                RecoveryKeyContent(key: key, ownerName: owner) { Task { await model.savedKey(owner: owner) } }
+                VStack(alignment: .leading, spacing: SheetMetrics.spacing) {
+                    // Touch ID that couldn't be turned on is said here, where the admin lands after Continue.
+                    errorLine
+                    RecoveryKeyContent(key: key, ownerName: owner) { Task { await model.savedKey(owner: owner) } }
+                }
             case .offerOther(let person): offerStep(person)
             case .otherPassword(let person): otherPasswordStep(person)
             }

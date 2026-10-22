@@ -68,7 +68,13 @@ final class AppEnvironment: ObservableObject {
     /// Opens, migrates and seeds the database off the main thread so the window can show
     /// `LaunchView` straight away instead of blocking launch. Throws on any setup failure;
     /// `LaunchView` shows the error instead of crashing.
+    /// How many times `load()` has run in this process: once per main window. The lock overlay must not
+    /// make a window load twice (the snapshot route `auth-launch_loads_once` checks it).
+    private(set) static var loadCount = 0
+
     static func load() async throws -> AppEnvironment {
+        loadCount += 1
+        Logger(subsystem: "com.personal.budget", category: "Launch").info("Loading the environment (load #\(loadCount, privacy: .public))")
         let (dbQueue, dbPath, auth) = try await Task.detached(priority: .userInitiated) {
             let dbPath: String
             if let override = ProcessInfo.processInfo.environment["BUDGET_DB_PATH"], !override.isEmpty {

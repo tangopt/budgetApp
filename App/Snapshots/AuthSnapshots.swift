@@ -62,6 +62,37 @@ enum AuthSnapshots {
         ]
     }
 
+    /// The lock overlay over real content: the Search screen with its field focused, under a session of the
+    /// route's own that is locked (the app's snapshot session never locks). Nothing of Search may show.
+    static var lockedContentRoute: SnapshotRoute {
+        SnapshotRoute(name: "auth-locked_over_content", title: "Lock screen over the Search screen, its field focused", settleFactor: 1.5) { context in
+            _ = try await demoUsers(context)
+            let locked = SessionModel(dbQueue: context.dbQueue, isSetUp: true, biometrics: StandInTouchID(enrolled: []),
+                                      defaults: SnapshotMode.defaults)
+            locked.snapshotLock()
+            await locked.refreshCandidates()
+            return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .search, prepare: { models in
+                models.search.requestFocus()
+            })).lockOverlay(.main, session: locked))
+        }
+    }
+
+    /// `LaunchView` under the lock overlay, mounted with no environment yet, as at launch: the overlay must
+    /// keep the content's identity when the environment arrives, so `load()` runs once (it ran twice when
+    /// the overlay swapped the content in an `if`). Prints the count; last, as it replaces `Current`.
+    static var launchLoadsOnceRoute: SnapshotRoute {
+        SnapshotRoute(name: "auth-launch_loads_once", title: "Launch under the lock overlay: the environment loads once", settleFactor: 3) { _ in
+            let before = AppEnvironment.loadCount
+            AppEnvironment.Current.shared.environment = nil
+            return AnyView(LaunchView().lockOverlay(.main).task {
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled else { return }
+                let loads = AppEnvironment.loadCount - before
+                print("  auth-launch_loads_once: AppEnvironment.load ran \(loads) time\(loads == 1 ? " — OK" : "s — FAILED")")
+            })
+        }
+    }
+
     /// Confirm import records whoever is signed in when Confirm is pressed, not who opened the review
     /// (auth spec §6, Review Focus 3): a review opened as Person A, the lock changing hands to Person B, then
     /// the real `confirm()`. The route fails (and the run prints it) unless the run records Person B; it then

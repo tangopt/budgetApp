@@ -78,6 +78,23 @@ final class SessionModel: ObservableObject {
     /// Who can sign in on this Mac (the lock screen's avatars). More than one means a shared macOS user,
     /// and Mango ▸ Switch User… shows. Re-read by `refreshCandidates()` after setup and Settings changes.
     @Published private(set) var signInCandidates: [AppUser] = []
+    /// A step every window shows before the content after signing in: a new password after the recovery key
+    /// (required), or the offer to turn Touch ID on here. While it is set the windows stay covered.
+    @Published private(set) var afterSignIn: AfterSignIn?
+
+    enum AfterSignIn: Equatable {
+        case newPassword
+        case offerTouchID
+    }
+
+    /// The windows, sheets and popovers stay covered: locked, or signed in with a step still to do.
+    var isCovered: Bool {
+        switch state {
+        case .locked: true
+        case .notSetUp: false
+        case .signedIn: afterSignIn != nil
+        }
+    }
 
     let dbQueue: DatabaseQueue
     let biometrics: any BiometricUnlocker
@@ -136,13 +153,29 @@ final class SessionModel: ObservableObject {
 
     // MARK: Signing in
 
-    func signIn(appUserId: Int64, password: String) async -> SignInResult {
-        await finish(appUserId: appUserId, await gate.password(appUserId: appUserId, password: password, now: Date()))
+    /// `offerTouchID`: they aren't enrolled on a Mac with Touch ID, so the windows ask once before showing.
+    func signIn(appUserId: Int64, password: String, offerTouchID: Bool = false) async -> SignInResult {
+        await finish(appUserId: appUserId, await gate.password(appUserId: appUserId, password: password, now: Date()),
+                     then: offerTouchID ? .offerTouchID : nil)
     }
 
     /// "Forgot password?": the recovery key signs the user in so they can set a new password (auth spec §7).
+    /// Every window then asks for a new password before showing anything.
     func signIn(appUserId: Int64, recoveryKey: String) async -> SignInResult {
-        await finish(appUserId: appUserId, await gate.recoveryKey(appUserId: appUserId, key: recoveryKey, now: Date()))
+        await finish(appUserId: appUserId, await gate.recoveryKey(appUserId: appUserId, key: recoveryKey, now: Date()),
+                     then: .newPassword)
+    }
+
+    /// The required step after the recovery key. PBKDF2 runs on the database queue, off the main thread.
+    func chooseNewPassword(_ password: String, thenOfferTouchID: Bool) async throws {
+        guard case .signedIn(let user) = state, let id = user.id else { throw AppUserStoreError.noSuchUser }
+        try await dbQueue.write { try AppUserStore.changePassword($0, appUserId: id, newPassword: password) }
+        afterSignIn = thenOfferTouchID ? .offerTouchID : nil
+    }
+
+    /// The Touch ID offer answered (turned on or not now).
+    func finishOffer() {
+        if afterSignIn == .offerTouchID { afterSignIn = nil }
     }
 
     @discardableResult
@@ -191,18 +224,23 @@ final class SessionModel: ObservableObject {
     func snapshotSignIn(_ user: AppUser) {
         state = .signedIn(user)
     }
+
+    /// Snapshot routes only: a session of the route's own shown locked.
+    func snapshotLock() {
+        state = .locked
+    }
     #endif
 
     // MARK: Private
 
-    private func finish(appUserId: Int64, _ outcome: SignInGate.Outcome) async -> SignInResult {
+    private func finish(appUserId: Int64, _ outcome: SignInGate.Outcome, then step: AfterSignIn? = nil) async -> SignInResult {
         switch outcome {
         case .rejected: return .wrongPassword
         case .throttled(let wait): return .throttled(wait)
         case .busy: return .busy
         case .accepted:
             do {
-                try await begin(appUserId: appUserId)
+                try await begin(appUserId: appUserId, then: step)
                 return .signedIn
             } catch {
                 return .failed(error.localizedDescription)
@@ -210,12 +248,14 @@ final class SessionModel: ObservableObject {
         }
     }
 
-    private func begin(appUserId: Int64) async throws {
+    private func begin(appUserId: Int64, then step: AfterSignIn? = nil) async throws {
         let user = try await dbQueue.write { db -> AppUser? in
             try AppUserStore.recordSignIn(db, appUserId: appUserId, now: Date())
             return try AppUser.fetchOne(db, key: appUserId)
         }
         guard let user else { throw AppUserStoreError.noSuchUser }
+        // Set before the state changes, so no window shows its content in between.
+        afterSignIn = step
         state = .signedIn(user)
         idleMonitor.start(timeout: lockTimeout.seconds)
         await refreshCandidates()

@@ -31,7 +31,8 @@ enum SnapshotCatalog {
     /// `importRoutes` last: `imports-history` writes to the demo copy; the attribution check after them
     /// (it imports too). `settings-sign-in` and the check add synthetic app users to the demo copy.
     static var routes: [SnapshotRoute] {
-        screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + AuthSnapshots.routes + importRoutes + [AuthSnapshots.attributionRoute]
+        screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + AuthSnapshots.routes + [AuthSnapshots.lockedContentRoute] + importRoutes
+            + [AuthSnapshots.attributionRoute, AuthSnapshots.launchLoadsOnceRoute]
     }
 
     // MARK: Imports, from the demo's samples
