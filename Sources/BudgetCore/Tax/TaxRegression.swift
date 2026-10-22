@@ -437,10 +437,12 @@ public enum TaxRegression {
         if let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             folders.append(support.appendingPathComponent("Budget", isDirectory: true))
         }
+        #if os(macOS)
         let containers = fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Containers", isDirectory: true)
         for container in (try? fileManager.contentsOfDirectory(at: containers, includingPropertiesForKeys: nil)) ?? [] {
             folders.append(container.appendingPathComponent("Data/Library/Application Support/Budget", isDirectory: true))
         }
+        #endif
         return folders
     }
 
