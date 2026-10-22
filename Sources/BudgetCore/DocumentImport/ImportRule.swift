@@ -157,11 +157,11 @@ public enum ImportRuleStore {
     /// Saves the choice for `kind` and `key`: one row per pair, replaced and re-enabled when it exists.
     @discardableResult
     public static func learn(db: Database, kind: ImportRuleKind, key: String, matchLabel: String,
-                             action: some Encodable, actionLabel: String, now: Date) throws -> ImportRule {
+                             action: some Encodable, actionLabel: String, now: Date, by appUserId: Int64? = nil) throws -> ImportRule {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let json = String(decoding: try encoder.encode(action), as: UTF8.self)
-        return try learn(db: db, kind: kind, key: key, matchLabel: matchLabel, actionJSON: json, actionLabel: actionLabel, now: now)
+        return try learn(db: db, kind: kind, key: key, matchLabel: matchLabel, actionJSON: json, actionLabel: actionLabel, now: now, by: appUserId)
     }
 
     /// The rule a new one for `kind` and `key` replaces, enabled or not: the same pair, or for a
@@ -180,21 +180,24 @@ public enum ImportRuleStore {
     }
 
     /// `learn` with the action already encoded (a draft's, `ImportRuleDraft`). A bare-keyed link
-    /// rule of the same family takes the family key.
+    /// rule of the same family takes the family key. `appUserId`: who taught it; a new rule keeps
+    /// them as its creator, and a replaced one only as the last to teach it.
     @discardableResult
     public static func learn(db: Database, kind: ImportRuleKind, key: String, matchLabel: String,
-                             actionJSON json: String, actionLabel: String, now: Date) throws -> ImportRule {
+                             actionJSON json: String, actionLabel: String, now: Date, by appUserId: Int64? = nil) throws -> ImportRule {
         if var existing = try existing(db: db, kind: kind, key: key) {
             existing.matchKey = key
             existing.matchLabel = matchLabel
             existing.actionJSON = json
             existing.actionLabel = actionLabel
             existing.isEnabled = true
+            existing.lastLearntByAppUserId = appUserId
             try existing.update(db)
             return existing
         }
         var rule = ImportRule(kind: kind, matchKey: key, matchLabel: matchLabel, actionJSON: json,
-                              actionLabel: actionLabel, createdAt: now)
+                              actionLabel: actionLabel, createdAt: now,
+                              createdByAppUserId: appUserId, lastLearntByAppUserId: appUserId)
         try rule.insert(db)
         return rule
     }

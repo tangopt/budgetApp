@@ -430,6 +430,10 @@ public enum ImportUndo {
     /// The columns a learnt rule's use changes (`ImportRuleStore.markUsed`).
     private static let ruleUseColumns: Set<String> = ["useCount", "lastUsedAt"]
 
+    /// Who taught a learnt rule: not part of what it does, so a later re-learn that only changes
+    /// them doesn't make the rule "changed since".
+    private static let ruleAttributionColumns: Set<String> = ["createdByAppUserId", "lastLearntByAppUserId"]
+
     /// A learnt rule the run added or changed, reverted leniently: removed or put back only while
     /// it is as the run left it (its use since — `useCount`, `lastUsedAt` — doesn't count); else
     /// left as it is (gone: nothing to do; changed: noted,
@@ -444,7 +448,7 @@ public enum ImportUndo {
         let after = try values(db: db, change.afterJSON, table: change.tableName)
         let columns = try columnNames(db: db, change.tableName)
         // Being used since (a later run's `markUsed`) is not a change: only the rule itself counts.
-        let unchanged = columns.allSatisfy { ruleUseColumns.contains($0) || after[$0] == nil || now[$0] == after[$0] }
+        let unchanged = columns.allSatisfy { ruleUseColumns.contains($0) || ruleAttributionColumns.contains($0) || after[$0] == nil || now[$0] == after[$0] }
         let changedByRun = Set(columns.filter { before[$0] != after[$0] })
         func note() {
             let label = (String.fromDatabaseValue(now["matchLabel"] ?? .null) ?? "?") + " → " + (String.fromDatabaseValue(now["actionLabel"] ?? .null) ?? "?")
