@@ -74,11 +74,10 @@ final class AppEnvironment: ObservableObject {
             // A copy first, so no migration ever runs on the only copy. If it can't be made,
             // launch stops here with the database untouched.
             do {
-                _ = try MigrationBackup.backUpIfNeeded(manager: manager, databasePath: dbPath, now: Date())
+                try MigrationBackup.backUpThenMigrate(manager: manager, databasePath: dbPath, now: Date())
             } catch {
                 throw LaunchBackupError(underlying: error)
             }
-            try manager.migrate()
             try manager.dbQueue.write { db in
                 try CategorySeeder.seedDefaults(db)
             }

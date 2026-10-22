@@ -60,10 +60,10 @@ final class MigrationBackupTests: XCTestCase {
     func testFailedBackupStopsMigration() throws {
         let manager = try DatabaseManager(path: dbPath)
         try manager.migrate(upTo: "createPayMonthClose")
-        let appliedBefore = try manager.migrationStatus().pending
+        let pendingBefore = try manager.migrationStatus().pending
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
         XCTAssertThrowsError(try MigrationBackup.backUpIfNeeded(manager: manager, databasePath: dbPath, now: Date()))
-        XCTAssertEqual(try manager.migrationStatus().pending, appliedBefore)
+        XCTAssertEqual(try manager.migrationStatus().pending, pendingBefore)
         XCTAssertTrue(try backups().isEmpty)
     }
 
@@ -72,5 +72,63 @@ final class MigrationBackupTests: XCTestCase {
         let missing = dir.appendingPathComponent("nope.sqlite").path
         XCTAssertNil(try MigrationBackup.backUpIfNeeded(manager: manager, databasePath: missing, now: Date()))
         XCTAssertTrue(try backups().isEmpty)
+    }
+
+    func testRetentionLeavesLookalikesAlone() throws {
+        let manager = try DatabaseManager(path: dbPath)
+        try manager.migrate(upTo: "createPayMonthClose")
+        let lookalikes = ["20250101-120000-wal", "20250101-120000.partial", "20250101-120000-shm", "notes"]
+            .map { MigrationBackup.fileNamePrefix + $0 }
+        for name in lookalikes { try Data("x".utf8).write(to: dir.appendingPathComponent(name)) }
+        for day in 1...6 {
+            try Data("x".utf8).write(to: dir.appendingPathComponent(MigrationBackup.fileNamePrefix + String(format: "202601%02d-120000", day)))
+        }
+        _ = try MigrationBackup.backUpIfNeeded(manager: manager, databasePath: dbPath, now: Date())
+        for name in lookalikes { XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent(name).path), name) }
+    }
+
+    func testSameSecondCollisionKeepsBoth() throws {
+        let manager = try DatabaseManager(path: dbPath)
+        try manager.migrate(upTo: "createPayMonthClose")
+        let now = Date()
+        let a = try XCTUnwrap(try MigrationBackup.backUpIfNeeded(manager: manager, databasePath: dbPath, now: now))
+        let b = try XCTUnwrap(try MigrationBackup.backUpIfNeeded(manager: manager, databasePath: dbPath, now: now))
+        XCTAssertNotEqual(a, b)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: a.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: b.path))
+    }
+
+    func testFailedWriteLeavesEarlierBackupAndNoPartial() throws {
+        let manager = try DatabaseManager(path: dbPath)
+        try manager.migrate(upTo: "createPayMonthClose")
+        let first = try XCTUnwrap(try MigrationBackup.backUpIfNeeded(manager: manager, databasePath: dbPath, now: Date()))
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        XCTAssertThrowsError(try MigrationBackup.backUpIfNeeded(manager: manager, databasePath: dbPath, now: Date()))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: dir.path).contains { $0.contains(".partial") })
+    }
+
+    func testWalOnlyDataReachesTheCopy() throws {
+        let manager = try DatabaseManager(path: dbPath)
+        let queue = manager.dbQueue
+        try queue.writeWithoutTransaction { try $0.execute(sql: "PRAGMA journal_mode = WAL") }
+        try manager.migrate(upTo: "createPayMonthClose")
+        try queue.write { try $0.execute(sql: "CREATE TABLE marker (v TEXT); INSERT INTO marker VALUES ('wal-row')") }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dbPath + "-wal"))
+        let url = try XCTUnwrap(try MigrationBackup.backUpIfNeeded(manager: manager, databasePath: dbPath, now: Date()))
+        let copy = try DatabaseQueue(path: url.path)
+        XCTAssertEqual(try copy.read { try String.fetchOne($0, sql: "SELECT v FROM marker") }, "wal-row")
+    }
+
+    func testFailingBackupMeansMigrateIsNotCalled() throws {
+        let manager = try DatabaseManager(path: dbPath)
+        try manager.migrate(upTo: "createPayMonthClose")
+        let pendingBefore = try manager.migrationStatus().pending
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        XCTAssertThrowsError(try MigrationBackup.backUpThenMigrate(manager: manager, databasePath: dbPath, now: Date()))
+        XCTAssertEqual(try manager.migrationStatus().pending, pendingBefore)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+        _ = try MigrationBackup.backUpThenMigrate(manager: manager, databasePath: dbPath, now: Date())
+        XCTAssertTrue(try manager.migrationStatus().pending.isEmpty)
     }
 }
