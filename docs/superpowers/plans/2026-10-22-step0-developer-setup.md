@@ -13,7 +13,7 @@ the companions will need is registered. No app behaviour changes, and the databa
   - **Without that file, the build is exactly as before:** signed to run locally, no entitlements.
 - `Config/Signing.local.xcconfig.example`: copy it, then fill in your team ID.
 - `App/Mango.entitlements`, used only when a team is set:
-  - the iCloud container `iCloud.com.personal.budget` with CloudKit;
+  - the iCloud container `iCloud.ubberninja.mango` with CloudKit;
   - the CloudKit environment: Development for Debug, Production for Release, which Developer ID
     requires;
   - the data-protection keychain group, for the auth spec's Touch ID upgrade (§8).
@@ -31,22 +31,25 @@ the companions will need is registered. No app behaviour changes, and the databa
 Certificates, Identifiers & Profiles:
 
 1. **Identifiers ▸ App IDs**, explicit:
-   - `com.personal.budget`, the Mac app. Capabilities: iCloud (CloudKit, with the container below),
+   - `ubberninja.mango`, the Mac app. Capabilities: iCloud (CloudKit, with the container below),
      Push Notifications.
-   - `com.personal.budget.ios`, the iPhone/iPad app. Capabilities: iCloud (CloudKit), App Groups, Push
+   - `ubberninja.mango.ios`, the iPhone/iPad app. Capabilities: iCloud (CloudKit), App Groups, Push
      Notifications.
-   - `com.personal.budget.ios.widgets` and `com.personal.budget.ios.share` (App Groups).
-2. **Identifiers ▸ iCloud Containers:** `iCloud.com.personal.budget`. Assign it to both app IDs.
-3. **Identifiers ▸ App Groups:** `group.com.personal.budget`. Assign it to the three iOS IDs.
+   - `ubberninja.mango.ios.widgets` and `ubberninja.mango.ios.share` (App Groups).
+2. **Identifiers ▸ iCloud Containers:** `iCloud.ubberninja.mango`. Assign it to both app IDs.
+3. **Identifiers ▸ App Groups:** `group.ubberninja.mango`. Assign it to the three iOS IDs.
 4. **Certificates:** a **Developer ID Application** certificate. Xcode can create it: Settings ▸
    Accounts ▸ your team ▸ Manage Certificates ▸ + ▸ Developer ID Application.
 5. **If an identifier is refused as "already in use":** bundle IDs and containers are unique across all
-   developers, and `com.personal` is a common prefix. Then:
-   - use your own reverse-DNS prefix instead (e.g. `com.<yourname>.mango`) for all of them;
-   - tell me, and I'll change `project.yml`, the entitlements and the specs;
-   - nothing else depends on it: the data folder (`Application Support/Budget`) is a fixed path. Only
-     the app's preferences (theme, appearance) would start fresh, and the app can copy those across
-     once.
+   developers. Use your own prefix for all of them, then change `project.yml`, the entitlements and the
+   specs together. The data folder (`Application Support/Budget`) is a fixed path, so only the app's
+   preferences move, copied once at launch.
+   - **What happened (2026-10-22):** `group.com.personal.budget` was refused as not available. Every
+     identifier moved from `com.personal.budget` to `ubberninja.mango`, the prefix of your other app
+     (`ubberninja.petsify`, `group.ubberninja.petsify`). Changed: `project.yml`, `App/Mango.entitlements`,
+     the specs, the command-line tools' "app is running" check (both ids), and
+     `AppIdentity.copyLegacyPreferencesOnce` (theme, appearance and panel state from the old id). Kept:
+     the UTType id and the log subsystem, which aren't registered with Apple.
 
 ## B. On your Mac (you, about 10 minutes)
 
@@ -59,7 +62,7 @@ Certificates, Identifiers & Profiles:
    ```
    It prompts for the password and stores it in your login keychain. It never goes in the repo.
 3. **App Store Connect:** create the iOS app record now, so TestFlight is ready for build step 4.
-   - Platform iOS, bundle ID `com.personal.budget.ios`.
+   - Platform iOS, bundle ID `ubberninja.mango.ios`.
    - App Store Connect names are unique across the whole store, so "Mango" will be taken. Use e.g.
      "Mango Household Budget". The name under the icon on your devices stays "Mango".
    - Users and Access: add your wife's Apple Account with a limited role, e.g. Customer Support, so she

@@ -72,7 +72,7 @@ Anti-goals (a failure even if it "works")
 
 - **Every device keeps its own GRDB database.** BudgetCore runs unchanged on each; every screen reads
   local data, so everything works offline.
-- **CloudKit is the transport.** One container (`iCloud.com.personal.budget`), `CKSyncEngine` on each
+- **CloudKit is the transport.** One container (`iCloud.ubberninja.mango`), `CKSyncEngine` on each
   device, record-level sync.
 - **Zones (my call):**
   - `household`: in the admin's private database, shared with the member through a **zone-wide
@@ -475,8 +475,8 @@ in.
    synced record. The auth spec's `importRun.appUserId` and `importRule.*ByAppUserId` stay as they are,
    because they say who *confirmed* or *taught*, not just who wrote last.
 8. **The app is now called Mango** (user, 2026-10-22; overview §2.5). The lock screen, setup and
-   Settings copy say "Mango", e.g. "Mango is locked". Identifiers don't change: bundle id, data folder,
-   Keychain service.
+   Settings copy say "Mango", e.g. "Mango is locked". The rename changes no identifier: the bundle id
+   (`ubberninja.mango` since build step 0), data folder and Keychain service stay.
 
 ## 12. Test plan (sync and access)
 

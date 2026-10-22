@@ -77,7 +77,7 @@ func guardWrite(_ path: String, _ what: String) {
 }
 if !dryRun { guardWrite(sourcePath, "the database") }
 // The app holds the database open and would overwrite or miss the import.
-if !dryRun && !forceRunning && !NSRunningApplication.runningApplications(withBundleIdentifier: "com.personal.budget").isEmpty {
+if !dryRun && !forceRunning && AppIdentity.macBundleIdentifiers.contains(where: { !NSRunningApplication.runningApplications(withBundleIdentifier: $0).isEmpty }) {
     fail("Budget is running: quit it before a real run (or pass --force-running).")
 }
 if let reportPath {

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import BudgetCore
 
 /// The entry point. A snapshot build (`SNAPSHOTS`, made only by `scripts/render-snapshots.sh`)
 /// runs the snapshot harness and nothing else — it refuses to start as the app, so a stray
@@ -15,6 +16,8 @@ enum BudgetMain {
         }
         SnapshotRunner.main()
         #else
+        // Theme, appearance and panel state from before the bundle id moved (build step 0).
+        AppIdentity.copyLegacyPreferencesOnce()
         BudgetApp.main()
         #endif
     }

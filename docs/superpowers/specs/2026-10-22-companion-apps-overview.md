@@ -228,13 +228,21 @@ Composer layer):
 - `scripts/render-snapshots.sh` (the built app's path) and the `/install` skill's text.
 
 **Kept on purpose, so nothing about the data moves:**
-- **The bundle identifier `com.personal.budget`.** Changing it would orphan the Keychain items, the
-  UserDefaults (Touch ID enrolment, themes) and the CloudKit container.
+- **The bundle identifier `ubberninja.mango`,** set in build step 0. Changing it again would orphan
+  the Keychain items, the UserDefaults (Touch ID enrolment, themes) and the CloudKit container.
+  - Step 0 moved it from `com.personal.budget` (2026-10-22): `group.com.personal.budget` was refused
+    on developer.apple.com as already in use. Every identifier moved to the prefix the user's other
+    app already uses (`ubberninja.petsify`).
+  - Before step 0 the app kept no Keychain items and had no CloudKit container, so only UserDefaults
+    moved: the app copies the old domain's preferences once, on the first launch under the new id
+    (`AppIdentity.copyLegacyPreferencesOnce`).
+  - The command-line tools' "quit the app first" check looks for both ids.
 - **The data folder** `~/Library/Application Support/Budget/` (database, evidence library, backups).
   `AppEnvironment`, `EvidenceLibrary` and the command-line tools keep that path. A folder rename buys
   nothing and risks the data.
-- **The CloudKit container** `iCloud.com.personal.budget`, the App Group `group.com.personal.budget`,
-  the UTType identifier, the `BudgetCore` module, the target names in code, and the log subsystem.
+- **The CloudKit container** `iCloud.ubberninja.mango`, the App Group `group.ubberninja.mango`,
+  the UTType identifier (`com.personal.budget.account-reference`, internal to the app), the
+  `BudgetCore` module, the target names in code, and the log subsystem (`com.personal.budget`).
 - **The word "Budget" where it names the screen or the plan, not the app:** the Budget grid in the
   sidebar, the dashboard's "Budget ›" links, the "Budget" plan chip in the Forecast. The app is Mango;
   its budget is still a budget.
@@ -306,7 +314,7 @@ Each step is its own plan and branch, rehearsed on a copy, merged only when gree
 
 0. **Prerequisites:**
    - join the Developer Program;
-   - register the bundle IDs (`com.personal.budget`, `.ios`, widget, share extension), the App Group and
+   - register the bundle IDs (`ubberninja.mango`, `.ios`, widget, share extension), the App Group and
      the CloudKit container;
    - switch the Mac build to Developer ID signing.
 1. **Desktop authentication,** per the auth spec. Build it with the requested change §11.6

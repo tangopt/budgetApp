@@ -6,7 +6,7 @@
 	     signing and notarisation path is proven before sync needs it (sync spec §3, auth spec §8). -->
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
-		<string>iCloud.com.personal.budget</string>
+		<string>iCloud.ubberninja.mango</string>
 	</array>
 	<key>com.apple.developer.icloud-services</key>
 	<array>
@@ -19,7 +19,7 @@
 	     has a team signature (auth spec §8). -->
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.personal.budget</string>
+		<string>$(AppIdentifierPrefix)ubberninja.mango</string>
 	</array>
 </dict>
 </plist>

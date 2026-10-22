@@ -1,6 +1,6 @@
 name: Budget
 options:
-  bundleIdPrefix: com.personal
+  bundleIdPrefix: ubberninja
 packages:
   BudgetCore:
     path: .
@@ -25,7 +25,7 @@ targets:
             UTTypeConformsTo: [public.data]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.personal.budget
+        PRODUCT_BUNDLE_IDENTIFIER: ubberninja.mango
         MARKETING_VERSION: "0.2.0"
         # Bump on icon changes: macOS caches app icons per bundle id + version.
         CURRENT_PROJECT_VERSION: "3"
