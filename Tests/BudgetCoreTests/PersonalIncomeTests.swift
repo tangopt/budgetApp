@@ -277,11 +277,11 @@ final class PersonalIncomeTests: XCTestCase {
         XCTAssertEqual(extraction.taxCode, "1257L")
         XCTAssertEqual(extraction.totalPayMinorUnits, 1_234_567)
         XCTAssertEqual(extraction.totalTaxMinorUnits, 234_567)
-        // Box 7 is empty: this employment's figures are those to date.
+        // Box 8 is empty: this employment's figures are box 7's, those to date.
         XCTAssertEqual(extraction.payMinorUnits, 1_234_567)
         XCTAssertEqual(extraction.taxDeductedMinorUnits, 234_567)
         XCTAssertEqual(extraction.warnings.count, 1)
-        XCTAssertTrue(extraction.warnings[0].hasPrefix("Box 7 (this employment) is empty"))
+        XCTAssertTrue(extraction.warnings[0].hasPrefix("Box 8 (this employment) is empty"))
     }
 
     func testReadsP11DCashEquivalentsBySectionAndBox() throws {

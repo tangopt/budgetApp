@@ -318,7 +318,7 @@ public enum PayrollFormReader {
         } else {
             (extraction.payMinorUnits, extraction.taxDeductedMinorUnits) = (extraction.totalPayMinorUnits, extraction.totalTaxMinorUnits)
             if extraction.totalPayMinorUnits != nil {
-                extraction.warnings.append("Box 7 (this employment) is empty: pay and tax are the “to date” totals, which include any earlier job in the year.")
+                extraction.warnings.append("Box 8 (this employment) is empty, so pay and tax are box 7’s “to date” totals: fine if this was your only job since 6 April; otherwise they include the earlier job’s pay and tax.")
             }
         }
         if extraction.payMinorUnits == nil { extraction.warnings.append("No pay and tax figures found.") }
