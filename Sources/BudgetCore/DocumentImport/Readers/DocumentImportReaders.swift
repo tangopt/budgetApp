@@ -219,12 +219,13 @@ public struct UtilityInvoiceImportReader: ImportReader {
                                     reason: reading.amountReviewNote ?? (amount < 0 ? "Refund on the invoice" : "Amount due on the invoice")))
             if let note = reading.amountReviewNote { item.notes.append(note) }
         }
-        // The account balance printed beside the invoice's own value (earlier invoices included).
+        // The account balance printed beside the invoice's total when it differs (earlier invoices
+        // or credits on the account).
         let accountTotal = reading.accountTotalMinorUnits.flatMap { $0 != reading.amountMinorUnits ? $0 : nil }
         if let accountTotal {
             facts.append(ImportFact(field: .accountTotal, value: .money(accountTotal, currency), source: source, confidence: .certain,
                                     reason: "Account total on the invoice: what is debited"))
-            item.notes.append("The account total \(Money.format(accountTotal, currency: currency)) includes earlier invoices")
+            item.notes.append("The account total \(Money.format(accountTotal, currency: currency)) includes earlier invoices or credits")
         }
         item.facts = facts
         item.placement = ImportNaming.placement(kind: .utilityInvoice, facts: facts, file: file, persons: [])
@@ -329,7 +330,7 @@ public struct UtilityInvoiceImportReader: ImportReader {
                                                                     amountMinorUnits: invoice.amountMinorUnits, issueDate: invoice.issueDate)
         let qualifying = candidates.filter { why($0) != nil }
         // The account total's debit (the provider's, or in a utility category) may have paid it
-        // with earlier invoices: offered, never certain.
+        // with earlier invoices or less a credit: offered, never certain.
         let accountTotalDebits = try accountTotal.map { total in
             try UtilityInvoiceIntake.paymentCandidates(db: db, propertyId: propertyId, provider: provider, amountMinorUnits: total,
                                                        issueDate: invoice.issueDate).filter { why($0) != nil }
@@ -356,15 +357,15 @@ public struct UtilityInvoiceImportReader: ImportReader {
                 offered += try accountTotalDebits.prefix(5).compactMap { transaction -> LinkCandidate? in
                     guard let id = transaction.id, let why = why(transaction) else { return nil }
                     return LinkCandidate(entity: .transaction(id), label: transactionLabel(transaction, currency: try accountCurrency(transaction)),
-                                         reasons: ["Debit of the account total \(totalText) (includes earlier invoices)",
+                                         reasons: ["Debit of the account total \(totalText) (includes earlier invoices or credits)",
                                                    "Booked on \(isoDay(transaction.date)); \(why)"])
                 }
                 let reason = candidates.isEmpty
-                    ? "No debit of \(amountText): \(providerName) debited the account total \(totalText), which includes earlier invoices. Did it pay this invoice?"
+                    ? "No debit of \(amountText): \(providerName) debited the account total \(totalText), which includes earlier invoices or credits. Did it pay this invoice?"
                     : (qualifying.count >= 2
                     ? "\(qualifying.count) movements of \(amountText) look like \(providerName)'s: which one paid this invoice?"
                     : "A movement of the amount fits, but nothing shows it is \(providerName)'s: which one paid it?")
-                    + (accountTotalDebits.isEmpty ? "" : " The debit of the account total \(totalText) (includes earlier invoices) is offered too.")
+                    + (accountTotalDebits.isEmpty ? "" : " The debit of the account total \(totalText) (includes earlier invoices or credits) is offered too.")
                 item.issues.append(ImportIssue(id: "chooseLink", kind: .chooseLink(offered), reason: reason, offers: [.fileWithoutLink]))
             }
         }

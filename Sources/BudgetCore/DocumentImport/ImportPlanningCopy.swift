@@ -99,20 +99,38 @@ final class ImportPlanningSession: @unchecked Sendable {
 public final class ImportPlanTimings: @unchecked Sendable {
     // @unchecked: `seconds` is guarded by `lock`.
     public enum Phase: String, CaseIterable, Sendable {
-        case copy, load, detect, prepare, stage, readers, duplicates, guardCheck = "guard"
+        case copy, load, detect, prepare, stage, readers, statementChecks, duplicates, guardCheck = "guard"
+        /// Inside the filed-year guard (`guardCheck`): the baseline matching and figures, each
+        /// item's records applied, its follow-on matching, the baseline's reads replayed after it
+        /// (`TaxFiguresReads`), and the figures taken after it when they read differently.
+        case guardBaseline, guardApply, guardFollowOns, guardReplay, guardSnapshot
     }
 
     private let lock = NSLock()
     private var seconds: [Phase: TimeInterval] = [:]
+    private var counts: [Phase: Int] = [:]
+    private var checks: [(what: String, seconds: TimeInterval)] = []
 
     public init() {}
 
     public func add(_ phase: Phase, _ interval: TimeInterval) {
-        lock.withLock { seconds[phase, default: 0] += interval }
+        lock.withLock {
+            seconds[phase, default: 0] += interval
+            counts[phase, default: 0] += 1
+        }
     }
 
     /// The phase's total so far (0 when it never ran).
     public func total(_ phase: Phase) -> TimeInterval { lock.withLock { seconds[phase] ?? 0 } }
+
+    /// How many times the phase ran.
+    public func count(_ phase: Phase) -> Int { lock.withLock { counts[phase] ?? 0 } }
+
+    /// The guard's check of one item (`what`: its effect's kind) and how long it took.
+    func addCheck(_ what: String, _ interval: TimeInterval) { lock.withLock { checks.append((what, interval)) } }
+
+    /// The guard's item checks, slowest first.
+    public var slowestChecks: [(what: String, seconds: TimeInterval)] { lock.withLock { checks.sorted { $0.seconds > $1.seconds } } }
 
     func measure<T>(_ phase: Phase, _ body: () throws -> T) rethrows -> T {
         let start = Date()

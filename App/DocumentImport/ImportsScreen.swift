@@ -40,7 +40,8 @@ struct ImportsScreen: View {
 
 // MARK: Reading
 
-/// "Reading 3 of 12 — <file>", its progress bar and Cancel.
+/// "Reading 3 of 12 — <file>" while the files are read, then the pass under way ("Checking
+/// filed tax years (12 of 49)…"); its progress bar (indeterminate without a count) and Cancel.
 private struct ImportReadingPanel: View {
     let progress: ImportProgress
     let addingToReview: Bool
@@ -52,7 +53,9 @@ private struct ImportReadingPanel: View {
               accessory: { Button("Cancel", action: cancel).controlSize(.small) }) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 4) {
-                    if progress.total == 0 {
+                    if let stage = progress.stageText {
+                        Text(stage).figureText()
+                    } else if progress.total == 0 {
                         Text("Finding the files…")
                     } else {
                         Text("Reading \(progress.completed) of \(progress.total)").figureText()

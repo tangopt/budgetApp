@@ -486,22 +486,22 @@ final class UtilityInvoiceIntakeTests: XCTestCase {
     }
 
     func testCopiesOfBillsWithoutANumberAreDuplicates() throws {
-        let text = "EXAMPLE WATER bill of 2022-12-29\nTOTAL 9,52"
-        let original = try document("20221229 - Agua.pdf", text: text)
-        let copy = try document("20231229 - Agua .pdf", text: text + "\n")
+        let text = "EXAMPLE WATER bill of 2021-11-23\nTOTAL 8,64"
+        let original = try document("20211123 - Agua.pdf", text: text)
+        let copy = try document("20221123 - Agua .pdf", text: text + "\n")
         try db.write { db in
-            var first = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2022, 12, 29), amountMinorUnits: 952, documentId: original)
+            var first = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2021, 11, 23), amountMinorUnits: 864, documentId: original)
             try UtilityInvoiceIntake.record(db: db, &first)
             // The same text in another file (misread differently, even), or the same date, period and amount.
-            var sameText = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2023, 12, 29), amountMinorUnits: 376, documentId: copy)
+            var sameText = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2022, 11, 23), amountMinorUnits: 211, documentId: copy)
             XCTAssertEqual(try Recharges.duplicate(db: db, of: sameText)?.id, first.id)
             XCTAssertThrowsError(try Recharges.saveInvoice(db: db, &sameText)) { XCTAssertEqual($0 as? RechargeError, .duplicateInvoice) }
-            var sameBill = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2022, 12, 29), amountMinorUnits: 952)
+            var sameBill = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2021, 11, 23), amountMinorUnits: 864)
             XCTAssertThrowsError(try Recharges.saveInvoice(db: db, &sameBill)) { XCTAssertEqual($0 as? RechargeError, .duplicateInvoice) }
             // Another month's bill, another provider's, or another number isn't a copy.
-            var next = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2023, 1, 30), amountMinorUnits: 952)
+            var next = UtilityInvoice(providerId: id("water"), issueDate: Self.date(2021, 12, 18), amountMinorUnits: 864)
             try Recharges.saveInvoice(db: db, &next)
-            var power = UtilityInvoice(providerId: id("power"), issueDate: Self.date(2022, 12, 29), amountMinorUnits: 952)
+            var power = UtilityInvoice(providerId: id("power"), issueDate: Self.date(2021, 11, 23), amountMinorUnits: 864)
             try Recharges.saveInvoice(db: db, &power)
             var numbered = UtilityInvoice(providerId: id("water"), invoiceNumber: "N-1", issueDate: Self.date(2024, 1, 1), amountMinorUnits: 100)
             try Recharges.saveInvoice(db: db, &numbered)
@@ -614,56 +614,54 @@ final class UtilityInvoiceIntakeTests: XCTestCase {
         XCTAssertEqual(reading.periodEnd, Self.date(2026, 3, 11))
     }
 
-    /// The 2017–2021 water layout: the invoice's own value (header and "VALOR TOTAL" column)
-    /// and the account balance (earlier unpaid invoices included), which is what gets debited.
+    /// The 2017–2021 water layout: the summary's first figure and the "VALOR TOTAL" column's
+    /// first one are the water charge (one line); the invoice's total is "TOTAL", here also the
+    /// account balance that gets debited.
     static let accountBalanceWaterLayout = """
         SIMAR services · Fatura
-        2017.06.20
+        2016.03.01
         Nº Ident. Fiscal
         500000000
         €
-        45.39
-        39.95
+        21.37
+        40.18
         QUANTIDADE VALOR UNITÁRIO VALOR TOTAL VALOR A PAGAR IVA%
-        45.39
-        1.00 m3 0.5111 0.51 6.00
-        TOTAL 103.19
-        103.19+
-        Valor da Conta Cliente em 06.07.2017 103.19
-        Sr. Cliente, o valor de 103.19€ será debitado na conta bancária
+        21.37
+        1.00 m3 0.4321 0.43 6.00
+        TOTAL 61.55
+        61.55+
+        Valor da Conta Cliente em 10.03.2016 61.55
+        Sr. Cliente, o valor de 61.55€ será debitado na conta bancária
         """
 
-    func testTheOldWaterLayoutRecordsTheInvoiceValueNotTheAccountTotal() {
+    /// The same layout when the account holds an earlier unpaid invoice: the balance differs
+    /// from the invoice's total.
+    static let earlierInvoiceWaterLayout = accountBalanceWaterLayout
+        .replacingOccurrences(of: "Valor da Conta Cliente em 10.03.2016 61.55", with: "Valor da Conta Cliente em 10.03.2016 88.00")
+        .replacingOccurrences(of: "o valor de 61.55€", with: "o valor de 88.00€")
+
+    func testTheOldWaterLayoutRecordsTheInvoiceTotalNotItsWaterCharge() {
         for rules in [Self.preset("Municipal water (SIMAR)"), Self.storedWaterRules, .generic] {
             let reading = UtilityInvoiceReader.read(text: Self.accountBalanceWaterLayout, fileName: "x.pdf", rules: rules)
-            XCTAssertEqual(reading.amountMinorUnits, 4_539)
-            XCTAssertEqual(reading.accountTotalMinorUnits, 10_319)
+            XCTAssertEqual(reading.amountMinorUnits, 6_155)
+            XCTAssertNil(reading.accountTotalMinorUnits)
+            XCTAssertNil(reading.amountReviewNote)
         }
-        // Without the column to cross-check the header, the amount read is kept, to be checked.
-        let headerOnly = Self.accountBalanceWaterLayout.replacingOccurrences(of: "QUANTIDADE VALOR UNITÁRIO VALOR TOTAL VALOR A PAGAR IVA%\n45.39\n", with: "")
-        let reading = UtilityInvoiceReader.read(text: headerOnly, fileName: "x.pdf", rules: Self.preset("Municipal water (SIMAR)"))
-        XCTAssertEqual(reading.amountMinorUnits, 10_319)
-        XCTAssertNil(reading.accountTotalMinorUnits)
-        XCTAssertEqual(reading.amountReviewNote, UtilityInvoiceReader.amountReviewNote)
-        // Header and column disagreeing: kept, to be checked.
-        let disagree = Self.accountBalanceWaterLayout.replacingOccurrences(of: "IVA%\n45.39", with: "IVA%\n4.44")
-        let disagreeing = UtilityInvoiceReader.read(text: disagree, fileName: "x.pdf", rules: Self.preset("Municipal water (SIMAR)"))
-        XCTAssertEqual(disagreeing.amountMinorUnits, 10_319)
-        XCTAssertNotNil(disagreeing.amountReviewNote)
-        XCTAssertNil(UtilityInvoiceReader.read(text: Self.accountBalanceWaterLayout, fileName: "x.pdf",
-                                               rules: Self.preset("Municipal water (SIMAR)")).amountReviewNote)
+    }
+
+    func testAnAccountBalanceOtherThanTheTotalIsKeptApartToBeChecked() {
+        for rules in [Self.preset("Municipal water (SIMAR)"), Self.storedWaterRules, .generic] {
+            let reading = UtilityInvoiceReader.read(text: Self.earlierInvoiceWaterLayout, fileName: "x.pdf", rules: rules)
+            XCTAssertEqual(reading.amountMinorUnits, 6_155)
+            XCTAssertEqual(reading.accountTotalMinorUnits, 8_800)
+            XCTAssertEqual(reading.amountReviewNote, UtilityInvoiceReader.amountReviewNote)
+        }
         // Only the debit wording is enough to know the account total.
-        let debitOnly = Self.accountBalanceWaterLayout.replacingOccurrences(of: "Valor da Conta Cliente em 06.07.2017 103.19\n", with: "")
+        let debitOnly = Self.earlierInvoiceWaterLayout.replacingOccurrences(of: "Valor da Conta Cliente em 10.03.2016 88.00\n", with: "")
         XCTAssertEqual(UtilityInvoiceReader.read(text: debitOnly, fileName: "x.pdf", rules: Self.preset("Municipal water (SIMAR)")).accountTotalMinorUnits,
-                       10_319)
-        // An account total equal to the invoice's value is no separate figure.
-        let paidUp = "SIMAR 2017.06.20 QUANTIDADE VALOR TOTAL VALOR A PAGAR 45.39 TOTAL 45.39 Valor da Conta Cliente em 06.07.2017 45.39"
-        let settled = UtilityInvoiceReader.read(text: paidUp, fileName: "x.pdf", rules: Self.preset("Municipal water (SIMAR)"))
-        XCTAssertEqual(settled.amountMinorUnits, 4_539)
-        XCTAssertNil(settled.accountTotalMinorUnits)
-        XCTAssertNil(settled.amountReviewNote)
+                       8_800)
         // A generic "saldo da conta" is no account total.
-        XCTAssertNil(UtilityInvoiceReader.read(text: "SIMAR 2017.06.20 VALOR TOTAL 45.39 Saldo da conta 103.19", fileName: "x.pdf",
+        XCTAssertNil(UtilityInvoiceReader.read(text: "SIMAR 2016.03.01 VALOR TOTAL 21.37 Saldo da conta 61.55", fileName: "x.pdf",
                                                rules: Self.preset("Municipal water (SIMAR)")).accountTotalMinorUnits)
     }
 
@@ -672,17 +670,12 @@ final class UtilityInvoiceIntakeTests: XCTestCase {
     func testAPaidUpBillWhoseColumnStartsWithASubLineKeepsItsTotal() {
         let paidUp = Self.oldWaterLayout + "\nValor da Conta Cliente em 28.11.2022 11.23"
         for rules in [Self.preset("Municipal water (SIMAR)"), Self.storedWaterRules] {
-            // "Valor da Fatura" says the invoice's value is the balance: nothing to check.
-            let stated = UtilityInvoiceReader.read(text: paidUp, fileName: "x.pdf", rules: rules)
-            XCTAssertEqual(stated.amountMinorUnits, 1_123)
-            XCTAssertNil(stated.accountTotalMinorUnits)
-            XCTAssertNil(stated.amountReviewNote)
-            // Without it, the column's sub-line is not taken: the total is kept, to be checked.
-            let unstated = UtilityInvoiceReader.read(text: paidUp.replacingOccurrences(of: "Valor da Fatura 11.23\n", with: ""),
-                                                     fileName: "x.pdf", rules: rules)
-            XCTAssertEqual(unstated.amountMinorUnits, 1_123)
-            XCTAssertNil(unstated.accountTotalMinorUnits)
-            XCTAssertEqual(unstated.amountReviewNote, UtilityInvoiceReader.amountReviewNote)
+            for text in [paidUp, paidUp.replacingOccurrences(of: "Valor da Fatura 11.23\n", with: "")] {
+                let reading = UtilityInvoiceReader.read(text: text, fileName: "x.pdf", rules: rules)
+                XCTAssertEqual(reading.amountMinorUnits, 1_123)
+                XCTAssertNil(reading.accountTotalMinorUnits)
+                XCTAssertNil(reading.amountReviewNote)
+            }
         }
     }
 
@@ -694,13 +687,15 @@ final class UtilityInvoiceIntakeTests: XCTestCase {
     }
 
     func testTheAccountTotalsDebitIsNotAMisreadAmount() throws {
-        try transaction(Self.date(2017, 7, 6), -10_319, "SEPADD/EXAMPLE WTR ADC/1")
-        let text = Self.accountBalanceWaterLayout.replacingOccurrences(of: "SIMAR services", with: "EXAMPLE WATER")
+        try transaction(Self.date(2016, 3, 10), -8_800, "SEPADD/EXAMPLE WTR ADC/1")
+        // (This provider's rules know only "VALOR TOTAL".)
+        let text = Self.earlierInvoiceWaterLayout.replacingOccurrences(of: "SIMAR services", with: "EXAMPLE WATER")
+            .replacingOccurrences(of: "\nTOTAL 61.55", with: "\nVALOR TOTAL 61.55")
         let proposal = try db.read { db in
             try UtilityInvoiceIntake.propose(db: db, propertyId: id("property"), documentId: nil, text: text, fileName: "x.pdf", textStatus: .text)
         }
-        XCTAssertEqual(proposal.reading.amountMinorUnits, 4_539)
-        XCTAssertEqual(proposal.reading.accountTotalMinorUnits, 10_319)
+        XCTAssertEqual(proposal.reading.amountMinorUnits, 6_155)
+        XCTAssertEqual(proposal.reading.accountTotalMinorUnits, 8_800)
         XCTAssertNil(proposal.transactionId)
         XCTAssertEqual(proposal.warnings, [])
     }

@@ -85,6 +85,9 @@ struct ContentView: View {
     /// Transactions still needing a category (`UncategorizedTransactions.count`): the
     /// Uncategorized sidebar row shows only while it's above zero.
     @State private var uncategorizedCount = 0
+    /// An import is being read, reviewed or applied (`ImportCenterModel.phase`): the Imports
+    /// sidebar row shows only then, or while its screen is on show.
+    @State private var importActive = false
     @AppStorage("lastImportAccountId") private var lastImportAccountId = 0
     /// Show in Budget has just loaded the Budget grid's data (so its appearance needn't).
     @State private var budgetGridJustLoaded = false
@@ -159,9 +162,11 @@ struct ContentView: View {
     }
 
     /// Whether the screen has a sidebar row right now (spec §6): Uncategorized only while
-    /// something needs a category.
+    /// something needs a category, Imports only while an import is active (imports start from
+    /// elsewhere) or its screen is on show, so a result stays up until the user moves on.
     private func isInSidebar(_ screen: AppScreen) -> Bool {
         switch screen {
+        case .imports: return importActive || selection == .imports
         case .uncategorized: return uncategorizedCount > 0
         default: return true
         }
@@ -173,8 +178,8 @@ struct ContentView: View {
     /// being first in `allCases`, `.dashboard` being the first `.sidebarSection ==
     /// "Overview"` case, etc.) stays stable regardless of where a section's later members
     /// (e.g. `.uncategorized`) happen to sit in `allCases`' own declaration order. A section
-    /// with no visible screens (Workflow, when there's nothing to import or assign) is left
-    /// out, header and all (Imports is always there, so Workflow always shows).
+    /// with no visible screens (Workflow, when there's no import active and nothing to assign) is left
+    /// out, header and all.
     private var sidebarSections: [(name: String, screens: [AppScreen])] {
         var order: [String] = []
         var grouped: [String: [AppScreen]] = [:]
@@ -333,6 +338,8 @@ struct ContentView: View {
             refreshUncategorizedCount()
         }
         .onChange(of: sidebarSelection) { _, newValue in sidebarSelectionChanged(to: newValue) }
+        // Observes the phase alone, so the window isn't redrawn by every progress tick.
+        .onReceive(environment.importCenter.$phase.map(Self.isActiveImport).removeDuplicates()) { importActive = $0 }
         // ⌘F (Edit ▸ Search Transactions) in this window: the Search screen, its field focused.
         .focusedSceneValue(\.transactionSearch, TransactionSearchAction {
             sidebarSelectionChanged(to: .screen(.search))
@@ -362,6 +369,13 @@ struct ContentView: View {
             // recompute whichever of them is on screen.
             if selection == .dashboard { dashboardViewModel.load() }
             if selection == .accounts { accountsViewModel.load() }
+        }
+    }
+
+    private static func isActiveImport(_ phase: ImportCenterModel.Phase) -> Bool {
+        switch phase {
+        case .reading, .review, .applying: return true
+        case .idle, .finished, .failed: return false
         }
     }
 

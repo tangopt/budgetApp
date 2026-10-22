@@ -43,7 +43,7 @@ public enum ImportFigureField: String, Codable, CaseIterable, Sendable {
     /// (a BBVA statement's mortgage instalments and fund).
     case openingBalance, closingBalance, rows, instalments, fund
     /// A utility invoice's customer-account balance, debited instead of its own value (it
-    /// includes earlier invoices): kept apart from the amount.
+    /// includes earlier invoices or credits): kept apart from the amount.
     case accountTotal
 
     public var displayName: String {

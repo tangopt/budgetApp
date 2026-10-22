@@ -132,10 +132,70 @@ final class ImportPipelineTests: XCTestCase {
         let urls = [try receiptPDF(), try note(), try copyOfLibraryFile()]
         let seen = ProgressLog()
         _ = try await pipeline.plan(urls, progress: { seen.append($0) })
-        let reports = seen.all
+        let reports = seen.all.filter { $0.stage == .reading }
         XCTAssertEqual(reports.map(\.completed), [0, 1, 2, 3])
         XCTAssertTrue(reports.allSatisfy { $0.total == 3 })
         XCTAssertEqual(Set(reports.dropFirst().compactMap(\.currentFile)), ["r1.pdf", "note.txt", "kept copy.pdf"])
+    }
+
+    /// A filed 2023/24 for a person owning the property, so the guard checks the receipt.
+    private func filedYear() throws {
+        try db.write { db in
+            var person = Person(name: "Person A", shortName: "A")
+            try People.save(db: db, &person)
+            _ = try Properties.setOwners(db: db, propertyId: propertyId, [
+                PropertyOwner(propertyId: propertyId, personId: person.id!, shareBasisPoints: 10_000)
+            ])
+            var year = TaxYear(startYear: 2023, personId: person.id!, status: .filed)
+            try year.insert(db)
+        }
+    }
+
+    /// Receipt nº 2's PDF (February 2024).
+    private func secondReceiptPDF() throws -> URL {
+        let lines = RentReceiptPDFsTests.lines(receipt: "2", start: "2024-02-01", end: "2024-02-29", amount: "600,00", received: "600,00",
+                                               receivedOn: "2024-02-03")
+        return try place(EvidenceTestPDFs.textPDF(lines, name: "r2.pdf"), as: "r2.pdf", in: "Drop")
+    }
+
+    func testProgressGoesThroughThePassesAfterReading() async throws {
+        try filedYear()
+        let urls = [try receiptPDF(), try note(), try secondReceiptPDF()]
+        let seen = ProgressLog()
+        _ = try await pipeline.plan(urls, progress: { seen.append($0) })
+        let after = seen.all.filter { $0.stage != .reading }
+        XCTAssertEqual(after.map(\.stage), [.matching, .duplicates, .filedYears, .filedYears, .filedYears, .filedYears])
+        XCTAssertEqual(after.filter { $0.stage == .filedYears }.map { [$0.completed, $0.total] }, [[0, 0], [0, 2], [1, 2], [2, 2]])
+        XCTAssertEqual(after.map(\.stageText), ["Matching the documents to your records…", "Checking for duplicates…",
+                                                 "Checking filed tax years…", "Checking filed tax years (0 of 2)…",
+                                                 "Checking filed tax years (1 of 2)…", "Checking filed tax years (2 of 2)…"])
+        // Each report comes no earlier than the one before it.
+        XCTAssertTrue(zip(seen.all, seen.all.dropFirst()).allSatisfy { $1.isNotBefore($0) })
+        XCTAssertFalse(ImportProgress(completed: 3, total: 3).isNotBefore(ImportProgress(.matching)))
+        XCTAssertFalse(ImportProgress(completed: 1, total: 2, stage: .filedYears).isNotBefore(ImportProgress(completed: 2, total: 2, stage: .filedYears)))
+    }
+
+    func testCancellationStopsTheFiledYearCheck() async throws {
+        try filedYear()
+        let urls = [try receiptPDF(), try secondReceiptPDF()]
+        let seen = ProgressLog()
+        let outer = OuterTaskBox()
+        let pipeline = pipeline!
+        let task = Task {
+            try await pipeline.plan(urls, progress: { report in
+                seen.append(report)
+                // Cancelled while the guard takes its figures (inside the database access): it
+                // stops before the first item.
+                if report.stage == .filedYears { outer.cancel() }
+            })
+        }
+        outer.set(task)
+        do {
+            _ = try await task.value
+            XCTFail("planning went on after cancellation")
+        } catch is CancellationError {
+        }
+        XCTAssertEqual(seen.all.filter { $0.stage == .filedYears }.map(\.total), [0])
     }
 
     func testAddingTheSameFileLaterIsADuplicate() async throws {

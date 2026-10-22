@@ -183,6 +183,15 @@ public enum RentalAccounts {
 
     // MARK: - Computing
 
+    /// `compute`, kept in `memo` (and taken from it when already worked out there).
+    static func compute(db: Database, taxYear: UKTaxYear, personId: Int64, propertyId: Int64, memo: TaxComputationMemo?) throws -> Result {
+        let key = TaxComputationMemo.AccountsKey(startYear: taxYear.startYear, personId: personId, propertyId: propertyId)
+        if let known = memo?.knownAccounts(key) { return known }
+        let result = try compute(db: db, taxYear: taxYear, personId: personId, propertyId: propertyId)
+        memo?.keep(result, for: key)
+        return result
+    }
+
     public static func compute(db: Database, taxYear: UKTaxYear, personId: Int64, propertyId: Int64) throws -> Result {
         guard let property = try Property.fetchOne(db, key: propertyId) else { throw TaxError.propertyNotFound }
         guard let person = try Person.fetchOne(db, key: personId) else { throw TaxError.personNotFound }
@@ -963,23 +972,37 @@ public enum RentalAccounts {
         return year
     }
 
-    /// The documents linked to each record of `type` in `ids`, by document date.
+    /// The documents linked to each record of `type` in `ids`, by document date, without their
+    /// text (not read here). Only those records' links are read (a few hundred ids at a time),
+    /// so a link to another record leaves what this reads as it was (the filed-year guard
+    /// replays these reads: `TaxFiguresReads`).
     static func linkedDocuments(db: Database, type: EvidenceEntityType, ids: [Int64]) throws -> [Int64: [EvidenceDocument]] {
-        guard !ids.isEmpty else { return [:] }
-        let wanted = Set(ids)
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT documentLink.entityId AS entityId, document.* FROM documentLink JOIN document ON document.id = documentLink.documentId
-            WHERE documentLink.entityType = ?
-            ORDER BY document.docDate IS NULL, document.docDate, document.id
-            """, arguments: [type.rawValue])
+        let wanted = Array(Set(ids)).sorted()
         var result: [Int64: [EvidenceDocument]] = [:]
-        for row in rows {
-            let entityId: Int64 = row["entityId"]
-            guard wanted.contains(entityId) else { continue }
-            result[entityId, default: []].append(try EvidenceDocument(row: row))
+        for start in stride(from: 0, to: wanted.count, by: linkedDocumentsChunk) {
+            let chunk = Array(wanted[start..<min(start + linkedDocumentsChunk, wanted.count)])
+            // Each record's documents come from one chunk, in date order.
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT documentLink.entityId AS entityId, \(linkedDocumentColumns) FROM documentLink JOIN document ON document.id = documentLink.documentId
+                WHERE documentLink.entityType = ? AND documentLink.entityId IN (\(chunk.map { _ in "?" }.joined(separator: ",")))
+                ORDER BY document.docDate IS NULL, document.docDate, document.id
+                """, arguments: StatementArguments([type.rawValue] + chunk.map { $0 as DatabaseValueConvertible }))
+            for row in rows {
+                let entityId: Int64 = row["entityId"]
+                result[entityId, default: []].append(try EvidenceDocument(row: row))
+            }
         }
         return result
     }
+
+    /// Record ids per `linkedDocuments` query.
+    static let linkedDocumentsChunk = 500
+
+    /// Every column of a document but its text.
+    static let linkedDocumentColumns = ["id", "sha256", "storedRelativePath", "originalFileName", "byteCount", "canonicalName", "kind",
+                                        "docDate", "periodStart", "periodEnd", "amountMinorUnits", "currency", "persons", "textStatus",
+                                        "sourceFolderId", "sourceRelativePath", "sourceModifiedAt", "addedAt", "note"]
+        .map { "document.\($0)" }.joined(separator: ", ")
 
     /// The documents of a recharge statement: its invoices' and its manual lines'.
     static func statementDocumentIds(db: Database, statementId: Int64) throws -> [Int64] {

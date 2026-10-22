@@ -20,6 +20,8 @@ struct DocumentImportAction {
     var startFolder: (_ folder: SourceFolder, _ inputs: [SourceFolderImport.Input]) -> Void = { _, _ in }
     /// A library shortcut's "From library" (`ImportCenterModel.startFromLibrary`): false when there was nothing.
     var startFromLibrary: (_ shortcut: ImportShortcut) -> Bool = { _ in false }
+    /// Shows the Imports screen (the history and its Undo when nothing is being imported).
+    var showHistory: () -> Void = {}
     /// The counts its "From library (N)" shows (nil: no importer behind it, e.g. the gallery).
     var libraryCounts: ImportLibraryCounts?
 
@@ -39,6 +41,7 @@ struct DocumentImportAction {
             pickShortcutChosen: { center.pickFiles(for: $0) },
             startFolder: { folder, inputs in center.start(folder: folder, inputs: inputs) },
             startFromLibrary: { center.startFromLibrary($0) },
+            showHistory: { center.onShow?() },
             libraryCounts: center.libraryCounts)
     }
 }
@@ -91,7 +94,8 @@ extension EnvironmentValues {
     @Entry var documentImport: DocumentImportAction?
 }
 
-/// File ▸ Import… (⇧⌘I): picks files and folders for the focused window's importer. Off while
+/// File ▸ Import… (⇧⌘I): picks files and folders for the focused window's importer; File ▸
+/// Import History… shows the Imports screen (its row is in the sidebar only during an import). Off while
 /// that window shows a sheet or alert.
 struct ImportCommands: Commands {
     @FocusedValue(\.documentImport) private var documentImport
@@ -101,6 +105,8 @@ struct ImportCommands: Commands {
         CommandGroup(after: .newItem) {
             Button("Import…") { documentImport?.pickFiles(.none, "Menu") }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
+                .disabled(documentImport == nil || keyWindow.isSheetKey)
+            Button("Import History…") { documentImport?.showHistory() }
                 .disabled(documentImport == nil || keyWindow.isSheetKey)
         }
     }
