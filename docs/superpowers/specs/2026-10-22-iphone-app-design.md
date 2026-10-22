@@ -24,7 +24,7 @@ mockups are invented. Data, sync, access and identity: `2026-10-22-sync-and-acce
   - Sharing (my accounts' levels);
   - Notifications;
   - Appearance and theme;
-  - Security status (ADP);
+  - Security status (FileVault on the Mac, iCloud, document encryption);
   - About and sync status.
 - **Deep links** from widgets and notifications open the matching tab and screen.
   - A notification about something the person has no permission for opens Home with an inline message.

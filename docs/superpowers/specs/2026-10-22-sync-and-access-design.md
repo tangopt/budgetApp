@@ -161,7 +161,9 @@ syncRecord                          -- one row per synced local row (local only,
 - **Foreign keys are encrypted UUID strings, not `CKRecord.Reference` (my call).** References can't be
   encrypted and would show Apple how records connect. The cost is no server-side cascade delete, which we
   don't use anyway.
-- Documents are `CKAsset`s. They are end-to-end only with Advanced Data Protection (§9).
+- **Documents are encrypted by the app before upload** (§9.1). Each is a `CKAsset` holding ciphertext.
+  The keys travel only in encrypted fields. Advanced Data Protection isn't available to UK accounts, so
+  we don't rely on it (user, 2026-10-22).
 
 ### 4.3 Never synced (device-local)
 `syncRecord`, the staging table, backups, source-folder paths and bookmarks, window/UI state, lock and
@@ -209,7 +211,14 @@ Every device works offline on its local copy. Changes queue and upload when back
 "Offline · showing data from <time>" (iPhone mockup 9). Confirming an import and accepting the share are
 the only things that need a connection.
 
-### 5.6 First sync
+### 5.6 Sync unavailable (no iCloud, or the developer membership lapsed)
+- Treated like being offline, with a banner saying why. Local data is never deleted because sync stopped.
+- On return, sync resumes from where it left off.
+- Settings ▸ Export my data writes the person's own data (household and their private zone) to an
+  encrypted file protected by a password they choose, so private data can't be stranded on devices that
+  stop launching (overview §3.1).
+
+### 5.7 First sync
 - **Mac:** after the migration (§8) it uploads everything; this takes minutes for tens of thousands of
   records.
 - **Member's iPhone:** after accepting the share it downloads records with a progress bar (iPhone
@@ -308,6 +317,7 @@ memberPermission (appUserUuid, area, level)      -- level: none | view | edit; s
   - the snapshot harness (`App/Snapshots`), which gets an iOS twin that renders the same demo database.
 - **New in BudgetCore** (`Sources/BudgetCore/Sync/`, `Sources/BudgetCore/Access/`):
   - `SyncSchema`, `SyncRecordStore`, the outgoing/incoming translators, the batch stager, `ImportLease`;
+  - `DocumentCrypto` (zone keys, data keys, seal/open, re-wrap; §9.1);
   - `AccessPolicy`, `SharingLevel`, the summary builders, `ActualsSource` (transactions + summaries),
     used by `BudgetGridCalculator`, `DashboardCalculator` and `ForecastCalculator`.
 - **Only the CKSyncEngine wrapper lives in the apps**, because it needs entitlements; it calls into
@@ -339,11 +349,38 @@ Builds on the authentication spec's pre-migration backup (its §6).
 **In iCloud**
 - Field values are end-to-end encrypted (`encryptedValues`). Apple sees record types, counts, sizes and
   timestamps, never amounts, names, descriptions or identifiers.
-- Documents (`CKAsset`) are end-to-end only with **Advanced Data Protection**. Recommendation:
-  - both people turn it on;
-  - Settings ▸ Security shows each person's status and warns when it is off;
-  - the trade-off: a recovery contact or recovery key becomes mandatory.
+- **Documents** are encrypted on the device before upload (§9.1). Apple stores ciphertext whose keys it
+  doesn't have, with or without Advanced Data Protection.
+- **Advanced Data Protection isn't available in the UK** (user, 2026-10-22). It hasn't been offered to UK
+  accounts since 2025, so the design doesn't depend on it. If it ever becomes available, it adds nothing
+  this design needs.
+- **To verify at build step 0:** that CloudKit encrypted fields are end-to-end for UK accounts without
+  ADP. Their keys live in iCloud Keychain, which stays end-to-end for everyone. Check this against Apple's
+  current Platform Security guide. If it ever stops being true, the zone keys of §9.1 move to a keychain
+  item, and the rest of the design is unchanged.
 - Private zones are never shared, so the other person's devices never receive their contents.
+
+### 9.1 Document encryption (my call, because ADP isn't available)
+- **Zone keys.** Each zone has a 256-bit **zone key**, held in a `zoneKey` record in that zone, in an
+  encrypted field:
+  - the household zone's key is readable by both people;
+  - a private zone's key only by its owner.
+- **Per-document keys.** Each document gets a random **data key**. The file is sealed with AES-GCM
+  (CryptoKit) under the data key. The data key, wrapped with the zone key, is stored in an encrypted
+  field of the document's record. The `CKAsset` holds only the ciphertext.
+- **The evidence hash stays the SHA-256 of the plaintext**, so duplicate detection and canonical naming
+  are unchanged. The hash is stored in an encrypted field.
+- **Rotation.** Removing a member, or moving a document between zones (a sharing-level change):
+  - a new zone key is made, and every document's data key is re-wrapped. That's cheap: no file is
+    re-uploaded.
+  - Copies the removed person already downloaded can't be recalled. The app says so.
+- **Cost:** about 5% more CPU on upload and download, and nothing else visible.
+- **Tests:**
+  - seal and open;
+  - a wrong key fails;
+  - re-wrap on rotation;
+  - the hash is unchanged;
+  - an uploaded asset never contains plaintext (checked against the CloudKit fake).
 
 **On devices**
 - **iOS:** the database and documents use file protection `completeUntilFirstUserAuthentication`, so
@@ -359,7 +396,7 @@ Builds on the authentication spec's pre-migration backup (its §6).
 - Logs never carry amounts or names.
 
 **Weakest points**
-- Each Apple Account (two-factor required; a recovery key with ADP).
+- Each Apple Account (two-factor required). Use a strong, unique password; Apple can reset the account, which is why documents carry our own encryption.
 - The member has Edit on shared data by design.
 
 ## 10. Alternatives considered
@@ -378,6 +415,9 @@ Builds on the authentication spec's pre-migration backup (its §6).
   private zones gives the same privacy more simply.
 
 ## 11. Changes requested to the authentication spec
+
+**All seven accepted by the user (2026-10-22).** They are for the authentication spec's owner to fold
+in.
 
 1. **Mobile identity from the iCloud account, not Sign in with Apple.**
    - Replace `appUser.appleUserId` with `appUser.cloudKitUserRecordName` (from

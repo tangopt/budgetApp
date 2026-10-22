@@ -25,7 +25,7 @@ Full = everything the Mac does. **Light** = view plus the listed small edits. Vi
 | Two people on the Mac | One macOS user each, with real privacy | — | — |
 | Sharing level of my accounts | Full | Full | View |
 | Member permissions per area | Full (admin) | Full (admin) | View |
-| Security check (ADP, FileVault) | Full | Full | Full |
+| Security check (FileVault, iCloud, document encryption) | Full | Full | Full |
 | **Overview** | | | |
 | Dashboard | Full | Full | Glance |
 | Accounts & net worth | Full | Light: update a manual balance | Light: update a manual balance |
@@ -106,6 +106,35 @@ The name is private and non-commercial, so there are no trademark worries.
 - **Never:** coins, piggy banks or pound signs.
 - Same icon on all three platforms. The Mac version keeps the rounded square.
 
+### 2.1 More names (asked for, 2026-10-22)
+
+| Name | Why |
+|---|---|
+| **Sixpence** | The silver sixpence in the bride's shoe ("…and a silver sixpence in her shoe"): a British wish for a married couple's prosperity. Small, lucky, two of you. |
+| **Tuppence** | "Two pence": the two of you, cheeky and British ("put in your tuppence"). |
+| **Azulejo** | Lisbon's tiles: many small squares that make one picture, like the category × pay-month grid. |
+| Saldo | "Balance" in Portuguese: the one number every screen is about. |
+| Tostão | An old Portuguese coin; "sem um tostão" means broke. Affectionately self-deprecating. |
+| Caravel | The small Portuguese ship built for long voyages: nimble, and looking far ahead (the forecast). |
+| Fado | Lisbon's song, and the word for fate: where the money is heading. |
+| Larder | Where a household keeps its provisions. Homely and British. |
+
+**Overall top 3:** Sixpence, Escudo, Azulejo.
+
+**Recommendation now: Sixpence.**
+- It's the one with a story about the two of you.
+- It's British like your tax home, short under an icon, and warm rather than technical.
+- Escudo stays the runner-up if you prefer the Portuguese link and the "shield".
+
+**Icon direction for Sixpence:**
+- **Ground:** deep navy, so the same tint family as the app.
+- **The coin:** one silver coin seen almost face-on in Liquid Glass. Its milled edge is a ring of fine
+  ticks.
+- **On its face:** today's three rising bars, embossed, so the old icon lives on inside the new one.
+- **Variants:** in tinted and clear modes the coin becomes a ring and the bars a single glyph. It must
+  read at 16 pt in the Mac's menu bar and Spotlight.
+- **No lettering** ("6d"), no shoes, no confetti.
+
 ## 3. Private distribution
 
 | Option | Cost | Expiry | Updates | CloudKit / push / Sign-in | Verdict |
@@ -128,6 +157,29 @@ The name is private and non-commercial, so there are no trademark worries.
   - CloudKit.
 - **Two private-distribution routes don't fit:** the App Store's "unlisted app" needs review and a public
   listing page, and Custom Apps need Apple Business Manager.
+
+### 3.1 If the membership isn't renewed (asked, 2026-10-22)
+
+The user is already a member and may not renew every year. What happens when it lapses:
+
+| What | Effect |
+|---|---|
+| **Mac app (Developer ID, notarised)** | Keeps launching: notarised, timestamped builds aren't revoked when a membership ends. You can't sign or notarise new builds until you renew. Local builds (today's ad-hoc way) still work, but without CloudKit. |
+| **iPhone and iPad (TestFlight)** | No new builds can be uploaded. Installed builds stop launching when they expire, at most 90 days after upload. In practice **the mobile apps need an active membership.** |
+| **Sync (CloudKit)** | The data stays in iCloud. Expect sync to stop working for new builds, and treat it as unavailable until renewal. |
+| **Your data** | **Nothing is lost.** Every device has a full local copy of what it can see. The hub Mac has the whole household plus your private data, keeps working offline, and keeps its backups. |
+| **Free-account fallback** | Xcode installs that expire after 7 days, with no CloudKit. Not a real fallback for the companions. |
+
+**What the design does about it (my call):**
+- The apps treat "sync unavailable" like being offline, with a banner saying why.
+- They never delete local data because sync stopped.
+- On renewal, sync resumes from where it left off: changes made meanwhile upload normally.
+- The Mac stays fully usable with no membership at all.
+- **Before letting it lapse:** make sure the other person's private data is also on a device she keeps.
+  Her iPad's TestFlight build will stop launching, and her private data isn't on your Mac. The app's
+  "Export my data" (a Settings action on every device) saves her own encrypted backup file.
+- **Cheapest way to stay safe:** renew yearly, and upload a TestFlight build every 60 days (a scheduled
+  reminder or Xcode Cloud).
 
 ## 4. Build order
 
@@ -166,14 +218,16 @@ Each step is its own plan and branch, rehearsed on a copy, merged only when gree
 
 ## 5. Decisions for the user
 
-1. Accept the changes requested to the authentication spec (sync spec §11):
-   - iCloud identity instead of Sign in with Apple;
-   - no app password on mobile;
-   - permissions table;
-   - credentials kept local-only.
-2. Join the Apple Developer Program now. It's needed from step 0 onward.
-3. Pick the name (my recommendation: Escudo).
-4. Turn on Advanced Data Protection on both Apple Accounts. The trade-off is that a recovery key or
-   recovery contact becomes mandatory.
-5. Default sharing level for the existing accounts: everything stays "Everything" until you change it
-   in step 5.
+Settled on 2026-10-22:
+- **The changes requested to the authentication spec (sync spec §11) are accepted.** All seven, for the
+  authentication spec's owner to fold in.
+- **The user is already a Developer Program member,** and may not renew every year. The impact is in
+  §3.1: the Mac is unaffected, the mobile apps need the membership, and no data is ever lost.
+- **No Advanced Data Protection (not available in the UK).** The app encrypts documents itself instead
+  (sync spec §9.1).
+- **Two people on the Mac:** one macOS user each (sync spec §3.1).
+
+Still open:
+1. Pick the name. My recommendation is Sixpence; Escudo is the runner-up.
+2. Default sharing level for the existing accounts: everything stays "Everything" until you change it
+   in build step 5.
