@@ -79,7 +79,7 @@ func guardWrite(_ path: String, _ what: String) {
 if !dryRun { guardWrite(sourcePath, "the database") }
 // The app holds the database open and would overwrite or miss the rebuild.
 if !dryRun && !forceRunning && AppIdentity.macBundleIdentifiers.contains(where: { !NSRunningApplication.runningApplications(withBundleIdentifier: $0).isEmpty }) {
-    fail("Budget is running: quit it before a real run (or pass --force-running).")
+    fail("Mango is running: quit it before a real run (or pass --force-running).")
 }
 if let reportPath {
     guardWrite(reportPath, "the report")

@@ -15,8 +15,8 @@ struct EvidenceSourcesSettings: View {
             EvidenceSourcesList(model: EvidenceSourcesModel(scanner: SourceFolderScanner(library: environment.evidenceLibrary),
                                                             importCenter: environment.importCenter))
         } else {
-            ContentUnavailableView("Budget isn't open", systemImage: "folder.badge.questionmark",
-                                   description: Text("Open the Budget window to manage evidence folders."))
+            ContentUnavailableView("Mango isn't open", systemImage: "folder.badge.questionmark",
+                                   description: Text("Open the Mango window to manage evidence folders."))
                 .frame(height: 300)
         }
     }
@@ -143,7 +143,7 @@ private struct EvidenceSourcesList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Folders Budget looks in for receipts, notices and statements. Scanning only reads them; nothing in them is moved or changed. Scan Now sends what's new or changed to Imports, in the Budget window, to review.")
+            Text("Folders Mango looks in for receipts, notices and statements. Scanning only reads them; nothing in them is moved or changed. Scan Now sends what's new or changed to Imports, in the Mango window, to review.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -188,7 +188,7 @@ private struct EvidenceSourcesList: View {
         ), presenting: folderToRemove) { folder in
             Button("Remove", role: .destructive) { model.remove(folder) }
         } message: { _ in
-            Text("Budget stops scanning it. Documents already added from it stay in the library, and the folder itself isn't touched.")
+            Text("Mango stops scanning it. Documents already added from it stay in the library, and the folder itself isn't touched.")
         }
     }
 

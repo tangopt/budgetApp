@@ -66,7 +66,7 @@ struct LaunchView: View {
                 .interpolation(.high)
                 .frame(width: iconSize, height: iconSize)
             if showsName {
-                Text("Budget")
+                Text("Mango")
                     .font(.title2.weight(.medium))
             }
             footer()

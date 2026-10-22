@@ -51,8 +51,8 @@ struct DocumentInspector: View {
             Button("Remove from library", role: .destructive) { if let id = document.id { viewModel.remove(id) } }
         } message: {
             Text(viewModel.links.isEmpty
-                 ? "Budget deletes its copy. The original file, if you still have it, isn't touched. This can't be undone."
-                 : "Budget deletes its copy and its \(viewModel.links.count) link\(viewModel.links.count == 1 ? "" : "s"). The original file, if you still have it, isn't touched. This can't be undone.")
+                 ? "Mango deletes its copy. The original file, if you still have it, isn't touched. This can't be undone."
+                 : "Mango deletes its copy and its \(viewModel.links.count) link\(viewModel.links.count == 1 ? "" : "s"). The original file, if you still have it, isn't touched. This can't be undone.")
         }
         .alert("Custom role", isPresented: Binding(get: { customRoleRow != nil }, set: { if !$0 { customRoleRow = nil } })) {
             TextField("Role", text: $customRole)

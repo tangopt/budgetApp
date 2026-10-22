@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Builds Budget in Release and installs it to /Applications, so it runs like any other app.
+# Builds Mango in Release and installs it to /Applications, so it runs like any other app.
 # Re-run after pulling new changes to update the installed copy. Your data stays where it is
 # (~/Library/Application Support/Budget), shared by every copy of the app.
 #
@@ -14,8 +14,8 @@ cd "$(dirname "$0")/.."
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
-if pgrep -x Budget >/dev/null; then
-    echo "Quit Budget first, then run this again." >&2
+if pgrep -x Mango >/dev/null || pgrep -x Budget >/dev/null; then
+    echo "Quit Mango first, then run this again." >&2
     exit 1
 fi
 
@@ -27,11 +27,11 @@ TEAM=""
 
 if [[ -n "$TEAM" ]]; then
     NOTARY_PROFILE="${NOTARY_PROFILE:-mango-notary}"
-    xcodebuild -project Budget.xcodeproj -scheme Budget -configuration Release \
+    xcodebuild -project Mango.xcodeproj -scheme Mango -configuration Release \
         -destination 'generic/platform=macOS' -derivedDataPath "$BUILD_DIR/dd" \
-        -archivePath "$BUILD_DIR/Budget.xcarchive" -allowProvisioningUpdates archive \
+        -archivePath "$BUILD_DIR/Mango.xcarchive" -allowProvisioningUpdates archive \
         | grep -E "error:|warning:|ARCHIVE" | grep -v appintents || true
-    [[ -d "$BUILD_DIR/Budget.xcarchive" ]] || { echo "Archive failed." >&2; exit 1; }
+    [[ -d "$BUILD_DIR/Mango.xcarchive" ]] || { echo "Archive failed." >&2; exit 1; }
 
     cat > "$BUILD_DIR/ExportOptions.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -44,44 +44,52 @@ if [[ -n "$TEAM" ]]; then
 </dict>
 </plist>
 PLIST
-    xcodebuild -exportArchive -archivePath "$BUILD_DIR/Budget.xcarchive" \
+    xcodebuild -exportArchive -archivePath "$BUILD_DIR/Mango.xcarchive" \
         -exportOptionsPlist "$BUILD_DIR/ExportOptions.plist" -exportPath "$BUILD_DIR/export" \
         -allowProvisioningUpdates | grep -E "error:|EXPORT" || true
-    APP="$BUILD_DIR/export/Budget.app"
-    [[ -x "$APP/Contents/MacOS/Budget" ]] || { echo "Export failed." >&2; exit 1; }
+    APP="$BUILD_DIR/export/Mango.app"
+    [[ -x "$APP/Contents/MacOS/Mango" ]] || { echo "Export failed." >&2; exit 1; }
 
     echo "Notarising (usually a few minutes)…"
-    ditto -c -k --keepParent "$APP" "$BUILD_DIR/Budget.zip"
-    xcrun notarytool submit "$BUILD_DIR/Budget.zip" --keychain-profile "$NOTARY_PROFILE" --wait
+    ditto -c -k --keepParent "$APP" "$BUILD_DIR/Mango.zip"
+    xcrun notarytool submit "$BUILD_DIR/Mango.zip" --keychain-profile "$NOTARY_PROFILE" --wait
     xcrun stapler staple "$APP"
 else
-    xcodebuild -project Budget.xcodeproj -scheme Budget -configuration Release \
+    xcodebuild -project Mango.xcodeproj -scheme Mango -configuration Release \
         -destination 'platform=macOS' -derivedDataPath "$BUILD_DIR" build \
         | grep -E "error:|warning:|BUILD" | grep -v appintents || true
-    APP="$BUILD_DIR/Build/Products/Release/Budget.app"
-    [[ -x "$APP/Contents/MacOS/Budget" ]] || { echo "Build failed." >&2; exit 1; }
+    APP="$BUILD_DIR/Build/Products/Release/Mango.app"
+    [[ -x "$APP/Contents/MacOS/Mango" ]] || { echo "Build failed." >&2; exit 1; }
 fi
 
-rm -rf /Applications/Budget.app
-ditto "$APP" /Applications/Budget.app
+# The app used to be called Budget (renamed Mango): remove the old copy once, and unregister it so
+# Spotlight and Launchpad offer only Mango. Nothing else in /Applications is touched.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+if [[ -d /Applications/Budget.app ]]; then
+    "$LSREGISTER" -u /Applications/Budget.app 2>/dev/null || true
+    rm -rf /Applications/Budget.app
+    echo "Removed the old /Applications/Budget.app"
+fi
+
+rm -rf /Applications/Mango.app
+ditto "$APP" /Applications/Mango.app
 
 # Point macOS at the installed copy (icon, Spotlight, Open With), not a build folder.
-LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 "$LSREGISTER" -u "$APP" 2>/dev/null || true
 
 # Remove Xcode's own builds of the app so Spotlight and Launchpad only offer the installed one.
 # Xcode rebuilds them the next time you run from Xcode (only the .app is removed, not the cache).
-for old in ~/Library/Developer/Xcode/DerivedData/Budget-*/Build/Products/*/Budget.app(N); do
+for old in ~/Library/Developer/Xcode/DerivedData/Mango-*/Build/Products/*/Mango.app(N); do
     "$LSREGISTER" -u "$old" 2>/dev/null || true
     rm -rf "$old"
     echo "Removed Xcode build: $old"
 done
 
-"$LSREGISTER" -f /Applications/Budget.app
+"$LSREGISTER" -f /Applications/Mango.app
 
 if [[ -n "$TEAM" ]]; then
     # Gatekeeper's verdict on the installed copy: expect "accepted, source=Notarized Developer ID".
-    spctl --assess --type execute -vv /Applications/Budget.app 2>&1 || true
+    spctl --assess --type execute -vv /Applications/Mango.app 2>&1 || true
 fi
 
-echo "Installed /Applications/Budget.app"
+echo "Installed /Applications/Mango.app"

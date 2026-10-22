@@ -11,7 +11,7 @@ enum BudgetMain {
     static func main() {
         #if SNAPSHOTS
         guard SnapshotMode.isActive else {
-            FileHandle.standardError.write(Data("This is a snapshot build of Budget: it only runs \(SnapshotMode.argument) (scripts/render-snapshots.sh).\n".utf8))
+            FileHandle.standardError.write(Data("This is a snapshot build of Mango: it only runs \(SnapshotMode.argument) (scripts/render-snapshots.sh).\n".utf8))
             exit(2)
         }
         SnapshotRunner.main()
@@ -35,7 +35,7 @@ struct BudgetApp: App {
             SearchCommands()
             ImportCommands()
         }
-        // Budget ▸ Settings… (⌘,): Appearance, Theme, Evidence and Sign-in.
+        // Mango ▸ Settings… (⌘,): Appearance, Theme, Evidence and Sign-in.
         Settings {
             SettingsView()
                 .lockOverlay(.settings)

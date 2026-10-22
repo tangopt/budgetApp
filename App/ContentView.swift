@@ -280,7 +280,7 @@ struct ContentView: View {
                 }
             }
             // "Mango" while covered: the screen's name would say what's under the lock.
-            .navigationTitle(lockCovered ? "Mango" : selection == .property ? (propertyName ?? "Property") : (selection?.rawValue ?? "Budget"))
+            .navigationTitle(lockCovered ? "Mango" : selection == .property ? (propertyName ?? "Property") : (selection?.rawValue ?? "Mango"))
             .onReceive(propertyViewModel.$snapshot) { snapshot in
                 if snapshot.property?.name != propertyName { propertyName = snapshot.property?.name }
             }

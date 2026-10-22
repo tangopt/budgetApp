@@ -95,7 +95,7 @@ enum EvidenceFiles {
     static func skippedMessage(_ skipped: [String]) -> String? {
         guard !skipped.isEmpty else { return nil }
         let names = skipped.map { "“\($0)”" }.joined(separator: ", ")
-        return "Skipped \(names) — only files are added. To have Budget look in a folder, add it in Settings ▸ Evidence."
+        return "Skipped \(names) — only files are added. To have Mango look in a folder, add it in Settings ▸ Evidence."
     }
 
     /// Runs `body` with access to a file from the open panel (a no-op outside the sandbox).

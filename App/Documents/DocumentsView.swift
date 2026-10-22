@@ -44,7 +44,7 @@ struct DocumentsView: View {
                             isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { document in
             Button("Remove from library", role: .destructive) { if let id = document.id { viewModel.remove(id) } }
         } message: { _ in
-            Text("Budget deletes its copy and its links. The original file, if you still have it, isn't touched. This can't be undone.")
+            Text("Mango deletes its copy and its links. The original file, if you still have it, isn't touched. This can't be undone.")
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -473,7 +473,7 @@ private struct DocumentsOverview: View {
 
     private var emptyLibrary: some View {
         EmptyState(systemImage: "doc.on.doc", title: "No documents yet",
-                   message: "Add receipts, notices and statements, or drop them on the list. Budget keeps its own copy; your files aren't changed.") {
+                   message: "Add receipts, notices and statements, or drop them on the list. Mango keeps its own copy; your files aren't changed.") {
             ImportShortcutButton("Add documents…", shortcut: .documents(dropped: false), prominent: true)
         }
         .fillingScreen()
