@@ -97,6 +97,7 @@ fi
 
 # Point macOS at the installed copy (icon, Spotlight, Open With), not a build folder.
 "$LSREGISTER" -u "$APP" 2>/dev/null || true
+for built in "$CACHE_DIR"/**/Mango.app(N); do "$LSREGISTER" -u "$built" 2>/dev/null || true; done
 
 # Remove Xcode's own builds of the app so Spotlight and Launchpad only offer the installed one.
 # Xcode rebuilds them the next time you run from Xcode (only the .app is removed, not the cache).
