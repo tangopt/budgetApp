@@ -361,10 +361,16 @@ final class TaxNotClaimedTests: XCTestCase {
         XCTAssertNotNil(TaxDataPlan.writeRefusal(path: real, what: "the database", allowAppData: false, isAppData: isAppData))
         XCTAssertNil(TaxDataPlan.writeRefusal(path: real, what: "the database", allowAppData: true, isAppData: isAppData))
         XCTAssertNil(TaxDataPlan.writeRefusal(path: copy, what: "the database", allowAppData: false, isAppData: isAppData))
+        #if os(macOS)
         // The default checks the real home too (getpwuid), whatever HOME says.
         let home = try XCTUnwrap(TaxRegression.realHomeDirectory)
         let realApp = home.appendingPathComponent("Library/Application Support/Budget/budget.sqlite").path
         XCTAssertNotNil(TaxDataPlan.writeRefusal(path: realApp, what: "the database", allowAppData: false))
+        #endif
+        // On every platform the default refuses the process's own app database.
+        let support = try XCTUnwrap(FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first)
+        let ownApp = support.appendingPathComponent("Budget/budget.sqlite").path
+        XCTAssertNotNil(TaxDataPlan.writeRefusal(path: ownApp, what: "the database", allowAppData: false))
 
         // The app's database must be at this build's version; a copy is migrated by the tool.
         let partial = try DatabaseManager(path: real)

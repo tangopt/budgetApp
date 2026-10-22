@@ -277,9 +277,17 @@ final class AppDataGuardTests: XCTestCase {
 
     func testTheRealHomesFolderIsCovered() throws {
         // Paths only: nothing in the app's folder is opened.
+        #if os(macOS)
         let home = try XCTUnwrap(TaxRegression.realHomeDirectory)
         let folders = TaxRegression.appDataFolders(home: home)
         XCTAssertEqual(folders.first?.path, home.appendingPathComponent("Library/Application Support/Budget").path)
+        #else
+        // iOS/iPadOS: no account home outside the sandbox (see `realHomeDirectory`).
+        XCTAssertNil(TaxRegression.realHomeDirectory)
+        #endif
+        // On every platform the process's own Application Support/Budget is the app's data.
+        let support = try XCTUnwrap(FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first)
+        XCTAssertTrue(TaxRegression.isAppData(support.appendingPathComponent("Budget/budget.sqlite").path))
         XCTAssertFalse(TaxRegression.isAppData(FileManager.default.temporaryDirectory.appendingPathComponent("demo.sqlite").path))
     }
 

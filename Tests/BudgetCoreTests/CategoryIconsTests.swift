@@ -1,5 +1,9 @@
 import XCTest
+#if canImport(AppKit)
 import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
@@ -90,8 +94,17 @@ final class CategoryIconsTests: XCTestCase {
     // MARK: curated set
 
     func testEveryCuratedSymbolExists() {
-        let missing = CategoryIcons.allSymbols.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
+        // The same SF Symbols must exist on the Mac and on iPhone/iPad.
+        let missing = CategoryIcons.allSymbols.filter { !Self.symbolExists($0) }
         XCTAssertEqual(missing, [])
+    }
+
+    private static func symbolExists(_ name: String) -> Bool {
+        #if canImport(AppKit)
+        return NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil
+        #else
+        return UIImage(systemName: name) != nil
+        #endif
     }
 
     func testCuratedSymbolsAreUniqueAndAbout80() {
