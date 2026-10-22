@@ -190,15 +190,17 @@ haven't got a peso", which is exactly why you keep a budget.
 **Icon** (canvas page "Icon: Mango"; master artwork `docs/design/mango-icon.svg`, one group per Icon
 Composer layer):
 - **Ground:** deep navy (`#16406A` → `#0A2440`), the app's tint family.
-- **The fruit:** a ripe mango, a little fuller on its left with the classic beak at the lower left. A
-  radial gradient runs warm yellow (`#FFE36E`) → amber (`#FFB627`) → orange (`#F7782F`) → red blush
-  (`#E2483A`), with a red blush on the lower right, a soft highlight upper left and a soft shadow
-  beneath.
-- **The leaf:** green (`#1E7A43` → `#46C878`), with a short brown stem. It points up and to the right,
-  the way you want the net-worth line to go.
+- **The artwork (revised by the user, 2026-10-22):** drawn after the user's reference image as original
+  vector artwork. The reference is a watermarked stock preview, so it isn't used itself.
+  - **The fruit:** a glossy, ripe mango leaning right, plump, with the rounded beak at the lower left.
+    A radial gradient runs yellow (`#FFE477`) → golden (`#FFC838`) → orange (`#F9A21E` → `#E8741A`),
+    with a soft orange rim lower right, a gloss highlight upper left and a soft shadow beneath.
+  - **The stem:** curved, brown (`#7A4A22`), rising up and to the left.
+  - **The leaf:** one broad leaf, green (`#8ED257` → `#3F9A2F`), with a pale midrib and veins. It starts
+    at the stem and falls to the right over the shoulder of the fruit.
 - **Appearances:** default, dark (near-black ground), tinted (a one-colour silhouette that takes the
   system tint), clear (a glass silhouette).
-- **Small sizes:** below 32 px a simplified drawing drops the highlight, blush, shadow and leaf vein.
+- **Small sizes:** below 32 px a simplified drawing drops the gloss, shading, shadow and leaf veins.
 - **Never:** lettering, coins or currency signs. The same artwork everywhere; the system applies each
   platform's rounded shape.
 
