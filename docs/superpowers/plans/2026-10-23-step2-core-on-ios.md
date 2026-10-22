@@ -106,3 +106,23 @@
 ## Deferred (ruling)
 
 - **The iOS snapshot harness** (overview §4 lists it in step 2) moves to build step 4, together with the first iOS app target. A harness needs an app to host it, and this Mac's simulator runtime is out of date ("CoreSimulator is out of date"), so it can't run yet. Cost: none until step 4.
+
+### Task 4: The shared test suite runs on the iOS simulator (added 2026-10-23)
+
+Why: the user asked whether tests differ per platform. Building for iOS proves the code compiles there, not that it behaves the same. The shared logic's tests should pass on iOS as well as on the Mac.
+
+**Files:**
+- Create: `.swiftpm/xcode/xcshareddata/xcschemes/BudgetCoreTests.xcscheme`, a shared test scheme. The controller has drafted it; force-add it, because `.swiftpm/` is git-ignored, or add a `.gitignore` exception for `xcshareddata`.
+- Create: `scripts/test-core-ios.sh`, which runs `xcodebuild test -scheme BudgetCoreTests -destination 'platform=iOS Simulator,name=iPhone 17'` and exits non-zero on any failure.
+- Modify: `Tests/BudgetCoreTests/CategoryIconsTests.swift`, which imports AppKit. Fence the Mac-only part with `#if canImport(AppKit)`, or test the platform-neutral part on both platforms.
+- Modify: other tests or code as the run shows.
+
+- [ ] **Step 1:** Run the script and expect FAIL: the first failure is the AppKit import.
+- [ ] **Step 2:** Make the suite compile on iOS. Then classify every runtime failure:
+  - (a) a real behaviour difference in BudgetCore on iOS. Fix the code so both platforms agree, and add a test that pins it.
+  - (b) a test that assumes the Mac, such as an absolute path, the home directory or a fixture location. Fix the test so it is platform-neutral.
+  - (c) behaviour that legitimately differs by platform. Fence it explicitly and document why.
+
+  List each failure with its class in the report. Never skip or delete a test to get green.
+- [ ] **Step 3:** Run `scripts/test-core-ios.sh` (all pass), the Mac suite, the Mango app build and `scripts/build-core-ios.sh`, and expect all green.
+- [ ] **Step 4: Commit** "Shared tests run on the iOS simulator too".
