@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Mango app icon, master artwork (spec: docs/superpowers/specs/2026-10-22-companion-apps-overview.md §2.4).
+       Unmasked square: the system applies the rounded shape. Each top-level group is one Icon Composer layer:
+       background, shadow, fruit, blush, highlight, stem, leaf. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16406A"/>
+      <stop offset="1" stop-color="#0A2440"/>
+    </linearGradient>
+    <radialGradient id="fruit" cx="0.38" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#FFE36E"/>
+      <stop offset="0.42" stop-color="#FFB627"/>
+      <stop offset="0.78" stop-color="#F7782F"/>
+      <stop offset="1" stop-color="#E2483A"/>
+    </radialGradient>
+    <radialGradient id="blush" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#D93A3A" stop-opacity="0.75"/>
+      <stop offset="1" stop-color="#D93A3A" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="leaf" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#1E7A43"/>
+      <stop offset="1" stop-color="#46C878"/>
+    </linearGradient>
+    <clipPath id="fruitClip">
+      <path d="M575 240C745 250 850 410 830 600C812 770 700 880 560 885C450 888 360 850 300 790C262 752 250 715 262 690C230 650 205 560 230 470C262 350 420 236 575 240Z"/>
+    </clipPath>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="22"/></filter>
+  </defs>
+  <g id="background"><rect width="1024" height="1024" fill="url(#bg)"/></g>
+  <g id="shadow"><ellipse cx="540" cy="900" rx="250" ry="38" fill="#000000" opacity="0.35" filter="url(#soft)"/></g>
+  <g id="fruit"><path d="M575 240C745 250 850 410 830 600C812 770 700 880 560 885C450 888 360 850 300 790C262 752 250 715 262 690C230 650 205 560 230 470C262 350 420 236 575 240Z" fill="url(#fruit)"/></g>
+  <g id="blush" clip-path="url(#fruitClip)"><ellipse cx="720" cy="760" rx="260" ry="220" fill="url(#blush)"/></g>
+  <g id="highlight" clip-path="url(#fruitClip)"><ellipse cx="420" cy="430" rx="80" ry="150" transform="rotate(-28 420 430)" fill="#FFFFFF" opacity="0.38" filter="url(#soft)"/></g>
+  <g id="stem"><path d="M572 246L590 192" stroke="#5B3A1E" stroke-width="24" stroke-linecap="round" fill="none"/></g>
+  <g id="leaf">
+    <path d="M588 200C618 118 718 66 846 84C806 188 704 240 588 200Z" fill="url(#leaf)"/>
+    <path d="M604 196C672 160 742 122 820 96" stroke="#B6EBC9" stroke-width="9" stroke-linecap="round" fill="none" opacity="0.75"/>
+  </g>
+</svg>

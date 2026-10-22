@@ -233,11 +233,20 @@ Two layers, because data that reaches a device can always be read there.
 
 | Level | Lives in | The other person gets |
 |---|---|---|
-| **Everything** (default) | `household` | All transactions, documents, statements, balances |
+| **Everything** | `household` | All transactions, documents, statements, balances |
 | **Category totals** | owner's `private` zone | Per pay month: totals per category, plus balances |
 | **Balance only** | owner's `private` zone | Balance over time; counts in net worth |
 | **Hidden** | owner's `private` zone | Nothing |
 
+- **Starting level (user, 2026-10-22): Category totals.** It applies to every personal account, at
+  migration and for every new account.
+  - **Joint accounts and property accounts start at Everything** (my call, from the user's "everything
+    related to the flat or taxes could be completely transparent"). A joint account has two owners, so
+    it can only be Everything.
+  - **Tax years start at Everything.**
+  - Each owner can change the level of their own accounts at any time.
+- **Ownership:** a new `account.ownerPersonId` column (NULL = joint), set in the migration wizard (§8),
+  decides whose account it is and so who sets its level.
 - **Applies to:** each account; each per-person area (that person's tax years, employment and payroll
   documents); and documents not linked to a shared record. A document follows the record it is linked to.
 - **Summaries.** For an account below "Everything", the owner's devices publish summary records into
@@ -337,7 +346,18 @@ Builds on the authentication spec's pre-migration backup (its §6).
      "Everything" today);
    - no existing value changes.
 3. **First upload** to the production container. The Mac shows progress and stays usable.
-4. **The admin sets levels** for any account that should be private. Records move to the private zone.
+4. **Ownership and levels (wizard, before the first upload):**
+   - Every account is listed with an owner picker: Me / <other person> / Joint. Accounts linked to a
+     property default to Joint.
+   - The level defaults from the owner: personal accounts → **Category totals**; joint and property
+     accounts → Everything (§6.1).
+   - The admin's personal accounts go to the admin's private zone from the first upload. Their
+     transactions are never in `household`, even for a moment.
+   - **Accounts owned by the other person** are already on the admin's Mac, the only copy today. They
+     upload to `household`, flagged "waiting for its owner". Her first device to sync moves them into
+     her private zone at her chosen level (default Category totals) and deletes the `household` copy.
+     The admin's Mac then drops its own copy too. Until then, the household's other devices show them
+     as summaries only.
 5. **Invite:** Settings ▸ Household ▸ Invite… creates the zone-wide share. The member accepts on her
    iPhone, and the app asks the admin (on next sync) which person she is. That links her app user to her
    `person` row.
@@ -416,7 +436,7 @@ Builds on the authentication spec's pre-migration backup (its §6).
 
 ## 11. Changes requested to the authentication spec
 
-**All seven accepted by the user (2026-10-22).** They are for the authentication spec's owner to fold
+**All accepted by the user (2026-10-22); item 8 added after the rename.** They are for the authentication spec's owner to fold
 in.
 
 1. **Mobile identity from the iCloud account, not Sign in with Apple.**
@@ -454,6 +474,9 @@ in.
 7. **Attribution generalises with sync.** `syncRecord.modifiedBy` records the last writer of every
    synced record. The auth spec's `importRun.appUserId` and `importRule.*ByAppUserId` stay as they are,
    because they say who *confirmed* or *taught*, not just who wrote last.
+8. **The app is now called Mango** (user, 2026-10-22; overview §2.5). The lock screen, setup and
+   Settings copy say "Mango", e.g. "Mango is locked". Identifiers don't change: bundle id, data folder,
+   Keychain service.
 
 ## 12. Test plan (sync and access)
 

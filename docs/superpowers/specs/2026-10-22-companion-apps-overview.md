@@ -182,6 +182,63 @@ getting old, and an icon of a single elegant penny, or a monogrammed "M", is eas
 
 **Runner-up: Plata.** One word that ties Argentina, money and the "silver" of Sixpence together.
 
+### 2.4 Decision: Mango (user, 2026-10-22)
+
+**The app is called Mango on every device, the Mac included.** "No tengo un mango": Argentine for "I
+haven't got a peso", which is exactly why you keep a budget.
+
+**Icon** (canvas page "Icon: Mango"; master artwork `docs/design/mango-icon.svg`, one group per Icon
+Composer layer):
+- **Ground:** deep navy (`#16406A` → `#0A2440`), the app's tint family.
+- **The fruit:** a ripe mango, a little fuller on its left with the classic beak at the lower left. A
+  radial gradient runs warm yellow (`#FFE36E`) → amber (`#FFB627`) → orange (`#F7782F`) → red blush
+  (`#E2483A`), with a red blush on the lower right, a soft highlight upper left and a soft shadow
+  beneath.
+- **The leaf:** green (`#1E7A43` → `#46C878`), with a short brown stem. It points up and to the right,
+  the way you want the net-worth line to go.
+- **Appearances:** default, dark (near-black ground), tinted (a one-colour silhouette that takes the
+  system tint), clear (a glass silhouette).
+- **Small sizes:** below 32 px a simplified drawing drops the highlight, blush, shadow and leaf vein.
+- **Never:** lettering, coins or currency signs. The same artwork everywhere; the system applies each
+  platform's rounded shape.
+
+### 2.5 What the rename touches (the Mac app included)
+
+**User-facing (changes):**
+- The product and display name: `project.yml` `name`/`PRODUCT_NAME` → Mango, so the app becomes
+  `/Applications/Mango.app`. Bump `CURRENT_PROJECT_VERSION`, because macOS caches icons per bundle id
+  and version (`project.yml` already notes this).
+- The app-name copy:
+  - the application menu ("Mango ▸ Settings…", "Mango ▸ Lock");
+  - `LaunchView`'s title;
+  - the lock screen ("Mango is locked");
+  - messages that name the app ("Mango deletes its copy…", "Mango stops scanning it…");
+  - the window title's fallback;
+  - the UTType description ("Mango account reference").
+- The app icon (`App/Assets.xcassets/AppIcon`, from the master artwork through Icon Composer).
+- `scripts/install-app.sh`:
+  - quit-check `pgrep -x Mango`;
+  - install `Mango.app`;
+  - **remove an old `/Applications/Budget.app` once**, unregistering it from Launch Services so
+    Spotlight offers only Mango.
+- `scripts/render-snapshots.sh` (the built app's path) and the `/install` skill's text.
+
+**Kept on purpose, so nothing about the data moves:**
+- **The bundle identifier `com.personal.budget`.** Changing it would orphan the Keychain items, the
+  UserDefaults (Touch ID enrolment, themes) and the CloudKit container.
+- **The data folder** `~/Library/Application Support/Budget/` (database, evidence library, backups).
+  `AppEnvironment`, `EvidenceLibrary` and the command-line tools keep that path. A folder rename buys
+  nothing and risks the data.
+- **The CloudKit container** `iCloud.com.personal.budget`, the App Group `group.com.personal.budget`,
+  the UTType identifier, the `BudgetCore` module, the target names in code, and the log subsystem.
+- **The word "Budget" where it names the screen or the plan, not the app:** the Budget grid in the
+  sidebar, the dashboard's "Budget ›" links, the "Budget" plan chip in the Forecast. The app is Mango;
+  its budget is still a budget.
+
+**When:** with build step 1 (desktop authentication). Its lock screen and setup copy are new anyway, and
+the auth spec asks for them to say "Mango" (sync spec §11.8). The step is cosmetic and safe because no
+identifier changes.
+
 ## 3. Private distribution
 
 | Option | Cost | Expiry | Updates | CloudKit / push / Sign-in | Verdict |
@@ -271,8 +328,7 @@ Each step is its own plan and branch, rehearsed on a copy, merged only when gree
    evidence.
 8. **iPad import:** the import lease, Inbox and share extension, the review, Undo. Last, because it is
    the riskiest write path.
-9. **Rename and icon,** once the name is chosen. This is cosmetic and can happen at any point after step
-   0.
+9. **Rename to Mango and the new icon:** done together with step 1 (§2.5).
 
 ## 5. Decisions for the user
 
@@ -287,7 +343,7 @@ Settled on 2026-10-22:
 - **Sync path: CloudKit for now.** The transport is built swappable; the Mac hub (sync spec §13) is the
   fallback if the membership lapses.
 
-Still open:
-1. Pick the name. My recommendation is Sixpence; Escudo is the runner-up.
-2. Default sharing level for the existing accounts: everything stays "Everything" until you change it
-   in build step 5.
+- **Name: Mango**, on every device including the Mac; icon designed (§2.4, §2.5).
+- **Starting sharing level: Category totals** (sync spec §6.1, §8).
+
+Nothing is open. Next is build step 0.
