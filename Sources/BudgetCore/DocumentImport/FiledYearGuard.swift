@@ -13,6 +13,12 @@ import GRDB
 /// rental accounts attribute payments to earlier years (previous calendar year, invoice date,
 /// quota windows) and matching can recategorise older rows.
 ///
+/// Taking the figures is the slow part, so with several items to check, what taking them read
+/// is recorded statement by statement, year by year (`TaxFiguresReads`); after confirming an
+/// item, the statements reading a table it wrote run again, and only the years one of whose
+/// statements returns something else are worked out again (none: the item changes no figure).
+/// Every read counts, so this is the same answer as taking every figure again.
+///
 /// The batch's follow-on matching is run once on its own first: whatever filed figure the
 /// matching alone would move (stale matching) is reported on every item whose confirmation
 /// reruns it ("Re-running matching on … would change this return"); each item's own impact is
@@ -65,7 +71,7 @@ public enum FiledYearGuard {
         try db.inSavepoint {
             let base = try baseline(db: db, cache: cache, onSnapshot: onSnapshot)
             impacts = try matchingImpacts(db: db, item: item, baseline: base)
-                + Self.impacts(db: db, item: item, before: base.before, cache: cache, onSnapshot: onSnapshot)
+                + Self.impacts(db: db, item: item, before: base.before, reads: base.reads, cache: cache, onSnapshot: onSnapshot)
             return .rollback
         }
         return impacts
@@ -76,13 +82,21 @@ public enum FiledYearGuard {
     /// the information-only impacts in `informationChanges`. Earlier guard annotations are
     /// replaced; left-out and duplicate items aren't applied, so aren't checked. An item whose
     /// confirmation can't be simulated is held too (it can't be shown to leave filed returns alone).
-    /// Each item is checked on its own against the same "before".
+    /// Each item is checked on its own against the same "before". With several items to check,
+    /// what taking "before" read is recorded (`TaxFiguresReads`), and an item after which it all
+    /// reads the same isn't worked out again (nor the years whose reads didn't change).
     public static func annotate(_ items: [ImportItem], db: Database) throws -> [ImportItem] {
         try annotate(items, db: db, onSnapshot: {})
     }
 
     /// `annotate`, calling `onSnapshot` for each snapshot taken (tests count them).
-    static func annotate(_ items: [ImportItem], db: Database, onSnapshot: () -> Void) throws -> [ImportItem] {
+    /// `progress`: (items checked, items to check), with (0, 0) before the baseline is taken.
+    /// `checkCancellation`: called before the baseline and each item; what it throws stops the pass.
+    /// `shortcut`: false — every item's figures are taken again in full (tests compare).
+    static func annotate(_ items: [ImportItem], db: Database, timings: ImportPlanTimings? = nil,
+                         progress: (_ checked: Int, _ total: Int) -> Void = { _, _ in },
+                         checkCancellation: () throws -> Void = {}, shortcut: Bool = true,
+                         onSnapshot: () -> Void) throws -> [ImportItem] {
         let filed = try filedYears(db: db)
         var result = items.map { original -> ImportItem in
             var item = original
@@ -95,8 +109,17 @@ public enum FiledYearGuard {
         // The library's advices are read once for the pass (each item's placeholder is new).
         let cache = RentCreditEvidence.AdviceCache()
         try db.inSavepoint {
-            let base = try baseline(db: db, cache: cache, onSnapshot: onSnapshot)
-            for index in checked {
+            progress(0, 0)
+            try checkCancellation()
+            let base = try timings.measure(.guardBaseline) {
+                // Recording pays off from the second item on.
+                try baseline(db: db, cache: cache, recordReads: shortcut && checked.count > 1, onSnapshot: onSnapshot)
+            }
+            for (done, index) in checked.enumerated() {
+                progress(done, checked.count)
+                try checkCancellation()
+                let start = Date()
+                defer { timings?.addCheck(effectName(result[index].effect), Date().timeIntervalSince(start)) }
                 var item = result[index]
                 let confirmed = asConfirmed(item)
                 for impact in try matchingImpacts(db: db, item: confirmed, baseline: base) {
@@ -105,7 +128,8 @@ public enum FiledYearGuard {
                 }
                 let impacts: [FiledYearImpact]
                 do {
-                    impacts = try Self.impacts(db: db, item: confirmed, before: base.before, cache: cache, onSnapshot: onSnapshot)
+                    impacts = try Self.impacts(db: db, item: confirmed, before: base.before, reads: base.reads, cache: cache,
+                                               timings: timings, onSnapshot: onSnapshot)
                 } catch let error as DatabaseError where error.resultCode == .SQLITE_INTERRUPT {
                     throw error
                 } catch {
@@ -123,9 +147,15 @@ public enum FiledYearGuard {
                 }
                 result[index] = item
             }
+            progress(checked.count, checked.count)
             return .rollback
         }
         return result
+    }
+
+    /// The effect's case name (`"file"`, `"ukStatement"`…), for the dry run's slowest checks.
+    private static func effectName(_ effect: ImportEffect) -> String {
+        String(String(describing: effect).prefix { $0 != "(" })
     }
 
     /// The item as confirming it would apply it: a possibly corrected version of a recorded
@@ -178,21 +208,73 @@ public enum FiledYearGuard {
         var drift: [FiledYearImpact]
         var drifting: Set<Int64>?
         var driftingNames: [String]?
+        /// What taking `before` read, year by year (nil: not recorded, or not replayable).
+        var reads: YearReads?
     }
 
-    private static func baseline(db: Database, cache: RentCreditEvidence.AdviceCache, onSnapshot: () -> Void) throws -> Baseline {
+    /// The years a snapshot works out (`TaxFigures.years`), what working them out read, and
+    /// which of those reads each year's figures came from.
+    struct YearReads {
+        var years: [Int]
+        var reads: TaxFiguresReads
+        /// Each year's reads, with those of the earlier years whose returns and accounts it reused.
+        var yearReads: [Int: Set<Int>]
+        /// The returns and accounts worked out, each tagged with the year it was worked out for.
+        var memo: TaxComputationMemo
+        /// The schema they were read with (GRDB reads a table's columns once: a later year's reads don't show it).
+        var schemaVersion: Int32
+
+        /// The years one of whose reads gives something else now (nil when the years themselves
+        /// or the schema changed: take the whole snapshot again). `written`: the only tables
+        /// written since (`TaxFiguresReads.writtenTables`; nil: can't tell).
+        func changedYears(db: Database, written: Set<String>?) throws -> [Int]? {
+            guard try db.schemaVersion() == schemaVersion, try TaxFigures.years(db: db, extra: years) == years else { return nil }
+            let changed = reads.changed(written: written)
+            return years.filter { year in yearReads[year].map { !$0.isDisjoint(with: changed) } ?? true }
+        }
+    }
+
+    /// `recordReads`: record what taking `before` reads (`TaxFiguresReads`), for the items' checks.
+    private static func baseline(db: Database, cache: RentCreditEvidence.AdviceCache, recordReads: Bool = false,
+                                 onSnapshot: () -> Void) throws -> Baseline {
         onSnapshot()
         let raw = try TaxFigures.snapshot(db: db)
         try ImportEffects.followOns(db: db, propertyIds: nil, adviceCache: cache)
         onSnapshot()
-        let before = try TaxFigures.snapshot(db: db, years: Array(Set(raw.values.keys.map(\.startYear))))
+        let years = try TaxFigures.years(db: db, extra: Array(Set(raw.values.keys.map(\.startYear))))
+        var before: TaxFigures.Snapshot
+        var reads: YearReads?
+        if recordReads {
+            // Year by year, each year's reads recorded on their own (the same figures as one snapshot).
+            // Earlier years first, so a year's return reuses the earlier ones (their reads count as its own).
+            before = try TaxFigures.snapshot(db: db, only: [])
+            let memo = TaxComputationMemo()
+            var recorded = YearReads(years: years, reads: TaxFiguresReads(), yearReads: [:], memo: memo, schemaVersion: try db.schemaVersion())
+            var replayable = true
+            for year in years {
+                memo.tag = year
+                memo.usedTags = []
+                let (part, read) = try recorded.reads.record(db: db) { try TaxFigures.snapshot(db: db, only: [year], memo: memo) }
+                before.values.merge(part.values) { _, new in new }
+                guard var read else {
+                    replayable = false
+                    continue
+                }
+                for used in memo.usedTags { read.formUnion(recorded.yearReads[used] ?? []) }
+                recorded.yearReads[year] = read
+            }
+            reads = replayable ? recorded : nil
+        } else {
+            before = try TaxFigures.snapshot(db: db, only: years)
+        }
         let drift = FiledYearImpact.impacts(before: raw, after: before, causes: [])
-        guard !drift.isEmpty else { return Baseline(before: before, drift: [], drifting: [], driftingNames: []) }
+        guard !drift.isEmpty else { return Baseline(before: before, drift: [], drifting: [], driftingNames: [], reads: reads) }
         // The properties named by the fields that moved ("<property> · …").
         let moved = TaxFigures.changes(from: raw, to: before).map(\.key.field)
         let properties = try Property.fetchAll(db).filter { property in moved.contains { $0.hasPrefix("\(property.name) · ") } }
-        guard !properties.isEmpty else { return Baseline(before: before, drift: drift, drifting: nil, driftingNames: nil) }
-        return Baseline(before: before, drift: drift, drifting: Set(properties.compactMap(\.id)), driftingNames: properties.map(\.name))
+        guard !properties.isEmpty else { return Baseline(before: before, drift: drift, drifting: nil, driftingNames: nil, reads: reads) }
+        return Baseline(before: before, drift: drift, drifting: Set(properties.compactMap(\.id)), driftingNames: properties.map(\.name),
+                        reads: reads)
     }
 
     /// The filed-return changes the matching alone would make, for an item whose confirmation
@@ -217,18 +299,46 @@ public enum FiledYearGuard {
     }
 
     /// Confirms the item in a savepoint (placeholder document, records, follow-ons), takes the
-    /// figures and rolls back.
-    private static func impacts(db: Database, item: ImportItem, before: TaxFigures.Snapshot,
-                                cache: RentCreditEvidence.AdviceCache, onSnapshot: () -> Void) throws -> [FiledYearImpact] {
+    /// figures and rolls back. A year whose reads in taking `before` (`reads`) all read the same
+    /// after confirming it has `before`'s figures, and isn't worked out again: only the other
+    /// years are (none: nothing changes).
+    private static func impacts(db: Database, item: ImportItem, before: TaxFigures.Snapshot, reads: YearReads?,
+                                cache: RentCreditEvidence.AdviceCache, timings: ImportPlanTimings? = nil,
+                                onSnapshot: () -> Void) throws -> [FiledYearImpact] {
         var after = TaxFigures.Snapshot()
+        var unchanged = false
         try db.inSavepoint {
-            let documentId = try placeholderDocument(db: db, item: item)
-            try ImportEffects.applyRecords(db: db, item: item, documentId: documentId, importRunId: nil)
-            try ImportEffects.followOns(db: db, propertyIds: ImportEffects.touchedPropertyIds(db: db, item: item), adviceCache: cache)
+            let written = try TaxFiguresReads.writtenTables(db: db) {
+                try timings.measure(.guardApply) {
+                    let documentId = try placeholderDocument(db: db, item: item)
+                    try ImportEffects.applyRecords(db: db, item: item, documentId: documentId, importRunId: nil)
+                }
+                try timings.measure(.guardFollowOns) {
+                    try ImportEffects.followOns(db: db, propertyIds: ImportEffects.touchedPropertyIds(db: db, item: item), adviceCache: cache)
+                }
+            }
+            if let reads, let changed = try timings.measure(.guardReplay, { try reads.changedYears(db: db, written: written) }) {
+                guard !changed.isEmpty else {
+                    unchanged = true
+                    return .rollback
+                }
+                onSnapshot()
+                // The returns and accounts of the years whose reads didn't change are reused.
+                let memo = reads.memo.keeping(excluding: Set(changed))
+                let part = try timings.measure(.guardSnapshot) { try TaxFigures.snapshot(db: db, only: changed, memo: memo) }
+                let retaken = Set(changed)
+                after = before
+                after.values = after.values.filter { !retaken.contains($0.key.startYear) }.merging(part.values) { _, new in new }
+                after.statuses = part.statuses
+                return .rollback
+            }
             onSnapshot()
-            after = try TaxFigures.snapshot(db: db, years: Array(Set(before.values.keys.map(\.startYear))))
+            after = try timings.measure(.guardSnapshot) {
+                try TaxFigures.snapshot(db: db, years: Array(Set(before.values.keys.map(\.startYear))))
+            }
             return .rollback
         }
+        if unchanged { return [] }
         let found = FiledYearImpact.impacts(before: before, after: after, causes: [], includeInformationOnly: true)
         return try found.map { impact in
             var impact = impact

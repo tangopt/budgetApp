@@ -792,4 +792,27 @@ extension RentalAccountsTests {
     func testParseHistoryIgnoresAByteOrderMark() {
         XCTAssertEqual(TaxRegression.parseHistory("\u{FEFF}" + Self.history).count, 4)
     }
+
+    func testLinkedDocumentsReadsOnlyTheRecordsAskedForInChunksWithoutTheirText() throws {
+        let documents = try db.write { db -> [Int64: [EvidenceDocument]] in
+            func link(_ name: String, docDate: Date, to entityId: Int64) throws {
+                var document = EvidenceDocument(sha256: name, storedRelativePath: "x/\(name).pdf", originalFileName: "\(name).pdf", byteCount: 1,
+                                                docDate: docDate, textStatus: .text, extractedText: "Synthetic text", addedAt: Date())
+                try document.insert(db)
+                // Ids only (no receipts behind them): the query is what's tested.
+                try db.execute(sql: "INSERT INTO documentLink (documentId, entityType, entityId, createdAt) VALUES (?, ?, ?, ?)",
+                               arguments: [document.id!, EvidenceEntityType.rentReceipt.rawValue, entityId, Date()])
+            }
+            try link("late", docDate: Self.date(2024, 9, 1), to: 7)
+            try link("early", docDate: Self.date(2024, 5, 1), to: 7)
+            try link("far", docDate: Self.date(2024, 6, 1), to: 1_100)
+            try link("other", docDate: Self.date(2024, 6, 1), to: 3)
+            // More ids than one query takes, the records with documents in different chunks.
+            let ids = Array(Int64(5)...Int64(1_200)).reversed()
+            return try RentalAccounts.linkedDocuments(db: db, type: .rentReceipt, ids: Array(ids))
+        }
+        XCTAssertEqual(documents.mapValues { $0.map(\.sha256) }, [7: ["early", "late"], 1_100: ["far"]])
+        XCTAssertNil(documents[7]?.first?.extractedText)
+        XCTAssertEqual(documents[7]?.first?.textStatus, .text)
+    }
 }

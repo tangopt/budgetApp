@@ -375,6 +375,112 @@ final class FiledYearGuardTests: XCTestCase {
         XCTAssertEqual(snapshots, 4)
     }
 
+    // MARK: Shortcut (what the figures read, replayed)
+
+    /// A document filed with nothing to record, and optionally linked to a transaction.
+    private func fileItem(_ name: String, date: Date, linkedTo transactionId: Int64? = nil) -> ImportItem {
+        ImportItem(file: file(name), recognition: ImportRecognition(kind: .evidence(.other), confidence: .certain, reason: "x"),
+                   title: name, placement: placement(.other, date: date),
+                   links: transactionId.map { [ProposedLink(entity: .transaction($0), label: "x", confidence: .certain, reasons: ["x"])] } ?? [],
+                   effect: .file)
+    }
+
+    private func accountantItem(linkedTo paymentId: Int64) -> ImportItem {
+        ImportItem(file: file("accountant.pdf"), recognition: ImportRecognition(kind: .evidence(.accountantInvoice), confidence: .certain, reason: "x"),
+                   title: "Accountant invoice", placement: placement(.accountantInvoice, date: Self.date(2025, 4, 20), amount: 10_000),
+                   links: [ProposedLink(entity: .transaction(paymentId), label: "ACCOUNTANT", confidence: .certain, reasons: ["x"])],
+                   effect: .file)
+    }
+
+    private func annotate(_ items: [ImportItem], shortcut: Bool = true) throws -> (items: [ImportItem], snapshots: Int) {
+        var snapshots = 0
+        let annotated = try db.write { db in try FiledYearGuard.annotate(items, db: db, shortcut: shortcut) { snapshots += 1 } }
+        return (annotated, snapshots)
+    }
+
+    func testTheShortcutHoldsAndExplainsExactlyWhatTakingEveryFigureDoes() throws {
+        let paymentId = try bankTransaction((2025, 3, 30), "ACCOUNTANT", -10_000, category: "accountant")
+        let farPayment = try bankTransaction((2031, 6, 1), "ACCOUNTANT LATER", -10_000, category: "accountant")
+        let items = [
+            fileItem("letter.pdf", date: Self.date(2026, 1, 5)),
+            p60Item(startYear: 2024, pay: 4_100_000),
+            fileItem("receipt.pdf", date: Self.date(2031, 6, 1), linkedTo: farPayment),
+            statementItem([staged((2024, 7, 1), "PLUMBER", -10_000, category: "repairs")]),
+            statementItem([staged((2024, 7, 1), "LIFE COVER", -5_000, category: "life")]),
+            accountantItem(linkedTo: paymentId),
+            statementItem([staged((2025, 5, 19), "PG IMI", -30_000, category: "imi")]),
+            p60Item(startYear: 2024, pay: 4_100_000, person: "B"),
+            fileItem("other letter.pdf", date: Self.date(2023, 2, 1)),
+        ]
+        let full = try annotate(items, shortcut: false)
+        let short = try annotate(items)
+        XCTAssertEqual(short.items, full.items)
+        XCTAssertEqual(short.items.map { filedImpact($0)?.startYear },
+                       [nil, 2024, nil, 2024, nil, 2024, 2024, nil, nil])
+        XCTAssertFalse(short.items[4].informationChanges.isEmpty)
+        // Raw and "before" each time; in full one "after" per item, with the shortcut only for
+        // the items whose reads changed (the P60s, the statements, the accountant's link).
+        XCTAssertEqual(full.snapshots, 2 + items.count)
+        XCTAssertEqual(short.snapshots, 2 + 6)
+    }
+
+    func testDocumentsThatChangeNoReadTakeNoFigures() throws {
+        let farPayment = try bankTransaction((2031, 6, 1), "ACCOUNTANT LATER", -10_000, category: "accountant")
+        let items = [fileItem("letter.pdf", date: Self.date(2024, 6, 1)), fileItem("receipt.pdf", date: Self.date(2031, 6, 1), linkedTo: farPayment)]
+        let (annotated, snapshots) = try annotate(items)
+        XCTAssertEqual(snapshots, 2)
+        XCTAssertTrue(annotated.allSatisfy { $0.issues.isEmpty && $0.informationChanges.isEmpty })
+    }
+
+    func testAnItemChangingAFiledYearAfterOnesThatDontIsStillHeld() throws {
+        let paymentId = try bankTransaction((2025, 3, 30), "ACCOUNTANT", -10_000, category: "accountant")
+        let (annotated, snapshots) = try annotate([fileItem("letter.pdf", date: Self.date(2024, 6, 1)), accountantItem(linkedTo: paymentId),
+                                                   fileItem("letter 2.pdf", date: Self.date(2024, 6, 2))])
+        XCTAssertNil(filedImpact(annotated[0]))
+        XCTAssertEqual(filedImpact(annotated[1])?.startYear, 2024, "\(annotated[1].issues)")
+        XCTAssertEqual(annotated[1].section, .needsYou)
+        XCTAssertNil(filedImpact(annotated[2]))
+        XCTAssertEqual(snapshots, 3)
+    }
+
+    func testAChangeReachingALaterYearOnlyThroughBroughtForwardFiguresIsFound() throws {
+        // 2023/24 filed too. A repair in 2020/21 is outside what 2024/25's own accounts read
+        // (three years either side), but the loss it adds is brought forward to 2023/24 and on
+        // to 2024/25: the later year reuses 2023/24's return, so 2023/24's reads count as its own.
+        try db.write { db in
+            var year = TaxYear(startYear: 2023, personId: id("A"), status: .filed)
+            try year.insert(db)
+        }
+        let items = [fileItem("letter.pdf", date: Self.date(2024, 6, 1)),
+                     statementItem([staged((2020, 5, 1), "PLUMBER", -100_000, category: "repairs")])]
+        let full = try annotate(items, shortcut: false)
+        let short = try annotate(items)
+        XCTAssertEqual(short.items, full.items)
+        let held = Set(full.items[1].issues.compactMap { issue -> Int? in
+            if case .filedYear(let impact) = issue.kind { return impact.startYear }
+            return nil
+        })
+        XCTAssertEqual(held, [2023, 2024], "\(full.items[1].issues)")
+    }
+
+    func testProgressCountsTheItemsCheckedAndCancellingStopsThePass() throws {
+        let items = (1...3).map { fileItem("letter \($0).pdf", date: Self.date(2024, 6, $0)) }
+        var reports: [[Int]] = []
+        _ = try db.write { db in
+            try FiledYearGuard.annotate(items, db: db, progress: { reports.append([$0, $1]) }) {}
+        }
+        XCTAssertEqual(reports, [[0, 0], [0, 3], [1, 3], [2, 3], [3, 3]])
+        struct Stop: Error {}
+        var checks = 0
+        XCTAssertThrowsError(try db.write { db in
+            try FiledYearGuard.annotate(items, db: db, checkCancellation: {
+                checks += 1
+                if checks == 3 { throw Stop() }
+            }) {}
+        }) { XCTAssertTrue($0 is Stop) }
+        XCTAssertEqual(checks, 3)
+    }
+
     func testHeadlineAndTaxLines() {
         func impact(_ difference: Int, paid: Bool = false) -> FiledYearImpact {
             FiledYearImpact(startYear: 2023, person: "Person B", isPaid: paid,

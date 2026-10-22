@@ -311,8 +311,9 @@ final class ImportCenterModel: ObservableObject {
     }
 
     private func readingProgressed(_ update: ImportProgress, generation: Int) {
-        // Files finish out of order (several are read at once): the count only goes up.
-        guard generation == readingGeneration, case .reading(let shown) = phase, update.completed >= shown.completed else { return }
+        // Files finish out of order (several are read at once), reports arrive in tasks of their
+        // own: the stage and its count only go forward.
+        guard generation == readingGeneration, case .reading(let shown) = phase, update.isNotBefore(shown) else { return }
         phase = .reading(update)
     }
 

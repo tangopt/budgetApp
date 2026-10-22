@@ -45,11 +45,26 @@ public enum TaxFigures {
 
     /// The years every person has a tax year for, plus `extraYears`.
     public static func snapshot(db: Database, years extraYears: [Int] = []) throws -> Snapshot {
+        try snapshot(db: db, only: years(db: db, extra: extraYears))
+    }
+
+    /// The years `snapshot(db:years:)` works out: every stored tax year's, plus `extraYears`, sorted.
+    static func years(db: Database, extra extraYears: [Int] = []) throws -> [Int] {
+        Set(try Int.fetchAll(db, sql: "SELECT startYear FROM taxYear") + extraYears).sorted()
+    }
+
+    /// The figures of `years` only, with every stored year's statuses. Each year is worked out
+    /// on its own, so these are `snapshot(db:years:)`'s values for those years (the filed-year
+    /// guard takes again only the years whose reads changed: `TaxFiguresReads`).
+    /// `memo`: returns and accounts already worked out in this state of the database (else a new one).
+    static func snapshot(db: Database, only years: [Int], memo: TaxComputationMemo? = nil) throws -> Snapshot {
         var snapshot = Snapshot()
+        // Each year's return works out the earlier years' again (brought-forward figures) and
+        // its rental accounts: worked out once here.
+        let memo = memo ?? TaxComputationMemo()
         let people = try Person.order(Column("id")).fetchAll(db)
         let properties = try Property.order(Column("id")).fetchAll(db)
         let stored = try TaxYear.fetchAll(db)
-        let years = Set(stored.map(\.startYear) + extraYears).sorted()
         for year in stored {
             if let person = people.first(where: { $0.id == year.personId }) {
                 snapshot.statuses[year.startYear, default: [:]][person.name] = year.status
@@ -65,7 +80,8 @@ public enum TaxFigures {
                     guard let propertyId = property.id else { continue }
                     let owners = try Properties.owners(db: db, propertyId: propertyId)
                     guard owners.contains(where: { $0.personId == personId }) else { continue }
-                    let result = try RentalAccounts.compute(db: db, taxYear: UKTaxYear(startYear: year), personId: personId, propertyId: propertyId)
+                    let result = try RentalAccounts.compute(db: db, taxYear: UKTaxYear(startYear: year), personId: personId, propertyId: propertyId,
+                                                            memo: memo)
                     for line in result.allLines {
                         let prefix = "\(property.name) · \(line.expenseType.rawValue)"
                         set(prefix + " · whole", .amount(line.whole.native))
@@ -83,7 +99,7 @@ public enum TaxFigures {
                 guard UKTaxRules.forYear(year) != nil else { continue }
                 let result: SelfAssessment.Result
                 do {
-                    result = try SelfAssessment.compute(db: db, startYear: year, personId: personId)
+                    result = try SelfAssessment.compute(db: db, startYear: year, personId: personId, memo: memo)
                 } catch {
                     // Recorded, so a failure that starts (or stops) shows as a change.
                     set("SA computation", .text("failed: \(error)"))

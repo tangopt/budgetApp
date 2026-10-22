@@ -1,16 +1,74 @@
 import Foundation
 import GRDB
 
+/// How far planning is: the files read (`completed` of `total`, `currentFile` the one just read),
+/// then the passes over what they hold (`stage`), each with a count when it has one (`total` 0:
+/// none — an indeterminate bar).
 public struct ImportProgress: Equatable, Sendable {
+    /// What planning is doing, in the order it does it.
+    public enum Stage: Int, Comparable, Sendable {
+        /// Reading the files (and asking the on-device model about what nothing recognised).
+        case reading
+        /// Staging the bank statements' rows.
+        case statements
+        /// The readers matching what the documents hold to the records.
+        case matching
+        /// The statements' checks and the duplicate pass.
+        case duplicates
+        /// The filed-year guard: `completed` of `total` items checked (0 of 0 while it takes the figures before).
+        case filedYears
+
+        public static func < (lhs: Stage, rhs: Stage) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+
     public var completed: Int
     public var total: Int
     /// The file just read.
     public var currentFile: String?
+    public var stage: Stage
 
-    public init(completed: Int, total: Int, currentFile: String? = nil) {
+    public init(completed: Int, total: Int, currentFile: String? = nil, stage: Stage = .reading) {
         self.completed = completed
         self.total = total
         self.currentFile = currentFile
+        self.stage = stage
+    }
+
+    /// A pass after reading, with no count.
+    public init(_ stage: Stage) {
+        self.init(completed: 0, total: 0, stage: stage)
+    }
+
+    /// The line shown for a pass after reading (nil while reading the files).
+    public var stageText: String? {
+        switch stage {
+        case .reading: return nil
+        case .statements: return "Reading the statements’ transactions…"
+        case .matching: return "Matching the documents to your records…"
+        case .duplicates: return "Checking for duplicates…"
+        case .filedYears: return total == 0 ? "Checking filed tax years…" : "Checking filed tax years (\(completed) of \(total))…"
+        }
+    }
+
+    /// Whether this report is no earlier than `other` (a later stage, or as far or further in the
+    /// same one): a report arriving after a later one is stale.
+    public func isNotBefore(_ other: ImportProgress) -> Bool {
+        stage != other.stage ? stage > other.stage : completed >= other.completed
+    }
+}
+
+/// Set when planning is cancelled, for the passes that run inside one database access (which a
+/// task's cancellation doesn't reach): they check it between items.
+final class ImportCancellation: @unchecked Sendable {
+    // @unchecked: `cancelled` is guarded by `lock`.
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func cancel() { lock.withLock { cancelled = true } }
+
+    /// Throws `CancellationError` once cancelled.
+    func check() throws {
+        if lock.withLock({ cancelled }) { throw CancellationError() }
     }
 }
 
@@ -28,7 +86,9 @@ public struct ImportProgress: Equatable, Sendable {
 /// the UK and BBVA statements (async, outside the transaction; several of one account in date order,
 /// each later one treating the earlier ones' rows as already imported) → in the rolled-back
 /// write: the readers, the learnt rules, the model's proposals, intent mismatches, `ImportDuplicates.annotate` over the whole plan,
-/// `FiledYearGuard.annotate`. Cancelling the task stops it with `CancellationError`.
+/// `FiledYearGuard.annotate`. Progress goes on after the files are read: each pass's stage
+/// (`ImportProgress.Stage`), the guard with its items' count. Cancelling the task stops it with
+/// `CancellationError`, inside the rolled-back write too (between passes and the guard's items).
 public struct ImportPipeline: @unchecked Sendable {
     // @unchecked: `EvidenceLibrary` and `CategorizationService` are classes with constant state
     // that aren't declared Sendable.
@@ -63,14 +123,14 @@ public struct ImportPipeline: @unchecked Sendable {
     // MARK: Planning
 
     public func plan(_ urls: [URL], intent: ImportIntent = .none, timings: ImportPlanTimings? = nil,
-                     progress: @Sendable (ImportProgress) -> Void = { _ in }) async throws -> ImportPlan {
+                     progress: @escaping @Sendable (ImportProgress) -> Void = { _ in }) async throws -> ImportPlan {
         try await plan(adding: urls, to: ImportPlan(items: []), intent: intent, timings: timings, progress: progress)
     }
 
     /// `plan` with the files read into `plan`: the duplicate pass runs over old and new items,
     /// so a file added again later is a duplicate. The planning copy is taken afresh.
     public func plan(adding urls: [URL], to plan: ImportPlan, intent: ImportIntent, timings: ImportPlanTimings? = nil,
-                     progress: @Sendable (ImportProgress) -> Void = { _ in }) async throws -> ImportPlan {
+                     progress: @escaping @Sendable (ImportProgress) -> Void = { _ in }) async throws -> ImportPlan {
         try await self.plan(adding: urls, to: plan, intent: intent, sources: [:], timings: timings, progress: progress)
     }
 
@@ -79,7 +139,7 @@ public struct ImportPipeline: @unchecked Sendable {
     /// name, so filing it on Confirm import returns that document (no second copy). Ids no
     /// longer in the library, and documents whose file is already in `plan`, are skipped.
     public func plan(adding urls: [URL], libraryDocuments documentIds: [Int64], to plan: ImportPlan, intent: ImportIntent,
-                     timings: ImportPlanTimings? = nil, progress: @Sendable (ImportProgress) -> Void = { _ in }) async throws -> ImportPlan {
+                     timings: ImportPlanTimings? = nil, progress: @escaping @Sendable (ImportProgress) -> Void = { _ in }) async throws -> ImportPlan {
         // Ones already in the open review (brought before, or picked as a file) aren't read again.
         let inReview = Set(plan.items.filter { $0.parentId == nil }.map(\.file.sha256))
         let documents = try await dbQueue.read { db in try EvidenceDocument.filter(keys: documentIds).fetchAll(db) }
@@ -108,7 +168,7 @@ public struct ImportPipeline: @unchecked Sendable {
     /// `existing`: an open review the files join (as `plan(adding:)`: each item keeps its own intent).
     public func plan(folder: SourceFolder, scanner: SourceFolderScanner, inputs: [SourceFolderImport.Input],
                      to existing: ImportPlan = ImportPlan(items: []),
-                     timings: ImportPlanTimings? = nil, progress: @Sendable (ImportProgress) -> Void = { _ in }) async throws -> ImportPlan {
+                     timings: ImportPlanTimings? = nil, progress: @escaping @Sendable (ImportProgress) -> Void = { _ in }) async throws -> ImportPlan {
         guard let folderId = folder.id else { throw SourceFolderError.folderNotFound }
         let intent = ImportShortcut.sourceFolder(folderId: folderId, name: folder.name).intent
         return try await scanner.withResolvedFolder(folder) { resolved in
@@ -130,7 +190,7 @@ public struct ImportPipeline: @unchecked Sendable {
     /// `names`: the library files among them, by path, with the name each was added under.
     private func plan(adding urls: [URL], to plan: ImportPlan, intent: ImportIntent, sources: [String: SourceFolderImport.Input],
                       names: [String: String] = [:],
-                      timings: ImportPlanTimings?, progress: @Sendable (ImportProgress) -> Void) async throws -> ImportPlan {
+                      timings: ImportPlanTimings?, progress: @escaping @Sendable (ImportProgress) -> Void) async throws -> ImportPlan {
         try await cancellable {
             try Task.checkCancellation()
             let collected = ImportFileCollector.collect(urls)
@@ -164,6 +224,7 @@ public struct ImportPipeline: @unchecked Sendable {
             let now = Date()
             let context = try await queue.read { try ImportContext.load(db: $0, intent: intent, now: now) }
             let stageStart = Date()
+            if entries.contains(where: { Self.isStatement($0, readers: readers) }) { progress(ImportProgress(.statements)) }
             let contexts = Array(repeating: context, count: entries.count)
             let staged = try await stageStatements(entries, contexts: contexts, skipped: plan.state.skippedRows, readers: readers, queue: queue,
                                                    earlier: Self.batchRows(plan.items))
@@ -171,13 +232,17 @@ public struct ImportPipeline: @unchecked Sendable {
             try Task.checkCancellation()
             let library = try timings.measure(.duplicates) { try copy.libraryIndex() }
             let existing = plan
-            let planned = try await queue.write { db -> ImportPlan in
+            // The passes below run inside one database access: Cancel reaches them through `cancellation`.
+            let cancellation = ImportCancellation()
+            let planned = try await withTaskCancellationHandler { try await queue.write { db -> ImportPlan in
                 var result = existing
                 result.ignoredFiles += collected.ignored
                 for (hash, outcome) in outcomes {
                     if case .guess(let guess) = outcome { result.state.modelGuesses[hash] = guess }
                 }
                 try db.inSavepoint {
+                    progress(ImportProgress(.matching))
+                    try cancellation.check()
                     let added = try timings.measure(.readers) {
                         try ImportLearning.apply(Self.propose(entries, staged: staged, contexts: contexts, readers: readers, db: db), db: db)
                             .map { Self.withModelOutcome($0, outcomes) }
@@ -189,11 +254,11 @@ public struct ImportPipeline: @unchecked Sendable {
                     }
                     result.items += added.map { Self.withIntentIssue($0, intent: intent) }
                     result = try Self.annotate(result, checking: existing.items.isEmpty ? nil : Set(added.map(\.id)), db: db,
-                                               library: library, timings: timings)
+                                               library: library, timings: timings, progress: progress, cancellation: cancellation)
                     return .rollback
                 }
                 return result
-            }
+            } } onCancel: { cancellation.cancel() }
             // A statement added to an account that already has some in the review: the
             // account's statements are staged again together, in date order.
             let before = Set(existing.items.map(\.id))
@@ -1100,14 +1165,17 @@ public struct ImportPipeline: @unchecked Sendable {
     /// `contexts`: each entry's (its intent); `leftOut`: entries whose rows no later one counts as
     /// imported; `skipped`: per account, the fingerprints of the rows the user skipped — taken out
     /// of every statement of the account, and held (a later statement counts them as handled).
+    /// Whether the entry is read as a UK or BBVA statement (staged before the readers run).
+    private static func isStatement(_ entry: Entry, readers: [any ImportReader]) -> Bool {
+        guard entry.failure == nil else { return false }
+        let reader = readers.first { $0.handles(entry.recognition.kind) }
+        return reader is UKStatementReader || reader is BBVAStatementReader
+    }
+
     private func stageStatements(_ entries: [Entry], contexts: [ImportContext], leftOut: Set<Int> = [], skipped: [Int64: Set<String>] = [:],
                                  readers: [any ImportReader], queue: DatabaseQueue,
                                  earlier: [Int64: [StagedTransaction]]) async throws -> [Int: StagedStatement] {
-        let statements = entries.indices.filter { index in
-            guard entries[index].failure == nil else { return false }
-            let reader = readers.first { $0.handles(entries[index].recognition.kind) }
-            return reader is UKStatementReader || reader is BBVAStatementReader
-        }
+        let statements = entries.indices.filter { Self.isStatement(entries[$0], readers: readers) }
         guard !statements.isEmpty else { return [:] }
         let resolved = try await queue.read { db -> [Int: (accountId: Int64, source: StagedStatement.Source)] in
             var found: [Int: (accountId: Int64, source: StagedStatement.Source)] = [:]
@@ -1457,13 +1525,19 @@ public struct ImportPipeline: @unchecked Sendable {
     /// settled kept settled), then the filed-year guard on `checking` and on every item the
     /// pass changed (nil: every item).
     /// `library`: the library's identity index read from the same database (else read now).
+    /// `progress` and `cancellation`: as planning reports and stops the passes (none: not reported, run to the end).
     static func annotate(_ plan: ImportPlan, checking: Set<UUID>?, db: Database, library: DocumentIdentityIndex? = nil,
-                         timings: ImportPlanTimings? = nil) throws -> ImportPlan {
+                         timings: ImportPlanTimings? = nil, progress: (ImportProgress) -> Void = { _ in },
+                         cancellation: ImportCancellation? = nil) throws -> ImportPlan {
         var result = plan
         let previous = plan.items
+        progress(ImportProgress(.duplicates))
+        try cancellation?.check()
         // The statements' checks across the batch (balances, possible duplicate rows, mortgages),
         // before the guard simulates them.
-        let stripped = try StatementChecks.recheck(previous.map { strip($0, batchDuplicate: plan.state.batchDuplicates.contains($0.id)) }, db: db)
+        let stripped = try timings.measure(.statementChecks) {
+            try StatementChecks.recheck(previous.map { strip($0, batchDuplicate: plan.state.batchDuplicates.contains($0.id)) }, db: db)
+        }
         var items = try timings.measure(.duplicates) { try ImportDuplicates.annotate(stripped, db: db, library: library) }
         result.state.batchDuplicates = Set(items.indices.filter { stripped[$0].duplicate == nil && items[$0].duplicate != nil }.map { items[$0].id })
         // An "import anyway" answers its mismatch only while it lasts: a statement whose balance
@@ -1492,7 +1566,12 @@ public struct ImportPipeline: @unchecked Sendable {
             return true
         }
         if !check.isEmpty {
-            let guarded = try timings.measure(.guardCheck) { try FiledYearGuard.annotate(check.map { items[$0] }, db: db) }
+            try cancellation?.check()
+            let guarded = try timings.measure(.guardCheck) {
+                try FiledYearGuard.annotate(check.map { items[$0] }, db: db, timings: timings,
+                                            progress: { progress(ImportProgress(completed: $0, total: $1, stage: .filedYears)) },
+                                            checkCancellation: { try cancellation?.check() }, onSnapshot: {})
+            }
             for (offset, i) in check.enumerated() { items[i] = guarded[offset] }
         }
         result.items = items

@@ -666,13 +666,26 @@ public enum SelfAssessment {
 
     /// The person's return for the year from the records.
     public static func compute(db: Database, startYear: Int, personId: Int64, options: Options = Options()) throws -> Result {
+        try compute(db: db, startYear: startYear, personId: personId, options: options, memo: nil)
+    }
+
+    /// `compute`, reusing (and keeping) in `memo` each year's return worked out with the brought-forward
+    /// figures from the records, and each rental account: for working out several years in one
+    /// unchanged state of the database (`TaxFigures.snapshot`), where each year otherwise works
+    /// out every earlier one again.
+    static func compute(db: Database, startYear: Int, personId: Int64, options: Options = Options(),
+                        memo: TaxComputationMemo?) throws -> Result {
+        let fromRecords = options.financeCostsBroughtForward == nil && options.propertyLossBroughtForward == nil
+        if fromRecords, let known = memo?.knownReturn(TaxComputationMemo.ReturnKey(startYear: startYear, personId: personId)) {
+            return known
+        }
         guard let rules = UKTaxRules.forYear(startYear) else { throw ComputeError.noRulesForYear(startYear) }
         guard try Person.exists(db, key: personId) else { throw ComputeError.personNotFound }
-        var (inputs, warnings) = try gather(db: db, startYear: startYear, personId: personId, rules: rules)
+        var (inputs, warnings) = try gather(db: db, startYear: startYear, personId: personId, rules: rules, memo: memo)
         if options.financeCostsBroughtForward == nil || options.propertyLossBroughtForward == nil {
             var previous: Result?
             if UKTaxRules.forYear(startYear - 1) != nil {
-                previous = try compute(db: db, startYear: startYear - 1, personId: personId)
+                previous = try compute(db: db, startYear: startYear - 1, personId: personId, memo: memo)
             }
             inputs.financeCostsBroughtForward = options.financeCostsBroughtForward ?? previous?.calculation.financeCostsCarriedForward ?? 0
             inputs.propertyLossBroughtForward = options.propertyLossBroughtForward ?? previous?.calculation.propertyLossCarriedForward ?? 0
@@ -682,10 +695,12 @@ public enum SelfAssessment {
         }
         var result = calculate(inputs, rules: rules, personId: personId)
         result.warnings = warnings + result.warnings
+        if fromRecords { memo?.keep(result, for: TaxComputationMemo.ReturnKey(startYear: startYear, personId: personId)) }
         return result
     }
 
-    static func gather(db: Database, startYear: Int, personId: Int64, rules: UKTaxRules) throws -> (Inputs, [String]) {
+    static func gather(db: Database, startYear: Int, personId: Int64, rules: UKTaxRules,
+                       memo: TaxComputationMemo? = nil) throws -> (Inputs, [String]) {
         var warnings: [String] = []
         var inputs = Inputs(startYear: startYear)
         let year = UKTaxYear(startYear: startYear)
@@ -708,7 +723,7 @@ public enum SelfAssessment {
                 warnings.append("\(property.name) is in the UK: UK property (SA105) isn't computed.")
                 continue
             }
-            let accounts = try RentalAccounts.compute(db: db, taxYear: year, personId: personId, propertyId: property.id!)
+            let accounts = try RentalAccounts.compute(db: db, taxYear: year, personId: personId, propertyId: property.id!, memo: memo)
             let totals = accounts.totals
             func gbp(_ amount: RentalAccounts.Amount, _ what: String) -> Int {
                 if let value = amount.gbp { return value }
@@ -765,5 +780,68 @@ enum UKTaxRulesFormat {
     /// 2 000 → "20%", 875 → "8.75%".
     static func percent(_ basisPoints: Int) -> String {
         basisPoints % 100 == 0 ? "\(basisPoints / 100)%" : String(format: "%g%%", Double(basisPoints) / 100)
+    }
+}
+
+/// Returns and rental accounts already worked out in one unchanged state of the database
+/// (`SelfAssessment.compute(…, memo:)`, `TaxFigures.snapshot(…, memo:)`).
+///
+/// The filed-year guard records what each year's figures read (`TaxFiguresReads`) with one
+/// memo across the years: each entry carries the `tag` (the year being recorded) it was worked
+/// out under, and a hit on another tag's entry is noted in `usedTags` (that year's reads count
+/// too); `keeping(excluding:)` keeps the entries whose reads haven't changed.
+final class TaxComputationMemo {
+    struct ReturnKey: Hashable {
+        var startYear: Int
+        var personId: Int64
+    }
+
+    struct AccountsKey: Hashable {
+        var startYear: Int
+        var personId: Int64
+        var propertyId: Int64
+    }
+
+    private var returns: [ReturnKey: (result: SelfAssessment.Result, tag: Int?)] = [:]
+    private var accounts: [AccountsKey: (result: RentalAccounts.Result, tag: Int?)] = [:]
+    /// The tag of the entries kept from now on.
+    var tag: Int?
+    /// The other tags whose entries were used since `tag` was set.
+    var usedTags: Set<Int> = []
+
+    init(tag: Int? = nil) {
+        self.tag = tag
+    }
+
+    func knownReturn(_ key: ReturnKey) -> SelfAssessment.Result? {
+        guard let entry = returns[key] else { return nil }
+        used(entry.tag)
+        return entry.result
+    }
+
+    func keep(_ result: SelfAssessment.Result, for key: ReturnKey) {
+        returns[key] = (result, tag)
+    }
+
+    func knownAccounts(_ key: AccountsKey) -> RentalAccounts.Result? {
+        guard let entry = accounts[key] else { return nil }
+        used(entry.tag)
+        return entry.result
+    }
+
+    func keep(_ result: RentalAccounts.Result, for key: AccountsKey) {
+        accounts[key] = (result, tag)
+    }
+
+    /// A memo with the tagged entries whose tag isn't in `tags` (untagged ones are left out too).
+    func keeping(excluding tags: Set<Int>) -> TaxComputationMemo {
+        let kept = TaxComputationMemo()
+        kept.returns = returns.filter { $0.value.tag.map { !tags.contains($0) } ?? false }
+        kept.accounts = accounts.filter { $0.value.tag.map { !tags.contains($0) } ?? false }
+        return kept
+    }
+
+    private func used(_ entryTag: Int?) {
+        if let entryTag, entryTag != tag { usedTags.insert(entryTag) }
     }
 }

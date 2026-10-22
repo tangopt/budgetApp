@@ -82,12 +82,20 @@ public enum ImportDryRun {
         out += "  baseline drift         \(seconds(drifted))\n"
         let phases: [(ImportPlanTimings.Phase, String)] = [
             (.copy, "planning copy"), (.load, "load (summed)"), (.detect, "detect (summed)"), (.prepare, "prepare (summed)"),
-            (.stage, "stage statements"), (.readers, "readers"), (.duplicates, "duplicates"), (.guardCheck, "filed-year guard"),
+            (.stage, "stage statements"), (.readers, "readers"), (.statementChecks, "statement checks"), (.duplicates, "duplicates"),
+            (.guardCheck, "filed-year guard"), (.guardBaseline, "  baseline"), (.guardApply, "  apply (summed)"),
+            (.guardFollowOns, "  follow-ons (summed)"), (.guardReplay, "  reads replayed"), (.guardSnapshot, "  figures (summed)"),
         ]
         for (phase, name) in phases {
-            out += "  \(name.padding(toLength: 22, withPad: " ", startingAt: 0)) \(seconds(timings.total(phase)))\n"
+            let runs = [.guardReplay, .guardSnapshot].contains(phase) ? " (\(timings.count(phase))×)" : ""
+            out += "  \(name.padding(toLength: 22, withPad: " ", startingAt: 0)) \(seconds(timings.total(phase)))\(runs)\n"
         }
         out += "  plan (wall clock)      \(seconds(planned))\n"
+        let checks = timings.slowestChecks
+        if !checks.isEmpty {
+            out += "  guard checks: \(checks.count), slowest:\n"
+            for check in checks.prefix(8) { out += "    \(seconds(check.seconds))  \(check.what)\n" }
+        }
         out += "\n== Sections ==\n"
         for (section, title) in sectionTitles { out += "  \(title): \(sections[section] ?? 0)\n" }
         if !plan.ignoredFiles.isEmpty { out += "  Ignored files: \(plan.ignoredFiles.count)\n" }
