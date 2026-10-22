@@ -67,8 +67,7 @@ stand-in, not the final colouring.
 - **Privacy belongs to the owner:** the admin can't see the other person's private data.
 - **"Category totals" counts** in the budget and the forecast.
 - **The starting level is Category totals** for personal accounts. Joint and property accounts and tax
-  years start at Everything. That last part is the cloud session's reading of the user's earlier "flat
-  and taxes fully transparent"; it hasn't been explicitly confirmed.
+  years start at Everything. The user confirmed this on 2026-10-22.
 
 **Authentication**
 - All the changes requested to the authentication spec are accepted (sync spec §11):

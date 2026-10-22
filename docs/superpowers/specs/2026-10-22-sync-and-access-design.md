@@ -240,10 +240,9 @@ Two layers, because data that reaches a device can always be read there.
 
 - **Starting level (user, 2026-10-22): Category totals.** It applies to every personal account, at
   migration and for every new account.
-  - **Joint accounts and property accounts start at Everything** (my call, from the user's "everything
-    related to the flat or taxes could be completely transparent"). A joint account has two owners, so
+  - **Joint accounts and property accounts start at Everything** (confirmed by the user, 2026-10-22). A joint account has two owners, so
     it can only be Everything.
-  - **Tax years start at Everything.**
+  - **Tax years start at Everything** (confirmed by the user, 2026-10-22).
   - Each owner can change the level of their own accounts at any time.
 - **Ownership:** a new `account.ownerPersonId` column (NULL = joint), set in the migration wizard (§8),
   decides whose account it is and so who sets its level.
