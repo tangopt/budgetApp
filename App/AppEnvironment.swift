@@ -4,6 +4,13 @@ import BudgetCore
 import GRDB
 import OSLog
 
+struct LaunchBackupError: LocalizedError {
+    let underlying: Error
+    var errorDescription: String? {
+        "Mango couldn't back up your data before updating it, so it didn't update anything. \(underlying.localizedDescription)"
+    }
+}
+
 @MainActor
 final class AppEnvironment: ObservableObject {
     let dbQueue: DatabaseQueue
@@ -64,6 +71,13 @@ final class AppEnvironment: ObservableObject {
             }
 
             let manager = try DatabaseManager(path: dbPath)
+            // A copy first, so no migration ever runs on the only copy. If it can't be made,
+            // launch stops here with the database untouched.
+            do {
+                _ = try MigrationBackup.backUpIfNeeded(manager: manager, databasePath: dbPath, now: Date())
+            } catch {
+                throw LaunchBackupError(underlying: error)
+            }
             try manager.migrate()
             try manager.dbQueue.write { db in
                 try CategorySeeder.seedDefaults(db)
