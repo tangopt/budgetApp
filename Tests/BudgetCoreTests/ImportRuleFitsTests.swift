@@ -336,4 +336,22 @@ final class ImportRuleFitsTests: XCTestCase {
         return ImportItem(file: file, recognition: ImportRecognition(kind: .evidence(.insuranceReceipt), confidence: .certain, reason: "test"),
                           title: name, groupKey: "Insurance receipt documents")
     }
+
+    // MARK: Greetings and bank letters (rule-issuer)
+
+    func testBankAdvicesAndGreetingLettersFitNothing() async throws {
+        // Debit advices naming no creditor, and a letter whose first line is a greeting.
+        var second = IssuerKeyTests.bareDebitAdvice
+        second[second.firstIndex(of: "DATA: 2025-02-03")!] = "DATA: 2025-05-03"
+        var plan = try await pipeline.plan([try pdf("advice-1.pdf", IssuerKeyTests.bareDebitAdvice), try pdf("advice-2.pdf", second),
+                                            try pdf("letter-1.pdf", ["Exmo(a). Senhor(a)", "Ref. 123", "10,00"]),
+                                            try pdf("letter-2.pdf", ["Exmo(a). Senhor(a)", "Ref. 456", "20,00"])])
+        let advice = try item(plan, "advice-1.pdf"), letter = try item(plan, "letter-1.pdf")
+        plan = try await pipeline.resolve(plan, itemId: advice.id, .chooseKind(.insuranceReceipt))
+        plan = try await pipeline.resolve(plan, itemId: letter.id, .chooseKind(.insurancePolicy))
+        XCTAssertEqual(try item(plan, "advice-1.pdf").ruleDrafts, [])
+        XCTAssertEqual(try item(plan, "letter-1.pdf").ruleDrafts, [])
+        let fits = try await pipeline.ruleFits(plan)
+        XCTAssertEqual(fits, [:])
+    }
 }

@@ -700,6 +700,64 @@ final class ImportLearningTests: XCTestCase {
         XCTAssertFalse(item.ruleDrafts.contains { $0.kind == .documentKind }, "\(item.ruleDrafts)")
         XCTAssertTrue(item.notes.contains(ImportLearning.recognisesItselfNote), "\(item.notes)")
     }
+
+    // MARK: Issuers that aren't (rule-issuer)
+
+    private static func textFile(_ lines: [String]) -> ImportFile {
+        ImportFile(url: URL(fileURLWithPath: "/tmp/\(UUID().uuidString)/a.pdf"), fileName: "a.pdf", sha256: UUID().uuidString,
+                   byteCount: 1, fileExtension: "pdf", text: lines.joined(separator: "\n"), textStatus: .glyph, usedOCR: false)
+    }
+
+    func testPaidByIsNeverDraftedFromAReferenceOnlyDescription() {
+        let item = ImportItem(file: Self.textFile([Self.issuerLine]), recognition: ImportRecognition(kind: .evidence(.insuranceReceipt),
+                              confidence: .certain, reason: "test"), title: "x")
+        let issuer = IssuerKey(key: Self.issuerKey, label: "Example Seguros, S.A.")
+        func paidBy(_ description: String) -> [String] {
+            ImportLearning.drafts(for: item, resolution: .chooseLink(.transaction(1)), issuer: issuer,
+                                  transactionDescriptions: [1: description]).map(\.actionLabel)
+        }
+        for reference in ["XYZ 1234567890123", "SMR 1234567890123", "SEPADD/ ADC/12345678", "TRF 12345 PG", "MB 1234 AB", "AB/ /CODE1 12"] {
+            XCTAssertEqual(paidBy(reference), [], reference)
+        }
+        XCTAssertEqual(paidBy("SEPADD/DEMO SEGUROS ADC/12345678"), ["Paid by “SEPADD/DEMO SEGUROS”"])
+        XCTAssertEqual(paidBy("DEMO SEGUROS 77"), ["Paid by “DEMO SEGUROS”"])
+        XCTAssertEqual(paidBy("CARD PAYMENT TO DEMOMART 12"), ["Paid by “CARD PAYMENT TO DEMOMART”"])
+        // Three-letter brands are names.
+        XCTAssertEqual(paidBy("DD MEO 1234567890123"), ["Paid by “DD MEO”"])
+        XCTAssertEqual(paidBy("COMPRA EDP 1234567890"), ["Paid by “COMPRA EDP”"])
+        XCTAssertEqual(paidBy("SEPADD/NOS COMUNICACOES ADC/12345678"), ["Paid by “SEPADD/NOS COMUNICACOES”"])
+        XCTAssertEqual(paidBy("NOS 1234"), ["Paid by “NOS”"])
+    }
+
+    func testMerchantPatternsNeedARealName() {
+        XCTAssertFalse(ImportLearning.isMerchantPattern("XYZ", description: "XYZ 1234567890123"), "a code and a reference only")
+        XCTAssertFalse(ImportLearning.isMerchantPattern("SEPADD", description: "SEPADD/ ADC/12345678"))
+        XCTAssertFalse(ImportLearning.isMerchantPattern("PAYPAL", description: "PAYPAL 12"))
+        XCTAssertFalse(ImportLearning.isMerchantPattern("DD TRF PG MB", description: "DD TRF PG MB 12"))
+        XCTAssertTrue(ImportLearning.isMerchantPattern("DD XYZ", description: "DD XYZ 1234567890123"))
+        XCTAssertTrue(ImportLearning.isMerchantPattern("EDP", description: "EDP 1234"))
+        XCTAssertTrue(ImportLearning.isMerchantPattern("DEMO SEGUROS", description: "DEMO SEGUROS 77"))
+    }
+
+    func testNothingIsLearntAboutABanksOwnLetterhead() {
+        let item = ImportItem(file: Self.textFile(["Banco Demo SA"]), recognition: ImportRecognition(kind: .evidence(.insuranceReceipt),
+                              confidence: .certain, reason: "test"), title: "x")
+        let bank = IssuerKey(key: "nif:500000000", label: "Banco Bilbao Vizcaya Argentaria S.A. - S")
+        XCTAssertEqual(ImportLearning.drafts(for: item, resolution: .chooseKind(.insuranceReceipt), issuer: bank), [])
+        XCTAssertEqual(ImportLearning.drafts(for: item, resolution: .setIssuer("Demo Seguros"), issuer: bank), [])
+        let insurer = IssuerKey(key: "nif:500000000", label: "Demo Seguros")
+        XCTAssertEqual(ImportLearning.drafts(for: item, resolution: .chooseKind(.insuranceReceipt), issuer: insurer).map(\.kind), [.documentKind])
+    }
+
+    func testABankDebitAdviceFiledAsAReceiptTeachesNothing() async throws {
+        let debit = try transaction(Self.date(2025, 2, 3), -1_000, "XYZ 1234567890123")
+        var plan = try await pipeline.plan([try pdf("advice.pdf", IssuerKeyTests.bareDebitAdvice)])
+        let id = try only(plan).id
+        plan = try await pipeline.resolve(plan, itemId: id, .chooseKind(.insuranceReceipt))
+        XCTAssertEqual(try only(plan).ruleDrafts, [], "no greeting, no bank: no issuer, no kind rule")
+        plan = try await pipeline.resolve(plan, itemId: id, .linkTransactions([debit]))
+        XCTAssertEqual(try only(plan).ruleDrafts, [], "a reference is never a merchant")
+    }
 }
 
 /// Reads a P60 recognised by a learnt rule as the given item (its file and recognition kept).

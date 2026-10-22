@@ -627,13 +627,24 @@ public enum ImportDuplicates {
         var kind: DocumentKind
     }
 
+    /// The part a document plays on its transaction: the bank's proof of the movement (a debit
+    /// advice or transfer proof, or the bank's advice of the movement filed under another kind,
+    /// `IssuerKey.isBankMovementAdvice`) or the underlying receipt or invoice (its kind). A receipt
+    /// and the bank's advice of its debit share a transaction by nature; two of one part don't.
+    static func claimRole(kind: DocumentKind, text: String?) -> DocumentKind {
+        if kind == .bankDebitAdvice || kind == .bankTransferProof { return kind }
+        if let text, IssuerKey.isBankMovementAdvice(text) { return .bankDebitAdvice }
+        return kind
+    }
+
     private static func annotateClaims(_ items: inout [ImportItem], db: Database) throws {
-        // Items of one kind certain of the same transaction: the user decides (an invoice and
-        // its transfer proof on one debit is normal).
+        // Items of one kind (one role, `claimRole`) certain of the same transaction: the user
+        // decides (an invoice and its transfer proof or debit advice on one debit is normal).
         var claimants: [Claim: [(item: Int, link: Int)]] = [:]
         var order: [Claim] = []
         for i in items.indices {
-            guard let kind = claimingKind(items[i]) else { continue }
+            guard let claimed = claimingKind(items[i]) else { continue }
+            let kind = claimRole(kind: claimed, text: items[i].file.text)
             for (l, link) in items[i].links.enumerated() where link.entity.type == .transaction && link.confidence == .certain {
                 let claim = Claim(transactionId: link.entity.id, kind: kind)
                 if claimants[claim] == nil { order.append(claim) }
@@ -656,18 +667,25 @@ public enum ImportDuplicates {
         for i in items.indices {
             // A corrected version filed only is linked where its original is, on purpose.
             guard let kind = claimingKind(items[i]), !ImportResolutions.isFiledAsCorrectedVersion(items[i]) else { continue }
+            let role = claimRole(kind: kind, text: items[i].file.text)
             for link in items[i].links where link.entity.type == .transaction && link.confidence == .certain {
                 // Never the item's own file, already in the library (read again to be recorded), nor a
-                // document the link replaces there (a previous version, a replaced PDF).
+                // document the link replaces there (a previous version, a replaced PDF). Of the same
+                // part (`claimRole`), whatever kind each was filed as: a receipt beside the bank's
+                // advice of its debit is normal, the same advice filed again under another kind is not.
                 var existing = try EvidenceLinks.documents(db: db, for: link.entity)
-                    .first { $0.kind == kind && $0.sha256 != items[i].file.sha256 && !link.replacing.contains($0.id ?? 0) }?.displayName
+                    .first { document in
+                        claimRole(kind: document.kind, text: document.extractedText) == role
+                            && document.sha256 != items[i].file.sha256 && !link.replacing.contains(document.id ?? 0)
+                    }.map { (kind: $0.kind, name: $0.displayName) }
                 if existing == nil {
                     existing = items.indices.first { j in
-                        j != i && claimingKind(items[j]) == kind && items[j].links.contains { $0.entity == link.entity }
-                    }.map { items[$0].file.fileName }
+                        guard j != i, let other = claimingKind(items[j]) else { return false }
+                        return claimRole(kind: other, text: items[j].file.text) == role && items[j].links.contains { $0.entity == link.entity }
+                    }.map { (kind: claimingKind(items[$0]) ?? kind, name: items[$0].file.fileName) }
                 }
                 guard let existing else { continue }
-                let reason = "That transaction already has \(article(kind.displayName)) (\(existing))"
+                let reason = "That transaction already has \(article(existing.kind.displayName)) (\(existing.name))"
                 items[i].issues.append(ImportIssue(id: "transactionHasDocument.\(link.entity.id)", kind: .readerProblem(reason), reason: reason,
                                                    offers: [.acknowledge, .fileWithoutLink]))
             }
