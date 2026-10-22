@@ -1,5 +1,7 @@
 .build/
 .swiftpm/
+# .swiftpm/xcode/xcshareddata/xcschemes/BudgetCoreTests.xcscheme is tracked on purpose (force-added):
+# a "!" exception can't re-include it under an ignored folder, so a new shared scheme must be force-added too.
 *.xcodeproj/
 DerivedData/
 .DS_Store
