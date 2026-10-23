@@ -65,10 +65,22 @@ public enum SyncChangeTracker {
         }
     }
 
-    /// Removes the entries the server has taken, unless they changed again since they were read.
+    /// Removes the entries the server has taken, unless they changed again since they were read. A taken
+    /// insert or update stamps the record as synced now (`SyncMerge.syncedClock`), so the merge can tell
+    /// later local edits from what the server already has.
     public static func acknowledge(_ changes: [PendingChange], db: Database) throws {
         let statement = try db.cachedStatement(sql: "DELETE FROM syncPending WHERE uuid = ? AND revision = ?")
-        for change in changes { try statement.execute(arguments: [change.uuid, change.revision]) }
+        let synced = try db.cachedStatement(sql: """
+            INSERT INTO syncFieldClock(tableName, localId, field, modifiedAt, modifiedBy)
+                SELECT tableName, localId, ?, \(now), NULL FROM syncRecord WHERE uuid = ?
+            ON CONFLICT(tableName, localId, field) DO UPDATE SET modifiedAt = excluded.modifiedAt, modifiedBy = NULL
+            """)
+        for change in changes {
+            try statement.execute(arguments: [change.uuid, change.revision])
+            if db.changesCount > 0, change.kind != .delete {
+                try synced.execute(arguments: [SyncMerge.syncedClock, change.uuid])
+            }
+        }
     }
 
     // MARK: Writer and incoming applies

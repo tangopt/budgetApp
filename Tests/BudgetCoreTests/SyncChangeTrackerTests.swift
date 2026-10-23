@@ -244,7 +244,7 @@ final class SyncChangeTrackerTests: XCTestCase {
     func testSchemaHashIsPinnedToItsVersion() throws {
         // Changing SyncSchema or the trigger template changes the hash: bump SyncSchema.version and
         // update this pin, so an older build can tell its triggers are older than the database's.
-        XCTAssertEqual(SyncSchema.version, 1)
+        XCTAssertEqual(SyncSchema.version, 2)
         XCTAssertEqual(SyncChangeTracker.schemaHash(SyncSchema.tables), Self.pinnedHash)
     }
 
@@ -348,7 +348,18 @@ final class SyncChangeTrackerTests: XCTestCase {
         try manager.dbQueue.write { db in try SyncChangeTracker.acknowledge(try SyncChangeTracker.pending(db: db), db: db) }
         try manager.dbQueue.write { db in try db.execute(sql: "UPDATE importRun SET backupPath = '/synthetic/backup' WHERE id = ?", arguments: [runId]) }
         XCTAssertEqual(try pending(), [])
-        XCTAssertEqual(Set(try clocks("importRun", runId).keys), ["*"])
+        // The insert's clock and the acknowledge's synced stamp; nothing for the local-only column.
+        XCTAssertEqual(Set(try clocks("importRun", runId).keys), ["*", SyncMerge.syncedClock])
+    }
+
+    func testAcknowledgeStampsOnlyWhatTheServerTook() throws {
+        let (taken, edited) = try manager.dbQueue.write { db in (try insertAccount(db, "Taken"), try insertAccount(db, "Edited")) }
+        let sent = try pending()
+        try manager.dbQueue.write { db in try db.execute(sql: "UPDATE account SET alias = 'during upload' WHERE id = ?", arguments: [edited]) }
+        try manager.dbQueue.write { db in try SyncChangeTracker.acknowledge(sent, db: db) }
+        XCTAssertNotNil(try clocks("account", taken)[SyncMerge.syncedClock])
+        XCTAssertNil(try clocks("account", edited)[SyncMerge.syncedClock], "an edit made during the upload is still unsent")
+        XCTAssertEqual(try pending().map(\.localId), [edited])
     }
 
     func testAcknowledgeKeepsAChangeMadeSince() throws {
@@ -694,5 +705,5 @@ final class SyncChangeTrackerTests: XCTestCase {
     }
 
     /// `SyncChangeTracker.schemaHash(SyncSchema.tables)` for `SyncSchema.version` 1.
-    private static let pinnedHash = "60ceec64c029e076124cf84b5a8241a2ced900ca31ca079d984fba2624ccd53f"
+    private static let pinnedHash = "fbac75bf185795d64f024db7a2d43e5a028852269b0f668ed9e85abe7ceded5a"
 }

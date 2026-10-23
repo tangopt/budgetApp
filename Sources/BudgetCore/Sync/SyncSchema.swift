@@ -41,10 +41,12 @@ public struct SyncTableSchema: Equatable, Sendable {
 /// - `importChange` syncs with its run: undo is a batch and uses the change log (sync spec §5.2).
 /// - `account.statementLastCheckedDate` and the statement-mismatch columns sync: they describe statements,
 ///   which are household data, not this device.
+/// - `document.extractedText` is local-only (ruling R4): it is re-derived from the document's file on each
+///   device, and it would push records past CloudKit's size limit.
 public enum SyncSchema {
     /// Bumped whenever `tables` or the tracking triggers change (`SyncChangeTrackerTests` pins the hash of
     /// each version). A build never replaces triggers a newer version installed.
-    public static let version = 1
+    public static let version = 2
 
     /// Synced tables, parents before children (each foreign key's table is listed earlier).
     public static let tables: [SyncTableSchema] = [
@@ -74,8 +76,8 @@ public enum SyncSchema {
                         foreignKeys: ["runId": "importRun"],
                         batchKey: "runId"),
         SyncTableSchema("document",
-                        synced: ["sha256", "storedRelativePath", "originalFileName", "byteCount", "canonicalName", "kind", "docDate", "periodStart", "periodEnd", "amountMinorUnits", "currency", "persons", "textStatus", "extractedText", "addedAt", "note"],
-                        localOnly: ["sourceFolderId", "sourceRelativePath", "sourceModifiedAt"]),
+                        synced: ["sha256", "storedRelativePath", "originalFileName", "byteCount", "canonicalName", "kind", "docDate", "periodStart", "periodEnd", "amountMinorUnits", "currency", "persons", "textStatus", "addedAt", "note"],
+                        localOnly: ["sourceFolderId", "sourceRelativePath", "sourceModifiedAt", "extractedText"]),
         SyncTableSchema("importRunFile",
                         synced: ["runId", "fileName", "sha256", "documentId", "outcome", "detail"],
                         foreignKeys: ["runId": "importRun"],
@@ -239,4 +241,157 @@ public enum SyncSchema {
     private static let byName: [String: SyncTableSchema] = Dictionary(uniqueKeysWithValues: tables.map { ($0.name, $0) })
 
     public static func table(_ name: String) -> SyncTableSchema? { byName[name] }
+}
+
+// MARK: References the database doesn't declare (ruling R1)
+
+/// A pair of columns naming a row of one of several tables: the type column says which table, the id
+/// column holds that table's local id (`documentLink.entityType` / `entityId`).
+public struct SyncPolymorphicReference: Equatable, Sendable {
+    /// What a type value that names no table means.
+    public enum Unlisted: Equatable, Sendable {
+        /// The id isn't a row id (`EvidenceEntityType.other`): it travels as it is.
+        case passThrough(Set<String>)
+        /// The row is in a table that doesn't sync (an import's change to `sourceFile`): it names no row
+        /// on another device.
+        case dangling
+    }
+
+    public let table: String
+    public let typeColumn: String
+    public let idColumn: String
+    /// Type value to table.
+    public let targets: [String: String]
+    public let unlisted: Unlisted
+}
+
+/// One place inside a JSON value that names rows, as a path from the root: object keys separated by `.`,
+/// `[]` for every element of an array (`operations[].created[].entryId`, or `[]` alone for a root array).
+public struct SyncJSONRule: Equatable, Sendable {
+    public enum Target: Equatable, Sendable {
+        /// A number: a local id of the table.
+        case row(String)
+        /// An object `{"type": <EvidenceEntityType>, "id": <local id>}` (`EvidenceEntity`).
+        case evidenceEntity
+        /// A string: `ScenarioApply`'s fingerprint of a forecast entry, which embeds its group, category
+        /// and account ids and its exceptions' category ids.
+        case forecastFingerprint
+    }
+
+    public let path: String
+    public let target: Target
+
+    public init(_ path: String, _ target: Target) {
+        self.path = path
+        self.target = target
+    }
+}
+
+/// A JSON column whose content names rows.
+public struct SyncJSONReference: Equatable, Sendable {
+    public enum Content: Equatable, Sendable {
+        /// The places listed.
+        case rules([SyncJSONRule])
+        /// A whole row of the table named by `typeColumn` of the same row, as `ImportChangeCapture` records it
+        /// (`importChange.beforeJSON` / `afterJSON`): every reference that table declares is translated.
+        case rowOfTable(typeColumn: String)
+    }
+
+    public let table: String
+    public let column: String
+    public let content: Content
+    /// Numbers in the known shapes that aren't row ids (dates, counts), so the guard test can tell a new
+    /// id path from a known plain number.
+    public let plainNumbers: Set<String>
+}
+
+extension SyncSchema {
+    /// Columns holding another row's local id without a declared foreign key (`table.column` to the table).
+    /// They travel as the row's UUID, like foreign keys.
+    public static let logicalReferences: [String: String] = [
+        "category.groupId": "categoryGroup",
+        "forecastEntry.sourceEntryId": "forecastEntry",
+        "importRunFile.documentId": "document",
+    ]
+
+    /// The table of each `EvidenceEntityType` that names a row (as `ImportUndo.entityTables`).
+    public static let evidenceEntityTables: [String: String] = [
+        "transaction": "transaction_", "account": "account", "category": "category", "property": "property",
+        "person": "person", "tenancy": "tenancy", "rentReceipt": "rentReceipt", "taxYear": "taxYear",
+        "taxManualItem": "taxManualItem", "employment": "employment", "employmentIncome": "employmentIncome",
+        "hmrcPayment": "hmrcPayment", "otherIncome": "otherIncome", "pensionContribution": "pensionContribution",
+        "taxPolicyReceipt": "taxPolicyReceipt",
+    ]
+
+    /// Evidence entity types whose id names no row.
+    public static let evidenceEntityPassThrough: Set<String> = ["other"]
+
+    public static let polymorphicReferences: [SyncPolymorphicReference] = [
+        SyncPolymorphicReference(table: "documentLink", typeColumn: "entityType", idColumn: "entityId",
+                                 targets: evidenceEntityTables, unlisted: .passThrough(evidenceEntityPassThrough)),
+        SyncPolymorphicReference(table: "evidenceWaiver", typeColumn: "entityType", idColumn: "entityId",
+                                 targets: evidenceEntityTables, unlisted: .passThrough(evidenceEntityPassThrough)),
+        SyncPolymorphicReference(table: "importChange", typeColumn: "tableName", idColumn: "rowId",
+                                 targets: Dictionary(uniqueKeysWithValues: tables.map { ($0.name, $0.name) }), unlisted: .dangling),
+    ]
+
+    public static let jsonReferences: [SyncJSONReference] = [
+        SyncJSONReference(table: "importChange", column: "beforeJSON", content: .rowOfTable(typeColumn: "tableName"), plainNumbers: []),
+        SyncJSONReference(table: "importChange", column: "afterJSON", content: .rowOfTable(typeColumn: "tableName"), plainNumbers: []),
+        SyncJSONReference(table: "evidenceRequirement", column: "excludedAccountIds", content: .rules([
+            SyncJSONRule("[]", .row("account")),
+        ]), plainNumbers: []),
+        SyncJSONReference(table: "evidenceRequirement", column: "scope", content: .rules([
+            SyncJSONRule("transactionsInCategory.categoryId", .row("category")),
+            SyncJSONRule("transactionsInCategoryGroup.groupId", .row("categoryGroup")),
+            SyncJSONRule("transactionsMatching.categoryIds[]", .row("category")),
+            SyncJSONRule("transactionsMatching.accountIds[]", .row("account")),
+            SyncJSONRule("periodic.entity", .evidenceEntity),
+            SyncJSONRule("single.entity", .evidenceEntity),
+            SyncJSONRule("recordsOfProperty.propertyId", .row("property")),
+        ]), plainNumbers: []),
+        SyncJSONReference(table: "importRule", column: "actionJSON", content: .rules([
+            SyncJSONRule("accountId", .row("account")),
+            SyncJSONRule("entity", .evidenceEntity),
+        ]), plainNumbers: ["occurrence"]),
+        SyncJSONReference(table: "scenarioApplication", column: "journal", content: .rules([
+            SyncJSONRule("operations[].differenceId", .row("forecastEntry")),
+            SyncJSONRule("operations[].created[].entryId", .row("forecastEntry")),
+            SyncJSONRule("operations[].created[].after", .forecastFingerprint),
+            SyncJSONRule("operations[].modified[].entryId", .row("forecastEntry")),
+            SyncJSONRule("operations[].modified[].after", .forecastFingerprint),
+            SyncJSONRule("operations[].categoryIds[]", .row("category")),
+            SyncJSONRule("enabledGroupIds[]", .row("forecastGroup")),
+            SyncJSONRule("createdGroupIds[]", .row("forecastGroup")),
+            SyncJSONRule("lastEntryId", .row("forecastEntry")),
+        ]), plainNumbers: ["boundary", "operations[].modified[].before.endDate"]),
+    ]
+
+    /// JSON columns whose known shapes name no rows (`importRun.reasonsJSON` is keyed by plan item UUIDs).
+    public static let jsonColumnsWithoutReferences: Set<String> = [
+        "document.persons", "evidenceRequirement.kinds", "utilityProvider.invoiceRules",
+        "importProfile.pdfLayoutConfig", "importRun.reasonsJSON",
+    ]
+
+    /// Every reference column of `table` that isn't a declared foreign key, column to target table.
+    static func logicalReferences(of table: String) -> [String: String] {
+        logicalByTable[table] ?? [:]
+    }
+
+    private static let logicalByTable: [String: [String: String]] = {
+        var result: [String: [String: String]] = [:]
+        for (key, target) in logicalReferences {
+            let parts = key.split(separator: ".", maxSplits: 1).map(String.init)
+            result[parts[0], default: [:]][parts[1]] = target
+        }
+        return result
+    }()
+
+    static func polymorphicReferences(of table: String) -> [SyncPolymorphicReference] {
+        polymorphicReferences.filter { $0.table == table }
+    }
+
+    static func jsonReferences(of table: String) -> [SyncJSONReference] {
+        jsonReferences.filter { $0.table == table }
+    }
 }

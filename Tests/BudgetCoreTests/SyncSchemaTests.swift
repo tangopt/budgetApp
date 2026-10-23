@@ -92,7 +92,9 @@ final class SyncSchemaTests: XCTestCase {
         XCTAssertEqual(SyncSchema.table("appUser")?.localOnlyColumns, ["lastSignInAt"])
         XCTAssertEqual(SyncSchema.table("importRun")?.localOnlyColumns, ["backupPath"])
         XCTAssertEqual(Set(SyncSchema.table("document")?.localOnlyColumns ?? []),
-                       ["sourceFolderId", "sourceRelativePath", "sourceModifiedAt"])
+                       ["sourceFolderId", "sourceRelativePath", "sourceModifiedAt", "extractedText"])
+        // Ruling R4: re-derived from the file on each device, and too large for a record.
+        XCTAssertFalse(SyncSchema.table("document")?.syncedColumns.contains("extractedText") ?? true)
     }
 
     func testForeignKeysMatchTheDatabase() throws {
