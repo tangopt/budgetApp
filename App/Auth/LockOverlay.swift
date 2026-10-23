@@ -135,6 +135,12 @@ struct LockScreenHost: View {
 
     var body: some View {
         LockScreen(model: model)
+            // Touch ID by itself when this lock screen comes up with Mango in front, and when Mango comes
+            // forward while still locked.
+            .onAppear { model.autoPromptTouchID() }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                model.autoPromptTouchID()
+            }
             // At launch the people are read after the first lock: pick the only one once they're in.
             .onChange(of: session.signInCandidates) {
                 if model.selectedId == nil { model.prepare() }
@@ -221,6 +227,27 @@ final class LockScreenModel: ObservableObject {
         selectedId = candidates[min(max(index, 0), candidates.count - 1)].id
         step = .choose
         message = nil
+    }
+
+    /// Starts Touch ID without a click for the one person it's clear about (`TouchIDAutoPrompt`): not in
+    /// the background, not over another step, and once per lock (again only if the last try never got an
+    /// answer because Mango went to the background). Cancel leaves the avatars and "Use password".
+    func autoPromptTouchID() {
+        guard fixedCandidates == nil, step == .choose, !isWorking, session.afterSignIn == nil,
+              session.state == .locked, touchIDAvailable || !biometrics.enrolledIds().isEmpty else { return }
+        enrolled = biometrics.enrolledIds()
+        touchIDAvailable = biometrics.isAvailable
+        guard let id = TouchIDAutoPrompt.user(
+            lastSignedIn: session.lastSignedInId, candidates: candidates.compactMap(\.id),
+            enrolled: enrolled, touchIDAvailable: touchIDAvailable),
+              session.claimAutoPrompt(otherStepInProgress: false) else { return }
+        selectedId = id
+        message = nil
+        Task {
+            await useTouchID()
+            // Answered while Mango was in front; if it went to the background the prompt died unanswered.
+            session.autoPromptEnded(decided: NSApp.isActive)
+        }
     }
 
     func useTouchID() async {

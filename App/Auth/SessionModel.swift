@@ -72,7 +72,11 @@ final class SessionModel: ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var state: State
+    @Published private(set) var state: State {
+        didSet { if state == .locked && oldValue != .locked { autoPrompt.lockBegan() } }
+    }
+    /// Touch ID by itself on the lock screen, once per lock; shared by every window's lock screen.
+    private(set) var autoPrompt = TouchIDAutoPrompt()
     /// Bumped when Settings changes the timeout so views reading `lockTimeout` refresh.
     @Published private(set) var lockTimeoutRevision = 0
     /// Who can sign in on this Mac (the lock screen's avatars). More than one means a shared macOS user,
@@ -188,6 +192,18 @@ final class SessionModel: ObservableObject {
     func finishOffer() {
         if afterSignIn == .offerTouchID { afterSignIn = nil }
     }
+
+    /// A lock screen asks to start Touch ID by itself: true for the one window that should (the others, and
+    /// later asks in the same lock, get false). `end` it with `autoPromptEnded`.
+    func claimAutoPrompt(otherStepInProgress: Bool) -> Bool {
+        guard !SnapshotMode.isActive, afterSignIn == nil,
+              autoPrompt.shouldPrompt(isLocked: state == .locked, appIsActive: NSApp.isActive,
+                                      otherStepInProgress: otherStepInProgress) else { return false }
+        autoPrompt.promptStarted()
+        return true
+    }
+
+    func autoPromptEnded(decided: Bool) { autoPrompt.promptEnded(decided: decided) }
 
     @discardableResult
     func signInWithBiometrics(appUserId: Int64) async -> BiometricSignInResult {
