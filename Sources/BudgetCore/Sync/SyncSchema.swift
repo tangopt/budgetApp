@@ -429,9 +429,11 @@ public struct SyncUniqueKey: Equatable, Sendable {
 }
 
 extension SyncSchema {
-    /// Every unique key of every synced table. `SyncUniqueKeyTests` fails, naming the index, when one isn't
-    /// listed. Identity is kept to keys that mean the same thing on every device; any other collision keeps
-    /// both records.
+    /// Every unique key of every synced table. `SyncReferenceClassificationTests` fails, naming the index, when
+    /// one isn't listed. Identity is kept to keys that mean the same thing on every device; any other
+    /// collision keeps both records. Ruling R9: natural keys of real-world items (a statement row by its
+    /// fingerprint, a receipt, an invoice or a contract by its number) are identities, because a suffixed
+    /// duplicate would count the money twice.
     public static let uniqueKeys: [SyncUniqueKey] = [
         SyncUniqueKey("person", ["name"], .suffix("name")),
         SyncUniqueKey("appUser", ["personId"], .identity),                     // one app user per person
@@ -445,7 +447,7 @@ extension SyncSchema {
         SyncUniqueKey("document", ["sha256"], .identity),                      // the same file
         SyncUniqueKey("importProfile", ["accountId", "format"], .identity),    // the account's profile for a format
         SyncUniqueKey("importRule", ["kind", "matchKey"], .identity),          // one learnt rule per key (`ImportRuleStore.learn`)
-        SyncUniqueKey("transaction_", ["accountId", "fingerprint"], .suffix("fingerprint")),
+        SyncUniqueKey("transaction_", ["accountId", "fingerprint"], .identity),   // the same statement row (ruling R9)
         SyncUniqueKey("transferLink", ["inTransactionId"], .yield("isDismissed", .bool(true))),
         SyncUniqueKey("payMonthClose", ["year", "month"], .identity),
         SyncUniqueKey("scenario", ["name"], .suffix("name")),
@@ -458,12 +460,12 @@ extension SyncSchema {
         SyncUniqueKey("propertyMortgageTerms", ["propertyId"], .identity),     // the primary key (ruling R2)
         SyncUniqueKey("mortgageRateOverride", ["propertyId", "periodStart"], .identity),
         SyncUniqueKey("interestIndexValue", ["indexName", "period", "date"], .identity),
-        SyncUniqueKey("tenancy", ["propertyId", "contractNumber"], .suffix("contractNumber")),
+        SyncUniqueKey("tenancy", ["propertyId", "contractNumber"], .identity),  // the same contract (R9)
         SyncUniqueKey("tenancyRent", ["tenancyId", "fromDate"], .identity),
-        SyncUniqueKey("rentReceipt", ["tenancyId", "receiptNumber"], .suffix("receiptNumber")),
+        SyncUniqueKey("rentReceipt", ["tenancyId", "receiptNumber"], .identity), // the same receipt (R9)
         SyncUniqueKey("rentReceiptPayment", ["rentReceiptId", "transactionId"], .identity),
         SyncUniqueKey("utilityProvider", ["propertyId", "name"], .suffix("name")),
-        SyncUniqueKey("utilityInvoice", ["providerId", "invoiceNumber"], .suffix("invoiceNumber")),
+        SyncUniqueKey("utilityInvoice", ["providerId", "invoiceNumber"], .identity), // the same invoice (R9)
         SyncUniqueKey("rechargeStatement", ["tenancyId", "month"], .identity),
         SyncUniqueKey("rechargeLine", ["statementId", "invoiceId"], .identity),
         SyncUniqueKey("rechargePayment", ["statementId", "transactionId"], .identity),

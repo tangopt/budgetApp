@@ -330,6 +330,192 @@ final class SyncConflictTests: XCTestCase {
         }
     }
 
+    /// N1: a save of a redirected UUID (from a device that hasn't merged yet) merges by the rule, field by
+    /// field, on the merging device, the survivor's device and a third device alike.
+    func testALaterSaveOfARedirectedRecordMergesByTheRuleEverywhere() throws {
+        for (device, note) in [(a!, "from A"), (b!, "from B")] {
+            try device.queue.write { db in
+                var document = EvidenceDocument(sha256: "same-file", storedRelativePath: "sa/same.pdf", originalFileName: "same.pdf", byteCount: 1,
+                                                addedAt: Date(timeIntervalSince1970: 1_700_000_000), note: note)
+                try document.insert(db)
+            }
+        }
+        let aDoc = try a.uuid("document", 1), bDoc = try b.uuid("document", 1)
+        let (survivorDevice, loserDevice) = aDoc < bDoc ? (a!, b!) : (b!, a!)
+        let loserNote = aDoc < bDoc ? "from B" : "from A"
+        let stale = try loserDevice.push()
+        pause()
+        try survivorDevice.queue.write { db in try db.execute(sql: "UPDATE document SET note = 'survivor wins' WHERE id = 1") }
+        let survivorChanges = try survivorDevice.push()
+        let c = try SyncTestDevice("user-c")
+        try c.receive(survivorChanges)
+        try loserDevice.receive(survivorChanges)
+        let merged = try loserDevice.push()
+        try survivorDevice.receive(merged)
+        try c.receive(merged)
+        // The loser's old save turns up late, everywhere.
+        for device in [loserDevice, survivorDevice, c] {
+            try device.receive(stale)
+            try device.queue.read { db in
+                XCTAssertEqual(try String.fetchAll(db, sql: "SELECT note FROM document"), ["survivor wins"], device.user)
+                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncConflict WHERE field = 'note' AND losingValueJSON = ?",
+                                                arguments: [SyncValue.string(loserNote).json]), 1, "\(device.user) logs the loser once")
+            }
+        }
+    }
+
+    /// N2 as asked (set the base of fields an adoption took from the incoming record) would make a later
+    /// pull of the unchanged server record revert them silently. This pins the behaviour kept: the
+    /// merged value survives such a pull.
+    func testAValueAnAdoptionTookSurvivesAPullOfTheUnchangedServerRecord() throws {
+        for (device, note) in [(a!, "from A"), (b!, "from B")] {
+            try device.queue.write { db in
+                var document = EvidenceDocument(sha256: "same-file", storedRelativePath: "sa/same.pdf", originalFileName: "same.pdf", byteCount: 1,
+                                                addedAt: Date(timeIntervalSince1970: 1_700_000_000), note: note)
+                try document.insert(db)
+            }
+        }
+        let aDoc = try a.uuid("document", 1), bDoc = try b.uuid("document", 1)
+        let (survivorDevice, loserDevice) = aDoc < bDoc ? (a!, b!) : (b!, a!)
+        let serverCopy = try survivorDevice.push()
+        // A third device edits another field of the survivor and that upload reaches the server first.
+        let c = try SyncTestDevice("user-c")
+        try c.receive(serverCopy)
+        pause()
+        // The loser's note is newer, so adoption on the survivor's device takes it (the else branch).
+        try loserDevice.queue.write { db in try db.execute(sql: "UPDATE document SET note = 'newer, from the loser' WHERE id = 1") }
+        try survivorDevice.receive(try loserDevice.push())
+        XCTAssertEqual(try survivorDevice.queue.read { db in try String.fetchOne(db, sql: "SELECT note FROM document") }, "newer, from the loser")
+        let cId = try XCTUnwrap(try c.localId("document", min(aDoc, bDoc)))
+        try c.queue.write { db in try db.execute(sql: "UPDATE document SET canonicalName = 'renamed on C' WHERE id = ?", arguments: [cId]) }
+        try survivorDevice.receive(try c.push())
+        try survivorDevice.queue.read { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT note FROM document"), "newer, from the loser", "not reverted")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT canonicalName FROM document"), "renamed on C")
+        }
+    }
+
+    // MARK: Natural keys are identities (ruling R9)
+
+    func testTheSameStatementRowsReceiptAndInvoiceOnTwoDevicesAreOneEach() throws {
+        try a.queue.write { db in
+            try account(db, "Current")
+            var property = Property(name: "Flat", country: "PT")
+            try property.insert(db)
+            try db.execute(sql: "INSERT INTO tenancy(propertyId, referenceLabel, contractNumber, startDate) VALUES (1, 'T', 'C-1', '2024-01-01 00:00:00.000')")
+            try db.execute(sql: "INSERT INTO utilityProvider(propertyId, name, kind) VALUES (1, 'Power', 'electricity')")
+        }
+        try b.receive(try a.push())
+        let ids = { (device: SyncTestDevice, table: String) in try XCTUnwrap(try device.localId(table, try self.a.uuid(table, 1))) }
+        for (device, note) in [(a!, "on A"), (b!, "on B")] {
+            let account = try ids(device, "account"), tenancy = try ids(device, "tenancy"), provider = try ids(device, "utilityProvider")
+            try device.queue.write { db in
+                var batch = ImportBatch(accountId: account, sourceFileName: "same.csv", importedAt: Date(timeIntervalSince1970: 1_700_000_000))
+                try batch.insert(db)
+                for (fingerprint, amount) in [("fp-1", -1_000), ("fp-2", -250)] {
+                    var tx = Transaction(importBatchId: batch.id!, accountId: account, date: Date(timeIntervalSince1970: 1_700_000_000),
+                                         rawDescription: "Shop", amountMinorUnits: amount, categoryId: nil, status: .pendingReview,
+                                         categorizedBy: .none, fingerprint: fingerprint, note: note)
+                    try tx.insert(db)
+                }
+                try db.execute(sql: """
+                    INSERT INTO rentReceipt(tenancyId, receiptNumber, periodStart, periodEnd, amountMinorUnits, amountReceivedMinorUnits)
+                    VALUES (?, 'R-7', '2024-02-01 00:00:00.000', '2024-02-29 00:00:00.000', 90000, 90000)
+                    """, arguments: [tenancy])
+                try db.execute(sql: "INSERT INTO utilityInvoice(providerId, invoiceNumber, issueDate, amountMinorUnits, notes) VALUES (?, 'INV-1', '2024-02-10 00:00:00.000', 4200, ?)",
+                               arguments: [provider, note])
+            }
+        }
+        try b.receive(try a.push())
+        try a.receive(try b.push())
+        try b.receive(try a.push())
+        for device in [a!, b!] {
+            try device.queue.read { db in
+                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM transaction_"), 2, device.user)
+                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT SUM(amountMinorUnits) FROM transaction_"), -1_250, "spending counted once")
+                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM rentReceipt"), 1)
+                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT SUM(amountMinorUnits) FROM rentReceipt"), 90_000, "rent counted once")
+                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM utilityInvoice"), 1)
+                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT SUM(amountMinorUnits) FROM utilityInvoice"), 4_200)
+                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tenancy"), 1)
+            }
+        }
+        // The differing notes merged to one value on both devices, the other logged.
+        let notes = { (device: SyncTestDevice) in try device.queue.read { db in try String.fetchAll(db, sql: "SELECT note FROM transaction_ ORDER BY fingerprint") } }
+        XCTAssertEqual(try notes(a), try notes(b))
+        XCTAssertFalse(try losing(a).isEmpty && losing(b).isEmpty)
+    }
+
+    // MARK: Fix round 2 minors
+
+    func testStagedRecordsAreRetriedAtOpen() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SyncOpen-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try a.queue.write { db in try account(db, "From A") }
+        let payload = try XCTUnwrap(try a.push().compactMap { change -> SyncPayload? in if case .save(let p) = change { return p }; return nil }.first)
+        let path = folder.appendingPathComponent("db.sqlite").path
+        do {
+            let manager = try DatabaseManager(path: path)
+            try manager.migrate()
+            try manager.dbQueue.write { db in
+                // As an older build would have left it: a record type it didn't know.
+                var row = SyncStagingRow(tableName: "account", uuid: payload.recordName, payloadJSON: try SyncTranslator.json(payload),
+                                         reason: "unknown record type", receivedAt: Date())
+                try row.insert(db)
+            }
+        }
+        let reopened = try DatabaseManager(path: path)
+        try reopened.migrate()
+        try reopened.dbQueue.read { db in
+            XCTAssertEqual(try SyncStagingRow.fetchCount(db), 0)
+            XCTAssertEqual(try String.fetchAll(db, sql: "SELECT name FROM account"), ["From A"])
+            XCTAssertEqual(try SyncChangeTracker.pending(db: db), [], "applied, not echoed")
+        }
+    }
+
+    func testADeleteOfAParentStillReferencedHereIsKeptAndTheRestApplies() throws {
+        let uuid = try sharedTransaction()
+        try a.queue.write { db in try account(db, "Other") }
+        try b.receive(try a.push())
+        let current = try a.uuid("account", 1), other = try a.uuid("account", 2)
+        try set(a, "account", other, "alias", "edited")
+        let edit = try a.push()
+        // The account's delete arrives while B's transactions (NO ACTION) still point at it.
+        let results = try b.receive(edit + [.delete(recordName: current, recordType: "account")])
+        XCTAssertEqual(results[current], .kept("still referenced"))
+        XCTAssertEqual(results[other], .applied)
+        XCTAssertEqual(String.fromDatabaseValue(try column(b, "account", other, "alias")), "edited")
+        XCTAssertNotNil(try b.localId("account", current))
+        XCTAssertNotNil(try b.localId("transaction_", uuid))
+        try b.queue.read { db in XCTAssertEqual(try SyncConflictRow.filter(Column("uuid") == current).fetchOne(db)?.field, "*") }
+    }
+
+    func testARedirectToAnotherRowHereIsLoggedForAttention() throws {
+        try b.queue.write { db in
+            try account(db, "One")
+            try account(db, "Two")
+        }
+        let one = try b.uuid("account", 1), two = try b.uuid("account", 2)
+        let result = try b.receive([.save(SyncPayload(recordType: "account", recordName: one, zone: "household", fields: [:], mergedInto: two))])
+        XCTAssertEqual(result[one], .kept("both records are rows here"))
+        try b.queue.read { db in
+            XCTAssertEqual(try Account.fetchCount(db), 2)
+            XCTAssertTrue(try XCTUnwrap(try SyncConflictRow.filter(Column("uuid") == one).fetchOne(db)).losingValueJSON.contains("needs attention"))
+        }
+    }
+
+    func testAConflictIsLoggedOncePerLostValue() throws {
+        let uuid = try sharedTransaction()
+        try set(a, "transaction_", uuid, "note", "A")
+        pause()
+        try set(b, "transaction_", uuid, "note", "B")
+        let fromB = try b.push()
+        try a.receive(fromB)
+        try a.receive(fromB)
+        XCTAssertEqual(try losing(a), [logged("A")])
+    }
+
     // MARK: Minors
 
     func testSeededBuiltInCategoriesHaveTheSameUUIDOnEveryDevice() throws {

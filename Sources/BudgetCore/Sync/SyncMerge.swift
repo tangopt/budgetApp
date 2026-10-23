@@ -92,16 +92,21 @@ public enum SyncMerge {
         var conflicts: [String] = []
         /// This device kept a value the server doesn't have: the record must go out.
         var localWon = false
+        /// The remote clocks of the fields taken from the payload.
+        var taken: [String: SyncClock] = [:]
     }
 
     /// Merges `payload` (already translated to `values`) into this device's row of the same record.
     /// `held` are fields the caller couldn't take (a reference to a parent deleted here): they keep the local
     /// value and are logged, with the remote value as it travelled.
+    /// `adopted`: the payload is another record merged into this one (a save of a redirected UUID); its
+    /// clocks aren't this record's server state, so every differing field is decided by `wins` and logged,
+    /// and the base stays.
     static func merge(_ payload: SyncPayload, into localId: Int64, values: [String: DatabaseValue], held: [String: SyncValue] = [:],
-                      schema: SyncTableSchema, db: Database, deviceUser: String?, now: Date) throws -> IncomingResult {
+                      schema: SyncTableSchema, db: Database, deviceUser: String?, adopted: Bool = false, now: Date) throws -> IncomingResult {
         let outcome = try mergeFields(payload, into: localId, values: values, held: held, schema: schema, db: db, deviceUser: deviceUser,
-                                      uuid: payload.recordName, adopted: false, now: now)
-        try setBase(payload.clocks, table: schema.name, localId: localId, db: db)
+                                      uuid: payload.recordName, adopted: adopted, now: now)
+        if !adopted { try setBase(payload.clocks, table: schema.name, localId: localId, db: db) }
         try db.execute(sql: """
             UPDATE syncRecord SET modifiedBy = ?, modifiedAt = ? WHERE tableName = ? AND localId = ?
                 AND (modifiedAt IS NULL OR (? IS NOT NULL AND modifiedAt < ?))
@@ -160,7 +165,9 @@ public enum SyncMerge {
         // exclusive flag the incoming record wins, clears it on the other row).
         let blocked = try update(schema, localId, writes: &writes, payload: payload, db: db, deviceUser: deviceUser, now: now)
         for field in blocked {
+            // Held at the local value: only the remote value is lost.
             taken[field] = nil
+            losers.removeAll { $0.field == field }
             losers.append((field, values[field]!, local[field]?.by ?? local[insertClock]?.by ?? deviceUser, payload.clock(field)?.by))
             outcome.localWon = true
         }
@@ -178,6 +185,7 @@ public enum SyncMerge {
             outcome.localWon = true
         }
         outcome.conflicts = Array(Set(outcome.conflicts)).sorted()
+        outcome.taken = taken.compactMapValues { $0 }
         return outcome
     }
 
@@ -303,6 +311,12 @@ public enum SyncMerge {
 
     static func logConflict(table: String, uuid: String, field: String, losing: SyncValue, winner: String?, loser: String?,
                             db: Database, now: Date) throws {
+        // One entry per lost value: the same record, field and value arriving again (or from a second
+        // device) isn't logged twice.
+        let json = losing.json
+        if try Bool.fetchOne(db.cachedStatement(sql: """
+            SELECT EXISTS (SELECT 1 FROM syncConflict WHERE uuid = ? AND tableName = ? AND field = ? AND losingValueJSON = ?)
+            """), arguments: [uuid, table, field, json]) ?? false { return }
         var conflict = SyncConflictRow(tableName: table, uuid: uuid, field: field, losingValueJSON: losing.json,
                                        winningWriter: winner, losingWriter: loser, recordedAt: now)
         try conflict.insert(db)

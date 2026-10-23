@@ -127,7 +127,9 @@ public enum SyncTranslator {
     /// (retired, not sent: the sender removed them too). Results by record name; a record that left
     /// staging during the retries reports its final result.
     @discardableResult
-    public static func apply(_ changes: [SyncIncomingChange], db: Database, deviceUser: String?, now: Date = Date()) throws -> [String: IncomingResult] {
+    /// `retryAll`: retry every staged record, not only those the changes unblock (at open, after an upgrade).
+    public static func apply(_ changes: [SyncIncomingChange], db: Database, deviceUser: String?, now: Date = Date(),
+                             retryAll: Bool = false) throws -> [String: IncomingResult] {
         guard db.isInsideTransaction else { throw SyncTranslatorError.notInTransaction }
         return try SyncChangeTracker.applyingIncoming(db: db) {
             var results: [String: IncomingResult] = [:]
@@ -156,7 +158,7 @@ public enum SyncTranslator {
                 // A delete of a record of unknown type may be what anything waits for.
                 if let table { arrived.insert(table) } else { unknownArrived = true }
             }
-            if unknownArrived {
+            if unknownArrived || retryAll {
                 for (name, result) in try retryStaged(db: db, deviceUser: deviceUser, now: now) { results[name] = result }
             } else if !arrived.isEmpty {
                 for (name, result) in try retryStaged(db: db, deviceUser: deviceUser, now: now, arrived: arrived) { results[name] = result }
@@ -224,11 +226,13 @@ public enum SyncTranslator {
             return try applyRedirect(payload.recordName, to: target, schema: schema, db: db, deviceUser: deviceUser, now: now)
         }
         var payload = payload
+        var redirected = false
         if try SyncRecordStore.localId(table: schema.name, uuid: payload.recordName, db: db) == nil,
            let tombstone = try SyncTombstoneRow.fetchOne(db, key: payload.recordName), let target = tombstone.mergedInto {
             // A save of a record merged into another here (from a device that hasn't merged yet) is that one.
             try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [payload.recordName])
             payload.recordName = target
+            redirected = true
         }
         let uuid = payload.recordName
         let existing = try SyncRecordStore.localId(table: schema.name, uuid: uuid, db: db)
@@ -274,7 +278,8 @@ public enum SyncTranslator {
         do {
             let result: IncomingResult
             if let localId = existing {
-                result = try SyncMerge.merge(payload, into: localId, values: values, held: held, schema: schema, db: db, deviceUser: deviceUser, now: now)
+                result = try SyncMerge.merge(payload, into: localId, values: values, held: held, schema: schema, db: db, deviceUser: deviceUser,
+                                             adopted: redirected, now: now)
             } else {
                 result = try insert(payload, values: values, schema: schema, db: db, deviceUser: deviceUser, now: now)
             }
@@ -305,7 +310,10 @@ public enum SyncTranslator {
             } else {
                 // Both records are rows here: they can't be fused by a redirect; both stay.
                 log.error("Sync redirect of a \(schema.name, privacy: .public) record whose target is another row here; both kept")
-                return .applied
+                try SyncMerge.logConflict(table: schema.name, uuid: old, field: "*",
+                                          losing: .string(needsAttention + "merged into \(target) elsewhere, but both are rows here"),
+                                          winner: nil, loser: nil, db: db, now: now)
+                return .kept("both records are rows here")
             }
         }
         try SyncMerge.redirect(old, to: target, table: schema.name, localId: row ?? 0, zone: SyncRecordStore.householdZone,
@@ -483,8 +491,20 @@ public enum SyncTranslator {
             try SyncMerge.queue(uuid: uuid, table: schema.name, localId: record.localId, kind: .insert, db: db)
             return .kept("linked document")
         }
-        try db.execute(sql: "DELETE FROM \(SyncChangeTracker.quoted(schema.name)) WHERE \(SyncChangeTracker.quoted(schema.localIdColumn)) = ?",
-                       arguments: [record.localId])
+        // A parent whose children here still point at it (NO ACTION, RESTRICT) refuses the delete: it is
+        // kept and logged, and the rest of the apply goes on.
+        try db.execute(sql: "SAVEPOINT syncApplyDelete")
+        do {
+            try db.execute(sql: "DELETE FROM \(SyncChangeTracker.quoted(schema.name)) WHERE \(SyncChangeTracker.quoted(schema.localIdColumn)) = ?",
+                           arguments: [record.localId])
+            try db.execute(sql: "RELEASE syncApplyDelete")
+        } catch let error as DatabaseError where error.extendedResultCode == .SQLITE_CONSTRAINT_FOREIGNKEY || error.resultCode == .SQLITE_CONSTRAINT {
+            try db.execute(sql: "ROLLBACK TO syncApplyDelete")
+            try db.execute(sql: "RELEASE syncApplyDelete")
+            try SyncMerge.logConflict(table: schema.name, uuid: uuid, field: "*", losing: .string("delete refused: records here still point at it"),
+                                      winner: deviceUser, loser: nil, db: db, now: now)
+            return .kept("still referenced")
+        }
         try SyncMerge.retire(uuid: uuid, table: schema.name, localId: record.localId, zone: record.zone, deletedBy: nil, now: now, db: db)
         return .applied
     }
