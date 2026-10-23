@@ -123,9 +123,22 @@ public struct SyncPayload: Codable, Equatable, Sendable {
     /// A redirect, not a record: this record was merged into the one named (both devices made it). It has
     /// no fields; receivers re-key their row and never delete it.
     public var mergedInto: String?
+    /// The import run whose batch this record belongs to (sync spec §5.2): set while the run's batch is
+    /// being uploaded, on every record the confirm (or the Undo) wrote. Receivers hold it in staging until
+    /// the whole batch is there.
+    public var importRunUuid: String?
+    /// Which of the run's batches (1: the import, 2: its Undo), with `importRunUuid`.
+    public var batchGeneration: Int?
+    /// On an `importRun` record: its batch's manifest (record count per type, and more; `SyncBatch`).
+    public var manifest: SyncBatchManifest?
+    /// On an `importChange` record (ruling R7): the UUIDs it names of rows that were already gone when it
+    /// was sent, so a receiver that never had one doesn't wait for it.
+    public var deletedReferences: [String]?
 
     public init(recordType: String, recordName: String, zone: String, fields: [String: SyncValue],
-                clocks: [String: SyncClock] = [:], modifiedBy: String? = nil, modifiedAt: Date? = nil, mergedInto: String? = nil) {
+                clocks: [String: SyncClock] = [:], modifiedBy: String? = nil, modifiedAt: Date? = nil, mergedInto: String? = nil,
+                importRunUuid: String? = nil, batchGeneration: Int? = nil, manifest: SyncBatchManifest? = nil,
+                deletedReferences: [String]? = nil) {
         self.recordType = recordType
         self.recordName = recordName
         self.zone = zone
@@ -134,6 +147,10 @@ public struct SyncPayload: Codable, Equatable, Sendable {
         self.modifiedBy = modifiedBy
         self.modifiedAt = modifiedAt
         self.mergedInto = mergedInto
+        self.importRunUuid = importRunUuid
+        self.batchGeneration = batchGeneration
+        self.manifest = manifest
+        self.deletedReferences = deletedReferences
     }
 
     /// When `field` last changed on the sender: its own clock, else the insert's, else never.

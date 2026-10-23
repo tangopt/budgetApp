@@ -59,6 +59,7 @@ public enum SyncTranslator {
         guard let row = try Row.fetchOne(db, sql: "SELECT * FROM \(SyncChangeTracker.quoted(schema.name)) WHERE \(SyncChangeTracker.quoted(schema.localIdColumn)) = ?",
                                          arguments: [change.localId]) else { return nil }
         let resolver = SyncReferenceResolver(db: db)
+        resolver.history = SyncSchema.historyTables.contains(schema.name)
         let json = SyncJSONTranslator(resolver: resolver, direction: .outgoing)
         var fields: [String: SyncValue] = [:]
         for column in schema.syncedColumns where columns.declared[column] != nil {
@@ -80,9 +81,12 @@ public enum SyncTranslator {
                 fields[column] = SyncValue(value, declaredType: columns.declared[column] ?? "")
             }
         }
-        return SyncPayload(recordType: schema.name, recordName: record.uuid, zone: record.zone, fields: fields,
-                           clocks: try SyncMerge.clocks(table: schema.name, localId: change.localId, db: db),
-                           modifiedBy: record.modifiedBy, modifiedAt: record.modifiedAt)
+        var payload = SyncPayload(recordType: schema.name, recordName: record.uuid, zone: record.zone, fields: fields,
+                                  clocks: try SyncMerge.clocks(table: schema.name, localId: change.localId, db: db),
+                                  modifiedBy: record.modifiedBy, modifiedAt: record.modifiedAt,
+                                  deletedReferences: resolver.deletedReferences.isEmpty ? nil : resolver.deletedReferences.sorted())
+        try SyncBatch.decorate(&payload, db: db)
+        return payload
     }
 
     private static func reference(_ value: DatabaseValue, table: String, nullable: Bool, resolver: SyncReferenceResolver) throws -> SyncValue {
@@ -126,12 +130,34 @@ public enum SyncTranslator {
     /// nothing more applies. Rows removed by cascades and app triggers on the way lose their identity
     /// (retired, not sent: the sender removed them too). Results by record name; a record that left
     /// staging during the retries reports its final result.
+    ///
+    /// Records of an import batch (sync spec §5.2) wait in staging until their whole batch is here, then
+    /// apply together (`SyncBatch`).
     @discardableResult
     /// `retryAll`: retry every staged record, not only those the changes unblock (at open, after an upgrade).
     public static func apply(_ changes: [SyncIncomingChange], db: Database, deviceUser: String?, now: Date = Date(),
                              retryAll: Bool = false) throws -> [String: IncomingResult] {
         guard db.isInsideTransaction else { throw SyncTranslatorError.notInTransaction }
         return try SyncChangeTracker.applyingIncoming(db: db) {
+            let routed = try SyncBatch.route(changes, db: db, now: now)
+            var results = routed.results
+            for (name, result) in try applyChanges(routed.direct, db: db, deviceUser: deviceUser, now: now, retryAll: retryAll) {
+                results[name] = result
+            }
+            for run in routed.runs {
+                for (name, result) in try SyncBatch.flushIfComplete(run: run, db: db, deviceUser: deviceUser, now: now).results {
+                    results[name] = result
+                }
+            }
+            return results
+        }
+    }
+
+    /// `apply` without batch routing: what `SyncBatch` applies once a batch is complete. `revivals`: records
+    /// an Undo brings back (deleted here; ruling R7), by UUID, with the local id they had here.
+    static func applyChanges(_ changes: [SyncIncomingChange], db: Database, deviceUser: String?, now: Date,
+                             retryAll: Bool = false, revivals: [String: Int64] = [:]) throws -> [String: IncomingResult] {
+        try SyncChangeTracker.applyingIncoming(db: db) {
             var results: [String: IncomingResult] = [:]
             let order = Dictionary(uniqueKeysWithValues: SyncSchema.tables.enumerated().map { ($1.name, $0) })
             var saves: [SyncPayload] = []
@@ -146,7 +172,7 @@ public enum SyncTranslator {
             var arrived: Set<String> = []
             var unknownArrived = false
             for payload in saves {
-                let result = try applySave(payload, db: db, deviceUser: deviceUser, now: now)
+                let result = try applySave(payload, db: db, deviceUser: deviceUser, now: now, revivals: revivals)
                 results[payload.recordName] = result
                 if case .staged = result {} else { arrived.insert(payload.recordType) }
             }
@@ -218,7 +244,7 @@ public enum SyncTranslator {
     // MARK: Saves
 
     private static func applySave(_ payload: SyncPayload, db: Database, deviceUser: String?, now: Date,
-                                  fromStaging: Bool = false) throws -> IncomingResult {
+                                  fromStaging: Bool = false, revivals: [String: Int64] = [:]) throws -> IncomingResult {
         guard let schema = SyncSchema.table(payload.recordType), try db.tableExists(schema.name) else {
             return try stage(payload, reason: "unknown record type", db: db, now: now, fromStaging: fromStaging)
         }
@@ -236,7 +262,14 @@ public enum SyncTranslator {
         }
         let uuid = payload.recordName
         let existing = try SyncRecordStore.localId(table: schema.name, uuid: uuid, db: db)
-        if existing == nil, let tombstone = try SyncTombstoneRow.fetchOne(db, key: uuid), tombstone.mergedInto == nil {
+        var reviveAt: Int64?
+        if existing == nil, let tombstone = try SyncTombstoneRow.fetchOne(db, key: uuid), tombstone.mergedInto == nil,
+           let localId = revivals[uuid] {
+            // An Undo (on another device) brought back a row its import deleted: the same record comes back,
+            // at the local id it had here when that is free (ruling R7).
+            try db.execute(sql: "DELETE FROM syncTombstone WHERE uuid = ?", arguments: [uuid])
+            reviveAt = localId
+        } else if existing == nil, let tombstone = try SyncTombstoneRow.fetchOne(db, key: uuid), tombstone.mergedInto == nil {
             // A delete wins over an edit made while offline, except that a document is sent again by a
             // device that kept it because a record links to it (`kept`): it comes back.
             guard schema.name == "document" else {
@@ -246,6 +279,8 @@ public enum SyncTranslator {
             try db.execute(sql: "DELETE FROM syncTombstone WHERE uuid = ?", arguments: [uuid])
         }
         let resolver = SyncReferenceResolver(db: db)
+        resolver.history = SyncSchema.historyTables.contains(schema.name)
+        resolver.incomingDeleted = Set(payload.deletedReferences ?? [])
         let columns = try Columns(table: schema.name, db: db)
         var deletedParents: [String: String] = [:]
         var values = try localValues(payload, schema: schema, columns: columns, resolver: resolver, deletedParents: &deletedParents)
@@ -281,7 +316,7 @@ public enum SyncTranslator {
                 result = try SyncMerge.merge(payload, into: localId, values: values, held: held, schema: schema, db: db, deviceUser: deviceUser,
                                              adopted: redirected, now: now)
             } else {
-                result = try insert(payload, values: values, schema: schema, db: db, deviceUser: deviceUser, now: now)
+                result = try insert(payload, values: values, schema: schema, db: db, deviceUser: deviceUser, now: now, at: reviveAt)
             }
             try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
             try db.execute(sql: "RELEASE \(savepoint)")
@@ -390,9 +425,14 @@ public enum SyncTranslator {
     /// declares: an identity key merges into the existing row; any other keeps both rows (suffix, exclusive
     /// flag, yield), every other field applying, and logs what it changed.
     private static func insert(_ payload: SyncPayload, values: [String: DatabaseValue], schema: SyncTableSchema, db: Database,
-                               deviceUser: String?, now: Date) throws -> IncomingResult {
+                               deviceUser: String?, now: Date, at preferred: Int64? = nil) throws -> IncomingResult {
         var values = values
         let original = values
+        if let preferred, preferred != 0, !schema.syncedColumns.contains(schema.localIdColumn),
+           try !Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM \(SyncChangeTracker.quoted(schema.name)) WHERE \(SyncChangeTracker.quoted(schema.localIdColumn)) = ?)",
+                              arguments: [preferred])! {
+            values[schema.localIdColumn] = preferred.databaseValue
+        }
         var changed: [String] = []
         var suffixes: [String: Int] = [:]
         let table = SyncChangeTracker.quoted(schema.name)

@@ -228,11 +228,17 @@ public enum SyncSchema {
                         foreignKeys: ["personId": "person", "transactionId": "transaction_"]),
     ]
 
+    /// Tables that record history, whose references may name rows that are gone (ruling R7): the import
+    /// change log, which an Undo reads. A reference to a deleted row travels as the UUID the row had (its
+    /// tombstone), and comes back as this device's deleted row, so an Undo anywhere re-inserts it under
+    /// the same identity.
+    public static let historyTables: Set<String> = ["importChange"]
+
     /// Never synced (sync spec §4.3, §11.6): sync bookkeeping, credentials and settings of this device,
     /// linked source folders and their files (paths and bookmarks), and SQLite's and GRDB's own tables.
     public static let localOnlyTables: Set<String> = [
         "syncRecord", "syncStaging", "syncConflict", "syncTombstone", "syncState",
-        "syncPending", "syncFieldClock", "syncWriter", "syncApplying",
+        "syncPending", "syncFieldClock", "syncWriter", "syncApplying", "syncBatch", "syncBatchMember",
         "localCredential", "localSetting",
         "sourceFolder", "sourceFile",
         "grdb_migrations", "sqlite_sequence",

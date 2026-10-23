@@ -11,7 +11,7 @@ public enum ImportChangeCapture {
     static let untrackedTables: Set<String> = [
         "importRun", "importChange", "importRunFile", "forecastEntry", "forecastGroup", "grdb_migrations",
         "syncRecord", "syncStaging", "syncConflict", "syncTombstone", "syncState",
-        "syncPending", "syncFieldClock", "syncWriter", "syncApplying",
+        "syncPending", "syncFieldClock", "syncWriter", "syncApplying", "syncBatch", "syncBatchMember",
     ]
 
     private static let triggerPrefix = "importCapture_"

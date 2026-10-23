@@ -9,8 +9,8 @@ final class SyncTestDevice {
     let user: String
     var queue: DatabaseQueue { manager.dbQueue }
 
-    init(_ user: String) throws {
-        manager = try DatabaseManager(path: nil)
+    init(_ user: String, path: String? = nil) throws {
+        manager = try DatabaseManager(path: path)
         try manager.migrate()
         self.user = user
         try queue.write { db in try SyncChangeTracker.setWriter(user, db: db) }

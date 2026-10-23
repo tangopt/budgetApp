@@ -43,9 +43,11 @@ public struct SyncStagingRow: Codable, Equatable, Identifiable, FetchableRecord,
     /// Set when the record belongs to an import batch (sync spec §5.2).
     public var importRunUuid: String?
     public var receivedAt: Date
+    /// Which of the run's batches it belongs to (1: the import, 2: its Undo; `SyncBatch`).
+    public var batchGeneration: Int?
 
     public init(id: Int64? = nil, tableName: String, uuid: String, payloadJSON: String, reason: String,
-                importRunUuid: String? = nil, receivedAt: Date) {
+                importRunUuid: String? = nil, receivedAt: Date, batchGeneration: Int? = nil) {
         self.id = id
         self.tableName = tableName
         self.uuid = uuid
@@ -53,6 +55,7 @@ public struct SyncStagingRow: Codable, Equatable, Identifiable, FetchableRecord,
         self.reason = reason
         self.importRunUuid = importRunUuid
         self.receivedAt = receivedAt
+        self.batchGeneration = batchGeneration
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
@@ -150,6 +153,7 @@ func registerSyncMigration(_ migrator: inout DatabaseMigrator) {
             t.column("reason", .text).notNull()
             t.column("importRunUuid", .text).indexed()
             t.column("receivedAt", .datetime).notNull()
+            t.column("batchGeneration", .integer)
         }
         try db.create(table: "syncConflict") { t in
             t.autoIncrementedPrimaryKey("id")
@@ -199,6 +203,22 @@ func registerSyncMigration(_ migrator: inout DatabaseMigrator) {
         try db.create(table: "syncWriter") { t in
             t.primaryKey("id", .integer).check { $0 == 1 }
             t.column("appUserUuid", .text)
+        }
+        // Import batches (sync spec §5.2, `SyncBatch`): one row per import run whose batch this device sent
+        // or received, with its latest generation (1: the import, 2: its Undo) and where it stands.
+        try db.create(table: "syncBatch") { t in
+            t.primaryKey("runUuid", .text)
+            t.column("generation", .integer).notNull()
+            t.column("state", .text).notNull().check { ["sending", "open", "complete", "closed"].contains($0) }
+            // A received run's manifest; the records an Undo sent here brings back (`revives`).
+            t.column("manifestJSON", .text)
+            t.column("revivesJSON", .text)
+        }
+        // The records of a batch this device is sending, until it is fully uploaded.
+        try db.create(table: "syncBatchMember") { t in
+            t.primaryKey("uuid", .text)
+            t.column("runUuid", .text).notNull().indexed()
+            t.column("tableName", .text).notNull()
         }
         // A row here only inside an incoming apply's transaction: the triggers skip while it exists.
         try db.create(table: "syncApplying") { t in

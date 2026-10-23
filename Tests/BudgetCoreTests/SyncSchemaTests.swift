@@ -213,7 +213,7 @@ final class SyncSchemaTests: XCTestCase {
         var after = try snapshot()
         let added = Set(after.keys).subtracting(before.keys)
         XCTAssertEqual(added, ["syncRecord", "syncStaging", "syncConflict", "syncTombstone", "syncState",
-                               "syncPending", "syncFieldClock", "syncWriter", "syncApplying"])
+                               "syncPending", "syncFieldClock", "syncWriter", "syncApplying", "syncBatch", "syncBatchMember"])
         for table in added where table != "syncState" { XCTAssertEqual(after[table], [], "\(table) starts empty") }
         XCTAssertEqual(after["syncState"]?.count, 1, "only the installed trigger schema's stamp")
         XCTAssertTrue(after["syncState"]?.first?.hasPrefix("'triggerSchema'|") ?? false)

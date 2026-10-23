@@ -257,6 +257,32 @@ final class ImportApplierTests: XCTestCase {
                           groupKey: "Utility invoices")
     }
 
+    /// Step 3 Task 4: what a confirmed run wrote goes out as one sync batch, tagged with the run.
+    func testConfirmedRunIsASyncBatch() async throws {
+        let plan = try await pipeline.plan([try receiptPDF(), try insurancePDF()])
+        let summary = try applier.apply(plan, entryPoint: "Import…")
+        try await db.write { db in
+            let run = try XCTUnwrap(SyncRecordStore.existingUUID(table: "importRun", localId: summary.runId, db: db))
+            var members: [String: Int] = [:]
+            var manifest: SyncBatchManifest?
+            for change in try SyncChangeTracker.pending(db: db) where change.kind != .delete {
+                guard let payload = try SyncTranslator.outgoing(change, db: db) else { continue }
+                if payload.recordName == run {
+                    manifest = payload.manifest
+                } else if payload.importRunUuid == run {
+                    members[payload.recordType, default: 0] += 1
+                }
+            }
+            let sent = try XCTUnwrap(manifest)
+            XCTAssertTrue(sent.isOpen)
+            XCTAssertEqual(sent.counts, members)
+            XCTAssertEqual(members["document"], 2)
+            XCTAssertEqual(members["importRunFile"], 2)
+            XCTAssertGreaterThan(members["importChange"] ?? 0, 0)
+            XCTAssertGreaterThan(members["documentLink"] ?? 0, 0)
+        }
+    }
+
     func testCorrectedUtilityInvoiceIsFiledAsADocumentOnly() async throws {
         let original = try linkedLibraryDocument("invoice.txt", text: "Demo Power invoice FT 1/23 total 120,00", kind: .utilityInvoice,
                                                  amount: 12_000, to: .transaction(id("debit")))

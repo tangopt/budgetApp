@@ -245,6 +245,8 @@ public struct ImportApplier: Sendable {
     private func applyAll(db: Database, plan: ImportPlan, applied: [ImportItem], entryPoint: String, reasons: [UUID: String], appUserId: Int64?,
                        backupPath: String?, folderRoots: [Int64: URL], now: Date, placed: inout [URL]) throws -> ImportRunSummary {
         try Self.checkCurrent(db: db, applied)
+        // Everything the run writes from here on is one sync batch (sync spec §5.2).
+        let syncMark = try SyncBatch.mark(db: db)
         var run = ImportRun(confirmedAt: now, entryPoint: entryPoint, summary: "", backupPath: backupPath,
                             reasonsJSON: try Self.reasonsJSON(reasons), appUserId: appUserId)
         try run.insert(db)
@@ -348,6 +350,7 @@ public struct ImportApplier: Sendable {
         _ = try ImportChangeCapture.finish(db: db, runId: runId)
         run.summary = summary.text
         try run.update(db)
+        try SyncBatch.open(runId: runId, since: syncMark, db: db)
         return summary
     }
 

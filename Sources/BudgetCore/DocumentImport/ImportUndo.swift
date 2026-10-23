@@ -15,6 +15,9 @@ public enum ImportUndoConflict: Equatable, Sendable {
     case dependsOnIt(table: String, rowId: Int64, dependent: String)
     /// Undoing would change a figure of a filed (or paid) return.
     case filedYear(FiledYearImpact)
+    /// The run (imported on another device) removed a row this device never had, so it can't be put back
+    /// here (ruling R7): undo it on the device that imported it.
+    case removedElsewhere(table: String)
 
     public var message: String {
         switch self {
@@ -33,6 +36,9 @@ public enum ImportUndoConflict: Equatable, Sendable {
             return "\(other) depends on \(ImportUndo.tableLabel(table)) \(rowId)"
         case .filedYear(let impact):
             return impact.headline
+        case .removedElsewhere(let table):
+            return "This import removed a\(ImportUndo.startsWithVowel(table) ? "n" : "") \(ImportUndo.tableLabel(table).lowercased()) on another device "
+                + "that was never on this one: undo it on the device that imported it"
         }
     }
 }
@@ -132,6 +138,11 @@ public enum ImportUndo {
             let key = RowKey(table: change.tableName, rowId: change.rowId)
             // Learnt rules never refuse an undo (`revertRule`).
             if key.table == ImportRule.databaseTableName { continue }
+            // A row it removed that this device never had (ruling R7: it arrived naming no row here).
+            if change.operation == .delete, change.rowId == 0 {
+                found.append(.removedElsewhere(table: key.table))
+                continue
+            }
             if let laterRun = later[key] {
                 found.append(.laterImport(runId: laterRun, table: key.table, rowId: key.rowId))
                 continue
@@ -349,13 +360,17 @@ public enum ImportUndo {
             let net = try netChanges(db: db, runId: runId)
             let found = try conflicts(db: db, runId: runId, net: net)
             guard found.isEmpty else { throw ImportUndoError.refused(found) }
-            let outcome = try revert(db: db, net: net)
+            // The Undo is a sync batch of its own (sync spec §5.2), its run queued first.
+            let syncMark = try SyncBatch.mark(db: db)
             run.undoneAt = now
+            try run.update(db)
+            let outcome = try revert(db: db, net: net)
             run.undoSummary = (["Removed \(outcome.removed) row\(outcome.removed == 1 ? "" : "s"), restored \(outcome.restored)"] + outcome.notes)
                 .joined(separator: ". ")
             try run.update(db)
             // The auto forecast reads every transaction: refreshed as after any import.
             try AutoForecastGenerator.refresh(db: db)
+            try SyncBatch.open(runId: runId, since: syncMark, revives: outcome.revived, db: db)
             return (outcome, outcome.removed, outcome.restored)
         }
         var filesRemoved = 0
@@ -375,6 +390,8 @@ public enum ImportUndo {
         var restored = 0
         var removedDocuments: [EvidenceDocument] = []
         var notes: [String] = []
+        /// The sync identities of the rows put back (ruling R7).
+        var revived: [String] = []
     }
 
     /// Walks the net changes newest first: deletes inserted rows, puts updated columns back to
@@ -421,6 +438,8 @@ public enum ImportUndo {
                 }
                 let placeholders = Array(repeating: "?", count: names.count).joined(separator: ", ")
                 try db.execute(sql: "INSERT INTO \(table) (\(names.joined(separator: ", "))) VALUES (\(placeholders))", arguments: arguments)
+                // Back under the identity it had, so other devices bring back the same record.
+                if let uuid = try SyncBatch.reviveIdentity(table: change.tableName, localId: change.rowId, db: db) { outcome.revived.append(uuid) }
                 outcome.restored += 1
             }
         }
@@ -544,6 +563,10 @@ public enum ImportUndo {
             break
         }
         return "\(tableLabel(table)) \(rowId)"
+    }
+
+    static func startsWithVowel(_ table: String) -> Bool {
+        tableLabel(table).lowercased().first.map { "aeiou".contains($0) } ?? false
     }
 
     /// `"transaction_"` → `"Transaction"`, `"documentLink"` → `"Document link"`.

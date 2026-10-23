@@ -18,6 +18,13 @@ final class SyncReferenceResolver {
     }
 
     let db: Database
+    /// Translating a history table's record (`SyncSchema.historyTables`, ruling R7): going out, a reference
+    /// to a row that is gone is the UUID it had (its tombstone), listed in `deletedReferences`; coming in,
+    /// a deleted record is this device's deleted row (its tombstone's local id), and one listed in
+    /// `incomingDeleted` that this device never had names no row, without waiting for it.
+    var history = false
+    private(set) var deletedReferences: Set<String> = []
+    var incomingDeleted: Set<String> = []
     /// What incoming references are waiting for, as `table` names (never values).
     private(set) var missing: Set<String> = []
     /// An incoming declared foreign key names a deleted parent.
@@ -37,8 +44,27 @@ final class SyncReferenceResolver {
         do {
             return try SyncRecordStore.uuid(for: table, localId: localId, db: db)
         } catch SyncRecordStoreError.noSuchRow {
-            return nil
+            guard history, localId != 0, let gone = try String.fetchOne(db.cachedStatement(sql: """
+                SELECT uuid FROM syncTombstone WHERE tableName = ? AND localId = ? AND mergedInto IS NULL ORDER BY deletedAt DESC LIMIT 1
+                """), arguments: [table, localId]) else { return nil }
+            deletedReferences.insert(gone)
+            return gone
         }
+    }
+
+    /// The local id a deleted record had here (following redirects), or nil when it had none.
+    private func deletedLocalId(_ uuid: String) throws -> Int64? {
+        var name = uuid
+        for _ in 0..<8 {
+            guard let row = try Row.fetchOne(db.cachedStatement(sql: "SELECT localId, mergedInto FROM syncTombstone WHERE uuid = ?"),
+                                             arguments: [name]) else { return nil }
+            guard let next: String = row["mergedInto"] else {
+                let id: Int64 = row["localId"]
+                return id == 0 ? nil : id
+            }
+            name = next
+        }
+        return nil
     }
 
     func incoming(table: String, uuid: String) throws -> Incoming {
@@ -59,8 +85,9 @@ final class SyncReferenceResolver {
     func incomingWeak(table: String, uuid: String) throws -> Int64? {
         switch try incoming(table: table, uuid: uuid) {
         case .local(let id): return id
-        case .deleted: return nil
+        case .deleted: return history ? try deletedLocalId(uuid) : nil
         case .missing:
+            if history, incomingDeleted.contains(uuid) { return nil }
             missing.insert(table)
             return nil
         }
