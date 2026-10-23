@@ -187,3 +187,10 @@ Nothing is sent to iCloud in this step.
 ## Result
 
 (filled in after the rehearsal)
+
+## Prerequisite recorded for later steps (ruling R10, 2026-10-23)
+
+Transaction fingerprints embed the importing device's local account id, so the same statement imported on two devices isn't recognised as the same rows. Before any second device can import statements (the member's Mac in step 6, the iPad in step 8), add a **portable fingerprint**:
+- a new column computed from the account's UUID;
+- existing rows backfilled by re-deriving each row's occurrence number against its stored local fingerprint, with no existing value changed;
+- used by sync identity and by every importer's duplicate check.
