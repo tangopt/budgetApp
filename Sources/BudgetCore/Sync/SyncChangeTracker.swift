@@ -1,5 +1,7 @@
+import CryptoKit
 import Foundation
 import GRDB
+import os
 
 /// One synced record waiting to be sent: its row, its UUID (which still names it after a delete, when
 /// the local id no longer does) and what happened to it since the last upload.
@@ -83,31 +85,98 @@ public enum SyncChangeTracker {
     public static func applyingIncoming<T>(db: Database, _ body: () throws -> T) throws -> T {
         guard db.isInsideTransaction else { throw SyncChangeTrackerError.notInTransaction }
         let outermost = try !Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncApplying)")!
-        if outermost { try db.execute(sql: "INSERT INTO syncApplying(id) VALUES (1)") }
-        defer { if outermost { try? db.execute(sql: "DELETE FROM syncApplying") } }
-        return try body()
+        guard outermost else { return try body() }
+        try db.execute(sql: "INSERT INTO syncApplying(id) VALUES (1)")
+        let result: T
+        do {
+            result = try body()
+        } catch {
+            try? db.execute(sql: "DELETE FROM syncApplying")
+            throw error
+        }
+        // On success a failed removal must fail the transaction rather than leave tracking off.
+        try db.execute(sql: "DELETE FROM syncApplying")
+        return result
     }
 
     // MARK: Triggers
 
+    /// The schema version and hash whose triggers are installed (`syncState` key `triggerSchema`).
+    public struct InstalledSchema: Codable, Equatable, Sendable {
+        public var version: Int
+        public var hash: String
+    }
+
+    static let installedSchemaKey = "triggerSchema"
+    private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
+
+    public static func installedSchema(db: Database) throws -> InstalledSchema? {
+        try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [installedSchemaKey])
+            .map { try JSONDecoder().decode(InstalledSchema.self, from: $0) }
+    }
+
+    /// SHA-256 of every trigger `schema` calls for: it changes with the schema and with the template.
+    public static func schemaHash(_ schema: [SyncTableSchema]) -> String {
+        let text = schema.flatMap(triggers(for:)).map { $0.0 + "\n" + $0.1 }.joined(separator: "\n\n")
+        return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Makes the database's tracking triggers exactly those `schema` calls for: creates missing ones,
     /// replaces changed ones, drops stale ones, and leaves the schema untouched when they already match.
+    /// - A listed table or column the database doesn't have (yet) is skipped and logged, so a database
+    ///   migrated part of the way still takes writes.
+    /// - Triggers a newer `version` installed are left as they are (logged): an older build must not
+    ///   take tracking away from columns it doesn't know.
     /// Also clears a stale incoming-apply marker and sweeps identities whose row is gone (a delete no
     /// trigger saw) into tombstones. `DatabaseManager.migrate` runs it on every open.
-    public static func refreshSyncTriggers(db: Database, schema: [SyncTableSchema] = SyncSchema.tables) throws {
-        let expected = Dictionary(uniqueKeysWithValues: schema.flatMap(triggers(for:)))
-        let installed = try Row.fetchAll(db, sql: "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE ? ESCAPE '\\'",
-                                         arguments: [triggerPrefix.replacingOccurrences(of: "_", with: "\\_") + "%"])
-        var current: [String: String] = [:]
-        for row in installed { current[row["name"]] = row["sql"] }
-        for (name, sql) in current where expected[name] != sql {
-            try db.execute(sql: "DROP TRIGGER \(quoted(name))")
-        }
-        for (name, sql) in expected.sorted(by: { $0.key < $1.key }) where current[name] != sql {
-            try db.execute(sql: sql)
+    public static func refreshSyncTriggers(db: Database, schema: [SyncTableSchema] = SyncSchema.tables,
+                                           version: Int = SyncSchema.version) throws {
+        let present = try present(schema, db: db)
+        if let installed = try installedSchema(db: db), installed.version > version {
+            log.error("Sync triggers were installed by schema version \(installed.version), newer than this build's \(version); left as they are")
+        } else {
+            let expected = Dictionary(uniqueKeysWithValues: present.flatMap(triggers(for:)))
+            let installed = try Row.fetchAll(db, sql: "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE ? ESCAPE '\\'",
+                                             arguments: [triggerPrefix.replacingOccurrences(of: "_", with: "\\_") + "%"])
+            var current: [String: String] = [:]
+            for row in installed { current[row["name"]] = row["sql"] }
+            for (name, sql) in current where expected[name] != sql {
+                try db.execute(sql: "DROP TRIGGER \(quoted(name))")
+            }
+            for (name, sql) in expected.sorted(by: { $0.key < $1.key }) where current[name] != sql {
+                try db.execute(sql: sql)
+            }
+            let stamp = InstalledSchema(version: version, hash: schemaHash(schema))
+            if try installedSchema(db: db) != stamp {
+                try db.execute(sql: """
+                    INSERT INTO syncState(key, value, updatedAt) VALUES (?, ?, \(now))
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt
+                    """, arguments: [installedSchemaKey, try JSONEncoder().encode(stamp)])
+            }
         }
         try db.execute(sql: "DELETE FROM syncApplying")
-        for table in schema { try sweepOrphans(table, db: db) }
+        for table in present { try sweepOrphans(table, db: db) }
+    }
+
+    /// `schema` cut down to the tables and columns the database has; what is missing is logged.
+    private static func present(_ schema: [SyncTableSchema], db: Database) throws -> [SyncTableSchema] {
+        try schema.compactMap { table in
+            guard try db.tableExists(table.name) else {
+                log.error("Sync tracking skips table \(table.name, privacy: .public): not in the database")
+                return nil
+            }
+            let columns = Set(try db.columns(in: table.name).map(\.name))
+            guard columns.contains(table.localIdColumn) else {
+                log.error("Sync tracking skips table \(table.name, privacy: .public): no column \(table.localIdColumn, privacy: .public)")
+                return nil
+            }
+            let missing = table.syncedColumns.filter { !columns.contains($0) }
+            guard !missing.isEmpty else { return table }
+            log.error("Sync tracking skips columns not in the database: \(missing.map { table.name + "." + $0 }.joined(separator: ", "), privacy: .public)")
+            return SyncTableSchema(table.name, localIdColumn: table.localIdColumn, synced: table.syncedColumns.filter(columns.contains),
+                                   foreignKeys: table.foreignKeys.filter { columns.contains($0.key) },
+                                   localOnly: table.localOnlyColumns.filter(columns.contains), batchKey: table.batchKey)
+        }
     }
 
     /// The tracking triggers for one table, by name.
@@ -148,8 +217,9 @@ public enum SyncChangeTracker {
             END
             """))
         if !fields.isEmpty {
-            let changed = fields.map { "NEW.\(quoted($0)) IS NOT OLD.\(quoted($0))" }
-            let which = fields.map { "SELECT \(literal($0)) AS field WHERE NEW.\(quoted($0)) IS NOT OLD.\(quoted($0))" }
+            // BINARY: a column's own collation (NOCASE on names) would hide a case-only change.
+            let changed = fields.map { "NEW.\(quoted($0)) IS NOT OLD.\(quoted($0)) COLLATE BINARY" }
+            let which = fields.map { "SELECT \(literal($0)) AS field WHERE NEW.\(quoted($0)) IS NOT OLD.\(quoted($0)) COLLATE BINARY" }
             result.append((name("upd"), """
                 CREATE TRIGGER \(quoted(name("upd"))) AFTER UPDATE ON \(tq) WHEN \(notApplying) AND (\(changed.joined(separator: " OR ")))
                 BEGIN

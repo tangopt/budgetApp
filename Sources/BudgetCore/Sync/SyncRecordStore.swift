@@ -4,6 +4,8 @@ import GRDB
 public enum SyncRecordStoreError: Error, Equatable {
     /// The table isn't synced (`SyncSchema.tables`), so its rows have no cloud identity.
     case notSynced(String)
+    /// No row of the table has this local id, so there is nothing to name.
+    case noSuchRow(table: String, localId: Int64)
 }
 
 /// The stable identity of each synced local row (sync spec §4.1): one `syncRecord` row holding the
@@ -20,13 +22,25 @@ public enum SyncRecordStore {
         substr('89ab', 1 + (abs(random()) % 4), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6))))
         """
 
-    /// The row's UUID, created (zone `household`) the first time it is asked for.
+    /// The row's UUID. The tracking triggers give every row they see one; a row written without them
+    /// (an incoming apply, a row from before tracking) gets one here, zone `household`, queued as a
+    /// pending insert like `backfill` would. A local id that names no row is refused.
     public static func uuid(for table: String, localId: Int64, db: Database) throws -> String {
-        guard SyncSchema.table(table) != nil else { throw SyncRecordStoreError.notSynced(table) }
+        guard let schema = SyncSchema.table(table) else { throw SyncRecordStoreError.notSynced(table) }
         if let existing = try existingUUID(table: table, localId: localId, db: db) { return existing }
+        let exists = try Bool.fetchOne(db, sql: """
+            SELECT EXISTS (SELECT 1 FROM \(SyncChangeTracker.quoted(table)) WHERE \(SyncChangeTracker.quoted(schema.localIdColumn)) = ?)
+            """, arguments: [localId]) ?? false
+        guard exists else { throw SyncRecordStoreError.noSuchRow(table: table, localId: localId) }
         try db.cachedStatement(sql: "INSERT INTO syncRecord(tableName, localId, uuid, zone) VALUES (?, ?, \(uuidSQL), ?)")
             .execute(arguments: [table, localId, householdZone])
-        return try existingUUID(table: table, localId: localId, db: db)!
+        let uuid = try existingUUID(table: table, localId: localId, db: db)!
+        try db.cachedStatement(sql: """
+            INSERT INTO syncPending(uuid, tableName, localId, kind, revision)
+            VALUES (?, ?, ?, 'insert', (SELECT COALESCE(MAX(revision), 0) + 1 FROM syncPending))
+            ON CONFLICT(uuid) DO NOTHING
+            """).execute(arguments: [uuid, table, localId])
+        return uuid
     }
 
     /// The row's UUID if it has one.

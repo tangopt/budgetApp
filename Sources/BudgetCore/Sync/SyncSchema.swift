@@ -42,6 +42,10 @@ public struct SyncTableSchema: Equatable, Sendable {
 /// - `account.statementLastCheckedDate` and the statement-mismatch columns sync: they describe statements,
 ///   which are household data, not this device.
 public enum SyncSchema {
+    /// Bumped whenever `tables` or the tracking triggers change (`SyncChangeTrackerTests` pins the hash of
+    /// each version). A build never replaces triggers a newer version installed.
+    public static let version = 1
+
     /// Synced tables, parents before children (each foreign key's table is listed earlier).
     public static let tables: [SyncTableSchema] = [
         SyncTableSchema("person",

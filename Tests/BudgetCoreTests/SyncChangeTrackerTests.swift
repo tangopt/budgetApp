@@ -54,11 +54,12 @@ final class SyncChangeTrackerTests: XCTestCase {
         XCTAssertEqual(Set(made).count, 2000)
         made.forEach { assertUUID($0) }
         XCTAssertEqual(Set(made.map { $0[$0.index($0.startIndex, offsetBy: 19)] }), ["8", "9", "a", "b"], "every variant digit appears")
-        // Made by a trigger, and by Swift.
+        // Made by a trigger, and by Swift (a row written untracked).
         try manager.dbQueue.write { db in
             let id = try insertAccount(db)
             assertUUID(try SyncRecordStore.uuid(for: "account", localId: id, db: db))
-            assertUUID(try SyncRecordStore.uuid(for: "account", localId: 999_999, db: db))
+            let untracked = try SyncChangeTracker.applyingIncoming(db: db) { try insertAccount(db, "Untracked") }
+            assertUUID(try SyncRecordStore.uuid(for: "account", localId: untracked, db: db))
         }
     }
 
@@ -73,6 +74,22 @@ final class SyncChangeTrackerTests: XCTestCase {
             XCTAssertEqual(try SyncRecordRow.fetchOne(db, sql: "SELECT * FROM syncRecord WHERE uuid = ?", arguments: [first])?.zone,
                            "household")
             XCTAssertThrowsError(try SyncRecordStore.uuid(for: "localSetting", localId: 1, db: db))
+        }
+    }
+
+    func testUUIDForAnUntrackedRowQueuesItAndRefusesAMissingRow() throws {
+        let id = try manager.dbQueue.write { db in
+            try SyncChangeTracker.applyingIncoming(db: db) { try insertAccount(db, "Untracked") }
+        }
+        XCTAssertEqual(try pending(), [])
+        let uuid = try manager.dbQueue.write { db in try SyncRecordStore.uuid(for: "account", localId: id, db: db) }
+        XCTAssertEqual(try pending().map(\.uuid), [uuid])
+        XCTAssertEqual(try pending().map(\.kind), [.insert], "a new identity is a record to send")
+        try manager.dbQueue.write { db in
+            XCTAssertThrowsError(try SyncRecordStore.uuid(for: "account", localId: 999_999, db: db)) { error in
+                XCTAssertEqual(error as? SyncRecordStoreError, .noSuchRow(table: "account", localId: 999_999))
+            }
+            XCTAssertNil(try SyncRecordStore.existingUUID(table: "account", localId: 999_999, db: db))
         }
     }
 
@@ -203,6 +220,58 @@ final class SyncChangeTrackerTests: XCTestCase {
         XCTAssertFalse(sql?.contains("somethingNew") ?? true)
     }
 
+    func testRefreshSkipsWhatTheDatabaseDoesNotHaveYet() throws {
+        // A schema listing a column and a table a later migration would add (as after migrate(upTo:)).
+        var schema = SyncSchema.tables.map { table -> SyncTableSchema in
+            guard table.name == "account" else { return table }
+            return SyncTableSchema(table.name, localIdColumn: table.localIdColumn, synced: table.syncedColumns + ["notYet"],
+                                   foreignKeys: table.foreignKeys, localOnly: table.localOnlyColumns, batchKey: table.batchKey)
+        }
+        schema.append(SyncTableSchema("notYetTable", synced: ["name"]))
+        try manager.dbQueue.write { db in try SyncChangeTracker.refreshSyncTriggers(db: db, schema: schema) }
+        try manager.dbQueue.read { db in
+            let update = try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE name = 'syncTrack_account_upd'") ?? ""
+            XCTAssertTrue(update.contains("\"alias\""), "the columns that exist are still watched")
+            XCTAssertFalse(update.contains("notYet"))
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'syncTrack_notYetTable%'"), 0)
+        }
+        // Writes still work and are tracked.
+        let id = try manager.dbQueue.write { db in try insertAccount(db) }
+        try manager.dbQueue.write { db in try db.execute(sql: "UPDATE account SET alias = 'ok' WHERE id = ?", arguments: [id]) }
+        XCTAssertEqual(try pending().map(\.localId), [id])
+    }
+
+    func testSchemaHashIsPinnedToItsVersion() throws {
+        // Changing SyncSchema or the trigger template changes the hash: bump SyncSchema.version and
+        // update this pin, so an older build can tell its triggers are older than the database's.
+        XCTAssertEqual(SyncSchema.version, 1)
+        XCTAssertEqual(SyncChangeTracker.schemaHash(SyncSchema.tables), Self.pinnedHash)
+    }
+
+    func testOlderBuildLeavesANewerSchemasTriggers() throws {
+        try manager.dbQueue.read { db in
+            let stamp = try XCTUnwrap(try SyncChangeTracker.installedSchema(db: db))
+            XCTAssertEqual(stamp.version, SyncSchema.version)
+            XCTAssertEqual(stamp.hash, SyncChangeTracker.schemaHash(SyncSchema.tables))
+        }
+        // A newer build installed version + 1 with a column this build doesn't list.
+        let newer = SyncSchema.tables.map { table -> SyncTableSchema in
+            guard table.name == "account" else { return table }
+            return SyncTableSchema(table.name, localIdColumn: table.localIdColumn, synced: table.syncedColumns.filter { $0 != "alias" },
+                                   foreignKeys: table.foreignKeys, localOnly: table.localOnlyColumns, batchKey: table.batchKey)
+        }
+        try manager.dbQueue.write { db in try SyncChangeTracker.refreshSyncTriggers(db: db, schema: newer, version: SyncSchema.version + 1) }
+        let installed = try manager.dbQueue.read { db in try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE name = 'syncTrack_account_upd'") }
+        let version = try manager.dbQueue.read { db in try Int.fetchOne(db, sql: "PRAGMA schema_version") }
+        // This (older) build opens the database: it leaves the newer triggers alone.
+        try manager.migrate()
+        try manager.dbQueue.read { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE name = 'syncTrack_account_upd'"), installed)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "PRAGMA schema_version"), version)
+            XCTAssertEqual(try SyncChangeTracker.installedSchema(db: db)?.version, SyncSchema.version + 1)
+        }
+    }
+
     // MARK: Tracking
 
     func testInsertUpdateAndDeleteAreTrackedAndCoalesced() throws {
@@ -256,6 +325,18 @@ final class SyncChangeTrackerTests: XCTestCase {
 
         try manager.dbQueue.write { db in try db.execute(sql: "DELETE FROM account WHERE id = ?", arguments: [id]) }
         XCTAssertEqual(try clocks("account", id), [:])
+    }
+
+    func testCaseOnlyRenameOfANoCaseColumnIsTracked() throws {
+        // person.name is COLLATE NOCASE: the comparison must still see "ana" -> "Ana".
+        let id = try manager.dbQueue.write { db -> Int64 in
+            try db.execute(sql: "INSERT INTO person(name) VALUES ('synthetic ana')")
+            return db.lastInsertedRowID
+        }
+        try manager.dbQueue.write { db in try SyncChangeTracker.acknowledge(try SyncChangeTracker.pending(db: db), db: db) }
+        try manager.dbQueue.write { db in try db.execute(sql: "UPDATE person SET name = 'Synthetic Ana' WHERE id = ?", arguments: [id]) }
+        XCTAssertEqual(try pending().map(\.kind), [.update])
+        XCTAssertNotNil(try clocks("person", id)["name"])
     }
 
     func testLocalOnlyColumnChangeIsNotTracked() throws {
@@ -542,13 +623,28 @@ final class SyncChangeTrackerTests: XCTestCase {
         let accountId = try manager.dbQueue.write { db in try insertAccount(db) }
         let uuid = try manager.dbQueue.write { db in try SyncRecordStore.uuid(for: "account", localId: accountId, db: db) }
 
+        // A person with no identity yet (applied untracked); the import gives it one without changing it.
+        let personId = try manager.dbQueue.write { db -> Int64 in
+            try SyncChangeTracker.applyingIncoming(db: db) {
+                try db.execute(sql: "INSERT INTO person(name) VALUES ('Synthetic Person')")
+                return db.lastInsertedRowID
+            }
+        }
+        try manager.dbQueue.write { db in try SyncChangeTracker.acknowledge(try SyncChangeTracker.pending(db: db), db: db) }
+
+        var during: (aliasClock: Date, accountRevision: Int64, personUuid: String, personRevision: Int64)!
         let runId = try manager.dbQueue.write { db -> Int64 in
             var run = ImportRun(confirmedAt: Date(), entryPoint: "Import…", summary: "s")
             try run.insert(db)
             try ImportChangeCapture.begin(db: db)
             try db.execute(sql: "UPDATE account SET alias = 'imported' WHERE id = ?", arguments: [accountId])
+            let personUuid = try SyncRecordStore.uuid(for: "person", localId: personId, db: db)
             try SyncStateRow(key: "engine", value: Data([9]), updatedAt: Date()).insert(db)
             try SyncChangeTracker.setWriter("user-uuid", db: db)
+            let queued = try SyncChangeTracker.pending(db: db)
+            during = (try Date.fetchOne(db, sql: "SELECT modifiedAt FROM syncFieldClock WHERE tableName = 'account' AND localId = ? AND field = 'alias'",
+                                        arguments: [accountId])!,
+                      queued.first { $0.uuid == uuid }!.revision, personUuid, queued.first { $0.uuid == personUuid }!.revision)
             let changes = try ImportChangeCapture.finish(db: db, runId: run.id!)
             XCTAssertEqual(changes.map(\.tableName), ["account"], "sync bookkeeping is not logged")
             return run.id!
@@ -559,8 +655,17 @@ final class SyncChangeTrackerTests: XCTestCase {
             XCTAssertEqual(try SyncRecordStore.localId(table: "account", uuid: uuid, db: db), accountId)
             XCTAssertEqual(try SyncStateRow.fetchOne(db, key: "engine")?.value, Data([9]))
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT appUserUuid FROM syncWriter"), "user-uuid")
-            // The undo is itself a change to send: the alias went back.
-            XCTAssertTrue(try SyncChangeTracker.pending(db: db).contains { $0.uuid == uuid })
+            // The import's field clock is kept (the undo moves it on), and so is its revision (likewise).
+            let aliasClock = try XCTUnwrap(try Date.fetchOne(db, sql: "SELECT modifiedAt FROM syncFieldClock WHERE tableName = 'account' AND localId = ? AND field = 'alias'",
+                                                             arguments: [accountId]))
+            XCTAssertGreaterThanOrEqual(aliasClock, during.aliasClock)
+            let queued = try SyncChangeTracker.pending(db: db)
+            XCTAssertEqual(queued.first { $0.uuid == uuid }?.kind, .update, "the undo is itself a change to send")
+            XCTAssertGreaterThan(try XCTUnwrap(queued.first { $0.uuid == uuid }?.revision), during.accountRevision)
+            // What the undo doesn't touch is exactly as the import left it.
+            XCTAssertEqual(try SyncRecordStore.localId(table: "person", uuid: during.personUuid, db: db), personId)
+            XCTAssertEqual(queued.first { $0.uuid == during.personUuid },
+                           PendingChange(table: "person", localId: personId, uuid: during.personUuid, kind: .insert, revision: during.personRevision))
         }
         for table in SyncSchema.localOnlyTables where table.hasPrefix("sync") {
             XCTAssertTrue(ImportChangeCapture.untrackedTables.contains(table), table)
@@ -587,4 +692,7 @@ final class SyncChangeTrackerTests: XCTestCase {
             XCTAssertTrue(try SyncChangeTracker.pending(db: db).contains { $0.uuid == uuid && $0.kind == .delete })
         }
     }
+
+    /// `SyncChangeTracker.schemaHash(SyncSchema.tables)` for `SyncSchema.version` 1.
+    private static let pinnedHash = "60ceec64c029e076124cf84b5a8241a2ced900ca31ca079d984fba2624ccd53f"
 }

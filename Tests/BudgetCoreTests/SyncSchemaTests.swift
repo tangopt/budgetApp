@@ -153,7 +153,7 @@ final class SyncSchemaTests: XCTestCase {
             XCTAssertEqual(try SyncStagingRow.fetchOne(db)?.reason, "missing parent account")
             XCTAssertEqual(try SyncConflictRow.fetchOne(db)?.losingValueJSON, "\"Old\"")
             XCTAssertEqual(try SyncTombstoneRow.fetchOne(db)?.localId, 9)
-            XCTAssertEqual(try SyncStateRow.fetchOne(db)?.value, Data([7]))
+            XCTAssertEqual(try SyncStateRow.fetchOne(db, key: "engine")?.value, Data([7]))
         }
         // One identity per UUID and per local row.
         XCTAssertThrowsError(try manager.dbQueue.write { db in
@@ -212,7 +212,9 @@ final class SyncSchemaTests: XCTestCase {
         let added = Set(after.keys).subtracting(before.keys)
         XCTAssertEqual(added, ["syncRecord", "syncStaging", "syncConflict", "syncTombstone", "syncState",
                                "syncPending", "syncFieldClock", "syncWriter", "syncApplying"])
-        for table in added { XCTAssertEqual(after[table], [], "\(table) starts empty") }
+        for table in added where table != "syncState" { XCTAssertEqual(after[table], [], "\(table) starts empty") }
+        XCTAssertEqual(after["syncState"]?.count, 1, "only the installed trigger schema's stamp")
+        XCTAssertTrue(after["syncState"]?.first?.hasPrefix("'triggerSchema'|") ?? false)
         // Every old schema object is unchanged; only the new tables, their indexes and the sync tracking
         // triggers (`syncTrack_*`) appear.
         let newObjects = Set(after["schema"]!).subtracting(before["schema"]!)
