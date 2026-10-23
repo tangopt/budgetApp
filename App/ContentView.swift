@@ -297,22 +297,23 @@ struct ContentView: View {
             // The theme's window colour behind every screen (clear for Classic).
             .background(theme.windowBackground.ignoresSafeArea())
             .toolbar {
-                // None while the lock screen covers the window.
-                if !lockCovered {
-                    ToolbarItem(placement: .navigation) {
-                        SidebarToggleButton(columnVisibility: $columnVisibility)
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                    ToolbarItem(placement: .primaryAction) {
-                        Button { documentImport.pickFiles(.none, "Toolbar") } label: {
-                            Label("Import…", systemImage: "square.and.arrow.down.on.square")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Import documents (⇧⌘I)")
-                        .accessibilityLabel("Import documents")
-                    }
-                    .sharedBackgroundVisibility(.hidden)
+                // Hidden and inert while the lock screen covers the window, but still there: a toolbar that
+                // empties or goes changes the window's frame, and the window must keep its size through a lock.
+                ToolbarItem(placement: .navigation) {
+                    SidebarToggleButton(columnVisibility: $columnVisibility)
+                        .lockCoverHidden(lockCovered)
                 }
+                .sharedBackgroundVisibility(.hidden)
+                ToolbarItem(placement: .primaryAction) {
+                    Button { documentImport.pickFiles(.none, "Toolbar") } label: {
+                        Label("Import…", systemImage: "square.and.arrow.down.on.square")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Import documents (⇧⌘I)")
+                    .accessibilityLabel("Import documents")
+                    .lockCoverHidden(lockCovered)
+                }
+                .sharedBackgroundVisibility(.hidden)
             }
         }
         .environment(\.documentImport, documentImport)

@@ -25,11 +25,13 @@ enum BudgetMain {
 
 struct BudgetApp: App {
     var body: some Scene {
-        WindowGroup {
-            LaunchView()
-                .lockOverlay(.main)
-                .themedRoot()
+        // A stable id and root type: SwiftUI keys the saved window frame (and the sidebar width) by the
+        // scene's root type name, and a private modifier in that type named it "(unknown context at $…)",
+        // an address that moves every launch, so the size was never found again.
+        WindowGroup(id: MainWindowRoot.sceneId) {
+            MainWindowRoot()
         }
+        .defaultSize(width: 1280, height: 800)
         .commands {
             SessionCommands()
             SearchCommands()
@@ -41,6 +43,18 @@ struct BudgetApp: App {
                 .lockOverlay(.settings)
                 .themedRoot()
         }
+    }
+}
+
+/// The main window's content. Internal and named, so the scene's type name (the window's frame autosave
+/// key) is the same on every launch and every build.
+struct MainWindowRoot: View {
+    static let sceneId = "main"
+
+    var body: some View {
+        LaunchView()
+            .lockOverlay(.main)
+            .themedRoot()
     }
 }
 

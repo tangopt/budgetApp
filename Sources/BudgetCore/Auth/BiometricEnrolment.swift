@@ -16,11 +16,24 @@ public protocol BiometricUnlocker: AnyObject {
     func enrolledIds() -> Set<Int64>
 }
 
-public enum BiometricUnlockError: Error, Equatable, Sendable {
+public enum BiometricUnlockError: Error, Equatable, Sendable, LocalizedError {
     case unavailable
     /// Never enrolled here, or dropped because the Mac's fingerprints changed: sign in with the password.
     case notEnrolled
     case keychain(OSStatus)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unavailable: "Touch ID isn't available on this Mac."
+        case .notEnrolled: "Touch ID isn't on for you on this Mac."
+        case .keychain(let status):
+            "The Keychain refused it (\(Self.keychainMessage(status) ?? "error"), \(status))."
+        }
+    }
+
+    private static func keychainMessage(_ status: OSStatus) -> String? {
+        SecCopyErrorMessageString(status, nil) as String?
+    }
 }
 
 // MARK: - LAContext-only fallback (builds without a team)
@@ -114,29 +127,65 @@ public enum BiometricSecretRead: Equatable, Sendable {
 }
 
 /// The Keychain calls the Keychain-bound unlock needs: one `.biometryCurrentSet` item per enrolled
-/// "<scope>:<appUserId>" account.
+/// "<scope>:<appUserId>" account. There is deliberately no way to list them: who is enrolled comes from the
+/// `BiometricEnrolmentIndex`, so nothing but an unlock ever queries an access-controlled item (a listing
+/// with interaction not allowed can come back empty or `errSecInteractionNotAllowed` on a team build).
 @MainActor
 public protocol BiometricSecretStore: AnyObject {
     func add(secret: Data, account: String) throws
     /// Reading asks for Touch ID.
     func read(account: String, reason: String) async throws -> BiometricSecretRead
     func delete(account: String)
-    /// The accounts with an item, read without asking for Touch ID.
-    func storedAccounts() -> Set<String>
 }
 
-/// Each enrolled user holds a random 32-byte secret only their fingerprints on this Mac can read. An item
-/// the system has invalidated reads as not found; that drops the enrolment, so the password is asked once.
+/// The non-secret list of "<scope>:<appUserId>" accounts with a secret on this Mac: what the lock screen
+/// and Settings read to know who has Touch ID on. Written on enrol, dropped on remove and when the secret
+/// reads as not found.
+@MainActor
+public protocol BiometricEnrolmentIndex: AnyObject {
+    func accounts() -> Set<String>
+    func insert(_ account: String)
+    func remove(_ account: String)
+}
+
+/// The index in this Mac's preferences. Its own key, apart from the `LAContext` fallback's list, which
+/// is cleared whenever the fingerprints change.
+@MainActor
+public final class DefaultsEnrolmentIndex: BiometricEnrolmentIndex {
+    public static let key = "auth.keychainEnrolledAccounts"
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults) { self.defaults = defaults }
+
+    public func accounts() -> Set<String> { Set(defaults.stringArray(forKey: Self.key) ?? []) }
+
+    public func insert(_ account: String) {
+        defaults.set(accounts().union([account]).sorted(), forKey: Self.key)
+    }
+
+    public func remove(_ account: String) {
+        let rest = accounts().subtracting([account])
+        if rest.isEmpty { defaults.removeObject(forKey: Self.key) } else { defaults.set(rest.sorted(), forKey: Self.key) }
+    }
+}
+
+/// Each enrolled user holds a random 32-byte secret only their fingerprints on this Mac can read. Who is
+/// enrolled is read from the index alone; the secret is read only to unlock (that read shows the Touch ID
+/// sheet). An item the system has invalidated reads as not found; that drops the enrolment, so the
+/// password is asked once.
 @MainActor
 public final class KeychainBiometricEnrolment: BiometricUnlocker {
     public static let secretLength = 32
 
     private let store: BiometricSecretStore
+    private let index: BiometricEnrolmentIndex
     private let scope: String
     private let availability: @MainActor () -> Bool
 
-    public init(store: BiometricSecretStore, scope: String, isAvailable: @escaping @MainActor () -> Bool) {
+    public init(store: BiometricSecretStore, index: BiometricEnrolmentIndex, scope: String,
+                isAvailable: @escaping @MainActor () -> Bool) {
         self.store = store
+        self.index = index
         self.scope = scope
         self.availability = isAvailable
     }
@@ -150,8 +199,16 @@ public final class KeychainBiometricEnrolment: BiometricUnlocker {
         var secret = Data(count: Self.secretLength)
         let status = secret.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, Self.secretLength, $0.baseAddress!) }
         guard status == errSecSuccess else { throw BiometricUnlockError.keychain(status) }
-        store.delete(account: account(appUserId))
-        try store.add(secret: secret, account: account(appUserId))
+        let account = account(appUserId)
+        store.delete(account: account)
+        do {
+            try store.add(secret: secret, account: account)
+        } catch {
+            // The old secret is gone too: not enrolled any more.
+            index.remove(account)
+            throw error
+        }
+        index.insert(account)
     }
 
     public func unlock(appUserId: Int64, reason: String) async throws -> Bool {
@@ -162,17 +219,18 @@ public final class KeychainBiometricEnrolment: BiometricUnlocker {
         case .cancelled:
             return false
         case .notFound:
-            store.delete(account: account(appUserId))
+            remove(appUserId: appUserId)
             throw BiometricUnlockError.notEnrolled
         }
     }
 
     public func remove(appUserId: Int64) {
         store.delete(account: account(appUserId))
+        index.remove(account(appUserId))
     }
 
     public func enrolledIds() -> Set<Int64> {
         let prefix = "\(scope):"
-        return Set(store.storedAccounts().compactMap { $0.hasPrefix(prefix) ? Int64($0.dropFirst(prefix.count)) : nil })
+        return Set(index.accounts().compactMap { $0.hasPrefix(prefix) ? Int64($0.dropFirst(prefix.count)) : nil })
     }
 }

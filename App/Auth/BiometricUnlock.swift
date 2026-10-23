@@ -19,10 +19,10 @@ enum BiometricUnlock {
             return DefaultsBiometricEnrolment(defaults: defaults, scope: scope, biometry: LAContextBiometricUnlock())
         }
         if status != errSecSuccess {
-            Logger(subsystem: "com.personal.budget", category: "Auth").error("Keychain probe failed with \(status, privacy: .public); keeping Keychain-bound Touch ID")
+            authLog.error("Keychain probe failed with \(status, privacy: .public); keeping Keychain-bound Touch ID")
         }
-        return KeychainBiometricEnrolment(store: KeychainBiometricUnlock(), scope: scope,
-                                          isAvailable: { LAContextBiometricUnlock.canUseBiometrics() })
+        return KeychainBiometricEnrolment(store: KeychainBiometricUnlock(), index: DefaultsEnrolmentIndex(defaults: defaults),
+                                          scope: scope, isAvailable: { LAContextBiometricUnlock.canUseBiometrics() })
     }
 
     /// For the snapshot build: never touches the Keychain or asks for Touch ID.
@@ -30,6 +30,9 @@ enum BiometricUnlock {
         DefaultsBiometricEnrolment(defaults: defaults, scope: scope, biometry: LAContextBiometricUnlock())
     }
 }
+
+/// Status codes only, never secrets or account names.
+private let authLog = Logger(subsystem: "com.personal.budget", category: "Auth")
 
 /// One `.biometryCurrentSet` item per enrolled app user in the data-protection Keychain: service
 /// `ubberninja.mango.unlock`, account `"<databaseId>:<appUserId>"`, holding a random 32-byte secret.
@@ -74,6 +77,7 @@ final class KeychainBiometricUnlock: BiometricSecretStore {
         guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
                                                            .biometryCurrentSet, &error) else {
             let code = error.map { CFErrorGetCode($0.takeRetainedValue()) } ?? Int(errSecParam)
+            authLog.error("Touch ID access control couldn't be made: \(code, privacy: .public)")
             throw BiometricUnlockError.keychain(OSStatus(truncatingIfNeeded: code))
         }
         var query = Self.baseQuery()
@@ -81,7 +85,10 @@ final class KeychainBiometricUnlock: BiometricSecretStore {
         query[kSecValueData] = secret
         query[kSecAttrAccessControl] = access
         let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else { throw BiometricUnlockError.keychain(status) }
+        guard status == errSecSuccess else {
+            authLog.error("Touch ID enrol: SecItemAdd returned \(status, privacy: .public)")
+            throw BiometricUnlockError.keychain(status)
+        }
     }
 
     func read(account: String, reason: String) async throws -> BiometricSecretRead {
@@ -99,6 +106,9 @@ final class KeychainBiometricUnlock: BiometricSecretStore {
             let status = SecItemCopyMatching(request.query as CFDictionary, &result)
             return (status, result as? Data)
         }.value
+        if status != errSecSuccess {
+            authLog.notice("Touch ID unlock: SecItemCopyMatching returned \(status, privacy: .public)")
+        }
         switch status {
         case errSecSuccess: return data.map { .secret($0) } ?? .notFound
         case errSecItemNotFound: return .notFound
@@ -111,19 +121,6 @@ final class KeychainBiometricUnlock: BiometricSecretStore {
         var query = Self.baseQuery()
         query[kSecAttrAccount] = account
         SecItemDelete(query as CFDictionary)
-    }
-
-    func storedAccounts() -> Set<String> {
-        let context = LAContext()
-        context.interactionNotAllowed = true
-        var query = Self.baseQuery()
-        query[kSecReturnAttributes] = true
-        query[kSecMatchLimit] = kSecMatchLimitAll
-        query[kSecUseAuthenticationContext] = context
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let items = result as? [[String: Any]] else { return [] }
-        return Set(items.compactMap { $0[kSecAttrAccount as String] as? String })
     }
 }
 

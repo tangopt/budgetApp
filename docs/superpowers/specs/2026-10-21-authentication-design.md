@@ -215,6 +215,10 @@ Touch ID
   means reading their item with Touch ID. So a fingerprint unlocks only the app users enrolled with it on
   this Mac, and a copied database can't be unlocked elsewhere. When the Mac's fingerprints change, the
   item becomes unreadable: enrolment is dropped and the password is asked once.
+  Who is enrolled is read from a separate, non-secret index (`auth.keychainEnrolledAccounts` in this
+  Mac's preferences, written on enrol and dropped on remove or a not-found read), never by querying the
+  access-controlled items: a listing of them without interaction can come back empty or refused on a team
+  build, and the lock screen then never offered Touch ID (fixed 2026-10-23).
 - **Unsigned local builds (no `Config/Signing.local.xcconfig`; the membership lapsed, overview §3.1).**
   The data-protection Keychain isn't available without a team (errSecMissingEntitlement), so the
   fallback is `LAContext.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics)` alone. Enrolment is
