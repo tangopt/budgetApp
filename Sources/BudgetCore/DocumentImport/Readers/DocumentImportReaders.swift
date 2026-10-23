@@ -625,6 +625,12 @@ public struct EvidenceDocumentReader: ImportReader {
             facts.append(ImportFact(field: .amount, value: .money(amount, currency), source: source, confidence: .certain,
                                     reason: "Amount on the document"))
         }
+        // A mortgage receipt's instalment ("193/480"), named in its canonical name.
+        if kind == .mortgageReceipt, let instalment = MortgageReceipt.instalment(text: file.text, fileName: file.fileName) {
+            let fromText = MortgageReceipt.instalment(text: file.text, fileName: "") != nil
+            facts.append(ImportFact(field: .receiptNumber, value: .text(instalment.label), source: fromText ? source : .fileName,
+                                    confidence: .certain, reason: "Instalment on the receipt"))
+        }
         var item = ImportItem(file: file, recognition: recognition, title: kind.displayName, facts: facts,
                               groupKey: "\(kind.displayName) documents")
         item.placement = ImportNaming.placement(kind: recognition.kind, facts: facts, file: file, persons: [])

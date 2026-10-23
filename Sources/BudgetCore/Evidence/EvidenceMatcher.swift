@@ -3,7 +3,7 @@ import Foundation
 /// Proposes the transactions a document is evidence for (spec §2–§3), ranked: the exact
 /// amount (sign-free, in the transaction's account currency) is the strongest signal, then a
 /// payment reference the description repeats, the date within the kind's window (a mortgage
-/// notice's value date ±3 days, an IMI payment the same day, an insurance receipt ±10 days, a
+/// notice's value date ±3 days, a mortgage receipt its own date ±1, an IMI payment the same day, an insurance receipt ±10 days, a
 /// rent receipt's rent-period month for the credit …), and the category, account and
 /// description the kind usually has (the Lisbon categories, the BBVA account). Equal scores are
 /// left equal — `confidentMatch` only picks a single clear winner.
@@ -61,6 +61,10 @@ public enum EvidenceMatcher {
         switch kind {
         case .mortgageNotice:
             return Expectation(direction: .debit, window: -3...3, anchor: .periodEnd, categoryHints: ["mortgage", "hipoteca"],
+                               descriptionHints: ["COBR. REC", "COBR REC", "PRESTACAO", "EMPRESTIMO"], accountHint: bbva)
+        case .mortgageReceipt:
+            // Dated on the debit's own day (its value date).
+            return Expectation(direction: .debit, window: -1...1, anchor: .docDate, categoryHints: ["mortgage", "hipoteca"],
                                descriptionHints: ["COBR. REC", "COBR REC", "PRESTACAO", "EMPRESTIMO"], accountHint: bbva)
         case .insuranceReceipt:
             return Expectation(direction: .debit, window: -10...10, categoryHints: ["insurance", "seguro"],

@@ -476,7 +476,7 @@ final class MissingEvidenceTests: XCTestCase {
         try transaction(Self.date(2025, 5, 2), -20_000, category: interest, description: "Juros", account: mortgage)
         let result = try items(year2025.interval)
         XCTAssertEqual(result.map(\.target), [.transaction(instalment)])
-        XCTAssertEqual(result.first?.expectedKinds, [.mortgageNotice])
+        XCTAssertEqual(result.first?.expectedKinds, [.mortgageNotice, .mortgageReceipt])
 
         // Without mortgage accounts the interest rule covers every account.
         let plain = try db.write { db -> [EvidenceRequirement] in
@@ -509,7 +509,7 @@ final class MissingEvidenceTests: XCTestCase {
 
     func testDefaultRuleByCategoryName() {
         let rule = EvidenceRequirementDefaults.rule(forCategoryName:)
-        XCTAssertEqual(rule("Mortgage interest").kinds, [.mortgageNotice, .mortgageInterestStatement])
+        XCTAssertEqual(rule("Mortgage interest").kinds, [.mortgageNotice, .mortgageReceipt, .mortgageInterestStatement])
         XCTAssertEqual(rule("IMI").kinds, [.imiNotice, .imiPayment])
         XCTAssertEqual(rule("IMI").usualSource, "Portal das Finanças")
         XCTAssertEqual(rule("Condomínio").kinds, [.condominioReceipt])
@@ -534,7 +534,7 @@ final class MissingEvidenceTests: XCTestCase {
         XCTAssertEqual(added[1].scope, .transactionsInCategory(categoryId: imi))
         XCTAssertEqual(added[1].kinds, [.imiNotice, .imiPayment])
         XCTAssertEqual(added[3].scope, .transactionsMatching(categoryIds: [mortgageTransfer], accountIds: [], descriptionContains: nil))
-        XCTAssertEqual(added[3].kinds, [.mortgageNotice])
+        XCTAssertEqual(added[3].kinds, [.mortgageNotice, .mortgageReceipt])
         XCTAssertTrue(added.allSatisfy { $0.direction == .outflows && $0.notes == EvidenceRequirementDefaults.seededNote })
 
         let legal = try db.write { try insertCategory($0, "Legal fees", .expense, group: lisbon) }
@@ -548,7 +548,7 @@ final class MissingEvidenceTests: XCTestCase {
         try transaction(Self.date(2025, 5, 4), -500, category: groceries)
         let result = try items(year2025.interval)
         XCTAssertEqual(result.map(\.sourceName), ["BBVA app", "Portal das Finanças"])
-        XCTAssertEqual(result.map(\.expectedKinds), [[.mortgageNotice], [.imiNotice, .imiPayment]])
+        XCTAssertEqual(result.map(\.expectedKinds), [[.mortgageNotice, .mortgageReceipt], [.imiNotice, .imiPayment]])
     }
 
     // MARK: Screen helpers

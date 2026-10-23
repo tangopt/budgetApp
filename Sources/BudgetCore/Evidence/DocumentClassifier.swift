@@ -112,10 +112,14 @@ public enum DocumentClassifier {
         Rule(kind: .ptIRSPaymentProof) { isStatePayment($0) && $0.isIRS },
         // Mortgage
         Rule(kind: .mortgageInterestStatement) { $0.has("ENCARGOS COM IMOVE") },
+        // The receipt after the debit is headed so; the notice before it never is.
+        Rule(kind: .mortgageReceipt) { $0.has("RECIBO DE EMPRESTIMO") },
         Rule(kind: .mortgageNotice) {
             $0.has("AVISO DEBITO PRESTACAO", "AVISO DE DEBITO PRESTACAO")
                 || ($0.has("PRESTACAO") && $0.has("EMPRESTIMO", "CREDITO HABITACAO") && $0.has("AVISO"))
         },
+        // A receipt without its heading: the receipt's total on a loan account's letter.
+        Rule(kind: .mortgageReceipt) { $0.has("TOTAL DO RECIBO") && $0.has("EMPRESTIMO", "CREDITO HABITACAO") },
         // Building (a condomínio's receipt can list the building's insurance), then insurance.
         Rule(kind: .condominioReceipt) { $0.has("CONDOMINIO") && $0.has("RECIBO N", "RECEBEMOS", "AVISO DE DEBITO", "QUOTA") },
         // A policy says so near the top, and isn't a receipt (receipts mention the conditions too).
@@ -161,6 +165,8 @@ public enum DocumentClassifier {
         Rule(kind: .ptIRSPaymentNote) { $0.isIRS && $0.has("NOTA", "PAGAMENTO") },
         Rule(kind: .imiPayment) { $0.isIMI && ($0.has("PAGAMENTO", "COMPROVATIVO") || $0.matches(Patterns.fileDated)) },
         Rule(kind: .imiNotice) { $0.isIMI },
+        // "Prestacao - Recibo 193:480": the receipt of instalment 193 of 480.
+        Rule(kind: .mortgageReceipt) { $0.has("PRESTACAO", "EMPRESTIMO") && $0.has("RECIBO") },
         Rule(kind: .mortgageNotice) { $0.has("PRESTACAO") },
         Rule(kind: .insurancePolicy) { $0.has("CONDICOES") || $0.matches(Patterns.fileMinutes) },
         Rule(kind: .insuranceReceipt) { $0.has("SEG MR", "SEG VIDA", "SEGURO", "FATURA_RECIBO_", "INSURANCE") },

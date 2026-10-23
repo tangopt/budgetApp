@@ -42,6 +42,7 @@ let package = Package(
         .executableTarget(name: "ImportDryRun", dependencies: ["BudgetCore"]),
         .executableTarget(name: "ImportRehearsal", dependencies: ["BudgetCore"]),
         .executableTarget(name: "SyncRehearsal", dependencies: ["BudgetCore"]),
-        .executableTarget(name: "CorrectSimarInvoiceTotals", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")])
+        .executableTarget(name: "CorrectSimarInvoiceTotals", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
+        .executableTarget(name: "ReclassifyMortgageReceipts", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")])
     ]
 )
