@@ -13,7 +13,8 @@ import BudgetCore
 /// - Changes: `CKFetchRecordZoneChangesOperation`, one page per call (`fetchAllChanges = false`), records and
 ///   deletions in the order CloudKit reports them, the server change token archived as `Data`. A record's own
 ///   failure stays that record's (`CloudKitRecordMapping.feedChange`); only a passing one fails the page.
-/// - Every value goes in `encryptedValues` (`CloudKitRecordMapping.record`); assets are `CKAsset`s written to this
+/// - Records arrive already sealed by the engine (ruling R15: `sealed` + `keyId`); every value goes in
+///   `encryptedValues` as a second layer (`CloudKitRecordMapping.record`); assets are `CKAsset`s written to this
 ///   instance's temporary folder, one subfolder per operation, removed when it finishes.
 /// - Errors: `CloudKitRecordMapping.operationError` (no network, busy, rate limited → `unavailable` with the
 ///   server's retry-after; `limitExceeded`, `changeTokenExpired`, `zoneNotFound`, `notAuthenticated`,

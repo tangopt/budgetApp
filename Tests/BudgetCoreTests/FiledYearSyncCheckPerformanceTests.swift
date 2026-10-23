@@ -30,7 +30,7 @@ final class FiledYearSyncCheckPerformanceTests: XCTestCase {
                 switch change {
                 case .record(let record):
                     guard !SyncEngineCore.reservedRecordTypes.contains(record.wire.recordType) else { continue }
-                    changes.append(.save(try SyncLargePayload.payload(from: record.wire)))
+                    changes.append(.save(try SyncLargePayload.payload(from: record.wire, keys: try device.keys.allKeys(zone: record.wire.zone))))
                 case .deletion(let deletion):
                     changes.append(.delete(recordName: deletion.recordName, recordType: deletion.recordType))
                 }
@@ -46,8 +46,9 @@ final class FiledYearSyncCheckPerformanceTests: XCTestCase {
 
     func testCheckCostOnAThousandRecordPullOfTheDemoDatabase() async throws {
         let cloud = FakeCloud()
-        let a = try SyncEngineTestDevice("user-a", name: "Mac", cloud: cloud)
-        let b = try SyncEngineTestDevice("user-b", name: "iPad", cloud: cloud)
+        let keys = InMemorySyncKeyStore()
+        let a = try SyncEngineTestDevice("user-a", name: "Mac", cloud: cloud, keys: keys)
+        let b = try SyncEngineTestDevice("user-b", name: "iPad", cloud: cloud, keys: keys)
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("SyncFiledDemo-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }

@@ -6,8 +6,9 @@ import Foundation
 /// to iCloud; the operations live in the App target (`CloudKitTransport`). Kept in BudgetCore so the future
 /// iPhone and iPad apps share it and so it is tested offline on both platforms.
 ///
-/// Sync spec §4.2: the record type, name and zone are the only plaintext. Every value of `encryptedFields`
-/// goes into `CKRecord.encryptedValues`, never a plain field; a wire record carrying `unencryptedFields` is
+/// Sync spec §4.2: the record type, name and zone are the only plaintext. The engine hands over records already
+/// sealed (ruling R15: `sealed` + `keyId`, `FieldSealing`); every value of `encryptedFields` still goes into
+/// `CKRecord.encryptedValues` (a second layer), never a plain field; a wire record carrying `unencryptedFields` is
 /// refused. Assets (ciphertext the app sealed itself) are `CKAsset` fields, written to files for the upload.
 public enum CloudKitRecordMapping {
     public enum MappingError: Error, Equatable {

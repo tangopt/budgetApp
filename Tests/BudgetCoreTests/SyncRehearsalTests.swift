@@ -73,6 +73,8 @@ final class SyncRehearsalTests: XCTestCase {
         XCTAssertEqual(report.documents, report.recordsByType[SyncDocumentFile.recordType])
         XCTAssertGreaterThan(report.documentBytes, 0)
         XCTAssertEqual(report.plaintextFields, [])
+        XCTAssertEqual(report.sealingFindings, [], "R15: every record sealed, no source value readable")
+        XCTAssertNil(report.push.keyWait)
         // Applied into an empty database through the checked pull.
         XCTAssertEqual(report.apply.received, report.records - (report.recordsByType[SyncDocumentFile.recordType] ?? 0)
                        - (report.recordsByType[SyncZoneKeys.recordType] ?? 0))
@@ -153,6 +155,38 @@ final class SyncRehearsalTests: XCTestCase {
         let assetDirectory = folder.appendingPathComponent("assets", isDirectory: true)
         XCTAssertEqual(try SyncRehearsal.plaintextFields(in: [clean], assetDirectory: assetDirectory), [])
         XCTAssertEqual(try SyncRehearsal.plaintextFields(in: [clean, leaking], assetDirectory: assetDirectory), ["account.name"])
+    }
+
+    /// Ruling R15: every data record is exactly `sealed` + `keyId`, opens with the household key, and holds no source
+    /// value's bytes; the marker and sealed files have their own exact shapes.
+    func testTheSealingCheckFindsAnythingButSealedRecords() throws {
+        let keys = InMemorySyncKeyStore()
+        let key = DocumentCrypto.newZoneKey()
+        try keys.store(key, zone: "household")
+        let uuid = "6C1E0E0A-3F4B-4C2D-9A1B-2C3D4E5F6A7B"
+        let payload = SyncPayload(recordType: "account", recordName: uuid, zone: "household", fields: ["name": .string("Synthetic Account")])
+        let sealed = try SyncLargePayload.wire(for: payload, key: key).0
+        let marker = SyncZoneKeys.wire(.init(keyId: DocumentCrypto.zoneKeyId(key), createdAt: Date()), zone: "household")
+        let file = SyncWireRecord(recordType: SyncDocumentFile.recordType, recordName: uuid + ".file.0a1b2c3d", zone: "household",
+                                  assets: [SyncDocumentFile.assetField: Data(count: 64)])
+        XCTAssertEqual(try SyncRehearsal.sealingFindings(in: [sealed, marker, file], keys: keys), [])
+        // The step 3 format, readable values in the encrypted fields.
+        XCTAssertEqual(try SyncRehearsal.sealingFindings(in: [try SyncWireRecord(payload)], keys: keys), ["account: not exactly sealed + keyId"])
+        var extra = sealed
+        extra.encryptedFields["f_name"] = Data("{\"string\":\"Synthetic Account\"}".utf8)
+        XCTAssertEqual(try SyncRehearsal.sealingFindings(in: [extra], keys: keys), ["account: not exactly sealed + keyId"])
+        XCTAssertEqual(try SyncRehearsal.sealingFindings(in: [sealed], keys: InMemorySyncKeyStore()), ["account: doesn't open"])
+        // Readable bytes appended to the box: it no longer authenticates.
+        let leaky = SyncWireRecord(recordType: "account", recordName: uuid, zone: "household",
+                                   encryptedFields: [FieldSealing.sealedField: (sealed.encryptedFields[FieldSealing.sealedField] ?? Data()) + Data("Synthetic Account".utf8),
+                                                     FieldSealing.keyIdField: Data(DocumentCrypto.zoneKeyId(key).utf8)])
+        XCTAssertEqual(try SyncRehearsal.sealingFindings(in: [leaky], keys: keys), ["account: doesn't open"])
+        var keyed = marker
+        keyed.encryptedFields["keys"] = Data("{}".utf8)
+        XCTAssertEqual(try SyncRehearsal.sealingFindings(in: [keyed], keys: keys), ["zoneKey: not exactly a key marker"])
+        var fileWithFields = file
+        fileWithFields.encryptedFields["meta"] = Data([1])
+        XCTAssertEqual(try SyncRehearsal.sealingFindings(in: [fileWithFields], keys: keys), ["documentFile: not exactly a sealed file"])
     }
 
     /// M3: assets must be ciphertext: never readable JSON, never holding a library file's bytes.

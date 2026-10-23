@@ -9,6 +9,7 @@ import GRDB
 /// 2024/25, Property A let out with its rent and a repair in that year.
 final class FiledYearSyncCheckTests: XCTestCase {
     private var cloud: FakeCloud!
+    private var keys: InMemorySyncKeyStore!
     private var a: SyncEngineTestDevice!
     private var b: SyncEngineTestDevice!
     private var ids: [String: Int64] = [:]
@@ -19,8 +20,9 @@ final class FiledYearSyncCheckTests: XCTestCase {
 
     override func setUp() async throws {
         cloud = FakeCloud()
-        a = try SyncEngineTestDevice("user-a", name: "Mac", cloud: cloud)
-        b = try SyncEngineTestDevice("user-b", name: "iPad", cloud: cloud)
+        keys = InMemorySyncKeyStore()
+        a = try SyncEngineTestDevice("user-a", name: "Mac", cloud: cloud, keys: keys)
+        b = try SyncEngineTestDevice("user-b", name: "iPad", cloud: cloud, keys: keys)
         ids = try a.write { db in try Self.fixture(db) }
         try await a.engine.syncNow()
         try await b.engine.syncNow()
@@ -294,7 +296,7 @@ final class FiledYearSyncCheckTests: XCTestCase {
                 switch change {
                 case .record(let record):
                     guard !SyncEngineCore.reservedRecordTypes.contains(record.wire.recordType) else { continue }
-                    changes.append(.save(try SyncLargePayload.payload(from: record.wire)))
+                    changes.append(.save(try SyncLargePayload.payload(from: record.wire, keys: try device.keys.allKeys(zone: record.wire.zone))))
                 case .deletion(let deletion):
                     changes.append(.delete(recordName: deletion.recordName, recordType: deletion.recordType))
                 }
@@ -420,10 +422,39 @@ final class FiledYearSyncCheckTests: XCTestCase {
     }
 
     func testAFirstSyncOntoAnEmptyDeviceHoldsNothing() async throws {
-        let c = try SyncEngineTestDevice("user-c", name: "iPhone", cloud: cloud)
+        let c = try SyncEngineTestDevice("user-c", name: "iPhone", cloud: cloud, keys: keys)
         let report = try await c.engine.pull()
         XCTAssertNil(report.filedYearAlert)
         XCTAssertEqual(try figures(c), try figures(a))
+    }
+
+    /// Ruling R15: a record that waited for the household key goes through the same check once its key arrives.
+    func testARecordThatWaitedForTheHouseholdKeyIsCheckedWhenItOpens() async throws {
+        // C: a device whose key store had the first key, but not yet the key A rotates to.
+        let cKeys = InMemorySyncKeyStore()
+        try cKeys.store(try XCTUnwrap(keys.key(zone: SyncRecordStore.householdZone)), zone: SyncRecordStore.householdZone)
+        let c = try SyncEngineTestDevice("user-c", name: "iPhone", cloud: cloud, keys: cKeys)
+        try await c.engine.pull()
+        let before = try figures(c)
+        XCTAssertEqual(before, try figures(a))
+
+        try await a.engine.rotateZoneKey()
+        let plumber = try a.uuid("transaction_", ids["plumber"]!)
+        try a.write { db in try db.execute(sql: "UPDATE transaction_ SET amountMinorUnits = -20000 WHERE id = ?", arguments: [ids["plumber"]!]) }
+        try await a.engine.syncNow()
+
+        let waiting = try await c.engine.pull()
+        XCTAssertEqual(waiting.waitingForKey, 1)
+        XCTAssertNil(waiting.filedYearAlert)
+        XCTAssertEqual(try amount(c, plumber), -10_000)
+
+        try cKeys.store(try XCTUnwrap(keys.key(zone: SyncRecordStore.householdZone)), zone: SyncRecordStore.householdZone)
+        let opened = try await c.engine.pull()
+        let alert = try XCTUnwrap(opened.filedYearAlert, "held by the filed-year check")
+        XCTAssertEqual(alert.records.map(\.recordName), [plumber])
+        XCTAssertEqual(try amount(c, plumber), -10_000)
+        XCTAssertEqual(try figures(c), before, "the filed figures are unchanged")
+        XCTAssertEqual(try held(c).map(\.uuid), [plumber])
     }
 
     // MARK: Fix round 1

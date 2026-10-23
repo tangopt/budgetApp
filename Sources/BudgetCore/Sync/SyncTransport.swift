@@ -175,10 +175,11 @@ extension SyncTransport {
 // MARK: Wire records
 
 /// A record as it is written to the server (sync spec §4.2): the record type, name and zone are the only
-/// plaintext. Every synced value is an encrypted field `f_<column>`; everything else the payload says
-/// (clocks, writers, batch tags, manifests…) is the encrypted field `meta`, the payload itself encoded
-/// with its fields cleared, so no property can be left out. `assets` are asset fields holding ciphertext
-/// the app sealed itself; they are saved with the record and don't count towards its size.
+/// plaintext. What the engine sends is sealed (ruling R15, `FieldSealing`): exactly `sealed` and `keyId`. Built
+/// from a payload (`init(_:)`), it is the *inner* record the seal holds: every synced value is a field
+/// `f_<column>`; everything else the payload says (clocks, writers, batch tags, manifests…) is the field `meta`,
+/// the payload itself encoded with its fields cleared, so no property can be left out. `assets` are asset fields
+/// holding ciphertext the app sealed itself; they are saved with the record and don't count towards its size.
 public struct SyncWireRecord: Equatable, Sendable {
     public var recordType: String
     public var recordName: String

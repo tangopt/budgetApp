@@ -472,7 +472,8 @@ final class SyncConflictTests: XCTestCase {
             XCTAssertEqual(try SyncStagingRow.fetchCount(db), 1)
             XCTAssertTrue(try SyncEngineCore.retryStagedRequested(db: db))
         }
-        let engine = SyncEngineCore(db: reopened.dbQueue, transport: FakeCloud(), device: SyncDevice(id: "device-b", name: "iPad"))
+        let engine = SyncEngineCore(db: reopened.dbQueue, transport: FakeCloud(), device: SyncDevice(id: "device-b", name: "iPad"),
+                                    keyStore: InMemorySyncKeyStore())
         let pulled = expectation(description: "pull")
         Task {
             do { _ = try await engine.pull() } catch { XCTFail("\(error)") }

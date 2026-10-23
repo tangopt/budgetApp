@@ -135,7 +135,7 @@ public struct SyncPayload: Codable, Equatable, Sendable {
     /// was sent, so a receiver that never had one doesn't wait for it.
     public var deletedReferences: [String]?
     /// Set only on the wire (ruling R4): the record was too large for one server record, so its payload
-    /// travels as an encrypted asset field of the record, and this names it. The engine reassembles it.
+    /// travels as a sealed asset field of the record, and this names it. The engine reassembles it.
     public var largePayload: SyncLargePayloadReference?
     /// Ruling R12: sent again because a full fetch found it missing on the server (a delete missed while a
     /// token was expired, or a zone reset). A receiver that deleted it takes it back, and logs that.
@@ -166,15 +166,12 @@ public struct SyncPayload: Codable, Equatable, Sendable {
     public func clock(_ field: String) -> SyncClock? { clocks[field] ?? clocks[SyncMerge.insertClock] }
 }
 
-/// Where a payload too large for a record went (ruling R4): an asset field of the same record, holding
-/// the payload sealed with AES-GCM under `key`, a random key that travels only in the record's encrypted
-/// fields.
+/// Where a payload too large for a record went (ruling R4): an asset field of the same record, holding the
+/// payload sealed under the zone key like the record's fields (ruling R15; no key travels with the record).
 public struct SyncLargePayloadReference: Codable, Equatable, Hashable, Sendable {
     public var assetField: String
-    public var key: Data
 
-    public init(assetField: String, key: Data) {
+    public init(assetField: String) {
         self.assetField = assetField
-        self.key = key
     }
 }

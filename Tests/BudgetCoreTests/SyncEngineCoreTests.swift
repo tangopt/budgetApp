@@ -9,15 +9,18 @@ final class SyncEngineTestDevice {
     let user: String
     let device: SyncDevice
     let engine: SyncEngineCore
+    /// The zone keys this device holds (ruling R15): devices sharing one model the same iCloud Keychain.
+    let keys: any SyncKeyStore
     var queue: DatabaseQueue { manager.dbQueue }
 
-    init(_ user: String, name: String, cloud: FakeCloud, batchSize: Int = 200, path: String? = nil) throws {
+    init(_ user: String, name: String, cloud: FakeCloud, keys: any SyncKeyStore, batchSize: Int = 200, path: String? = nil) throws {
         manager = try DatabaseManager(path: path)
         try manager.migrate()
         self.user = user
         device = SyncDevice(id: "device-\(user)", name: name)
         try manager.dbQueue.write { db in try SyncChangeTracker.setWriter(user, db: db) }
-        engine = SyncEngineCore(db: manager.dbQueue, transport: cloud, device: device, batchSize: batchSize)
+        self.keys = keys
+        engine = SyncEngineCore(db: manager.dbQueue, transport: cloud, device: device, keyStore: keys, batchSize: batchSize)
     }
 
     /// Synchronous access (async tests would otherwise pick GRDB's async overloads).
@@ -61,13 +64,15 @@ final class SyncEngineTestDevice {
 /// feeds with tombstones, paged tokens, a server clock, the record size limit and assets). Synthetic data.
 final class SyncEngineCoreTests: XCTestCase {
     private var cloud: FakeCloud!
+    private var keys: InMemorySyncKeyStore!
     private var a: SyncEngineTestDevice!
     private var b: SyncEngineTestDevice!
 
     override func setUp() async throws {
         cloud = FakeCloud()
-        a = try SyncEngineTestDevice("user-a", name: "Mac", cloud: cloud)
-        b = try SyncEngineTestDevice("user-b", name: "iPad", cloud: cloud)
+        keys = InMemorySyncKeyStore()
+        a = try SyncEngineTestDevice("user-a", name: "Mac", cloud: cloud, keys: keys)
+        b = try SyncEngineTestDevice("user-b", name: "iPad", cloud: cloud, keys: keys)
     }
 
     private static let day = Date(timeIntervalSince1970: 1_700_000_000)
@@ -230,13 +235,13 @@ final class SyncEngineCoreTests: XCTestCase {
             XCTAssertEqual(row["note"] as String?, "Mac note")
             XCTAssertEqual(row["status"] as String, "confirmed")
         }
-        let server = try await cloud.payload(named: uuid)
+        let server = try await cloud.payload(named: uuid, keys: keys)
         XCTAssertEqual(server?.fields["note"], .string("Mac note"))
         XCTAssertEqual(server?.fields["status"], .string("confirmed"))
     }
 
     func testImportBatchArrivesAtomically() async throws {
-        a = try SyncEngineTestDevice("user-a", name: "Mac", cloud: cloud, batchSize: 2)
+        a = try SyncEngineTestDevice("user-a", name: "Mac", cloud: cloud, keys: keys, batchSize: 2)
         let (account, _, manual) = try base(a)
         let manualUuid = try a.uuid("transaction_", manual)
         try await a.engine.syncNow()
@@ -294,7 +299,7 @@ final class SyncEngineCoreTests: XCTestCase {
         // A device offline for the whole upload sees only the closed batch, over small fetch pages, and
         // gets it all at once.
         await cloud.setPageSize(3)
-        let c = try SyncEngineTestDevice("user-c", name: "iPhone", cloud: cloud)
+        let c = try SyncEngineTestDevice("user-c", name: "iPhone", cloud: cloud, keys: keys)
         try await c.engine.pull()
         XCTAssertEqual(try c.descriptions().filter { $0.hasPrefix("Shop") }.count, 6)
         XCTAssertNil(try c.localId("transaction_", manualUuid))
@@ -343,7 +348,7 @@ final class SyncEngineCoreTests: XCTestCase {
 
         // A device that joins now can never meet the counts: once its fetch has caught up, the batch applies.
         await cloud.setPageSize(2)
-        let c = try SyncEngineTestDevice("user-c", name: "iPhone", cloud: cloud)
+        let c = try SyncEngineTestDevice("user-c", name: "iPhone", cloud: cloud, keys: keys)
         try await c.engine.pull()
         XCTAssertEqual(try c.descriptions().filter { $0.hasPrefix("Shop") }.sorted(), ["Shop 1", "Shop 2"])
         XCTAssertEqual(try c.count("syncStaging"), 0)
@@ -464,17 +469,17 @@ final class SyncEngineCoreTests: XCTestCase {
             XCTFail("the second operation can't go")
         } catch SyncTransportError.networkUnavailable {}
         await cloud.restoreConnection()
-        let server = try await cloud.payload(named: accountUuid)
+        let server = try await cloud.payload(named: accountUuid, keys: keys)
         XCTAssertEqual(server?.fields["name"], .string("Renamed"))
-        let batchOnServer = try await cloud.payload(named: batchUuid)
+        let batchOnServer = try await cloud.payload(named: batchUuid, keys: keys)
         XCTAssertEqual(batchOnServer?.fields["sourceFileName"], .string("renamed.csv"))
     }
 
     func testOperationsAreSplitByCountAndBytes() async throws {
         for advertised in [true, false] {
             let cloud = FakeCloud(limits: SyncOperationLimits(maxRecords: 3, maxBytes: 4_000), advertisesLimits: advertised)
-            let mac = try SyncEngineTestDevice("user-a", name: "Mac", cloud: cloud)
-            let ipad = try SyncEngineTestDevice("user-b", name: "iPad", cloud: cloud)
+            let mac = try SyncEngineTestDevice("user-a", name: "Mac", cloud: cloud, keys: keys)
+            let ipad = try SyncEngineTestDevice("user-b", name: "iPad", cloud: cloud, keys: keys)
             let (account, batch, _) = try base(mac)
             try mac.write { db in
                 for i in 0..<9 {
@@ -532,7 +537,7 @@ final class SyncEngineCoreTests: XCTestCase {
         try await b.engine.syncNow()
         await cloud.deleteZone("household")
         try await a.engine.syncNow()
-        let back = try await cloud.payload(named: uuid)
+        let back = try await cloud.payload(named: uuid, keys: keys)
         XCTAssertEqual(back?.fields["rawDescription"], .string("Coffee"), "re-uploaded")
         try await b.engine.syncNow()
         XCTAssertEqual(try b.descriptions(), ["Coffee"], "no duplicates")
@@ -612,9 +617,9 @@ final class SyncEngineCoreTests: XCTestCase {
         }
         try await a.engine.syncNow()
         try await b.engine.syncNow()   // B never saw the deletes: all three go up again, resent
-        let childOnServer = try await cloud.payload(named: uuids.2)
-        let accountOnServer = try await cloud.payload(named: uuids.0)
-        let batchOnServer = try await cloud.payload(named: uuids.1)
+        let childOnServer = try await cloud.payload(named: uuids.2, keys: keys)
+        let accountOnServer = try await cloud.payload(named: uuids.0, keys: keys)
+        let batchOnServer = try await cloud.payload(named: uuids.1, keys: keys)
         let child = try XCTUnwrap(childOnServer)
         let parents = [try XCTUnwrap(accountOnServer), try XCTUnwrap(batchOnServer)]
         XCTAssertEqual(child.resent, true)
@@ -650,10 +655,10 @@ final class SyncEngineCoreTests: XCTestCase {
         // B's re-send of the coffee: while its save is on the way, B edits the row.
         let bCoffee = try XCTUnwrap(b.localId("transaction_", uuid))
         let device = b!
-        let spy = SaveSpy(watching: uuid) {
+        let spy = SaveSpy(watching: uuid, keys: keys) {
             try? device.write { db in try db.execute(sql: "UPDATE transaction_ SET note = 'During the resend' WHERE id = ?", arguments: [bCoffee]) }
         }
-        let engine = SyncEngineCore(db: b.queue, transport: SpyTransport(cloud: cloud, spy: spy), device: b.device)
+        let engine = SyncEngineCore(db: b.queue, transport: SpyTransport(cloud: cloud, spy: spy), device: b.device, keyStore: keys)
         try await engine.syncNow()
         // The Mac only ever sees the latest version (the edit): it must still say "resent", or the Mac,
         // which deleted the coffee, would discard it and the two would diverge.
@@ -696,7 +701,7 @@ final class SyncEngineCoreTests: XCTestCase {
 
     func testTheLeaseStoreReportsPassingFailuresAsUnavailable() async throws {
         try await cloud.createZone("household")
-        let store = TransportLeaseStore(transport: cloud)
+        let store = try leaseStore()
         await cloud.failSaveOperations(after: 0)
         do {
             _ = try await ImportLease.acquire(device: a.device, now: Date(), transport: store)
@@ -707,7 +712,7 @@ final class SyncEngineCoreTests: XCTestCase {
     /// Final review M3: signed out of iCloud, or out of space, isn't "try again later": it reaches the caller as it is.
     func testTheLeaseStorePassesAccountFailuresThrough() async throws {
         try await cloud.createZone("household")
-        let store = TransportLeaseStore(transport: cloud)
+        let store = try leaseStore()
         for failure in [SyncTransportError.notAuthenticated, .quotaExceeded] {
             await cloud.failSaveOperations(after: 0, with: failure)
             do {
@@ -724,7 +729,7 @@ final class SyncEngineCoreTests: XCTestCase {
         } catch LeaseStoreError.unavailable {}
     }
 
-    func testUploadedPayloadsContainNoPlaintextAmountsOutsideEncryptedFields() async throws {
+    func testUploadedRecordsHoldNoReadableValueAnywhere() async throws {
         try a.write { db in
             var account = Account(name: "Probe Account Zeta", currency: .gbp, kind: .cash, trackingMode: .imported)
             try account.insert(db)
@@ -750,18 +755,30 @@ final class SyncEngineCoreTests: XCTestCase {
         let records = await cloud.storedRecords()
         XCTAssertGreaterThanOrEqual(records.count, 3)
         let probes = ["987654", "Probe Shop Omega", "Probe Account Zeta", "Probe note Kappa", "Probe large Sigma", "probe-file"]
-        var foundEncrypted = Set<String>()
+        // Ruling R15: not even the encrypted fields hold a readable value (they were readable in the CloudKit
+        // Console); each data record is exactly `sealed` + `keyId`, and the values are only inside the box.
+        var readable = Set<String>()
+        var opened = Set<String>()
+        let held = try keys.allKeys(zone: "household")
         for record in records {
             XCTAssertTrue(record.unencryptedFields.isEmpty, record.recordType)
             let plaintext = [record.recordType, record.recordName, record.zone].joined(separator: "|")
             for probe in probes { XCTAssertFalse(plaintext.contains(probe), "\(probe) outside encrypted fields") }
             for value in record.encryptedFields.values {
                 let text = String(decoding: value, as: UTF8.self)
-                for probe in probes where text.contains(probe) { foundEncrypted.insert(probe) }
+                for probe in probes where text.contains(probe) { readable.insert(probe) }
+            }
+            guard !SyncEngineCore.reservedRecordTypes.contains(record.recordType) else { continue }
+            XCTAssertEqual(Set(record.encryptedFields.keys), [FieldSealing.sealedField, FieldSealing.keyIdField], record.recordType)
+            let inner = try FieldSealing.open(record, keys: held)
+            for value in inner.encryptedFields.values {
+                let text = String(decoding: value, as: UTF8.self)
+                for probe in probes where text.contains(probe) { opened.insert(probe) }
             }
         }
-        XCTAssertTrue(foundEncrypted.isSuperset(of: ["987654", "Probe Shop Omega", "Probe Account Zeta", "probe-file"]),
-                      "the scan sees the values where they are: in encrypted fields (\(foundEncrypted))")
+        XCTAssertEqual(readable, [], "no value readable in the encrypted fields")
+        XCTAssertTrue(opened.isSuperset(of: ["987654", "Probe Shop Omega", "Probe Account Zeta", "probe-file"]),
+                      "the scan finds the values where they are: inside the sealed box (\(opened))")
         let assets = records.flatMap(\.assets.values)
         XCTAssertFalse(assets.isEmpty, "the large record went as an asset")
         for asset in assets {
@@ -799,9 +816,16 @@ final class SyncEngineCoreTests: XCTestCase {
 
     // MARK: Lease
 
+    /// The lease store over the fake, sealing under a zone key held in the devices' shared key store (ruling R15).
+    private func leaseStore() throws -> TransportLeaseStore {
+        let key = DocumentCrypto.newZoneKey()
+        try keys.store(key, zone: "household")
+        return TransportLeaseStore(transport: cloud, sealingKey: key, keys: try keys.allKeys(zone: "household"))
+    }
+
     func testTheLeaseOverTheTransportIsCompareAndSetOnTheServersClock() async throws {
         try await cloud.createZone("household")
-        let store = TransportLeaseStore(transport: cloud)
+        let store = try leaseStore()
         let mac = SyncDevice(id: "mac", name: "Mac")
         let ipad = SyncDevice(id: "ipad", name: "iPad")
         let start = await cloud.now
@@ -841,7 +865,7 @@ final class SyncEngineCoreTests: XCTestCase {
 
     func testAPushRenewsAUsedLeaseOnceItIsTenMinutesOld() async throws {
         let clock = TestClock()
-        let engine = SyncEngineCore(db: a.queue, transport: cloud, device: a.device, clock: { clock.now })
+        let engine = SyncEngineCore(db: a.queue, transport: cloud, device: a.device, keyStore: keys, clock: { clock.now })
         let (account, _, _) = try base(a)
         try await engine.syncNow()
         try await engine.acquireImportLease()
@@ -857,13 +881,13 @@ final class SyncEngineCoreTests: XCTestCase {
         try await engine.pushPending()
         let renewed = try XCTUnwrap(a.read { db in try SyncImportGate.heldLease(db: db) })
         XCTAssertEqual(renewed.record.expiresAt, clock.now.addingTimeInterval(ImportLease.duration))
-        let server = try await TransportLeaseStore(transport: cloud).currentLease()
+        let server = try await TransportLeaseStore(transport: cloud, sealingKey: nil, keys: keys.allKeys(zone: "household")).currentLease()
         XCTAssertEqual(server?.record.expiresAt, renewed.record.expiresAt)
     }
 
     func testAnUnusedLeaseIsNeverRenewedAndIsDroppedOnceExpired() async throws {
         let clock = TestClock()
-        let engine = SyncEngineCore(db: a.queue, transport: cloud, device: a.device, clock: { clock.now })
+        let engine = SyncEngineCore(db: a.queue, transport: cloud, device: a.device, keyStore: keys, clock: { clock.now })
         try await engine.acquireImportLease()
         let taken = try XCTUnwrap(a.read { db in try SyncImportGate.heldLease(db: db) })
         func updatedAt(_ key: String) throws -> Date? {
@@ -1124,7 +1148,7 @@ final class FakeCloudTests: XCTestCase {
         original.manifest?.deletes = ["gone"]
         original.manifest?.revives = ["back"]
         original.deletedReferences = ["gone"]
-        original.largePayload = SyncLargePayloadReference(assetField: "payload", key: Data([1, 2, 3]))
+        original.largePayload = SyncLargePayloadReference(assetField: "payload")
         original.resent = true
         original.documentFile = SyncDocumentFileReference(recordName: "r1.file.1", wrappedKey: Data([4, 5, 6]))
         // Every property is set: a property added later without a value here fails this.
@@ -1144,9 +1168,11 @@ final class SaveSpy: @unchecked Sendable {
     private var flags: [Bool] = []
     private var hook: (() -> Void)?
     let watching: String
+    let keys: any SyncKeyStore
 
-    init(watching: String, hook: @escaping () -> Void) {
+    init(watching: String, keys: any SyncKeyStore, hook: @escaping () -> Void) {
         self.watching = watching
+        self.keys = keys
         self.hook = hook
     }
 
@@ -1156,7 +1182,7 @@ final class SaveSpy: @unchecked Sendable {
         lock.withLock {
             var seen = false
             for record in records where record.recordName == watching {
-                flags.append((try? SyncLargePayload.payload(from: record))?.resent == true)
+                flags.append((try? SyncLargePayload.payload(from: record, keys: (try? keys.allKeys(zone: record.zone)) ?? [:]))?.resent == true)
                 seen = true
             }
             return seen
