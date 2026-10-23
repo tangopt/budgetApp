@@ -207,7 +207,7 @@ final class SyncSchemaTests: XCTestCase {
         }
         let before = try snapshot()
         XCTAssertEqual(before["transaction_"]?.count, 1)
-        try manager.migrate()
+        try manager.migrate(upTo: "createSync")
         var after = try snapshot()
         let added = Set(after.keys).subtracting(before.keys)
         XCTAssertEqual(added, ["syncRecord", "syncStaging", "syncConflict", "syncTombstone", "syncState"])
