@@ -63,6 +63,7 @@ public enum SyncDocumentError: Error, Equatable, Sendable {
 /// Each device keeps the marker in `syncState` (`zoneKeyMarker.<zone>`) with the version it last saw: no key
 /// material. A step 3 keyring (`zoneKeys.<zone>`, key material) moves into the key store once and is deleted.
 public enum SyncZoneKeys {
+    private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
     public static let recordType = "zoneKey"
     static let keyIdField = "keyId"
     static let createdAtField = "createdAt"
@@ -82,7 +83,9 @@ public enum SyncZoneKeys {
         }
     }
 
-    /// The marker a `zoneKey` record holds: exactly a key id (16 hex digits) and an 8-byte creation time.
+    /// The marker a `zoneKey` record holds: exactly a key id (16 hex digits) and an 8-byte creation time, a
+    /// finite number of seconds (a NaN or infinite bit pattern makes a `Date` that can't be stored, security review
+    /// finding 1). The only error thrown is `SyncTransportError.unreadableRecord`, which every reader stages.
     public static func marker(from wire: SyncWireRecord) throws -> Marker {
         guard wire.recordType == recordType, wire.unencryptedFields.isEmpty, wire.assets.isEmpty,
               Set(wire.encryptedFields.keys) == [keyIdField, createdAtField],
@@ -91,8 +94,9 @@ public enum SyncZoneKeys {
               let time = wire.encryptedFields[createdAtField], time.count == 8 else {
             throw SyncTransportError.unreadableRecord(wire.recordName)
         }
-        let bits = time.reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
-        return Marker(keyId: id, createdAt: Date(timeIntervalSinceReferenceDate: Double(bitPattern: bits)))
+        let seconds = Double(bitPattern: time.reduce(UInt64(0)) { $0 << 8 | UInt64($1) })
+        guard seconds.isFinite, abs(seconds) < 1e11 else { throw SyncTransportError.unreadableRecord(wire.recordName) }
+        return Marker(keyId: id, createdAt: Date(timeIntervalSinceReferenceDate: seconds))
     }
 
     public static func wire(_ marker: Marker, zone: String) -> SyncWireRecord {
@@ -174,7 +178,13 @@ public enum SyncZoneKeys {
                 try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [legacyStateKey(zone)])
             }
         } else {
-            try db.write { db in try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [legacyStateKey(zone)]) }
+            // Not a keyring this build can read, and possibly the only copy of key material: set aside under another
+            // key (never deleted; security review finding 3), so the next start finds nothing to move.
+            Self.log.error("Sync step 3 keyring in syncState can't be read; set aside")
+            try db.write { db in
+                try db.execute(sql: "UPDATE syncState SET key = ? WHERE key = ?",
+                               arguments: [legacyStateKey(zone) + ".unreadable-\(Int(now.timeIntervalSince1970))", legacyStateKey(zone)])
+            }
         }
         return true
     }
@@ -360,12 +370,9 @@ extension SyncEngineCore {
             return try heldKey(marker.keyId, zone: zone)
         case .changed(let winner):
             Self.documentLog.error("Zone key marker written by another device first; adopting it")
-            do {
-                let adopted = try await db.write { db in try SyncZoneKeys.adopt(winner, zone: zone, db: db, now: now) }
-                return try heldKey(adopted.keyId, zone: zone)
-            } catch SyncTransportError.unreadableRecord {
-                throw SyncKeyError.unavailable
-            }
+            guard let adopted = try? SyncZoneKeys.marker(from: winner.wire) else { throw SyncKeyError.unavailable }
+            try await db.write { db in try SyncZoneKeys.store(.init(marker: adopted, systemFields: winner.stamp.systemFields), zone: zone, db: db, now: now) }
+            return try heldKey(adopted.keyId, zone: zone)
         default:
             throw SyncKeyError.unavailable
         }
@@ -393,7 +400,8 @@ extension SyncEngineCore {
             case .changed(let server):
                 // Another device rotated (or created) it first: its key is the zone's.
                 Self.documentLog.error("Zone key changed on another device during rotation; adopting it")
-                try await self.db.write { db in _ = try SyncZoneKeys.adopt(server, zone: zone, db: db, now: now) }
+                guard let adopted = try? SyncZoneKeys.marker(from: server.wire) else { throw SyncKeyError.unavailable }
+                try await self.db.write { db in try SyncZoneKeys.store(.init(marker: adopted, systemFields: server.stamp.systemFields), zone: zone, db: db, now: now) }
             case .deleted:
                 try await self.db.write { db in try SyncZoneKeys.store(.init(marker: marker, systemFields: nil), zone: zone, db: db, now: now) }
                 _ = try await self.householdKey(zone: zone, create: true)
@@ -546,11 +554,12 @@ extension SyncEngineCore {
         // readable version arriving later is adopted and clears it.
         var unreadable = 0
         for record in zoneKeys {
-            do {
-                try SyncZoneKeys.adopt(record, zone: zone, db: db, now: now)
+            // Only the parse can refuse (and it only throws `unreadableRecord`); a database error still rolls back.
+            if let marker = try? SyncZoneKeys.marker(from: record.wire) {
+                try SyncZoneKeys.store(.init(marker: marker, systemFields: record.stamp.systemFields), zone: zone, db: db, now: now)
                 try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ? AND tableName = ?",
                                arguments: [record.wire.recordName, SyncZoneKeys.recordType])
-            } catch SyncTransportError.unreadableRecord {
+            } else {
                 if let legacy = SyncZoneKeys.legacyKeyring(from: record.wire) {
                     // A step 3 record: its keys are kept (what they sealed stays readable); the next push replaces it.
                     for key in legacy.keys { try keyStore.store(key, zone: zone) }

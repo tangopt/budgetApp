@@ -823,6 +823,43 @@ final class SyncEngineCoreTests: XCTestCase {
         return TransportLeaseStore(transport: cloud, sealingKey: key, keys: try keys.allKeys(zone: "household"))
     }
 
+    /// Security review finding 2: a lease record that isn't sealed, is sealed under a key not held here, carries
+    /// an unknown wire version or doesn't authenticate is `LeaseStoreError.unavailable` (the device waits or the
+    /// zone is reset), never a raw `FieldSealing.SealingError` callers don't expect.
+    func testAnyUnreadableLeaseRecordIsUnavailableToTheLeaseStore() async throws {
+        try await cloud.createZone("household")
+        let store = try leaseStore()
+        let name = TransportLeaseStore.recordName
+        let payload = SyncPayload(recordType: TransportLeaseStore.recordType, recordName: name, zone: "household", fields: [
+            "holderId": .string("other"), "holderName": .string("Other"), "takenAt": .date(Date()), "expiresAt": .date(Date().addingTimeInterval(600)),
+        ])
+        let held = try XCTUnwrap(keys.key(zone: "household"))
+        let (sealed, _) = try SyncLargePayload.wire(for: payload, key: held)
+        var tampered = sealed
+        var box = try XCTUnwrap(tampered.encryptedFields[FieldSealing.sealedField])
+        box[box.count - 1] ^= 0xff
+        tampered.encryptedFields[FieldSealing.sealedField] = box
+        var unknownVersion = sealed
+        var versioned = try XCTUnwrap(unknownVersion.encryptedFields[FieldSealing.sealedField])
+        versioned[3] = 9
+        unknownVersion.encryptedFields[FieldSealing.sealedField] = versioned
+        let (foreign, _) = try SyncLargePayload.wire(for: payload, key: DocumentCrypto.newZoneKey())
+        let notSealed = SyncWireRecord(recordType: TransportLeaseStore.recordType, recordName: name, zone: "household",
+                                       encryptedFields: ["holderId": Data("other".utf8)])
+        for (label, wire) in [("not sealed", notSealed), ("tampered", tampered), ("unknown version", unknownVersion), ("foreign key", foreign)] {
+            let current = await cloud.record(named: name)
+            let saved = try await cloud.save([wire], ifUnchanged: current.map { [name: $0.stamp.systemFields] } ?? [:], atomic: false)
+            guard case .saved = saved.first?.outcome else { return XCTFail("\(label): not saved") }
+            do {
+                _ = try await store.currentLease()
+                XCTFail("\(label): read")
+            } catch LeaseStoreError.unavailable {
+            } catch {
+                XCTFail("\(label): \(error)")
+            }
+        }
+    }
+
     func testTheLeaseOverTheTransportIsCompareAndSetOnTheServersClock() async throws {
         try await cloud.createZone("household")
         let store = try leaseStore()

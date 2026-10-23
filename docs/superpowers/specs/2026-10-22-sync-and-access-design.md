@@ -489,6 +489,18 @@ Builds on the authentication spec's pre-migration backup (its §6).
 **Weakest points**
 - Each Apple Account (two-factor required). Use a strong, unique password; Apple can reset the account, which is why documents carry our own encryption.
 - The member has Edit on shared data by design.
+- **The `zoneKey` marker isn't authenticated** (R15.4, security review 2026-10-23): whoever can write the zone
+  (the console, a compromised Apple Account) can name a key id nobody holds and every device waits. Denial of
+  service only: no key is made, nothing is sent, nothing is exposed; a damaged marker is staged for attention
+  and never rolls back a pull. Signing the marker is for the sharing design.
+- **Rotation re-wraps, it doesn't re-seal** (security review 2026-10-23): after `rotateZoneKey` the records
+  sealed under the retired key keep it until their next edit, and a device refreshes its marker only on a pull.
+  Fine while every household device holds the retired keys (sharing out of scope); the re-seal sweep comes with
+  steps 5–6.
+- **Waiting isn't failing**: records staged "waiting for the household key" (and a push that reports `keyWait`)
+  mean iCloud Keychain hasn't delivered the key yet; the UI (step 4) must say so, never present them as errors.
+- **iOS keychain access group**: the iOS app must share `$(AppIdentifierPrefix)ubberninja.mango` with the Mac
+  app, or the synchronizable key items aren't visible to it.
 
 ## 10. Alternatives considered
 

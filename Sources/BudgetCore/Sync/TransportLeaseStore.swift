@@ -42,6 +42,10 @@ public struct TransportLeaseStore: LeaseStore {
             fields = try SyncLargePayload.payload(from: server.wire, keys: keys).fields
         } catch FieldSealing.SealingError.keyMissing {
             throw LeaseStoreError.unavailable("the lease is sealed under a household key not held here yet")
+        } catch {
+            // Not sealed (a step 3 lease), another wire version, damaged, moved, or not a lease once opened: never
+            // applied, and never an error type the callers don't expect (security review finding 2).
+            throw LeaseStoreError.unavailable("the lease on the server can't be read: \(error)")
         }
         func string(_ key: String) -> String { if case .string(let value) = fields[key] { return value } else { return "" } }
         func date(_ key: String) -> Date { if case .date(let value) = fields[key] { return value } else { return .distantPast } }

@@ -255,6 +255,57 @@ final class DocumentSyncTests: XCTestCase {
         }
     }
 
+    /// Security review finding 1: a marker whose `createdAt` bits aren't a finite number (NaN, an infinity) is
+    /// unreadable like any other damaged marker: staged, the pull applies the rest and its token moves on, and the
+    /// push waits (`keyWait`) instead of throwing. Nothing else about the marker can roll the pull back.
+    func testAMarkerWithANonFiniteCreationTimeIsStagedAndNeverRollsBackOrThrows() async throws {
+        _ = try a.add("one.pdf", Self.bytes("one"))
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        let good = try await zoneKeys().marker
+        let keyName = SyncZoneKeys.recordName(zone: zone)
+
+        // A valid key id with a NaN creation time (0x7ff8000000000000): a Date JSONEncoder refuses.
+        let awaitedServer = await cloud.record(named: keyName)
+        let server = try XCTUnwrap(awaitedServer)
+        let nan = SyncWireRecord(recordType: SyncZoneKeys.recordType, recordName: keyName, zone: zone,
+                                 encryptedFields: ["keyId": Data(good.keyId.utf8), "createdAt": Data([0x7f, 0xf8, 0, 0, 0, 0, 0, 0])])
+        let saved = try await cloud.save([nan], ifUnchanged: [keyName: server.stamp.systemFields], atomic: false)
+        guard case .saved = saved.first?.outcome else { return XCTFail("damaged version saved") }
+        let (_, other) = try a.add("two.pdf", Self.bytes("two"))
+        try await a.engine.pushPending()
+
+        let pulled = try await b.engine.pull()
+        XCTAssertEqual(pulled.unreadable, 1)
+        XCTAssertNotNil(try b.document(uuid: other), "the rest of the pull applied")
+        try b.read { db in
+            XCTAssertEqual(try SyncZoneKeys.local(zone: zone, db: db)?.marker, good, "the local marker stays")
+            XCTAssertNil(try SyncZoneKeys.local(zone: zone, db: db)?.systemFields, "the next push asks the server again")
+            XCTAssertEqual(try SyncStagingRow.filter(Column("uuid") == keyName).fetchCount(db), 1)
+        }
+        let again = try await b.engine.pull()
+        XCTAssertEqual(again.unreadable, 0, "the token moved on")
+        XCTAssertEqual(again.received, 0)
+
+        // The push asks the server again, meets the damaged marker, and waits rather than throwing.
+        let (_, uuid) = try b.add("three.pdf", Self.bytes("three"))
+        let report = try await b.engine.pushPending()
+        XCTAssertEqual(report.keyWait, .unavailable)
+        XCTAssertEqual(report.saved, 0)
+        let pending = try b.read { db in try SyncChangeTracker.pending(db: db).map(\.uuid) }
+        XCTAssertTrue(pending.contains(uuid), "it waits, still pending")
+        let awaitedKeys = await stored(type: SyncZoneKeys.recordType)
+        XCTAssertEqual(awaitedKeys.first?.encryptedFields, nan.encryptedFields, "never replaced from here")
+
+        // Infinity is refused the same way by the parser itself.
+        let inf = SyncWireRecord(recordType: SyncZoneKeys.recordType, recordName: keyName, zone: zone,
+                                 encryptedFields: ["keyId": Data(good.keyId.utf8), "createdAt": Data([0xff, 0xf0, 0, 0, 0, 0, 0, 0])])
+        XCTAssertThrowsError(try SyncZoneKeys.marker(from: inf)) { error in
+            guard case SyncTransportError.unreadableRecord(let name) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(name, keyName)
+        }
+    }
+
     /// Final review I2: a push that needs the zone key while the server's marker is unreadable waits (ruling R15:
     /// every record is sealed under the key the marker names) instead of failing, and never replaces the marker.
     func testADamagedZoneKeyMarkerMakesThePushWaitInsteadOfFailing() async throws {

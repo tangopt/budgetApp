@@ -76,3 +76,23 @@ Tests must cover at least:
 Mac suite, scripts/build-core-ios.sh, scripts/test-core-ios.sh, Mango Debug build (CODE_SIGNING_ALLOWED=NO), and
 the rehearsal tool on the demo DB. Then the controller re-runs the attended demo sync after resetting the
 Development zone.
+
+## Follow-ups (security review, 2026-10-23)
+Fixed in this branch: a marker with a non-finite `createdAt` is `unreadableRecord` (staged, never rolls back a
+pull or makes a push throw); every `SealingError` on the lease record is `LeaseStoreError.unavailable`; an
+undecodable step 3 keyring row is set aside (`zoneKeys.<zone>.unreadable-<timestamp>`), not deleted. Still open:
+- [ ] **Step 4 UI (finding 4):** rows staged "waiting for the household key" are listed for attention at once
+  when a local edit of the same record is pending (after a refused save), and after 7 days otherwise. The UI
+  must word them as waiting for iCloud Keychain, never as failures; the refused-save case fires on every
+  device that edits before its key arrives.
+- [ ] **Rotation doesn't re-seal (finding 5), with steps 5–6:** `rotateZoneKey` re-wraps the documents' data
+  keys but existing sealed records keep their old key id until they are next edited; and a device refreshes
+  its marker only on a *pull* (`pushPending` alone keeps sealing under the key it confirmed last). Acceptable
+  while sharing is out of scope (every household device holds the retired keys); design the re-seal sweep and
+  "removed member keeps the old key" together with sharing.
+- [ ] **Unauthenticated marker (finding 6, accepted by R15.4):** anyone who can write the zone can point
+  `keyId` at an id nobody holds and every device waits forever. Denial of service only: nothing is created,
+  sent or exposed. Surface the wait in the step 4 UI, and consider signing the marker when sharing is designed.
+- [ ] **iOS keychain access group (finding 7):** the iOS app must share the Mac's keychain access group,
+  `$(AppIdentifierPrefix)ubberninja.mango`, or the synchronizable items (service `ubberninja.mango.sync`)
+  won't be visible to it; add it to the iOS entitlements when that target exists.

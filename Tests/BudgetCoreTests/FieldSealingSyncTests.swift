@@ -218,6 +218,31 @@ final class FieldSealingSyncTests: XCTestCase {
         XCTAssertEqual(account.flatMap(FieldSealing.keyId), DocumentCrypto.zoneKeyId(current))
     }
 
+    /// Security review finding 3: a `zoneKeys.<zone>` row that doesn't decode as a step 3 keyring is the only local
+    /// copy of whatever it holds, so it is set aside under another key (never deleted); nothing is stored or published.
+    func testAnUndecodableStepThreeKeyringRowIsSetAsideNotDeleted() async throws {
+        let garbage = Data("not a keyring".utf8)
+        try a.write { db in try SyncImportGate.setState(garbage, key: "zoneKeys.\(zone)", db: db, now: Date()) }
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        XCTAssertTrue(try SyncZoneKeys.migrateLocalKeyring(zone: zone, db: a.queue, keyStore: keys, now: now))
+        XCTAssertTrue(try keys.allKeys(zone: zone).isEmpty, "nothing stored")
+        try a.read { db in
+            XCTAssertNil(try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: ["zoneKeys.\(zone)"]))
+            XCTAssertNil(try SyncZoneKeys.local(zone: zone, db: db), "no marker from it")
+            let rows = try Row.fetchAll(db, sql: "SELECT key, value FROM syncState WHERE key LIKE ?", arguments: ["zoneKeys.\(zone).unreadable-%"])
+            XCTAssertEqual(rows.count, 1)
+            XCTAssertEqual(rows.first?["key"] as String?, "zoneKeys.\(zone).unreadable-1800000000")
+            XCTAssertEqual(rows.first?["value"] as Data?, garbage, "kept byte for byte")
+        }
+        // Once: the set-aside row isn't a keyring to move, and a start finds nothing more.
+        XCTAssertFalse(try SyncZoneKeys.migrateLocalKeyring(zone: zone, db: a.queue, keyStore: keys, now: now))
+        try await a.engine.pull()
+        try a.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM syncState WHERE key LIKE ?", arguments: ["zoneKeys.\(zone).unreadable-%"]), 1)
+        }
+    }
+
     func testAStepThreeZoneKeyRecordOnTheServerIsReplacedByItsMarker() async throws {
         let current = DocumentCrypto.newZoneKey()
         try await cloud.createZone(zone)
