@@ -198,6 +198,14 @@ Rulings that refine the spec (recorded there too):
 - **R13** (§5.4): the protected years are 2020/21–2024/25 ∪ every year stored filed or paid; a change moving a (year, person) out of filed/paid is held like a figure move. The check holds only the offending records (and their batch) and applies the rest, instead of "writing nothing more".
 - **R14** (§4.2, §9.1): a sealed file travels as its own `documentFile` record (asset = ciphertext only); the wrapped data key and the file record's name stay in the document record's encrypted fields.
 
+## Note, 2026-10-23: field sealing (ruling R15)
+The step 4 kick-off found `encryptedValues` readable in the CloudKit Console (base64 of the plaintext, UK
+account without ADP), so the `zoneKey` record exposed the household key. Plan
+`2026-10-23-field-sealing.md` changes this step's wire format: every record is one AES-GCM box under the zone
+key (`sealed` + `keyId`), the zone key moves to iCloud Keychain (`SyncKeyStore`), and the `zoneKey` record
+becomes a key-id marker. R15 in the spec (§4.2, §9, §9.1) records the decisions. Records written by the step 3
+format (only the demo, Development container) are unreadable to the new build: reset the Development zone.
+
 ## Prerequisite recorded for later steps (ruling R10, 2026-10-23)
 
 Transaction fingerprints embed the importing device's local account id, so the same statement imported on two devices isn't recognised as the same rows. Before any second device can import statements (the member's Mac in step 6, the iPad in step 8), add a **portable fingerprint**:

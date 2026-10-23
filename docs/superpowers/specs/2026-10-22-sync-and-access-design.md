@@ -164,8 +164,14 @@ syncRecord                          -- one row per synced local row (local only,
   unlisted.
 
 ### 4.2 Field encryption
-- **Every synced column except the UUID foreign keys goes in `encryptedValues`** (end-to-end, keys in
-  iCloud Keychain, also inside the shared zone).
+- **Mango seals every synced record's fields itself (ruling R15, 2026-10-23).** All of a record's synced
+  values, the UUID foreign keys and the record's metadata (clocks, writers, batch tags, file references) are
+  encoded deterministically and sealed with AES-GCM-256 under the zone (household) key, whose only copies
+  live on the household's devices and in iCloud Keychain (§9.1). The CloudKit record carries exactly two
+  fields: `sealed` (the box) and `keyId` (which zone key sealed it). Both still go in `encryptedValues`, but
+  only as a second layer: the finding of §9 showed `encryptedValues` aren't end-to-end for our accounts.
+  *(Superseded: "every synced column except the UUID foreign keys goes in `encryptedValues` (end-to-end,
+  keys in iCloud Keychain)".)*
 - **Foreign keys are encrypted UUID strings, not `CKRecord.Reference` (my call).** References can't be
   encrypted and would show Apple how records connect. The cost is no server-side cascade delete, which we
   don't use anyway.
@@ -177,6 +183,35 @@ syncRecord                          -- one row per synced local row (local only,
   The document record keeps, in its encrypted fields, the wrapped data key and the file record's name. Why:
   CloudKit saves whole records, so an asset on the document record would be uploaded again with every
   metadata edit and every key rotation.
+- **Ruling R15 (field sealing, 2026-10-23).** Decisions, binding for every later step:
+  1. One sealed blob per record: the record's synced fields (today's `f_<column>` values and `meta`) in a
+     deterministic encoding (sorted keys, length-prefixed), sealed with AES-GCM under the zone key. The
+     authenticated data binds the zone, record type, record name and key id, so a blob can't be moved to
+     another record, type or zone. The record carries exactly `sealed` and `keyId`, both in `encryptedValues`.
+     A payload too large for one record (R4) travels as an asset sealed the same way (its own field name in
+     the authenticated data); the random per-payload key R4 used is gone.
+  2. The blob starts with a magic and a wire format version (`MSB` + version 1). An unknown version, a wrong
+     or missing key, or a failed authentication: the record is staged, never applied.
+  3. The zone key lives in iCloud Keychain: a `SyncKeyStore` (BudgetCore protocol) per zone, keys by id. The
+     Mac and iOS apps use a synchronizable generic-password item (data-protection keychain,
+     `AfterFirstUnlock`, service `ubberninja.mango.sync`, account `<container>/<zone>/<keyId>`), never bound
+     to biometry. Tests use an in-memory store.
+  4. The `zoneKey` record holds no key material: it is a marker naming the current key id and when it was
+     created (neither secret), so devices agree on which key seals. `documentFile` records are unchanged; the
+     data keys in document records are wrapped with zone keys from the key store.
+  5. Bootstrap: no key here and no marker on the server → the device creates a key, stores it in the key
+     store, then saves the marker (create only; a device that loses the race adopts the winner's marker).
+     No key here but a marker on the server (another device made it, iCloud Keychain hasn't delivered it):
+     the device **waits**. Its pull stages what it can't open as "waiting for the household key" (the
+     sealed record kept), its push sends nothing, and it never creates a second key. Once the key arrives,
+     the next pull opens the waiting records and applies them through the filed-year check.
+  6. The device's `syncState` no longer holds key material: a step 3 keyring (`zoneKeys.<zone>`) moves into
+     the key store once, at engine start, and is deleted; only the marker (key id, its server version) stays.
+  7. Sharing (steps 5–6) isn't designed here; the key store is per zone so a shared zone can later receive
+     its key by a key exchange with the other person's devices.
+  8. The import lease record is sealed too (it names a device). The rehearsal checks that every data record
+     carries exactly `sealed` and `keyId`, that no source value's bytes appear in it, and that record names
+     stay opaque.
 
 ### 4.3 Never synced (device-local)
 `syncRecord`, the staging table, backups, source-folder paths and bookmarks, window/UI state, lock and
@@ -386,24 +421,40 @@ Builds on the authentication spec's pre-migration backup (its §6).
 ## 9. Security model
 
 **In iCloud**
-- Field values are end-to-end encrypted (`encryptedValues`). Apple sees record types, counts, sizes and
-  timestamps, never amounts, names, descriptions or identifiers.
+- **Field values are sealed by Mango (ruling R15).** Every record's values are one AES-GCM box under the
+  zone key, which Apple never holds (§9.1). Apple sees record types, record names (random UUIDs), counts,
+  sizes, timestamps and which key id sealed a record, never amounts, names, descriptions or identifiers.
+  `encryptedValues` is kept only as a second layer.
 - **Documents** are encrypted on the device before upload (§9.1). Apple stores ciphertext whose keys it
   doesn't have, with or without Advanced Data Protection.
 - **Advanced Data Protection isn't available in the UK** (user, 2026-10-22). It hasn't been offered to UK
   accounts since 2025, so the design doesn't depend on it. If it ever becomes available, it adds nothing
   this design needs.
-- **To verify at build step 0:** that CloudKit encrypted fields are end-to-end for UK accounts without
-  ADP. Their keys live in iCloud Keychain, which stays end-to-end for everyone. Check this against Apple's
-  current Platform Security guide. If it ever stops being true, the zone keys of §9.1 move to a keychain
-  item, and the rest of the design is unchanged.
+- **Finding (step 4 kick-off, 2026-10-23): `encryptedValues` aren't end-to-end for our accounts.** In the
+  CloudKit Console (Development, acting as the user's UK account, no Advanced Data Protection) the demo
+  records' `encryptedValues` were readable: base64 of the plaintext (`{"string":…`, `{"int":…`). The
+  `zoneKey` record, which held the household key in an encrypted field, therefore exposed the document keys
+  too. Only demo data had been uploaded. Response (ruling R15): Mango seals every record's fields itself, and
+  the zone key moved to iCloud Keychain, which stays end-to-end for everyone; the `zoneKey` record is now only
+  a marker. *(Superseded: "To verify at build step 0: that CloudKit encrypted fields are end-to-end for UK
+  accounts without ADP".)*
 - Private zones are never shared, so the other person's devices never receive their contents.
 
 ### 9.1 Document encryption (my call, because ADP isn't available)
-- **Zone keys.** Each zone has a 256-bit **zone key**, held in a `zoneKey` record in that zone, in an
-  encrypted field:
+- **Zone keys (ruling R15).** Each zone has a 256-bit **zone key**. It seals every record of the zone and
+  wraps the documents' data keys. It lives in **iCloud Keychain** (a synchronizable keychain item per zone
+  and key id, `SyncKeyStore`), never in CloudKit:
   - the household zone's key is readable by both people;
   - a private zone's key only by its owner.
+- **The `zoneKey` record is a marker**, not a key: it names the current key id and when it was created, so
+  devices agree which key seals. Retired keys stay in the key store, so records and data keys wrapped with
+  them still open.
+- **Bootstrap.** A device with no key and no marker on the server creates the key, stores it in the key
+  store, then saves the marker (create only; the loser of a race adopts the winner's). A device with no key
+  but a marker on the server waits for iCloud Keychain: its pull stages the records it can't open ("waiting
+  for the household key"), its push sends nothing, it never makes a second key; when the key arrives the
+  waiting records are opened and applied (through the filed-year check).
+  *(Superseded: "held in a `zoneKey` record in that zone, in an encrypted field".)*
 - **Per-document keys.** Each document gets a random **data key**. The file is sealed with AES-GCM
   (CryptoKit) under the data key. The data key, wrapped with the zone key, is stored in an encrypted
   field of the document's record. The `CKAsset` holds only the ciphertext (on its own `documentFile` record,
