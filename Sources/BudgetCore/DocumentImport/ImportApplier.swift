@@ -88,7 +88,11 @@ public struct ImportApplier: Sendable {
         // A file that couldn't be read has no real hash: it is never filed.
         guard !applied.isEmpty, !applied.contains(where: ImportResolutions.isUnreadable) else { throw ImportApplyError.notConfirmable }
         // Checked before the backup too, so an outdated plan writes nothing at all.
-        try dbQueue.read { db in try Self.checkCurrent(db: db, applied) }
+        try dbQueue.read { db in
+            // With sync on, one import is confirmed at a time per household (sync spec §5.2).
+            try SyncImportGate.check(db: db, now: now)
+            try Self.checkCurrent(db: db, applied)
+        }
 
         let backupPath = try ImportBackup.backupIfNeeded(dbQueue: dbQueue, databasePath: databasePath, plan: plan, now: now)
         var placed: [URL] = []
@@ -245,6 +249,9 @@ public struct ImportApplier: Sendable {
     private func applyAll(db: Database, plan: ImportPlan, applied: [ImportItem], entryPoint: String, reasons: [UUID: String], appUserId: Int64?,
                        backupPath: String?, folderRoots: [Int64: URL], now: Date, placed: inout [URL]) throws -> ImportRunSummary {
         try Self.checkCurrent(db: db, applied)
+        try SyncImportGate.require(db: db, now: now)
+        // Everything the run writes from here on is one sync batch (sync spec §5.2).
+        let syncMark = try SyncBatch.mark(db: db)
         var run = ImportRun(confirmedAt: now, entryPoint: entryPoint, summary: "", backupPath: backupPath,
                             reasonsJSON: try Self.reasonsJSON(reasons), appUserId: appUserId)
         try run.insert(db)
@@ -348,6 +355,7 @@ public struct ImportApplier: Sendable {
         _ = try ImportChangeCapture.finish(db: db, runId: runId)
         run.summary = summary.text
         try run.update(db)
+        try SyncBatch.open(runId: runId, since: syncMark, db: db)
         return summary
     }
 

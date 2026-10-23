@@ -226,9 +226,12 @@ public enum FiledYearGuard {
 
         /// The years one of whose reads gives something else now (nil when the years themselves
         /// or the schema changed: take the whole snapshot again). `written`: the only tables
-        /// written since (`TaxFiguresReads.writtenTables`; nil: can't tell).
-        func changedYears(db: Database, written: Set<String>?) throws -> [Int]? {
-            guard try db.schemaVersion() == schemaVersion, try TaxFigures.years(db: db, extra: years) == years else { return nil }
+        /// written since (`TaxFiguresReads.writtenTables`; nil: can't tell). `fixedYears`: the
+        /// years are the caller's own (the post-sync check's filed years), not every stored year's,
+        /// so a year added or removed since doesn't count.
+        func changedYears(db: Database, written: Set<String>?, fixedYears: Bool = false) throws -> [Int]? {
+            guard try db.schemaVersion() == schemaVersion else { return nil }
+            if !fixedYears, try TaxFigures.years(db: db, extra: years) != years { return nil }
             let changed = reads.changed(written: written)
             return years.filter { year in yearReads[year].map { !$0.isDisjoint(with: changed) } ?? true }
         }
@@ -245,25 +248,7 @@ public enum FiledYearGuard {
         var before: TaxFigures.Snapshot
         var reads: YearReads?
         if recordReads {
-            // Year by year, each year's reads recorded on their own (the same figures as one snapshot).
-            // Earlier years first, so a year's return reuses the earlier ones (their reads count as its own).
-            before = try TaxFigures.snapshot(db: db, only: [])
-            let memo = TaxComputationMemo()
-            var recorded = YearReads(years: years, reads: TaxFiguresReads(), yearReads: [:], memo: memo, schemaVersion: try db.schemaVersion())
-            var replayable = true
-            for year in years {
-                memo.tag = year
-                memo.usedTags = []
-                let (part, read) = try recorded.reads.record(db: db) { try TaxFigures.snapshot(db: db, only: [year], memo: memo) }
-                before.values.merge(part.values) { _, new in new }
-                guard var read else {
-                    replayable = false
-                    continue
-                }
-                for used in memo.usedTags { read.formUnion(recorded.yearReads[used] ?? []) }
-                recorded.yearReads[year] = read
-            }
-            reads = replayable ? recorded : nil
+            (before, reads) = try recordedSnapshot(db: db, years: years)
         } else {
             before = try TaxFigures.snapshot(db: db, only: years)
         }
@@ -275,6 +260,30 @@ public enum FiledYearGuard {
         guard !properties.isEmpty else { return Baseline(before: before, drift: drift, drifting: nil, driftingNames: nil, reads: reads) }
         return Baseline(before: before, drift: drift, drifting: Set(properties.compactMap(\.id)), driftingNames: properties.map(\.name),
                         reads: reads)
+    }
+
+    /// `TaxFigures.snapshot(db:only: years)`, with what working each year out read recorded
+    /// (`YearReads`; nil when a read can't be replayed). Year by year, each year's reads recorded
+    /// on their own (the same figures as one snapshot); earlier years first, so a year's return
+    /// reuses the earlier ones (their reads count as its own).
+    static func recordedSnapshot(db: Database, years: [Int]) throws -> (TaxFigures.Snapshot, YearReads?) {
+        var before = try TaxFigures.snapshot(db: db, only: [])
+        let memo = TaxComputationMemo()
+        var recorded = YearReads(years: years, reads: TaxFiguresReads(), yearReads: [:], memo: memo, schemaVersion: try db.schemaVersion())
+        var replayable = true
+        for year in years {
+            memo.tag = year
+            memo.usedTags = []
+            let (part, read) = try recorded.reads.record(db: db) { try TaxFigures.snapshot(db: db, only: [year], memo: memo) }
+            before.values.merge(part.values) { _, new in new }
+            guard var read else {
+                replayable = false
+                continue
+            }
+            for used in memo.usedTags { read.formUnion(recorded.yearReads[used] ?? []) }
+            recorded.yearReads[year] = read
+        }
+        return (before, replayable ? recorded : nil)
     }
 
     /// The filed-return changes the matching alone would make, for an item whose confirmation

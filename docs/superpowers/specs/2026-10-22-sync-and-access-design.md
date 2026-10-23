@@ -74,6 +74,14 @@ Anti-goals (a failure even if it "works")
   local data, so everything works offline.
 - **CloudKit is the transport.** One container (`iCloud.ubberninja.mango`), `CKSyncEngine` on each
   device, record-level sync.
+  - **Ruling R11 (build step 3, 2026-10-23): `CKDatabase` operations, not `CKSyncEngine`.** The transport
+    uses `CKModifyRecordsOperation` (non-atomic, `.ifServerRecordUnchanged` from archived system fields) and
+    `CKFetchRecordZoneChangesOperation` (archived change tokens), behind BudgetCore's `SyncTransport`
+    protocol. Why: BudgetCore's `SyncEngineCore` must own the change tokens, the batching (an import's
+    manifest, held deletes), the order (parents first, a run before its records) and the filed-year check
+    of each pull, and must run identically over the in-memory `FakeCloud` in tests. `CKSyncEngine` owns
+    those itself, schedules on its own, and can't be driven offline. Where this spec says "CKSyncEngine"
+    (tombstones in §5.3, the app-side wrapper in §7), read the CloudKit transport over `CKDatabase`.
 - **Zones (my call):**
   - `household`: in the admin's private database, shared with the member through a **zone-wide
     CKShare** (read-write). Holds everything at sharing level "Everything", plus the summaries of
@@ -164,6 +172,11 @@ syncRecord                          -- one row per synced local row (local only,
 - **Documents are encrypted by the app before upload** (§9.1). Each is a `CKAsset` holding ciphertext.
   The keys travel only in encrypted fields. Advanced Data Protection isn't available to UK accounts, so
   we don't rely on it (user, 2026-10-22).
+- **Ruling R14 (build step 3, 2026-10-23):** the sealed file is not an asset on the document's own record but
+  on a separate `documentFile` record (asset = ciphertext only, no other field; a new record name per sealing).
+  The document record keeps, in its encrypted fields, the wrapped data key and the file record's name. Why:
+  CloudKit saves whole records, so an asset on the document record would be uploaded again with every
+  metadata edit and every key rotation.
 
 ### 4.3 Never synced (device-local)
 `syncRecord`, the staging table, backups, source-folder paths and bookmarks, window/UI state, lock and
@@ -205,6 +218,13 @@ except for documents: the evidence library never deletes a file another record s
 - As a second line, after each sync the Mac re-runs the filed-return regression for 2020/21–2024/25.
   If a figure would move, it shows a banner naming the records and who changed them. It never writes
   anything automatically.
+- **Rulings R12 and R13 (build step 3, 2026-10-23):**
+  - R13: the protected years are 2020/21–2024/25 **and** every year stored as filed or paid. A change that
+    would move a protected figure, or move a (year, person) out of filed/paid, is **held** in staging for
+    attention with the records and their writer named; the rest of the sync applies (the offenders are found
+    by bisection; an import batch is held whole). "Never writes automatically" holds for the held records.
+  - R12: after a full refetch (expired token, zone reset), a local synced row the server no longer lists is
+    re-uploaded and logged needs-attention, never deleted here.
 
 ### 5.5 Offline
 Every device works offline on its local copy. Changes queue and upload when back online. The UI shows
@@ -386,7 +406,8 @@ Builds on the authentication spec's pre-migration backup (its §6).
   - a private zone's key only by its owner.
 - **Per-document keys.** Each document gets a random **data key**. The file is sealed with AES-GCM
   (CryptoKit) under the data key. The data key, wrapped with the zone key, is stored in an encrypted
-  field of the document's record. The `CKAsset` holds only the ciphertext.
+  field of the document's record. The `CKAsset` holds only the ciphertext (on its own `documentFile` record,
+  ruling R14 in §4.2).
 - **The evidence hash stays the SHA-256 of the plaintext**, so duplicate detection and canonical naming
   are unchanged. The hash is stored in an encrypted field.
 - **Rotation.** Removing a member, or moving a document between zones (a sharing-level change):

@@ -124,6 +124,9 @@ final class AppEnvironment: ObservableObject {
         AppEnvironment.Current.shared.environment = environment
         // Every transaction's paperclip count, kept current from here on.
         TransactionDocumentCounts.shared.start(dbQueue: dbQueue)
+        #if DEBUG
+        SyncDemoMode.start(environment)
+        #endif
         return environment
     }
 
