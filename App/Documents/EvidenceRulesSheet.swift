@@ -37,9 +37,11 @@ struct EvidenceRulesSheet: View {
         }
         .sheet(item: $editing) { target in
             EvidenceRuleEditorSheet(viewModel: viewModel, requirement: target.requirement)
+                .keepsEvidenceObserved(viewModel, as: "rule-editor")
         }
         .sheet(isPresented: $seeding) {
             PropertyRulesSheet(viewModel: viewModel)
+                .keepsEvidenceObserved(viewModel, as: "property-rules-from-rules")
         }
         .confirmationDialog("Delete “\(deleting?.name ?? "")”?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
                             presenting: deleting) { requirement in
