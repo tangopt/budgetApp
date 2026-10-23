@@ -140,6 +140,9 @@ public struct SyncPayload: Codable, Equatable, Sendable {
     /// Ruling R12: sent again because a full fetch found it missing on the server (a delete missed while a
     /// token was expired, or a zone reset). A receiver that deleted it takes it back, and logs that.
     public var resent: Bool?
+    /// On a `document` record (sync spec §9.1): the record holding its file sealed under a random data key,
+    /// and that key wrapped with the zone key. Nil when no device has uploaded the file.
+    public var documentFile: SyncDocumentFileReference?
 
     public init(recordType: String, recordName: String, zone: String, fields: [String: SyncValue],
                 clocks: [String: SyncClock] = [:], modifiedBy: String? = nil, modifiedAt: Date? = nil, mergedInto: String? = nil,

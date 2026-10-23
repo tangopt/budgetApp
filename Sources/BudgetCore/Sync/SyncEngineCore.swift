@@ -21,6 +21,8 @@ public struct SyncPushReport: Equatable, Sendable {
     public var held = 0
     /// What they would have changed, and who wrote them; nil when nothing was held.
     public var filedYearAlert: FiledYearSyncAlert?
+    /// Evidence files sealed and uploaded (sync spec §9.1).
+    public var documentsSealed = 0
 
     public init() {}
 }
@@ -40,6 +42,10 @@ public struct SyncPullReport: Equatable, Sendable {
     public var held = 0
     /// What they would have changed, and who wrote them; nil when nothing was held.
     public var filedYearAlert: FiledYearSyncAlert?
+    /// Evidence files downloaded, opened, checked and placed in the library (eager policy, the Mac).
+    public var documentsDownloaded = 0
+    /// Downloaded files not saved because they don't open or don't match their record's hash (needs attention).
+    public var documentsNeedingAttention = 0
 
     public init() {}
 }
@@ -75,8 +81,9 @@ public struct SyncReport: Equatable, Sendable {
 public actor SyncEngineCore {
     /// The zones synced in build step 3.
     public static let zones = [SyncRecordStore.householdZone]
-    /// Records in the zone that are the engine's own, never data (the import lease).
-    static let reservedRecordTypes: Set<String> = [TransportLeaseStore.recordType]
+    /// Records in the zone that are the engine's own, never data: the import lease, the zone key and the
+    /// sealed document files (sync spec §9.1).
+    static let reservedRecordTypes: Set<String> = [TransportLeaseStore.recordType, SyncZoneKeys.recordType, SyncDocumentFile.recordType]
     /// A payload whose record would be larger than this goes as an encrypted asset (ruling R4).
     public static let largePayloadThreshold = 900_000
     /// How many times one push tries one record before leaving it for the next sync.
@@ -86,18 +93,22 @@ public actor SyncEngineCore {
 
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
-    private let db: any DatabaseWriter
-    private let transport: any SyncTransport
+    let db: any DatabaseWriter
+    let transport: any SyncTransport
     public nonisolated let device: SyncDevice
     private let batchSize: Int
-    private let clock: @Sendable () -> Date
+    let clock: @Sendable () -> Date
+    /// Where evidence files live here and when they download; nil: this device doesn't sync files (it still
+    /// keeps and sends each document's file reference).
+    let documents: SyncDocumentFiles?
     private let leaseStore: TransportLeaseStore
     /// The last entry point started: the next one waits for it.
     private var tail: Task<Void, Never>?
 
     public init(db: any DatabaseWriter, transport: any SyncTransport, device: SyncDevice, batchSize: Int = 200,
-                clock: @escaping @Sendable () -> Date = { Date() }) {
+                clock: @escaping @Sendable () -> Date = { Date() }, documents: SyncDocumentFiles? = nil) {
         self.db = db
+        self.documents = documents
         self.transport = transport
         self.device = device
         self.batchSize = max(1, batchSize)
@@ -158,7 +169,7 @@ public actor SyncEngineCore {
 
     /// Runs `body` after every entry point called before it has finished (actor methods are reentrant at
     /// each `await`, so without this two syncs would interleave: double sends, a token going back).
-    private func serialized<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) async throws -> T {
+    func serialized<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) async throws -> T {
         let previous = tail
         let task = Task<T, Error> {
             await previous?.value
@@ -170,7 +181,7 @@ public actor SyncEngineCore {
 
     // MARK: Pull
 
-    private func pullAll() async throws -> SyncPullReport {
+    func pullAll() async throws -> SyncPullReport {
         try await prepare()
         var report = SyncPullReport()
         for zone in Self.zones {
@@ -188,6 +199,10 @@ public actor SyncEngineCore {
             report.unreadable += zoneReport.unreadable
             report.reconciled += zoneReport.reconciled
         }
+        // The Mac keeps every file (sync spec §5.7).
+        let files = try await downloadMissingDocuments()
+        report.documentsDownloaded = files.downloaded
+        report.documentsNeedingAttention = files.needingAttention
         return report
     }
 
@@ -205,6 +220,7 @@ public actor SyncEngineCore {
         // A fetch from the start lists every record the zone holds (ruling R12 reconciles against it).
         var full = token == nil
         var listed: Set<String> = []
+        var zoneKeys: [String: SyncServerRecord] = [:]
         while true {
             let page: SyncChanges
             do {
@@ -217,6 +233,7 @@ public actor SyncEngineCore {
                 alreadyHeld = 0
                 full = true
                 listed = []
+                zoneKeys = [:]
                 continue
             } catch SyncTransportError.zoneNotFound {
                 try await recoverMissingZone(zone)
@@ -230,6 +247,7 @@ public actor SyncEngineCore {
                 case .record(let record):
                     let name = record.wire.recordName
                     listed.insert(name)
+                    if record.wire.recordType == SyncZoneKeys.recordType { zoneKeys[name] = record }
                     guard !Self.reservedRecordTypes.contains(record.wire.recordType) else { continue }
                     if let tag = held[name], tag == record.stamp.changeTag {
                         // Already held at this version (this device's own upload coming back): skipped,
@@ -256,6 +274,7 @@ public actor SyncEngineCore {
         let finalToken = token
         let skipped = alreadyHeld
         let reconcile = full ? listed : nil
+        let keyRecords = Array(zoneKeys.values)
         let now = clock()
         return try await db.write { db in
             var report = SyncPullReport()
@@ -298,6 +317,10 @@ public actor SyncEngineCore {
                     try Self.storeStamp(stamp, uuid: name, db: db)
                 }
             }
+            // Document files (sync spec §9.1): the zone key adopted, each document's file reference kept.
+            try Self.takeDocumentFiles(zoneKeys: keyRecords, saves: incoming.compactMap { if case .save(let payload) = $0 { return payload } else { return nil } },
+                                       deletions: ordered.compactMap { if case .delete = $0.1 { return $0.0 } else { return nil } },
+                                       zone: zone, db: db, now: now)
             if let reconcile {
                 report.reconciled = try SyncTranslator.reconcile(zone: zone, listed: reconcile, db: db, now: now).count
             }
@@ -308,7 +331,7 @@ public actor SyncEngineCore {
 
     // MARK: Push
 
-    private func pushAll() async throws -> SyncPushReport {
+    func pushAll() async throws -> SyncPushReport {
         try await prepare()
         try await renewLeaseIfDue()
         var report = SyncPushReport()
@@ -403,13 +426,21 @@ public actor SyncEngineCore {
                 return (change, payload, try payload.flatMap { try Self.systemFields(uuid: $0.recordName, db: db) })
             }
         }
+        // Evidence files go first, sealed (sync spec §9.1); a document whose file can't go now waits.
+        let files = try await attachDocumentFiles(built.compactMap(\.1))
+        report.documentsSealed += files.sealed
+        let attached = Dictionary(files.payloads.map { ($0.recordName, $0) }, uniquingKeysWith: { first, _ in first })
         var wires: [SyncWireRecord] = []
         var systemFields: [String: Data] = [:]
         var sent: [String: PendingChange] = [:]
         var nothingToSend: [PendingChange] = []
-        for (change, payload, fields) in built {
-            guard let payload else {
+        for (change, built, fields) in built {
+            guard let built else {
                 nothingToSend.append(change)
+                continue
+            }
+            guard let payload = attached[built.recordName] else {
+                report.refused += 1
                 continue
             }
             let (wire, packed) = try SyncLargePayload.wire(for: payload)
@@ -480,6 +511,8 @@ public actor SyncEngineCore {
                 }
             }
             if !merges.isEmpty {
+                // The server's document file references are kept here (the merged record goes with them).
+                try Self.takeDocumentFiles(zoneKeys: [], saves: merges, deletions: [], zone: SyncRecordStore.householdZone, db: db, now: now)
                 // Merged field by field with the server's version, unless that would move a filed tax year (§5.4):
                 // then the server's version is held, without its stamp, and the local edit waits for it. The merged
                 // record goes again next round against the server's version (unless that version waits here).
@@ -571,7 +604,7 @@ public actor SyncEngineCore {
     // MARK: Zones
 
     /// Before the first sync: sync is on here, and the zones exist on the server.
-    private func prepare() async throws {
+    func prepare() async throws {
         let now = clock()
         let (on, ready) = try await db.read { db in
             (try SyncImportGate.isSyncOn(db: db), try Self.zones.filter { try Self.zoneReady($0, db: db) })
@@ -594,6 +627,14 @@ public actor SyncEngineCore {
         try await db.write { db in
             try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [Self.tokenKey(zone)])
             try db.execute(sql: "UPDATE syncRecord SET systemFields = NULL, changeTag = NULL WHERE zone = ?", arguments: [zone])
+            // The zone's file records and key record went with it: files are sealed and uploaded again, under
+            // the same keyring published again (or the one another device published first).
+            try db.execute(sql: "DELETE FROM syncState WHERE key LIKE ? OR key LIKE ?",
+                           arguments: [SyncDocumentFile.referencePrefix + "%", SyncDocumentFile.failedPrefix + "%"])
+            if var keys = try SyncZoneKeys.local(zone: zone, db: db) {
+                keys.systemFields = nil
+                try SyncZoneKeys.store(keys, zone: zone, db: db, now: now)
+            }
             let base = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(revision), 0) FROM syncPending") ?? 0
             try db.execute(sql: """
                 INSERT INTO syncPending(uuid, tableName, localId, kind, revision)
