@@ -70,22 +70,59 @@ final class ImportLeaseTests: XCTestCase {
             XCTFail("acquired before expiry")
         } catch ImportLeaseError.heldBy {}
 
-        // 30 minutes without renewal: anyone may take it.
-        let expired = try await ImportLease.holder(now: start.addingTimeInterval(50 * 60), transport: store)
+        // 30 minutes without renewal, plus the allowance for clocks a little apart: anyone may take it.
+        let stillHeld = try await ImportLease.holder(now: start.addingTimeInterval(51 * 60), transport: store)
+        XCTAssertEqual(stillHeld?.holderId, mac.id, "within the clock allowance")
+        let expired = try await ImportLease.holder(now: start.addingTimeInterval(52 * 60), transport: store)
         XCTAssertNil(expired)
-        let taken = try await ImportLease.acquire(device: ipad, now: start.addingTimeInterval(50 * 60), transport: store)
+        let taken = try await ImportLease.acquire(device: ipad, now: start.addingTimeInterval(52 * 60), transport: store)
         XCTAssertEqual(taken.record.holderId, ipad.id)
 
         // The Mac's old lease is lost: renewing it fails, and releasing it leaves the iPad's alone.
         do {
-            _ = try await ImportLease.renew(renewed, now: start.addingTimeInterval(51 * 60), transport: store)
+            _ = try await ImportLease.renew(renewed, now: start.addingTimeInterval(53 * 60), transport: store)
             XCTFail("renewed a lease another device took")
         } catch let error as ImportLeaseError {
             XCTAssertEqual(error, .lost)
         }
         try await ImportLease.release(renewed, transport: store)
-        let held = try await ImportLease.holder(now: start.addingTimeInterval(52 * 60), transport: store)
+        let held = try await ImportLease.holder(now: start.addingTimeInterval(54 * 60), transport: store)
         XCTAssertEqual(held?.holderId, ipad.id)
+    }
+
+    func testAFastClockCannotTakeALeaseEarly() async throws {
+        // The server's clock is the truth; the iPad's runs 10 minutes fast.
+        let server = Clock(start)
+        let store = InMemoryLeaseStore(clock: { server.now })
+        _ = try await ImportLease.acquire(device: mac, now: server.now, transport: store)
+        server.advance(25 * 60)
+        let fast = server.now.addingTimeInterval(10 * 60)
+        do {
+            _ = try await ImportLease.acquire(device: ipad, now: fast, transport: store)
+            XCTFail("a fast clock took the lease 5 minutes early")
+        } catch ImportLeaseError.heldBy {}
+        server.advance(5 * 60 + 1)
+        let taken = try await ImportLease.acquire(device: ipad, now: server.now.addingTimeInterval(10 * 60), transport: store)
+        XCTAssertEqual(taken.record.holderId, ipad.id, "expired by the server's clock")
+
+        // Without the server's clock, a clock a minute fast is covered by the allowance.
+        let plain = InMemoryLeaseStore()
+        let lease = try await ImportLease.acquire(device: mac, now: start, transport: plain)
+        do {
+            _ = try await ImportLease.acquire(device: ipad, now: lease.record.expiresAt.addingTimeInterval(60), transport: plain)
+            XCTFail("taken within the allowance")
+        } catch ImportLeaseError.heldBy {}
+    }
+
+    func testAcquireDecidesOnceMoreAfterLosingEveryRace() async throws {
+        // The Mac's own expired lease, and every compare-and-set of the retries lost to churn: the last read
+        // still shows a lease the Mac may take, so it takes it rather than reporting itself as the holder.
+        let store = InMemoryLeaseStore()
+        _ = try await ImportLease.acquire(device: mac, now: start, transport: store)
+        let churning = LosesSaves(store, losses: 5)
+        let lease = try await ImportLease.acquire(device: mac, now: start.addingTimeInterval(40 * 60), transport: churning)
+        XCTAssertEqual(lease.record.holderId, mac.id)
+        XCTAssertEqual(lease.record.expiresAt, start.addingTimeInterval(70 * 60))
     }
 
     func testAnExpiredLeaseNobodyTookCanStillBeRenewed() async throws {
@@ -128,4 +165,36 @@ private actor StaleFirstRead: LeaseStore {
     func deleteLease(ifTag tag: String) async throws {
         try await store.deleteLease(ifTag: tag)
     }
+}
+
+/// The server's clock in a test.
+private final class Clock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Date
+    init(_ start: Date) { current = start }
+    var now: Date { lock.withLock { current } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { current = current.addingTimeInterval(seconds) } }
+}
+
+/// A store whose first `losses` writes lose a race (another write landed first).
+private actor LosesSaves: LeaseStore {
+    private let store: InMemoryLeaseStore
+    private var losses: Int
+
+    init(_ store: InMemoryLeaseStore, losses: Int) {
+        self.store = store
+        self.losses = losses
+    }
+
+    func currentLease() async throws -> StoredLease? { try await store.currentLease() }
+
+    func saveLease(_ record: ImportLeaseRecord, ifTag tag: String?) async throws -> StoredLease {
+        if losses > 0 {
+            losses -= 1
+            throw LeaseStoreError.changed
+        }
+        return try await store.saveLease(record, ifTag: tag)
+    }
+
+    func deleteLease(ifTag tag: String) async throws { try await store.deleteLease(ifTag: tag) }
 }

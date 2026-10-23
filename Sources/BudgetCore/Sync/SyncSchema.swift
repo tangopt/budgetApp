@@ -46,7 +46,7 @@ public struct SyncTableSchema: Equatable, Sendable {
 public enum SyncSchema {
     /// Bumped whenever `tables` or the tracking triggers change (`SyncChangeTrackerTests` pins the hash of
     /// each version). A build never replaces triggers a newer version installed.
-    public static let version = 2
+    public static let version = 3
 
     /// Synced tables, parents before children (each foreign key's table is listed earlier).
     public static let tables: [SyncTableSchema] = [
@@ -72,7 +72,7 @@ public enum SyncSchema {
                         foreignKeys: ["importRunId": "importRun", "accountId": "account"],
                         batchKey: "importRunId"),
         SyncTableSchema("importChange",
-                        synced: ["runId", "seq", "tableName", "rowId", "operation", "beforeJSON", "afterJSON"],
+                        synced: ["runId", "seq", "tableName", "rowId", "operation", "beforeJSON", "afterJSON", "rowUuid"],
                         foreignKeys: ["runId": "importRun"],
                         batchKey: "runId"),
         SyncTableSchema("document",

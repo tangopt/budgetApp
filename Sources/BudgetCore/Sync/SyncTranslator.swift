@@ -144,7 +144,9 @@ public enum SyncTranslator {
             for (name, result) in try applyChanges(routed.direct, db: db, deviceUser: deviceUser, now: now, retryAll: retryAll) {
                 results[name] = result
             }
-            for run in routed.runs {
+            // Any batch waiting here may be complete now: its last records arrived, or a parent one of them
+            // waited for.
+            for run in try SyncBatch.waitingRuns(db: db) {
                 for (name, result) in try SyncBatch.flushIfComplete(run: run, db: db, deviceUser: deviceUser, now: now).results {
                     results[name] = result
                 }

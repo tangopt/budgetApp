@@ -103,7 +103,9 @@ public enum ImportUndo {
             default: operation = .update
             }
             return ImportChange(id: last.id, runId: first.runId, seq: last.seq, tableName: key.table, rowId: key.rowId,
-                                operation: operation, beforeJSON: before, afterJSON: after)
+                                operation: operation, beforeJSON: before, afterJSON: after,
+                                rowUuid: group.last(where: { $0.operation == .delete && $0.rowUuid != nil })?.rowUuid
+                                    ?? group.last(where: { $0.rowUuid != nil })?.rowUuid)
         }
         return net.sorted { $0.seq < $1.seq }
     }
@@ -439,7 +441,9 @@ public enum ImportUndo {
                 let placeholders = Array(repeating: "?", count: names.count).joined(separator: ", ")
                 try db.execute(sql: "INSERT INTO \(table) (\(names.joined(separator: ", "))) VALUES (\(placeholders))", arguments: arguments)
                 // Back under the identity it had, so other devices bring back the same record.
-                if let uuid = try SyncBatch.reviveIdentity(table: change.tableName, localId: change.rowId, db: db) { outcome.revived.append(uuid) }
+                if let uuid = try SyncBatch.reviveIdentity(table: change.tableName, localId: change.rowId, uuid: change.rowUuid, db: db) {
+                    outcome.revived.append(uuid)
+                }
                 outcome.restored += 1
             }
         }

@@ -89,11 +89,23 @@ public enum ImportChangeCapture {
     public static func finish(db: Database, runId: Int64) throws -> [ImportChange] {
         let rows = try Row.fetchAll(db, sql: "SELECT seq, tableName, rowId, op, beforeJSON, afterJSON FROM temp.importCapture ORDER BY seq")
         var written: [ImportChange] = []
+        let identities = try db.tableExists("syncRecord") && db.tableExists("syncTombstone") && db.columns(in: "importChange").contains { $0.name == "rowUuid" }
         for row in rows {
+            let table: String = row["tableName"], rowId: Int64 = row["rowId"]
+            let operation = ImportChangeOperation(rawValue: row["op"])!
+            // The row's sync identity now: a deleted row's is its tombstone, the run's own deletion.
+            var rowUuid: String?
+            if identities, SyncSchema.table(table) != nil {
+                rowUuid = operation == .delete
+                    ? try String.fetchOne(db, sql: """
+                        SELECT uuid FROM syncTombstone WHERE tableName = ? AND localId = ? AND mergedInto IS NULL ORDER BY deletedAt DESC LIMIT 1
+                        """, arguments: [table, rowId])
+                    : try SyncRecordStore.existingUUID(table: table, localId: rowId, db: db)
+            }
             var change = ImportChange(
-                runId: runId, seq: row["seq"], tableName: row["tableName"], rowId: row["rowId"],
-                operation: ImportChangeOperation(rawValue: row["op"])!,
-                beforeJSON: row["beforeJSON"], afterJSON: row["afterJSON"])
+                runId: runId, seq: row["seq"], tableName: table, rowId: rowId,
+                operation: operation,
+                beforeJSON: row["beforeJSON"], afterJSON: row["afterJSON"], rowUuid: rowUuid)
             try change.insert(db)
             written.append(change)
         }

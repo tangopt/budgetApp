@@ -209,20 +209,29 @@ func registerSyncMigration(_ migrator: inout DatabaseMigrator) {
         try db.create(table: "syncBatch") { t in
             t.primaryKey("runUuid", .text)
             t.column("generation", .integer).notNull()
-            t.column("state", .text).notNull().check { ["sending", "open", "complete", "closed"].contains($0) }
+            t.column("state", .text).notNull().check { ["sending", "sent", "open", "complete", "closed", "done"].contains($0) }
             // A received run's manifest; the records an Undo sent here brings back (`revives`).
             t.column("manifestJSON", .text)
             t.column("revivesJSON", .text)
         }
-        // The records of a batch this device is sending, until it is fully uploaded.
+        // The records of each import run's batches as this device knows them (written by it, or received
+        // tagged): each record belongs to the latest generation that wrote it, and keeps that tag.
         try db.create(table: "syncBatchMember") { t in
             t.primaryKey("uuid", .text)
             t.column("runUuid", .text).notNull().indexed()
             t.column("tableName", .text).notNull()
+            t.column("generation", .integer).notNull()
         }
         // A row here only inside an incoming apply's transaction: the triggers skip while it exists.
         try db.create(table: "syncApplying") { t in
             t.primaryKey("id", .integer).check { $0 == 1 }
+        }
+    }
+    // Ruling R7 (append-only): the sync identity of the row each change names, recorded when the run is
+    // captured, so an Undo restores a deleted row under exactly the UUID the run deleted.
+    migrator.registerMigration("importChangeRowUuid") { db in
+        try db.alter(table: "importChange") { t in
+            t.add(column: "rowUuid", .text)
         }
     }
 }

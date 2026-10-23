@@ -48,9 +48,12 @@ public struct ImportChange: Codable, Equatable, Identifiable, FetchableRecord, M
     public var operation: ImportChangeOperation
     public var beforeJSON: String?
     public var afterJSON: String?
+    /// The row's sync identity when the change was captured (for a delete: the UUID it had), so an Undo
+    /// brings a deleted row back as the same record (ruling R7). Nil without sync bookkeeping.
+    public var rowUuid: String?
 
     public init(id: Int64? = nil, runId: Int64, seq: Int, tableName: String, rowId: Int64,
-                operation: ImportChangeOperation, beforeJSON: String? = nil, afterJSON: String? = nil) {
+                operation: ImportChangeOperation, beforeJSON: String? = nil, afterJSON: String? = nil, rowUuid: String? = nil) {
         self.id = id
         self.runId = runId
         self.seq = seq
@@ -59,6 +62,7 @@ public struct ImportChange: Codable, Equatable, Identifiable, FetchableRecord, M
         self.operation = operation
         self.beforeJSON = beforeJSON
         self.afterJSON = afterJSON
+        self.rowUuid = rowUuid
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }

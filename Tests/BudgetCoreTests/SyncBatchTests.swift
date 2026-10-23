@@ -221,49 +221,117 @@ final class SyncBatchTests: XCTestCase {
 
     // MARK: Closing a batch
 
-    func testAClosedBatchAppliesWhatWaitsAndLaterEditsGoUntagged() throws {
+    func testAClosedBatchWaitsForItsFinalCountsOrForFlushClosed() throws {
         let (account, _, _) = try base(a)
-        try b.receive(try a.push())
+        let shared = try a.push()
+        try b.receive(shared)
         let runId = try importRun(on: a, account: account, count: 3)
         let run = try runUuid(a, runId)
         let sent = try a.push()
-        // Everything uploaded: the sender closes the batch, which sends the run once more.
+        // Everything uploaded: the sender closes the batch, which sends the run once more with its final
+        // counts: every member on the server.
         XCTAssertEqual(try a.queue.write { db in try SyncBatch.closeUploaded(db: db) }, [run])
         let close = try a.push()
         XCTAssertEqual(close.count, 1)
         let header = try XCTUnwrap(payload(close, run)?.manifest)
         XCTAssertFalse(header.isOpen)
         XCTAssertEqual(header.generation, 1)
+        XCTAssertEqual(header.counts, ["transaction_": 3, "importBatch": 1, "importChange": 4, "importRunFile": 1])
 
-        // A receiver that got only part of the batch, then the close (the rest of it was replaced on the
-        // server meanwhile, say), applies what it has: the batch is no longer being uploaded.
-        try b.receive(Array(sent.filter { payload([$0], run) == nil }.prefix(3)))
-        XCTAssertEqual(try descriptions(b), ["Manual entry"])
+        // A receiver with part of the batch, then the close: still nothing; the rest completes it.
+        let members = sent.filter { payload([$0], run) == nil }
+        try b.receive(Array(members.prefix(3)))
         try b.receive(close)
-        XCTAssertGreaterThan(try count(b, "importRun"), 0)
-        XCTAssertEqual(try b.queue.read { db in try SyncStagingRow.filter(Column("importRunUuid") != nil).fetchCount(db) }, 0)
+        XCTAssertEqual(try descriptions(b), ["Manual entry"])
+        XCTAssertEqual(try count(b, "importRun"), 0)
+        try b.receive(Array(members.dropFirst(3)))
+        XCTAssertEqual(try descriptions(b), ["Manual entry", "Shop 0", "Shop 1", "Shop 2"])
+        XCTAssertEqual(try b.queue.read { db in try SyncStagingRow.fetchCount(db) }, 0)
 
-        // Later edits of what the import wrote are ordinary edits.
+        // A receiver whose counts can't be met (the rest was edited since by a device that didn't tag it):
+        // once the fetch has caught up, `flushClosed` applies what it has, all at once.
+        let c = try SyncTestDevice("user-c")
+        try c.receive(shared)
+        try c.receive(Array(members.prefix(3)) + close)
+        XCTAssertEqual(try count(c, "importRun"), 0)
+        XCTAssertEqual(try c.queue.write { db in try SyncBatch.flushClosed(db: db) }, [run])
+        XCTAssertEqual(try count(c, "importRun"), 1)
+        XCTAssertEqual(try c.queue.read { db in try SyncStagingRow.filter(Column("importRunUuid") != nil).fetchCount(db) }, 0)
+
+        // The sender's later edits keep the tag (so the server's copy still counts), and apply at once where
+        // the batch already applied.
         try a.queue.write { db in try db.execute(sql: "UPDATE transaction_ SET note = 'later' WHERE rawDescription = 'Shop 0'") }
         let edit = try a.push()
         XCTAssertEqual(edit.count, 1)
-        guard case .save(let payload) = edit[0] else { return XCTFail("expected a save") }
-        XCTAssertNil(payload.importRunUuid)
+        guard case .save(let later) = edit[0] else { return XCTFail("expected a save") }
+        XCTAssertEqual(later.importRunUuid, run)
+        XCTAssertEqual(try b.receive(edit)[later.recordName], .applied)
     }
 
-    func testADeviceThatJoinsLaterTakesAClosedBatchAtOnce() throws {
+    func testADeviceThatJoinsLaterNeverHoldsPartOfABatch() throws {
         let (account, _, manual) = try base(a)
         var server = TestServer()
         server.upload(try a.push())
-        try importRun(on: a, account: account, count: 2, removing: manual)
+        let runId = try importRun(on: a, account: account, count: 3, removing: manual)
+        let run = try runUuid(a, runId)
         server.upload(try a.push())
         _ = try a.queue.write { db in try SyncBatch.closeUploaded(db: db) }
         server.upload(try a.push())
 
-        // A new device's first sync: the latest records, the members still tagged, the run closed.
-        try b.receive(server.everything)
-        XCTAssertEqual(try descriptions(b), ["Shop 0", "Shop 1"])
-        XCTAssertEqual(try b.queue.read { db in try SyncStagingRow.fetchCount(db) }, 0)
+        // A device offline for the whole upload sees only the latest records: the run closed, its members
+        // still tagged, and everything else, over fetch pages in any order.
+        let everything = server.everything
+        let batchNames = Set(everything.compactMap { change -> String? in
+            guard case .save(let payload) = change, payload.recordName == run || payload.importRunUuid == run else { return nil }
+            return payload.recordName
+        })
+        XCTAssertEqual(batchNames.count, 11, "the run and its 10 members")
+        let isRun = { (change: SyncIncomingChange) in self.payload([change], run) != nil }
+        let isMember = { (change: SyncIncomingChange) in batchNames.contains(change.recordName) && !isRun(change) }
+        var random = SeededRandom(seed: 0x5eed)
+        for trial in 0..<24 {
+            var order = everything.shuffled(using: &random)
+            switch trial % 3 {
+            case 0: order = order.filter(isRun) + order.filter { !isRun($0) }        // the run first
+            case 1: order = order.filter(isMember) + order.filter { !isMember($0) }  // its members first
+            default: break                                                            // interleaved
+            }
+            let device = try SyncTestDevice("user-b")
+            var rest = order[...]
+            while !rest.isEmpty {
+                let size = Int.random(in: 1...4, using: &random)
+                try device.receive(Array(rest.prefix(size)))
+                rest = rest.dropFirst(size)
+                let present = try device.queue.read { db in
+                    try batchNames.filter { try String.fetchOne(db, sql: "SELECT uuid FROM syncRecord WHERE uuid = ?", arguments: [$0]) != nil }.count
+                }
+                XCTAssertTrue(present == 0 || present == batchNames.count, "trial \(trial): \(present) of \(batchNames.count) records of the batch")
+            }
+            XCTAssertEqual(try descriptions(device), ["Shop 0", "Shop 1", "Shop 2"], "trial \(trial)")
+            XCTAssertEqual(try device.queue.read { db in try SyncStagingRow.fetchCount(db) }, 0, "trial \(trial)")
+        }
+    }
+
+    func testANewerGenerationKeepsTheDeletesAnOlderOneHeld() throws {
+        let (account, _, manual) = try base(a)
+        let manualUuid = try a.uuid("transaction_", manual)
+        try b.receive(try a.push())
+        let runId = try importRun(on: a, account: account, count: 2, removing: manual)
+        let run = try runUuid(a, runId)
+        let sent = try a.push()
+        let first = try XCTUnwrap(payload(sent, run))
+        XCTAssertEqual(first.manifest?.deletes, [manualUuid])
+        // B gets the open run and its plain delete, which it holds for the batch.
+        XCTAssertEqual(try b.receive([.save(first), .delete(recordName: manualUuid, recordType: "transaction_")])[manualUuid],
+                       .staged(SyncBatch.waitingForBatch))
+        XCTAssertEqual(try descriptions(b), ["Manual entry"])
+        // Then a newer generation of the run replaces it before the first applied: the removal it held still
+        // applies, with the newer batch.
+        var second = first
+        second.manifest = SyncBatchManifest(generation: 2, isOpen: true)
+        try b.receive([.save(second)])
+        XCTAssertEqual(try descriptions(b), [])
+        XCTAssertEqual(try count(b, "importRun"), 1)
     }
 
     func testAMemberThatArrivesAfterItsBatchAppliedAppliesAtOnce() throws {
@@ -325,6 +393,28 @@ final class SyncBatchTests: XCTestCase {
         try b.receive(try a.push())
         XCTAssertEqual(try descriptions(b), ["Manual entry"])
         XCTAssertNotNil(try b.localId("transaction_", manualUuid))
+    }
+
+    func testUndoRestoresTheIdentityTheImportDeletedEvenWhenItsIdWasReusedSince() throws {
+        let (account, batch, manual) = try base(a)
+        let manualUuid = try a.uuid("transaction_", manual)
+        let runId = try importRun(on: a, account: account, count: 1, removing: manual)
+        XCTAssertEqual(try a.queue.read { db in try String.fetchOne(db, sql: "SELECT rowUuid FROM importChange WHERE operation = 'delete'") },
+                       manualUuid, "the change log keeps the identity the run deleted")
+        // Since the import, another row took the same id and was deleted again: a later tombstone at that id.
+        let other = try a.queue.write { db -> String in
+            var t = Transaction(id: manual, importBatchId: batch, accountId: account, date: Self.day, rawDescription: "Another",
+                                amountMinorUnits: -1, categoryId: nil, status: .confirmed, categorizedBy: .manual, fingerprint: "fp-other")
+            try t.insert(db)
+            let uuid = try XCTUnwrap(SyncRecordStore.existingUUID(table: "transaction_", localId: manual, db: db))
+            try db.execute(sql: "DELETE FROM transaction_ WHERE id = ?", arguments: [manual])
+            return uuid
+        }
+        Thread.sleep(forTimeInterval: 0.01)
+        let library = EvidenceLibrary(root: try temporaryFolder(), database: a.queue)
+        _ = try ImportUndo.undo(dbQueue: a.queue, library: library, runId: runId)
+        XCTAssertEqual(try a.uuid("transaction_", manual), manualUuid)
+        XCTAssertNotNil(try a.queue.read { db in try SyncTombstoneRow.fetchOne(db, key: other) }, "the other row stays deleted")
     }
 
     func testUndoIsABatchToo() throws {
@@ -494,5 +584,18 @@ extension SyncTestDevice {
             try SyncChangeTracker.acknowledge(pending, db: db)
             return sent
         }
+    }
+}
+
+/// A deterministic random source (SplitMix64), so shuffled orders repeat run to run.
+struct SeededRandom: RandomNumberGenerator {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
     }
 }
