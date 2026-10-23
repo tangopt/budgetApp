@@ -359,6 +359,8 @@ public enum ImportUndo {
         let (outcome, rowsRemoved, rowsRestored) = try dbQueue.write { db -> (Reverted, Int, Int) in
             guard var run = try ImportRun.fetchOne(db, key: runId) else { throw ImportUndoError.runNotFound }
             guard run.undoneAt == nil else { throw ImportUndoError.alreadyUndone }
+            // With sync on, an Undo is a batch too and needs the import lease (sync spec §5.2).
+            try SyncImportGate.require(db: db, now: now)
             let net = try netChanges(db: db, runId: runId)
             let found = try conflicts(db: db, runId: runId, net: net)
             guard found.isEmpty else { throw ImportUndoError.refused(found) }

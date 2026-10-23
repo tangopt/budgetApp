@@ -283,6 +283,22 @@ final class ImportApplierTests: XCTestCase {
         }
     }
 
+    /// Step 3 Task 5: with sync on, Confirm needs the import lease (sync spec §5.2), enforced here.
+    func testConfirmNeedsTheImportLeaseWhenSyncIsOn() async throws {
+        try await db.write { db in try SyncImportGate.setSyncOn(true, db: db) }
+        let plan = try await pipeline.plan([try receiptPDF()])
+        XCTAssertThrowsError(try applier.apply(plan, entryPoint: "Import…")) { error in
+            XCTAssertEqual(error as? SyncImportGateError, .leaseRequired)
+        }
+        XCTAssertEqual(try read { db in try ImportRun.fetchCount(db) }, 0, "nothing was written")
+
+        let engine = SyncEngineCore(db: db, transport: FakeCloud(), device: SyncDevice(id: "mac", name: "Mac"))
+        try await engine.acquireImportLease()
+        let summary = try applier.apply(plan, entryPoint: "Import…")
+        XCTAssertGreaterThan(summary.runId, 0)
+        XCTAssertEqual(try read { db in try SyncImportGate.heldLease(db: db)?.used }, true, "the lease covers this batch until its close is uploaded")
+    }
+
     func testCorrectedUtilityInvoiceIsFiledAsADocumentOnly() async throws {
         let original = try linkedLibraryDocument("invoice.txt", text: "Demo Power invoice FT 1/23 total 120,00", kind: .utilityInvoice,
                                                  amount: 12_000, to: .transaction(id("debit")))

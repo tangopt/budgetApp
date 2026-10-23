@@ -134,6 +134,9 @@ public struct SyncPayload: Codable, Equatable, Sendable {
     /// On an `importChange` record (ruling R7): the UUIDs it names of rows that were already gone when it
     /// was sent, so a receiver that never had one doesn't wait for it.
     public var deletedReferences: [String]?
+    /// Set only on the wire (ruling R4): the record was too large for one server record, so its payload
+    /// travels as an encrypted asset and this record names it. The engine reassembles it on arrival.
+    public var largePayload: SyncLargePayloadReference?
 
     public init(recordType: String, recordName: String, zone: String, fields: [String: SyncValue],
                 clocks: [String: SyncClock] = [:], modifiedBy: String? = nil, modifiedAt: Date? = nil, mergedInto: String? = nil,
@@ -155,4 +158,16 @@ public struct SyncPayload: Codable, Equatable, Sendable {
 
     /// When `field` last changed on the sender: its own clock, else the insert's, else never.
     public func clock(_ field: String) -> SyncClock? { clocks[field] ?? clocks[SyncMerge.insertClock] }
+}
+
+/// Where a payload too large for a record went (ruling R4): an asset holding it sealed with AES-GCM under
+/// `key`, a random key that travels only inside the record's encrypted fields.
+public struct SyncLargePayloadReference: Codable, Equatable, Hashable, Sendable {
+    public var assetName: String
+    public var key: Data
+
+    public init(assetName: String, key: Data) {
+        self.assetName = assetName
+        self.key = key
+    }
 }

@@ -45,9 +45,13 @@ public struct SyncStagingRow: Codable, Equatable, Identifiable, FetchableRecord,
     public var receivedAt: Date
     /// Which of the run's batches it belongs to (1: the import, 2: its Undo; `SyncBatch`).
     public var batchGeneration: Int?
+    /// When the record first waited here (ruling R8); a newer version of it keeps the time.
+    public var firstSeenAt: Date?
+    /// How many applies of it SQLite refused; at `SyncTranslator.maxApplyAttempts` it needs attention.
+    public var attempts: Int
 
     public init(id: Int64? = nil, tableName: String, uuid: String, payloadJSON: String, reason: String,
-                importRunUuid: String? = nil, receivedAt: Date, batchGeneration: Int? = nil) {
+                importRunUuid: String? = nil, receivedAt: Date, batchGeneration: Int? = nil, firstSeenAt: Date? = nil, attempts: Int = 0) {
         self.id = id
         self.tableName = tableName
         self.uuid = uuid
@@ -56,6 +60,8 @@ public struct SyncStagingRow: Codable, Equatable, Identifiable, FetchableRecord,
         self.importRunUuid = importRunUuid
         self.receivedAt = receivedAt
         self.batchGeneration = batchGeneration
+        self.firstSeenAt = firstSeenAt ?? receivedAt
+        self.attempts = attempts
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
@@ -154,6 +160,9 @@ func registerSyncMigration(_ migrator: inout DatabaseMigrator) {
             t.column("importRunUuid", .text).indexed()
             t.column("receivedAt", .datetime).notNull()
             t.column("batchGeneration", .integer)
+            // Ruling R8: when the record first waited here, and how many applies SQLite refused (bounded).
+            t.column("firstSeenAt", .datetime)
+            t.column("attempts", .integer).notNull().defaults(to: 0)
         }
         try db.create(table: "syncConflict") { t in
             t.autoIncrementedPrimaryKey("id")

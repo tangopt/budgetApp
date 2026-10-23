@@ -166,6 +166,8 @@ public enum ImportLease {
     /// plus the clock allowance. The holder's own lease never counts.
     private static func isHeld(_ lease: StoredLease, byAnotherThan device: SyncDevice?, now: Date, transport: any LeaseStore) async throws -> Bool {
         if let device, lease.record.holderId == device.id { return false }
+        // Released: a store that can't delete by compare-and-set saves the record empty instead.
+        if lease.record.holderId.isEmpty { return false }
         if let written = lease.serverModifiedAt, let serverNow = try await transport.serverTime() {
             return written.addingTimeInterval(duration) > serverNow
         }

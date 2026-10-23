@@ -492,20 +492,44 @@ public enum SyncTranslator {
         throw DatabaseError(resultCode: .SQLITE_CONSTRAINT, message: "unique collisions unresolved")
     }
 
+    /// Ruling R8: a record SQLite refuses is tried this many times (each apply that tries it counts), then
+    /// waits marked "needs attention" and is no longer retried (step 6 surfaces it).
+    public static let maxApplyAttempts = 5
+    /// Ruling R8: a record waiting longer than this is listed by `stagingAttention`.
+    public static let stagingMaxAge: TimeInterval = 7 * 86_400
+
     private static func stage(_ payload: SyncPayload, reason: String, db: Database, now: Date, fromStaging: Bool) throws -> IncomingResult {
+        let failed = reason.hasPrefix(applyFailed)
         if !fromStaging {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
             let json = String(decoding: try encoder.encode(payload), as: UTF8.self)
+            // A newer version of a waiting record keeps its first-seen time, and starts its attempts again.
             try db.execute(sql: """
-                INSERT INTO syncStaging(tableName, uuid, payloadJSON, reason, importRunUuid, receivedAt) VALUES (?, ?, ?, ?, NULL, ?)
+                INSERT INTO syncStaging(tableName, uuid, payloadJSON, reason, importRunUuid, receivedAt, firstSeenAt, attempts)
+                    VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
                 ON CONFLICT(uuid) DO UPDATE SET tableName = excluded.tableName, payloadJSON = excluded.payloadJSON,
-                    reason = excluded.reason, receivedAt = excluded.receivedAt
-                """, arguments: [payload.recordType, payload.recordName, json, reason, now])
-        } else {
-            try db.execute(sql: "UPDATE syncStaging SET reason = ? WHERE uuid = ?", arguments: [reason, payload.recordName])
+                    reason = excluded.reason, receivedAt = excluded.receivedAt, attempts = excluded.attempts
+                """, arguments: [payload.recordType, payload.recordName, json, reason, now, now, failed ? 1 : 0])
+            return .staged(reason)
         }
-        return .staged(reason)
+        let attempts = (try Int.fetchOne(db, sql: "SELECT attempts FROM syncStaging WHERE uuid = ?", arguments: [payload.recordName]) ?? 0)
+            + (failed ? 1 : 0)
+        var stored = reason
+        if failed, attempts >= maxApplyAttempts {
+            log.error("Sync staging: a \(payload.recordType, privacy: .public) record failed \(attempts) times; marked for attention")
+            stored = needsAttention + reason
+        }
+        try db.execute(sql: "UPDATE syncStaging SET reason = ?, attempts = ? WHERE uuid = ?", arguments: [stored, attempts, payload.recordName])
+        return .staged(stored)
+    }
+
+    /// Staged records that need someone (ruling R8, surfaced in step 6): those marked "needs attention",
+    /// and those that have waited longer than `maxAge` (a parent or a batch that never came).
+    public static func stagingAttention(db: Database, now: Date = Date(), maxAge: TimeInterval = stagingMaxAge) throws -> [SyncStagingRow] {
+        try SyncStagingRow.fetchAll(db, sql: """
+            SELECT * FROM syncStaging WHERE reason LIKE ? OR COALESCE(firstSeenAt, receivedAt) < ? ORDER BY id
+            """, arguments: [needsAttention + "%", now.addingTimeInterval(-maxAge)])
     }
 
     // MARK: Deletes

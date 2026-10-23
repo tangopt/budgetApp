@@ -471,11 +471,12 @@ public enum SyncBatch {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         try db.execute(sql: """
-            INSERT INTO syncStaging(tableName, uuid, payloadJSON, reason, importRunUuid, receivedAt, batchGeneration) VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO syncStaging(tableName, uuid, payloadJSON, reason, importRunUuid, receivedAt, batchGeneration, firstSeenAt)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(uuid) DO UPDATE SET tableName = excluded.tableName, payloadJSON = excluded.payloadJSON, reason = excluded.reason,
                 importRunUuid = excluded.importRunUuid, receivedAt = excluded.receivedAt, batchGeneration = excluded.batchGeneration
             """, arguments: [payload.recordType, payload.recordName, String(decoding: try encoder.encode(payload), as: UTF8.self),
-                             waitingForBatch, run, now, generation])
+                             waitingForBatch, run, now, generation, now])
     }
 
     static func batch(run: String, db: Database) throws -> Batch? {
