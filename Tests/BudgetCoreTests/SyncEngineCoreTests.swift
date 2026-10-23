@@ -230,9 +230,9 @@ final class SyncEngineCoreTests: XCTestCase {
             XCTAssertEqual(row["note"] as String?, "Mac note")
             XCTAssertEqual(row["status"] as String, "confirmed")
         }
-        let server = try await cloud.record(named: uuid)
-        XCTAssertEqual(server?.payload.fields["note"], .string("Mac note"))
-        XCTAssertEqual(server?.payload.fields["status"], .string("confirmed"))
+        let server = try await cloud.payload(named: uuid)
+        XCTAssertEqual(server?.fields["note"], .string("Mac note"))
+        XCTAssertEqual(server?.fields["status"], .string("confirmed"))
     }
 
     func testImportBatchArrivesAtomically() async throws {
@@ -263,7 +263,7 @@ final class SyncEngineCoreTests: XCTestCase {
             do {
                 try await a.engine.pushPending()
                 finished = true
-            } catch FakeCloudError.networkUnavailable {
+            } catch SyncTransportError.networkUnavailable {
                 allowed += 1
             }
             await cloud.restoreConnection()
@@ -276,6 +276,8 @@ final class SyncEngineCoreTests: XCTestCase {
             if allowed >= 50 { break }
         }
         XCTAssertGreaterThan(allowed, 3, "the batch took several save operations")
+        // The last allowance may have run out on the lease's release, which the next push tries again.
+        try await a.engine.pushPending()
         try await b.engine.pull()
         XCTAssertEqual(try b.descriptions().filter { $0.hasPrefix("Shop") }.count, 6)
         XCTAssertEqual(try b.count("importRun"), 1)
@@ -349,6 +351,209 @@ final class SyncEngineCoreTests: XCTestCase {
         XCTAssertEqual(try c.content(excluding: ["importChange"]), try b.content(excluding: ["importChange"]))
     }
 
+    // MARK: Fix round 1
+
+    func testConcurrentSyncsRunOneAtATime() async throws {
+        let (account, _, _) = try base(a)
+        try await a.engine.acquireImportLease()
+        let runId = try importRun(on: a, account: account, count: 4)
+        let run = try a.uuid("importRun", runId)
+        async let first = a.engine.syncNow()
+        async let second = a.engine.syncNow()
+        async let third = a.engine.pushPending()
+        _ = try await (first, second, third)
+
+        var saves: [String: Int] = [:]
+        var since: [Int] = []
+        for call in await cloud.calls {
+            switch call {
+            case .save(let names, let atomic):
+                XCTAssertFalse(atomic, "the engine asks for non-atomic saves")
+                for name in names where name != TransportLeaseStore.recordName { saves[name, default: 0] += 1 }
+            case .changes(_, let position):
+                since.append(position ?? 0)
+            default:
+                break
+            }
+        }
+        XCTAssertEqual(saves[run], 2, "the run goes open, then closed")
+        for (name, count) in saves where name != run { XCTAssertEqual(count, 1, "\(name) was sent \(count) times") }
+        XCTAssertEqual(since, since.sorted(), "the change token never goes back")
+        XCTAssertNil(try a.read { db in try SyncImportGate.heldLease(db: db) }, "released, not lost")
+        let holder = try await b.engine.importLeaseHolder()
+        XCTAssertNil(holder)
+    }
+
+    /// Damages the asset of a large record on the server.
+    private func largeNoteOnTheServer(_ coffee: Int64) async throws -> String {
+        let uuid = try a.uuid("transaction_", coffee)
+        try a.write { db in try db.execute(sql: "UPDATE transaction_ SET note = ? WHERE id = ?",
+                                           arguments: [String(repeating: "Synthetic long note. ", count: 60_000), coffee]) }
+        try await a.engine.syncNow()
+        await cloud.corruptAsset(of: uuid, field: "payload")
+        return uuid
+    }
+
+    func testAnUnreadableRecordIsStagedForAttentionAndThePullGoesOn() async throws {
+        let (_, _, coffee) = try base(a)
+        let uuid = try await largeNoteOnTheServer(coffee)
+        let report = try await b.engine.pull()
+        XCTAssertEqual(report.unreadable, 1)
+        XCTAssertEqual(try b.count("account"), 1, "the rest of the pull applied")
+        XCTAssertNil(try b.localId("transaction_", uuid))
+        let staged = try XCTUnwrap(b.read { db in try SyncStagingRow.filter(Column("uuid") == uuid).fetchOne(db) })
+        XCTAssertEqual(staged.reason, "needs attention: unreadable payload")
+        XCTAssertEqual(try b.read { db in try SyncTranslator.stagingAttention(db: db) }.map(\.uuid), [uuid])
+        let again = try await b.engine.pull()
+        XCTAssertEqual(again.received, 0, "the token moved past it")
+
+        // A readable version replaces it.
+        try a.write { db in try db.execute(sql: "UPDATE transaction_ SET note = 'short' WHERE id = ?", arguments: [coffee]) }
+        try await a.engine.syncNow()
+        try await b.engine.pull()
+        XCTAssertNotNil(try transaction(b, uuid: uuid))
+        XCTAssertEqual(try b.count("syncStaging"), 0)
+    }
+
+    func testALocalEditWaitsWhileTheServersVersionIsStaged() async throws {
+        let (_, _, coffee) = try base(a)
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        let uuid = try await largeNoteOnTheServer(coffee)
+        try await b.engine.pull()
+        let bCoffee = try XCTUnwrap(b.localId("transaction_", uuid))
+        try b.write { db in try db.execute(sql: "UPDATE transaction_ SET status = 'confirmed' WHERE id = ?", arguments: [bCoffee]) }
+        let before = await cloud.calls.count
+        let report = try await b.engine.pushPending()
+        XCTAssertEqual(report.heldBack, 1, "not sent while the server's version waits here")
+        let sent = await cloud.calls.dropFirst(before).contains { if case .save(let names, _) = $0 { return names.contains(uuid) } else { return false } }
+        XCTAssertFalse(sent)
+        XCTAssertEqual(try b.read { db in try SyncTranslator.stagingAttention(db: db) }.map(\.uuid), [uuid])
+
+        try a.write { db in try db.execute(sql: "UPDATE transaction_ SET note = 'short' WHERE id = ?", arguments: [coffee]) }
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        try await a.engine.pull()
+        for device in [a!, b!] {
+            let row = try XCTUnwrap(transaction(device, uuid: uuid))
+            XCTAssertEqual(row["note"] as String?, "short")
+            XCTAssertEqual(row["status"] as String, "confirmed")
+        }
+    }
+
+    func testOneConflictDoesNotFailItsChunk() async throws {
+        let (account, batch, coffee) = try base(a)
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        let accountUuid = try a.uuid("account", account)
+        let batchUuid = try a.uuid("importBatch", batch)
+        let uuid = try a.uuid("transaction_", coffee)
+        try a.write { db in try db.execute(sql: "UPDATE transaction_ SET note = 'Mac note' WHERE id = ?", arguments: [coffee]) }
+        try await a.engine.pushPending()
+        let ids = (try XCTUnwrap(b.localId("transaction_", uuid)), try XCTUnwrap(b.localId("account", accountUuid)),
+                   try XCTUnwrap(b.localId("importBatch", batchUuid)))
+        try b.write { db in
+            try db.execute(sql: "UPDATE transaction_ SET status = 'confirmed' WHERE id = ?", arguments: [ids.0])
+            try db.execute(sql: "UPDATE account SET name = 'Renamed' WHERE id = ?", arguments: [ids.1])
+            try db.execute(sql: "UPDATE importBatch SET sourceFileName = 'renamed.csv' WHERE id = ?", arguments: [ids.2])
+        }
+        // Only B's first operation goes through: the conflicting record fails alone in it.
+        await cloud.failSaveOperations(after: 1)
+        do {
+            try await b.engine.pushPending()
+            XCTFail("the second operation can't go")
+        } catch SyncTransportError.networkUnavailable {}
+        await cloud.restoreConnection()
+        let server = try await cloud.payload(named: accountUuid)
+        XCTAssertEqual(server?.fields["name"], .string("Renamed"))
+        let batchOnServer = try await cloud.payload(named: batchUuid)
+        XCTAssertEqual(batchOnServer?.fields["sourceFileName"], .string("renamed.csv"))
+    }
+
+    func testOperationsAreSplitByCountAndBytes() async throws {
+        for advertised in [true, false] {
+            let cloud = FakeCloud(limits: SyncOperationLimits(maxRecords: 3, maxBytes: 4_000), advertisesLimits: advertised)
+            let mac = try SyncEngineTestDevice("user-a", name: "Mac", cloud: cloud)
+            let ipad = try SyncEngineTestDevice("user-b", name: "iPad", cloud: cloud)
+            let (account, batch, _) = try base(mac)
+            try mac.write { db in
+                for i in 0..<9 {
+                    var t = Transaction(importBatchId: batch, accountId: account, date: Self.day, rawDescription: "Item \(i)",
+                                        amountMinorUnits: -i, categoryId: nil, status: .pendingReview, categorizedBy: .none,
+                                        fingerprint: "fp-item-\(i)", note: String(repeating: "n", count: 1_200), isManual: true)
+                    try t.insert(db)
+                }
+            }
+            try await mac.engine.syncNow()
+            try await ipad.engine.syncNow()
+            XCTAssertEqual(try ipad.count("transaction_"), 10)
+            let refusedWhole = await cloud.limitExceededCount
+            if advertised {
+                XCTAssertEqual(refusedWhole, 0, "split before sending: at most 3 records and 4,000 bytes")
+            } else {
+                XCTAssertGreaterThan(refusedWhole, 0, "split on limitExceeded")
+            }
+        }
+    }
+
+    func testALostReplyIsHarmless() async throws {
+        let (_, _, coffee) = try base(a)
+        let uuid = try a.uuid("transaction_", coffee)
+        try await a.engine.syncNow()
+        try a.write { db in try db.execute(sql: "UPDATE transaction_ SET note = 'Edited' WHERE id = ?", arguments: [coffee]) }
+        await cloud.loseTheNextReply()
+        do {
+            try await a.engine.pushPending()
+            XCTFail("the reply was lost")
+        } catch SyncTransportError.networkUnavailable {}
+        try await a.engine.syncNow()
+        XCTAssertTrue(try a.read { db in try SyncChangeTracker.pending(db: db) }.isEmpty)
+        XCTAssertEqual(try a.count("syncConflict"), 0, "its own version coming back is no conflict")
+        try await b.engine.syncNow()
+        XCTAssertEqual(try transaction(b, uuid: uuid)?["note"] as String?, "Edited")
+    }
+
+    func testAnExpiredTokenFetchesTheZoneAgain() async throws {
+        try base(a)
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        try a.write { db in try db.execute(sql: "UPDATE account SET name = 'Later' WHERE id = 1") }
+        try await a.engine.syncNow()
+        await cloud.expireChangeTokens()
+        try await b.engine.pull()
+        XCTAssertEqual(try b.read { db in try String.fetchOne(db, sql: "SELECT name FROM account") }, "Later")
+        XCTAssertEqual(try a.content(), try b.content())
+    }
+
+    func testAMissingZoneIsCreatedAgainAndEverythingGoesUpAgain() async throws {
+        let (_, _, coffee) = try base(a)
+        let uuid = try a.uuid("transaction_", coffee)
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        await cloud.deleteZone("household")
+        try await a.engine.syncNow()
+        let back = try await cloud.payload(named: uuid)
+        XCTAssertEqual(back?.fields["rawDescription"], .string("Coffee"), "re-uploaded")
+        try await b.engine.syncNow()
+        XCTAssertEqual(try b.descriptions(), ["Coffee"], "no duplicates")
+        XCTAssertEqual(try a.content(), try b.content())
+        let stamps = try a.read { db in try Row.fetchOne(db, sql: "SELECT systemFields, changeTag FROM syncRecord WHERE uuid = ?", arguments: [uuid]) }
+        let fields: Data? = stamps?["systemFields"]
+        let tag: String? = stamps?["changeTag"]
+        XCTAssertNotNil(tag)
+        XCTAssertNotEqual(fields, tag.map { Data($0.utf8) }, "the opaque blob and the compared tag are both kept")
+    }
+
+    func testTheLeaseStoreReportsPassingFailuresAsUnavailable() async throws {
+        try await cloud.createZone("household")
+        let store = TransportLeaseStore(transport: cloud)
+        await cloud.failSaveOperations(after: 0)
+        do {
+            _ = try await ImportLease.acquire(device: a.device, now: Date(), transport: store)
+            XCTFail("no connection")
+        } catch LeaseStoreError.unavailable {}
+    }
+
     func testUploadedPayloadsContainNoPlaintextAmountsOutsideEncryptedFields() async throws {
         try a.write { db in
             var account = Account(name: "Probe Account Zeta", currency: .gbp, kind: .cash, trackingMode: .imported)
@@ -387,9 +592,9 @@ final class SyncEngineCoreTests: XCTestCase {
         }
         XCTAssertTrue(foundEncrypted.isSuperset(of: ["987654", "Probe Shop Omega", "Probe Account Zeta", "probe-file"]),
                       "the scan sees the values where they are: in encrypted fields (\(foundEncrypted))")
-        let assets = await cloud.storedAssets()
+        let assets = records.flatMap(\.assets.values)
         XCTAssertFalse(assets.isEmpty, "the large record went as an asset")
-        for asset in assets.values {
+        for asset in assets {
             let text = String(decoding: asset, as: UTF8.self)
             for probe in probes { XCTAssertFalse(text.contains(probe), "an asset holds only ciphertext") }
         }
@@ -407,7 +612,8 @@ final class SyncEngineCoreTests: XCTestCase {
         let payload = try a.write { db in
             try XCTUnwrap(SyncTranslator.outgoing(PendingChange(table: "transaction_", localId: coffee, uuid: uuid, kind: .insert), db: db))
         }
-        let direct = try await cloud.save([payload], ifUnchanged: [:])
+        try await cloud.createZone("household")
+        let direct = try await cloud.save([try SyncWireRecord(payload)], ifUnchanged: [:], atomic: false)
         guard case .tooLarge = direct.first?.outcome else { return XCTFail("a record over 1 MB is refused: \(direct)") }
 
         try await a.engine.syncNow()
@@ -424,6 +630,7 @@ final class SyncEngineCoreTests: XCTestCase {
     // MARK: Lease
 
     func testTheLeaseOverTheTransportIsCompareAndSetOnTheServersClock() async throws {
+        try await cloud.createZone("household")
         let store = TransportLeaseStore(transport: cloud)
         let mac = SyncDevice(id: "mac", name: "Mac")
         let ipad = SyncDevice(id: "ipad", name: "iPad")
@@ -455,17 +662,24 @@ final class SyncEngineCoreTests: XCTestCase {
         XCTAssertEqual(try b.count("syncStaging"), 0)
     }
 
-    func testAPushRenewsTheLeaseOnceItIsTenMinutesOld() async throws {
-        final class Clock: @unchecked Sendable {
-            private let lock = NSLock()
-            private var value = Date(timeIntervalSinceReferenceDate: 800_000_000)
-            var now: Date { lock.withLock { value } }
-            func advance(_ seconds: TimeInterval) { lock.withLock { value = value.addingTimeInterval(seconds) } }
-        }
-        let clock = Clock()
+    private final class TestClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = Date()
+        var now: Date { lock.withLock { value } }
+        func advance(_ seconds: TimeInterval) { lock.withLock { value = value.addingTimeInterval(seconds) } }
+    }
+
+    func testAPushRenewsAUsedLeaseOnceItIsTenMinutesOld() async throws {
+        let clock = TestClock()
         let engine = SyncEngineCore(db: a.queue, transport: cloud, device: a.device, clock: { clock.now })
+        let (account, _, _) = try base(a)
+        try await engine.syncNow()
         try await engine.acquireImportLease()
+        let runId = try importRun(on: a, account: account, count: 1)
+        // The run's record can't go yet, so the batch is still uploading.
+        await cloud.failSaves(of: [try a.uuid("importRun", runId)], times: 100)
         let taken = try XCTUnwrap(a.read { db in try SyncImportGate.heldLease(db: db) })
+        XCTAssertTrue(taken.used)
         clock.advance(5 * 60)
         try await engine.pushPending()
         XCTAssertEqual(try a.read { db in try SyncImportGate.heldLease(db: db) }?.record.expiresAt, taken.record.expiresAt, "not yet")
@@ -474,7 +688,27 @@ final class SyncEngineCoreTests: XCTestCase {
         let renewed = try XCTUnwrap(a.read { db in try SyncImportGate.heldLease(db: db) })
         XCTAssertEqual(renewed.record.expiresAt, clock.now.addingTimeInterval(ImportLease.duration))
         let server = try await TransportLeaseStore(transport: cloud).currentLease()
-        XCTAssertEqual(server?.tag, renewed.tag)
+        XCTAssertEqual(server?.record.expiresAt, renewed.record.expiresAt)
+    }
+
+    func testAnUnusedLeaseIsNeverRenewedAndIsDroppedOnceExpired() async throws {
+        let clock = TestClock()
+        let engine = SyncEngineCore(db: a.queue, transport: cloud, device: a.device, clock: { clock.now })
+        try await engine.acquireImportLease()
+        let taken = try XCTUnwrap(a.read { db in try SyncImportGate.heldLease(db: db) })
+        func updatedAt(_ key: String) throws -> Date? {
+            try a.read { db in try Date.fetchOne(db, sql: "SELECT updatedAt FROM syncState WHERE key = ?", arguments: [key]) }
+        }
+        XCTAssertEqual(try XCTUnwrap(updatedAt("importLease")).timeIntervalSince(clock.now), 0, accuracy: 0.002, "stamped with the engine's clock")
+        let syncOn = try updatedAt("syncOn")
+        clock.advance(11 * 60)
+        try await engine.pushPending()
+        XCTAssertEqual(try updatedAt("syncOn"), syncOn, "not written again when nothing changed")
+        XCTAssertEqual(try a.read { db in try SyncImportGate.heldLease(db: db) }?.record.expiresAt, taken.record.expiresAt,
+                       "a lease nobody imported under isn't kept alive")
+        clock.advance(20 * 60)
+        try await engine.pushPending()
+        XCTAssertNil(try a.read { db in try SyncImportGate.heldLease(db: db) }, "dropped once expired")
     }
 
     func testUndoNeedsTheLeaseWhenSyncIsOn() async throws {
@@ -548,86 +782,158 @@ final class SyncEngineCoreTests: XCTestCase {
     }
 }
 
-/// `FakeCloud` on its own: the parts of CloudKit's behaviour the engine relies on.
+/// `FakeCloud` on its own: the parts of `CKDatabase`'s behaviour the engine relies on (ruling R11).
 final class FakeCloudTests: XCTestCase {
-    private func payload(_ name: String, _ value: Int64, type: String = "account") -> SyncPayload {
-        SyncPayload(recordType: type, recordName: name, zone: "household", fields: ["value": .int(value)])
+    private let zone = "household"
+
+    private func record(_ name: String, _ value: Int64, type: String = "account") throws -> SyncWireRecord {
+        try SyncWireRecord(SyncPayload(recordType: type, recordName: name, zone: "household", fields: ["value": .int(value)]))
     }
 
-    private func tag(_ results: [SaveResult], _ name: String) -> String? {
+    private func stamp(_ results: [SaveResult], _ name: String) -> SyncServerStamp? {
         for result in results where result.recordName == name {
-            if case .saved(let tag, _) = result.outcome { return tag }
+            if case .saved(let stamp) = result.outcome { return stamp }
         }
         return nil
     }
 
-    func testCompareAndSetOnChangeTags() async throws {
+    private func value(_ record: SyncServerRecord?) throws -> SyncValue? { try record?.wire.payload().fields["value"] }
+
+    func testZonesMustBeCreatedFirst() async throws {
         let cloud = FakeCloud()
-        let first = try await cloud.save([payload("r1", 1)], ifUnchanged: [:])
-        let tag1 = try XCTUnwrap(tag(first, "r1"))
-        // A save without the tag of a record the server has is refused, with the server's record.
-        let blind = try await cloud.save([payload("r1", 2)], ifUnchanged: [:])
-        guard case .changed(let server) = blind.first?.outcome else { return XCTFail("\(blind)") }
-        XCTAssertEqual(server.payload.fields["value"], .int(1))
-        XCTAssertEqual(server.changeTag, tag1)
-        let second = try await cloud.save([payload("r1", 3)], ifUnchanged: ["r1": tag1])
-        let tag2 = try XCTUnwrap(tag(second, "r1"))
-        XCTAssertNotEqual(tag1, tag2)
-        let stale = try await cloud.save([payload("r1", 4)], ifUnchanged: ["r1": tag1])
-        guard case .changed = stale.first?.outcome else { return XCTFail("a stale tag loses") }
-        try await cloud.delete(["r1"], zone: "household")
-        let afterDelete = try await cloud.save([payload("r1", 5)], ifUnchanged: ["r1": tag2])
-        guard case .deleted = afterDelete.first?.outcome else { return XCTFail("a save against a deleted record: \(afterDelete)") }
-        let recreated = try await cloud.save([payload("r1", 6)], ifUnchanged: [:])
-        XCTAssertNotNil(tag(recreated, "r1"), "a record deleted on the server can be created again")
+        let early = try await cloud.save([try record("r1", 1)], ifUnchanged: [:], atomic: false)
+        XCTAssertEqual(early.first?.outcome, .zoneNotFound)
+        do {
+            _ = try await cloud.changes(since: nil, zone: zone)
+            XCTFail("no zone yet")
+        } catch SyncTransportError.zoneNotFound {}
+        try await cloud.createZone(zone)
+        let saved = try await cloud.save([try record("r1", 1)], ifUnchanged: [:], atomic: false)
+        XCTAssertNotNil(stamp(saved, "r1"))
     }
 
-    func testFeedsCarryOnlyLatestVersionsAndTombstonesInPages() async throws {
-        let cloud = FakeCloud(pageSize: 2)
-        var tags: [String: String] = [:]
-        for name in ["r1", "r2", "r3"] { tags[name] = tag(try await cloud.save([payload(name, 1)], ifUnchanged: [:]), name) }
-        let full = try await cloud.changes(since: nil, zone: "household")
-        XCTAssertEqual(full.records.map(\.payload.recordName), ["r1", "r2"])
+    func testCompareAndSetOnSystemFields() async throws {
+        let cloud = FakeCloud(zones: [zone])
+        let firstResults = try await cloud.save([try record("r1", 1)], ifUnchanged: [:], atomic: false)
+        let first = try XCTUnwrap(stamp(firstResults, "r1"))
+        XCTAssertNotEqual(first.systemFields, Data(first.changeTag.utf8), "the system fields blob is not the tag")
+        // A save without system fields of a record the server has is refused, with the server's record.
+        let blind = try await cloud.save([try record("r1", 2)], ifUnchanged: [:], atomic: false)
+        guard case .changed(let server) = blind.first?.outcome else { return XCTFail("\(blind)") }
+        XCTAssertEqual(try value(server), .int(1))
+        XCTAssertEqual(server.stamp.changeTag, first.changeTag)
+        let secondResults = try await cloud.save([try record("r1", 3)], ifUnchanged: ["r1": first.systemFields], atomic: false)
+        let second = try XCTUnwrap(stamp(secondResults, "r1"))
+        XCTAssertNotEqual(first.changeTag, second.changeTag)
+        let stale = try await cloud.save([try record("r1", 4)], ifUnchanged: ["r1": first.systemFields], atomic: false)
+        guard case .changed = stale.first?.outcome else { return XCTFail("a stale version loses") }
+        try await cloud.delete(["r1"], zone: zone)
+        let afterDelete = try await cloud.save([try record("r1", 5)], ifUnchanged: ["r1": second.systemFields], atomic: false)
+        XCTAssertEqual(afterDelete.first?.outcome, .deleted)
+        let recreated = try await cloud.save([try record("r1", 6)], ifUnchanged: [:], atomic: false)
+        XCTAssertNotNil(stamp(recreated, "r1"), "a record deleted on the server can be created again")
+    }
+
+    func testAtomicSavesAreAllOrNothingAndNonAtomicOnesAreNot() async throws {
+        let cloud = FakeCloud(zones: [zone])
+        _ = try await cloud.save([try record("taken", 1)], ifUnchanged: [:], atomic: false)
+        let atomic = try await cloud.save([try record("a", 1), try record("taken", 2), try record("b", 1)], ifUnchanged: [:], atomic: true)
+        XCTAssertEqual(atomic.map(\.outcome.isBatchFailure), [true, false, true])
+        let nothing = await cloud.record(named: "a")
+        XCTAssertNil(nothing, "an atomic operation with one failure saves nothing")
+        let loose = try await cloud.save([try record("a", 1), try record("taken", 2), try record("b", 1)], ifUnchanged: [:], atomic: false)
+        XCTAssertNotNil(stamp(loose, "a"))
+        XCTAssertNotNil(stamp(loose, "b"))
+    }
+
+    func testOperationLimitsAndTheRecordSizeLimit() async throws {
+        let cloud = FakeCloud(limits: SyncOperationLimits(maxRecords: 2, maxBytes: 600), zones: [zone])
+        do {
+            _ = try await cloud.save([try record("a", 1), try record("b", 1), try record("c", 1)], ifUnchanged: [:], atomic: false)
+            XCTFail("three records is over the count")
+        } catch SyncTransportError.limitExceeded {}
+        let big = SyncWireRecord(recordType: "account", recordName: "big", zone: zone, encryptedFields: ["f_x": Data(count: 500)])
+        do {
+            _ = try await cloud.save([big, try record("a", 1)], ifUnchanged: [:], atomic: false)
+            XCTFail("over the bytes")
+        } catch SyncTransportError.limitExceeded {}
+        let large = FakeCloud(zones: [zone])
+        let huge = SyncWireRecord(recordType: "document", recordName: "huge", zone: zone, encryptedFields: ["f_text": Data(count: 1_100_000)])
+        let refused = try await large.save([huge], ifUnchanged: [:], atomic: false)
+        guard case .tooLarge = refused.first?.outcome else { return XCTFail("\(refused)") }
+    }
+
+    func testAssetsLiveWithTheRecordVersion() async throws {
+        let cloud = FakeCloud(zones: [zone])
+        var withAsset = try record("doc", 1, type: "document")
+        withAsset.assets["file"] = Data(count: 2_000_000)
+        let firstResults = try await cloud.save([withAsset], ifUnchanged: [:], atomic: false)
+        let first = try XCTUnwrap(stamp(firstResults, "doc"),
+                                  "assets don't count towards the record size")
+        let stored = await cloud.record(named: "doc")
+        XCTAssertEqual(stored?.wire.assets["file"]?.count, 2_000_000)
+        _ = try await cloud.save([try record("doc", 2, type: "document")], ifUnchanged: ["doc": first.systemFields], atomic: false)
+        let replaced = await cloud.record(named: "doc")
+        XCTAssertNil(replaced?.wire.assets["file"], "the asset went with its version")
+    }
+
+    func testFeedsCarryOnlyLatestVersionsAndTombstonesInFeedOrderAndPages() async throws {
+        let cloud = FakeCloud(pageSize: 2, zones: [zone, "private-other"])
+        var stamps: [String: SyncServerStamp] = [:]
+        for name in ["r1", "r2", "r3"] { stamps[name] = stamp(try await cloud.save([try record(name, 1)], ifUnchanged: [:], atomic: false), name) }
+        let full = try await cloud.changes(since: nil, zone: zone)
+        XCTAssertEqual(full.records.map(\.wire.recordName), ["r1", "r2"])
         XCTAssertTrue(full.moreComing)
-        let rest = try await cloud.changes(since: full.token, zone: "household")
-        XCTAssertEqual(rest.records.map(\.payload.recordName), ["r3"])
+        let rest = try await cloud.changes(since: full.token, zone: zone)
+        XCTAssertEqual(rest.records.map(\.wire.recordName), ["r3"])
         XCTAssertFalse(rest.moreComing)
 
+        await cloud.setPageSize(10)
+        try await cloud.delete(["r2"], zone: zone)
         for value in [2, 3] as [Int64] {
-            let saved = try await cloud.save([payload("r1", value)], ifUnchanged: ["r1": tags["r1"]!])
-            tags["r1"] = tag(saved, "r1")
+            stamps["r1"] = stamp(try await cloud.save([try record("r1", value)], ifUnchanged: ["r1": stamps["r1"]!.systemFields], atomic: false), "r1")
         }
-        try await cloud.delete(["r2"], zone: "household")
-        let delta = try await cloud.changes(since: rest.token, zone: "household")
-        XCTAssertEqual(delta.records.map(\.payload.recordName), ["r1"], "one entry per record")
-        XCTAssertEqual(delta.records.first?.payload.fields["value"], .int(3), "its latest version only")
-        XCTAssertEqual(delta.deletions.map(\.recordName), ["r2"])
-        XCTAssertEqual(delta.deletions.first?.recordType, "account")
-        let fresh = try await cloud.changes(since: nil, zone: "household")
-        let names = fresh.records.map(\.payload.recordName)
-        XCTAssertEqual(Set(names), ["r1", "r3"], "a fetch from scratch sees what exists")
-        let empty = try await cloud.changes(since: nil, zone: "private-other")
-        XCTAssertTrue(empty.records.isEmpty, "zones are separate")
+        let delta = try await cloud.changes(since: rest.token, zone: zone)
+        XCTAssertEqual(delta.changes.count, 2, "one entry per record")
+        guard case .deletion(let deletion) = delta.changes.first, case .record(let latest) = delta.changes.last else {
+            return XCTFail("feed order: the delete came first: \(delta.changes)")
+        }
+        XCTAssertEqual(deletion, SyncDeletion(recordName: "r2", recordType: "account"))
+        XCTAssertEqual(try value(latest), .int(3), "its latest version only")
+        let fresh = try await cloud.changes(since: nil, zone: zone)
+        XCTAssertEqual(Set(fresh.records.map(\.wire.recordName)), ["r1", "r3"], "a fetch from scratch sees what exists")
+        XCTAssertTrue(fresh.deletions.isEmpty)
+        let other = try await cloud.changes(since: nil, zone: "private-other")
+        XCTAssertTrue(other.changes.isEmpty, "zones are separate")
+
+        await cloud.expireChangeTokens()
+        do {
+            _ = try await cloud.changes(since: delta.token, zone: zone)
+            XCTFail("expired")
+        } catch SyncTransportError.changeTokenExpired {}
     }
 
-    func testRecordSizeLimitAndServerClock() async throws {
-        let cloud = FakeCloud()
-        let big = SyncPayload(recordType: "document", recordName: "big", zone: "household",
-                              fields: ["text": .string(String(repeating: "x", count: 1_100_000))])
-        let refused = try await cloud.save([big], ifUnchanged: [:])
-        guard case .tooLarge = refused.first?.outcome else { return XCTFail("\(refused)") }
+    func testServerClockAndALostReply() async throws {
+        let cloud = FakeCloud(zones: [zone])
         let before = await cloud.now
         await cloud.advanceClock(by: 60)
-        let saved = try await cloud.save([payload("r1", 1)], ifUnchanged: [:])
-        guard case .saved(_, let at) = saved.first?.outcome else { return XCTFail() }
-        XCTAssertGreaterThanOrEqual(at.timeIntervalSince(before), 60)
+        let savedResults = try await cloud.save([try record("r1", 1)], ifUnchanged: [:], atomic: false)
+        let saved = try XCTUnwrap(stamp(savedResults, "r1"))
+        XCTAssertGreaterThanOrEqual(saved.modifiedAt.timeIntervalSince(before), 60)
         let serverNow = try await cloud.serverTime()
         XCTAssertNotNil(serverNow)
+        await cloud.loseTheNextReply()
+        do {
+            _ = try await cloud.save([try record("r2", 1)], ifUnchanged: [:], atomic: false)
+            XCTFail("the reply is lost")
+        } catch SyncTransportError.networkUnavailable {}
+        let applied = await cloud.record(named: "r2")
+        XCTAssertNotNil(applied, "but the save was applied")
     }
 
     func testAPlaintextFieldIsRecordedAsUnencrypted() async throws {
-        let cloud = FakeCloud()
-        var wire = try SyncWireRecord(payload("r1", 1))
+        let cloud = FakeCloud(zones: [zone])
+        var wire = try record("r1", 1)
         XCTAssertTrue(wire.unencryptedFields.isEmpty, "BudgetCore puts every value in encryptedFields")
         wire.unencryptedFields["amount"] = Data("12".utf8)
         _ = await cloud.save(wire: wire, ifUnchanged: nil)
@@ -636,15 +942,31 @@ final class FakeCloudTests: XCTestCase {
     }
 
     func testWireRecordsRoundTripEveryPart() throws {
-        var original = payload("r1", 7)
-        original.clocks = ["*": SyncClock(at: Date(timeIntervalSince1970: 5), by: "u")]
+        var original = SyncPayload(recordType: "importRun", recordName: "r1", zone: "household", fields: ["value": .int(7), "note": .null])
+        original.clocks = ["*": SyncClock(at: Date(timeIntervalSince1970: 5), by: "u"), "value": SyncClock(at: Date(timeIntervalSince1970: 9), by: nil)]
         original.modifiedBy = "u"
+        original.modifiedAt = Date(timeIntervalSince1970: 11)
+        original.mergedInto = "other"
         original.importRunUuid = "run"
-        original.batchGeneration = 1
+        original.batchGeneration = 2
+        original.manifest = SyncBatchManifest(generation: 2, isOpen: false)
+        original.manifest?.counts = ["transaction_": 3]
+        original.manifest?.deletes = ["gone"]
+        original.manifest?.revives = ["back"]
         original.deletedReferences = ["gone"]
+        original.largePayload = SyncLargePayloadReference(assetField: "payload", key: Data([1, 2, 3]))
+        // Every property is set: a property added later without a value here fails this.
+        for child in Mirror(reflecting: original).children {
+            XCTAssertNotEqual(String(describing: child.value), "nil", "\(child.label ?? "?") is set in this test")
+        }
         let wire = try SyncWireRecord(original)
+        XCTAssertEqual(Set(wire.encryptedFields.keys), ["f_value", "f_note", "meta"])
         XCTAssertEqual(try wire.payload(), original)
     }
+}
+
+extension SaveResult.Outcome {
+    var isBatchFailure: Bool { self == .batchRequestFailed }
 }
 
 extension SyncTestDevice {

@@ -44,6 +44,8 @@ public struct StoredLease: Equatable, Sendable {
 public enum LeaseStoreError: Error, Equatable {
     /// A compare-and-set failed: the record isn't the one the write was made against.
     case changed
+    /// The store couldn't be reached or refused for a passing reason: try again later.
+    case unavailable(String)
 }
 
 /// Where the lease lives: one record, written only by compare-and-set (`.ifServerRecordUnchanged`,

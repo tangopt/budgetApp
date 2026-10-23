@@ -525,11 +525,26 @@ public enum SyncTranslator {
     }
 
     /// Staged records that need someone (ruling R8, surfaced in step 6): those marked "needs attention",
-    /// and those that have waited longer than `maxAge` (a parent or a batch that never came).
+    /// those that have waited longer than `maxAge` (a parent or a batch that never came), and those that
+    /// hold back a local edit of the same record (it isn't sent while the server's version waits here).
     public static func stagingAttention(db: Database, now: Date = Date(), maxAge: TimeInterval = stagingMaxAge) throws -> [SyncStagingRow] {
         try SyncStagingRow.fetchAll(db, sql: """
-            SELECT * FROM syncStaging WHERE reason LIKE ? OR COALESCE(firstSeenAt, receivedAt) < ? ORDER BY id
+            SELECT * FROM syncStaging WHERE reason LIKE ? OR COALESCE(firstSeenAt, receivedAt) < ?
+                OR uuid IN (SELECT uuid FROM syncPending WHERE kind <> 'delete') ORDER BY id
             """, arguments: [needsAttention + "%", now.addingTimeInterval(-maxAge)])
+    }
+
+    /// A record from the cloud that can't be read (its asset damaged, or its encoding unknown): kept in
+    /// staging for attention and never retried, so one bad record doesn't hold up the rest of a pull. A
+    /// readable version arriving later replaces it.
+    public static func stageUnreadable(recordType: String, recordName: String, db: Database, now: Date) throws {
+        log.error("Sync received a \(recordType, privacy: .public) record that can't be read; marked for attention")
+        try db.execute(sql: """
+            INSERT INTO syncStaging(tableName, uuid, payloadJSON, reason, importRunUuid, receivedAt, firstSeenAt, attempts)
+                VALUES (?, ?, '{}', ?, NULL, ?, ?, 0)
+            ON CONFLICT(uuid) DO UPDATE SET tableName = excluded.tableName, payloadJSON = excluded.payloadJSON,
+                reason = excluded.reason, importRunUuid = NULL, receivedAt = excluded.receivedAt
+            """, arguments: [recordType, recordName, needsAttention + "unreadable payload", now, now])
     }
 
     // MARK: Deletes

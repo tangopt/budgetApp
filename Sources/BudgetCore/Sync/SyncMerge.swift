@@ -369,7 +369,7 @@ public enum SyncMerge {
     /// Gives the row named `old` the name `new`, moving its log entries and its pending change.
     static func rekey(from old: String, to new: String, db: Database) throws {
         guard let record = try SyncRecordRow.fetchOne(db, sql: "SELECT * FROM syncRecord WHERE uuid = ?", arguments: [old]) else { return }
-        try db.execute(sql: "UPDATE syncRecord SET uuid = ?, systemFields = NULL WHERE uuid = ?", arguments: [new, old])
+        try db.execute(sql: "UPDATE syncRecord SET uuid = ?, systemFields = NULL, changeTag = NULL WHERE uuid = ?", arguments: [new, old])
         try db.execute(sql: "UPDATE syncConflict SET uuid = ? WHERE uuid = ?", arguments: [new, old])
         if try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncPending WHERE uuid = ? AND kind <> 'delete')", arguments: [old]) ?? false {
             try queue(uuid: new, table: record.tableName, localId: record.localId, kind: .update, db: db)

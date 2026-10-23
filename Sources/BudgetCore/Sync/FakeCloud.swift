@@ -1,31 +1,33 @@
 import Foundation
 
 public enum FakeCloudError: Error, Equatable {
-    /// The connection dropped (`failSaveOperations(after:)`).
-    case networkUnavailable
-    /// A change token from another zone, or not one of this fake's.
+    /// A change token that isn't one of this fake's, or is from another zone.
     case badToken
 }
 
-/// CloudKit in memory, for tests and the App's debug harness (plan Task 5). It models what the engine
+/// `CKDatabase` in memory (ruling R11), for tests and the App's debug harness. It models what the engine
 /// relies on:
-/// - zones, each with its own change feed;
-/// - per-record change tags and `.ifServerRecordUnchanged` compare-and-set (a save without a tag only
-///   creates; a stale tag is refused with the server's record; a tag for a deleted record is refused);
-/// - change feeds that carry only each record's latest version, and tombstones for deletions (not on a
-///   fetch from scratch), in pages with continuation tokens;
-/// - a server clock stamping every write (`modificationDate`);
-/// - the ~1 MB record size limit (assets don't count);
-/// - assets, stored as given (the app encrypts them first);
+/// - custom zones that must be created before use (`zoneNotFound` otherwise) and can be deleted;
+/// - per-record change tags, and system-field blobs that differ from them; `.ifServerRecordUnchanged`
+///   compare-and-set (no system fields: create only; a stale version: `changed` with the server's record;
+///   a version of a deleted record: `deleted`); a deleted record can be created again;
+/// - `CKModifyRecordsOperation`'s atomic default in custom zones (one failure fails the rest with
+///   `batchRequestFailed`), per-operation record and byte limits (`limitExceeded`), the ~1 MB record limit;
+/// - asset fields stored with the record version (a replaced asset goes with its old version);
+/// - change feeds with only each record's latest version and tombstones for deletions (none from
+///   scratch), in feed order, in pages; tokens that can expire (`changeTokenExpired`);
+/// - a server clock stamping every write;
+/// - failure modes: a dropped connection, a lost reply (applied on the server, an error to the client),
+///   passing per-record failures;
 /// - a call log, and the names of any field a record carried outside its encrypted fields.
 public actor FakeCloud: SyncTransport {
     public enum Call: Equatable, Sendable {
-        case save([String])
-        case changes(zone: String)
+        case createZone(String)
+        case save([String], atomic: Bool)
+        /// `since`: the token's position, nil from scratch.
+        case changes(zone: String, since: Int?)
         case delete([String])
         case fetch(String)
-        case saveAsset(String, bytes: Int)
-        case asset(String)
     }
 
     private struct Stored {
@@ -44,27 +46,48 @@ public actor FakeCloud: SyncTransport {
     private struct Token: Codable {
         var zone: String
         var sequence: Int
+        var epoch: Int
+    }
+
+    /// What a `systemFields` blob holds here: the version, wrapped so it is not the tag itself.
+    private struct SystemFields: Codable {
+        var recordName: String
+        var zone: String
+        var tag: String
     }
 
     private var zones: [String: Zone] = [:]
     private var sequence = 0
     private var tags = 0
-    private var assets: [String: Data] = [:]
+    private var epoch = 0
     private var saveOperationsLeft: Int?
     private var failing: [String: Int] = [:]
+    private var loseNextReply = false
 
     /// The server's clock: every write moves it on by a millisecond; tests move it with `advanceClock`.
     public private(set) var now: Date
     public private(set) var pageSize: Int
     public let recordSizeLimit: Int
+    /// The limits enforced per save operation.
+    public let limits: SyncOperationLimits
+    private let advertisesLimits: Bool
     public private(set) var calls: [Call] = []
     /// `"<recordType>.<field>"` for every field a saved record carried outside `encryptedFields`.
     public private(set) var unencryptedFieldNames: Set<String> = []
+    /// How many save operations were refused as too large as a whole.
+    public private(set) var limitExceededCount = 0
 
-    public init(start: Date = Date(timeIntervalSinceReferenceDate: 800_000_000), pageSize: Int = 400, recordSizeLimit: Int = 1_000_000) {
+    /// `advertisesLimits`: false to tell the engine none, so it meets them only as `limitExceeded`.
+    /// `zones`: zones that exist from the start.
+    public init(start: Date = Date(timeIntervalSinceReferenceDate: 800_000_000), pageSize: Int = 400, recordSizeLimit: Int = 1_000_000,
+                limits: SyncOperationLimits = SyncOperationLimits(maxRecords: 400, maxBytes: 2_000_000), advertisesLimits: Bool = true,
+                zones: [String] = []) {
         now = start
         self.pageSize = pageSize
         self.recordSizeLimit = recordSizeLimit
+        self.limits = limits
+        self.advertisesLimits = advertisesLimits
+        for zone in zones { self.zones[zone] = Zone() }
     }
 
     // MARK: Test controls
@@ -76,13 +99,30 @@ public actor FakeCloud: SyncTransport {
     public func restoreConnection() { saveOperationsLeft = nil }
     /// The next `times` saves of each named record fail with a passing error (`.failed`).
     public func failSaves(of names: Set<String>, times: Int) { for name in names { failing[name] = times } }
+    /// The next save operation is applied, but its reply is lost: the caller gets `networkUnavailable`.
+    public func loseTheNextReply() { loseNextReply = true }
+    /// Every change token issued so far stops working (`changeTokenExpired`).
+    public func expireChangeTokens() { epoch += 1 }
+    /// Deletes a zone and everything in it (another device reset it, or the user did).
+    public func deleteZone(_ name: String) {
+        zones[name] = nil
+        epoch += 1
+    }
+    /// Damages a stored asset's bytes (for unreadable-record tests).
+    public func corruptAsset(of recordName: String, field: String) {
+        for (name, var zone) in zones {
+            guard var stored = zone.records[recordName], var data = stored.wire.assets[field], !data.isEmpty else { continue }
+            data[data.startIndex] ^= 0xFF
+            stored.wire.assets[field] = data
+            zone.records[recordName] = stored
+            zones[name] = zone
+        }
+    }
 
     /// Every record the server holds, as written (all zones).
     public func storedRecords() -> [SyncWireRecord] {
         zones.values.flatMap { $0.records.values.map(\.wire) }.sorted { $0.recordName < $1.recordName }
     }
-
-    public func storedAssets() -> [String: Data] { assets }
 
     /// A record by name, in any zone.
     public func record(named name: String) -> SyncServerRecord? {
@@ -90,19 +130,49 @@ public actor FakeCloud: SyncTransport {
         return nil
     }
 
-    // MARK: SyncTransport
-
-    public func save(_ payloads: [SyncPayload], ifUnchanged: [String: String]) async throws -> [SaveResult] {
-        calls.append(.save(payloads.map(\.recordName)))
-        if let left = saveOperationsLeft {
-            guard left > 0 else { throw FakeCloudError.networkUnavailable }
-            saveOperationsLeft = left - 1
-        }
-        return try payloads.map { save(wire: try SyncWireRecord($0), ifUnchanged: ifUnchanged[$0.recordName]) }
+    /// The payload a record holds, opened if it is a large one (`SyncLargePayload`).
+    public func payload(named name: String) throws -> SyncPayload? {
+        try record(named: name).map { try SyncLargePayload.payload(from: $0.wire) }
     }
 
-    /// Saves one record as written, with compare-and-set on `tag`.
-    func save(wire: SyncWireRecord, ifUnchanged tag: String?) -> SaveResult {
+    // MARK: SyncTransport
+
+    public func operationLimits() async -> SyncOperationLimits { advertisesLimits ? limits : .unlimited }
+
+    public func createZone(_ zone: String) async throws {
+        calls.append(.createZone(zone))
+        if zones[zone] == nil { zones[zone] = Zone() }
+    }
+
+    public func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data], atomic: Bool) async throws -> [SaveResult] {
+        calls.append(.save(records.map(\.recordName), atomic: atomic))
+        if let left = saveOperationsLeft {
+            guard left > 0 else { throw SyncTransportError.networkUnavailable }
+            saveOperationsLeft = left - 1
+        }
+        guard records.count <= limits.maxRecords, records.map(\.size).reduce(0, +) <= limits.maxBytes else {
+            limitExceededCount += 1
+            throw SyncTransportError.limitExceeded
+        }
+        let saved = zones
+        var results = records.map { save(wire: $0, ifUnchanged: ifUnchanged[$0.recordName]) }
+        if atomic, results.contains(where: { if case .saved = $0.outcome { return false } else { return true } }) {
+            // All or nothing: what saved is undone; those that would have saved fail with the batch.
+            zones = saved
+            results = results.map { result in
+                if case .saved = result.outcome { return SaveResult(recordName: result.recordName, outcome: .batchRequestFailed) }
+                return result
+            }
+        }
+        if loseNextReply {
+            loseNextReply = false
+            throw SyncTransportError.networkUnavailable
+        }
+        return results
+    }
+
+    /// Saves one record as written, with compare-and-set on the version `systemFields` names.
+    func save(wire: SyncWireRecord, ifUnchanged systemFields: Data?) -> SaveResult {
         for field in wire.unencryptedFields.keys { unencryptedFieldNames.insert(wire.recordType + "." + field) }
         if let left = failing[wire.recordName], left > 0 {
             failing[wire.recordName] = left - 1
@@ -110,10 +180,11 @@ public actor FakeCloud: SyncTransport {
         }
         let size = wire.size
         guard size <= recordSizeLimit else { return SaveResult(recordName: wire.recordName, outcome: .tooLarge(bytes: size)) }
-        var zone = zones[wire.zone] ?? Zone()
+        guard var zone = zones[wire.zone] else { return SaveResult(recordName: wire.recordName, outcome: .zoneNotFound) }
+        let tag = systemFields.flatMap { try? JSONDecoder().decode(SystemFields.self, from: $0) }?.tag
         if let existing = zone.records[wire.recordName] {
             guard tag == existing.tag else { return SaveResult(recordName: wire.recordName, outcome: .changed(server(existing))) }
-        } else if tag != nil {
+        } else if systemFields != nil {
             return SaveResult(recordName: wire.recordName, outcome: .deleted)
         }
         tick()
@@ -123,42 +194,38 @@ public actor FakeCloud: SyncTransport {
         zone.tombstones[wire.recordName] = nil
         zone.latest = sequence
         zones[wire.zone] = zone
-        return SaveResult(recordName: wire.recordName, outcome: .saved(changeTag: stored.tag, modifiedAt: stored.modifiedAt))
+        return SaveResult(recordName: wire.recordName, outcome: .saved(stamp(stored, zone: wire.zone)))
     }
 
     public func changes(since token: Data?, zone name: String) async throws -> SyncChanges {
-        calls.append(.changes(zone: name))
-        var since = 0
+        var since: Int?
         if let token {
             guard let decoded = try? JSONDecoder().decode(Token.self, from: token), decoded.zone == name else { throw FakeCloudError.badToken }
             since = decoded.sequence
+            calls.append(.changes(zone: name, since: since))
+            guard decoded.epoch == epoch else { throw SyncTransportError.changeTokenExpired }
+        } else {
+            calls.append(.changes(zone: name, since: nil))
         }
-        let zone = zones[name] ?? Zone()
-        enum Item { case record(Stored), deletion(String, String, Int) }
-        var items: [(Int, Item)] = zone.records.values.filter { $0.sequence > since }.map { ($0.sequence, .record($0)) }
-        if token != nil {
+        guard let zone = zones[name] else { throw SyncTransportError.zoneNotFound(name) }
+        let after = since ?? 0
+        var items: [(Int, SyncFeedChange)] = zone.records.values.filter { $0.sequence > after }.map { ($0.sequence, .record(server($0))) }
+        if since != nil {
             // From scratch there is nothing to delete: only what exists is listed.
-            items += zone.tombstones.filter { $0.value.sequence > since }.map { ($0.value.sequence, .deletion($0.key, $0.value.type, $0.value.sequence)) }
+            items += zone.tombstones.filter { $0.value.sequence > after }
+                .map { ($0.value.sequence, .deletion(SyncDeletion(recordName: $0.key, recordType: $0.value.type))) }
         }
         items.sort { $0.0 < $1.0 }
-        let page = items.prefix(pageSize)
+        let page = Array(items.prefix(pageSize))
         let moreComing = items.count > page.count
-        var records: [SyncServerRecord] = []
-        var deletions: [SyncDeletion] = []
-        for (_, item) in page {
-            switch item {
-            case .record(let stored): records.append(server(stored))
-            case .deletion(let name, let type, _): deletions.append(SyncDeletion(recordName: name, recordType: type))
-            }
-        }
-        let reached = moreComing ? (page.last?.0 ?? since) : max(since, zone.latest)
-        let next = try JSONEncoder().encode(Token(zone: name, sequence: reached))
-        return SyncChanges(records: records, deletions: deletions, token: next, moreComing: moreComing)
+        let reached = moreComing ? (page.last?.0 ?? after) : max(after, zone.latest)
+        let next = try JSONEncoder().encode(Token(zone: name, sequence: reached, epoch: epoch))
+        return SyncChanges(changes: page.map(\.1), token: next, moreComing: moreComing)
     }
 
     public func delete(_ recordNames: [String], zone name: String) async throws {
         calls.append(.delete(recordNames))
-        var zone = zones[name] ?? Zone()
+        guard var zone = zones[name] else { return }
         for recordName in recordNames {
             guard let existing = zone.records.removeValue(forKey: recordName) else { continue }
             tick()
@@ -170,18 +237,8 @@ public actor FakeCloud: SyncTransport {
 
     public func fetch(_ recordName: String, zone: String) async throws -> SyncServerRecord? {
         calls.append(.fetch(recordName))
-        return zones[zone]?.records[recordName].map(server)
-    }
-
-    public func saveAsset(_ ciphertext: Data, for recordName: String) async throws {
-        calls.append(.saveAsset(recordName, bytes: ciphertext.count))
-        assets[recordName] = ciphertext
-    }
-
-    public func asset(for recordName: String) async throws -> Data {
-        calls.append(.asset(recordName))
-        guard let data = assets[recordName] else { throw SyncTransportError.assetNotFound(recordName) }
-        return data
+        guard let stored = zones[zone] else { throw SyncTransportError.zoneNotFound(zone) }
+        return stored.records[recordName].map(server)
     }
 
     public func serverTime() async throws -> Date? { now }
@@ -193,9 +250,12 @@ public actor FakeCloud: SyncTransport {
         now = now.addingTimeInterval(0.001)
     }
 
+    private func stamp(_ stored: Stored, zone: String) -> SyncServerStamp {
+        let fields = SystemFields(recordName: stored.wire.recordName, zone: zone, tag: stored.tag)
+        return SyncServerStamp(systemFields: (try? JSONEncoder().encode(fields)) ?? Data(), changeTag: stored.tag, modifiedAt: stored.modifiedAt)
+    }
+
     private func server(_ stored: Stored) -> SyncServerRecord {
-        let payload = (try? stored.wire.payload())
-            ?? SyncPayload(recordType: stored.wire.recordType, recordName: stored.wire.recordName, zone: stored.wire.zone, fields: [:])
-        return SyncServerRecord(payload: payload, changeTag: stored.tag, modifiedAt: stored.modifiedAt)
+        SyncServerRecord(wire: stored.wire, stamp: stamp(stored, zone: stored.wire.zone))
     }
 }

@@ -11,19 +11,22 @@ public struct SyncRecordRow: Codable, Equatable, FetchableRecord, PersistableRec
     public var uuid: String
     /// `"household"` for every row in build step 3; `"private-<person uuid>"` later.
     public var zone: String
-    /// `CKRecord.encodeSystemFields` (the change tag); nil until the record has been to the server.
+    /// `CKRecord.encodeSystemFields`: the opaque blob a save needs; nil until the record has been to the server.
     public var systemFields: Data?
+    /// The server's change tag of the version `systemFields` names: what the engine compares.
+    public var changeTag: String?
     /// The `appUser` UUID of the last writer.
     public var modifiedBy: String?
     public var modifiedAt: Date?
 
     public init(tableName: String, localId: Int64, uuid: String, zone: String,
-                systemFields: Data? = nil, modifiedBy: String? = nil, modifiedAt: Date? = nil) {
+                systemFields: Data? = nil, modifiedBy: String? = nil, modifiedAt: Date? = nil, changeTag: String? = nil) {
         self.tableName = tableName
         self.localId = localId
         self.uuid = uuid
         self.zone = zone
         self.systemFields = systemFields
+        self.changeTag = changeTag
         self.modifiedBy = modifiedBy
         self.modifiedAt = modifiedAt
     }
@@ -149,6 +152,7 @@ func registerSyncMigration(_ migrator: inout DatabaseMigrator) {
             t.column("systemFields", .blob)
             t.column("modifiedBy", .text)
             t.column("modifiedAt", .datetime)
+            t.column("changeTag", .text)
             t.primaryKey(["tableName", "localId"])
         }
         try db.create(table: "syncStaging") { t in
