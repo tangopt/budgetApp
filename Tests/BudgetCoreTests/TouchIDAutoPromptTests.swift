@@ -30,6 +30,24 @@ final class TouchIDAutoPromptTests: XCTestCase {
         XCTAssertEqual(user(last: 1, [1], enrolled: [1], available: false), nil)
     }
 
+    /// At launch the lock screen comes up before the people are read: nobody to ask yet, and the lock's
+    /// one prompt is still owed for when they are.
+    func testUnobodyYetLeavesThePromptOwed() {
+        let p = TouchIDAutoPrompt()
+        XCTAssertNil(user([], enrolled: [1]))
+        XCTAssertTrue(p.shouldPrompt(isLocked: true, appIsActive: true, otherStepInProgress: false))
+        XCTAssertEqual(user([1], enrolled: [1]), 1)
+    }
+
+    /// The glyph never reached a window (the try didn't start): not decided, so the next trigger asks again.
+    func testUtryThatNeverStartedIsStillOwed() {
+        var p = TouchIDAutoPrompt()
+        p.promptStarted()
+        XCTAssertFalse(p.shouldPrompt(isLocked: true, appIsActive: true, otherStepInProgress: false))
+        p.promptEnded(decided: false)
+        XCTAssertTrue(p.shouldPrompt(isLocked: true, appIsActive: true, otherStepInProgress: false))
+    }
+
     func testUpromptsOnceWhenLockedAndActive() {
         var p = TouchIDAutoPrompt()
         XCTAssertTrue(p.shouldPrompt(isLocked: true, appIsActive: true, otherStepInProgress: false))

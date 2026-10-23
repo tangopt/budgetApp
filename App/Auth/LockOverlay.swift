@@ -127,6 +127,8 @@ private struct PlainCover: View {
 struct LockScreenHost: View {
     @StateObject private var model: LockScreenModel
     @ObservedObject private var session: SessionModel
+    /// The window this lock screen is in (`WindowReader`), so its own window becoming key can start Touch ID.
+    @State private var window = WindowHolder()
 
     init(session: SessionModel) {
         self.session = session
@@ -135,17 +137,28 @@ struct LockScreenHost: View {
 
     var body: some View {
         LockScreen(model: model)
-            // Touch ID by itself when this lock screen comes up with Mango in front, and when Mango comes
-            // forward while still locked.
+            // Touch ID by itself, at every moment it may first be possible: this lock screen comes up, it
+            // reaches its window, its window becomes key, Mango comes forward while still locked, and the people
+            // are read (at launch that's after the first lock). The rules (`TouchIDAutoPrompt`, claimed once per
+            // lock across windows) decide; a call that can't prompt yet changes nothing.
             .onAppear { model.autoPromptTouchID() }
+            .background(WindowReader { newWindow in
+                window.window = newWindow
+                if newWindow != nil { model.autoPromptTouchID() }
+            })
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+                if let key = note.object as? NSWindow, key === window.window { model.autoPromptTouchID() }
+            }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 model.autoPromptTouchID()
             }
             // Signed in from another window, or the lock screen replaced: a try still listening ends.
             .onDisappear { model.cancelTouchID() }
-            // At launch the people are read after the first lock: pick the only one once they're in.
+            // At launch the people are read after the first lock: pick the only one once they're in, then
+            // Touch ID by itself (before they were read there was nobody to ask for).
             .onChange(of: session.signInCandidates) {
                 if model.selectedId == nil { model.prepare() }
+                model.autoPromptTouchID()
             }
     }
 }
