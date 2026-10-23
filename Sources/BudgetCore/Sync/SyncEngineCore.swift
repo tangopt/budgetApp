@@ -31,6 +31,10 @@ public struct SyncPullReport: Equatable, Sendable {
     public var unreadable = 0
     /// Rows here a full fetch didn't list, queued to go up again (ruling R12).
     public var reconciled = 0
+    /// Received records held because applying them would change a filed or paid tax year (sync spec §5.4).
+    public var held = 0
+    /// What they would have changed, and who wrote them; nil when nothing was held.
+    public var filedYearAlert: FiledYearSyncAlert?
 
     public init() {}
 }
@@ -53,7 +57,9 @@ public struct SyncReport: Equatable, Sendable {
 ///   A record too large for the server carries its payload as an encrypted asset (ruling R4).
 /// - **Pull** fetches every page of the zone's changes since the stored token, then applies the whole pull
 ///   in feed order in one transaction (`SyncTranslator.apply`), with the stamps of what applied and the new
-///   token, then `SyncBatch.flushClosed` (it has caught up). A record that can't be read is staged for
+///   token, then `SyncBatch.flushClosed` (it has caught up). The apply and the flush are checked against the
+///   filed and paid tax years (`FiledYearSyncCheck`, sync spec §5.4): records that would move a filed figure
+///   are held for attention and named in the report's alert; the rest applies. A record that can't be read is staged for
 ///   attention. An expired token fetches again from the start; a missing zone is created again and
 ///   everything here is queued to go up again.
 /// - **Import lease** (sync spec §5.2): `acquireImportLease` before Confirm and Undo; with sync on,
@@ -164,6 +170,13 @@ public actor SyncEngineCore {
         var report = SyncPullReport()
         for zone in Self.zones {
             let zoneReport = try await pull(zone: zone)
+            report.held += zoneReport.held
+            if let alert = zoneReport.filedYearAlert {
+                var merged = report.filedYearAlert ?? FiledYearSyncAlert(records: [], impacts: [])
+                merged.records += alert.records
+                merged.impacts += alert.impacts
+                report.filedYearAlert = merged
+            }
             report.received += zoneReport.received
             report.alreadyHeld += zoneReport.alreadyHeld
             report.staged += zoneReport.staged
@@ -258,7 +271,16 @@ public actor SyncEngineCore {
                     report.unreadable += 1
                 }
             }
-            let results = incoming.isEmpty ? [:] : try SyncTranslator.apply(incoming, db: db, deviceUser: user, now: now)
+            // Sync spec §5.4: the apply (and the batches it completes or flushes) is kept only while it moves no
+            // figure on a filed or paid return; the records that would are held, the rest applies.
+            // (Nothing to apply and no closed batch to flush: nothing can move, nothing is taken.)
+            let closedWaiting = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncBatch WHERE state = 'closed')") ?? true
+            let baseline = incoming.isEmpty && !closedWaiting ? FiledYearBaseline.none : try FiledYearSyncCheck.baseline(db: db)
+            // Caught up: a closed batch that can't complete any more applies now (`SyncBatch.flushClosed`, inside).
+            let outcome = try FiledYearSyncCheck.apply(incoming, baseline: baseline, db: db, deviceUser: user, now: now)
+            let results = outcome.results
+            report.filedYearAlert = outcome.alert
+            report.held = outcome.alert?.records.count ?? 0
             for (name, result) in results {
                 if case .staged = result {
                     report.staged += 1
@@ -272,8 +294,6 @@ public actor SyncEngineCore {
                 report.reconciled = try SyncTranslator.reconcile(zone: zone, listed: reconcile, db: db, now: now).count
             }
             if let finalToken { try Self.setToken(finalToken, zone: zone, db: db, now: now) }
-            // Caught up: a closed batch that can't complete any more applies now.
-            _ = try SyncBatch.flushClosed(db: db, deviceUser: user, now: now)
             return report
         }
     }

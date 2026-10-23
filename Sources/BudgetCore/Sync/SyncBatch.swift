@@ -391,6 +391,8 @@ public enum SyncBatch {
     static func flushIfComplete(run: String, db: Database, deviceUser: String?, now: Date,
                                 force: Bool = false) throws -> (complete: Bool, results: [String: IncomingResult]) {
         guard var batch = try batch(run: run, db: db) else { return (false, [:]) }
+        // Held because it would change a filed tax year (sync spec §5.4): it never applies without the records held.
+        if try FiledYearSyncCheck.runIsHeld(run, db: db) { return (false, [:]) }
         let staged = try SyncStagingRow.filter(Column("importRunUuid") == run).order(Column("id")).fetchAll(db)
         let current = staged.filter { $0.uuid == run || ($0.batchGeneration ?? 0) <= batch.generation }
         let manifest = batch.manifest ?? SyncBatchManifest(generation: batch.generation, isOpen: batch.state == .open)
