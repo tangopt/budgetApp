@@ -104,7 +104,12 @@ public enum SyncZoneKeys {
     /// The keyring a `zoneKey` record holds.
     public static func keyring(from wire: SyncWireRecord) throws -> Keyring {
         guard wire.recordType == recordType, let data = wire.encryptedFields[keysField] else { throw SyncTransportError.unreadableRecord(wire.recordName) }
-        return try JSONDecoder().decode(Keyring.self, from: data)
+        let keyring = try JSONDecoder().decode(Keyring.self, from: data)
+        // Only 256-bit keys: anything else is a damaged or foreign record, never used to wrap.
+        guard ([keyring.current] + keyring.retired).allSatisfy({ $0.keyData.count == 32 }) else {
+            throw SyncTransportError.unreadableRecord(wire.recordName)
+        }
+        return keyring
     }
 
     static func wire(_ keyring: Keyring, zone: String) throws -> SyncWireRecord {
@@ -563,15 +568,18 @@ extension SyncEngineCore {
         guard DocumentCrypto.sha256(plaintext) == sha.lowercased() else {
             try await attention(.hashMismatch, SyncDocumentFile.hashMismatchMessage)
         }
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let temporary = documents.root.appendingPathComponent(".downloading-\(UUID().uuidString)")
-        try plaintext.write(to: temporary, options: .atomic)
+        // Placed the way the library places an added file: a timestamped temporary copy (removed as stale if a
+        // crash leaves it), moved in; the same content already there counts as placed.
+        let now = clock()
+        try FileManager.default.createDirectory(at: documents.root, withIntermediateDirectories: true)
+        EvidenceLibrary.removeStaleTemporaryFiles(in: documents.root, now: now)
+        let temporary = documents.root.appendingPathComponent(
+            "\(EvidenceLibrary.temporaryPrefix)\(Int(now.timeIntervalSince1970))-\(UUID().uuidString)")
         do {
-            if fileManager.fileExists(atPath: destination.path) { try fileManager.removeItem(at: destination) }
-            try fileManager.moveItem(at: temporary, to: destination)
+            try plaintext.write(to: temporary)
+            _ = try EvidenceLibrary.place(temporary, at: destination, sha256: sha.lowercased(), byteCount: Int64(plaintext.count))
         } catch {
-            try? fileManager.removeItem(at: temporary)
+            try? FileManager.default.removeItem(at: temporary)
             throw error
         }
         return destination

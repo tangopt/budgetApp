@@ -259,7 +259,7 @@ final class DocumentSyncTests: XCTestCase {
         let logged = try b.conflicts(uuid: uuid)
         XCTAssertTrue(logged.contains { $0.field == SyncDocumentFile.conflictField && $0.losingValueJSON.contains("needs attention") }, "\(logged)")
         let leftovers = (try? FileManager.default.subpathsOfDirectory(atPath: b.root.path)) ?? []
-        XCTAssertFalse(leftovers.contains { $0.hasSuffix(".pdf") || $0.contains(".downloading") }, "\(leftovers)")
+        XCTAssertFalse(leftovers.contains { $0.hasSuffix(".pdf") || $0.contains(EvidenceLibrary.temporaryPrefix) }, "\(leftovers)")
 
         // The lazy path refuses the same way.
         do {
@@ -339,6 +339,67 @@ final class DocumentSyncTests: XCTestCase {
         XCTAssertEqual(after.fields["note"], .string("From a device without files"))
         XCTAssertEqual(after.documentFile, before)
         XCTAssertNil(try other.file(uuid: uuid))
+    }
+
+    func testACrashLeftoverIsRemovedAndAStaleCopyReplacedByTheNextDownload() async throws {
+        let phone = try DocumentSyncTestDevice("user-b", transport: cloud, policy: .lazy)
+        let plaintext = Self.bytes("crash")
+        let (document, uuid) = try a.add("crash.pdf", plaintext)
+        try await a.engine.syncNow()
+        try await phone.engine.syncNow()
+
+        // A download interrupted by a crash two hours ago left its decrypted temporary copy; one in progress
+        // now is left alone. A wrong copy sits where the file goes.
+        try FileManager.default.createDirectory(at: phone.root, withIntermediateDirectories: true)
+        let stale = phone.root.appendingPathComponent("\(EvidenceLibrary.temporaryPrefix)\(Int(Date().timeIntervalSince1970) - 7200)-crash")
+        let fresh = phone.root.appendingPathComponent("\(EvidenceLibrary.temporaryPrefix)\(Int(Date().timeIntervalSince1970))-busy")
+        try plaintext.write(to: stale)
+        try plaintext.write(to: fresh)
+        let destination = phone.root.appendingPathComponent(document.storedRelativePath)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Self.bytes("wrong").write(to: destination)
+
+        let url = try await phone.engine.downloadDocument(uuid: uuid)
+        XCTAssertEqual(try Data(contentsOf: url), plaintext)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path), "the crash leftover is removed")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fresh.path), "a copy in progress is left alone")
+        let temporaries = try FileManager.default.contentsOfDirectory(atPath: phone.root.path).filter { $0.hasPrefix(EvidenceLibrary.temporaryPrefix) }
+        XCTAssertEqual(temporaries, [fresh.lastPathComponent], "the download's own temporary copy is gone")
+
+        // The same content already in place counts as downloaded.
+        let again = try await phone.engine.downloadDocument(uuid: uuid)
+        XCTAssertEqual(again, url)
+    }
+
+    func testAZoneKeyRecordWithAKeyThatIsntTwoHundredFiftySixBitsIsUnreadable() throws {
+        var keyring = SyncZoneKeys.Keyring(generation: 1, current: .init(DocumentCrypto.newZoneKey()), retired: [])
+        XCTAssertNoThrow(try SyncZoneKeys.keyring(from: SyncZoneKeys.wire(keyring, zone: zone)))
+        keyring.retired = [.init(SymmetricKey(size: .bits128))]
+        XCTAssertThrowsError(try SyncZoneKeys.keyring(from: SyncZoneKeys.wire(keyring, zone: zone))) { error in
+            XCTAssertEqual(error as? SyncTransportError, .unreadableRecord(SyncZoneKeys.recordName(zone: self.zone)))
+        }
+        keyring.retired = []
+        keyring.current.keyData = Data(count: 31)
+        XCTAssertThrowsError(try SyncZoneKeys.keyring(from: SyncZoneKeys.wire(keyring, zone: zone)))
+    }
+
+    func testADocumentWhoseFileCantBeUploadedNowIsDeferredNotRefused() async throws {
+        let (_, uuid) = try a.add("later.pdf", Self.bytes("later"))
+        try await a.engine.pull()
+        await cloud.failSaveOperations(after: 0)
+        let report = try await a.engine.pushPending()
+        XCTAssertGreaterThan(report.documentsDeferred, 0)
+        XCTAssertEqual(report.refused, 0)
+        XCTAssertEqual(report.documentsSealed, 0)
+        let pending = try a.read { db in try SyncChangeTracker.pending(db: db).map(\.uuid) }
+        XCTAssertTrue(pending.contains(uuid), "it waits, still pending")
+
+        await cloud.restoreConnection()
+        let retried = try await a.engine.pushPending()
+        XCTAssertEqual(retried.documentsSealed, 1)
+        XCTAssertEqual(retried.documentsDeferred, 0)
+        let payload = try await documentPayload(uuid)
+        XCTAssertNotNil(payload.documentFile)
     }
 
     // MARK: Rotation

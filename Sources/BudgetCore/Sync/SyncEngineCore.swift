@@ -23,6 +23,9 @@ public struct SyncPushReport: Equatable, Sendable {
     public var filedYearAlert: FiledYearSyncAlert?
     /// Evidence files sealed and uploaded (sync spec §9.1).
     public var documentsSealed = 0
+    /// Document records not sent because their file couldn't be uploaded now (the zone key or the file record
+    /// was unreachable): they stay pending. Not counted in `refused`.
+    public var documentsDeferred = 0
 
     public init() {}
 }
@@ -440,7 +443,8 @@ public actor SyncEngineCore {
                 continue
             }
             guard let payload = attached[built.recordName] else {
-                report.refused += 1
+                // Its file couldn't be uploaded now (no zone key or file save): it waits, still pending.
+                report.documentsDeferred += 1
                 continue
             }
             let (wire, packed) = try SyncLargePayload.wire(for: payload)

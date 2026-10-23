@@ -171,6 +171,9 @@ Nothing is sent to iCloud in this step.
   - rewrap on rotation;
   - the hash is unchanged;
   - the uploaded asset never contains the plaintext (FakeCloud asset inspection).
+- **Limits recorded (Task 7 review):**
+  - Rotation protects only files sealed after it. A removed member who kept the old zone key can still open the files sealed before the rotation, because rotation re-wraps data keys and doesn't re-seal files. Sync spec §9.1 accepts this ("copies the removed person already downloaded can't be recalled").
+  - The zone keyring is kept in the local database (`syncState`) until it moves to the Keychain in step 5 or 6. Until then, local database backups contain it. That is the same exposure as the plaintext evidence library on the same disk.
 
 ### Task 8: CloudKit transport (App target, off) and the migration rehearsal
 

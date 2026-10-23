@@ -195,7 +195,7 @@ public struct EvidenceLibrary: Sendable {
         guard values.isRegularFile == true else { throw EvidenceLibraryError.notAFile }
 
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        removeStaleTemporaryFiles(now: now)
+        Self.removeStaleTemporaryFiles(in: root, now: now)
         let temporary = root.appendingPathComponent("\(Self.temporaryPrefix)\(Int(now.timeIntervalSince1970))-\(UUID().uuidString)")
         let hash: String, byteCount: Int64
         do {
@@ -216,7 +216,7 @@ public struct EvidenceLibrary: Sendable {
         let destination = root.appendingPathComponent(relativePath)
         let movedIn: Bool
         do {
-            movedIn = try place(temporary, at: destination, sha256: hash, byteCount: byteCount)
+            movedIn = try Self.place(temporary, at: destination, sha256: hash, byteCount: byteCount)
         } catch {
             try? fileManager.removeItem(at: temporary)
             throw error
@@ -277,7 +277,7 @@ public struct EvidenceLibrary: Sendable {
         guard values.isRegularFile == true else { throw EvidenceLibraryError.notAFile }
 
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        removeStaleTemporaryFiles(now: now)
+        Self.removeStaleTemporaryFiles(in: root, now: now)
         let temporary = root.appendingPathComponent("\(Self.temporaryPrefix)\(Int(now.timeIntervalSince1970))-\(UUID().uuidString)")
         let hash: String, byteCount: Int64
         do {
@@ -296,7 +296,7 @@ public struct EvidenceLibrary: Sendable {
         let destination = root.appendingPathComponent(relativePath)
         let movedIn: Bool
         do {
-            movedIn = try place(temporary, at: destination, sha256: hash, byteCount: byteCount)
+            movedIn = try Self.place(temporary, at: destination, sha256: hash, byteCount: byteCount)
         } catch {
             try? fileManager.removeItem(at: temporary)
             throw error
@@ -318,8 +318,8 @@ public struct EvidenceLibrary: Sendable {
     /// Moves the temporary copy to `destination`; `false` when a file with this content was
     /// already there (left by an earlier failed add, or placed by a concurrent one) and the
     /// copy was dropped instead. A leftover of the wrong size — or same size, other hash — is
-    /// replaced.
-    private func place(_ temporary: URL, at destination: URL, sha256 hash: String, byteCount: Int64) throws -> Bool {
+    /// replaced. Shared with sync's document downloads (`SyncEngineCore.download`).
+    static func place(_ temporary: URL, at destination: URL, sha256 hash: String, byteCount: Int64) throws -> Bool {
         let fileManager = FileManager.default
         if fileManager.fileExists(atPath: destination.path) {
             let existingSize = try? Self.byteCount(of: destination)
@@ -340,9 +340,11 @@ public struct EvidenceLibrary: Sendable {
         return true
     }
 
-    /// Removes temporary copies left by adds that never finished (older than an hour, by the
+    /// Removes temporary copies left by adds (and sync downloads) that never finished (older than an hour, by the
     /// time in their name), leaving any in progress alone.
-    private func removeStaleTemporaryFiles(now: Date) {
+    /// Also run before a sync download writes into the library, so a decrypted copy left by a crash
+    /// doesn't stay.
+    static func removeStaleTemporaryFiles(in root: URL, now: Date) {
         let fileManager = FileManager.default
         guard let names = try? fileManager.contentsOfDirectory(atPath: root.path) else { return }
         let cutoff = Int(now.timeIntervalSince1970) - 3600
