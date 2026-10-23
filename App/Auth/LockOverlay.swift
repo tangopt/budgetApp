@@ -141,6 +141,8 @@ struct LockScreenHost: View {
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 model.autoPromptTouchID()
             }
+            // Signed in from another window, or the lock screen replaced: a try still listening ends.
+            .onDisappear { model.cancelTouchID() }
             // At launch the people are read after the first lock: pick the only one once they're in.
             .onChange(of: session.signInCandidates) {
                 if model.selectedId == nil { model.prepare() }
@@ -155,7 +157,7 @@ struct LockScreenHost: View {
 @MainActor
 final class LockScreenModel: ObservableObject {
     enum Step: Equatable {
-        /// The avatars; a Touch ID user picked shows "Use password".
+        /// The avatars; a Touch ID user picked shows the inline Touch ID and "Use password".
         case choose
         case password
         /// "Forgot password?".
@@ -174,6 +176,9 @@ final class LockScreenModel: ObservableObject {
     @Published private(set) var isWorking = false
     @Published private(set) var enrolled: Set<Int64> = []
     @Published private(set) var touchIDAvailable = false
+    /// The Touch ID try listening in this lock screen (its glyph shows under the avatars), nil otherwise.
+    @Published private(set) var touchIDPrompt: InlineTouchIDPrompt?
+    private var touchIDTask: Task<Bool, Never>?
 
     let session: SessionModel
     private let biometrics: any BiometricUnlocker
@@ -206,8 +211,13 @@ final class LockScreenModel: ObservableObject {
         }
     }
 
-    /// Clicking an avatar: Touch ID when they turned it on here, otherwise their password.
+    /// Clicking an avatar: Touch ID when they turned it on here, otherwise their password. A try still
+    /// listening for someone else ends first.
     func select(_ user: AppUser) {
+        if touchIDPrompt != nil {
+            Task { await cancelTouchIDAndWait(); select(user) }
+            return
+        }
         guard !isWorking, let id = user.id else { return }
         selectedId = id
         message = nil
@@ -222,6 +232,10 @@ final class LockScreenModel: ObservableObject {
 
     /// The avatar row's arrow keys: moves the pick without signing in.
     func movePick(by offset: Int) {
+        if touchIDPrompt != nil {
+            Task { await cancelTouchIDAndWait(); movePick(by: offset) }
+            return
+        }
         guard !candidates.isEmpty, !isWorking else { return }
         let index = candidates.firstIndex { $0.id == selectedId }.map { $0 + offset } ?? (offset > 0 ? 0 : candidates.count - 1)
         selectedId = candidates[min(max(index, 0), candidates.count - 1)].id
@@ -231,7 +245,7 @@ final class LockScreenModel: ObservableObject {
 
     /// Starts Touch ID without a click for the one person it's clear about (`TouchIDAutoPrompt`): not in
     /// the background, not over another step, and once per lock (again only if the last try never got an
-    /// answer because Mango went to the background). Cancel leaves the avatars and "Use password".
+    /// answer because Mango went to the background). "Use password" ends it.
     func autoPromptTouchID() {
         guard fixedCandidates == nil, step == .choose, !isWorking, session.afterSignIn == nil,
               session.state == .locked, touchIDAvailable || !biometrics.enrolledIds().isEmpty else { return }
@@ -244,21 +258,47 @@ final class LockScreenModel: ObservableObject {
         selectedId = id
         message = nil
         Task {
-            await useTouchID()
-            // Answered while Mango was in front; if it went to the background the prompt died unanswered.
-            session.autoPromptEnded(decided: NSApp.isActive)
+            let ran = await useTouchID()
+            // Answered while Mango was in front; if it went to the background (or never started) it wasn't.
+            session.autoPromptEnded(decided: ran && NSApp.isActive)
         }
     }
 
-    func useTouchID() async {
-        guard let id = selectedId, !isWorking else { return }
+    /// Touch ID in this lock screen: the glyph shows under the avatars and listens; the finger is asked for
+    /// there, not in a system panel. True when the try ran (the glyph came up and was answered or cancelled).
+    @discardableResult
+    func useTouchID() async -> Bool {
+        guard let id = selectedId, !isWorking, touchIDTask == nil else { return false }
+        let task = Task { await runTouchID(appUserId: id) }
+        touchIDTask = task
+        let ran = await task.value
+        touchIDTask = nil
+        return ran
+    }
+
+    private func runTouchID(appUserId id: Int64) async -> Bool {
         isWorking = true
-        defer { isWorking = false }
-        switch await session.signInWithBiometrics(appUserId: id) {
+        step = .choose
+        message = nil
+        let prompt = InlineTouchIDPrompt()
+        touchIDPrompt = prompt
+        defer {
+            touchIDPrompt = nil
+            isWorking = false
+        }
+        // Never evaluated before its view is on screen: that would bring up the system's panel.
+        guard await prompt.waitUntilPaired() else { return false }
+        let result = await session.signInWithBiometrics(appUserId: id, prompt: prompt)
+        switch result {
         case .signedIn:
             message = nil
         case .cancelled:
             break
+        case .notRecognised:
+            message = TouchIDInlineText.notRecognised
+        case .lockedOut:
+            step = .password
+            message = TouchIDInlineText.lockedOut
         case .notEnrolled:
             // The fingerprints changed, or Touch ID was turned off elsewhere: the password once, then the offer.
             enrolled.remove(id)
@@ -268,9 +308,20 @@ final class LockScreenModel: ObservableObject {
             message = "Touch ID didn't work: \(AuthText.sentence(error)) Enter your password."
             step = .password
         }
+        return true
     }
 
+    /// Ends a try still listening (it comes back as a cancel).
+    func cancelTouchID() { touchIDPrompt?.cancel() }
+
+    private func cancelTouchIDAndWait() async {
+        cancelTouchID()
+        _ = await touchIDTask?.value
+    }
+
+    /// Next to the listening glyph (and Esc): ends the try and asks for the password.
     func usePassword() {
+        cancelTouchID()
         step = .password
         message = nil
     }
@@ -344,6 +395,14 @@ final class LockScreenModel: ObservableObject {
     }
 
     var isThrottled: Bool { (throttledUntil ?? .distantPast) > Date() }
+
+    #if SNAPSHOTS
+    /// Snapshot routes only: the inline Touch ID shown listening, never evaluated.
+    func snapshotShowTouchIDListening() {
+        step = .choose
+        touchIDPrompt = InlineTouchIDPrompt()
+    }
+    #endif
 
     private func handleFailure(_ result: SessionModel.SignInResult, wrong: String) {
         switch result {
@@ -469,9 +528,23 @@ struct LockScreen: View {
     @ViewBuilder private var stepContent: some View {
         switch shown {
         case .lock(.choose):
-            if let user = model.selected, model.isEnrolled(user), model.touchIDAvailable {
+            if let prompt = model.touchIDPrompt {
+                // Touch ID listening right here: the glyph, Mango's own caption, and the way out.
                 VStack(spacing: 10) {
-                    Button { Task { await model.useTouchID() } } label: { Label("Use Touch ID", systemImage: "touchid") }
+                    InlineTouchIDView(prompt: prompt)
+                    Text(TouchIDInlineText.listening)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("Use password") { model.usePassword() }
+                        .buttonStyle(.link)
+                        .keyboardShortcut(.cancelAction)
+                    messageLine
+                }
+            } else if let user = model.selected, model.isEnrolled(user), model.touchIDAvailable {
+                VStack(spacing: 10) {
+                    Button { Task { await model.useTouchID() } } label: {
+                        Label(model.message == nil ? "Use Touch ID" : "Try Touch ID Again", systemImage: "touchid")
+                    }
                         .buttonStyle(.borderedProminent).prominentTint()
                         .disabled(model.isWorking)
                     Button("Use password") { model.usePassword() }

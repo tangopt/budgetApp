@@ -64,8 +64,12 @@ final class SessionModel: ObservableObject {
 
     enum BiometricSignInResult: Equatable {
         case signedIn
-        /// Cancelled or not recognised: the lock screen stays, "Use password" is there.
+        /// Cancelled: the lock screen stays, "Use password" is there.
         case cancelled
+        /// The finger wasn't recognised: the lock screen says so and offers another try.
+        case notRecognised
+        /// Too many misses: Touch ID is off until the Mac's own password; ask for Mango's password.
+        case lockedOut
         /// Not enrolled on this Mac, or dropped because the fingerprints changed: ask for the password, then
         /// offer Touch ID again.
         case notEnrolled
@@ -205,8 +209,9 @@ final class SessionModel: ObservableObject {
 
     func autoPromptEnded(decided: Bool) { autoPrompt.promptEnded(decided: decided) }
 
+    /// Touch ID asks in `prompt`, the lock screen's own view, never in a system panel.
     @discardableResult
-    func signInWithBiometrics(appUserId: Int64) async -> BiometricSignInResult {
+    func signInWithBiometrics(appUserId: Int64, prompt: InlineTouchIDPrompt) async -> BiometricSignInResult {
         guard !SnapshotMode.isActive else { return .cancelled }
         do {
             // Only someone who can sign in on this Mac with a password too.
@@ -215,11 +220,15 @@ final class SessionModel: ObservableObject {
                 biometrics.remove(appUserId: appUserId)
                 return .notEnrolled
             }
-            guard try await biometrics.unlock(appUserId: appUserId, reason: "unlock Mango") else { return .cancelled }
+            guard try await biometrics.unlock(appUserId: appUserId, reason: "unlock Mango", prompt: prompt) else { return .cancelled }
             try await begin(appUserId: appUserId)
             return .signedIn
         } catch BiometricUnlockError.notEnrolled {
             return .notEnrolled
+        } catch BiometricUnlockError.notRecognised {
+            return .notRecognised
+        } catch BiometricUnlockError.lockedOut {
+            return .lockedOut
         } catch {
             return .failed(error.localizedDescription)
         }

@@ -72,7 +72,9 @@ final class KeychainBiometricUnlock: BiometricSecretStore {
         return status
     }
 
-    func add(secret: Data, account: String) throws {
+    /// The items' access control: this Mac's current fingerprints, while the Mac is unlocked. Adding an item
+    /// with it asks for nothing (enrolment never shows Touch ID); reading one needs Touch ID.
+    private static func accessControl() throws -> SecAccessControl {
         var error: Unmanaged<CFError>?
         guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
                                                            .biometryCurrentSet, &error) else {
@@ -80,6 +82,11 @@ final class KeychainBiometricUnlock: BiometricSecretStore {
             authLog.error("Touch ID access control couldn't be made: \(code, privacy: .public)")
             throw BiometricUnlockError.keychain(OSStatus(truncatingIfNeeded: code))
         }
+        return access
+    }
+
+    func add(secret: Data, account: String) throws {
+        let access = try Self.accessControl()
         var query = Self.baseQuery()
         query[kSecAttrAccount] = account
         query[kSecValueData] = secret
@@ -91,16 +98,33 @@ final class KeychainBiometricUnlock: BiometricSecretStore {
         }
     }
 
-    func read(account: String, reason: String) async throws -> BiometricSecretRead {
-        let context = LAContext()
+    /// Touch ID first, in the lock screen's own view: the prompt's context (paired with the embedded
+    /// `LAAuthenticationView`) evaluates the items' access control, so the finger is asked for in Mango, never
+    /// in the system's panel. Then the secret is read with that already-authenticated context and interaction
+    /// not allowed: the Keychain accepts the context without asking again (SecItem.h,
+    /// `kSecUseAuthenticationContext`), and if it ever wanted to ask it fails with
+    /// `errSecInteractionNotAllowed` instead of showing a panel. Unlocking still needs the secret itself.
+    func read(account: String, reason: String, prompt: any BiometricPromptContext) async throws -> BiometricSecretRead {
+        guard let inline = prompt as? InlineTouchIDPrompt else { throw BiometricUnlockError.unavailable }
+        let context = inline.context
         context.localizedReason = reason
+        do {
+            guard try await context.evaluateAccessControl(try Self.accessControl(), operation: .useItem,
+                                                          localizedReason: reason) else { return .cancelled }
+        } catch let error as LAError {
+            authLog.notice("Touch ID unlock: evaluateAccessControl failed with \(error.code.rawValue, privacy: .public)")
+            let end = TouchIDAttemptEnd.classify(laErrorCode: error.code.rawValue)
+            if end == .cancelled { return .cancelled }
+            throw end.unlockError ?? error
+        }
+        context.interactionNotAllowed = true
         var query = Self.baseQuery()
         query[kSecAttrAccount] = account
         query[kSecReturnData] = true
         query[kSecMatchLimit] = kSecMatchLimitOne
         query[kSecUseAuthenticationContext] = context
         let request = UncheckedQuery(query: query)
-        // The Touch ID sheet blocks the calling thread until answered, so never on the main thread.
+        // Off the main thread: a Keychain call can take a moment.
         let (status, data) = await Task.detached(priority: .userInitiated) { () -> (OSStatus, Data?) in
             var result: CFTypeRef?
             let status = SecItemCopyMatching(request.query as CFDictionary, &result)
@@ -112,7 +136,8 @@ final class KeychainBiometricUnlock: BiometricSecretStore {
         switch status {
         case errSecSuccess: return data.map { .secret($0) } ?? .notFound
         case errSecItemNotFound: return .notFound
-        case errSecUserCanceled, errSecAuthFailed: return .cancelled
+        case errSecUserCanceled: return .cancelled
+        case errSecAuthFailed: throw BiometricUnlockError.notRecognised
         default: throw BiometricUnlockError.keychain(status)
         }
     }
@@ -145,11 +170,15 @@ final class LAContextBiometricUnlock: BiometryCheck {
         return context.domainState.biometry.stateHash
     }
 
-    func evaluate(reason: String) async throws -> Bool {
+    /// Evaluated on the prompt's context, so it asks in the lock screen's embedded view.
+    func evaluate(reason: String, prompt: any BiometricPromptContext) async throws -> Bool {
+        guard let inline = prompt as? InlineTouchIDPrompt else { throw BiometricUnlockError.unavailable }
         do {
-            return try await LAContext().evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)
-        } catch let error as LAError where [.userCancel, .appCancel, .systemCancel, .authenticationFailed, .userFallback].contains(error.code) {
-            return false
+            return try await inline.context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)
+        } catch let error as LAError {
+            let end = TouchIDAttemptEnd.classify(laErrorCode: error.code.rawValue)
+            if end == .cancelled { return false }
+            throw end.unlockError ?? error
         }
     }
 }
