@@ -60,7 +60,7 @@ struct MissingEvidenceView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
-        .toolbar {
+        .screenToolbar {
             if !embedded {
                 ToolbarItem(placement: .primaryAction) {
                     rulesButton

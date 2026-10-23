@@ -10,6 +10,15 @@ public enum AuthText {
         return (String(first) + String(last)).uppercased()
     }
 
+    /// A message as a sentence: trimmed, ending in exactly one full stop (or its own ? or !).
+    public static func sentence(_ text: String) -> String {
+        var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return "" }
+        if text.hasSuffix("?") || text.hasSuffix("!") { return text }
+        while text.hasSuffix(".") { text.removeLast() }
+        return text + "."
+    }
+
     /// After too many wrong attempts: "Try again in N s", N rounded up and never 0, the figure kept whole.
     public static func tryAgain(after seconds: TimeInterval) -> String {
         let whole = max(1, Int(seconds.rounded(.up)))

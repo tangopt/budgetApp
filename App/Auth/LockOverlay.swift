@@ -14,7 +14,7 @@ enum LockOverlayScene {
 extension View {
     /// The lock screen over this window while Mango is locked (auth spec §6). It's opaque, so the content
     /// under it is hidden, not blurred. The content is also disabled: it takes no clicks, focus, typing or
-    /// keyboard shortcuts, and the window toolbar goes. The session is the app's (`AppEnvironment.Current`),
+    /// keyboard shortcuts; Settings' toolbar (its tabs) goes, and the main window's toolbar items hide. The session is the app's (`AppEnvironment.Current`),
     /// shared by every window; snapshot routes pass one of their own.
     func lockOverlay(_ scene: LockOverlayScene, session: SessionModel? = nil) -> some View {
         modifier(LockOverlayModifier(scene: scene, fixedSession: session))
@@ -79,7 +79,10 @@ private struct LockOverlayModifier: ViewModifier {
             .opacity(covers ? 0 : 1)
             .allowsHitTesting(!covers)
             .accessibilityHidden(covers)
-            .toolbar(covers ? .hidden : .automatic, for: .windowToolbar)
+            // Settings' toolbar is its tabs, so it goes. The main window keeps its toolbar (its items hide
+            // themselves, `isLockCovered`): showing and hiding a window's toolbar changes the window's frame,
+            // so every lock and unlock resized it.
+            .toolbar(covers && scene == .settings ? .hidden : .automatic, for: .windowToolbar)
             .overlay {
                 if covers {
                     cover.transition(.opacity)
@@ -235,7 +238,8 @@ final class LockScreenModel: ObservableObject {
             step = .password
             message = "Touch ID isn't on for you here any more. Enter your password."
         case .failed(let error):
-            message = error
+            message = "Touch ID didn't work: \(AuthText.sentence(error)) Enter your password."
+            step = .password
         }
     }
 
@@ -303,7 +307,7 @@ final class LockScreenModel: ObservableObject {
             session.finishOffer()
         } catch {
             // Shown on the offer, which stays up so it's read; "Not Now" carries on.
-            message = "Touch ID couldn't be turned on: \(error.localizedDescription)"
+            message = "Couldn't turn on Touch ID: \(AuthText.sentence(error.localizedDescription))"
         }
     }
 

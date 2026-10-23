@@ -127,7 +127,7 @@ final class SignInSettingsModel: ObservableObject {
         if touchID != savedTouchID {
             if touchID {
                 do { try await biometrics.enrol(appUserId: id) } catch {
-                    self.error = "Touch ID couldn't be turned on: \(error.localizedDescription)"
+                    self.error = "Couldn't turn on Touch ID: \(AuthText.sentence(error.localizedDescription))"
                     touchID = false
                 }
             } else {

@@ -29,13 +29,18 @@ struct RulesView: View {
             case .importRules: ImportRulesTab(viewModel: viewModel, searchText: searchText)
             }
         }
-        .searchable(text: $searchText, prompt: viewModel.tab == .transactionRules ? "Search patterns" : "Search import rules")
+        .screenSearchable(text: $searchText, prompt: viewModel.tab == .transactionRules ? "Search patterns" : "Search import rules")
         // Each tab searches different text: a switch starts afresh.
         .onChange(of: viewModel.tab) { searchText = ""; selection = [] }
         // "Show on Rules page" from an import's review: the rule isn't hidden by an earlier search.
-        .onAppear { if viewModel.focusedImportRuleId != nil { searchText = "" } }
+        .onAppear {
+            if viewModel.focusedImportRuleId != nil { searchText = "" }
+            #if SNAPSHOTS
+            if let text = viewModel.snapshotSearchText { searchText = text }
+            #endif
+        }
         .onChange(of: viewModel.focusedImportRuleId) { if viewModel.focusedImportRuleId != nil { searchText = "" } }
-        .toolbar {
+        .screenToolbar {
             if viewModel.tab == .transactionRules {
                 ToolbarItem(placement: .primaryAction) {
                     Button { sheetDraft = RuleDraft() } label: { Label("Rule", systemImage: "plus") }

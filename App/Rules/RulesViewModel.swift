@@ -24,6 +24,11 @@ final class RulesViewModel: ObservableObject {
     @Published var categoryGroups: [CategoryGroup] = []
     @Published var recentCategoryIds: [Int64] = []
 
+    #if SNAPSHOTS
+    /// Snapshot routes only: the search text the Rules page starts with.
+    var snapshotSearchText: String?
+    #endif
+
     /// Called after a save filed uncategorised transactions (the sidebar's count).
     var onTransactionsCategorised: (() -> Void)?
 

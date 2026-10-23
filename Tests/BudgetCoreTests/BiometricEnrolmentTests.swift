@@ -16,19 +16,28 @@ private final class FakeBiometry: BiometryCheck {
 
 /// Stands in for the data-protection Keychain. `invalidate()` is what macOS does to `.biometryCurrentSet`
 /// items when the fingerprints change: they read as not found.
+/// `readStatus` makes every read throw that Keychain status (`errSecInteractionNotAllowed`, say), the way
+/// a team build answers a query it won't serve; `failAdd` makes adding throw.
 @MainActor
 private final class FakeSecretStore: BiometricSecretStore {
     var secrets: [String: Data] = [:]
     var invalidated: Set<String> = []
     var cancelNext = false
-    func add(secret: Data, account: String) throws { secrets[account] = secret }
+    var readStatus: OSStatus?
+    var failAdd: OSStatus?
+    private(set) var reads = 0
+    func add(secret: Data, account: String) throws {
+        if let failAdd { throw BiometricUnlockError.keychain(failAdd) }
+        secrets[account] = secret
+    }
     func read(account: String, reason: String) async throws -> BiometricSecretRead {
+        reads += 1
+        if let readStatus { throw BiometricUnlockError.keychain(readStatus) }
         if cancelNext { cancelNext = false; return .cancelled }
         guard let secret = secrets[account], !invalidated.contains(account) else { return .notFound }
         return .secret(secret)
     }
     func delete(account: String) { secrets[account] = nil; invalidated.remove(account) }
-    func storedAccounts() -> Set<String> { Set(secrets.keys) }
     func invalidateAll() { invalidated = Set(secrets.keys) }
 }
 
@@ -104,8 +113,8 @@ final class BiometricEnrolmentTests: XCTestCase {
         XCTAssertEqual(onA.enrolledIds(), [userA], "removing B's user leaves A's enrolment")
 
         let store = FakeSecretStore()
-        let keychainA = KeychainBiometricEnrolment(store: store, scope: idA, isAvailable: { true })
-        let keychainB = KeychainBiometricEnrolment(store: store, scope: idB, isAvailable: { true })
+        let keychainA = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults), scope: idA, isAvailable: { true })
+        let keychainB = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults), scope: idB, isAvailable: { true })
         try await keychainA.enrol(appUserId: userA)
         XCTAssertEqual(keychainB.enrolledIds(), [])
         do {
@@ -151,7 +160,7 @@ final class BiometricEnrolmentTests: XCTestCase {
         XCTAssertEqual(enrolment.enrolledIds(), [])
 
         let store = FakeSecretStore()
-        let keychain = KeychainBiometricEnrolment(store: store, scope: "db-a", isAvailable: { true })
+        let keychain = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults), scope: "db-a", isAvailable: { true })
         try await keychain.enrol(appUserId: 3)
         keychain.remove(appUserId: 3)
         XCTAssertEqual(keychain.enrolledIds(), [])
@@ -185,7 +194,7 @@ final class BiometricEnrolmentTests: XCTestCase {
 
     func testKeychainEnrolStoresA32ByteSecretPerUser() async throws {
         let store = FakeSecretStore()
-        let keychain = KeychainBiometricEnrolment(store: store, scope: "db-a", isAvailable: { true })
+        let keychain = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults), scope: "db-a", isAvailable: { true })
         try await keychain.enrol(appUserId: 1)
         try await keychain.enrol(appUserId: 2)
         XCTAssertEqual(store.secrets["db-a:1"]?.count, 32)
@@ -197,7 +206,7 @@ final class BiometricEnrolmentTests: XCTestCase {
 
     func testChangedBiometryDropsKeychainEnrolment() async throws {
         let store = FakeSecretStore()
-        let keychain = KeychainBiometricEnrolment(store: store, scope: "db-a", isAvailable: { true })
+        let keychain = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults), scope: "db-a", isAvailable: { true })
         try await keychain.enrol(appUserId: 5)
         store.invalidateAll()   // errSecItemNotFound from here on
         do {
@@ -215,11 +224,118 @@ final class BiometricEnrolmentTests: XCTestCase {
 
     func testKeychainCancelKeepsEnrolment() async throws {
         let store = FakeSecretStore()
-        let keychain = KeychainBiometricEnrolment(store: store, scope: "db-a", isAvailable: { true })
+        let keychain = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults), scope: "db-a", isAvailable: { true })
         try await keychain.enrol(appUserId: 6)
         store.cancelNext = true
         let unlocked = try await keychain.unlock(appUserId: 6, reason: "test")
         XCTAssertFalse(unlocked)
         XCTAssertEqual(keychain.enrolledIds(), [6])
+    }
+
+    // MARK: Keychain-bound: the enrolment index
+
+    func testEnrolledIdsNeverQueriesTheSecrets() async throws {
+        // A team build may refuse any query of the access-controlled items without Touch ID: who is enrolled
+        // must not depend on one.
+        let store = FakeSecretStore()
+        let keychain = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults),
+                                                  scope: "db-a", isAvailable: { true })
+        try await keychain.enrol(appUserId: 1)
+        store.readStatus = errSecInteractionNotAllowed
+        XCTAssertEqual(keychain.enrolledIds(), [1])
+        XCTAssertEqual(store.reads, 0, "only an unlock reads a secret")
+    }
+
+    func testEnrolledIdsSurviveARelaunch() async throws {
+        // A new enrolment object over the same Mac (the next launch) still knows who is enrolled.
+        let store = FakeSecretStore()
+        try await KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults),
+                                             scope: "db-a", isAvailable: { true }).enrol(appUserId: 2)
+        let relaunched = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults),
+                                                    scope: "db-a", isAvailable: { true })
+        XCTAssertEqual(relaunched.enrolledIds(), [2])
+        let unlocked = try await relaunched.unlock(appUserId: 2, reason: "test")
+        XCTAssertTrue(unlocked)
+    }
+
+    func testIndexAndSecretStayTogether() async throws {
+        let store = FakeSecretStore()
+        let index = DefaultsEnrolmentIndex(defaults: defaults)
+        let keychain = KeychainBiometricEnrolment(store: store, index: index, scope: "db-a", isAvailable: { true })
+        try await keychain.enrol(appUserId: 1)
+        XCTAssertEqual(index.accounts(), ["db-a:1"])
+        XCTAssertEqual(Set(store.secrets.keys), ["db-a:1"])
+
+        keychain.remove(appUserId: 1)
+        XCTAssertEqual(index.accounts(), [])
+        XCTAssertTrue(store.secrets.isEmpty)
+
+        // The fingerprints changed: the unlock's not-found drops the index entry too.
+        try await keychain.enrol(appUserId: 1)
+        store.invalidateAll()
+        do {
+            _ = try await keychain.unlock(appUserId: 1, reason: "test")
+            XCTFail("an invalidated item must not unlock")
+        } catch {
+            XCTAssertEqual(error as? BiometricUnlockError, .notEnrolled)
+        }
+        XCTAssertEqual(index.accounts(), [])
+        XCTAssertTrue(store.secrets.isEmpty)
+    }
+
+    func testFailedEnrolLeavesNoIndexEntry() async throws {
+        let store = FakeSecretStore()
+        let index = DefaultsEnrolmentIndex(defaults: defaults)
+        let keychain = KeychainBiometricEnrolment(store: store, index: index, scope: "db-a", isAvailable: { true })
+        try await keychain.enrol(appUserId: 1)
+        store.failAdd = errSecMissingEntitlement
+        do {
+            try await keychain.enrol(appUserId: 1)
+            XCTFail("a refused add must throw")
+        } catch {
+            XCTAssertEqual(error as? BiometricUnlockError, .keychain(errSecMissingEntitlement))
+        }
+        XCTAssertEqual(keychain.enrolledIds(), [], "the old secret went with the re-enrol")
+        XCTAssertTrue(store.secrets.isEmpty)
+    }
+
+    func testKeychainReadErrorKeepsEnrolment() async throws {
+        let store = FakeSecretStore()
+        let keychain = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults),
+                                                  scope: "db-a", isAvailable: { true })
+        try await keychain.enrol(appUserId: 3)
+        store.readStatus = errSecInteractionNotAllowed
+        do {
+            _ = try await keychain.unlock(appUserId: 3, reason: "test")
+            XCTFail("a refused read must throw")
+        } catch {
+            XCTAssertEqual(error as? BiometricUnlockError, .keychain(errSecInteractionNotAllowed))
+        }
+        XCTAssertEqual(keychain.enrolledIds(), [3])
+    }
+
+    func testIndexIsApartFromTheFallbackList() async throws {
+        // The fallback clears its list when the fingerprints change; the Keychain index must not go with it.
+        let store = FakeSecretStore()
+        let keychain = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults),
+                                                  scope: "db-a", isAvailable: { true })
+        try await keychain.enrol(appUserId: 4)
+        let biometry = FakeBiometry()
+        let fallback = DefaultsBiometricEnrolment(defaults: defaults, scope: "db-a", biometry: biometry)
+        try await fallback.enrol(appUserId: 9)
+        biometry.domainState = Data([7])
+        XCTAssertEqual(fallback.enrolledIds(), [])
+        XCTAssertEqual(keychain.enrolledIds(), [4])
+    }
+
+    func testKeychainErrorsReadAsSentences() {
+        XCTAssertEqual(BiometricUnlockError.unavailable.localizedDescription, "Touch ID isn't available on this Mac.")
+        for status in [errSecInteractionNotAllowed, errSecMissingEntitlement, errSecParam, OSStatus(-123_456)] {
+            let text = BiometricUnlockError.keychain(status).localizedDescription
+            XCTAssertTrue(text.hasPrefix("The Keychain refused it"), text)
+            XCTAssertTrue(text.hasSuffix(".") && !text.hasSuffix(".."), text)
+            XCTAssertFalse(text.contains("\(status)"), "the status code is for the log, not the user: \(text)")
+            XCTAssertFalse(text.contains("BudgetCore"), text)
+        }
     }
 }

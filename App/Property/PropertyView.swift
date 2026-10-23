@@ -44,7 +44,7 @@ struct PropertyView: View {
         }
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
-        .toolbar {
+        .screenToolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { editingProperty = PropertyDraft(nil) } label: {
                     Label("New property…", systemImage: "plus")

@@ -83,6 +83,39 @@ enum AuthSnapshots {
         }
     }
 
+    /// The lock overlay over screens that put items in the window toolbar: Scenario Lab (its view picker and
+    /// a horizon menu that names the horizon) and Rules with a search typed. The toolbar stays (so the
+    /// window keeps its size) but none of its items or the search text may show. `rules-search_typed` is
+    /// the same Rules page unlocked, so the search text is known to be there under the lock.
+    static var lockedToolbarRoutes: [SnapshotRoute] {
+        [
+            SnapshotRoute(name: "auth-locked_over_scenario_lab", title: "Lock screen over Scenario Lab: no toolbar items show", settleFactor: 1.5) { context in
+                try await lockedContent(context, screen: .forecast)
+            },
+            SnapshotRoute(name: "auth-locked_over_rules_search", title: "Lock screen over Rules with a search typed: no search text shows", settleFactor: 1.5) { context in
+                try await lockedContent(context, screen: .rules) { $0.rules.snapshotSearchText = rulesSearch }
+            },
+            SnapshotRoute(name: "rules-search_typed", title: "Rules with a search typed (unlocked, to compare)", settleFactor: 1.5) { context in
+                AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .rules, prepare: { models in
+                    models.rules.snapshotSearchText = rulesSearch
+                })))
+            },
+        ]
+    }
+
+    private static let rulesSearch = "Synthetic search"
+
+    private static func lockedContent(_ context: SnapshotContext, screen: AppScreen,
+                                      prepare: @escaping @MainActor (SnapshotScreenModels) -> Void = { _ in }) async throws -> AnyView {
+        _ = try await demoUsers(context)
+        let locked = SessionModel(dbQueue: context.dbQueue, isSetUp: true, biometrics: StandInTouchID(enrolled: []),
+                                  defaults: SnapshotMode.defaults)
+        locked.snapshotLock()
+        await locked.refreshCandidates()
+        return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: screen, prepare: prepare))
+            .lockOverlay(.main, session: locked))
+    }
+
     /// `LaunchView` under the lock overlay, mounted with no environment yet, as at launch: the overlay must
     /// keep the content's identity when the environment arrives, so `load()` runs once (it ran twice when
     /// the overlay swapped the content in an `if`). Prints the count; last, as it replaces `Current`.
