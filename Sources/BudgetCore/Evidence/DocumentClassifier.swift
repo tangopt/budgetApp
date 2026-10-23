@@ -70,6 +70,10 @@ public enum DocumentClassifier {
         static let fileUtility = make(#"\b(LUZ|GAS|AGUA|SMAS|EDP|ELECTRICITY|WATER)\b"#)
         static let fileCourt = make(#"\b(IGFEJ|TAXA DE JUSTICA|CUSTAS)\b"#)
         static let fileLetting = make(#"\b(LETTING|ERA|MEDIACAO)\b"#)
+        /// An addendum's heading word; not a contract's clause about "any addendum" to it.
+        static let addendum = make(#"(?<!QUALQUER )(?<!EVENTUAL )(?<!EVENTUAIS )(?<!NENHUM )\b(ADITAMENTO|ADENDA)S?\b"#)
+        static let addendumTitle = make(#"(?<!QUALQUER )(?<!EVENTUAL )(?<!NENHUM )\b(ADITAMENTO|ADENDA) (AO|DO|DE) CONTRATO DE ARRENDAMENTO"#)
+        static let fileAddendum = make(#"\b(ADITAMENTO|ADENDA|ADDENDUM)S?\b"#)
     }
 
     /// Text rules, in order.
@@ -86,7 +90,17 @@ public enum DocumentClassifier {
         Rule(kind: .p11d) { $0.matches(Patterns.p11d) && $0.has("EXPENSES AND BENEFITS") },
         Rule(kind: .p45) { $0.matches(Patterns.p45) && $0.has("LEAVING") },
         Rule(kind: .p60) { $0.matches(Patterns.p60) && $0.has("END OF YEAR CERTIFICATE") },
-        // Tenancy. Provisional: written from the portal's receipt title; no real receipt seen yet.
+        // Tenancy. An addendum is headed so ("Aditamento" / "Adenda" ao contrato de arrendamento),
+        // before the contract: an addendum is never read as the contract it amends.
+        Rule(kind: .tenancyAddendum) {
+            ($0.top(200).matches(Patterns.addendum) || $0.matches(Patterns.addendumTitle)) && $0.has("ARRENDAMENTO")
+        },
+        // A contract is headed so; not an invoice, receipt or proof that names one.
+        Rule(kind: .rentContract) {
+            $0.top(300).has("CONTRATO DE ARRENDAMENTO")
+                && !$0.top(300).has("FATURA", "FACTURA", "RECIBO", "INVOICE", "COMPROVATIVO", "NOTA DE COBRANCA", "DOCUMENTO DE COBRANCA")
+        },
+        // Provisional: written from the portal's receipt title; no real receipt seen yet.
         Rule(kind: .rentReceipt) { $0.has("RECIBO DE RENDA") },
         // Bank documents that list other issuers' names (a statement's movements, a transfer's
         // beneficiary), before the issuer rules below.
@@ -158,6 +172,7 @@ public enum DocumentClassifier {
         Rule(kind: .p45) { $0.matches(Patterns.fileP45) },
         Rule(kind: .p60) { $0.matches(Patterns.fileP60) },
         Rule(kind: .taxCodeNotice) { $0.has("TAX CODE") },
+        Rule(kind: .tenancyAddendum) { $0.matches(Patterns.fileAddendum) },
         Rule(kind: .rentReceipt) { $0.has("RECIBO DE RENDA", "RECIBOS DE RENDA", "RECIBO RENDA", "RENT RECEIPT") },
         Rule(kind: .ptIRSDeclaration) { $0.isIRS && $0.has("DECLARACAO", "MOD 3", "MODELO 3") },
         Rule(kind: .ptIRSAssessment) { $0.isIRS && $0.has("LIQUIDACAO") },

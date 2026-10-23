@@ -55,7 +55,9 @@ public enum EvidenceAnalyzer {
             period = self.period(in: body, kind: kind, docDate: nil)
             metadata.docDate = period?.end ?? documentDate(in: body) ?? EvidenceDateParser.fileNameDate(fileName)
         } else {
-            metadata.docDate = documentDate(in: body) ?? EvidenceDateParser.fileNameDate(fileName)
+            // An addendum quotes its contract's date: dated by its signature or effect instead.
+            let own = kind == .tenancyAddendum ? TenancyAddendum.date(in: body) : nil
+            metadata.docDate = own ?? documentDate(in: body) ?? EvidenceDateParser.fileNameDate(fileName)
             period = self.period(in: body, kind: kind, docDate: metadata.docDate)
         }
         metadata.periodStart = period?.start
@@ -83,6 +85,7 @@ public enum EvidenceAnalyzer {
         case .imiNotice, .ptIRSPaymentNote: return ["IMPORTANCIA A PAGAR", "VALOR A PAGAR", "MONTANTE"]
         case .ptIRSAssessment: return ["VALOR A PAGAR", "VALOR A REEMBOLSAR", "IMPORTANCIA A PAGAR"]
         case .condominioReceipt: return ["TOTAL RECEBIDO", "TOTAL", "MONTANTE"]
+        case .tenancyAddendum: return TenancyAddendum.rentLabels
         case .rentReceipt: return ["IMPORTANCIA RECEBIDA", "VALOR DA RENDA", "IMPORTANCIA", "QUANTIA DE", "VALOR"]
         case .courtFee: return ["MONTANTE PAGO", "MONTANTE", "IMPORTANCIA A PAGAR", "VALOR"]
         case .lettingAgentFee: return ["FOI LIQUIDADO", "TOTAL A PAGAR", "TOTAL DOCUMENTO"]
@@ -104,7 +107,7 @@ public enum EvidenceAnalyzer {
     /// policies, mortgage notices listing capital and balances).
     static let labelledAmountOnly: Set<DocumentKind> = [
         .mortgageNotice, .mortgageReceipt, .mortgageInterestStatement, .mortgageContract, .insurancePolicy, .p60, .p45, .p11d, .sa302,
-        .taxReturn, .taxCodeNotice, .ptIRSDeclaration, .ptIRSAssessment, .bankStatement, .rentContract, .propertyDeed,
+        .taxReturn, .taxCodeNotice, .ptIRSDeclaration, .ptIRSAssessment, .bankStatement, .rentContract, .tenancyAddendum, .propertyDeed,
         .certificate, .other
     ]
 

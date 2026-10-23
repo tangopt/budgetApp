@@ -33,21 +33,56 @@ public enum MortgageReceipt {
     /// ("12/05/2024") or an amount.
     private static let textPattern = try! NSRegularExpression(pattern: #"(?<![\d.,/])(\d{1,3})\s*/\s*(\d{1,3})(?![\d.,/])"#)
 
-    /// The instalment the receipt is for: from its text, else its file name's "Recibo n/total".
+    /// A page marker just before a pair ("Pág. 1/2", "Page 1/2", "Folha 1/2"): never an instalment.
+    private static let pageMarker = try! NSRegularExpression(pattern: #"\b(?:PAG(?:INA)?|PAGE|FOLHA|FL)\.?\s*(?:N\.?\s*[O\u00BA]\.?\s*)?$"#,
+                                                             options: [.caseInsensitive])
+    /// How close to "RECIBO" (characters, either side) a pair counts as the receipt's own.
+    private static let nearReceipt = 40
+
+    /// The instalment the receipt is for: from its text — a pair near "RECIBO" or of a loan's
+    /// length (total ≥ 100), never a page marker — else its file name's "Recibo n/total", else
+    /// any other pair in the text.
     public static func instalment(text: String?, fileName: String) -> Instalment? {
-        if let text, let found = firstPair(textPattern, in: text, ordered: false) { return found }
-        return firstPair(fileNamePattern, in: EvidenceText.fold((fileName as NSString).deletingPathExtension), ordered: true)
+        let candidates = text.map { textPairs(in: EvidenceText.fold($0)) } ?? []
+        if let preferred = candidates.first(where: { $0.nearReceipt || $0.instalment.total >= 100 }) { return preferred.instalment }
+        let name = EvidenceText.fold((fileName as NSString).deletingPathExtension)
+        if let fromName = pairs(fileNamePattern, in: name, ordered: true).first { return fromName.instalment }
+        return candidates.first?.instalment
     }
 
-    private static func firstPair(_ regex: NSRegularExpression, in text: String, ordered: Bool) -> Instalment? {
+    private struct Candidate {
+        var instalment: Instalment
+        var range: NSRange
+        var nearReceipt = false
+    }
+
+    /// The text's pairs, page markers left out, each marked when "RECIBO" is near it.
+    private static func textPairs(in text: String) -> [Candidate] {
         let source = text as NSString
-        for match in regex.matches(in: text, range: NSRange(location: 0, length: source.length)) {
-            guard let first = Int(source.substring(with: match.range(at: 1))), let second = Int(source.substring(with: match.range(at: 2))) else { continue }
-            let (number, total) = ordered ? (first, second) : (min(first, second), max(first, second))
-            guard number >= 1, total >= 2, number <= total else { continue }
-            return Instalment(number: number, total: total)
+        let receipts = EvidenceAnalyzer.occurrences(of: "RECIBO", in: source)
+        return pairs(textPattern, in: text, ordered: false).compactMap { candidate in
+            let start = max(0, candidate.range.location - 12)
+            let before = source.substring(with: NSRange(location: start, length: candidate.range.location - start))
+            if pageMarker.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) != nil { return nil }
+            var candidate = candidate
+            candidate.nearReceipt = receipts.contains { receipt in
+                let gap = receipt.location >= candidate.range.location + candidate.range.length
+                    ? receipt.location - (candidate.range.location + candidate.range.length)
+                    : candidate.range.location - (receipt.location + receipt.length)
+                return gap <= nearReceipt
+            }
+            return candidate
         }
-        return nil
+    }
+
+    private static func pairs(_ regex: NSRegularExpression, in text: String, ordered: Bool) -> [Candidate] {
+        let source = text as NSString
+        return regex.matches(in: text, range: NSRange(location: 0, length: source.length)).compactMap { match in
+            guard let first = Int(source.substring(with: match.range(at: 1))), let second = Int(source.substring(with: match.range(at: 2))) else { return nil }
+            let (number, total) = ordered ? (first, second) : (min(first, second), max(first, second))
+            guard number >= 1, total >= 2, number <= total else { return nil }
+            return Candidate(instalment: Instalment(number: number, total: total), range: match.range)
+        }
     }
 
     /// `<date> - Property - Mortgage receipt - <n>/<total> - €<amount>` (`EvidenceNaming`): the

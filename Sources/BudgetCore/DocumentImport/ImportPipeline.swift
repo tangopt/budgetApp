@@ -1506,6 +1506,7 @@ public struct ImportPipeline: @unchecked Sendable {
     static func isDuplicatePassIssue(_ id: String) -> Bool {
         id == "possibleDuplicate" || id == ImportDuplicates.correctedVersionIssueId
             || id.hasPrefix("sharedTransaction.") || id.hasPrefix("transactionHasDocument.")
+            || id.hasPrefix(ImportDuplicates.tenancyHasContractPrefix)
     }
 
     static let kindMismatchId = "kindMismatch"
