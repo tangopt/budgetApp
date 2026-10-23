@@ -226,6 +226,7 @@ public enum SyncSchema {
     /// linked source folders and their files (paths and bookmarks), and SQLite's and GRDB's own tables.
     public static let localOnlyTables: Set<String> = [
         "syncRecord", "syncStaging", "syncConflict", "syncTombstone", "syncState",
+        "syncPending", "syncFieldClock", "syncWriter", "syncApplying",
         "localCredential", "localSetting",
         "sourceFolder", "sourceFile",
         "grdb_migrations", "sqlite_sequence",

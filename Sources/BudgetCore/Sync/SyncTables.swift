@@ -109,7 +109,7 @@ public struct SyncTombstoneRow: Codable, Equatable, FetchableRecord, Persistable
     public static let databaseTableName = "syncTombstone"
 }
 
-/// Opaque sync state by key: the engine's serialized state, the pending-change list.
+/// Opaque sync state by key: the engine's serialized state and change token.
 public struct SyncStateRow: Codable, Equatable, FetchableRecord, PersistableRecord, Sendable {
     public var key: String
     public var value: Data
@@ -169,6 +169,34 @@ func registerSyncMigration(_ migrator: inout DatabaseMigrator) {
             t.primaryKey("key", .text)
             t.column("value", .blob).notNull()
             t.column("updatedAt", .datetime).notNull()
+        }
+        // Written by the change-tracking triggers (`SyncChangeTracker`), in the same transaction as the
+        // data change: one entry per record waiting to be sent, in the order first queued (rowid).
+        try db.create(table: "syncPending") { t in
+            t.primaryKey("uuid", .text)
+            t.column("tableName", .text).notNull()
+            t.column("localId", .integer).notNull()
+            t.column("kind", .text).notNull().check { ["insert", "update", "delete"].contains($0) }
+            t.column("revision", .integer).notNull().indexed()
+        }
+        // When each synced field last changed here, for field-level last writer wins (sync spec §5.1).
+        // Field `*` is the row's insert: every field without its own entry dates from it.
+        try db.create(table: "syncFieldClock") { t in
+            t.column("tableName", .text).notNull()
+            t.column("localId", .integer).notNull()
+            t.column("field", .text).notNull()
+            t.column("modifiedAt", .datetime).notNull()
+            t.column("modifiedBy", .text)
+            t.primaryKey(["tableName", "localId", "field"])
+        }
+        // At most one row: the signed-in app user's UUID, which the triggers stamp as the writer.
+        try db.create(table: "syncWriter") { t in
+            t.primaryKey("id", .integer).check { $0 == 1 }
+            t.column("appUserUuid", .text)
+        }
+        // A row here only inside an incoming apply's transaction: the triggers skip while it exists.
+        try db.create(table: "syncApplying") { t in
+            t.primaryKey("id", .integer).check { $0 == 1 }
         }
     }
 }

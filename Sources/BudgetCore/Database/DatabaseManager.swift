@@ -5,10 +5,13 @@ public final class DatabaseManager {
     public let dbQueue: DatabaseQueue
 
     public init(path: String?) throws {
+        var configuration = Configuration()
+        // A row that `REPLACE` removes fires delete triggers (sync tombstones) only with this on.
+        configuration.prepareDatabase { db in try db.execute(sql: "PRAGMA recursive_triggers = ON") }
         if let path {
-            dbQueue = try DatabaseQueue(path: path)
+            dbQueue = try DatabaseQueue(path: path, configuration: configuration)
         } else {
-            dbQueue = try DatabaseQueue()
+            dbQueue = try DatabaseQueue(configuration: configuration)
         }
     }
 
@@ -17,12 +20,23 @@ public final class DatabaseManager {
         var migrator = DatabaseMigrator()
         registerMigrations(&migrator)
         try migrator.migrate(dbQueue, upTo: target)
+        try refreshSyncTriggers()
     }
 
     public func migrate() throws {
         var migrator = DatabaseMigrator()
         registerMigrations(&migrator)
         try migrator.migrate(dbQueue)
+        try refreshSyncTriggers()
+    }
+
+    /// The sync change-tracking triggers, matched to `SyncSchema` after every migration (so a column a
+    /// later migration adds is tracked), once the sync tables exist.
+    private func refreshSyncTriggers() throws {
+        try dbQueue.write { db in
+            guard try db.tableExists("syncPending") else { return }
+            try SyncChangeTracker.refreshSyncTriggers(db: db)
+        }
     }
 
     /// The migrations this build has that the database hasn't run yet, and those the database

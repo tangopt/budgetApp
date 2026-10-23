@@ -210,9 +210,11 @@ final class SyncSchemaTests: XCTestCase {
         try manager.migrate(upTo: "createSync")
         var after = try snapshot()
         let added = Set(after.keys).subtracting(before.keys)
-        XCTAssertEqual(added, ["syncRecord", "syncStaging", "syncConflict", "syncTombstone", "syncState"])
+        XCTAssertEqual(added, ["syncRecord", "syncStaging", "syncConflict", "syncTombstone", "syncState",
+                               "syncPending", "syncFieldClock", "syncWriter", "syncApplying"])
         for table in added { XCTAssertEqual(after[table], [], "\(table) starts empty") }
-        // Every old schema object is unchanged; only the new tables and their indexes appear.
+        // Every old schema object is unchanged; only the new tables, their indexes and the sync tracking
+        // triggers (`syncTrack_*`) appear.
         let newObjects = Set(after["schema"]!).subtracting(before["schema"]!)
         XCTAssertTrue(Set(before["schema"]!).isSubset(of: Set(after["schema"]!)))
         for object in newObjects {

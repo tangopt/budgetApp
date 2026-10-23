@@ -1,15 +1,21 @@
 import XCTest
 import GRDB
+import SQLite3
 @testable import BudgetCore
 
 final class SyncChangeTrackerTests: XCTestCase {
     private var manager: DatabaseManager!
-    private var tracker: SyncChangeTracker!
+    private var folder: URL!
 
     override func setUpWithError() throws {
         manager = try DatabaseManager(path: nil)
         try manager.migrate()
-        tracker = try SyncChangeTracker.install(on: manager.dbQueue)
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent("SyncTracker-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: folder)
     }
 
     private func insertAccount(_ db: Database, _ name: String = "Current") throws -> Int64 {
@@ -18,11 +24,43 @@ final class SyncChangeTrackerTests: XCTestCase {
         return account.id!
     }
 
-    private func pending() throws -> [PendingChange] {
-        try manager.dbQueue.read { db in try SyncChangeTracker.pending(db: db) }
+    private func pending(_ queue: DatabaseQueue? = nil) throws -> [PendingChange] {
+        try (queue ?? manager.dbQueue).read { db in try SyncChangeTracker.pending(db: db) }
+    }
+
+    private func clocks(_ table: String, _ id: Int64, _ queue: DatabaseQueue? = nil) throws -> [String: Row] {
+        try (queue ?? manager.dbQueue).read { db in
+            Dictionary(uniqueKeysWithValues: try Row.fetchAll(db, sql: "SELECT * FROM syncFieldClock WHERE tableName = ? AND localId = ?",
+                                                              arguments: [table, id]).map { ($0["field"] as String, $0) })
+        }
+    }
+
+    private func filePath() -> String { folder.appendingPathComponent("db-\(UUID().uuidString).sqlite").path }
+
+    private static let uuidPattern = try! NSRegularExpression(pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+    private func assertUUID(_ value: String, file: StaticString = #filePath, line: UInt = #line) {
+        let range = NSRange(value.startIndex..., in: value)
+        XCTAssertNotNil(Self.uuidPattern.firstMatch(in: value, range: range), "\(value) is not a lowercase v4 UUID", file: file, line: line)
     }
 
     // MARK: Identity
+
+    func testUUIDsAreLowercaseVersion4() throws {
+        let made = try manager.dbQueue.read { db in
+            try String.fetchAll(db, sql: "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000) SELECT \(SyncRecordStore.uuidSQL) FROM n")
+        }
+        XCTAssertEqual(made.count, 2000)
+        XCTAssertEqual(Set(made).count, 2000)
+        made.forEach { assertUUID($0) }
+        XCTAssertEqual(Set(made.map { $0[$0.index($0.startIndex, offsetBy: 19)] }), ["8", "9", "a", "b"], "every variant digit appears")
+        // Made by a trigger, and by Swift.
+        try manager.dbQueue.write { db in
+            let id = try insertAccount(db)
+            assertUUID(try SyncRecordStore.uuid(for: "account", localId: id, db: db))
+            assertUUID(try SyncRecordStore.uuid(for: "account", localId: 999_999, db: db))
+        }
+    }
 
     func testUUIDIsCreatedOnFirstUseAndStable() throws {
         try manager.dbQueue.write { db in
@@ -39,13 +77,17 @@ final class SyncChangeTrackerTests: XCTestCase {
     }
 
     func testBackfillGivesEveryRowOneStableUUID() throws {
-        // A database written before tracking existed: rows in several tables, none with an identity.
+        // Rows written before the sync tables and their triggers existed: no identities.
         let plain = try DatabaseManager(path: nil)
-        try plain.migrate()
+        try plain.migrate(upTo: "createAppUser")
         try plain.dbQueue.write { db in
-            for name in ["A", "B", "C"] { _ = try insertAccount(db, name) }
+            for name in ["A", "B", "C"] {
+                try db.execute(sql: "INSERT INTO account(name, currency, kind, trackingMode) VALUES (?, 'GBP', 'cash', 'imported')", arguments: [name])
+            }
             try db.execute(sql: "INSERT INTO person(name) VALUES ('Synthetic Person')")
         }
+        try plain.migrate()
+        XCTAssertEqual(try plain.dbQueue.read { db in try SyncRecordRow.fetchCount(db) }, 0)
         let expected = try plain.dbQueue.read { db in
             try SyncSchema.tables.reduce(0) { sum, table in
                 sum + (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \"\(table.name)\"") ?? 0)
@@ -59,6 +101,7 @@ final class SyncChangeTrackerTests: XCTestCase {
         XCTAssertEqual(first.count, expected)
         XCTAssertEqual(Set(first.map(\.uuid)).count, expected, "UUIDs are distinct")
         XCTAssertTrue(first.allSatisfy { $0.zone == "household" })
+        first.forEach { assertUUID($0.uuid) }
         try plain.dbQueue.read { db in
             for table in SyncSchema.tables {
                 let missing = try Int.fetchOne(db, sql: """
@@ -71,17 +114,22 @@ final class SyncChangeTrackerTests: XCTestCase {
             let queued = try SyncChangeTracker.pending(db: db)
             XCTAssertEqual(queued.count, expected)
             XCTAssertTrue(queued.allSatisfy { $0.kind == .insert })
+            XCTAssertEqual(Set(queued.map(\.revision)).count, expected, "revisions are distinct")
         }
 
         // Idempotent: nothing new, nothing changed.
         XCTAssertEqual(try plain.dbQueue.write { db in try SyncRecordStore.backfill(db: db) }, 0)
         let second = try plain.dbQueue.read { db in try SyncRecordRow.order(Column("tableName"), Column("localId")).fetchAll(db) }
         XCTAssertEqual(second, first)
-        XCTAssertEqual(try plain.dbQueue.read { db in try SyncChangeTracker.pending(db: db).count }, expected)
+        XCTAssertEqual(try pending(plain.dbQueue).count, expected)
+        // An acknowledged record isn't queued again by a later backfill.
+        try plain.dbQueue.write { db in try SyncChangeTracker.acknowledge(try SyncChangeTracker.pending(db: db), db: db) }
+        XCTAssertEqual(try plain.dbQueue.write { db in try SyncRecordStore.backfill(db: db) }, 0)
+        XCTAssertEqual(try pending(plain.dbQueue), [])
     }
 
     func testEveryLocalIdIsTheRowId() throws {
-        // The tracker identifies rows by the update hook's rowid: each synced table's local id must be it.
+        // syncRecord.localId is the row's key; REPLACE and the sweep reason about rowids.
         try manager.dbQueue.read { db in
             for table in SyncSchema.tables {
                 let withoutRowId = try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -93,6 +141,66 @@ final class SyncChangeTrackerTests: XCTestCase {
                 XCTAssertEqual((pk.first?["type"] as String?)?.uppercased(), "INTEGER", "\(table.name).\(table.localIdColumn) aliases the rowid")
             }
         }
+    }
+
+    // MARK: Triggers
+
+    func testInstalledTriggersMatchSyncSchema() throws {
+        try manager.dbQueue.read { db in
+            let installed = try Row.fetchAll(db, sql: "SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'syncTrack\\_%' ESCAPE '\\'")
+            var expected: Set<String> = []
+            for table in SyncSchema.tables {
+                expected.formUnion(["ins", "del", "key"].map { "syncTrack_\(table.name)_\($0)" })
+                if table.syncedColumns.contains(where: { $0 != table.localIdColumn }) { expected.insert("syncTrack_\(table.name)_upd") }
+            }
+            XCTAssertEqual(Set(installed.map { $0["name"] as String }), expected)
+            for row in installed {
+                let name: String = row["name"], table: String = row["tbl_name"]
+                XCTAssertNotNil(SyncSchema.table(table), "\(name) is on a synced table")
+                XCTAssertTrue(name.hasPrefix("syncTrack_\(table)_"), name)
+            }
+            for table in SyncSchema.tables {
+                let update = try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE name = ?", arguments: ["syncTrack_\(table.name)_upd"]) ?? ""
+                for column in table.syncedColumns where column != table.localIdColumn {
+                    XCTAssertTrue(update.contains("NEW.\"\(column)\" IS NOT OLD.\"\(column)\""), "\(table.name).\(column) is watched")
+                }
+                for column in table.localOnlyColumns {
+                    XCTAssertFalse(update.contains("\"\(column)\""), "\(table.name).\(column) is local-only")
+                }
+            }
+            for table in SyncSchema.localOnlyTables {
+                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? AND name LIKE 'syncTrack%'",
+                                                arguments: [table]), 0, table)
+            }
+        }
+        // Refreshing again changes nothing (no schema write on an ordinary open).
+        let version = try manager.dbQueue.read { db in try Int.fetchOne(db, sql: "PRAGMA schema_version") }
+        try manager.migrate()
+        XCTAssertEqual(try manager.dbQueue.read { db in try Int.fetchOne(db, sql: "PRAGMA schema_version") }, version)
+    }
+
+    func testAddedColumnIsTrackedAfterRefresh() throws {
+        let id = try manager.dbQueue.write { db -> Int64 in
+            try db.execute(sql: "ALTER TABLE account ADD COLUMN somethingNew TEXT")
+            return try insertAccount(db)
+        }
+        try manager.dbQueue.write { db in try SyncChangeTracker.acknowledge(try SyncChangeTracker.pending(db: db), db: db) }
+        try manager.dbQueue.write { db in try db.execute(sql: "UPDATE account SET somethingNew = 'a' WHERE id = ?", arguments: [id]) }
+        XCTAssertEqual(try pending(), [], "unlisted, so not watched yet")
+
+        let schema = SyncSchema.tables.map { table -> SyncTableSchema in
+            guard table.name == "account" else { return table }
+            return SyncTableSchema(table.name, localIdColumn: table.localIdColumn, synced: table.syncedColumns + ["somethingNew"],
+                                   foreignKeys: table.foreignKeys, localOnly: table.localOnlyColumns, batchKey: table.batchKey)
+        }
+        try manager.dbQueue.write { db in try SyncChangeTracker.refreshSyncTriggers(db: db, schema: schema) }
+        try manager.dbQueue.write { db in try db.execute(sql: "UPDATE account SET somethingNew = 'b' WHERE id = ?", arguments: [id]) }
+        XCTAssertEqual(try pending().map(\.kind), [.update])
+        XCTAssertNotNil(try clocks("account", id)["somethingNew"])
+        // Back to the real schema: the extra trigger text goes again.
+        try manager.dbQueue.write { db in try SyncChangeTracker.refreshSyncTriggers(db: db) }
+        let sql = try manager.dbQueue.read { db in try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE name = 'syncTrack_account_upd'") }
+        XCTAssertFalse(sql?.contains("somethingNew") ?? true)
     }
 
     // MARK: Tracking
@@ -112,9 +220,54 @@ final class SyncChangeTrackerTests: XCTestCase {
 
         try manager.dbQueue.write { db in try SyncChangeTracker.acknowledge(queued, db: db) }
         XCTAssertEqual(try pending(), [])
+        try manager.dbQueue.write { db in try db.execute(sql: "UPDATE account SET alias = 'x' WHERE id = ?", arguments: [id]) }
+        XCTAssertEqual(try pending(), [], "an update that changes nothing isn't a change")
         try manager.dbQueue.write { db in try db.execute(sql: "UPDATE account SET alias = 'y' WHERE id = ?", arguments: [id]) }
         XCTAssertEqual(try pending().map(\.kind), [.update])
         XCTAssertEqual(try pending().first?.uuid, uuid)
+        try manager.dbQueue.write { db in try db.execute(sql: "DELETE FROM account WHERE id = ?", arguments: [id]) }
+        XCTAssertEqual(try pending().map(\.kind), [.delete], "a delete replaces what was queued")
+    }
+
+    func testFieldClocksRecordWhatChangedAndWho() throws {
+        let start = Date().addingTimeInterval(-1)
+        let id = try manager.dbQueue.write { db -> Int64 in
+            try SyncChangeTracker.setWriter("user-uuid", db: db)
+            return try insertAccount(db)
+        }
+        var clock = try clocks("account", id)
+        XCTAssertEqual(Set(clock.keys), ["*"], "an insert dates every field at once")
+        let inserted: Date = try XCTUnwrap(clock["*"]?["modifiedAt"])
+        XCTAssertGreaterThanOrEqual(inserted, start)
+        XCTAssertLessThanOrEqual(inserted, Date().addingTimeInterval(1))
+        XCTAssertEqual(clock["*"]?["modifiedBy"], "user-uuid")
+        let record = try manager.dbQueue.read { db in try SyncRecordRow.fetchOne(db, sql: "SELECT * FROM syncRecord WHERE tableName = 'account' AND localId = ?", arguments: [id]) }
+        XCTAssertEqual(record?.modifiedBy, "user-uuid")
+        XCTAssertNotNil(record?.modifiedAt)
+
+        try manager.dbQueue.write { db in
+            try SyncChangeTracker.setWriter(nil, db: db)
+            try db.execute(sql: "UPDATE account SET alias = 'x', sortOrder = sortOrder WHERE id = ?", arguments: [id])
+        }
+        clock = try clocks("account", id)
+        XCTAssertEqual(Set(clock.keys), ["*", "alias"], "only the column that changed")
+        XCTAssertNil(clock["alias"]?["modifiedBy"] as String?, "signed out: no writer")
+        XCTAssertEqual(clock["*"]?["modifiedBy"], "user-uuid")
+
+        try manager.dbQueue.write { db in try db.execute(sql: "DELETE FROM account WHERE id = ?", arguments: [id]) }
+        XCTAssertEqual(try clocks("account", id), [:])
+    }
+
+    func testLocalOnlyColumnChangeIsNotTracked() throws {
+        let runId = try manager.dbQueue.write { db -> Int64 in
+            var run = ImportRun(confirmedAt: Date(), entryPoint: "Import…", summary: "s")
+            try run.insert(db)
+            return run.id!
+        }
+        try manager.dbQueue.write { db in try SyncChangeTracker.acknowledge(try SyncChangeTracker.pending(db: db), db: db) }
+        try manager.dbQueue.write { db in try db.execute(sql: "UPDATE importRun SET backupPath = '/synthetic/backup' WHERE id = ?", arguments: [runId]) }
+        XCTAssertEqual(try pending(), [])
+        XCTAssertEqual(Set(try clocks("importRun", runId).keys), ["*"])
     }
 
     func testAcknowledgeKeepsAChangeMadeSince() throws {
@@ -123,6 +276,8 @@ final class SyncChangeTrackerTests: XCTestCase {
         try manager.dbQueue.write { db in try db.execute(sql: "UPDATE account SET alias = 'later' WHERE id = ?", arguments: [id]) }
         try manager.dbQueue.write { db in try SyncChangeTracker.acknowledge(sent, db: db) }
         XCTAssertEqual(try pending().count, 1, "the edit after the upload began is still pending")
+        try manager.dbQueue.write { db in try SyncChangeTracker.acknowledge(try SyncChangeTracker.pending(db: db), db: db) }
+        XCTAssertEqual(try pending(), [])
     }
 
     func testLocalOnlyWritesAreNotTracked() throws {
@@ -136,7 +291,7 @@ final class SyncChangeTrackerTests: XCTestCase {
     }
 
     func testRolledBackWritesLeaveNothingPending() throws {
-        // A whole transaction rolled back (ImportUndo.conflicts(dbQueue:)), and a rolled-back savepoint
+        // A whole transaction rolled back (ImportUndo.conflicts(dbQueue:)), and rolled-back savepoints
         // inside a committed one (the filed-year guard's simulations).
         try manager.dbQueue.inTransaction { db in
             _ = try insertAccount(db, "Rolled back")
@@ -155,6 +310,64 @@ final class SyncChangeTrackerTests: XCTestCase {
         }
         XCTAssertEqual(try pending().map(\.localId), [kept])
         XCTAssertEqual(try manager.dbQueue.read { db in try SyncRecordRow.fetchCount(db) }, 1)
+        XCTAssertEqual(try manager.dbQueue.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncFieldClock") }, 1)
+    }
+
+    func testChangeAndPendingCommitTogetherOrNotAtAll() throws {
+        let path = filePath()
+        let setup = try DatabaseManager(path: path)
+        try setup.migrate()
+        try setup.dbQueue.close()
+
+        // A writer that dies mid-transaction (a bare SQLite connection closed without committing, as
+        // a crash leaves it): neither the row nor its pending entry survives.
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(path, &raw, SQLITE_OPEN_READWRITE, nil), SQLITE_OK)
+        func exec(_ sql: String) { XCTAssertEqual(sqlite3_exec(raw, sql, nil, nil, nil), SQLITE_OK, String(cString: sqlite3_errmsg(raw))) }
+        func count(_ sql: String) -> Int32 {
+            var statement: OpaquePointer?
+            sqlite3_prepare_v2(raw, sql, -1, &statement, nil)
+            defer { sqlite3_finalize(statement) }
+            return sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : -1
+        }
+        exec("BEGIN IMMEDIATE")
+        exec("INSERT INTO account(name, currency, kind, trackingMode) VALUES ('Never committed', 'GBP', 'cash', 'imported')")
+        XCTAssertEqual(count("SELECT COUNT(*) FROM syncPending"), 1, "queued inside the same transaction")
+        XCTAssertEqual(count("SELECT COUNT(*) FROM syncRecord"), 1)
+        XCTAssertEqual(sqlite3_close_v2(raw), SQLITE_OK)
+
+        let after = try DatabaseQueue(path: path)
+        try after.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM account WHERE name = 'Never committed'"), 0)
+            XCTAssertEqual(try SyncChangeTracker.pending(db: db), [])
+            XCTAssertEqual(try SyncRecordRow.fetchCount(db), 0)
+        }
+        // Committed: both.
+        let id = try after.write { db in try insertAccount(db, "Committed") }
+        try after.close()
+        let reopened = try DatabaseQueue(path: path)
+        XCTAssertEqual(try pending(reopened).map(\.localId), [id])
+        try reopened.close()
+    }
+
+    func testWriteThroughAnIndependentQueueIsTracked() throws {
+        // A one-off tool opens its own queue on the file, without DatabaseManager.
+        let path = filePath()
+        let app = try DatabaseManager(path: path)
+        try app.migrate()
+        let tool = try DatabaseQueue(path: path)
+        let id = try tool.write { db -> Int64 in
+            let id = try insertAccount(db, "From a tool")
+            try db.execute(sql: "UPDATE account SET alias = 'tool' WHERE id = ?", arguments: [id])
+            return id
+        }
+        try tool.close()
+        let queued = try pending(app.dbQueue)
+        XCTAssertEqual(queued.map(\.localId), [id])
+        XCTAssertEqual(queued.map(\.kind), [.insert])
+        XCTAssertNil(try app.dbQueue.read { db in
+            try SyncRecordRow.fetchOne(db, sql: "SELECT * FROM syncRecord WHERE tableName = 'account' AND localId = ?", arguments: [id])
+        }?.modifiedBy, "no one signed in")
     }
 
     func testDeleteLeavesATombstone() throws {
@@ -169,9 +382,9 @@ final class SyncChangeTrackerTests: XCTestCase {
             XCTAssertEqual(tombstone.localId, id)
             XCTAssertEqual(tombstone.zone, "household")
             XCTAssertNil(try SyncRecordStore.localId(table: "account", uuid: uuid, db: db), "the identity is retired")
-            XCTAssertEqual(try SyncChangeTracker.pending(db: db),
-                           [PendingChange(table: "account", localId: id, uuid: uuid, kind: .delete,
-                                          revision: try SyncChangeTracker.pending(db: db).first!.revision)])
+            let queued = try SyncChangeTracker.pending(db: db)
+            XCTAssertEqual(queued.map(\.uuid), [uuid])
+            XCTAssertEqual(queued.map(\.kind), [.delete])
         }
 
         // A new row that reuses the local id is a different record.
@@ -187,11 +400,11 @@ final class SyncChangeTrackerTests: XCTestCase {
     }
 
     func testCascadeDeleteLeavesTombstonesForChildren() throws {
-        let (propertyId, child) = try manager.dbQueue.write { db -> (Int64, Int64) in
+        let propertyId = try manager.dbQueue.write { db -> Int64 in
             try db.execute(sql: "INSERT INTO property(name, country) VALUES ('Synthetic flat', 'PT')")
             let propertyId = db.lastInsertedRowID
             try db.execute(sql: "INSERT INTO propertyMortgageTerms(propertyId) VALUES (?)", arguments: [propertyId])
-            return (propertyId, propertyId)
+            return propertyId
         }
         let uuids = try pending().map(\.uuid)
         XCTAssertEqual(uuids.count, 2)
@@ -199,99 +412,163 @@ final class SyncChangeTrackerTests: XCTestCase {
         try manager.dbQueue.read { db in
             let tombstones = try SyncTombstoneRow.fetchAll(db)
             XCTAssertEqual(Set(tombstones.map(\.uuid)), Set(uuids))
-            XCTAssertTrue(tombstones.contains { $0.tableName == "propertyMortgageTerms" && $0.localId == child })
+            XCTAssertTrue(tombstones.contains { $0.tableName == "propertyMortgageTerms" && $0.localId == propertyId })
         }
     }
 
-    func testWriterAndTimeAreStamped() throws {
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let other = try DatabaseManager(path: nil)
-        try other.migrate()
-        let stamped = try SyncChangeTracker.install(on: other.dbQueue, now: { now })
-        stamped.modifiedBy = "USER-UUID"
-        let id = try other.dbQueue.write { db in try insertAccount(db) }
-        let row = try other.dbQueue.read { db in
-            try SyncRecordRow.fetchOne(db, sql: "SELECT * FROM syncRecord WHERE tableName = 'account' AND localId = ?", arguments: [id])
+    func testReplaceOfARowWithAnotherRowIdLeavesATombstone() throws {
+        // `property.name` is unique: REPLACE removes the old row (another rowid) and inserts a new one.
+        func replace(_ queue: DatabaseQueue) throws -> (old: String, new: Int64) {
+            let old = try queue.write { db -> String in
+                try db.execute(sql: "INSERT INTO property(name, country) VALUES ('Replaced', 'PT')")
+                return try SyncRecordStore.uuid(for: "property", localId: db.lastInsertedRowID, db: db)
+            }
+            let new = try queue.write { db -> Int64 in
+                try db.execute(sql: "INSERT OR REPLACE INTO property(id, name, country) VALUES (500, 'Replaced', 'GB')")
+                return db.lastInsertedRowID
+            }
+            return (old, new)
         }
-        XCTAssertEqual(row?.modifiedBy, "USER-UUID")
-        XCTAssertEqual(row?.modifiedAt, now)
+        // The app's connection (recursive triggers on): at once.
+        let (old, new) = try replace(manager.dbQueue)
+        XCTAssertEqual(new, 500)
+        try manager.dbQueue.read { db in
+            XCTAssertNotNil(try SyncTombstoneRow.fetchOne(db, key: old))
+            XCTAssertEqual(Set(try SyncChangeTracker.pending(db: db).filter { $0.table == "property" }.map(\.kind)), [.delete, .insert])
+        }
+
+        // A tool's connection (recursive triggers off): swept on the next open.
+        let path = filePath()
+        let app = try DatabaseManager(path: path)
+        try app.migrate()
+        try app.dbQueue.close()
+        let tool = try DatabaseQueue(path: path)
+        let (toolOld, _) = try replace(tool)
+        XCTAssertNil(try tool.read { db in try SyncTombstoneRow.fetchOne(db, key: toolOld) })
+        try tool.close()
+        let reopened = try DatabaseManager(path: path)
+        try reopened.migrate()
+        try reopened.dbQueue.read { db in
+            XCTAssertNotNil(try SyncTombstoneRow.fetchOne(db, key: toolOld))
+            XCTAssertNil(try SyncRecordStore.localId(table: "property", uuid: toolOld, db: db))
+            XCTAssertTrue(try SyncChangeTracker.pending(db: db).contains { $0.uuid == toolOld && $0.kind == .delete })
+        }
     }
 
-    func testIgnoredChangesAreNotTracked() throws {
-        // Incoming records applied by the engine must not echo back as pending changes.
-        try manager.dbQueue.write { db in
-            try tracker.ignoringChanges { _ = try insertAccount(db, "Incoming") }
+    func testPrimaryKeyUpdateIsRefused() throws {
+        let id = try manager.dbQueue.write { db in try insertAccount(db) }
+        XCTAssertThrowsError(try manager.dbQueue.write { db in
+            try db.execute(sql: "UPDATE account SET id = 4242 WHERE id = ?", arguments: [id])
+        }) { error in
+            XCTAssertTrue("\(error)".contains("account.id is a sync identity and cannot change"), "\(error)")
         }
-        XCTAssertEqual(try pending(), [])
-        try manager.dbQueue.write { db in _ = try insertAccount(db, "Local") }
-        XCTAssertEqual(try pending().count, 1)
+        try manager.dbQueue.write { db in try db.execute(sql: "UPDATE account SET id = id, alias = 'same id' WHERE id = ?", arguments: [id]) }
+        XCTAssertEqual(try manager.dbQueue.read { db in try String.fetchOne(db, sql: "SELECT alias FROM account WHERE id = ?", arguments: [id]) }, "same id")
     }
 
     func testTrackerSurvivesReopen() throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SyncTracker-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let path = folder.appendingPathComponent("db.sqlite").path
-
+        let path = filePath()
         var written: [PendingChange] = []
         do {
             let first = try DatabaseManager(path: path)
             try first.migrate()
-            _ = try SyncChangeTracker.install(on: first.dbQueue)
             try first.dbQueue.write { db in
                 _ = try insertAccount(db, "One")
                 _ = try insertAccount(db, "Two")
             }
-            written = try first.dbQueue.read { db in try SyncChangeTracker.pending(db: db) }
+            written = try pending(first.dbQueue)
             XCTAssertEqual(written.count, 2)
             try first.dbQueue.close()
         }
         let second = try DatabaseManager(path: path)
         try second.migrate()
-        _ = try SyncChangeTracker.install(on: second.dbQueue)
-        XCTAssertEqual(try second.dbQueue.read { db in try SyncChangeTracker.pending(db: db) }, written)
+        XCTAssertEqual(try pending(second.dbQueue), written)
         try second.dbQueue.write { db in try db.execute(sql: "UPDATE account SET alias = 'z' WHERE id = ?", arguments: [written[0].localId]) }
-        let after = try second.dbQueue.read { db in try SyncChangeTracker.pending(db: db) }
+        let after = try pending(second.dbQueue)
         XCTAssertEqual(after.map(\.uuid), written.map(\.uuid), "the same records, in the same order")
         XCTAssertGreaterThan(after[0].revision, written[1].revision, "revisions keep counting after a reopen")
+    }
+
+    // MARK: Incoming applies
+
+    func testIncomingApplyIsNotTracked() throws {
+        try manager.dbQueue.write { db in
+            try SyncChangeTracker.applyingIncoming(db: db) {
+                _ = try insertAccount(db, "Incoming")
+                try SyncChangeTracker.applyingIncoming(db: db) { _ = try insertAccount(db, "Nested") }
+                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncApplying"), 1, "still applying after a nested apply")
+            }
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncApplying"), 0)
+            _ = try insertAccount(db, "Local, same transaction")
+        }
+        XCTAssertEqual(try pending().count, 1)
+        try manager.dbQueue.write { db in _ = try insertAccount(db, "Local") }
+        XCTAssertEqual(try pending().count, 2)
+    }
+
+    func testApplyMarkerCannotOutliveItsTransaction() throws {
+        struct Failure: Error {}
+        // A failing apply whose error is caught, and its transaction committed anyway.
+        try manager.dbQueue.write { db in
+            XCTAssertThrowsError(try SyncChangeTracker.applyingIncoming(db: db) {
+                _ = try insertAccount(db, "Half applied")
+                throw Failure()
+            })
+        }
+        XCTAssertEqual(try manager.dbQueue.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncApplying") }, 0)
+        // Outside a transaction it refuses (the marker would commit on its own).
+        try manager.dbQueue.writeWithoutTransaction { db in
+            XCTAssertThrowsError(try SyncChangeTracker.applyingIncoming(db: db) {}) { error in
+                XCTAssertEqual(error as? SyncChangeTrackerError, .notInTransaction)
+            }
+        }
+        XCTAssertEqual(try manager.dbQueue.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncApplying") }, 0)
+        // A marker left in the file by any other route is cleared on the next open.
+        let path = filePath()
+        let app = try DatabaseManager(path: path)
+        try app.migrate()
+        try app.dbQueue.write { db in try db.execute(sql: "INSERT INTO syncApplying(id) VALUES (1)") }
+        try app.dbQueue.close()
+        let reopened = try DatabaseManager(path: path)
+        try reopened.migrate()
+        let id = try reopened.dbQueue.write { db in try insertAccount(db) }
+        XCTAssertEqual(try pending(reopened.dbQueue).map(\.localId), [id])
     }
 
     // MARK: Import capture (ruling R3)
 
     func testSyncWriteDuringImportCaptureSurvivesUndo() throws {
-        let plain = try DatabaseManager(path: nil)
-        try plain.migrate()
-        let base = FileManager.default.temporaryDirectory.appendingPathComponent("SyncUndo-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: base) }
-        let library = EvidenceLibrary(root: base.appendingPathComponent("Evidence", isDirectory: true), database: plain.dbQueue)
-        let accountId = try plain.dbQueue.write { db in try insertAccount(db) }
+        let library = EvidenceLibrary(root: folder.appendingPathComponent("Evidence", isDirectory: true), database: manager.dbQueue)
+        let accountId = try manager.dbQueue.write { db in try insertAccount(db) }
+        let uuid = try manager.dbQueue.write { db in try SyncRecordStore.uuid(for: "account", localId: accountId, db: db) }
 
-        let (runId, uuid) = try plain.dbQueue.write { db -> (Int64, String) in
+        let runId = try manager.dbQueue.write { db -> Int64 in
             var run = ImportRun(confirmedAt: Date(), entryPoint: "Import…", summary: "s")
             try run.insert(db)
             try ImportChangeCapture.begin(db: db)
             try db.execute(sql: "UPDATE account SET alias = 'imported' WHERE id = ?", arguments: [accountId])
-            let uuid = try SyncRecordStore.uuid(for: "account", localId: accountId, db: db)
             try SyncStateRow(key: "engine", value: Data([9]), updatedAt: Date()).insert(db)
+            try SyncChangeTracker.setWriter("user-uuid", db: db)
             let changes = try ImportChangeCapture.finish(db: db, runId: run.id!)
-            XCTAssertFalse(changes.contains { $0.tableName.hasPrefix("sync") }, "sync bookkeeping is not logged")
-            return (run.id!, uuid)
+            XCTAssertEqual(changes.map(\.tableName), ["account"], "sync bookkeeping is not logged")
+            return run.id!
         }
-        _ = try ImportUndo.undo(dbQueue: plain.dbQueue, library: library, runId: runId)
-        try plain.dbQueue.read { db in
-            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT alias FROM account WHERE id = ?", arguments: [accountId]), nil)
+        _ = try ImportUndo.undo(dbQueue: manager.dbQueue, library: library, runId: runId)
+        try manager.dbQueue.read { db in
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT alias FROM account WHERE id = ?", arguments: [accountId]))
             XCTAssertEqual(try SyncRecordStore.localId(table: "account", uuid: uuid, db: db), accountId)
             XCTAssertEqual(try SyncStateRow.fetchOne(db, key: "engine")?.value, Data([9]))
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT appUserUuid FROM syncWriter"), "user-uuid")
+            // The undo is itself a change to send: the alias went back.
+            XCTAssertTrue(try SyncChangeTracker.pending(db: db).contains { $0.uuid == uuid })
         }
-        for table in ["syncRecord", "syncStaging", "syncConflict", "syncTombstone", "syncState"] {
+        for table in SyncSchema.localOnlyTables where table.hasPrefix("sync") {
             XCTAssertTrue(ImportChangeCapture.untrackedTables.contains(table), table)
         }
     }
 
-    func testUndoOfATrackedImportTombstonesWhatItAdded() throws {
-        let base = FileManager.default.temporaryDirectory.appendingPathComponent("SyncUndo-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: base) }
-        let library = EvidenceLibrary(root: base.appendingPathComponent("Evidence", isDirectory: true), database: manager.dbQueue)
+    func testUndoOfAnImportTombstonesWhatItAdded() throws {
+        let library = EvidenceLibrary(root: folder.appendingPathComponent("Evidence", isDirectory: true), database: manager.dbQueue)
         let (runId, added) = try manager.dbQueue.write { db -> (Int64, Int64) in
             var run = ImportRun(confirmedAt: Date(), entryPoint: "Import…", summary: "s")
             try run.insert(db)
