@@ -5,7 +5,11 @@ import Foundation
 /// missing-evidence rules refer to these; `other` is anything not yet classified.
 public enum DocumentKind: String, Codable, CaseIterable, Sendable {
     // Property: mortgage, insurance, local taxes, building, tenancy
+    /// The bank's notice of an instalment, before its debit (issued mid-month, the breakdown).
     case mortgageNotice
+    /// The bank's receipt of an instalment, after its debit ("Recibo de empréstimo" n/total):
+    /// evidence of the same debit as its notice, dated on the debit's day.
+    case mortgageReceipt
     case mortgageInterestStatement
     case mortgageContract
     case insuranceReceipt
@@ -52,6 +56,7 @@ extension DocumentKind {
     public var displayName: String {
         switch self {
         case .mortgageNotice: return "Mortgage notice"
+        case .mortgageReceipt: return "Mortgage receipt"
         case .mortgageInterestStatement: return "Mortgage interest statement"
         case .mortgageContract: return "Mortgage contract"
         case .insuranceReceipt: return "Insurance receipt"

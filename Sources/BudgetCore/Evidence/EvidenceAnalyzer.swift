@@ -48,7 +48,7 @@ public enum EvidenceAnalyzer {
         var metadata = EvidenceMetadata(kind: kind)
         let body = text.map(EvidenceText.fold) ?? ""
 
-        // Tax-year documents are dated by their period; a mortgage notice's period is found
+        // Tax-year documents are dated by their period; a mortgage notice's (or receipt's) period is found
         // around its date.
         let period: (start: Date, end: Date)?
         if taxYearKinds.contains(kind) {
@@ -77,6 +77,7 @@ public enum EvidenceAnalyzer {
     static func amountLabels(for kind: DocumentKind) -> [String] {
         switch kind {
         case .mortgageNotice: return ["TOTAL EUR", "TOTAL DO RECIBO"]
+        case .mortgageReceipt: return ["TOTAL DO RECIBO", "TOTAL EUR"]
         case .insuranceReceipt: return ["PREMIO TOTAL", "RECEBEMOS O VALOR DE", "TOTAL A PAGAR E DE", "TOTAL A PAGAR", "MONTANTE", "TOTAL:", "TOTAL"]
         case .imiPayment, .ptIRSPaymentProof: return ["MONTANTE PAGO", "MONTANTE", "IMPORTANCIA PAGA", "VALOR PAGO", "VALOR"]
         case .imiNotice, .ptIRSPaymentNote: return ["IMPORTANCIA A PAGAR", "VALOR A PAGAR", "MONTANTE"]
@@ -102,7 +103,7 @@ public enum EvidenceAnalyzer {
     /// Kinds whose amounts are too many to guess a headline from without a label (tax forms,
     /// policies, mortgage notices listing capital and balances).
     static let labelledAmountOnly: Set<DocumentKind> = [
-        .mortgageNotice, .mortgageInterestStatement, .mortgageContract, .insurancePolicy, .p60, .p45, .p11d, .sa302,
+        .mortgageNotice, .mortgageReceipt, .mortgageInterestStatement, .mortgageContract, .insurancePolicy, .p60, .p45, .p11d, .sa302,
         .taxReturn, .taxCodeNotice, .ptIRSDeclaration, .ptIRSAssessment, .bankStatement, .rentContract, .propertyDeed,
         .certificate, .other
     ]
@@ -250,7 +251,7 @@ public enum EvidenceAnalyzer {
         if ukKinds.contains(kind), let year = ukTaxYearEnd(in: text) {
             return (ukDate(year - 1, 4, 6), ukDate(year, 4, 5))
         }
-        if kind == .mortgageNotice { return mortgagePeriod(in: text, docDate: docDate) }
+        if kind == .mortgageNotice || kind == .mortgageReceipt { return mortgagePeriod(in: text, docDate: docDate) }
         if let range = explicitRange(in: text) { return range }
         if [.imiNotice, .imiPayment, .ptIRSDeclaration, .ptIRSAssessment, .ptIRSPaymentNote, .ptIRSPaymentProof].contains(kind),
            let year = labelledYear(in: text) {

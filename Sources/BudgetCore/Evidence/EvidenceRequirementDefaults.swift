@@ -3,7 +3,7 @@ import Foundation
 
 /// The phase-1 default rules (plan Task 5, spec §7): every expense transaction in a property's
 /// category group needs a document of the kind its category implies, and every instalment
-/// transferred to the mortgage account needs the bank's notice. Never run automatically:
+/// transferred to the mortgage account needs the bank's notice or receipt. Never run automatically:
 /// a tool or the app calls `seedPropertyRules` with the user's go.
 public enum EvidenceRequirementDefaults {
     public struct CategoryRule: Equatable, Sendable {
@@ -13,7 +13,7 @@ public enum EvidenceRequirementDefaults {
 
     /// The kinds and usual source a category's transactions need, from its name (case and
     /// accent-insensitive), first match wins: insurance (incl. "Mortgage insurance") → receipt
-    /// or policy, Mortgage interest → mortgage notice or interest statement, IMI → notice or
+    /// or policy, Mortgage interest → mortgage notice, receipt or interest statement, IMI → notice or
     /// payment, Condomínio → receipt, PT tax → IRS liquidação or payment, PT accountant →
     /// accountant invoice, Legal fees → legal invoice or court fee, Repairs → any document
     /// (invoices classify as `other`), Utilities (electricity, gas, water) → utility invoice, bank fees → bank
@@ -22,7 +22,7 @@ public enum EvidenceRequirementDefaults {
         let folded = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
         let words = Set(folded.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
         if folded.contains("insurance") || folded.contains("seguro") { return CategoryRule(kinds: [.insuranceReceipt, .insurancePolicy], usualSource: "Insurer") }
-        if folded.contains("mortgage") { return CategoryRule(kinds: [.mortgageNotice, .mortgageInterestStatement], usualSource: "BBVA app") }
+        if folded.contains("mortgage") { return CategoryRule(kinds: [.mortgageNotice, .mortgageReceipt, .mortgageInterestStatement], usualSource: "BBVA app") }
         if words.contains("imi") { return CategoryRule(kinds: [.imiNotice, .imiPayment], usualSource: "Portal das Finanças") }
         if folded.contains("condominio") { return CategoryRule(kinds: [.condominioReceipt], usualSource: "Condomínio administrator") }
         if folded.contains("pt tax") || words.contains("irs") {
@@ -44,7 +44,7 @@ public enum EvidenceRequirementDefaults {
     /// the category group `groupId`, one `transactionsInCategory` rule (debits) per expense
     /// category in it, and one `transactionsMatching` rule (debits) for the transfer
     /// categories of `mortgageAccountIds` (the instalments paid into the loan) expecting a
-    /// mortgage notice. With mortgage accounts, the mortgage categories' rules leave out
+    /// mortgage notice or receipt. With mortgage accounts, the mortgage categories' rules leave out
     /// transactions on those accounts (the interest rows on the loan), so each instalment
     /// is asked for once, by the instalment rule. A rule whose scope already exists is left out.
     public static func propertyRules(db: Database, categoryGroupId groupId: Int64, mortgageAccountIds: [Int64] = []) throws -> [EvidenceRequirement] {
@@ -78,7 +78,7 @@ public enum EvidenceRequirementDefaults {
                 let scope = EvidenceRequirementScope.transactionsMatching(categoryIds: transferCategories, accountIds: [], descriptionContains: nil)
                 if !existingScopes.contains(scope) {
                     let name = [groupName, "Mortgage instalments"].compactMap { $0 }.joined(separator: ": ")
-                    rules.append(EvidenceRequirement(name: name, scope: scope, kinds: [.mortgageNotice], direction: .outflows,
+                    rules.append(EvidenceRequirement(name: name, scope: scope, kinds: [.mortgageNotice, .mortgageReceipt], direction: .outflows,
                                                      usualSource: "BBVA app", notes: seededNote))
                 }
             }

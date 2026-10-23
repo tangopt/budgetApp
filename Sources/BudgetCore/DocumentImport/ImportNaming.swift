@@ -54,6 +54,10 @@ public enum ImportNaming {
             documentKind = form == .p60 ? .p60 : form == .p45 ? .p45 : .p11d
             let detail = [issuer, taxYearLabel(facts)].compactMap { $0 }.joined(separator: " ")
             name = build(area: "Tax", type: form.displayName, detail: detail, precision: .year, withAmount: false)
+        case .evidence(.mortgageReceipt):
+            documentKind = .mortgageReceipt
+            name = MortgageReceipt.canonicalName(date: nameDate, instalment: text(.receiptNumber, facts).flatMap(MortgageReceipt.Instalment.init(label:)),
+                                                 amountMinorUnits: money?.0, currency: money?.1)
         case .evidence(let evidenceKind):
             documentKind = evidenceKind
             name = build(area: area(of: evidenceKind), type: evidenceKind.displayName, detail: issuer, withPeriod: true)
@@ -77,7 +81,7 @@ public enum ImportNaming {
     /// The library area of a document kind.
     static func area(of kind: DocumentKind) -> String {
         switch kind {
-        case .mortgageNotice, .mortgageInterestStatement, .mortgageContract, .insuranceReceipt, .insurancePolicy, .imiNotice,
+        case .mortgageNotice, .mortgageReceipt, .mortgageInterestStatement, .mortgageContract, .insuranceReceipt, .insurancePolicy, .imiNotice,
              .imiPayment, .condominioReceipt, .rentReceipt, .rentContract, .utilityInvoice, .accountantInvoice, .legalInvoice,
              .courtFee, .lettingAgentFee, .propertyDeed, .certificate:
             return "Property"

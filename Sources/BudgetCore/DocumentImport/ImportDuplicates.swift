@@ -631,8 +631,10 @@ public enum ImportDuplicates {
     /// advice or transfer proof, or the bank's advice of the movement filed under another kind,
     /// `IssuerKey.isBankMovementAdvice`) or the underlying receipt or invoice (its kind). A receipt
     /// and the bank's advice of its debit share a transaction by nature; two of one part don't.
+    /// A mortgage notice and receipt are the bank's own letters (worded as advices of the
+    /// movement) yet each its own part: a notice and a receipt of one instalment are a pair.
     static func claimRole(kind: DocumentKind, text: String?) -> DocumentKind {
-        if kind == .bankDebitAdvice || kind == .bankTransferProof { return kind }
+        if kind == .bankDebitAdvice || kind == .bankTransferProof || kind == .mortgageNotice || kind == .mortgageReceipt { return kind }
         if let text, IssuerKey.isBankMovementAdvice(text) { return .bankDebitAdvice }
         return kind
     }
