@@ -7,7 +7,7 @@ final class TouchIDAttemptTests: XCTestCase {
 
     func testCancelsAreSilent() {
         // "Use password" invalidates the context (appCancel); the system may interrupt (systemCancel).
-        for code in [LAError.Code.userCancel, .appCancel, .systemCancel, .userFallback, .notInteractive] {
+        for code in [LAError.Code.userCancel, .appCancel, .systemCancel, .userFallback, .notInteractive, .invalidContext] {
             XCTAssertEqual(end(code), .cancelled, "\(code)")
             XCTAssertNil(end(code).unlockError)
         }
@@ -31,7 +31,6 @@ final class TouchIDAttemptTests: XCTestCase {
     }
 
     func testAnythingElseKeepsTheSystemsError() {
-        XCTAssertEqual(end(.invalidContext), .other)
         XCTAssertEqual(TouchIDAttemptEnd.classify(laErrorCode: 12345), .other)
         XCTAssertNil(TouchIDAttemptEnd.other.unlockError)
     }

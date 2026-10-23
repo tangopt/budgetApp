@@ -17,7 +17,8 @@ public enum TouchIDAttemptEnd: Equatable, Sendable {
 
     public static func classify(laErrorCode code: Int) -> TouchIDAttemptEnd {
         switch LAError.Code(rawValue: code) {
-        case .userCancel, .appCancel, .systemCancel, .userFallback, .notInteractive: .cancelled
+        // invalidContext: "Use password" or Esc ended the attempt before the check started.
+        case .userCancel, .appCancel, .systemCancel, .userFallback, .notInteractive, .invalidContext: .cancelled
         case .authenticationFailed: .notRecognised
         case .biometryLockout: .lockedOut
         case .biometryNotAvailable, .biometryNotEnrolled, .passcodeNotSet: .unavailable

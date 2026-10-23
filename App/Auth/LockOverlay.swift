@@ -283,6 +283,8 @@ final class LockScreenModel: ObservableObject {
         let prompt = InlineTouchIDPrompt()
         touchIDPrompt = prompt
         defer {
+            // The authenticated context never outlives its single read.
+            prompt.cancel()
             touchIDPrompt = nil
             isWorking = false
         }
