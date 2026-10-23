@@ -55,27 +55,41 @@ final class InlineTouchIDPrompt: BiometricPromptContext {
 }
 
 /// The Touch ID glyph that listens for a finger, in the lock screen. The snapshot build draws a stand-in
-/// (the embedded view can render blank off screen, and the snapshots never ask this Mac for Touch ID).
+/// (the embedded view can render blank off screen, and the snapshots never ask this Mac for Touch ID) at the
+/// same size.
 struct InlineTouchIDView: View {
     let prompt: InlineTouchIDPrompt
     @Environment(\.theme) private var theme
 
+    /// The square the glyph sits in, centred.
+    static let side: CGFloat = 44
+    /// `LAAuthenticationView` pins its own width to its control size with a required constraint (mini 16,
+    /// small 32, regular 64, large 128 pt) and draws at that size whatever frame it's given: `.small` is the
+    /// one that fits the square.
+    static let controlSize: NSControl.ControlSize = .small
+    static let glyphSide: CGFloat = 32
+
     var body: some View {
         #if SNAPSHOTS
         Image(systemName: "touchid")
-            .font(.system(size: 30))
+            .resizable()
+            .scaledToFit()
             .foregroundStyle(theme.accent)
-            .frame(width: 44, height: 44)
+            .frame(width: Self.glyphSide, height: Self.glyphSide)
+            .frame(width: Self.side, height: Self.side)
             .accessibilityLabel(TouchIDInlineText.listening)
         #else
         EmbeddedTouchID(prompt: prompt)
-            .frame(width: 44, height: 44)
+            .frame(width: Self.side, height: Self.side)
+            // One view per try: a new try (a new context) never reuses the last one's view.
+            .id(ObjectIdentifier(prompt))
             .accessibilityLabel(TouchIDInlineText.listening)
         #endif
     }
 }
 
-/// `LAAuthenticationView` in a container that says when it reaches a window (`InlineTouchIDPrompt.paired`).
+/// `LAAuthenticationView` in a fixed-size container that says when it reaches a window
+/// (`InlineTouchIDPrompt.paired`). Made once per try; nothing in it changes while the try listens.
 private struct EmbeddedTouchID: NSViewRepresentable {
     let prompt: InlineTouchIDPrompt
 
@@ -84,6 +98,10 @@ private struct EmbeddedTouchID: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: PairingContainer, context: Context) {}
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: PairingContainer, context: Context) -> CGSize? {
+        CGSize(width: InlineTouchIDView.side, height: InlineTouchIDView.side)
+    }
 }
 
 private final class PairingContainer: NSView {
@@ -91,20 +109,28 @@ private final class PairingContainer: NSView {
 
     init(prompt: InlineTouchIDPrompt) {
         self.prompt = prompt
-        super.init(frame: NSRect(x: 0, y: 0, width: 44, height: 44))
-        let touchID = LAAuthenticationView(context: prompt.context, controlSize: .large)
+        let side = InlineTouchIDView.side
+        super.init(frame: NSRect(x: 0, y: 0, width: side, height: side))
+        wantsLayer = true
+        layer?.masksToBounds = true
+        clipsToBounds = true
+        // The view brings its own width (from the control size) and a square aspect: only its place is set
+        // here, so no constraint of ours fights its own.
+        let touchID = LAAuthenticationView(context: prompt.context, controlSize: InlineTouchIDView.controlSize)
         touchID.translatesAutoresizingMaskIntoConstraints = false
         addSubview(touchID)
         NSLayoutConstraint.activate([
             touchID.centerXAnchor.constraint(equalTo: centerXAnchor),
             touchID.centerYAnchor.constraint(equalTo: centerYAnchor),
-            touchID.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor),
-            touchID.heightAnchor.constraint(lessThanOrEqualTo: heightAnchor),
         ])
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: InlineTouchIDView.side, height: InlineTouchIDView.side)
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
