@@ -430,13 +430,16 @@ enum TaxIncomeFormat {
             ]
         }
         let used = row.incomes.filter { $0.source == effective.source }
-        let from: String
+        var from: String
         switch effective.source {
-        case .p60, .p45: from = "From the \(effective.source.displayName)"
+        case .p60: from = "From the \(effective.source.displayName)"
+        case .p45: from = effective.afterLeavingCount > 0 ? "From the P45 + paid after leaving" : "From the P45"
+        case .afterLeaving: from = used.count == 1 ? "From 1 paid-after-leaving record" : "From \(used.count) paid-after-leaving records"
         case .payslip: from = used.count == 1 ? "From 1 payslip" : "From \(used.count) payslips"
         case .other: from = used.count == 1 ? "From 1 other record" : "From \(used.count) other records"
         }
-        let codes = Array(Set(used.compactMap(\.taxCode))).sorted()
+        if effective.afterLeavingCount > 0, effective.source != .p45 { from += " + paid after leaving" }
+        let codes = Array(Set(row.incomes.filter { $0.source == effective.source || (effective.source != .p60 && $0.source == .afterLeaving) }.compactMap(\.taxCode))).sorted()
         return [
             FigureTile(title: "Pay", value: .money(effective.payMinorUnits, .gbp, .neutral), caption: from),
             FigureTile(title: "Tax taken off", value: .money(effective.taxDeductedMinorUnits, .gbp, .neutral),
@@ -452,7 +455,7 @@ enum TaxIncomeFormat {
         if let income {
             switch income.source {
             case .p60, .p45: return StatusPill(income.source.displayName, tone: .accent, systemImage: "doc.text", help: income.entryMethod.displayName)
-            case .payslip, .other: return StatusPill(income.source.displayName, tone: .neutral, help: income.entryMethod.displayName)
+            case .payslip, .other, .afterLeaving: return StatusPill(income.source.displayName, tone: .neutral, help: income.entryMethod.displayName)
             }
         }
         if benefit?.isFromP11DImport == true {
