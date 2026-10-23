@@ -186,6 +186,7 @@ Nothing is sent to iCloud in this step.
 - [ ] Build the transport; the app builds. A unit test runs the transport's payload↔`CKRecord` mapping without the network: `CKRecord` objects can be created offline.
 - [ ] The controller runs the rehearsal and records the numbers in the plan's Result section.
 - [ ] **User-attended, step 4 kick-off (not in this step):** one launch with the demo database and `--sync-demo` against the **development** container. Check that a record round-trips and that the CloudKit console shows only encrypted fields.
+  - Needs a **team-signed Debug build** (Config/Signing.local.xcconfig with the team, so the iCloud entitlement is present). `CKContainer(identifier:)` traps in a build without the entitlement; `--sync-demo` checks for it up front and refuses with a message instead, as it does for a non-demo `BUDGET_DB_PATH`.
 
 ## Result
 

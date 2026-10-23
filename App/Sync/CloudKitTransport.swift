@@ -7,32 +7,55 @@ import BudgetCore
 /// sync engine (`SyncEngineCore`) owns the change tokens, the batching and the order.
 ///
 /// - Saves: `CKModifyRecordsOperation` with `.ifServerRecordUnchanged`, each record rebuilt on the archived
-///   system fields of the version last seen (none: create only), `isAtomic` as asked; one result per record,
-///   mapped by `CloudKitRecordMapping.saveOutcome`.
+///   system fields of the version last seen (none: create only), keys that version had and this record doesn't
+///   cleared, `isAtomic` as asked; one result per record (`CloudKitRecordMapping.saveResult`, assembled by
+///   `CloudKitSaveAssembly`).
 /// - Changes: `CKFetchRecordZoneChangesOperation`, one page per call (`fetchAllChanges = false`), records and
-///   deletions in the order CloudKit reports them, the server change token archived as `Data`.
-/// - Every value goes in `encryptedValues` (`CloudKitRecordMapping.record`); assets are `CKAsset`s written to a
-///   temporary folder per operation and removed when it finishes.
+///   deletions in the order CloudKit reports them, the server change token archived as `Data`. A record's own
+///   failure stays that record's (`CloudKitRecordMapping.feedChange`); only a passing one fails the page.
+/// - Every value goes in `encryptedValues` (`CloudKitRecordMapping.record`); assets are `CKAsset`s written to this
+///   instance's temporary folder, one subfolder per operation, removed when it finishes.
 /// - Errors: `CloudKitRecordMapping.operationError` (no network, busy, rate limited → `unavailable` with the
-///   server's retry-after; `limitExceeded`, `changeTokenExpired`, `zoneNotFound`).
+///   server's retry-after; `limitExceeded`, `changeTokenExpired`, `zoneNotFound`, `notAuthenticated`,
+///   `quotaExceeded`). A cancelled task cancels its operation.
+/// - Feed pages fetch every key (`desiredKeys` nil), so `documentFile` assets download with each page although
+///   the engine reads them only through `fetch` (fix round 1, M9). Not narrowed: `SyncTransport.changes` has no
+///   lazy flag, and `desiredKeys` is an allow-list — leaving out `file` means naming every other key, which would
+///   silently drop the fields a newer build adds. A future iOS step can move file records to their own zone or
+///   give the protocol a "without file assets" page.
 ///
 /// Build step 3: the household zone in the admin's **private** database. Not reachable from the UI: only the
 /// DEBUG `--sync-demo` launch argument with a demo database makes one (`SyncDemoMode`).
 final class CloudKitTransport: SyncTransport {
     static let containerIdentifier = "iCloud.ubberninja.mango"
+    /// Asset folders older than this, left by a crashed run, are swept when a transport is made.
+    static let staleAssetAge: TimeInterval = 24 * 60 * 60
 
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
     private let database: CKDatabase
-    /// Where asset files wait for an upload: one folder per operation, removed when it ends.
-    private let assetRoot: URL
+    /// This instance's folder for asset files waiting for an upload (one subfolder per operation). Other
+    /// instances' folders are never touched unless a day old.
+    private let assetFolder: URL
 
     init(database: CKDatabase = CKContainer(identifier: CloudKitTransport.containerIdentifier).privateCloudDatabase,
-         assetRoot: URL = FileManager.default.temporaryDirectory.appendingPathComponent("MangoSyncAssets", isDirectory: true)) {
+         assetRoot: URL = FileManager.default.temporaryDirectory.appendingPathComponent("MangoSyncAssets", isDirectory: true),
+         now: Date = Date()) {
         self.database = database
-        self.assetRoot = assetRoot
-        // Folders a crash left behind (ciphertext only, but not kept).
-        try? FileManager.default.removeItem(at: assetRoot)
+        assetFolder = assetRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        Self.sweepStaleAssetFolders(in: assetRoot, now: now)
+    }
+
+    deinit { try? FileManager.default.removeItem(at: assetFolder) }
+
+    /// Removes folders under `root` last modified more than `staleAssetAge` ago (ciphertext only, but not kept).
+    static func sweepStaleAssetFolders(in root: URL, now: Date) {
+        let fileManager = FileManager.default
+        guard let folders = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        for folder in folders {
+            let modified = (try? folder.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? now
+            if now.timeIntervalSince(modified) > staleAssetAge { try? fileManager.removeItem(at: folder) }
+        }
     }
 
     func operationLimits() async -> SyncOperationLimits { CloudKitRecordMapping.operationLimits }
@@ -40,14 +63,14 @@ final class CloudKitTransport: SyncTransport {
     func createZone(_ zone: String) async throws {
         let operation = CKModifyRecordZonesOperation(recordZonesToSave: [CKRecordZone(zoneID: CloudKitRecordMapping.zoneID(zone))],
                                                      recordZoneIDsToDelete: nil)
-        try await run(operation, zone: zone) { finish in
+        try await run(operation, zone: zone, perRecordResults: false) { finish in
             operation.modifyRecordZonesResultBlock = { result in finish(result) }
         }
     }
 
     func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data], atomic: Bool) async throws -> [SaveResult] {
         guard !records.isEmpty else { return [] }
-        let folder = assetRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let folder = assetFolder.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         var built: [CKRecord] = []
         var refused: [String: SaveResult.Outcome] = [:]
@@ -59,33 +82,21 @@ final class CloudKitTransport: SyncTransport {
                 refused[wire.recordName] = .failed("not sent: \(error)")
             }
         }
-        if !refused.isEmpty, atomic || built.isEmpty {
-            // All or nothing: one record that can't be built fails the operation before anything is sent.
-            return records.map { SaveResult(recordName: $0.recordName, outcome: refused[$0.recordName] ?? .batchRequestFailed) }
-        }
+        if let results = CloudKitSaveAssembly.resultsWithoutSending(records, refused: refused, atomic: atomic) { return results }
         let wires = Dictionary(records.map { ($0.recordName, $0) }, uniquingKeysWith: { _, last in last })
         let operation = CKModifyRecordsOperation(recordsToSave: built, recordIDsToDelete: nil)
         operation.savePolicy = .ifServerRecordUnchanged
         operation.isAtomic = atomic
-        let outcomes = OSAllocatedUnfairLock(initialState: [String: SaveResult.Outcome]())
-        let zone = records[0].zone
-        try await run(operation, zone: zone, partialFailureIsPerRecord: true) { finish in
+        let taken = OSAllocatedUnfairLock(initialState: [String: SaveResult]())
+        try await run(operation, zone: records[0].zone, perRecordResults: true) { finish in
             operation.perRecordSaveBlock = { id, result in
-                let name = id.recordName
-                let outcome: SaveResult.Outcome
-                switch result {
-                case .success(let record): outcome = .saved(CloudKitRecordMapping.stamp(of: record))
-                case .failure(let error):
-                    outcome = wires[name].map { CloudKitRecordMapping.saveOutcome(for: error, wire: $0) } ?? .failed("unknown record")
-                }
-                outcomes.withLock { $0[name] = outcome }
+                guard let wire = wires[id.recordName] else { return }
+                let saved = CloudKitRecordMapping.saveResult(wire, result)
+                taken.withLock { $0[id.recordName] = saved }
             }
             operation.modifyRecordsResultBlock = { result in finish(result) }
         }
-        let taken = outcomes.withLock { $0 }
-        return records.map { wire in
-            SaveResult(recordName: wire.recordName, outcome: refused[wire.recordName] ?? taken[wire.recordName] ?? .failed("no result"))
-        }
+        return CloudKitSaveAssembly.results(records, refused: refused, taken: taken.withLock { $0 })
     }
 
     func changes(since token: Data?, zone: String) async throws -> SyncChanges {
@@ -98,29 +109,16 @@ final class CloudKitTransport: SyncTransport {
             var changes: [SyncFeedChange] = []
             var token: Data?
             var moreComing = false
-            var failure: SyncTransportError?
+            /// The page's failure: a passing per-record one, or the zone's (any error, as mapped).
+            var failure: Error?
         }
         let page = OSAllocatedUnfairLock(initialState: Page())
-        try await run(operation, zone: zone) { finish in
+        try await run(operation, zone: zone, perRecordResults: true) { finish in
             operation.recordWasChangedBlock = { id, result in
-                let change: SyncFeedChange
-                switch result {
-                case .success(let record):
-                    do {
-                        change = .record(try CloudKitRecordMapping.serverRecord(record))
-                    } catch {
-                        change = .record(Self.unreadable(id))
-                    }
-                case .failure(let error):
-                    // A passing failure fails the page (fetched again from the same token); any other leaves
-                    // the record staged as unreadable rather than blocking the zone.
-                    if let mapped = CloudKitRecordMapping.operationError(error, zone: zone) as? SyncTransportError, mapped.isPassing {
-                        page.withLock { $0.failure = $0.failure ?? mapped }
-                        return
-                    }
-                    change = .record(Self.unreadable(id))
+                switch CloudKitRecordMapping.feedChange(id, result, zone: zone) {
+                case .change(let change): page.withLock { $0.changes.append(change) }
+                case .failPage(let error): page.withLock { $0.failure = $0.failure ?? error }
                 }
-                page.withLock { $0.changes.append(change) }
             }
             operation.recordWithIDWasDeletedBlock = { id, recordType in
                 page.withLock { $0.changes.append(.deletion(SyncDeletion(recordName: id.recordName, recordType: recordType))) }
@@ -134,8 +132,8 @@ final class CloudKitTransport: SyncTransport {
                         $0.moreComing = moreComing
                     }
                 case .failure(let error):
-                    let mapped = CloudKitRecordMapping.operationError(error, zone: zone) as? SyncTransportError
-                    page.withLock { $0.failure = mapped ?? .unavailable(retryAfter: nil) }
+                    let mapped = CloudKitRecordMapping.operationError(error, zone: zone)
+                    page.withLock { $0.failure = mapped }
                 }
             }
             operation.fetchRecordZoneChangesResultBlock = { result in finish(result) }
@@ -152,7 +150,7 @@ final class CloudKitTransport: SyncTransport {
                                                  recordIDsToDelete: recordNames.map { CloudKitRecordMapping.recordID($0, zone: zone) })
         operation.isAtomic = false
         let failure = OSAllocatedUnfairLock<Error?>(initialState: nil)
-        try await run(operation, zone: zone, partialFailureIsPerRecord: true) { finish in
+        try await run(operation, zone: zone, perRecordResults: true) { finish in
             operation.perRecordDeleteBlock = { _, result in
                 guard case .failure(let error) = result else { return }
                 // Already gone (the record, or its zone): fine, like CloudKit's own unconditional delete.
@@ -169,7 +167,7 @@ final class CloudKitTransport: SyncTransport {
         let id = CloudKitRecordMapping.recordID(recordName, zone: zone)
         let operation = CKFetchRecordsOperation(recordIDs: [id])
         let fetched = OSAllocatedUnfairLock<Result<SyncServerRecord?, Error>?>(initialState: nil)
-        try await run(operation, zone: zone, partialFailureIsPerRecord: true) { finish in
+        try await run(operation, zone: zone, perRecordResults: true) { finish in
             operation.perRecordResultBlock = { _, result in
                 let value: Result<SyncServerRecord?, Error>
                 switch result {
@@ -189,34 +187,31 @@ final class CloudKitTransport: SyncTransport {
 
     // MARK: Running operations
 
-    /// Adds `operation` to the database and waits for its final block. `configure` sets the blocks and hands
-    /// the final one to `finish`. A whole-operation error is mapped (`partialFailure` is left to the per-record
-    /// blocks where they carry the results).
-    private func run(_ operation: CKDatabaseOperation, zone: String, partialFailureIsPerRecord: Bool = false,
+    /// Adds `operation` to the database and waits for its final block; cancelling the task cancels the operation.
+    /// `configure` sets the blocks and hands the final one to `finish`. The final error is mapped
+    /// (`CloudKitRecordMapping.finalError`: with per-record results a `partialFailure` is theirs, not the call's).
+    private func run(_ operation: CKDatabaseOperation, zone: String, perRecordResults: Bool,
                      configure: (@escaping @Sendable (Result<Void, Error>) -> Void) -> Void) async throws {
         operation.qualityOfService = .utility
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            configure { result in
-                switch result {
-                case .success:
-                    continuation.resume()
-                case .failure(let error):
-                    if partialFailureIsPerRecord, (error as? CKError)?.code == .partialFailure {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                configure { result in
+                    switch result {
+                    case .success:
                         continuation.resume()
-                    } else {
-                        let mapped = CloudKitRecordMapping.operationError(error, zone: zone)
-                        Self.log.error("Sync CloudKit operation failed: \(String(describing: mapped), privacy: .public)")
-                        continuation.resume(throwing: mapped)
+                    case .failure(let error):
+                        if let mapped = CloudKitRecordMapping.finalError(error, zone: zone, perRecordResults: perRecordResults) {
+                            Self.log.error("Sync CloudKit operation failed: \(String(describing: mapped), privacy: .public)")
+                            continuation.resume(throwing: mapped)
+                        } else {
+                            continuation.resume()
+                        }
                     }
                 }
+                database.add(operation)
             }
-            database.add(operation)
+        } onCancel: {
+            operation.cancel()
         }
-    }
-
-    /// A record the feed named but that couldn't be read: no payload, so the engine stages it as unreadable.
-    private static func unreadable(_ id: CKRecord.ID) -> SyncServerRecord {
-        SyncServerRecord(wire: SyncWireRecord(recordType: "", recordName: id.recordName, zone: id.zoneID.zoneName),
-                         stamp: SyncServerStamp(systemFields: Data(), changeTag: "", modifiedAt: .distantPast))
     }
 }

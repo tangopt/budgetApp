@@ -60,6 +60,8 @@ final class SyncRehearsalTests: XCTestCase {
         XCTAssertEqual(report.tablesAfterPayloads.filter { !$0.identical }.map(\.table), [])
         XCTAssertTrue(report.tables.contains { $0.table == "transaction_" && $0.rows > 100 })
         XCTAssertEqual(report.taxFiguresChanged, 0)
+        // Spec ⚠️1 / R13: the protected years at least (2020/21–2024/25), with every stored year.
+        XCTAssertTrue(Set(report.taxYears).isSuperset(of: 2020...2024))
         // The outgoing payload set.
         XCTAssertGreaterThan(report.recordsByType["transaction_"] ?? 0, 100)
         XCTAssertEqual(report.recordsByType.values.reduce(0, +), report.records)
@@ -84,11 +86,15 @@ final class SyncRehearsalTests: XCTestCase {
         XCTAssertTrue(report.passed)
         XCTAssertTrue(report.text.contains("createSync"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: report.workFolder.path), "the working folder is removed")
+        XCTAssertTrue(report.text.contains("SelfAssessmentRegression"), "the report says how to run the SA regression on a kept copy")
     }
 
     func testWithoutALibraryDocumentsGoWithoutFiles() async throws {
         let (database, _) = try preSyncDemo()
-        let report = try await SyncRehearsal.run(databasePath: database, libraryPath: nil)
+        let report = try await SyncRehearsal.run(databasePath: database, libraryPath: nil, keep: true)
+        defer { try? FileManager.default.removeItem(at: report.workFolder) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: report.workFolder.appendingPathComponent("copy.sqlite").path), "--keep keeps the migrated copy")
+        XCTAssertTrue(report.text.contains(report.workFolder.appendingPathComponent("copy.sqlite").path))
         XCTAssertEqual(report.documents, 0)
         XCTAssertGreaterThan(report.recordsByType["document"] ?? 0, 0)
         XCTAssertTrue(report.passed)
@@ -99,7 +105,7 @@ final class SyncRehearsalTests: XCTestCase {
     func testTheComparisonCatchesAnyChangedByte() throws {
         let original = try DatabaseQueue(path: folder.appendingPathComponent("a.sqlite").path)
         try original.write { db in
-            try db.execute(sql: "CREATE TABLE t(id INTEGER PRIMARY KEY, amount REAL, n INTEGER, label TEXT)")
+            try db.execute(sql: "CREATE TABLE t(id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL, n INTEGER, label TEXT)")
             try db.execute(sql: "INSERT INTO t(amount, n, label) VALUES (0.1, 1, 'x'), (2.5, 2, 'y')")
             try db.execute(sql: "CREATE TABLE grdb_migrations(identifier TEXT NOT NULL PRIMARY KEY)")
             try db.execute(sql: "INSERT INTO grdb_migrations VALUES ('one')")
@@ -118,7 +124,14 @@ final class SyncRehearsalTests: XCTestCase {
             return try original.read { a in try copy.read { b in try SyncRehearsal.compareTables(original: a, copy: b) } }
         }
         XCTAssertEqual(try compare(nil).filter { !$0.identical }.map(\.table), [])
-        XCTAssertEqual(try compare(nil).map(\.table).sorted(), ["grdb_migrations", "t"], "only tables that were there before")
+        XCTAssertEqual(try compare(nil).map(\.table).sorted(), ["grdb_migrations", "sqlite_sequence", "t"], "only tables that were there before")
+        // M1: TEXT compares by its bytes (GRDB's String decoding stops at a NUL).
+        XCTAssertEqual(try compare("UPDATE t SET label = 'x' || char(0) || 'y' WHERE id = 1").filter { !$0.identical }.map(\.table), ["t"])
+        // M2: a new AUTOINCREMENT table's sequence row isn't an existing table's change.
+        XCTAssertEqual(try compare("CREATE TABLE newAuto(id INTEGER PRIMARY KEY AUTOINCREMENT); INSERT INTO newAuto DEFAULT VALUES")
+            .filter { !$0.identical }.map(\.table), [])
+        XCTAssertEqual(try compare("UPDATE sqlite_sequence SET seq = seq + 1 WHERE name = 't'").filter { !$0.identical }.map(\.table),
+                       ["sqlite_sequence"])
         XCTAssertEqual(try compare("UPDATE t SET amount = 0.1 + 1e-17 * 10 WHERE id = 1").filter { !$0.identical }.map(\.table), ["t"])
         XCTAssertEqual(try compare("UPDATE t SET n = 1.0 WHERE id = 1").filter { !$0.identical }.map(\.table), [],
                        "SQLite stores an integral REAL in an INTEGER column as the integer")
@@ -132,13 +145,49 @@ final class SyncRehearsalTests: XCTestCase {
     }
 
     func testPlaintextOutsideEncryptedFieldsIsFound() throws {
-        let clean = try SyncWireRecord(SyncPayload(recordType: "account", recordName: "A", zone: "household", fields: ["name": .string("Synthetic")]))
+        let uuid = "6C1E0E0A-3F4B-4C2D-9A1B-2C3D4E5F6A7B"
+        let clean = try SyncWireRecord(SyncPayload(recordType: "account", recordName: uuid, zone: "household", fields: ["name": .string("Synthetic")]))
         var leaking = clean
-        leaking.recordName = "B"
+        leaking.recordName = "6C1E0E0A-3F4B-4C2D-9A1B-2C3D4E5F6A7C"
         leaking.unencryptedFields = ["name": Data("Synthetic".utf8)]
         let assetDirectory = folder.appendingPathComponent("assets", isDirectory: true)
         XCTAssertEqual(try SyncRehearsal.plaintextFields(in: [clean], assetDirectory: assetDirectory), [])
         XCTAssertEqual(try SyncRehearsal.plaintextFields(in: [clean, leaking], assetDirectory: assetDirectory), ["account.name"])
+    }
+
+    /// M3: assets must be ciphertext: never readable JSON, never holding a library file's bytes.
+    func testAnAssetThatIsPlaintextIsFound() throws {
+        let library = folder.appendingPathComponent("Library", isDirectory: true)
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        let pdf = Data("%PDF-1.7 synthetic invoice, never real, long enough to be recognised".utf8) + Data((0..<512).map { UInt8($0 % 251) })
+        try pdf.write(to: library.appendingPathComponent("invoice.pdf"))
+        let name = "6C1E0E0A-3F4B-4C2D-9A1B-2C3D4E5F6A7B"
+        let assetDirectory = folder.appendingPathComponent("assets", isDirectory: true)
+        func found(_ assets: [String: Data], type: String = "documentFile", recordName: String = name + ".file.0a1b2c3d") throws -> [String] {
+            try SyncRehearsal.plaintextFields(in: [SyncWireRecord(recordType: type, recordName: recordName, zone: "household", assets: assets)],
+                                              assetDirectory: assetDirectory, library: library)
+        }
+        let sealed = Data((0..<600).map { UInt8(($0 * 97 + 13) % 256) })
+        XCTAssertEqual(try found(["file": sealed]), [])
+        XCTAssertEqual(try found(["file": pdf]), ["documentFile.file (library file bytes)"])
+        XCTAssertEqual(try found(["file": Data(repeating: 7, count: 40) + pdf.prefix(200)]), ["documentFile.file (library file bytes)"], "contained")
+        XCTAssertEqual(try found(["payload": Data(#"{"fields":{"name":"Synthetic"}}"#.utf8)], type: "importChange", recordName: name),
+                       ["importChange.payload (JSON)"])
+    }
+
+    /// M3: record names are the only plaintext besides types: opaque UUIDs (and the engine's fixed names).
+    func testARecordNameThatIsntOpaqueIsFound() throws {
+        let assetDirectory = folder.appendingPathComponent("assets", isDirectory: true)
+        func found(_ name: String) throws -> [String] {
+            try SyncRehearsal.plaintextFields(in: [SyncWireRecord(recordType: "account", recordName: name, zone: "household",
+                                                                 encryptedFields: ["meta": Data([1])])], assetDirectory: assetDirectory)
+        }
+        XCTAssertEqual(try found("6C1E0E0A-3F4B-4C2D-9A1B-2C3D4E5F6A7B"), [])
+        XCTAssertEqual(try found("6c1e0e0a-3f4b-4c2d-9a1b-2c3d4e5f6a7b.file.0a1b2c3d"), [])
+        XCTAssertEqual(try found(SyncZoneKeys.recordName(zone: "household")), [])
+        XCTAssertEqual(try found(TransportLeaseStore.recordName), [])
+        XCTAssertEqual(try found("Synthetic current account"), ["account.recordName"])
+        XCTAssertEqual(try found("6C1E0E0A-3F4B-4C2D-9A1B-2C3D4E5F6A7B.Synthetic"), ["account.recordName"])
     }
 
     func testTheAppsOwnDatabaseIsRefused() throws {

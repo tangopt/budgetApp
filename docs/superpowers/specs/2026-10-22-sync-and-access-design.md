@@ -74,6 +74,14 @@ Anti-goals (a failure even if it "works")
   local data, so everything works offline.
 - **CloudKit is the transport.** One container (`iCloud.ubberninja.mango`), `CKSyncEngine` on each
   device, record-level sync.
+  - **Ruling R11 (build step 3, 2026-10-23): `CKDatabase` operations, not `CKSyncEngine`.** The transport
+    uses `CKModifyRecordsOperation` (non-atomic, `.ifServerRecordUnchanged` from archived system fields) and
+    `CKFetchRecordZoneChangesOperation` (archived change tokens), behind BudgetCore's `SyncTransport`
+    protocol. Why: BudgetCore's `SyncEngineCore` must own the change tokens, the batching (an import's
+    manifest, held deletes), the order (parents first, a run before its records) and the filed-year check
+    of each pull, and must run identically over the in-memory `FakeCloud` in tests. `CKSyncEngine` owns
+    those itself, schedules on its own, and can't be driven offline. Where this spec says "CKSyncEngine"
+    (tombstones in §5.3, the app-side wrapper in §7), read the CloudKit transport over `CKDatabase`.
 - **Zones (my call):**
   - `household`: in the admin's private database, shared with the member through a **zone-wide
     CKShare** (read-write). Holds everything at sharing level "Everything", plus the summaries of

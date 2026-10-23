@@ -102,10 +102,13 @@ public struct SaveResult: Equatable, Sendable {
 
     public var recordName: String
     public var outcome: Outcome
+    /// For a passing failure (`.failed`): how long the server asked to wait before sending it again, if it said.
+    public var retryAfter: TimeInterval?
 
-    public init(recordName: String, outcome: Outcome) {
+    public init(recordName: String, outcome: Outcome, retryAfter: TimeInterval? = nil) {
         self.recordName = recordName
         self.outcome = outcome
+        self.retryAfter = retryAfter
     }
 }
 
@@ -121,12 +124,16 @@ public enum SyncTransportError: Error, Equatable {
     /// The service can't take the operation now (CloudKit: no network, a failed connection, the service
     /// unavailable or busy, rate limited): try again, not before `retryAfter` seconds when the server says.
     case unavailable(retryAfter: TimeInterval?)
+    /// No iCloud account is signed in (CloudKit `notAuthenticated`): sync waits for the person, not for time.
+    case notAuthenticated
+    /// The iCloud storage is full (CloudKit `quotaExceeded`): sync waits for the person to make room.
+    case quotaExceeded
 
     /// Passes with time: the operation is tried again later as it is.
     public var isPassing: Bool {
         switch self {
         case .networkUnavailable, .unavailable: return true
-        case .limitExceeded, .changeTokenExpired, .zoneNotFound, .unreadableRecord: return false
+        case .limitExceeded, .changeTokenExpired, .zoneNotFound, .unreadableRecord, .notAuthenticated, .quotaExceeded: return false
         }
     }
 

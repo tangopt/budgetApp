@@ -49,10 +49,17 @@ public enum CloudKitRecordMapping {
         let id = recordID(wire.recordName, zone: wire.zone)
         let record: CKRecord
         if let systemFields {
-            guard let archived = try? unarchiveSystemFields(systemFields), archived.recordID == id, archived.recordType == wire.recordType else {
+            guard let (archived, keys) = try? unarchive(systemFields), archived.recordID == id, archived.recordType == wire.recordType else {
                 throw MappingError.systemFieldsMismatch(recordName: wire.recordName)
             }
             record = archived
+            // A modify only changes the keys it sets; CloudKit keeps the rest. The keys that version held and this
+            // record doesn't (a column gone, an R4 payload moved between fields and its asset) are cleared, so the
+            // server holds exactly this record, as a whole-record replacement (FakeCloud) would.
+            if let keys {
+                for key in keys.encrypted where wire.encryptedFields[key] == nil { record.encryptedValues[key] = nil }
+                for key in keys.plain where wire.assets[key] == nil && wire.encryptedFields[key] == nil { record[key] = nil }
+            }
         } else {
             record = CKRecord(recordType: wire.recordType, recordID: id)
         }
@@ -108,8 +115,29 @@ public enum CloudKitRecordMapping {
 
     // MARK: Archives
 
-    /// `encodeSystemFields`, archived with secure coding.
+    /// The names (never the values) of the keys a record version holds, kept with its system fields so a save
+    /// built on them can clear what the new record no longer has.
+    struct Keys: Codable, Equatable {
+        var encrypted: [String]
+        var plain: [String]
+    }
+
+    private static let keysMagic = Data("MSF1".utf8)
+
+    /// The opaque `systemFields` blob of `SyncServerStamp`: `"MSF1"`, the length and JSON of the record's key names,
+    /// then CloudKit's `encodeSystemFields` archive (secure coding).
     public static func systemFields(of record: CKRecord) -> Data {
+        let encrypted = record.encryptedValues.allKeys().sorted()
+        let keys = Keys(encrypted: encrypted, plain: Set(record.allKeys()).subtracting(encrypted).sorted())
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]  // the same record gives the same blob
+        let json = (try? encoder.encode(keys)) ?? Data("{\"encrypted\":[],\"plain\":[]}".utf8)
+        var length = UInt32(json.count).bigEndian
+        return keysMagic + Data(bytes: &length, count: 4) + json + archivedSystemFieldsOnly(record)
+    }
+
+    /// CloudKit's `encodeSystemFields` archive alone.
+    public static func archivedSystemFieldsOnly(_ record: CKRecord) -> Data {
         let archiver = NSKeyedArchiver(requiringSecureCoding: true)
         record.encodeSystemFields(with: archiver)
         archiver.finishEncoding()
@@ -117,11 +145,25 @@ public enum CloudKitRecordMapping {
     }
 
     public static func unarchiveSystemFields(_ data: Data) throws -> CKRecord {
-        let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
+        try unarchive(data).record
+    }
+
+    /// The record the blob holds, and its key names when the blob carries them (a bare archive doesn't).
+    static func unarchive(_ data: Data) throws -> (record: CKRecord, keys: Keys?) {
+        var archive = Data(data)
+        var keys: Keys?
+        if archive.starts(with: keysMagic), archive.count >= 8 {
+            let length = archive.subdata(in: archive.startIndex + 4 ..< archive.startIndex + 8).reduce(0) { $0 << 8 | Int($1) }
+            let start = archive.startIndex + 8
+            guard archive.count >= 8 + length else { throw CocoaError(.coderReadCorrupt) }
+            keys = try JSONDecoder().decode(Keys.self, from: archive.subdata(in: start ..< start + length))
+            archive = archive.subdata(in: start + length ..< archive.endIndex)
+        }
+        let unarchiver = try NSKeyedUnarchiver(forReadingFrom: archive)
         unarchiver.requiresSecureCoding = true
         defer { unarchiver.finishDecoding() }
         guard let record = CKRecord(coder: unarchiver) else { throw CocoaError(.coderReadCorrupt) }
-        return record
+        return (record, keys)
     }
 
     public static func archiveToken(_ token: CKServerChangeToken) throws -> Data {
@@ -155,6 +197,58 @@ public enum CloudKitRecordMapping {
         }
     }
 
+    /// One record's save as the protocol's result; a passing failure keeps the server's retry-after (M4).
+    public static func saveResult(_ wire: SyncWireRecord, _ result: Result<CKRecord, Error>) -> SaveResult {
+        switch result {
+        case .success(let record):
+            return SaveResult(recordName: wire.recordName, outcome: .saved(stamp(of: record)))
+        case .failure(let error):
+            let outcome = saveOutcome(for: error, wire: wire)
+            guard case .failed = outcome, let error = error as? CKError, passingCodes.contains(error.code) else {
+                return SaveResult(recordName: wire.recordName, outcome: outcome)
+            }
+            return SaveResult(recordName: wire.recordName, outcome: outcome, retryAfter: error.retryAfterSeconds)
+        }
+    }
+
+    /// What one record of a change feed means for the page.
+    public enum FeedOutcome {
+        /// The record (or, when it can't be read, a stand-in without a payload the engine stages as unreadable).
+        case change(SyncFeedChange)
+        /// A passing failure: the page is fetched again from the same token.
+        case failPage(Error)
+    }
+
+    /// One record a change feed delivered. A record fetched whole but not readable keeps its type (I1), so the
+    /// engine still routes reserved types; a failure that passes fails the page; any other failure is that
+    /// record's alone (I2), staged as unreadable with its type unknown, so one record never blocks the zone.
+    public static func feedChange(_ id: CKRecord.ID, _ result: Result<CKRecord, Error>, zone: String) -> FeedOutcome {
+        switch result {
+        case .success(let record):
+            if let server = try? serverRecord(record) { return .change(.record(server)) }
+            return .change(.record(unreadable(id, recordType: record.recordType)))
+        case .failure(let error):
+            if let mapped = operationError(error, zone: zone) as? SyncTransportError, mapped.isPassing { return .failPage(mapped) }
+            return .change(.record(unreadable(id, recordType: "")))
+        }
+    }
+
+    /// A record named by the feed with no payload: the engine stages it as unreadable.
+    static func unreadable(_ id: CKRecord.ID, recordType: String) -> SyncServerRecord {
+        SyncServerRecord(wire: SyncWireRecord(recordType: recordType, recordName: id.recordName, zone: id.zoneID.zoneName),
+                         stamp: SyncServerStamp(systemFields: Data(), changeTag: "", modifiedAt: .distantPast))
+    }
+
+    /// An operation's final error as what the call throws, or nil when the operation counts as finished: with
+    /// results per record (saves, deletes, fetches, feed pages), a `partialFailure` is only the sum of those.
+    public static func finalError(_ error: Error, zone: String, perRecordResults: Bool) -> Error? {
+        if perRecordResults, (error as? CKError)?.code == .partialFailure { return nil }
+        return operationError(error, zone: zone)
+    }
+
+    /// Codes that pass with time.
+    static let passingCodes: Set<CKError.Code> = [.networkUnavailable, .networkFailure, .serviceUnavailable, .requestRateLimited, .zoneBusy]
+
     /// Whether a fetch error means the server has no record by that name.
     public static func isMissingRecord(_ error: Error) -> Bool {
         (error as? CKError)?.code == .unknownItem
@@ -170,20 +264,22 @@ public enum CloudKitRecordMapping {
             let rank: (SyncTransportError) -> Int = {
                 switch $0 {
                 case .zoneNotFound: return 0
-                case .changeTokenExpired: return 1
-                case .limitExceeded: return 2
-                case .unavailable, .networkUnavailable: return 3
-                case .unreadableRecord: return 4
+                case .notAuthenticated, .quotaExceeded: return 1
+                case .changeTokenExpired: return 2
+                case .limitExceeded: return 3
+                case .unavailable, .networkUnavailable: return 4
+                case .unreadableRecord: return 5
                 }
             }
             return mapped.min { rank($0) < rank($1) } ?? error
         }
+        if passingCodes.contains(error.code) { return SyncTransportError.unavailable(retryAfter: error.retryAfterSeconds) }
         switch error.code {
-        case .networkUnavailable, .networkFailure, .serviceUnavailable, .requestRateLimited, .zoneBusy:
-            return SyncTransportError.unavailable(retryAfter: error.retryAfterSeconds)
         case .limitExceeded: return SyncTransportError.limitExceeded
         case .changeTokenExpired: return SyncTransportError.changeTokenExpired
         case .zoneNotFound, .userDeletedZone: return SyncTransportError.zoneNotFound(zone)
+        case .notAuthenticated: return SyncTransportError.notAuthenticated
+        case .quotaExceeded: return SyncTransportError.quotaExceeded
         default: return error
         }
     }
@@ -204,6 +300,26 @@ public enum CloudKitRecordMapping {
         case .assetFileNotFound: return "assetFileNotFound"
         case .assetFileModified: return "assetFileModified"
         default: return "CKError \(code.rawValue)"
+        }
+    }
+}
+
+/// Assembling a save's results (M10), kept out of the App target so it is tested offline.
+public enum CloudKitSaveAssembly {
+    /// The results when nothing is to be sent: an atomic save with a record that couldn't be built (all or
+    /// nothing: the others `batchRequestFailed`), or a save whose every record was refused. nil: send the rest.
+    public static func resultsWithoutSending(_ records: [SyncWireRecord], refused: [String: SaveResult.Outcome], atomic: Bool) -> [SaveResult]? {
+        guard !refused.isEmpty else { return nil }
+        let allRefused = records.allSatisfy { refused[$0.recordName] != nil }
+        guard atomic || allRefused else { return nil }
+        return records.map { SaveResult(recordName: $0.recordName, outcome: refused[$0.recordName] ?? .batchRequestFailed) }
+    }
+
+    /// One result per record, in order: refused before sending, else the server's, else "no result" (sent again).
+    public static func results(_ records: [SyncWireRecord], refused: [String: SaveResult.Outcome], taken: [String: SaveResult]) -> [SaveResult] {
+        records.map { wire in
+            if let outcome = refused[wire.recordName] { return SaveResult(recordName: wire.recordName, outcome: outcome) }
+            return taken[wire.recordName] ?? SaveResult(recordName: wire.recordName, outcome: .failed("no result"))
         }
     }
 }

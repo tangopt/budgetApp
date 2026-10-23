@@ -1,6 +1,7 @@
 #if DEBUG
 import Foundation
 import os
+import Security
 import BudgetCore
 
 /// The one way to reach `CloudKitTransport` in build step 3 (plan Global Constraints): a DEBUG build launched
@@ -33,7 +34,20 @@ enum SyncDemoMode {
         guard DemoMarker.isDemoDatabase(atPath: resolved) else {
             return "\(argument) syncs only the demo database; BUDGET_DB_PATH isn't one (MakeDemoDatabase builds it)."
         }
+        // CKContainer traps in a build without the iCloud entitlement (CODE_SIGNING_ALLOWED=NO, or no team in
+        // Config/Signing.local.xcconfig): refused here instead.
+        guard hasCloudKitEntitlement() else {
+            return "\(argument) needs a team-signed Debug build with the iCloud entitlement for \(CloudKitTransport.containerIdentifier) (Config/Signing.local.xcconfig names the team); this build has none."
+        }
         return nil
+    }
+
+    /// Whether this process is signed with the iCloud container entitlement for Mango's container.
+    static func hasCloudKitEntitlement() -> Bool {
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(task, "com.apple.developer.icloud-container-identifiers" as CFString, nil),
+              let containers = value as? [String] else { return false }
+        return containers.contains(CloudKitTransport.containerIdentifier)
     }
 
     /// Called first thing at launch: a refused `--sync-demo` stops here, before any database is opened.
