@@ -74,6 +74,9 @@ public enum EmploymentIncomeSource: String, Codable, CaseIterable, Sendable {
     case p45
     case payslip
     case other
+    /// Paid by the employer after the employee left (after the P45: holiday pay on code 0T, say).
+    /// It adds to the P45's (or payslips') pay and tax; a P60 already includes it.
+    case afterLeaving
 
     public var displayName: String {
         switch self {
@@ -81,6 +84,7 @@ public enum EmploymentIncomeSource: String, Codable, CaseIterable, Sendable {
         case .p45: return "P45"
         case .payslip: return "Payslip"
         case .other: return "Other"
+        case .afterLeaving: return "Paid after leaving"
         }
     }
 
@@ -91,6 +95,7 @@ public enum EmploymentIncomeSource: String, Codable, CaseIterable, Sendable {
         case .p45: return 1
         case .payslip: return 2
         case .other: return 3
+        case .afterLeaving: return 4
         }
     }
 }
@@ -548,21 +553,47 @@ public enum Employments {
 
     /// The pay and tax the return uses for the employment: the P60's, else the P45's (the
     /// latest), else the payslips' summed, else the other rows' summed; `nil` without any.
-    public static func effectiveIncome(db: Database, employmentId: Int64) throws -> (payMinorUnits: Int, taxDeductedMinorUnits: Int, source: EmploymentIncomeSource)? {
+    /// Except under a P60 (which already includes everything), the "paid after leaving" rows are
+    /// added on top (and on their own, they sum).
+    public static func effectiveIncome(db: Database, employmentId: Int64) throws -> EffectiveIncome? {
         effectiveIncome(try incomes(db: db, employmentId: employmentId))
+    }
+
+    /// The figures `effectiveIncome` gives. `source` is the base source (never `.afterLeaving`
+    /// unless those rows are all there is); `afterLeavingMinorUnits` is the pay already added in
+    /// from "paid after leaving" rows (0 under a P60 or without any).
+    public struct EffectiveIncome: Equatable, Sendable {
+        public var payMinorUnits: Int
+        public var taxDeductedMinorUnits: Int
+        public var source: EmploymentIncomeSource
+        public var afterLeavingMinorUnits: Int
+        public var afterLeavingCount: Int
     }
 
     /// `effectiveIncome(db:employmentId:)` of rows already read, in `incomes(db:employmentId:)`'s
     /// order (the Income tab's figures, from `SelfAssessmentOverview.EmploymentRow.incomes`).
-    public static func effectiveIncome(_ rows: [EmploymentIncome]) -> (payMinorUnits: Int, taxDeductedMinorUnits: Int, source: EmploymentIncomeSource)? {
+    public static func effectiveIncome(_ rows: [EmploymentIncome]) -> EffectiveIncome? {
         guard let best = rows.first?.source else { return nil }
+        let extras = rows.filter { $0.source == .afterLeaving }
+        let extraPay = extras.reduce(0) { $0 + $1.payMinorUnits }
+        let extraTax = extras.reduce(0) { $0 + $1.taxDeductedMinorUnits }
         let chosen = rows.filter { $0.source == best }
         switch best {
-        case .p60, .p45:
+        case .p60:
             let row = chosen.max { ($0.periodEnd ?? .distantFuture, $0.id ?? 0) < ($1.periodEnd ?? .distantFuture, $1.id ?? 0) }!
-            return (row.payMinorUnits, row.taxDeductedMinorUnits, best)
+            return EffectiveIncome(payMinorUnits: row.payMinorUnits, taxDeductedMinorUnits: row.taxDeductedMinorUnits, source: best,
+                                   afterLeavingMinorUnits: 0, afterLeavingCount: 0)
+        case .p45:
+            let row = chosen.max { ($0.periodEnd ?? .distantFuture, $0.id ?? 0) < ($1.periodEnd ?? .distantFuture, $1.id ?? 0) }!
+            return EffectiveIncome(payMinorUnits: row.payMinorUnits + extraPay, taxDeductedMinorUnits: row.taxDeductedMinorUnits + extraTax, source: best,
+                                   afterLeavingMinorUnits: extraPay, afterLeavingCount: extras.count)
         case .payslip, .other:
-            return (chosen.reduce(0) { $0 + $1.payMinorUnits }, chosen.reduce(0) { $0 + $1.taxDeductedMinorUnits }, best)
+            return EffectiveIncome(payMinorUnits: chosen.reduce(0) { $0 + $1.payMinorUnits } + extraPay,
+                                   taxDeductedMinorUnits: chosen.reduce(0) { $0 + $1.taxDeductedMinorUnits } + extraTax, source: best,
+                                   afterLeavingMinorUnits: extraPay, afterLeavingCount: extras.count)
+        case .afterLeaving:
+            return EffectiveIncome(payMinorUnits: extraPay, taxDeductedMinorUnits: extraTax, source: best,
+                                   afterLeavingMinorUnits: 0, afterLeavingCount: 0)
         }
     }
 

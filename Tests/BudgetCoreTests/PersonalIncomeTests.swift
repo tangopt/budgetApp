@@ -69,6 +69,39 @@ final class PersonalIncomeTests: XCTestCase {
         }
     }
 
+    func testPaidAfterLeavingAddsToP45ButNotP60() throws {
+        try db.write { db in
+            var employment = Employment(startYear: 2024, personId: personA, employerName: "Example Ltd")
+            try Employments.save(db: db, &employment)
+            let id = employment.id!
+            // On its own (no P45), the rows sum.
+            for (pay, tax) in [(10_000, 0), (5_000, 1_000)] {
+                var extra = EmploymentIncome(employmentId: id, source: .afterLeaving, payMinorUnits: pay, taxDeductedMinorUnits: tax)
+                try Employments.save(db: db, &extra)
+            }
+            var effective = try Employments.effectiveIncome(db: db, employmentId: id)
+            XCTAssertEqual(effective?.payMinorUnits, 15_000)
+            XCTAssertEqual(effective?.taxDeductedMinorUnits, 1_000)
+            XCTAssertEqual(effective?.source, .afterLeaving)
+            // With a P45, the P45 plus the extras; the source stays the P45.
+            var p45 = EmploymentIncome(employmentId: id, source: .p45, payMinorUnits: 300_000, taxDeductedMinorUnits: 60_000, periodEnd: Self.date(2024, 9, 30))
+            try Employments.save(db: db, &p45)
+            effective = try Employments.effectiveIncome(db: db, employmentId: id)
+            XCTAssertEqual(effective?.payMinorUnits, 315_000)
+            XCTAssertEqual(effective?.taxDeductedMinorUnits, 61_000)
+            XCTAssertEqual(effective?.source, .p45)
+            XCTAssertEqual(effective?.afterLeavingMinorUnits, 15_000)
+            // A P60 already includes everything: the extras are ignored.
+            var p60 = EmploymentIncome(employmentId: id, source: .p60, payMinorUnits: 400_000, taxDeductedMinorUnits: 80_000)
+            try Employments.save(db: db, &p60)
+            effective = try Employments.effectiveIncome(db: db, employmentId: id)
+            XCTAssertEqual(effective?.payMinorUnits, 400_000)
+            XCTAssertEqual(effective?.taxDeductedMinorUnits, 80_000)
+            XCTAssertEqual(effective?.source, .p60)
+            XCTAssertEqual(effective?.afterLeavingMinorUnits, 0)
+        }
+    }
+
     func testEffectiveIncomePrefersP60ThenP45ThenPayslips() throws {
         try db.write { db in
             var employment = Employment(startYear: 2024, personId: personA, employerName: "Example Ltd")
