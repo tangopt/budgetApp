@@ -274,6 +274,14 @@ public struct ImportPipeline: @unchecked Sendable {
         session.discard()
     }
 
+    /// Removes planning copies left behind by processes that ended without removing them (a
+    /// crash, a force quit, builds before per-process folders): run at launch. Returns how many
+    /// folders and files it removed.
+    @discardableResult
+    public static func removeStalePlanningCopies() -> Int {
+        ImportPlanningCopy.removeStale()
+    }
+
     /// The current planning copy's file (tests).
     var planningCopyPath: String? { session.currentPath }
 
