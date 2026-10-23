@@ -16,9 +16,13 @@ public enum DocumentClassifier {
         let text: String
         let squashed: String
 
+        /// The text's first lines (normalized each), where a title is.
+        let firstLines: [String]
+
         init(_ raw: String) {
             text = EvidenceText.normalized(raw)
             squashed = text.replacingOccurrences(of: " ", with: "")
+            firstLines = Array(raw.split(whereSeparator: \.isNewline).lazy.map { EvidenceText.normalized(String($0)) }.filter { !$0.isEmpty }.prefix(6))
         }
 
         func has(_ needles: String...) -> Bool {
@@ -39,6 +43,7 @@ public enum DocumentClassifier {
         private init(normalized: String) {
             text = normalized
             squashed = normalized.replacingOccurrences(of: " ", with: "")
+            firstLines = []
         }
 
         /// The tax code of a Portuguese payment reference (`104 700 000 000 001` → 104: IRS;
@@ -74,6 +79,8 @@ public enum DocumentClassifier {
         static let addendum = make(#"(?<!QUALQUER )(?<!EVENTUAL )(?<!EVENTUAIS )(?<!NENHUM )\b(ADITAMENTO|ADENDA)S?\b"#)
         static let addendumTitle = make(#"(?<!QUALQUER )(?<!EVENTUAL )(?<!NENHUM )\b(ADITAMENTO|ADENDA) (AO|DO|DE) CONTRATO DE ARRENDAMENTO"#)
         static let fileAddendum = make(#"\b(ADITAMENTO|ADENDA|ADDENDUM)S?\b"#)
+        /// A tenancy word in a file name, beside an addendum word.
+        static let fileTenancy = make(#"\b(ARRENDAMENTO|CONTRATO|TENANCY|RENT|RENTAL|LEASE)\b"#)
     }
 
     /// Text rules, in order.
@@ -94,11 +101,6 @@ public enum DocumentClassifier {
         // before the contract: an addendum is never read as the contract it amends.
         Rule(kind: .tenancyAddendum) {
             ($0.top(200).matches(Patterns.addendum) || $0.matches(Patterns.addendumTitle)) && $0.has("ARRENDAMENTO")
-        },
-        // A contract is headed so; not an invoice, receipt or proof that names one.
-        Rule(kind: .rentContract) {
-            $0.top(300).has("CONTRATO DE ARRENDAMENTO")
-                && !$0.top(300).has("FATURA", "FACTURA", "RECIBO", "INVOICE", "COMPROVATIVO", "NOTA DE COBRANCA", "DOCUMENTO DE COBRANCA")
         },
         // Provisional: written from the portal's receipt title; no real receipt seen yet.
         Rule(kind: .rentReceipt) { $0.has("RECIBO DE RENDA") },
@@ -158,6 +160,9 @@ public enum DocumentClassifier {
             $0.matches(Patterns.utilityIssuer)
                 || $0.has("LISBOAGAS", "LISBOA GAS", "SERVICOS INTERMUNICIPALIZADOS", "AGUAS DO", "CONSUMO [KWH]", "CONSUMO [M3]")
         },
+        // Tenancy contract: titled so (first words), after the bank's and issuers' documents that
+        // name one (an IRS annex, stamp duty, a condomínio's statement, a debit's description).
+        Rule(kind: .rentContract) { isRentContractTitle($0) },
         // A bare "Fatura-Recibo" says nothing about what it's for: left to the file name or `other`.
         Rule(kind: .bankTransferProof) { $0.has("TRANSFERENCIA") },
         Rule(kind: .bankStatement) { $0.has("EXTRATO") && $0.has("SALDO", "MOVIMENTOS") }
@@ -172,7 +177,8 @@ public enum DocumentClassifier {
         Rule(kind: .p45) { $0.matches(Patterns.fileP45) },
         Rule(kind: .p60) { $0.matches(Patterns.fileP60) },
         Rule(kind: .taxCodeNotice) { $0.has("TAX CODE") },
-        Rule(kind: .tenancyAddendum) { $0.matches(Patterns.fileAddendum) },
+        // An addendum of a tenancy ("Aditamento contrato"), not of a mortgage or a policy.
+        Rule(kind: .tenancyAddendum) { $0.matches(Patterns.fileAddendum) && $0.matches(Patterns.fileTenancy) },
         Rule(kind: .rentReceipt) { $0.has("RECIBO DE RENDA", "RECIBOS DE RENDA", "RECIBO RENDA", "RENT RECEIPT") },
         Rule(kind: .ptIRSDeclaration) { $0.isIRS && $0.has("DECLARACAO", "MOD 3", "MODELO 3") },
         Rule(kind: .ptIRSAssessment) { $0.isIRS && $0.has("LIQUIDACAO") },
@@ -199,6 +205,22 @@ public enum DocumentClassifier {
     /// authority's receipt titled "Comprovativo de pagamento".
     static func isStatePayment(_ subject: Subject) -> Bool {
         subject.has("PAGAMENTOS AO ESTADO", "PAGAMENTO AO ESTADO", "PAGAMENTOS - ESTADO", "PAGAMENTOS-ESTADO") || isTaxAuthorityReceipt(subject)
+    }
+
+    /// How far into the text a contract's title starts (characters).
+    static let contractTitleReach = 100
+
+    /// A tenancy contract's title: a line among the first that opens with "Contrato de
+    /// arrendamento", within the first words; not a finance lease, with no tax, building,
+    /// insurance, debit or payment wording near it.
+    static func isRentContractTitle(_ subject: Subject) -> Bool {
+        guard subject.firstLines.contains(where: { $0.hasPrefix("CONTRATO DE ARRENDAMENTO") }),
+              let range = subject.text.range(of: "CONTRATO DE ARRENDAMENTO"),
+              subject.text.distance(from: subject.text.startIndex, to: range.lowerBound) <= contractTitleReach else { return false }
+        let top = subject.top(300)
+        if top.isIRS || top.isIMI { return false }
+        return !top.has("CONDOMINIO", "SEGURO", "FINANCEIRO", "DEBITO", "PAGAMENTO", "REFERENCIA", "VALOR A PAGAR",
+                        "FATURA", "FACTURA", "RECIBO", "INVOICE", "COMPROVATIVO", "NOTA DE COBRANCA", "DOCUMENTO DE COBRANCA")
     }
 
     static let duc = Patterns.make(#"\bDUC\b"#)

@@ -705,7 +705,7 @@ public struct EvidenceDocumentReader: ImportReader {
             }
         } else {
             let candidates = try TenancyAddendum.candidates(db: db, text: file.text, date: date, propertyId: context.intent.propertyId)
-            if let match = TenancyAddendum.clearMatch(candidates), let id = match.tenancy.id {
+            if let match = TenancyAddendum.clearMatch(candidates, date: date), let id = match.tenancy.id {
                 tenancy = match.tenancy
                 item.links = [ProposedLink(entity: .tenancy(id), role: TenancyAddendum.linkRole, label: try entityLabel(db: db, .tenancy(id)),
                                            confidence: .certain, reasons: match.reasons)]

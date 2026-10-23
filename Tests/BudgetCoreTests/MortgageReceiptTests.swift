@@ -128,6 +128,9 @@ final class MortgageReceiptTests: XCTestCase {
                        .init(number: 7, total: 36))
         XCTAssertEqual(MortgageReceipt.instalment(text: (["Pág. 1/2"] + Self.receiptLines).joined(separator: "\n"), fileName: "scan.pdf"),
                        .init(number: 25, total: 480))
+        XCTAssertEqual(MortgageReceipt.instalment(text: "Folha 1/2\nRECIBO DE EMPRÉSTIMO 25/480", fileName: "x.pdf"), .init(number: 25, total: 480))
+        XCTAssertEqual(MortgageReceipt.instalment(text: "Page 2/3 N.º RECIBO : 7/36", fileName: "x.pdf"), .init(number: 7, total: 36))
+        XCTAssertEqual(MortgageReceipt.instalment(text: "RECIBO Fl. 1/2 PRESTAÇÃO 12/360", fileName: "x.pdf"), .init(number: 12, total: 360))
         // Only a page marker in the text: the file name's instalment, else none.
         XCTAssertEqual(MortgageReceipt.instalment(text: "RECIBO DE EMPRÉSTIMO Pág. 1/2 TOTAL DO RECIBO : 900,00",
                                                   fileName: "20250331 - Prestacao - Recibo 25:480.pdf"), .init(number: 25, total: 480))

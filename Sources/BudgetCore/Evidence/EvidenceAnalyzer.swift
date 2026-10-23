@@ -55,15 +55,17 @@ public enum EvidenceAnalyzer {
             period = self.period(in: body, kind: kind, docDate: nil)
             metadata.docDate = period?.end ?? documentDate(in: body) ?? EvidenceDateParser.fileNameDate(fileName)
         } else {
-            // An addendum quotes its contract's date: dated by its signature or effect instead.
-            let own = kind == .tenancyAddendum ? TenancyAddendum.date(in: body) : nil
-            metadata.docDate = own ?? documentDate(in: body) ?? EvidenceDateParser.fileNameDate(fileName)
+            // An addendum quotes its contract's date: dated by its signature or effect, else its
+            // file name's date, else none (to check) — never the first date in its text.
+            metadata.docDate = kind == .tenancyAddendum
+                ? TenancyAddendum.date(in: body) ?? EvidenceDateParser.fileNameDate(fileName)
+                : documentDate(in: body) ?? EvidenceDateParser.fileNameDate(fileName)
             period = self.period(in: body, kind: kind, docDate: metadata.docDate)
         }
         metadata.periodStart = period?.start
         metadata.periodEnd = period?.end
 
-        if let amount = amount(in: body, kind: kind) {
+        if let amount = kind == .tenancyAddendum ? TenancyAddendum.newRent(in: body) : amount(in: body, kind: kind) {
             metadata.amountMinorUnits = amount.minorUnits
             if let reason = amount.reason { metadata.note = metadata.note ?? reason }
             metadata.currency = amount.currency ?? defaultCurrency(for: kind, text: body)
@@ -85,7 +87,6 @@ public enum EvidenceAnalyzer {
         case .imiNotice, .ptIRSPaymentNote: return ["IMPORTANCIA A PAGAR", "VALOR A PAGAR", "MONTANTE"]
         case .ptIRSAssessment: return ["VALOR A PAGAR", "VALOR A REEMBOLSAR", "IMPORTANCIA A PAGAR"]
         case .condominioReceipt: return ["TOTAL RECEBIDO", "TOTAL", "MONTANTE"]
-        case .tenancyAddendum: return TenancyAddendum.rentLabels
         case .rentReceipt: return ["IMPORTANCIA RECEBIDA", "VALOR DA RENDA", "IMPORTANCIA", "QUANTIA DE", "VALOR"]
         case .courtFee: return ["MONTANTE PAGO", "MONTANTE", "IMPORTANCIA A PAGAR", "VALOR"]
         case .lettingAgentFee: return ["FOI LIQUIDADO", "TOTAL A PAGAR", "TOTAL DOCUMENTO"]
