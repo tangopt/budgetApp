@@ -9,23 +9,36 @@ public protocol BiometricUnlocker: AnyObject {
     /// This Mac has Touch ID with at least one fingerprint.
     var isAvailable: Bool { get }
     func enrol(appUserId: Int64) async throws
-    /// True when Touch ID confirmed the user; false when it was cancelled or failed. Throws
-    /// `BiometricUnlockError.notEnrolled` when the user isn't (or is no longer) enrolled on this Mac.
-    func unlock(appUserId: Int64, reason: String) async throws -> Bool
+    /// True when Touch ID confirmed the user; false when it was cancelled. Throws
+    /// `BiometricUnlockError.notEnrolled` when the user isn't (or is no longer) enrolled on this Mac,
+    /// `.notRecognised` or `.lockedOut` when the finger wasn't accepted. Touch ID asks in `prompt`, Mango's
+    /// own window, never in a system panel.
+    func unlock(appUserId: Int64, reason: String, prompt: any BiometricPromptContext) async throws -> Bool
     func remove(appUserId: Int64)
     func enrolledIds() -> Set<Int64>
 }
+
+/// Where Touch ID asks: the app's inline prompt (an `LAContext` paired with the lock screen's embedded Touch ID
+/// view), opaque to BudgetCore. Required on every unlock, so nothing can fall back to the system's panel.
+@MainActor
+public protocol BiometricPromptContext: AnyObject {}
 
 public enum BiometricUnlockError: Error, Equatable, Sendable, LocalizedError {
     case unavailable
     /// Never enrolled here, or dropped because the Mac's fingerprints changed: sign in with the password.
     case notEnrolled
+    /// Touch ID didn't accept the finger (too many misses in one try): try again or use the password.
+    case notRecognised
+    /// Too many misses: Touch ID is off until the Mac's own password is entered.
+    case lockedOut
     case keychain(OSStatus)
 
     public var errorDescription: String? {
         switch self {
         case .unavailable: "Touch ID isn't available on this Mac."
         case .notEnrolled: "Touch ID isn't on for you on this Mac."
+        case .notRecognised: "Touch ID didn't recognise that finger."
+        case .lockedOut: "Touch ID is locked after too many tries."
         // The status code itself goes to the log (App/Auth/BiometricUnlock.swift), not into the sentence.
         case .keychain(let status):
             Self.keychainMessage(status).map { "The Keychain refused it: \($0)." } ?? "The Keychain refused it."
@@ -51,8 +64,9 @@ public protocol BiometryCheck: AnyObject {
     var isAvailable: Bool { get }
     /// `LAContext.domainState.biometry.stateHash` (formerly `evaluatedPolicyDomainState`): changes whenever a fingerprint is added or removed.
     var domainState: Data? { get }
-    /// True when the owner passed Touch ID; false when they cancelled or it failed.
-    func evaluate(reason: String) async throws -> Bool
+    /// True when the owner passed Touch ID in `prompt`; false when they cancelled. Throws
+    /// `BiometricUnlockError.notRecognised` / `.lockedOut` when the finger wasn't accepted.
+    func evaluate(reason: String, prompt: any BiometricPromptContext) async throws -> Bool
 }
 
 /// Enrolment as a list of "<scope>:<appUserId>" entries in this Mac's defaults, stored with the fingerprint
@@ -83,9 +97,9 @@ public final class DefaultsBiometricEnrolment: BiometricUnlocker {
         defaults.set(state, forKey: Self.domainStateKey)
     }
 
-    public func unlock(appUserId: Int64, reason: String) async throws -> Bool {
+    public func unlock(appUserId: Int64, reason: String, prompt: any BiometricPromptContext) async throws -> Bool {
         guard enrolledIds().contains(appUserId) else { throw BiometricUnlockError.notEnrolled }
-        guard try await biometry.evaluate(reason: reason) else { return false }
+        guard try await biometry.evaluate(reason: reason, prompt: prompt) else { return false }
         // The fingerprint set may have changed while the prompt was up.
         guard enrolledIds().contains(appUserId) else { throw BiometricUnlockError.notEnrolled }
         return true
@@ -129,7 +143,7 @@ public enum BiometricSecretRead: Equatable, Sendable {
     case secret(Data)
     /// `errSecItemNotFound`: never enrolled, or invalidated by a change of fingerprints.
     case notFound
-    /// The user cancelled Touch ID, or it failed.
+    /// The user cancelled Touch ID.
     case cancelled
 }
 
@@ -140,8 +154,9 @@ public enum BiometricSecretRead: Equatable, Sendable {
 @MainActor
 public protocol BiometricSecretStore: AnyObject {
     func add(secret: Data, account: String) throws
-    /// Reading asks for Touch ID.
-    func read(account: String, reason: String) async throws -> BiometricSecretRead
+    /// Reading asks for Touch ID, in `prompt`. Throws `BiometricUnlockError.notRecognised` / `.lockedOut`
+    /// when the finger wasn't accepted.
+    func read(account: String, reason: String, prompt: any BiometricPromptContext) async throws -> BiometricSecretRead
     func delete(account: String)
 }
 
@@ -178,7 +193,7 @@ public final class DefaultsEnrolmentIndex: BiometricEnrolmentIndex {
 
 /// Each enrolled user holds a random 32-byte secret only their fingerprints on this Mac can read. Who is
 /// enrolled is read from the index alone; the secret is read only to unlock (that read shows the Touch ID
-/// sheet). An item the system has invalidated reads as not found; that drops the enrolment, so the
+/// prompt). An item the system has invalidated reads as not found; that drops the enrolment, so the
 /// password is asked once.
 @MainActor
 public final class KeychainBiometricEnrolment: BiometricUnlocker {
@@ -218,9 +233,9 @@ public final class KeychainBiometricEnrolment: BiometricUnlocker {
         index.insert(account)
     }
 
-    public func unlock(appUserId: Int64, reason: String) async throws -> Bool {
+    public func unlock(appUserId: Int64, reason: String, prompt: any BiometricPromptContext) async throws -> Bool {
         guard enrolledIds().contains(appUserId) else { throw BiometricUnlockError.notEnrolled }
-        switch try await store.read(account: account(appUserId), reason: reason) {
+        switch try await store.read(account: account(appUserId), reason: reason, prompt: prompt) {
         case .secret(let secret):
             return secret.count == Self.secretLength
         case .cancelled:

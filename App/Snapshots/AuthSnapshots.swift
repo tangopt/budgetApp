@@ -49,6 +49,15 @@ enum AuthSnapshots {
                 model.prepare()
                 return AnyView(LockScreen(model: model))
             },
+            SnapshotRoute(name: "auth-locked-touchid", title: "Lock screen: Touch ID listening in Mango's window, no system panel") { context in
+                let users = try await standInUsers(context)
+                let model = LockScreenModel(session: context.environment.session, biometrics: StandInTouchID(enrolled: [1]),
+                                            candidates: users)
+                model.prepare()
+                model.selectedId = users[0].id
+                model.snapshotShowTouchIDListening()
+                return AnyView(LockScreen(model: model))
+            },
             SnapshotRoute(name: "auth-forgot-password", title: "Lock screen: Forgot password?, the recovery key") { context in
                 let users = try await standInUsers(context)
                 let model = LockScreenModel(session: context.environment.session, biometrics: StandInTouchID(enrolled: []),
@@ -221,7 +230,7 @@ final class StandInTouchID: BiometricUnlocker {
     init(enrolled: Set<Int64>) { self.enrolled = enrolled }
     var isAvailable: Bool { true }
     func enrol(appUserId: Int64) async throws { enrolled.insert(appUserId) }
-    func unlock(appUserId: Int64, reason: String) async throws -> Bool { false }
+    func unlock(appUserId: Int64, reason: String, prompt: any BiometricPromptContext) async throws -> Bool { false }
     func remove(appUserId: Int64) { enrolled.remove(appUserId) }
     func enrolledIds() -> Set<Int64> { enrolled }
 }

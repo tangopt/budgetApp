@@ -1,15 +1,24 @@
 import XCTest
 @testable import BudgetCore
 
+/// Stands in for the lock screen's inline Touch ID prompt.
+@MainActor
+private final class FakePrompt: BiometricPromptContext {}
+
 /// Stands in for `LAContext`: the Mac's current fingerprint set and the answer to the next Touch ID check.
+/// `refusal` makes the next check throw (a finger not recognised, Touch ID locked out).
 @MainActor
 private final class FakeBiometry: BiometryCheck {
     var isAvailable = true
     var domainState: Data? = Data([1, 2, 3])
     var answer = true
+    var refusal: BiometricUnlockError?
     private(set) var evaluations = 0
-    func evaluate(reason: String) async throws -> Bool {
+    private(set) var prompts: [ObjectIdentifier] = []
+    func evaluate(reason: String, prompt: any BiometricPromptContext) async throws -> Bool {
         evaluations += 1
+        prompts.append(ObjectIdentifier(prompt))
+        if let refusal { throw refusal }
         return answer
     }
 }
@@ -25,13 +34,17 @@ private final class FakeSecretStore: BiometricSecretStore {
     var cancelNext = false
     var readStatus: OSStatus?
     var failAdd: OSStatus?
+    var refusal: BiometricUnlockError?
     private(set) var reads = 0
+    private(set) var prompts: [ObjectIdentifier] = []
     func add(secret: Data, account: String) throws {
         if let failAdd { throw BiometricUnlockError.keychain(failAdd) }
         secrets[account] = secret
     }
-    func read(account: String, reason: String) async throws -> BiometricSecretRead {
+    func read(account: String, reason: String, prompt: any BiometricPromptContext) async throws -> BiometricSecretRead {
         reads += 1
+        prompts.append(ObjectIdentifier(prompt))
+        if let refusal { throw refusal }
         if let readStatus { throw BiometricUnlockError.keychain(readStatus) }
         if cancelNext { cancelNext = false; return .cancelled }
         guard let secret = secrets[account], !invalidated.contains(account) else { return .notFound }
@@ -45,6 +58,7 @@ private final class FakeSecretStore: BiometricSecretStore {
 final class BiometricEnrolmentTests: XCTestCase {
     private var suiteName = ""
     private var defaults: UserDefaults!
+    private let prompt = FakePrompt()
 
     override func setUp() async throws {
         suiteName = "BiometricEnrolmentTests.\(UUID().uuidString)"
@@ -62,13 +76,13 @@ final class BiometricEnrolmentTests: XCTestCase {
         let enrolment = DefaultsBiometricEnrolment(defaults: defaults, scope: "db-a", biometry: biometry)
         try await enrolment.enrol(appUserId: 7)
         XCTAssertEqual(enrolment.enrolledIds(), [7])
-        let unlocked = try await enrolment.unlock(appUserId: 7, reason: "test")
+        let unlocked = try await enrolment.unlock(appUserId: 7, reason: "test", prompt: prompt)
         XCTAssertTrue(unlocked)
 
         biometry.domainState = Data([9, 9, 9])   // a fingerprint added or removed
         XCTAssertEqual(enrolment.enrolledIds(), [])
         do {
-            _ = try await enrolment.unlock(appUserId: 7, reason: "test")
+            _ = try await enrolment.unlock(appUserId: 7, reason: "test", prompt: prompt)
             XCTFail("a dropped enrolment must not unlock")
         } catch {
             XCTAssertEqual(error as? BiometricUnlockError, .notEnrolled)
@@ -104,7 +118,7 @@ final class BiometricEnrolmentTests: XCTestCase {
         XCTAssertEqual(onA.enrolledIds(), [userA])
         XCTAssertEqual(onB.enrolledIds(), [])
         do {
-            _ = try await onB.unlock(appUserId: userB, reason: "test")
+            _ = try await onB.unlock(appUserId: userB, reason: "test", prompt: prompt)
             XCTFail("another database's user must not unlock")
         } catch {
             XCTAssertEqual(error as? BiometricUnlockError, .notEnrolled)
@@ -118,7 +132,7 @@ final class BiometricEnrolmentTests: XCTestCase {
         try await keychainA.enrol(appUserId: userA)
         XCTAssertEqual(keychainB.enrolledIds(), [])
         do {
-            _ = try await keychainB.unlock(appUserId: userB, reason: "test")
+            _ = try await keychainB.unlock(appUserId: userB, reason: "test", prompt: prompt)
             XCTFail("another database's user must not unlock")
         } catch {
             XCTAssertEqual(error as? BiometricUnlockError, .notEnrolled)
@@ -172,7 +186,7 @@ final class BiometricEnrolmentTests: XCTestCase {
         let enrolment = DefaultsBiometricEnrolment(defaults: defaults, scope: "db-a", biometry: biometry)
         try await enrolment.enrol(appUserId: 4)
         biometry.answer = false
-        let unlocked = try await enrolment.unlock(appUserId: 4, reason: "test")
+        let unlocked = try await enrolment.unlock(appUserId: 4, reason: "test", prompt: prompt)
         XCTAssertFalse(unlocked)
         XCTAssertEqual(enrolment.enrolledIds(), [4], "a cancelled check keeps the enrolment")
     }
@@ -200,7 +214,7 @@ final class BiometricEnrolmentTests: XCTestCase {
         XCTAssertEqual(store.secrets["db-a:1"]?.count, 32)
         XCTAssertNotEqual(store.secrets["db-a:1"], store.secrets["db-a:2"])
         XCTAssertEqual(keychain.enrolledIds(), [1, 2])
-        let unlocked = try await keychain.unlock(appUserId: 2, reason: "test")
+        let unlocked = try await keychain.unlock(appUserId: 2, reason: "test", prompt: prompt)
         XCTAssertTrue(unlocked)
     }
 
@@ -210,7 +224,7 @@ final class BiometricEnrolmentTests: XCTestCase {
         try await keychain.enrol(appUserId: 5)
         store.invalidateAll()   // errSecItemNotFound from here on
         do {
-            _ = try await keychain.unlock(appUserId: 5, reason: "test")
+            _ = try await keychain.unlock(appUserId: 5, reason: "test", prompt: prompt)
             XCTFail("an invalidated item must not unlock")
         } catch {
             XCTAssertEqual(error as? BiometricUnlockError, .notEnrolled)
@@ -218,7 +232,7 @@ final class BiometricEnrolmentTests: XCTestCase {
         // Touch ID stops being offered; re-enrolling works again.
         XCTAssertEqual(keychain.enrolledIds(), [])
         try await keychain.enrol(appUserId: 5)
-        let unlocked = try await keychain.unlock(appUserId: 5, reason: "test")
+        let unlocked = try await keychain.unlock(appUserId: 5, reason: "test", prompt: prompt)
         XCTAssertTrue(unlocked)
     }
 
@@ -227,7 +241,7 @@ final class BiometricEnrolmentTests: XCTestCase {
         let keychain = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults), scope: "db-a", isAvailable: { true })
         try await keychain.enrol(appUserId: 6)
         store.cancelNext = true
-        let unlocked = try await keychain.unlock(appUserId: 6, reason: "test")
+        let unlocked = try await keychain.unlock(appUserId: 6, reason: "test", prompt: prompt)
         XCTAssertFalse(unlocked)
         XCTAssertEqual(keychain.enrolledIds(), [6])
     }
@@ -254,7 +268,7 @@ final class BiometricEnrolmentTests: XCTestCase {
         let relaunched = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults),
                                                     scope: "db-a", isAvailable: { true })
         XCTAssertEqual(relaunched.enrolledIds(), [2])
-        let unlocked = try await relaunched.unlock(appUserId: 2, reason: "test")
+        let unlocked = try await relaunched.unlock(appUserId: 2, reason: "test", prompt: prompt)
         XCTAssertTrue(unlocked)
     }
 
@@ -274,7 +288,7 @@ final class BiometricEnrolmentTests: XCTestCase {
         try await keychain.enrol(appUserId: 1)
         store.invalidateAll()
         do {
-            _ = try await keychain.unlock(appUserId: 1, reason: "test")
+            _ = try await keychain.unlock(appUserId: 1, reason: "test", prompt: prompt)
             XCTFail("an invalidated item must not unlock")
         } catch {
             XCTAssertEqual(error as? BiometricUnlockError, .notEnrolled)
@@ -306,7 +320,7 @@ final class BiometricEnrolmentTests: XCTestCase {
         try await keychain.enrol(appUserId: 3)
         store.readStatus = errSecInteractionNotAllowed
         do {
-            _ = try await keychain.unlock(appUserId: 3, reason: "test")
+            _ = try await keychain.unlock(appUserId: 3, reason: "test", prompt: prompt)
             XCTFail("a refused read must throw")
         } catch {
             XCTAssertEqual(error as? BiometricUnlockError, .keychain(errSecInteractionNotAllowed))
@@ -336,6 +350,52 @@ final class BiometricEnrolmentTests: XCTestCase {
             XCTAssertTrue(text.hasSuffix(".") && !text.hasSuffix(".."), text)
             XCTAssertFalse(text.contains("\(status)"), "the status code is for the log, not the user: \(text)")
             XCTAssertFalse(text.contains("BudgetCore"), text)
+        }
+    }
+
+    // MARK: The inline prompt
+
+    func testUnlockAsksInTheGivenPrompt() async throws {
+        // Touch ID asks in Mango's own window: the lock screen's prompt reaches the check, every time.
+        let biometry = FakeBiometry()
+        let fallback = DefaultsBiometricEnrolment(defaults: defaults, scope: "db-a", biometry: biometry)
+        try await fallback.enrol(appUserId: 1)
+        _ = try await fallback.unlock(appUserId: 1, reason: "test", prompt: prompt)
+        XCTAssertEqual(biometry.prompts, [ObjectIdentifier(prompt)])
+
+        let store = FakeSecretStore()
+        let keychain = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults), scope: "db-a", isAvailable: { true })
+        try await keychain.enrol(appUserId: 1)
+        _ = try await keychain.unlock(appUserId: 1, reason: "test", prompt: prompt)
+        XCTAssertEqual(store.prompts, [ObjectIdentifier(prompt)])
+    }
+
+    func testRefusedFingerKeepsEnrolmentAndSaysWhy() async throws {
+        for refusal in [BiometricUnlockError.notRecognised, .lockedOut] {
+            let biometry = FakeBiometry()
+            biometry.refusal = refusal
+            let fallback = DefaultsBiometricEnrolment(defaults: defaults, scope: "db-a", biometry: biometry)
+            try await fallback.enrol(appUserId: 2)
+            do {
+                _ = try await fallback.unlock(appUserId: 2, reason: "test", prompt: prompt)
+                XCTFail("a refused finger must not unlock")
+            } catch {
+                XCTAssertEqual(error as? BiometricUnlockError, refusal)
+            }
+            XCTAssertEqual(fallback.enrolledIds(), [2])
+
+            let store = FakeSecretStore()
+            let keychain = KeychainBiometricEnrolment(store: store, index: DefaultsEnrolmentIndex(defaults: defaults), scope: "db-a", isAvailable: { true })
+            try await keychain.enrol(appUserId: 2)
+            store.refusal = refusal
+            do {
+                _ = try await keychain.unlock(appUserId: 2, reason: "test", prompt: prompt)
+                XCTFail("a refused finger must not unlock")
+            } catch {
+                XCTAssertEqual(error as? BiometricUnlockError, refusal)
+            }
+            XCTAssertEqual(keychain.enrolledIds(), [2], "a refused finger keeps the secret")
+            XCTAssertNotNil(store.secrets["db-a:2"])
         }
     }
 }
