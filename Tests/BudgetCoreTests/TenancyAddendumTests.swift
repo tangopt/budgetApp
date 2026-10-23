@@ -138,6 +138,23 @@ final class TenancyAddendumTests: XCTestCase {
         XCTAssertEqual(DocumentClassifier.classify(text: Self.realContractLines.joined(separator: "\n"), fileName: "scan.pdf"), .rentContract)
     }
 
+    func testATitledContractWithAnyOrdinaryClauseIsAContract() {
+        let clauses = [
+            "IMI": "Quarta: o IMI (imposto municipal sobre imóveis) é suportado pelo Senhorio.",
+            "Utility": "Quinta: os contratos de eletricidade (EDP), gás e água ficam em nome do Arrendatário.",
+            "Policy": "Sexta: aplicam-se as condições gerais e as condições particulares aqui previstas.",
+            "Legal": "Sétima: em caso de litígio, qualquer das partes pode recorrer a advogado ou solicitador.",
+            "Insurance": "Oitava: o Arrendatário contrata um seguro multirriscos do recheio com a Fidelidade.",
+            "Condomínio": "Nona: a quota de condomínio é paga pelo Senhorio, contra recibo n.º da administração.",
+            "Transfer": "Décima: a renda é paga por transferência bancária para o IBAN do Senhorio."
+        ]
+        for (name, clause) in clauses {
+            let text = [Self.realContractLines[0], Self.realContractLines[1], Self.realContractLines[2], clause, "Lisboa, 20 de dezembro de 2023"]
+                .joined(separator: "\n")
+            XCTAssertEqual(DocumentClassifier.classify(text: text, fileName: "scan.pdf"), .rentContract, name)
+        }
+    }
+
     func testDocumentsNamingATenancyContractAreNotContracts() {
         let probes: [(String, String)] = [
             ("IRS", "MODELO 3 IRS ANEXO F CONTRATO DE ARRENDAMENTO RENDIMENTOS PREDIAIS\nRendas recebidas 7.200,00"),

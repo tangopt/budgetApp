@@ -102,6 +102,10 @@ public enum DocumentClassifier {
         Rule(kind: .tenancyAddendum) {
             ($0.top(200).matches(Patterns.addendum) || $0.matches(Patterns.addendumTitle)) && $0.has("ARRENDAMENTO")
         },
+        // A contract titled so (a line among the first opens with it), before the issuer rules its
+        // clauses would trip (IMI, EDP, seguro, condomínio, advogado…); the documents that only
+        // name one (an IRS annex, stamp duty, a debit's description) aren't titled so.
+        Rule(kind: .rentContract) { isRentContractTitle($0) },
         // Provisional: written from the portal's receipt title; no real receipt seen yet.
         Rule(kind: .rentReceipt) { $0.has("RECIBO DE RENDA") },
         // Bank documents that list other issuers' names (a statement's movements, a transfer's
@@ -160,9 +164,6 @@ public enum DocumentClassifier {
             $0.matches(Patterns.utilityIssuer)
                 || $0.has("LISBOAGAS", "LISBOA GAS", "SERVICOS INTERMUNICIPALIZADOS", "AGUAS DO", "CONSUMO [KWH]", "CONSUMO [M3]")
         },
-        // Tenancy contract: titled so (first words), after the bank's and issuers' documents that
-        // name one (an IRS annex, stamp duty, a condomínio's statement, a debit's description).
-        Rule(kind: .rentContract) { isRentContractTitle($0) },
         // A bare "Fatura-Recibo" says nothing about what it's for: left to the file name or `other`.
         Rule(kind: .bankTransferProof) { $0.has("TRANSFERENCIA") },
         Rule(kind: .bankStatement) { $0.has("EXTRATO") && $0.has("SALDO", "MOVIMENTOS") }
@@ -209,15 +210,18 @@ public enum DocumentClassifier {
 
     /// How far into the text a contract's title starts (characters).
     static let contractTitleReach = 100
+    /// How much of the text's start is checked for wording that isn't a contract's (characters).
+    static let contractTitleSurroundings = 150
 
     /// A tenancy contract's title: a line among the first that opens with "Contrato de
     /// arrendamento", within the first words; not a finance lease, with no tax, building,
-    /// insurance, debit or payment wording near it.
+    /// insurance, debit or payment wording in its first 150 characters.
     static func isRentContractTitle(_ subject: Subject) -> Bool {
         guard subject.firstLines.contains(where: { $0.hasPrefix("CONTRATO DE ARRENDAMENTO") }),
               let range = subject.text.range(of: "CONTRATO DE ARRENDAMENTO"),
               subject.text.distance(from: subject.text.startIndex, to: range.lowerBound) <= contractTitleReach else { return false }
-        let top = subject.top(300)
+        // The title's own surroundings only: a contract's clauses mention all of these.
+        let top = subject.top(contractTitleSurroundings)
         if top.isIRS || top.isIMI { return false }
         return !top.has("CONDOMINIO", "SEGURO", "FINANCEIRO", "DEBITO", "PAGAMENTO", "REFERENCIA", "VALOR A PAGAR",
                         "FATURA", "FACTURA", "RECIBO", "INVOICE", "COMPROVATIVO", "NOTA DE COBRANCA", "DOCUMENTO DE COBRANCA")
