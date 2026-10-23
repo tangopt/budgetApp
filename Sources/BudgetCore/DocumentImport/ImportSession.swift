@@ -462,17 +462,26 @@ public final class ImportSession {
     /// filed return would move, the plan is out of date) nothing is written and the review
     /// stays open with why.
     public func confirm(confirmedBy: Int64?) {
-        guard phase == .review, plan != nil else { return }
+        guard phase == .review, let reviewed = plan else {
+            logger.notice("Confirm import ignored: no review open (\(String(describing: self.phase), privacy: .public))")
+            return
+        }
         let previous = resolutionChain
         let applier = applier
         let pipeline = pipeline
         let entryPoint = reviewEntryPoint ?? "Import"
         let now = now()
+        logger.notice("Confirm import: \(reviewed.items.count, privacy: .public) items from \(entryPoint, privacy: .public)")
         phase = .applying
         problem = nil
         spawn { [weak self] in
             await previous?.value
-            guard let self, let plan = self.plan else { return }
+            guard let self else { return }
+            guard let plan = self.plan else {
+                // Never left showing "Importing" with nothing said: the review went meanwhile.
+                self.applyFinished(.failure(ImportApplyError.notConfirmable))
+                return
+            }
             let result = await Task.detached(priority: .userInitiated) { () -> Result<ImportRunSummary, Error> in
                 Result { try applier.apply(plan, entryPoint: entryPoint, reasons: plan.resolutionReasons, confirmedBy: confirmedBy, now: now) }
             }.value
@@ -493,6 +502,7 @@ public final class ImportSession {
     private func applyFinished(_ result: Result<ImportRunSummary, Error>, rechecked: ImportPlan? = nil) {
         switch result {
         case .success(let summary):
+            logger.notice("Import confirmed: run \(summary.runId, privacy: .public), \(summary.filed, privacy: .public) filed, \(summary.linked, privacy: .public) linked, \(summary.recorded, privacy: .public) recorded, \(summary.transactions, privacy: .public) transactions")
             closeReview()
             phase = .finished(summary)
             selectedRunId = summary.runId
@@ -505,10 +515,12 @@ public final class ImportSession {
                 plan = rechecked
                 if let held = rechecked.items.first(where: \.isHeldByFiledYear) { selectedItemId = held.id }
             }
-            problem = Self.problem(for: error, held: rechecked?.items.filter(\.isHeldByFiledYear).map(\.title) ?? [])
-            if case ImportApplyError.notConfirmable = error {} else {
-                logger.error("Applying the import failed: \(String(describing: error), privacy: .public)")
-            }
+            let shown = Self.problem(for: error, held: rechecked?.items.filter(\.isHeldByFiledYear).map(\.title) ?? [])
+            problem = shown
+            // No review left to show the problem in: the failure is the phase.
+            if plan == nil { phase = .failed(shown.title) }
+            // Every failed Confirm is logged, the ones the review explains too: nothing was imported.
+            logger.error("Confirm import failed, nothing was imported: \(String(describing: error), privacy: .public)")
         }
         startQueued()
     }

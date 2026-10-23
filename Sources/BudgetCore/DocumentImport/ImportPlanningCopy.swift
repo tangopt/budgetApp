@@ -7,6 +7,12 @@ import GRDB
 /// temporary file, which is deleted when the copy is released. Nothing ever keeps a write on
 /// it (every pass rolls back), so what is read from it once — the library's identity index —
 /// holds for its lifetime.
+///
+/// The copies hold personal data, so none outlives its process: each process keeps its copies
+/// in a folder of its own (`processFolder`), removed when the process exits normally (an
+/// `atexit` handler: the app quitting, a test run ending); the folders of processes that ended
+/// any other way (a crash, a force quit) are swept by `removeStale` — at launch and whenever a
+/// copy is taken.
 final class ImportPlanningCopy: @unchecked Sendable {
     // @unchecked: `index` is guarded by `lock`; the queue is GRDB's (serialised).
     let dbQueue: DatabaseQueue
@@ -14,15 +20,33 @@ final class ImportPlanningCopy: @unchecked Sendable {
     private let lock = NSLock()
     private var index: DocumentIdentityIndex?
 
-    /// The folder holding the copies (in the process's temporary directory).
+    /// The folder holding every process's copies (in the temporary directory).
     static var folder: URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("BudgetImportPlanning", isDirectory: true)
     }
 
+    private static let processPrefix = "process-"
+
+    /// This process's copies: `<folder>/process-<pid>`.
+    static var processFolder: URL { processFolder(pid: getpid()) }
+
+    static func processFolder(pid: pid_t) -> URL {
+        folder.appendingPathComponent("\(processPrefix)\(pid)", isDirectory: true)
+    }
+
+    /// Registers the exit handler that removes this process's folder (once per process).
+    private static let exitCleanup: Void = {
+        atexit {
+            // No captures (a C function pointer): the folder is worked out again here.
+            try? FileManager.default.removeItem(at: ImportPlanningCopy.processFolder)
+        }
+    }()
+
     init(of source: DatabaseQueue) throws {
-        try FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true)
+        _ = Self.exitCleanup
+        try FileManager.default.createDirectory(at: Self.processFolder, withIntermediateDirectories: true)
         Self.removeStale()
-        let path = Self.folder.appendingPathComponent("plan-\(UUID().uuidString).sqlite").path
+        let path = Self.processFolder.appendingPathComponent("plan-\(UUID().uuidString).sqlite").path
         self.path = path
         do {
             let queue = try DatabaseQueue(path: path)
@@ -39,16 +63,31 @@ final class ImportPlanningCopy: @unchecked Sendable {
         Self.remove(path)
     }
 
-    /// Copies left behind by a process that ended without releasing them (older than a day).
-    private static func removeStale(now: Date = Date()) {
+    /// Copies left behind by processes that ended without removing them: the folders of
+    /// processes no longer running, and copies at the top of `folder` (where builds before the
+    /// per-process folders put them) not touched for `legacyAge`. Returns how many it removed.
+    @discardableResult
+    static func removeStale(now: Date = Date(), legacyAge: TimeInterval = 60 * 60) -> Int {
         let fileManager = FileManager.default
-        guard let names = try? fileManager.contentsOfDirectory(atPath: folder.path) else { return }
-        for name in names where name.hasPrefix("plan-") {
+        guard let names = try? fileManager.contentsOfDirectory(atPath: folder.path) else { return 0 }
+        var removed = 0
+        for name in names {
             let url = folder.appendingPathComponent(name)
-            guard let modified = (try? fileManager.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
-                  now.timeIntervalSince(modified) > 24 * 60 * 60 else { continue }
-            try? fileManager.removeItem(at: url)
+            if name.hasPrefix(processPrefix) {
+                guard let pid = pid_t(name.dropFirst(processPrefix.count)), pid != getpid(), !isRunning(pid) else { continue }
+                if (try? fileManager.removeItem(at: url)) != nil { removed += 1 }
+            } else if name.hasPrefix("plan-") {
+                guard let modified = (try? fileManager.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+                      now.timeIntervalSince(modified) > legacyAge else { continue }
+                if (try? fileManager.removeItem(at: url)) != nil { removed += 1 }
+            }
         }
+        return removed
+    }
+
+    /// Whether process `pid` is running (one that can't be signalled — another user's — counts as running).
+    static func isRunning(_ pid: pid_t) -> Bool {
+        kill(pid, 0) == 0 || errno == EPERM
     }
 
     private static func remove(_ path: String) {

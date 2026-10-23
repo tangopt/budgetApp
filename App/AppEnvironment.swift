@@ -75,6 +75,15 @@ final class AppEnvironment: ObservableObject {
     static func load() async throws -> AppEnvironment {
         loadCount += 1
         Logger(subsystem: "com.personal.budget", category: "Launch").info("Loading the environment (load #\(loadCount, privacy: .public))")
+        if loadCount == 1 {
+            // Planning copies of the database (personal data) left by a crash or a force quit go.
+            Task.detached(priority: .utility) {
+                let removed = ImportPipeline.removeStalePlanningCopies()
+                if removed > 0 {
+                    Logger(subsystem: "com.personal.budget", category: "Launch").notice("Removed \(removed, privacy: .public) stale import planning copies")
+                }
+            }
+        }
         let (dbQueue, dbPath, auth) = try await Task.detached(priority: .userInitiated) {
             let dbPath: String
             if let override = ProcessInfo.processInfo.environment["BUDGET_DB_PATH"], !override.isEmpty {

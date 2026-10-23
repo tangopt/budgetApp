@@ -120,7 +120,7 @@ public struct ImportApplier: Sendable {
         }
     }
 
-    private static let log = Logger(subsystem: "Budget", category: "Import")
+    private static let log = Logger(subsystem: "com.personal.budget", category: "DocumentImport")
 
     /// Runs `body` inside the security scope of each source folder in `folderIds`, with where
     /// each folder is now (its bookmark followed). A folder no longer registered refuses the plan.
