@@ -57,12 +57,17 @@ final class InlineTouchIDPrompt: BiometricPromptContext {
 /// The Touch ID glyph that listens for a finger, in the lock screen. The snapshot build draws a stand-in
 /// (the embedded view can render blank off screen, and the snapshots never ask this Mac for Touch ID) at the
 /// same size.
+///
+/// `LAAuthenticationView` checks that it's really visible while it listens (an AppKit occlusion-detection
+/// view inside it, plus watching its ancestors' `alphaValue` and `isHidden`) and drops its glyph whenever it
+/// thinks it's covered. So its square is left alone: nothing clips it, nothing is drawn over it, nothing above
+/// it is translucent, and it has a margin of clear space round the glyph.
 struct InlineTouchIDView: View {
     let prompt: InlineTouchIDPrompt
     @Environment(\.theme) private var theme
 
-    /// The square the glyph sits in, centred.
-    static let side: CGFloat = 44
+    /// The square the glyph sits in, centred, with clear space all round it.
+    static let side: CGFloat = 56
     /// `LAAuthenticationView` pins its own width to its control size with a required constraint (mini 16,
     /// small 32, regular 64, large 128 pt) and draws at that size whatever frame it's given: `.small` is the
     /// one that fits the square.
@@ -106,17 +111,20 @@ private struct EmbeddedTouchID: NSViewRepresentable {
 
 private final class PairingContainer: NSView {
     private let prompt: InlineTouchIDPrompt
+    private let touchID: LAAuthenticationView
+    /// Only when `auth.diagnoseTouchIDGlyph` is on (`TouchIDGlyphDiagnostics`).
+    private let diagnostics: TouchIDGlyphDiagnostics?
 
     init(prompt: InlineTouchIDPrompt) {
         self.prompt = prompt
-        let side = InlineTouchIDView.side
-        super.init(frame: NSRect(x: 0, y: 0, width: side, height: side))
-        wantsLayer = true
-        layer?.masksToBounds = true
-        clipsToBounds = true
         // The view brings its own width (from the control size) and a square aspect: only its place is set
         // here, so no constraint of ours fights its own.
-        let touchID = LAAuthenticationView(context: prompt.context, controlSize: InlineTouchIDView.controlSize)
+        touchID = LAAuthenticationView(context: prompt.context, controlSize: InlineTouchIDView.controlSize)
+        diagnostics = TouchIDGlyphDiagnostics.isEnabled ? TouchIDGlyphDiagnostics(watching: touchID) : nil
+        let side = InlineTouchIDView.side
+        super.init(frame: NSRect(x: 0, y: 0, width: side, height: side))
+        // Nothing clipped: a clipping or masking ancestor can read as "covered" to the view's visibility check.
+        clipsToBounds = false
         touchID.translatesAutoresizingMaskIntoConstraints = false
         addSubview(touchID)
         NSLayoutConstraint.activate([
@@ -132,8 +140,14 @@ private final class PairingContainer: NSView {
         NSSize(width: InlineTouchIDView.side, height: InlineTouchIDView.side)
     }
 
+    override func layout() {
+        super.layout()
+        diagnostics?.layoutPassed()
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        diagnostics?.movedToWindow(window)
         if window != nil { prompt.paired() }
     }
 }
