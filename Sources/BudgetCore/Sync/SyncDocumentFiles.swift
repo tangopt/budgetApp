@@ -104,7 +104,7 @@ public enum SyncZoneKeys {
     /// The keyring a `zoneKey` record holds.
     public static func keyring(from wire: SyncWireRecord) throws -> Keyring {
         guard wire.recordType == recordType, let data = wire.encryptedFields[keysField] else { throw SyncTransportError.unreadableRecord(wire.recordName) }
-        let keyring = try JSONDecoder().decode(Keyring.self, from: data)
+        guard let keyring = try? JSONDecoder().decode(Keyring.self, from: data) else { throw SyncTransportError.unreadableRecord(wire.recordName) }
         // Only 256-bit keys: anything else is a damaged or foreign record, never used to wrap.
         guard ([keyring.current] + keyring.retired).allSatisfy({ $0.keyData.count == 32 }) else {
             throw SyncTransportError.unreadableRecord(wire.recordName)
@@ -297,7 +297,13 @@ extension SyncEngineCore {
         }
         if let server {
             let now = clock()
-            return try await db.write { db in try SyncZoneKeys.adopt(server, zone: zone, db: db, now: now) }
+            do {
+                return try await db.write { db in try SyncZoneKeys.adopt(server, zone: zone, db: db, now: now) }
+            } catch SyncTransportError.unreadableRecord {
+                // The server's keyring can't be read here (final review I2): never replaced by a new one from
+                // here; the documents that need it wait.
+                throw SyncDocumentError.zoneKeyUnavailable
+            }
         }
         let local = try await db.read { db in try SyncZoneKeys.local(zone: zone, db: db) }
         guard create else {
@@ -467,10 +473,24 @@ extension SyncEngineCore {
 
     /// What a pull (or a refused save's merge) brought for document files: zone key records adopted, each
     /// document record's file reference kept (a deleted document's dropped), stragglers re-wrapped.
+    /// Returns how many zone key records couldn't be read (staged for attention).
+    @discardableResult
     static func takeDocumentFiles(zoneKeys: [SyncServerRecord], saves: [SyncPayload], deletions: [String], zone: String,
-                                  db: Database, now: Date) throws {
-        // The latest version of the zone key record (a feed lists it once).
-        for record in zoneKeys { try SyncZoneKeys.adopt(record, zone: zone, db: db, now: now) }
+                                  db: Database, now: Date) throws -> Int {
+        // The latest version of the zone key record (a feed lists it once). One that can't be read never rolls
+        // back the pull (final review I2): it is staged for attention with its type, the keyring here stays, and
+        // a readable version arriving later is adopted and clears it.
+        var unreadable = 0
+        for record in zoneKeys {
+            do {
+                try SyncZoneKeys.adopt(record, zone: zone, db: db, now: now)
+                try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ? AND tableName = ?",
+                               arguments: [record.wire.recordName, SyncZoneKeys.recordType])
+            } catch SyncTransportError.unreadableRecord {
+                try SyncTranslator.stageUnreadable(recordType: SyncZoneKeys.recordType, recordName: record.wire.recordName, db: db, now: now)
+                unreadable += 1
+            }
+        }
         for payload in saves where payload.recordType == "document" && payload.mergedInto == nil {
             if let reference = payload.documentFile {
                 try SyncDocumentFile.setReference(reference, uuid: payload.recordName, db: db, now: now)
@@ -481,6 +501,7 @@ extension SyncEngineCore {
             try SyncDocumentFile.setReference(nil, uuid: uuid, db: db, now: now)
         }
         _ = try rewrapStragglers(zone: zone, db: db, now: now)
+        return unreadable
     }
 
     /// The Mac keeps every file (sync spec §5.7): downloads each document's file missing from the library.

@@ -360,7 +360,7 @@ public enum SyncBatch {
     /// Applies the run's staged batch in one transaction when it is complete here (every count of its
     /// manifest met and every record of it able to apply); true when the batch is complete here (now or
     /// before), false while it waits. Inside the caller's transaction.
-    public static func applyIfComplete(runUuid: String, db: Database, deviceUser: String? = nil, now: Date = Date()) throws -> Bool {
+    static func applyIfComplete(runUuid: String, db: Database, deviceUser: String? = nil, now: Date = Date()) throws -> Bool {
         guard db.isInsideTransaction else { throw SyncTranslatorError.notInTransaction }
         return try SyncChangeTracker.applyingIncoming(db: db) {
             try flushIfComplete(run: runUuid, db: db, deviceUser: deviceUser, now: now).complete
@@ -372,7 +372,7 @@ public enum SyncBatch {
     /// still can't apply (its parent outside the batch is missing) waits in staging on its own. Returns the
     /// runs applied.
     @discardableResult
-    public static func flushClosed(db: Database, deviceUser: String? = nil, now: Date = Date()) throws -> [String] {
+    static func flushClosed(db: Database, deviceUser: String? = nil, now: Date = Date()) throws -> [String] {
         guard db.isInsideTransaction else { throw SyncTranslatorError.notInTransaction }
         return try SyncChangeTracker.applyingIncoming(db: db) {
             var flushed: [String] = []

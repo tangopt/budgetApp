@@ -162,8 +162,8 @@ final class SyncTranslatorTests: XCTestCase {
         let accountUUID = try a.uuid("account", accountId)
         let bAccount = try XCTUnwrap(try b.localId("account", accountUUID))
         // Both offline, both create transaction 812.
-        try a.queue.write { db in try transaction(db, account: accountId, batch: batch(db, account: accountId), "Made on A", id: 812) }
-        try b.queue.write { db in try transaction(db, account: bAccount, batch: batch(db, account: bAccount), "Made on B", id: 812) }
+        _ = try a.queue.write { db in try transaction(db, account: accountId, batch: batch(db, account: accountId), "Made on A", id: 812) }
+        _ = try b.queue.write { db in try transaction(db, account: bAccount, batch: batch(db, account: bAccount), "Made on B", id: 812) }
         let fromA = try a.push(), fromB = try b.push()
         try b.receive(fromA)
         try a.receive(fromB)
@@ -461,8 +461,8 @@ final class SyncTranslatorTests: XCTestCase {
 
     func testRecordMadeOnBothDevicesMergesUnderOneName() throws {
         // Both devices seed the built-in categories; both give them identities.
-        try a.queue.write { db in try SyncRecordStore.backfill(db: db) }
-        try b.queue.write { db in try SyncRecordStore.backfill(db: db) }
+        _ = try a.queue.write { db in try SyncRecordStore.backfill(db: db) }
+        _ = try b.queue.write { db in try SyncRecordStore.backfill(db: db) }
         let fromA = try a.push(), fromB = try b.push()
         let seeded = try a.queue.read { db in try Category.fetchCount(db) }
         XCTAssertGreaterThan(seeded, 0)
@@ -717,7 +717,7 @@ final class SyncTranslatorTests: XCTestCase {
         let propertyId = try a.queue.write { db -> Int64 in
             var property = Property(name: "Mortgaged", country: "PT")
             try property.insert(db)
-            var terms = PropertyMortgageTerms(propertyId: property.id!, revisionMonths: [3, 9])
+            let terms = PropertyMortgageTerms(propertyId: property.id!, revisionMonths: [3, 9])
             try terms.insert(db)
             return property.id!
         }
@@ -740,7 +740,7 @@ final class SyncTranslatorTests: XCTestCase {
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
         try DemoDatabase.build(dbQueue: demo.queue, evidenceRoot: evidence)
-        try demo.queue.write { db in try SyncRecordStore.backfill(db: db) }
+        _ = try demo.queue.write { db in try SyncRecordStore.backfill(db: db) }
         let exported = try demo.push()
         let rows = try demo.queue.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncRecord")! }
         XCTAssertEqual(exported.count, rows, "one payload per synced row")

@@ -28,9 +28,6 @@ import BudgetCore
 /// DEBUG `--sync-demo` launch argument with a demo database makes one (`SyncDemoMode`).
 final class CloudKitTransport: SyncTransport {
     static let containerIdentifier = "iCloud.ubberninja.mango"
-    /// Asset folders older than this, left by a crashed run, are swept when a transport is made.
-    static let staleAssetAge: TimeInterval = 24 * 60 * 60
-
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
     private let database: CKDatabase
@@ -43,20 +40,10 @@ final class CloudKitTransport: SyncTransport {
          now: Date = Date()) {
         self.database = database
         assetFolder = assetRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        Self.sweepStaleAssetFolders(in: assetRoot, now: now)
+        CloudKitAssetFolders.sweepStale(in: assetRoot, now: now)
     }
 
     deinit { try? FileManager.default.removeItem(at: assetFolder) }
-
-    /// Removes folders under `root` last modified more than `staleAssetAge` ago (ciphertext only, but not kept).
-    static func sweepStaleAssetFolders(in root: URL, now: Date) {
-        let fileManager = FileManager.default
-        guard let folders = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
-        for folder in folders {
-            let modified = (try? folder.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? now
-            if now.timeIntervalSince(modified) > staleAssetAge { try? fileManager.removeItem(at: folder) }
-        }
-    }
 
     func operationLimits() async -> SyncOperationLimits { CloudKitRecordMapping.operationLimits }
 
@@ -193,8 +180,17 @@ final class CloudKitTransport: SyncTransport {
     private func run(_ operation: CKDatabaseOperation, zone: String, perRecordResults: Bool,
                      configure: (@escaping @Sendable (Result<Void, Error>) -> Void) -> Void) async throws {
         operation.qualityOfService = .utility
+        // A task already cancelled never adds the operation: CloudKit isn't guaranteed to call the final block of an
+        // operation cancelled before it was added, which would leave the continuation waiting (final review M2).
+        // Note: `SyncEngineCore.serialized` runs each entry point in its own unstructured Task, so a caller's
+        // cancellation doesn't reach the transport today; this matters for direct callers and a later scheduler.
+        try Task.checkCancellation()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
                 configure { result in
                     switch result {
                     case .success:

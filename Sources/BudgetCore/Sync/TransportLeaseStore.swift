@@ -24,7 +24,7 @@ public struct TransportLeaseStore: LeaseStore {
         } catch SyncTransportError.zoneNotFound {
             return nil
         } catch let error as SyncTransportError {
-            throw LeaseStoreError.unavailable("\(error)")
+            throw Self.leaseError(error)
         }
         guard let server else { return nil }
         let fields = try server.wire.payload().fields
@@ -46,7 +46,7 @@ public struct TransportLeaseStore: LeaseStore {
             results = try await transport.save([try SyncWireRecord(payload)], ifUnchanged: systemFields.map { [Self.recordName: $0] } ?? [:],
                                                atomic: false)
         } catch let error as SyncTransportError {
-            throw LeaseStoreError.unavailable("\(error)")
+            throw Self.leaseError(error)
         }
         switch results.first?.outcome {
         case .saved(let stamp):
@@ -66,7 +66,16 @@ public struct TransportLeaseStore: LeaseStore {
         do {
             return try await transport.serverTime()
         } catch let error as SyncTransportError {
-            throw LeaseStoreError.unavailable("\(error)")
+            throw Self.leaseError(error)
+        }
+    }
+
+    /// What a transport failure means for the lease: signed out of iCloud or out of space reaches the caller as
+    /// it is (it needs the person, final review M3); anything else passes with time (`unavailable`).
+    static func leaseError(_ error: SyncTransportError) -> Error {
+        switch error {
+        case .notAuthenticated, .quotaExceeded: return error
+        default: return LeaseStoreError.unavailable("\(error)")
         }
     }
 

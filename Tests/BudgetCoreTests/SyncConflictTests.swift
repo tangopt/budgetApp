@@ -148,13 +148,13 @@ final class SyncConflictTests: XCTestCase {
             a = try SyncTestDevice("user-a")
             b = try SyncTestDevice("user-b")
             if joinedLater {
-                try b.queue.write { db in try account(db, "Current", main: true) }
+                _ = try b.queue.write { db in try account(db, "Current", main: true) }
                 pause()
-                try a.queue.write { db in try account(db, "Joint", main: true) }
+                _ = try a.queue.write { db in try account(db, "Joint", main: true) }
             } else {
-                try a.queue.write { db in try account(db, "Joint", main: true) }
+                _ = try a.queue.write { db in try account(db, "Joint", main: true) }
                 pause()
-                try b.queue.write { db in try account(db, "Current", main: true) }
+                _ = try b.queue.write { db in try account(db, "Current", main: true) }
             }
             let joint = try a.uuid("account", 1)
             _ = try b.push()
@@ -173,8 +173,8 @@ final class SyncConflictTests: XCTestCase {
     }
 
     func testAccountsWithTheSameNameAreBothKept() throws {
-        try a.queue.write { db in try account(db, "Savings") }
-        try b.queue.write { db in try account(db, "Savings") }
+        _ = try a.queue.write { db in try account(db, "Savings") }
+        _ = try b.queue.write { db in try account(db, "Savings") }
         let aSavings = try a.uuid("account", 1), bSavings = try b.uuid("account", 1)
         let fromA = try a.push()
         try b.receive(fromA)
@@ -452,7 +452,7 @@ final class SyncConflictTests: XCTestCase {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SyncOpen-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        try a.queue.write { db in try account(db, "From A") }
+        _ = try a.queue.write { db in try account(db, "From A") }
         let payload = try XCTUnwrap(try a.push().compactMap { change -> SyncPayload? in if case .save(let p) = change { return p }; return nil }.first)
         let path = folder.appendingPathComponent("db.sqlite").path
         do {
@@ -490,7 +490,7 @@ final class SyncConflictTests: XCTestCase {
 
     func testADeleteOfAParentStillReferencedHereIsKeptAndTheRestApplies() throws {
         let uuid = try sharedTransaction()
-        try a.queue.write { db in try account(db, "Other") }
+        _ = try a.queue.write { db in try account(db, "Other") }
         try b.receive(try a.push())
         let current = try a.uuid("account", 1), other = try a.uuid("account", 2)
         try set(a, "account", other, "alias", "edited")
@@ -533,8 +533,8 @@ final class SyncConflictTests: XCTestCase {
     // MARK: Minors
 
     func testSeededBuiltInCategoriesHaveTheSameUUIDOnEveryDevice() throws {
-        try a.queue.write { db in try SyncRecordStore.backfill(db: db) }
-        try b.queue.write { db in try SyncRecordStore.backfill(db: db) }
+        _ = try a.queue.write { db in try SyncRecordStore.backfill(db: db) }
+        _ = try b.queue.write { db in try SyncRecordStore.backfill(db: db) }
         let sql = "SELECT c.builtInRole || '=' || s.uuid FROM category c JOIN syncRecord s ON s.tableName = 'category' AND s.localId = c.id WHERE c.builtInRole IS NOT NULL ORDER BY 1"
         let fromA = try a.queue.read { db in try String.fetchAll(db, sql: sql) }
         XCTAssertFalse(fromA.isEmpty)

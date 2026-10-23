@@ -58,7 +58,10 @@ public enum CloudKitRecordMapping {
             // server holds exactly this record, as a whole-record replacement (FakeCloud) would.
             if let keys {
                 for key in keys.encrypted where wire.encryptedFields[key] == nil { record.encryptedValues[key] = nil }
-                for key in keys.plain where wire.assets[key] == nil && wire.encryptedFields[key] == nil { record[key] = nil }
+                // A plain key is cleared even when the new record has an encrypted field of that name (final review
+                // M4): no plaintext value may stay beside it. (A local CKRecord holds one value per key already; this
+                // makes the intent explicit.)
+                for key in keys.plain where wire.assets[key] == nil { record[key] = nil }
             }
         } else {
             record = CKRecord(recordType: wire.recordType, recordID: id)
@@ -320,6 +323,23 @@ public enum CloudKitSaveAssembly {
         records.map { wire in
             if let outcome = refused[wire.recordName] { return SaveResult(recordName: wire.recordName, outcome: outcome) }
             return taken[wire.recordName] ?? SaveResult(recordName: wire.recordName, outcome: .failed("no result"))
+        }
+    }
+}
+
+/// The CloudKit transport's temporary asset folders (`MangoSyncAssets/<instance>/<operation>`): ciphertext waiting for
+/// an upload. Each transport removes its own; folders a crashed run left behind are swept once a day old, so a live
+/// instance's folder is never touched (fix round 1 M6, tested per final review M5).
+public enum CloudKitAssetFolders {
+    public static let staleAge: TimeInterval = 24 * 60 * 60
+
+    /// Removes the folders under `root` last modified more than `staleAge` before `now`.
+    public static func sweepStale(in root: URL, now: Date) {
+        let fileManager = FileManager.default
+        guard let folders = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        for folder in folders {
+            let modified = (try? folder.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? now
+            if now.timeIntervalSince(modified) > staleAge { try? fileManager.removeItem(at: folder) }
         }
     }
 }

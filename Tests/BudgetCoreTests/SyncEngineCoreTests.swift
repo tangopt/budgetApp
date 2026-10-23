@@ -704,6 +704,26 @@ final class SyncEngineCoreTests: XCTestCase {
         } catch LeaseStoreError.unavailable {}
     }
 
+    /// Final review M3: signed out of iCloud, or out of space, isn't "try again later": it reaches the caller as it is.
+    func testTheLeaseStorePassesAccountFailuresThrough() async throws {
+        try await cloud.createZone("household")
+        let store = TransportLeaseStore(transport: cloud)
+        for failure in [SyncTransportError.notAuthenticated, .quotaExceeded] {
+            await cloud.failSaveOperations(after: 0, with: failure)
+            do {
+                _ = try await ImportLease.acquire(device: a.device, now: Date(), transport: store)
+                XCTFail("refused")
+            } catch let error as SyncTransportError {
+                XCTAssertEqual(error, failure)
+            }
+        }
+        await cloud.failSaveOperations(after: 0, with: .unavailable(retryAfter: 5))
+        do {
+            _ = try await ImportLease.acquire(device: a.device, now: Date(), transport: store)
+            XCTFail("busy")
+        } catch LeaseStoreError.unavailable {}
+    }
+
     func testUploadedPayloadsContainNoPlaintextAmountsOutsideEncryptedFields() async throws {
         try a.write { db in
             var account = Account(name: "Probe Account Zeta", currency: .gbp, kind: .cash, trackingMode: .imported)

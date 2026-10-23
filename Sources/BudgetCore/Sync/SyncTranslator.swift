@@ -115,12 +115,12 @@ public enum SyncTranslator {
 
     /// Applies one incoming record (and then whatever in staging it unblocks), in the caller's
     /// transaction. Same as `apply([.save(payload)])`.
-    public static func incoming(_ payload: SyncPayload, db: Database, deviceUser: String?, now: Date = Date()) throws -> IncomingResult {
+    static func incoming(_ payload: SyncPayload, db: Database, deviceUser: String?, now: Date = Date()) throws -> IncomingResult {
         try apply([.save(payload)], db: db, deviceUser: deviceUser, now: now)[payload.recordName] ?? .applied
     }
 
     /// Applies one incoming delete, in the caller's transaction.
-    public static func incomingDelete(recordName: String, recordType: String? = nil, db: Database, deviceUser: String?,
+    static func incomingDelete(recordName: String, recordType: String? = nil, db: Database, deviceUser: String?,
                                       now: Date = Date()) throws -> IncomingResult {
         try apply([.delete(recordName: recordName, recordType: recordType)], db: db, deviceUser: deviceUser, now: now)[recordName] ?? .applied
     }
@@ -137,7 +137,7 @@ public enum SyncTranslator {
     /// `retryAll`: retry every staged record, not only those the changes unblock (after an upgrade).
     /// `followOns`: false — only the changes themselves: no staged record is retried and no waiting batch
     /// applies (the filed-year check uses it to tell what a record does from what it lets through).
-    public static func apply(_ changes: [SyncIncomingChange], db: Database, deviceUser: String?, now: Date = Date(),
+    static func apply(_ changes: [SyncIncomingChange], db: Database, deviceUser: String?, now: Date = Date(),
                              retryAll: Bool = false, followOns: Bool = true) throws -> [String: IncomingResult] {
         guard db.isInsideTransaction else { throw SyncTranslatorError.notInTransaction }
         return try SyncChangeTracker.applyingIncoming(db: db) {
@@ -208,7 +208,7 @@ public enum SyncTranslator {
     /// attention and left. Returns the records that left staging and how.
     @discardableResult
     /// `only`: just these records (by UUID), once each.
-    public static func retryStaged(db: Database, deviceUser: String?, now: Date = Date(), arrived: Set<String>? = nil,
+    static func retryStaged(db: Database, deviceUser: String?, now: Date = Date(), arrived: Set<String>? = nil,
                                    only: Set<String>? = nil) throws -> [String: IncomingResult] {
         try SyncChangeTracker.applyingIncoming(db: db) {
             var results: [String: IncomingResult] = [:]
@@ -409,7 +409,7 @@ public enum SyncTranslator {
                                       now: Date) throws -> IncomingResult {
         try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [old])
         let row = try SyncRecordStore.localId(table: schema.name, uuid: old, db: db)
-        if let row {
+        if row != nil {
             if try SyncRecordStore.localId(table: schema.name, uuid: target, db: db) == nil {
                 try SyncMerge.rekey(from: old, to: target, db: db)
             } else {

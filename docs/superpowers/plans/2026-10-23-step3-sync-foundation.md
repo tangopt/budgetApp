@@ -190,7 +190,13 @@ Nothing is sent to iCloud in this step.
 
 ## Result
 
-(filled in after the rehearsal)
+Rehearsal on a copy of the real DB, 2026-10-23: PASSED — 67/67 existing tables identical; tax figures for every stored year 2015–2024 and 2020/21–2024/25 unchanged; 7,595 records, 229.77 MB (fields 4.33 MB; 625 sealed documents 225.44 MB; largest record 3.9 MB); no value outside encrypted fields; checked apply into an empty DB 3.58 s, 0 staged/held; SelfAssessmentRegression (2020–2025 settings) identical on the original and migrated copies.
+
+Rulings that refine the spec (recorded there too):
+- **R11** (§3): the CloudKit transport uses `CKDatabase` operations, not `CKSyncEngine`.
+- **R12** (§5.4, §5.7): after a full refetch, local synced rows missing from the server are re-uploaded and logged needs-attention, never deleted.
+- **R13** (§5.4): the protected years are 2020/21–2024/25 ∪ every year stored filed or paid; a change moving a (year, person) out of filed/paid is held like a figure move. The check holds only the offending records (and their batch) and applies the rest, instead of "writing nothing more".
+- **R14** (§4.2, §9.1): a sealed file travels as its own `documentFile` record (asset = ciphertext only); the wrapped data key and the file record's name stay in the document record's encrypted fields.
 
 ## Prerequisite recorded for later steps (ruling R10, 2026-10-23)
 
@@ -198,6 +204,10 @@ Transaction fingerprints embed the importing device's local account id, so the s
 - a new column computed from the account's UUID;
 - existing rows backfilled by re-deriving each row's occurrence number against its stored local fingerprint, with no existing value changed;
 - used by sync identity and by every importer's duplicate check.
+
+## Follow-ups recorded by the final review (2026-10-23)
+- **Tools opening the real database (step 4+, before sync is on):** the one-off tools in `Sources/` open the database with their own `DatabaseQueue` and skip `PRAGMA recursive_triggers = ON`, which `DatabaseManager` sets. Their writes are still tracked (ordinary AFTER triggers fire), but a REPLACE-style delete there would leave no tombstone. None does a REPLACE today; when sync turns on, give the tools' shared open path the same pragma (or open through `DatabaseManager`).
+- **Cancellation (step 4 scheduler):** `SyncEngineCore.serialized` runs each entry point in its own unstructured `Task`, so cancelling the caller doesn't cancel the sync or reach the transport. The CloudKit transport now checks cancellation before adding an operation and cancels a running one; the scheduler should keep the entry point's task (or pass cancellation through) if a sync must be stoppable.
 
 ## Step-6 follow-up recorded by Task 6 (2026-10-23)
 - Records held by the post-sync filed-year check (`FiledYearSyncCheck.held`, reasons "needs attention: … filed tax year") stay in `syncStaging` and are never retried. A held import batch stays held whole (`SyncBatch` skips a run with a held record), and its local edits wait (push holds back staged UUIDs). Step 6 needs a "release held" action (after a person confirms) that re-feeds the held payloads — the rows keep the full payloads and run UUIDs — so a held batch can come back; children waiting on a held parent come back with it.

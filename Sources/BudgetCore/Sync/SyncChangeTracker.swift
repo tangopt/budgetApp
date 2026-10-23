@@ -90,7 +90,7 @@ public enum SyncChangeTracker {
     /// Runs `body`, which applies incoming records, without tracking its writes: they came from the
     /// cloud and must not be queued to go back. The marker row is removed before `body`'s transaction
     /// can commit (on success and on a throw), so it can't outlive it.
-    public static func applyingIncoming<T>(db: Database, _ body: () throws -> T) throws -> T {
+    static func applyingIncoming<T>(db: Database, _ body: () throws -> T) throws -> T {
         guard db.isInsideTransaction else { throw SyncChangeTrackerError.notInTransaction }
         let outermost = try !Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncApplying)")!
         guard outermost else { return try body() }

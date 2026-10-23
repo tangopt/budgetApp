@@ -301,6 +301,42 @@ final class CloudKitRecordMappingTests: XCTestCase {
         XCTAssertEqual(try CloudKitRecordMapping.wire(from: plain), small)
     }
 
+    /// Final review M4: a plain value the old version held under a name that is now an encrypted field is cleared
+    /// too, so no plaintext stays beside the encrypted value.
+    func testAPlainKeyNamedLikeANewEncryptedFieldIsCleared() throws {
+        let wire = try wire()
+        let server = try CloudKitRecordMapping.record(from: wire, systemFields: nil, assetDirectory: assets)
+        server.encryptedValues["f_name"] = nil
+        server["f_name"] = "plain text" as NSString
+        let stamp = CloudKitRecordMapping.stamp(of: server)
+        let rebuilt = try CloudKitRecordMapping.record(from: wire, systemFields: stamp.systemFields, assetDirectory: assets)
+        XCTAssertTrue(rebuilt.changedKeys().contains("f_name"), "\(rebuilt.changedKeys())")
+        XCTAssertEqual(rebuilt.encryptedValues["f_name"] as? Data, wire.encryptedFields["f_name"])
+        XCTAssertEqual(try CloudKitRecordMapping.wire(from: rebuilt).unencryptedFields, [:])
+        XCTAssertEqual(try CloudKitRecordMapping.wire(from: rebuilt), wire)
+    }
+
+    /// Final review M5: the asset folder sweep removes only folders older than the age, never a live one.
+    func testTheStaleAssetSweepRemovesOnlyOldFolders() throws {
+        let root = assets.appendingPathComponent("MangoSyncAssets", isDirectory: true)
+        let now = Date()
+        var folders: [String: URL] = [:]
+        for (name, age) in [("old", 2 * 86_400.0), ("fresh", 3_600.0), ("edge", 86_400.0 - 60)] {
+            let folder = root.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data([1, 2, 3]).write(to: folder.appendingPathComponent("asset"))
+            try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-age)], ofItemAtPath: folder.path)
+            folders[name] = folder
+        }
+        CloudKitAssetFolders.sweepStale(in: root, now: now)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folders["old"]!.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folders["fresh"]!.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folders["edge"]!.path))
+        // A missing root is fine.
+        CloudKitAssetFolders.sweepStale(in: root.appendingPathComponent("missing"), now: now)
+        XCTAssertEqual(CloudKitAssetFolders.staleAge, 86_400)
+    }
+
     // MARK: M10 save assembly
 
     func testAnAtomicSaveWithARecordThatCantBeBuiltSendsNothing() throws {

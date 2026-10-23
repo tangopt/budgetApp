@@ -321,7 +321,7 @@ public actor SyncEngineCore {
                 }
             }
             // Document files (sync spec §9.1): the zone key adopted, each document's file reference kept.
-            try Self.takeDocumentFiles(zoneKeys: keyRecords, saves: incoming.compactMap { if case .save(let payload) = $0 { return payload } else { return nil } },
+            report.unreadable += try Self.takeDocumentFiles(zoneKeys: keyRecords, saves: incoming.compactMap { if case .save(let payload) = $0 { return payload } else { return nil } },
                                        deletions: ordered.compactMap { if case .delete = $0.1 { return $0.0 } else { return nil } },
                                        zone: zone, db: db, now: now)
             if let reconcile {
@@ -464,6 +464,7 @@ public actor SyncEngineCore {
             }
         }
         let now = clock()
+        let saveResults = results
         let sentChanges = sent
         let unsent = nothingToSend
         let serverRecords = servers
@@ -476,7 +477,7 @@ public actor SyncEngineCore {
             // Server versions to merge (refused saves), applied together through the filed-year check below.
             var merges: [SyncPayload] = []
             var mergeStamps: [String: SyncServerStamp] = [:]
-            for result in results {
+            for result in saveResults {
                 guard let change = sentChanges[result.recordName] else { continue }
                 switch result.outcome {
                 case .saved(let stamp):

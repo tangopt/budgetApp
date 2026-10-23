@@ -193,6 +193,69 @@ final class DocumentSyncTests: XCTestCase {
         }
     }
 
+    /// Final review I2: a damaged zone key record never rolls back a pull. It is staged as unreadable (with its
+    /// type), the local keyring stays, the token moves on, the rest applies; a good version later is adopted.
+    func testADamagedZoneKeyRecordDoesntBlockThePull() async throws {
+        _ = try a.add("one.pdf", Self.bytes("one"))
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        let good = try await zoneKeys()
+        let keyName = SyncZoneKeys.recordName(zone: zone)
+        let held = try b.read { db in try SyncZoneKeys.local(zone: zone, db: db)?.keyring }
+        XCTAssertEqual(held, good)
+
+        // Another build (or corruption) writes a keyring that isn't readable here.
+        let awaitedServer = await cloud.record(named: keyName)
+        let server = try XCTUnwrap(awaitedServer)
+        let damaged = SyncWireRecord(recordType: SyncZoneKeys.recordType, recordName: keyName, zone: zone,
+                                     encryptedFields: ["keys": Data("not a keyring".utf8)])
+        let saved = try await cloud.save([damaged], ifUnchanged: [keyName: server.stamp.systemFields], atomic: false)
+        guard case .saved = saved.first?.outcome else { return XCTFail("damaged version saved") }
+        let (_, other) = try a.add("two.pdf", Self.bytes("two"))
+        try await a.engine.pushPending()
+
+        let pulled = try await b.engine.pull()
+        XCTAssertEqual(pulled.unreadable, 1)
+        XCTAssertNotNil(try b.document(uuid: other), "the rest of the pull applied")
+        try b.read { db in
+            XCTAssertEqual(try SyncZoneKeys.local(zone: zone, db: db)?.keyring, good, "the local keyring stays")
+            let staged = try XCTUnwrap(try SyncStagingRow.filter(Column("uuid") == keyName).fetchOne(db))
+            XCTAssertEqual(staged.tableName, SyncZoneKeys.recordType)
+            XCTAssertTrue(staged.reason.hasPrefix(SyncTranslator.needsAttention))
+        }
+        // The token moved on: the next pull doesn't meet the damaged version again.
+        let again = try await b.engine.pull()
+        XCTAssertEqual(again.unreadable, 0)
+        XCTAssertEqual(again.received, 0)
+
+        // A good version later is adopted, and the attention row goes.
+        let awaitedDamaged = await cloud.record(named: keyName)
+        let current = try XCTUnwrap(awaitedDamaged)
+        _ = try await cloud.save([try SyncZoneKeys.wire(good, zone: zone)], ifUnchanged: [keyName: current.stamp.systemFields], atomic: false)
+        let fixed = try await b.engine.pull()
+        XCTAssertEqual(fixed.unreadable, 0)
+        try b.read { db in
+            XCTAssertEqual(try SyncZoneKeys.local(zone: zone, db: db)?.keyring, good)
+            XCTAssertEqual(try SyncStagingRow.filter(Column("uuid") == keyName).fetchCount(db), 0)
+        }
+    }
+
+    /// Final review I2: a push that needs the zone key while the server's is unreadable defers its documents.
+    func testADamagedZoneKeyDefersDocumentsInsteadOfFailingThePush() async throws {
+        let keyName = SyncZoneKeys.recordName(zone: zone)
+        try await a.engine.pull()
+        _ = try await cloud.save([SyncWireRecord(recordType: SyncZoneKeys.recordType, recordName: keyName, zone: zone,
+                                                 encryptedFields: ["keys": Data("not a keyring".utf8)])], ifUnchanged: [:], atomic: false)
+        let (_, uuid) = try a.add("later.pdf", Self.bytes("later"))
+        let report = try await a.engine.pushPending()
+        XCTAssertGreaterThan(report.documentsDeferred, 0, "counted per try")
+        XCTAssertEqual(report.documentsSealed, 0)
+        let pending = try a.read { db in try SyncChangeTracker.pending(db: db).map(\.uuid) }
+        XCTAssertTrue(pending.contains(uuid), "it waits, still pending")
+        let awaitedKeys = await stored(type: SyncZoneKeys.recordType)
+        XCTAssertEqual(awaitedKeys.first?.encryptedFields["keys"], Data("not a keyring".utf8), "never replaced from here")
+    }
+
     func testDocumentArrivesOnTheMacDecryptedWithItsHashUnchanged() async throws {
         let plaintext = Self.bytes("arrives")
         let (document, uuid) = try a.add("rent.pdf", plaintext)
