@@ -26,13 +26,20 @@ public enum BiometricUnlockError: Error, Equatable, Sendable, LocalizedError {
         switch self {
         case .unavailable: "Touch ID isn't available on this Mac."
         case .notEnrolled: "Touch ID isn't on for you on this Mac."
+        // The status code itself goes to the log (App/Auth/BiometricUnlock.swift), not into the sentence.
         case .keychain(let status):
-            "The Keychain refused it (\(Self.keychainMessage(status) ?? "error"), \(status))."
+            Self.keychainMessage(status).map { "The Keychain refused it: \($0)." } ?? "The Keychain refused it."
         }
     }
 
+    /// The system's wording, without its own full stop, or nil when it has none.
     private static func keychainMessage(_ status: OSStatus) -> String? {
-        SecCopyErrorMessageString(status, nil) as String?
+        guard var message = SecCopyErrorMessageString(status, nil) as String? else { return nil }
+        message = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        while message.hasSuffix(".") { message.removeLast() }
+        // An unknown code comes back as "OSStatus <n>": no words for the user, the code is in the log.
+        guard !message.isEmpty, !message.contains("OSStatus"), !message.contains("\(status)") else { return nil }
+        return message
     }
 }
 

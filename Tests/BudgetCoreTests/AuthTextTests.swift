@@ -33,4 +33,12 @@ final class AuthTextTests: XCTestCase {
         XCTAssertFalse(PasswordStrength.tooShort.isAcceptable)
         XCTAssertTrue(PasswordStrength.weak.isAcceptable)
     }
+
+    func testSentenceEndsWithOneFullStop() {
+        XCTAssertEqual(AuthText.sentence("The Keychain refused it"), "The Keychain refused it.")
+        XCTAssertEqual(AuthText.sentence("The Keychain refused it."), "The Keychain refused it.")
+        XCTAssertEqual(AuthText.sentence("Done.. "), "Done.")
+        XCTAssertEqual(AuthText.sentence("Really?"), "Really?")
+        XCTAssertEqual(AuthText.sentence("  "), "")
+    }
 }

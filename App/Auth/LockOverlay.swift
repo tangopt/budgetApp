@@ -21,17 +21,6 @@ extension View {
     }
 }
 
-extension View {
-    /// A toolbar item under the lock screen: keeps its place (so the toolbar, and the window, keep their
-    /// size) but can't be seen, clicked, focused or read out.
-    func lockCoverHidden(_ covered: Bool) -> some View {
-        opacity(covered ? 0 : 1)
-            .disabled(covered)
-            .allowsHitTesting(!covered)
-            .accessibilityHidden(covered)
-    }
-}
-
 extension EnvironmentValues {
     /// The lock screen covers this window: views hosted apart from the root (the sidebar column, the
     /// toolbar, the title) hide themselves.
@@ -249,7 +238,7 @@ final class LockScreenModel: ObservableObject {
             step = .password
             message = "Touch ID isn't on for you here any more. Enter your password."
         case .failed(let error):
-            message = "Touch ID didn't work: \(error) Enter your password."
+            message = "Touch ID didn't work: \(AuthText.sentence(error)) Enter your password."
             step = .password
         }
     }
@@ -318,7 +307,7 @@ final class LockScreenModel: ObservableObject {
             session.finishOffer()
         } catch {
             // Shown on the offer, which stays up so it's read; "Not Now" carries on.
-            message = "Couldn't turn on Touch ID: \(error.localizedDescription)"
+            message = "Couldn't turn on Touch ID: \(AuthText.sentence(error.localizedDescription))"
         }
     }
 

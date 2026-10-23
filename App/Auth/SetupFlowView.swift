@@ -73,7 +73,7 @@ final class SetupModel: ObservableObject {
             admin = user
             if useTouchID && touchIDAvailable, let id = user.id {
                 do { try await biometrics.enrol(appUserId: id) } catch {
-                    self.error = "Couldn't turn on Touch ID: \(error.localizedDescription) You can turn it on in Settings ▸ Sign-in."
+                    self.error = "Couldn't turn on Touch ID: \(AuthText.sentence(error.localizedDescription)) You can turn it on in Settings ▸ Sign-in."
                 }
             }
             step = .recoveryKey(key: key, owner: nil)

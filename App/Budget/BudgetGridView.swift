@@ -377,7 +377,7 @@ struct BudgetGridView: View {
 
         }
         .padding()
-        .toolbar {
+        .screenToolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button("Export CSV…") {

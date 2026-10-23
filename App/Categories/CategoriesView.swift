@@ -135,7 +135,7 @@ struct CategoriesView: View {
             }
             .animation(.easeOut(duration: 0.2), value: panelSubject == nil)
         }
-        .toolbar {
+        .screenToolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     newGroupDraft = NewGroupDraft(selectedCategoryIds: movableIds(selectedCategoryIds), type: newGroupType)

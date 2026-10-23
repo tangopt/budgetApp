@@ -330,8 +330,12 @@ final class BiometricEnrolmentTests: XCTestCase {
 
     func testKeychainErrorsReadAsSentences() {
         XCTAssertEqual(BiometricUnlockError.unavailable.localizedDescription, "Touch ID isn't available on this Mac.")
-        let text = BiometricUnlockError.keychain(errSecInteractionNotAllowed).localizedDescription
-        XCTAssertTrue(text.contains("\(errSecInteractionNotAllowed)"), text)
-        XCTAssertFalse(text.contains("BudgetCore"), text)
+        for status in [errSecInteractionNotAllowed, errSecMissingEntitlement, errSecParam, OSStatus(-123_456)] {
+            let text = BiometricUnlockError.keychain(status).localizedDescription
+            XCTAssertTrue(text.hasPrefix("The Keychain refused it"), text)
+            XCTAssertTrue(text.hasSuffix(".") && !text.hasSuffix(".."), text)
+            XCTAssertFalse(text.contains("\(status)"), "the status code is for the log, not the user: \(text)")
+            XCTAssertFalse(text.contains("BudgetCore"), text)
+        }
     }
 }

@@ -39,7 +39,7 @@ struct ScenarioLabView: View {
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         // Window toolbar items live only while this screen is shown.
-        .toolbar {
+        .screenToolbar {
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $viewModel.tab) {
                     ForEach(Tab.allCases) { tab in Text(tab.rawValue).tag(tab) }

@@ -224,8 +224,8 @@ struct ContentView: View {
             // Replaced by the borderless toggle below.
             .toolbar(removing: .sidebarToggle)
             // The sidebar column is hosted apart from the window's root, so the lock overlay's own hiding
-            // doesn't reach it: it hides itself while covered.
-            .opacity(lockCovered ? 0 : 1)
+            // doesn't reach it: it hides itself while covered, and takes no clicks, focus or VoiceOver.
+            .lockCoverHidden(lockCovered)
         } detail: {
             Group {
                 switch selection {
@@ -296,7 +296,7 @@ struct ContentView: View {
             } isTargeted: { importDropTargeted = $0 }
             // The theme's window colour behind every screen (clear for Classic).
             .background(theme.windowBackground.ignoresSafeArea())
-            .toolbar {
+            .toolbar { // lock-cover: the window's own items, hidden in place (lockCoverHidden)
                 // Hidden and inert while the lock screen covers the window, but still there: a toolbar that
                 // empties or goes changes the window's frame, and the window must keep its size through a lock.
                 ToolbarItem(placement: .navigation) {
@@ -554,11 +554,15 @@ private struct SidebarFooter: View {
 /// its glass capsule.
 private struct SidebarToggleButton: View {
     @Binding var columnVisibility: NavigationSplitViewVisibility
+    /// Read here too: toolbar content may not inherit the root's `disabled`, and ⌃⌘S must not bring the
+    /// sidebar column back while the lock screen covers the window.
+    @Environment(\.isLockCovered) private var lockCovered
 
     private var sidebarShown: Bool { columnVisibility != .detailOnly }
 
     var body: some View {
         Button {
+            guard !lockCovered else { return }
             withAnimation { columnVisibility = sidebarShown ? .detailOnly : .all }
         } label: {
             Image(systemName: "sidebar.left")

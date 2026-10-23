@@ -65,7 +65,7 @@ struct UncategorizedView: View {
             }
         }
         .padding()
-        .searchable(text: $searchText, prompt: "Search descriptions")
+        .screenSearchable(text: $searchText, prompt: "Search descriptions")
     }
 
     /// Every transaction the given selection covers, in display order.

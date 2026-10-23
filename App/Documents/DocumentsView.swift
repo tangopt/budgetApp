@@ -46,7 +46,7 @@ struct DocumentsView: View {
         } message: { _ in
             Text("Mango deletes its copy and its links. The original file, if you still have it, isn't touched. This can't be undone.")
         }
-        .toolbar {
+        .screenToolbar {
             ToolbarItem(placement: .primaryAction) {
                 // The importer handed in: toolbar content may not inherit the environment.
                 ImportShortcutButton("Add documents…", systemImage: "doc.badge.plus", shortcut: .documents(dropped: false),
