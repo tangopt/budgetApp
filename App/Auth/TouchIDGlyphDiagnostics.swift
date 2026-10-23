@@ -12,7 +12,8 @@ import OSLog
 /// every change of `isHidden` and `alphaValue` of the view and of every view inside it, its subviews each
 /// second, the framework's own occlusion verdict (read-only, when the private view answers), what the window
 /// hit-tests at the glyph's centre, the layout passes per second, the window's occlusion state and key
-/// state, and when the view moves to or from a window.
+/// state, when the view moves to or from a window, and when the still copy behind it (`TouchIDGlyphUnderlay`)
+/// is shown or hidden.
 @MainActor
 final class TouchIDGlyphDiagnostics {
     nonisolated static let defaultsKey = "auth.diagnoseTouchIDGlyph"
@@ -38,6 +39,11 @@ final class TouchIDGlyphDiagnostics {
     private var stamp: String { String(format: "%.3f", Date().timeIntervalSince(started)) }
 
     func layoutPassed() { layoutPasses += 1 }
+
+    /// The still copy behind the glyph (`TouchIDGlyphUnderlay`) came up for a dip or went.
+    func underlay(shown: Bool, why: String) {
+        Self.log.info("[\(self.stamp, privacy: .public)] underlay \(shown ? "shown" : "hidden", privacy: .public): \(why, privacy: .public)")
+    }
 
     func movedToWindow(_ window: NSWindow?) {
         for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }

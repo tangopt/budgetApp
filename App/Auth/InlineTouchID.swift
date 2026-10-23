@@ -47,10 +47,17 @@ final class InlineTouchIDPrompt: BiometricPromptContext {
         for waiter in waiting { waiter.resume(returning: isPaired) }
     }
 
-    /// "Use password", another person picked, the lock screen gone: the try ends as a cancel.
+    /// Told when the try ends (`cancel`), after the context is invalidated: the glyph's view stops covering
+    /// for it (`TouchIDGlyphUnderlay.end`).
+    fileprivate var onEnd: (() -> Void)?
+
+    /// "Use password", another person picked, the lock screen gone, or the try answered: it ends as a cancel.
     func cancel() {
         context.invalidate()
         expire()
+        let ended = onEnd
+        onEnd = nil
+        ended?()
     }
 }
 
@@ -114,22 +121,35 @@ private final class PairingContainer: NSView {
     private let touchID: LAAuthenticationView
     /// Only when `auth.diagnoseTouchIDGlyph` is on (`TouchIDGlyphDiagnostics`).
     private let diagnostics: TouchIDGlyphDiagnostics?
+    /// A still copy behind the live glyph that covers its once-a-second dip (`TouchIDGlyphUnderlay`).
+    private let underlay: TouchIDGlyphUnderlay
 
     init(prompt: InlineTouchIDPrompt) {
         self.prompt = prompt
         // The view brings its own width (from the control size) and a square aspect: only its place is set
         // here, so no constraint of ours fights its own.
         touchID = LAAuthenticationView(context: prompt.context, controlSize: InlineTouchIDView.controlSize)
-        diagnostics = TouchIDGlyphDiagnostics.isEnabled ? TouchIDGlyphDiagnostics(watching: touchID) : nil
+        let diagnostics = TouchIDGlyphDiagnostics.isEnabled ? TouchIDGlyphDiagnostics(watching: touchID) : nil
+        self.diagnostics = diagnostics
+        let underlay = TouchIDGlyphUnderlay(live: touchID) { shown, why in diagnostics?.underlay(shown: shown, why: why) }
+        self.underlay = underlay
+        prompt.onEnd = { [weak underlay] in underlay?.end() }
         let side = InlineTouchIDView.side
         super.init(frame: NSRect(x: 0, y: 0, width: side, height: side))
         // Nothing clipped: a clipping or masking ancestor can read as "covered" to the view's visibility check.
         clipsToBounds = false
         touchID.translatesAutoresizingMaskIntoConstraints = false
+        // The copy first, so it's behind the live view; it takes the live view's frame exactly.
+        let copy = underlay.view
+        addSubview(copy)
         addSubview(touchID)
         NSLayoutConstraint.activate([
             touchID.centerXAnchor.constraint(equalTo: centerXAnchor),
             touchID.centerYAnchor.constraint(equalTo: centerYAnchor),
+            copy.leadingAnchor.constraint(equalTo: touchID.leadingAnchor),
+            copy.trailingAnchor.constraint(equalTo: touchID.trailingAnchor),
+            copy.topAnchor.constraint(equalTo: touchID.topAnchor),
+            copy.bottomAnchor.constraint(equalTo: touchID.bottomAnchor),
         ])
     }
 
@@ -145,9 +165,15 @@ private final class PairingContainer: NSView {
         diagnostics?.layoutPassed()
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        underlay.appearanceChanged()
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         diagnostics?.movedToWindow(window)
+        underlay.movedToWindow(window)
         if window != nil { prompt.paired() }
     }
 }
