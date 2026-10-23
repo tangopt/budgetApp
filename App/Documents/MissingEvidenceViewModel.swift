@@ -4,6 +4,7 @@ import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
 import GRDB
+import SwiftUI
 
 /// The Missing evidence screen (spec 2026-10-16 §7): the checklist for a UK tax year or a
 /// custom range (`MissingEvidence.items`), kept current by observing the database while the
@@ -79,7 +80,8 @@ final class MissingEvidenceViewModel: ObservableObject {
     @Published private(set) var entityTitles: [EvidenceEntity: String] = [:]
 
     private var observationTask: Task<Void, Never>?
-    private var isActive = false
+    private var demand = ObservationDemand()
+    private var isActive: Bool { demand.isWanted }
 
     init(dbQueue: DatabaseQueue, library: EvidenceLibrary, now: Date = AppClock.now) {
         self.dbQueue = dbQueue
@@ -94,15 +96,26 @@ final class MissingEvidenceViewModel: ObservableObject {
     // MARK: Lifecycle
 
     /// Starts observing (on appear): re-reads the choices and the tax years on offer.
-    func start() {
-        isActive = true
-        loadReferenceData()
-        restartObservation()
-    }
+    func start() { claim("screen") }
 
     /// Stops observing (on disappear), so imports elsewhere don't recompute the checklist.
-    func stop() {
-        isActive = false
+    /// A sheet still holding a claim keeps it running.
+    func stop() { release("screen") }
+
+    /// `holder` (the screen, or a sheet it presents) needs the live checklist and rules.
+    func claim(_ holder: String) {
+        let wasActive = isActive
+        demand.set(holder, wanted: true)
+        if !wasActive {
+            loadReferenceData()
+            restartObservation()
+        } else if observationTask == nil {
+            restartObservation()
+        }
+    }
+
+    func release(_ holder: String) {
+        guard !demand.set(holder, wanted: false) else { return }
         observationTask?.cancel()
         observationTask = nil
     }
@@ -386,5 +399,14 @@ final class MissingEvidenceViewModel: ObservableObject {
         var seen = Set<String>()
         return (named + defaults).filter { seen.insert($0.lowercased()).inserted }
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+}
+
+extension View {
+    /// Keeps the Missing evidence observation alive while this sheet shows (the screen behind
+    /// it may report a disappear once the sheet covers it).
+    func keepsEvidenceObserved(_ viewModel: MissingEvidenceViewModel, as holder: String) -> some View {
+        onAppear { viewModel.claim(holder) }
+            .onDisappear { viewModel.release(holder) }
     }
 }

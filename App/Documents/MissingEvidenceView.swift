@@ -79,15 +79,19 @@ struct MissingEvidenceView: View {
         }
         .sheet(item: $linking) { item in
             LinkEvidenceSheet(item: item, viewModel: viewModel)
+                .keepsEvidenceObserved(viewModel, as: "link")
         }
         .sheet(item: $waiving) { item in
             WaiveEvidenceSheet(item: item, viewModel: viewModel)
+                .keepsEvidenceObserved(viewModel, as: "waive")
         }
         .sheet(isPresented: $showingRules) {
             EvidenceRulesSheet(viewModel: viewModel)
+                .keepsEvidenceObserved(viewModel, as: "rules-sheet")
         }
         .sheet(isPresented: $seeding) {
             PropertyRulesSheet(viewModel: viewModel)
+                .keepsEvidenceObserved(viewModel, as: "property-rules")
         }
     }
 
