@@ -121,6 +121,22 @@ final class MortgageReceiptTests: XCTestCase {
         XCTAssertEqual(MortgageReceipt.Instalment(number: 25, total: 480).label, "25/480")
     }
 
+    func testInstalmentIsNeverAPageMarker() {
+        // A page marker before the instalment: the pair near "RECIBO", or with a loan's total, wins.
+        XCTAssertEqual(MortgageReceipt.instalment(text: "Pág. 1/2\nRECIBO DE EMPRÉSTIMO\n480/\n25", fileName: "x.pdf"), .init(number: 25, total: 480))
+        XCTAssertEqual(MortgageReceipt.instalment(text: "Pag 1/2\nN.º RECIBO : 7/36\nTOTAL DO RECIBO : 900,00", fileName: "x.pdf"),
+                       .init(number: 7, total: 36))
+        XCTAssertEqual(MortgageReceipt.instalment(text: (["Pág. 1/2"] + Self.receiptLines).joined(separator: "\n"), fileName: "scan.pdf"),
+                       .init(number: 25, total: 480))
+        XCTAssertEqual(MortgageReceipt.instalment(text: "Folha 1/2\nRECIBO DE EMPRÉSTIMO 25/480", fileName: "x.pdf"), .init(number: 25, total: 480))
+        XCTAssertEqual(MortgageReceipt.instalment(text: "Page 2/3 N.º RECIBO : 7/36", fileName: "x.pdf"), .init(number: 7, total: 36))
+        XCTAssertEqual(MortgageReceipt.instalment(text: "RECIBO Fl. 1/2 PRESTAÇÃO 12/360", fileName: "x.pdf"), .init(number: 12, total: 360))
+        // Only a page marker in the text: the file name's instalment, else none.
+        XCTAssertEqual(MortgageReceipt.instalment(text: "RECIBO DE EMPRÉSTIMO Pág. 1/2 TOTAL DO RECIBO : 900,00",
+                                                  fileName: "20250331 - Prestacao - Recibo 25:480.pdf"), .init(number: 25, total: 480))
+        XCTAssertNil(MortgageReceipt.instalment(text: "Página 1/2\nTOTAL DO RECIBO : 900,00", fileName: "x.pdf"))
+    }
+
     func testAnalyzerReadsTheReceipt() {
         let metadata = EvidenceAnalyzer.analyze(text: Self.receiptText, textStatus: .glyph, fileName: "scan.pdf").metadata
         XCTAssertEqual(metadata.kind, .mortgageReceipt)
@@ -172,6 +188,24 @@ final class MortgageReceiptTests: XCTestCase {
         late.docDate = Self.day("2025-03-24")
         let lateSuggestions = EvidenceMatcher.suggestions(document: late, transactions: transactions, accounts: [bbva], categories: [])
         XCTAssertTrue(lateSuggestions.allSatisfy { !$0.dateInWindow })
+    }
+
+    func testAMondayReceiptMatchesTheFridayDebit() {
+        // The debit's day fell on a weekend: debited Friday 2025-02-28, the receipt dated Monday 2025-03-03.
+        let receipt = EvidenceDocument(sha256: "x", storedRelativePath: "x/x.pdf", originalFileName: "x.pdf", byteCount: 1, kind: .mortgageReceipt,
+                                       docDate: Self.day("2025-03-03"), amountMinorUnits: 123_456, currency: .eur, addedAt: Date())
+        let transactions = [transaction(1, "2025-01-31", -123_456), transaction(2, "2025-02-28", -123_456), transaction(3, "2025-03-31", -123_456)]
+        let suggestions = EvidenceMatcher.suggestions(document: receipt, transactions: transactions, accounts: [bbva], categories: [])
+        XCTAssertEqual(EvidenceMatcher.confidentMatch(suggestions)?.transactionId, 2)
+        XCTAssertEqual(suggestions.filter(\.dateInWindow).map(\.transactionId), [2])
+        // Consecutive months of the same amount never cross: each receipt its own month's debit.
+        for (date, expected) in [("2025-01-31", Int64(1)), ("2025-03-31", Int64(3)), ("2025-04-01", Int64(3))] {
+            var other = receipt
+            other.docDate = Self.day(date)
+            let found = EvidenceMatcher.suggestions(document: other, transactions: transactions, accounts: [bbva], categories: [])
+            XCTAssertEqual(found.filter(\.dateInWindow).map(\.transactionId), [expected], date)
+            XCTAssertEqual(EvidenceMatcher.confidentMatch(found)?.transactionId, expected, date)
+        }
     }
 
     // MARK: Claims

@@ -58,6 +58,10 @@ public enum ImportNaming {
             documentKind = .mortgageReceipt
             name = MortgageReceipt.canonicalName(date: nameDate, instalment: text(.receiptNumber, facts).flatMap(MortgageReceipt.Instalment.init(label:)),
                                                  amountMinorUnits: money?.0, currency: money?.1)
+        case .evidence(.tenancyAddendum):
+            // Named after the tenancy it amends (the reference the reader gives it).
+            documentKind = .tenancyAddendum
+            name = TenancyAddendum.canonicalName(date: nameDate, tenancyLabel: reference)
         case .evidence(let evidenceKind):
             documentKind = evidenceKind
             name = build(area: area(of: evidenceKind), type: evidenceKind.displayName, detail: issuer, withPeriod: true)
@@ -82,7 +86,7 @@ public enum ImportNaming {
     static func area(of kind: DocumentKind) -> String {
         switch kind {
         case .mortgageNotice, .mortgageReceipt, .mortgageInterestStatement, .mortgageContract, .insuranceReceipt, .insurancePolicy, .imiNotice,
-             .imiPayment, .condominioReceipt, .rentReceipt, .rentContract, .utilityInvoice, .accountantInvoice, .legalInvoice,
+             .imiPayment, .condominioReceipt, .rentReceipt, .rentContract, .tenancyAddendum, .utilityInvoice, .accountantInvoice, .legalInvoice,
              .courtFee, .lettingAgentFee, .propertyDeed, .certificate:
             return "Property"
         case .p60, .p45, .p11d, .taxCodeNotice, .hmrcPaymentProof, .sa302, .taxReturn: return "Tax UK"

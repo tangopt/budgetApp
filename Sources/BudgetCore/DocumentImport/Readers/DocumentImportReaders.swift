@@ -631,6 +631,11 @@ public struct EvidenceDocumentReader: ImportReader {
             facts.append(ImportFact(field: .receiptNumber, value: .text(instalment.label), source: fromText ? source : .fileName,
                                     confidence: .certain, reason: "Instalment on the receipt"))
         }
+        // An addendum is linked to the tenancy it amends, never to a transaction.
+        if kind == .tenancyAddendum {
+            return try addendumItem(file: file, recognition: recognition, facts: facts, date: metadata.docDate, context: context,
+                                    targetLabel: targetLabel, db: db)
+        }
         var item = ImportItem(file: file, recognition: recognition, title: kind.displayName, facts: facts,
                               groupKey: "\(kind.displayName) documents")
         item.placement = ImportNaming.placement(kind: recognition.kind, facts: facts, file: file, persons: [])
@@ -677,6 +682,52 @@ public struct EvidenceDocumentReader: ImportReader {
         } else {
             item.notes.append("Not linked: no matching transaction yet")
         }
+        return item
+    }
+
+    /// A tenancy addendum (`TenancyAddendum`): linked as "Addendum" to the tenancy the user added
+    /// it to, else to the one it names (contract number, tenant) when a single one does; else the
+    /// user picks the tenancy, or files it without one. Named after the tenancy (a `.reference`
+    /// fact, so a renaming keeps it).
+    private func addendumItem(file: ImportFile, recognition: ImportRecognition, facts: [ImportFact], date: Date?, context: ImportContext,
+                              targetLabel: String?, db: Database) throws -> ImportItem {
+        let kind = DocumentKind.tenancyAddendum
+        var item = ImportItem(file: file, recognition: recognition, title: kind.displayName, facts: facts, groupKey: "\(kind.displayName) documents")
+        var tenancy: Tenancy?
+        if let target = context.intent.target {
+            if let label = targetLabel {
+                let isTenancy = target.entity.type == .tenancy
+                if isTenancy { tenancy = try Tenancy.fetchOne(db, key: target.entity.id) }
+                item.links = [ProposedLink(entity: target.entity, role: isTenancy ? TenancyAddendum.linkRole : target.role, label: label,
+                                           confidence: .certain, reasons: [context.intent.targetReason(label: label)])]
+            } else {
+                problem(&item, "The \(target.entity.type.displayName.lowercased()) you added it to no longer exists", offers: [.fileWithoutLink])
+            }
+        } else {
+            let candidates = try TenancyAddendum.candidates(db: db, text: file.text, date: date, propertyId: context.intent.propertyId)
+            if let match = TenancyAddendum.clearMatch(candidates, date: date), let id = match.tenancy.id {
+                tenancy = match.tenancy
+                item.links = [ProposedLink(entity: .tenancy(id), role: TenancyAddendum.linkRole, label: try entityLabel(db: db, .tenancy(id)),
+                                           confidence: .certain, reasons: match.reasons)]
+            } else {
+                let options = TenancyAddendum.options(candidates, date: date).compactMap(\.tenancy.id)
+                if options.isEmpty {
+                    item.notes.append("Not linked: no tenancy on record yet")
+                } else {
+                    let reason = options.count >= 2 && candidates.contains(where: \.identified)
+                        ? "\(options.count) tenancies fit equally well: which one does this addendum amend?"
+                        : "Which tenancy does this addendum amend?"
+                    item.issues.append(ImportIssue(id: "chooseTarget", kind: .chooseTarget(.tenancy, options: options), reason: reason,
+                                                   offers: [.fileWithoutLink]))
+                }
+            }
+        }
+        if let tenancy {
+            item.facts.append(ImportFact(field: .reference, value: .text(tenancy.referenceLabel), source: .matchedRecord, confidence: .certain,
+                                         reason: "The tenancy it amends"))
+        }
+        item.placement = ImportNaming.placement(kind: recognition.kind, facts: item.facts, file: file, persons: [])
+        if let date { item.title = "\(kind.displayName) of \(isoDay(date))" }
         return item
     }
 }

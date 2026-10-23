@@ -413,7 +413,8 @@ public enum ImportDuplicates {
     /// The first of a pair stays as it was; items a reader already marked, child rows and
     /// left-out items are left alone. Then transaction claims: items of one kind certain of the same transaction
     /// all need the user, and a certain link to a transaction that already has a document of
-    /// the same kind (in the library or this import) needs the user's go.
+    /// the same kind (in the library or this import) needs the user's go, as does a rent contract
+    /// certain of a tenancy that already has one (a tenancy's addenda never claim it).
     /// `library`: the library's index when already read from `db` (the pipeline reads it once
     /// per planning copy); else it is read here.
     /// What a later item may copy: a library document, or an item of the batch (`itemId`).
@@ -639,6 +640,9 @@ public enum ImportDuplicates {
         return kind
     }
 
+    /// The id prefix of "That tenancy already has a rent contract" (the tenancy's id follows).
+    static let tenancyHasContractPrefix = "tenancyHasContract."
+
     private static func annotateClaims(_ items: inout [ImportItem], db: Database) throws {
         // Items of one kind (one role, `claimRole`) certain of the same transaction: the user
         // decides (an invoice and its transfer proof or debit advice on one debit is normal).
@@ -689,6 +693,21 @@ public enum ImportDuplicates {
                 guard let existing else { continue }
                 let reason = "That transaction already has \(article(existing.kind.displayName)) (\(existing.name))"
                 items[i].issues.append(ImportIssue(id: "transactionHasDocument.\(link.entity.id)", kind: .readerProblem(reason), reason: reason,
+                                                   offers: [.acknowledge, .fileWithoutLink]))
+            }
+            // A contract certain of a tenancy that already has one (in the library, or another item
+            // of this import): two contracts of one tenancy ask. Its addenda never claim it.
+            for link in items[i].links where kind == .rentContract && link.entity.type == .tenancy && link.confidence == .certain {
+                var existing = try EvidenceLinks.documents(db: db, for: link.entity)
+                    .first { $0.kind == .rentContract && $0.sha256 != items[i].file.sha256 && !link.replacing.contains($0.id ?? 0) }?.displayName
+                if existing == nil {
+                    existing = items.indices.first { j in
+                        j != i && claimingKind(items[j]) == .rentContract && items[j].links.contains { $0.entity == link.entity }
+                    }.map { items[$0].file.fileName }
+                }
+                guard let existing else { continue }
+                let reason = "That tenancy already has a rent contract (\(existing))"
+                items[i].issues.append(ImportIssue(id: "\(tenancyHasContractPrefix)\(link.entity.id)", kind: .readerProblem(reason), reason: reason,
                                                    offers: [.acknowledge, .fileWithoutLink]))
             }
         }

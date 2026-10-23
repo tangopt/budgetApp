@@ -231,6 +231,7 @@ public enum ImportResolutions {
             for issue in accepting {
                 if case .chooseLink(let candidates) = issue.kind { dropped.formUnion(candidates.map(\.entity)) }
                 if let id = transactionId(inIssueId: issue.id) { dropped.insert(.transaction(id)) }
+                if let id = tenancyId(inIssueId: issue.id) { dropped.insert(.tenancy(id)) }
             }
             edited.issues.removeAll { accepting.contains($0) }
             if let corrected = accepting.first(where: { ImportDuplicates.isCorrectedVersion($0.id) }) {
@@ -318,7 +319,7 @@ public enum ImportResolutions {
 
     /// The target a correction can change on the item (`.chooseTarget`), when its reader reads
     /// one: an invoice's provider, a payroll form's person, a statement's account, a rent
-    /// receipt's tenancy, a receipts export's property.
+    /// receipt's (or a tenancy addendum's) tenancy, a receipts export's property.
     public static func correctableTarget(of item: ImportItem) -> ImportTargetKind? {
         switch item.recognition.kind {
         case .utilityInvoice: return .provider
@@ -326,6 +327,7 @@ public enum ImportResolutions {
         case .bankStatementCSV, .bankStatementPDF: return .account
         case .rentReceiptPDF: return .tenancy
         case .rentReceiptsExport: return .property
+        case .evidence(.tenancyAddendum): return .tenancy
         default: return nil
         }
     }
@@ -533,6 +535,12 @@ public enum ImportResolutions {
             return Int64(id.dropFirst(prefix.count))
         }
         return nil
+    }
+
+    /// The tenancy a duplicate-pass issue is about ("tenancyHasContract.<id>").
+    static func tenancyId(inIssueId id: String) -> Int64? {
+        guard id.hasPrefix(ImportDuplicates.tenancyHasContractPrefix) else { return nil }
+        return Int64(id.dropFirst(ImportDuplicates.tenancyHasContractPrefix.count))
     }
 
     /// A bank statement's own figures (read from it, checked by its rows: never confirmed by hand).

@@ -89,6 +89,8 @@ public struct ImportDetector: Sendable {
               case .evidence = ImportResolutions.importKind(for: kind, fileExtension: "") else { return nil }
         // A learnt rule's kind is the user's own answer: never overridden.
         guard recognition.ruleId == nil else { return nil }
+        // An addendum (if only by its name) is never declared the contract it amends.
+        guard !(kind == .rentContract && recognition.kind == .evidence(.tenancyAddendum)) else { return nil }
         let unrecognised: Bool
         switch recognition.kind {
         case .unknown, .evidence(.other): unrecognised = true
@@ -112,6 +114,8 @@ public struct ImportDetector: Sendable {
         // A rent receipt not in the portal's layout is still a rent receipt (Receipt ▸ Add/Replace
         // PDF…): filed as evidence and linked to the receipt the user picked.
         if Set([expected, found]) == Set([.rentReceiptPDF, .evidence(.rentReceipt)]) { return true }
+        // An addendum added from Tenancy ▸ Add contract… belongs to that tenancy too, beside its contract.
+        if expected == .evidence(.rentContract), found == .evidence(.tenancyAddendum) { return true }
         return expected == found
     }
 

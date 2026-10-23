@@ -19,6 +19,10 @@ public enum DocumentKind: String, Codable, CaseIterable, Sendable {
     case condominioReceipt
     case rentReceipt
     case rentContract
+    /// An addendum to a tenancy's contract ("Aditamento" / "Adenda" ao contrato de
+    /// arrendamento): a new rent or term. Filed on the contract's tenancy beside it; never
+    /// the contract the tenancy asks for, nor evidence of a transaction.
+    case tenancyAddendum
     case utilityInvoice
     case accountantInvoice
     case legalInvoice
@@ -66,6 +70,7 @@ extension DocumentKind {
         case .condominioReceipt: return "Condomínio receipt"
         case .rentReceipt: return "Rent receipt"
         case .rentContract: return "Rent contract"
+        case .tenancyAddendum: return "Tenancy addendum"
         case .utilityInvoice: return "Utility invoice"
         case .accountantInvoice: return "Accountant invoice"
         case .legalInvoice: return "Legal invoice"
