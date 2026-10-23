@@ -114,5 +114,6 @@ public final class DatabaseManager {
         registerImportRunMigration(&migrator)
         registerImportRuleMigration(&migrator)
         registerAppUserMigration(&migrator)
+        registerSyncMigration(&migrator)
     }
 }
