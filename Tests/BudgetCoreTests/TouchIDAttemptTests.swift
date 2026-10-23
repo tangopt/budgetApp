@@ -24,7 +24,11 @@ final class TouchIDAttemptTests: XCTestCase {
     }
 
     func testNoTouchIDIsUnavailable() {
-        for code in [LAError.Code.biometryNotAvailable, .biometryNotEnrolled, .passcodeNotSet, .biometryDisconnected, .biometryNotPaired] {
+        var codes: [LAError.Code] = [.biometryNotAvailable, .biometryNotEnrolled, .passcodeNotSet]
+        #if os(macOS)
+        codes += [.biometryDisconnected, .biometryNotPaired]  // macOS-only codes (unavailable in the iOS SDK)
+        #endif
+        for code in codes {
             XCTAssertEqual(end(code), .unavailable, "\(code)")
             XCTAssertEqual(end(code).unlockError, .unavailable)
         }

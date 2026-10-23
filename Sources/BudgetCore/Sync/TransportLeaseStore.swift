@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// `LeaseStore` over `SyncTransport` (sync spec §5.2): the lease is one `importLease` record in the zone,
@@ -5,16 +6,25 @@ import Foundation
 /// compare-and-set). The server's modification time and clock decide expiry where the transport knows
 /// them. A lost compare-and-set is `LeaseStoreError.changed`; anything that passes (no connection, a
 /// busy zone) is `.unavailable`.
+///
+/// Ruling R15: the record names a device, so it is sealed like every record (`FieldSealing`), under the zone key
+/// `sealingKey`; it is read with any key in `keys`. Without the key a lease can't be written here, and one sealed
+/// under a key not held here can't be read: both are `.unavailable` (the device waits for the household key).
 public struct TransportLeaseStore: LeaseStore {
     public static let recordType = "importLease"
     public static let recordName = "importLease"
 
     private let transport: any SyncTransport
     private let zone: String
+    private let sealingKey: SymmetricKey?
+    private let keys: [String: SymmetricKey]
 
-    public init(transport: any SyncTransport, zone: String = SyncRecordStore.householdZone) {
+    public init(transport: any SyncTransport, zone: String = SyncRecordStore.householdZone, sealingKey: SymmetricKey?,
+                keys: [String: SymmetricKey]) {
         self.transport = transport
         self.zone = zone
+        self.sealingKey = sealingKey
+        self.keys = keys
     }
 
     public func currentLease() async throws -> StoredLease? {
@@ -27,7 +37,16 @@ public struct TransportLeaseStore: LeaseStore {
             throw Self.leaseError(error)
         }
         guard let server else { return nil }
-        let fields = try server.wire.payload().fields
+        let fields: [String: SyncValue]
+        do {
+            fields = try SyncLargePayload.payload(from: server.wire, keys: keys).fields
+        } catch FieldSealing.SealingError.keyMissing {
+            throw LeaseStoreError.unavailable("the lease is sealed under a household key not held here yet")
+        } catch {
+            // Not sealed (a step 3 lease), another wire version, damaged, moved, or not a lease once opened: never
+            // applied, and never an error type the callers don't expect (security review finding 2).
+            throw LeaseStoreError.unavailable("the lease on the server can't be read: \(error)")
+        }
         func string(_ key: String) -> String { if case .string(let value) = fields[key] { return value } else { return "" } }
         func date(_ key: String) -> Date { if case .date(let value) = fields[key] { return value } else { return .distantPast } }
         let record = ImportLeaseRecord(holderId: string("holderId"), holderName: string("holderName"),
@@ -41,9 +60,11 @@ public struct TransportLeaseStore: LeaseStore {
             "takenAt": .date(record.takenAt), "expiresAt": .date(record.expiresAt),
         ])
         let systemFields = tag.flatMap { Data(base64Encoded: $0) }
+        guard let sealingKey else { throw LeaseStoreError.unavailable("no household key here yet") }
+        let (wire, _) = try SyncLargePayload.wire(for: payload, key: sealingKey)
         let results: [SaveResult]
         do {
-            results = try await transport.save([try SyncWireRecord(payload)], ifUnchanged: systemFields.map { [Self.recordName: $0] } ?? [:],
+            results = try await transport.save([wire], ifUnchanged: systemFields.map { [Self.recordName: $0] } ?? [:],
                                                atomic: false)
         } catch let error as SyncTransportError {
             throw Self.leaseError(error)

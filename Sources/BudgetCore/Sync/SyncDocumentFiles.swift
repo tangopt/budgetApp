@@ -23,7 +23,7 @@ public struct SyncDocumentFiles: Sendable {
 }
 
 /// On a `document` record (sync spec §9.1): the record holding its sealed file, and its data key wrapped
-/// with the zone key. It travels in the record's encrypted `meta` field; the file record's asset holds only
+/// with the zone key. It travels inside the record's sealed fields (`meta`); the file record's asset holds only
 /// ciphertext.
 public struct SyncDocumentFileReference: Codable, Equatable, Hashable, Sendable {
     public var recordName: String
@@ -46,7 +46,7 @@ public enum SyncDocumentError: Error, Equatable, Sendable {
     case unreadable
     /// The record's stored path isn't the library path its hash gives (needs attention).
     case unsafePath
-    /// The zone key couldn't be read or created now (offline): tried again later.
+    /// The zone key the file needs isn't held here yet (iCloud Keychain hasn't delivered it): tried again later.
     case zoneKeyUnavailable
     /// The device doesn't sync files (no `SyncDocumentFiles`).
     case notConfigured
@@ -54,79 +54,65 @@ public enum SyncDocumentError: Error, Equatable, Sendable {
 
 // MARK: Zone keys
 
-/// The zone key (sync spec §9.1), held in one `zoneKey` record per zone, in an encrypted field: the current
-/// 256-bit key, and the retired ones (so data keys still wrapped with one can be opened, and re-wrapped).
-/// Created once per zone with compare-and-set on the fixed record name: of two devices creating it, the
-/// server takes the first, and the other adopts it (it has sealed nothing yet: files are sealed only under
-/// a published key). Rotation replaces it the same way, against the version last seen.
+/// The zone key's marker (ruling R15, sync spec §9.1). The key itself lives only in the key store (iCloud
+/// Keychain, `SyncKeyStore`); the zone's `zoneKey` record names which key is current (its id) and when it was
+/// made, neither of them secret, so every device seals under the same key. Created once per zone with
+/// compare-and-set on the fixed record name: of two devices creating it, the server takes the first and the other
+/// adopts it (it has sealed nothing yet). Rotation replaces it the same way, against the version last seen.
 ///
-/// Each device keeps its copy in `syncState` (`zoneKeys.<zone>`), with the version it last saw.
+/// Each device keeps the marker in `syncState` (`zoneKeyMarker.<zone>`) with the version it last saw: no key
+/// material. A step 3 keyring (`zoneKeys.<zone>`, key material) moves into the key store once and is deleted.
 public enum SyncZoneKeys {
+    private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
     public static let recordType = "zoneKey"
-    static let keysField = "keys"
+    static let keyIdField = "keyId"
+    static let createdAtField = "createdAt"
+    /// The step 3 record's field holding the keyring itself (key material): read only to migrate it.
+    static let legacyKeysField = "keys"
 
     public static func recordName(zone: String) -> String { "zoneKey-" + zone }
 
-    public struct Entry: Codable, Equatable, Sendable {
-        public var id: String
-        public var keyData: Data
+    public struct Marker: Codable, Equatable, Sendable {
+        /// The current zone key's id (`DocumentCrypto.zoneKeyId`).
+        public var keyId: String
+        public var createdAt: Date
 
-        public var key: SymmetricKey { SymmetricKey(data: keyData) }
-
-        public init(_ key: SymmetricKey) {
-            id = DocumentCrypto.zoneKeyId(key)
-            keyData = key.withUnsafeBytes { Data($0) }
+        public init(keyId: String, createdAt: Date) {
+            self.keyId = keyId
+            self.createdAt = createdAt
         }
     }
 
-    public struct Keyring: Codable, Equatable, Sendable {
-        /// 1 when created, +1 on every rotation.
-        public var generation: Int
-        public var current: Entry
-        public var retired: [Entry]
-
-        public init(generation: Int, current: Entry, retired: [Entry]) {
-            self.generation = generation
-            self.current = current
-            self.retired = retired
-        }
-
-        public func key(id: String) -> SymmetricKey? {
-            ([current] + retired).first { $0.id == id }?.key
-        }
-
-        /// The next generation's keyring: a new key, the current one retired.
-        func rotated() -> Keyring {
-            Keyring(generation: generation + 1, current: Entry(DocumentCrypto.newZoneKey()), retired: [current] + retired)
-        }
-    }
-
-    /// The keyring a `zoneKey` record holds.
-    public static func keyring(from wire: SyncWireRecord) throws -> Keyring {
-        guard wire.recordType == recordType, let data = wire.encryptedFields[keysField] else { throw SyncTransportError.unreadableRecord(wire.recordName) }
-        guard let keyring = try? JSONDecoder().decode(Keyring.self, from: data) else { throw SyncTransportError.unreadableRecord(wire.recordName) }
-        // Only 256-bit keys: anything else is a damaged or foreign record, never used to wrap.
-        guard ([keyring.current] + keyring.retired).allSatisfy({ $0.keyData.count == 32 }) else {
+    /// The marker a `zoneKey` record holds: exactly a key id (16 hex digits) and an 8-byte creation time, a
+    /// finite number of seconds (a NaN or infinite bit pattern makes a `Date` that can't be stored, security review
+    /// finding 1). The only error thrown is `SyncTransportError.unreadableRecord`, which every reader stages.
+    public static func marker(from wire: SyncWireRecord) throws -> Marker {
+        guard wire.recordType == recordType, wire.unencryptedFields.isEmpty, wire.assets.isEmpty,
+              Set(wire.encryptedFields.keys) == [keyIdField, createdAtField],
+              let idData = wire.encryptedFields[keyIdField], let id = String(data: idData, encoding: .utf8),
+              id.count == 16, id.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
+              let time = wire.encryptedFields[createdAtField], time.count == 8 else {
             throw SyncTransportError.unreadableRecord(wire.recordName)
         }
-        return keyring
+        let seconds = Double(bitPattern: time.reduce(UInt64(0)) { $0 << 8 | UInt64($1) })
+        guard seconds.isFinite, abs(seconds) < 1e11 else { throw SyncTransportError.unreadableRecord(wire.recordName) }
+        return Marker(keyId: id, createdAt: Date(timeIntervalSinceReferenceDate: seconds))
     }
 
-    static func wire(_ keyring: Keyring, zone: String) throws -> SyncWireRecord {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
+    public static func wire(_ marker: Marker, zone: String) -> SyncWireRecord {
+        var bits = marker.createdAt.timeIntervalSinceReferenceDate.bitPattern.bigEndian
         return SyncWireRecord(recordType: recordType, recordName: recordName(zone: zone), zone: zone,
-                              encryptedFields: [keysField: try encoder.encode(keyring)])
+                              encryptedFields: [keyIdField: Data(marker.keyId.utf8), createdAtField: Data(bytes: &bits, count: 8)])
     }
 
-    /// This device's copy: the keyring, and the system fields of the version it was last seen at (nil:
-    /// not on the server yet, or the zone was reset).
+    /// This device's copy of the marker, and the system fields of the version it was last seen at (nil: not on
+    /// the server yet, the zone was reset, or the server's version couldn't be read).
     struct Local: Codable, Equatable {
-        var keyring: Keyring
+        var marker: Marker
         var systemFields: Data?
     }
 
-    static func stateKey(_ zone: String) -> String { "zoneKeys." + zone }
+    static func stateKey(_ zone: String) -> String { "zoneKeyMarker." + zone }
 
     static func local(zone: String, db: Database) throws -> Local? {
         guard let data = try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [stateKey(zone)]) else { return nil }
@@ -137,17 +123,70 @@ public enum SyncZoneKeys {
         try SyncImportGate.setState(try JSONEncoder().encode(local), key: stateKey(zone), db: db, now: now)
     }
 
-    /// Takes the server's keyring (its current key wins), keeping any key known here that it doesn't list
-    /// as retired here, so nothing wrapped with one becomes unreadable.
+    /// Takes the server's marker as this device's.
     @discardableResult
-    static func adopt(_ server: SyncServerRecord, zone: String, db: Database, now: Date) throws -> Keyring {
-        var keyring = try keyring(from: server.wire)
-        if let mine = try local(zone: zone, db: db)?.keyring {
-            let known = Set(([keyring.current] + keyring.retired).map(\.id))
-            keyring.retired += ([mine.current] + mine.retired).filter { !known.contains($0.id) }
+    static func adopt(_ server: SyncServerRecord, zone: String, db: Database, now: Date) throws -> Marker {
+        let marker = try marker(from: server.wire)
+        try store(Local(marker: marker, systemFields: server.stamp.systemFields), zone: zone, db: db, now: now)
+        return marker
+    }
+
+    // MARK: Step 3 keyrings (migration)
+
+    /// The step 3 keyring: the current key and the retired ones, as key material.
+    struct LegacyKeyring: Codable, Equatable {
+        struct Entry: Codable, Equatable {
+            var id: String
+            var keyData: Data
         }
-        try store(Local(keyring: keyring, systemFields: server.stamp.systemFields), zone: zone, db: db, now: now)
-        return keyring
+        var generation: Int
+        var current: Entry
+        var retired: [Entry]
+
+        /// Oldest first, so the current key is the newest one stored.
+        var keys: [SymmetricKey] {
+            ([current] + retired).reversed().filter { $0.keyData.count == 32 }.map { SymmetricKey(data: $0.keyData) }
+        }
+    }
+
+    struct LegacyLocal: Codable {
+        var keyring: LegacyKeyring
+        var systemFields: Data?
+    }
+
+    static func legacyStateKey(_ zone: String) -> String { "zoneKeys." + zone }
+
+    /// A step 3 `zoneKey` record's keyring (key material on the server), if that is what `wire` is.
+    static func legacyKeyring(from wire: SyncWireRecord) -> LegacyKeyring? {
+        guard wire.recordType == recordType, let data = wire.encryptedFields[legacyKeysField] else { return nil }
+        return try? JSONDecoder().decode(LegacyKeyring.self, from: data)
+    }
+
+    /// Ruling R15 decision 6: a step 3 keyring kept in `syncState` moves into the key store once (every key, the
+    /// current one last), becomes this device's marker (unconfirmed: the server is asked again before sealing),
+    /// and is deleted. Returns whether there was one. If the key store refuses, nothing is deleted.
+    @discardableResult
+    static func migrateLocalKeyring(zone: String, db: any DatabaseWriter, keyStore: any SyncKeyStore, now: Date) throws -> Bool {
+        guard let data = try db.read({ db in
+            try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [legacyStateKey(zone)])
+        }) else { return false }
+        if let legacy = try? JSONDecoder().decode(LegacyLocal.self, from: data) {
+            for key in legacy.keyring.keys { try keyStore.store(key, zone: zone) }
+            let marker = Marker(keyId: legacy.keyring.current.id, createdAt: now)
+            try db.write { db in
+                if try local(zone: zone, db: db) == nil { try store(Local(marker: marker, systemFields: nil), zone: zone, db: db, now: now) }
+                try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [legacyStateKey(zone)])
+            }
+        } else {
+            // Not a keyring this build can read, and possibly the only copy of key material: set aside under another
+            // key (never deleted; security review finding 3), so the next start finds nothing to move.
+            Self.log.error("Sync step 3 keyring in syncState can't be read; set aside")
+            try db.write { db in
+                try db.execute(sql: "UPDATE syncState SET key = ? WHERE key = ?",
+                               arguments: [legacyStateKey(zone) + ".unreadable-\(Int(now.timeIntervalSince1970))", legacyStateKey(zone)])
+            }
+        }
+        return true
     }
 }
 
@@ -243,108 +282,149 @@ extension SyncEngineCore {
         try await serialized { try await self.download(uuid: uuid) }
     }
 
-    /// A new zone key (a member removed, sync spec §9.1): saved over the version last seen; if another
-    /// device changed it meanwhile, its key is adopted instead. Every data key known here is re-wrapped with
-    /// the current key and its document record sent again; no file is uploaded again.
-    @discardableResult
-    public func rotateZoneKey() async throws -> SyncZoneKeyRotation {
-        try await serialized {
-            try await self.prepare()
-            let zone = SyncRecordStore.householdZone
-            let keyring = try await self.zoneKeyring(zone: zone)
-            let systemFields = try await self.db.read { db in try SyncZoneKeys.local(zone: zone, db: db)?.systemFields }
-            let next = keyring.rotated()
-            let wire = try SyncZoneKeys.wire(next, zone: zone)
-            let results = try await self.transport.save([wire], ifUnchanged: systemFields.map { [wire.recordName: $0] } ?? [:], atomic: false)
-            let now = self.clock()
-            switch results.first?.outcome {
-            case .saved(let stamp):
-                try await self.db.write { db in try SyncZoneKeys.store(.init(keyring: next, systemFields: stamp.systemFields), zone: zone, db: db, now: now) }
-            case .changed(let server):
-                // Another device rotated (or created) it first: its key is the zone's.
-                Self.documentLog.error("Zone key changed on another device during rotation; adopting it")
-                try await self.db.write { db in _ = try SyncZoneKeys.adopt(server, zone: zone, db: db, now: now) }
-            case .deleted:
-                try await self.db.write { db in try SyncZoneKeys.store(.init(keyring: next, systemFields: nil), zone: zone, db: db, now: now) }
-                _ = try await self.zoneKeyring(zone: zone)
-            default:
-                throw SyncDocumentError.zoneKeyUnavailable
-            }
-            let rewrapped = try await self.db.write { db in try Self.rewrapStragglers(zone: zone, db: db, now: now) }
-            return SyncZoneKeyRotation(rewrapped: rewrapped, push: try await self.pushAll())
-        }
+    // MARK: Household key
+
+    /// The zone's current key and its id.
+    struct HouseholdKey: Sendable {
+        var id: String
+        var key: SymmetricKey
     }
 
-    // MARK: Zone key
-
-    /// The zone's keyring, from the server when this device hasn't seen it there: adopted if it exists,
-    /// else created (compare-and-set: create only; a device that loses adopts the winner's).
-    func zoneKeyring(zone: String) async throws -> SyncZoneKeys.Keyring {
+    /// The zone's current key (ruling R15): the one the marker names, from the key store. The server's marker is
+    /// read when this device hasn't confirmed one there: adopted if it exists, else (with `create`) published, for
+    /// a new key stored in the key store first (or the newest one held, after a zone reset). Throws
+    /// `SyncKeyError.waitingForHouseholdKey` when the marker names a key not held here (nothing is created then),
+    /// `SyncKeyError.unavailable` when the marker can't be read or published now.
+    func householdKey(zone: String, create: Bool) async throws -> HouseholdKey {
         if let local = try await db.read({ db in try SyncZoneKeys.local(zone: zone, db: db) }), local.systemFields != nil {
-            return local.keyring
+            return try heldKey(local.marker.keyId, zone: zone)
         }
-        return try await refreshZoneKeyring(zone: zone, create: true)
+        return try await refreshHouseholdKey(zone: zone, create: create)
     }
 
-    @discardableResult
-    func refreshZoneKeyring(zone: String, create: Bool) async throws -> SyncZoneKeys.Keyring {
+    /// The key `id` from the key store, or "waiting" for it.
+    func heldKey(_ id: String, zone: String) throws -> HouseholdKey {
+        guard let key = try keyStore.allKeys(zone: zone)[id] else { throw SyncKeyError.waitingForHouseholdKey }
+        return HouseholdKey(id: id, key: key)
+    }
+
+    func refreshHouseholdKey(zone: String, create: Bool) async throws -> HouseholdKey {
         let name = SyncZoneKeys.recordName(zone: zone)
         let server: SyncServerRecord?
         do {
             server = try await transport.fetch(name, zone: zone)
         } catch let error as SyncTransportError where error.isPassing {
-            throw SyncDocumentError.zoneKeyUnavailable
+            throw SyncKeyError.unavailable
         }
+        let now = clock()
         if let server {
-            let now = clock()
-            do {
-                return try await db.write { db in try SyncZoneKeys.adopt(server, zone: zone, db: db, now: now) }
-            } catch SyncTransportError.unreadableRecord {
-                // The server's keyring can't be read here (final review I2): never replaced by a new one from
-                // here; the documents that need it wait.
-                throw SyncDocumentError.zoneKeyUnavailable
+            if (try? SyncZoneKeys.marker(from: server.wire)) != nil {
+                let marker = try await db.write { db in try SyncZoneKeys.adopt(server, zone: zone, db: db, now: now) }
+                return try heldKey(marker.keyId, zone: zone)
             }
+            if let legacy = SyncZoneKeys.legacyKeyring(from: server.wire) {
+                // A step 3 record holding the keyring itself: its keys go to the key store, and the record is replaced
+                // by the marker of its current key, so no key material stays on the server.
+                for key in legacy.keys { try keyStore.store(key, zone: zone) }
+                return try await publish(SyncZoneKeys.Marker(keyId: legacy.current.id, createdAt: now), over: server.stamp.systemFields, zone: zone)
+            }
+            // The server's marker can't be read here (final review I2): never replaced from here; sealing waits.
+            Self.documentLog.error("Sync zone key marker on the server can't be read; waiting")
+            throw SyncKeyError.unavailable
         }
         let local = try await db.read { db in try SyncZoneKeys.local(zone: zone, db: db) }
+        let held = try keyStore.allKeys(zone: zone)
         guard create else {
-            guard let local else { throw SyncDocumentError.zoneKeyUnavailable }
-            return local.keyring
+            guard let local else { throw SyncKeyError.unavailable }
+            return try heldKey(local.marker.keyId, zone: zone)
         }
-        // A keyring known here but not on the server (the zone was reset) is published again as it is, so
-        // data keys wrapped with it stay readable everywhere.
-        let keyring = local?.keyring ?? SyncZoneKeys.Keyring(generation: 1, current: .init(DocumentCrypto.newZoneKey()), retired: [])
-        let wire = try SyncZoneKeys.wire(keyring, zone: zone)
+        // Not on the server (a new zone, or a reset): the key known here is published again, so what it sealed stays
+        // readable; else the newest key held; else a new one, kept in the key store before the marker names it.
+        let marker: SyncZoneKeys.Marker
+        if let local, held[local.marker.keyId] != nil {
+            marker = local.marker
+        } else if let newest = try keyStore.key(zone: zone) {
+            marker = SyncZoneKeys.Marker(keyId: DocumentCrypto.zoneKeyId(newest), createdAt: now)
+        } else {
+            let key = DocumentCrypto.newZoneKey()
+            try keyStore.store(key, zone: zone)
+            marker = SyncZoneKeys.Marker(keyId: DocumentCrypto.zoneKeyId(key), createdAt: now)
+        }
+        return try await publish(marker, over: nil, zone: zone)
+    }
+
+    /// Saves `marker` over the version `systemFields` names (nil: create only). A device that loses adopts the
+    /// server's marker (it sealed nothing with its own key).
+    private func publish(_ marker: SyncZoneKeys.Marker, over systemFields: Data?, zone: String) async throws -> HouseholdKey {
+        let wire = SyncZoneKeys.wire(marker, zone: zone)
         let results: [SaveResult]
         do {
-            results = try await transport.save([wire], ifUnchanged: [:], atomic: false)
+            results = try await transport.save([wire], ifUnchanged: systemFields.map { [wire.recordName: $0] } ?? [:], atomic: false)
         } catch let error as SyncTransportError where error.isPassing {
-            throw SyncDocumentError.zoneKeyUnavailable
+            throw SyncKeyError.unavailable
         }
         let now = clock()
         switch results.first?.outcome {
         case .saved(let stamp):
-            try await db.write { db in try SyncZoneKeys.store(.init(keyring: keyring, systemFields: stamp.systemFields), zone: zone, db: db, now: now) }
-            return keyring
+            try await db.write { db in try SyncZoneKeys.store(.init(marker: marker, systemFields: stamp.systemFields), zone: zone, db: db, now: now) }
+            return try heldKey(marker.keyId, zone: zone)
         case .changed(let winner):
-            // Another device created it first: its key is the zone's (nothing was sealed with this one).
-            Self.documentLog.error("Zone key created by another device first; adopting it")
-            return try await db.write { db in try SyncZoneKeys.adopt(winner, zone: zone, db: db, now: now) }
+            Self.documentLog.error("Zone key marker written by another device first; adopting it")
+            guard let adopted = try? SyncZoneKeys.marker(from: winner.wire) else { throw SyncKeyError.unavailable }
+            try await db.write { db in try SyncZoneKeys.store(.init(marker: adopted, systemFields: winner.stamp.systemFields), zone: zone, db: db, now: now) }
+            return try heldKey(adopted.keyId, zone: zone)
         default:
-            throw SyncDocumentError.zoneKeyUnavailable
+            throw SyncKeyError.unavailable
         }
     }
 
-    /// Every data key known here that isn't wrapped with the zone's current key, and whose old key is known,
+    /// A new zone key (a member removed, sync spec §9.1): stored in the key store, then its marker saved over the
+    /// version last seen; if another device changed it meanwhile, its marker is adopted instead. Every data key
+    /// known here is re-wrapped with the current key and its document record sent again; no file is uploaded again.
+    @discardableResult
+    public func rotateZoneKey() async throws -> SyncZoneKeyRotation {
+        try await serialized {
+            try await self.prepare()
+            let zone = SyncRecordStore.householdZone
+            _ = try await self.householdKey(zone: zone, create: true)
+            let systemFields = try await self.db.read { db in try SyncZoneKeys.local(zone: zone, db: db)?.systemFields }
+            let key = DocumentCrypto.newZoneKey()
+            try self.keyStore.store(key, zone: zone)
+            let marker = SyncZoneKeys.Marker(keyId: DocumentCrypto.zoneKeyId(key), createdAt: self.clock())
+            let wire = SyncZoneKeys.wire(marker, zone: zone)
+            let results = try await self.transport.save([wire], ifUnchanged: systemFields.map { [wire.recordName: $0] } ?? [:], atomic: false)
+            let now = self.clock()
+            switch results.first?.outcome {
+            case .saved(let stamp):
+                try await self.db.write { db in try SyncZoneKeys.store(.init(marker: marker, systemFields: stamp.systemFields), zone: zone, db: db, now: now) }
+            case .changed(let server):
+                // Another device rotated (or created) it first: its key is the zone's.
+                Self.documentLog.error("Zone key changed on another device during rotation; adopting it")
+                guard let adopted = try? SyncZoneKeys.marker(from: server.wire) else { throw SyncKeyError.unavailable }
+                try await self.db.write { db in try SyncZoneKeys.store(.init(marker: adopted, systemFields: server.stamp.systemFields), zone: zone, db: db, now: now) }
+            case .deleted:
+                try await self.db.write { db in try SyncZoneKeys.store(.init(marker: marker, systemFields: nil), zone: zone, db: db, now: now) }
+                _ = try await self.householdKey(zone: zone, create: true)
+            default:
+                throw SyncKeyError.unavailable
+            }
+            let keys = try self.keyStore.allKeys(zone: zone)
+            let rewrapped = try await self.db.write { db in try Self.rewrapStragglers(zone: zone, keys: keys, db: db, now: now) }
+            return SyncZoneKeyRotation(rewrapped: rewrapped, push: try await self.pushAll())
+        }
+    }
+
+    /// Every data key known here that isn't wrapped with the zone's current key, and whose old key is held,
     /// re-wrapped with it; the document records here are queued to go again. Run after a rotation, after
-    /// adopting a newer key, and when a record arrives wrapped with a retired key (a device that uploaded
+    /// adopting a newer marker, and when a record arrives wrapped with a retired key (a device that uploaded
     /// before it saw the rotation): whoever sees it re-wraps it. Returns how many were re-wrapped.
-    static func rewrapStragglers(zone: String, db: Database, now: Date) throws -> Int {
-        guard let keyring = try SyncZoneKeys.local(zone: zone, db: db)?.keyring else { return 0 }
+    static func rewrapStragglers(zone: String, keys: [String: SymmetricKey], db: Database, now: Date) throws -> Int {
+        guard let currentId = try SyncZoneKeys.local(zone: zone, db: db)?.marker.keyId, let current = keys[currentId] else { return 0 }
         var count = 0
         for (uuid, reference) in try SyncDocumentFile.references(db: db) {
-            guard let id = try? DocumentCrypto.zoneKeyId(ofWrapped: reference.wrappedKey), id != keyring.current.id,
-                  let old = keyring.key(id: id),
-                  let wrapped = try? DocumentCrypto.rewrap(reference.wrappedKey, from: old, to: keyring.current.key) else { continue }
+            guard let id = try? DocumentCrypto.zoneKeyId(ofWrapped: reference.wrappedKey), id != currentId,
+                  let old = keys[id],
+                  let wrapped = try? DocumentCrypto.rewrap(reference.wrappedKey, from: old, to: current) else { continue }
             try SyncDocumentFile.setReference(SyncDocumentFileReference(recordName: reference.recordName, wrappedKey: wrapped), uuid: uuid, db: db, now: now)
             if let localId = try SyncRecordStore.localId(table: "document", uuid: uuid, db: db) {
                 try SyncMerge.queue(uuid: uuid, table: "document", localId: localId, kind: .update, db: db)
@@ -362,7 +442,8 @@ extension SyncEngineCore {
     /// whose file couldn't be uploaded now waits: in `deferred`) and how many files were sealed.
     /// A device that doesn't sync files (no `SyncDocumentFiles`) still sends the references it holds, so an
     /// edit never drops a document's file from its record.
-    func attachDocumentFiles(_ payloads: [SyncPayload]) async throws -> (payloads: [SyncPayload], deferred: Set<String>, sealed: Int) {
+    func attachDocumentFiles(_ payloads: [SyncPayload], key: HouseholdKey, keys: [String: SymmetricKey]) async throws
+        -> (payloads: [SyncPayload], deferred: Set<String>, sealed: Int) {
         guard payloads.contains(where: { $0.recordType == "document" && $0.mergedInto == nil }) else {
             return (payloads, [], 0)
         }
@@ -399,22 +480,12 @@ extension SyncEngineCore {
         }
         var deferred: Set<String> = []
         var sealed = 0
-        // Files are sealed only under a key the server holds (created or adopted now); references already
-        // held are checked against the keyring known here.
-        var keyring = try await db.read { db in try SyncZoneKeys.local(zone: zone, db: db)?.keyring }
+        // Files are sealed under the zone's current key (the push confirmed it with the server's marker).
         if !toSeal.isEmpty {
-            do {
-                keyring = try await zoneKeyring(zone: zone)
-            } catch SyncDocumentError.zoneKeyUnavailable {
-                deferred.formUnion(toSeal.map(\.uuid))
-                toSeal = []
-            }
-        }
-        if let keyring, !toSeal.isEmpty {
             var wires: [SyncWireRecord] = []
             var pending: [String: (uuid: String, reference: SyncDocumentFileReference)] = [:]
             for item in toSeal {
-                let box = try DocumentCrypto.seal(item.plaintext, zoneKey: keyring.current.key,
+                let box = try DocumentCrypto.seal(item.plaintext, zoneKey: key.key,
                                                   authenticating: DocumentCrypto.documentContext(uuid: item.uuid, sha256: item.sha256))
                 let name = SyncDocumentFile.newRecordName(uuid: item.uuid)
                 wires.append(SyncWireRecord(recordType: SyncDocumentFile.recordType, recordName: name, zone: zone,
@@ -442,12 +513,12 @@ extension SyncEngineCore {
             }
             references.merge(saved) { _, new in new }
         }
-        if let keyring {
+        do {
             // A data key still wrapped with a retired zone key goes re-wrapped with the current one.
             var rewrapped: [String: SyncDocumentFileReference] = [:]
             for (uuid, reference) in references {
-                guard let id = try? DocumentCrypto.zoneKeyId(ofWrapped: reference.wrappedKey), id != keyring.current.id,
-                      let old = keyring.key(id: id), let wrapped = try? DocumentCrypto.rewrap(reference.wrappedKey, from: old, to: keyring.current.key)
+                guard let id = try? DocumentCrypto.zoneKeyId(ofWrapped: reference.wrappedKey), id != key.id,
+                      let old = keys[id], let wrapped = try? DocumentCrypto.rewrap(reference.wrappedKey, from: old, to: key.key)
                 else { continue }
                 rewrapped[uuid] = SyncDocumentFileReference(recordName: reference.recordName, wrappedKey: wrapped)
             }
@@ -471,24 +542,35 @@ extension SyncEngineCore {
 
     // MARK: Pull
 
-    /// What a pull (or a refused save's merge) brought for document files: zone key records adopted, each
+    /// What a pull (or a refused save's merge) brought for document files: the zone key marker adopted, each
     /// document record's file reference kept (a deleted document's dropped), stragglers re-wrapped.
     /// Returns how many zone key records couldn't be read (staged for attention).
     @discardableResult
     static func takeDocumentFiles(zoneKeys: [SyncServerRecord], saves: [SyncPayload], deletions: [String], zone: String,
-                                  db: Database, now: Date) throws -> Int {
-        // The latest version of the zone key record (a feed lists it once). One that can't be read never rolls
-        // back the pull (final review I2): it is staged for attention with its type, the keyring here stays, and
-        // a readable version arriving later is adopted and clears it.
+                                  keyStore: any SyncKeyStore, db: Database, now: Date) throws -> Int {
+        // The latest version of the marker (a feed lists it once). One that can't be read never rolls back the
+        // pull (final review I2): it is staged for attention with its type, and the marker here is no longer taken
+        // as confirmed (follow-up: the next push asks the server again, and waits while it can't read it); a
+        // readable version arriving later is adopted and clears it.
         var unreadable = 0
         for record in zoneKeys {
-            do {
-                try SyncZoneKeys.adopt(record, zone: zone, db: db, now: now)
+            // Only the parse can refuse (and it only throws `unreadableRecord`); a database error still rolls back.
+            if let marker = try? SyncZoneKeys.marker(from: record.wire) {
+                try SyncZoneKeys.store(.init(marker: marker, systemFields: record.stamp.systemFields), zone: zone, db: db, now: now)
                 try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ? AND tableName = ?",
                                arguments: [record.wire.recordName, SyncZoneKeys.recordType])
-            } catch SyncTransportError.unreadableRecord {
-                try SyncTranslator.stageUnreadable(recordType: SyncZoneKeys.recordType, recordName: record.wire.recordName, db: db, now: now)
-                unreadable += 1
+            } else {
+                if let legacy = SyncZoneKeys.legacyKeyring(from: record.wire) {
+                    // A step 3 record: its keys are kept (what they sealed stays readable); the next push replaces it.
+                    for key in legacy.keys { try keyStore.store(key, zone: zone) }
+                } else {
+                    try SyncTranslator.stageUnreadable(recordType: SyncZoneKeys.recordType, recordName: record.wire.recordName, db: db, now: now)
+                    unreadable += 1
+                }
+                if var local = try SyncZoneKeys.local(zone: zone, db: db) {
+                    local.systemFields = nil
+                    try SyncZoneKeys.store(local, zone: zone, db: db, now: now)
+                }
             }
         }
         for payload in saves where payload.recordType == "document" && payload.mergedInto == nil {
@@ -500,7 +582,7 @@ extension SyncEngineCore {
         for uuid in deletions where try SyncRecordStore.localId(table: "document", uuid: uuid, db: db) == nil {
             try SyncDocumentFile.setReference(nil, uuid: uuid, db: db, now: now)
         }
-        _ = try rewrapStragglers(zone: zone, db: db, now: now)
+        _ = try rewrapStragglers(zone: zone, keys: try keyStore.allKeys(zone: zone), db: db, now: now)
         return unreadable
     }
 
@@ -575,13 +657,11 @@ extension SyncEngineCore {
               let id = try? DocumentCrypto.zoneKeyId(ofWrapped: reference.wrappedKey) else {
             try await attention(.unreadable, SyncDocumentFile.unreadableMessage)
         }
-        var zoneKey = try await db.read { db in try SyncZoneKeys.local(zone: zone, db: db)?.keyring.key(id: id) }
-        if zoneKey == nil {
-            // A key this device hasn't seen yet (rotated elsewhere): read the zone's keyring again.
-            zoneKey = try await refreshZoneKeyring(zone: zone, create: false).key(id: id)
+        guard let zoneKey = try keyStore.allKeys(zone: zone)[id] else {
+            // A key iCloud Keychain hasn't delivered here yet (made or rotated on another device): tried again later.
+            throw SyncDocumentError.zoneKeyUnavailable
         }
-        guard let zoneKey,
-              let plaintext = try? DocumentCrypto.open(ciphertext, wrappedKey: reference.wrappedKey, zoneKey: zoneKey,
+        guard let plaintext = try? DocumentCrypto.open(ciphertext, wrappedKey: reference.wrappedKey, zoneKey: zoneKey,
                                                       authenticating: DocumentCrypto.documentContext(uuid: uuid, sha256: sha)) else {
             try await attention(.unreadable, SyncDocumentFile.unreadableMessage)
         }

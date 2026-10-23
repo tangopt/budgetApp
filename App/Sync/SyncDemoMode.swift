@@ -8,7 +8,8 @@ import BudgetCore
 /// with `--sync-demo` and `BUDGET_DB_PATH` naming the demo database (`DemoMarker`). Anything else with the
 /// argument refuses to start, with the reason; without the argument nothing here runs. It syncs once after
 /// the database has loaded (development container) and logs the counts — for the user-attended step 4
-/// kick-off, never run by tests or tools.
+/// kick-off, never run by tests or tools. Records go sealed under the household key, which it keeps in iCloud
+/// Keychain (`KeychainSyncKeyStore`, ruling R15).
 enum SyncDemoMode {
     static let argument = "--sync-demo"
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
@@ -71,6 +72,8 @@ enum SyncDemoMode {
                 let assigned = try await dbQueue.write { db in try SyncRecordStore.backfill(db: db) }
                 let engine = SyncEngineCore(db: dbQueue, transport: CloudKitTransport(),
                                             device: SyncDevice(id: "sync-demo-mac", name: "Demo Mac"),
+                                            // Ruling R15: the household key in iCloud Keychain, never in CloudKit.
+                                            keyStore: KeychainSyncKeyStore(),
                                             documents: SyncDocumentFiles(root: root, policy: .eager))
                 let report = try await engine.syncNow()
                 log.info("Sync demo: backfilled \(assigned) · received \(report.pull.received) · saved \(report.push.saved) · refused \(report.push.refused) · files \(report.push.documentsSealed)")

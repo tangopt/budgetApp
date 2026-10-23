@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 import os
@@ -216,7 +217,7 @@ public enum SyncTranslator {
             let order = Dictionary(uniqueKeysWithValues: SyncSchema.tables.enumerated().map { ($1.name, $0) })
             while true {
                 let staged = try SyncStagingRow.filter(Column("importRunUuid") == nil).fetchAll(db)
-                    .filter { !$0.reason.hasPrefix(needsAttention) }
+                    .filter { !$0.reason.hasPrefix(needsAttention) && $0.reason != waitingForHouseholdKey }
                     .filter { row in only.map { $0.contains(row.uuid) } ?? true }
                     .filter { row in
                         guard let arrived else { return true }
@@ -613,6 +614,79 @@ public enum SyncTranslator {
             ON CONFLICT(uuid) DO UPDATE SET tableName = excluded.tableName, payloadJSON = excluded.payloadJSON,
                 reason = excluded.reason, importRunUuid = NULL, receivedAt = excluded.receivedAt
             """, arguments: [recordType, recordName, needsAttention + "unreadable payload", now, now])
+    }
+
+    // MARK: Waiting for the household key (ruling R15)
+
+    /// The reason of a record sealed under a zone key this device doesn't hold yet. Not "needs attention": it opens
+    /// by itself once iCloud Keychain delivers the key.
+    public static let waitingForHouseholdKey = "waiting for the household key"
+
+    /// A sealed record kept while its key hasn't arrived: the record as the server holds it, with its stamp.
+    struct SealedRecord: Codable {
+        var recordType: String
+        var recordName: String
+        var zone: String
+        var encryptedFields: [String: Data]
+        var assets: [String: Data]
+        var systemFields: Data
+        var changeTag: String
+        var modifiedAt: Date
+
+        init(_ record: SyncServerRecord) {
+            recordType = record.wire.recordType
+            recordName = record.wire.recordName
+            zone = record.wire.zone
+            encryptedFields = record.wire.encryptedFields
+            assets = record.wire.assets
+            systemFields = record.stamp.systemFields
+            changeTag = record.stamp.changeTag
+            modifiedAt = record.stamp.modifiedAt
+        }
+
+        var server: SyncServerRecord {
+            SyncServerRecord(wire: SyncWireRecord(recordType: recordType, recordName: recordName, zone: zone,
+                                                  encryptedFields: encryptedFields, assets: assets),
+                             stamp: SyncServerStamp(systemFields: systemFields, changeTag: changeTag, modifiedAt: modifiedAt))
+        }
+    }
+
+    /// Keeps a record sealed under a key not held here, sealed, until the key arrives (a newer version replaces it).
+    static func stageWaitingForKey(_ record: SyncServerRecord, db: Database, now: Date) throws {
+        let json = String(decoding: try JSONEncoder().encode(SealedRecord(record)), as: UTF8.self)
+        try db.execute(sql: """
+            INSERT INTO syncStaging(tableName, uuid, payloadJSON, reason, importRunUuid, receivedAt, firstSeenAt, attempts)
+                VALUES (?, ?, ?, ?, NULL, ?, ?, 0)
+            ON CONFLICT(uuid) DO UPDATE SET tableName = excluded.tableName, payloadJSON = excluded.payloadJSON,
+                reason = excluded.reason, importRunUuid = NULL, receivedAt = excluded.receivedAt, attempts = 0
+            """, arguments: [record.wire.recordType, record.wire.recordName, json, waitingForHouseholdKey, now, now])
+    }
+
+    /// The records waiting for a key that `keys` now opens, in the order they arrived, with their stamps; their
+    /// staging rows are removed (the caller applies them as if just received). A row that doesn't open for another
+    /// reason (damaged) is marked for attention; one whose key is still missing stays.
+    static func takeWaitingForKey(keys: [String: SymmetricKey], db: Database, now: Date) throws -> [(SyncPayload, SyncServerStamp)] {
+        let rows = try SyncStagingRow.filter(Column("reason") == waitingForHouseholdKey).order(Column("id")).fetchAll(db)
+        var opened: [(SyncPayload, SyncServerStamp)] = []
+        for row in rows {
+            guard let sealed = try? JSONDecoder().decode(SealedRecord.self, from: Data(row.payloadJSON.utf8)) else {
+                try db.execute(sql: "UPDATE syncStaging SET reason = ? WHERE id = ?", arguments: [needsAttention + "unreadable payload", row.id])
+                continue
+            }
+            let server = sealed.server
+            do {
+                let payload = try SyncLargePayload.payload(from: server.wire, keys: keys)
+                try db.execute(sql: "DELETE FROM syncStaging WHERE id = ?", arguments: [row.id])
+                opened.append((payload, server.stamp))
+            } catch FieldSealing.SealingError.keyMissing {
+                continue
+            } catch {
+                log.error("Sync received a \(row.tableName, privacy: .public) record that can't be read; marked for attention")
+                try db.execute(sql: "UPDATE syncStaging SET payloadJSON = '{}', reason = ? WHERE id = ?",
+                               arguments: [needsAttention + "unreadable payload", row.id])
+            }
+        }
+        return opened
     }
 
     // MARK: Deletes

@@ -23,9 +23,12 @@ public struct SyncPushReport: Equatable, Sendable {
     public var filedYearAlert: FiledYearSyncAlert?
     /// Evidence files sealed and uploaded (sync spec §9.1).
     public var documentsSealed = 0
-    /// Document records not sent because their file couldn't be uploaded now (the zone key or the file record
-    /// was unreachable): they stay pending. Not counted in `refused`.
+    /// Document records not sent because their file record couldn't be uploaded now: they stay pending. Not
+    /// counted in `refused`.
     public var documentsDeferred = 0
+    /// Why nothing was sent (ruling R15): the household key isn't held here yet, or its marker couldn't be read or
+    /// published now. Everything stays pending; nil when the push ran.
+    public var keyWait: SyncKeyError?
 
     public init() {}
 }
@@ -39,6 +42,9 @@ public struct SyncPullReport: Equatable, Sendable {
     public var staged = 0
     /// Received records that couldn't be read: staged for attention.
     public var unreadable = 0
+    /// Received records sealed under a household key this device doesn't hold yet: kept sealed in staging, opened
+    /// and applied by a later pull once iCloud Keychain delivers the key (ruling R15).
+    public var waitingForKey = 0
     /// Rows here a full fetch didn't list, queued to go up again (ruling R12).
     public var reconciled = 0
     /// Received records held because applying them would change a filed or paid tax year (sync spec §5.4).
@@ -84,7 +90,7 @@ public struct SyncReport: Equatable, Sendable {
 public actor SyncEngineCore {
     /// The zones synced in build step 3.
     public static let zones = [SyncRecordStore.householdZone]
-    /// Records in the zone that are the engine's own, never data: the import lease, the zone key and the
+    /// Records in the zone that are the engine's own, never data: the import lease, the zone key marker and the
     /// sealed document files (sync spec §9.1).
     static let reservedRecordTypes: Set<String> = [TransportLeaseStore.recordType, SyncZoneKeys.recordType, SyncDocumentFile.recordType]
     /// A payload whose record would be larger than this goes as an encrypted asset (ruling R4).
@@ -104,19 +110,25 @@ public actor SyncEngineCore {
     /// Where evidence files live here and when they download; nil: this device doesn't sync files (it still
     /// keeps and sends each document's file reference).
     let documents: SyncDocumentFiles?
-    private let leaseStore: TransportLeaseStore
+    /// Where the zone keys are (iCloud Keychain in the apps; ruling R15).
+    let keyStore: any SyncKeyStore
     /// The last entry point started: the next one waits for it.
     private var tail: Task<Void, Never>?
 
-    public init(db: any DatabaseWriter, transport: any SyncTransport, device: SyncDevice, batchSize: Int = 200,
+    public init(db: any DatabaseWriter, transport: any SyncTransport, device: SyncDevice, keyStore: any SyncKeyStore, batchSize: Int = 200,
                 clock: @escaping @Sendable () -> Date = { Date() }, documents: SyncDocumentFiles? = nil) {
         self.db = db
         self.documents = documents
         self.transport = transport
         self.device = device
+        self.keyStore = keyStore
         self.batchSize = max(1, batchSize)
         self.clock = clock
-        leaseStore = TransportLeaseStore(transport: transport)
+    }
+
+    /// The lease store, sealing with `key` (the zone's current key) and reading with every key held here.
+    private func leaseStore(_ key: HouseholdKey?) throws -> TransportLeaseStore {
+        TransportLeaseStore(transport: transport, sealingKey: key?.key, keys: try keyStore.allKeys(zone: SyncRecordStore.householdZone))
     }
 
     // MARK: Entry points (one at a time)
@@ -142,12 +154,14 @@ public actor SyncEngineCore {
     }
 
     /// Takes the household's import lease for this device: call before Confirm and before Undo. Throws
-    /// `ImportLeaseError.heldBy` ("Importing on <device>") while another device holds it.
+    /// `ImportLeaseError.heldBy` ("Importing on <device>") while another device holds it, and
+    /// `SyncKeyError.waitingForHouseholdKey` while this device doesn't hold the household key yet.
     public func acquireImportLease() async throws {
         try await serialized {
             try await self.prepare()
+            let key = try await self.householdKey(zone: SyncRecordStore.householdZone, create: true)
             let now = self.clock()
-            let lease = try await ImportLease.acquire(device: self.device, now: now, transport: self.leaseStore)
+            let lease = try await ImportLease.acquire(device: self.device, now: now, transport: try self.leaseStore(key))
             try await self.db.write { db in
                 try SyncImportGate.setHeldLease(HeldImportLease(record: lease.record, tag: lease.tag), db: db, now: now)
             }
@@ -159,7 +173,8 @@ public actor SyncEngineCore {
     public func releaseImportLease() async throws {
         try await serialized {
             guard let held = try await self.db.read({ db in try SyncImportGate.heldLease(db: db) }) else { return }
-            try await ImportLease.release(ImportLease.Lease(record: held.record, tag: held.tag), transport: self.leaseStore)
+            let key = try await self.householdKey(zone: SyncRecordStore.householdZone, create: false)
+            try await ImportLease.release(ImportLease.Lease(record: held.record, tag: held.tag), transport: try self.leaseStore(key))
             let now = self.clock()
             try await self.db.write { db in try SyncImportGate.setHeldLease(nil, db: db, now: now) }
         }
@@ -167,7 +182,7 @@ public actor SyncEngineCore {
 
     /// Who holds the lease now ("Importing on <device>"), or nil. Read only: it doesn't wait its turn.
     public func importLeaseHolder() async throws -> ImportLeaseRecord? {
-        try await ImportLease.holder(now: clock(), transport: leaseStore)
+        try await ImportLease.holder(now: clock(), transport: try leaseStore(nil))
     }
 
     /// Runs `body` after every entry point called before it has finished (actor methods are reentrant at
@@ -200,6 +215,7 @@ public actor SyncEngineCore {
             report.alreadyHeld += zoneReport.alreadyHeld
             report.staged += zoneReport.staged
             report.unreadable += zoneReport.unreadable
+            report.waitingForKey += zoneReport.waitingForKey
             report.reconciled += zoneReport.reconciled
         }
         // The Mac keeps every file (sync spec §5.7).
@@ -213,6 +229,7 @@ public actor SyncEngineCore {
         case save(SyncPayload, SyncServerStamp)
         case delete(SyncDeletion)
         case unreadable(recordType: String)
+        case waiting(SyncServerRecord)
     }
 
     private func pull(zone: String) async throws -> SyncPullReport {
@@ -224,6 +241,8 @@ public actor SyncEngineCore {
         var full = token == nil
         var listed: Set<String> = []
         var zoneKeys: [String: SyncServerRecord] = [:]
+        // Every key held here for the zone (ruling R15): what one of them sealed opens; the rest waits for its key.
+        let keys = try keyStore.allKeys(zone: zone)
         while true {
             let page: SyncChanges
             do {
@@ -260,7 +279,9 @@ public actor SyncEngineCore {
                         continue
                     }
                     do {
-                        entries[name] = (position, .save(try SyncLargePayload.payload(from: record.wire), record.stamp))
+                        entries[name] = (position, .save(try SyncLargePayload.payload(from: record.wire, keys: keys), record.stamp))
+                    } catch FieldSealing.SealingError.keyMissing {
+                        entries[name] = (position, .waiting(record))
                     } catch {
                         entries[name] = (position, .unreadable(recordType: record.wire.recordType))
                     }
@@ -286,6 +307,13 @@ public actor SyncEngineCore {
             let user = try Self.deviceUser(db: db)
             var incoming: [SyncIncomingChange] = []
             var stamps: [String: SyncServerStamp] = [:]
+            // Records that waited for their key and now open (ruling R15) go first, as received then, with their
+            // stamps, through the same checked apply; a newer version in this pull replaces one.
+            let arriving = Set(ordered.map(\.0))
+            for (payload, stamp) in try SyncTranslator.takeWaitingForKey(keys: keys, db: db, now: now) where !arriving.contains(payload.recordName) {
+                incoming.append(.save(payload))
+                stamps[payload.recordName] = stamp
+            }
             for (name, entry) in ordered {
                 switch entry {
                 case .save(let payload, let stamp):
@@ -296,6 +324,9 @@ public actor SyncEngineCore {
                 case .unreadable(let type):
                     try SyncTranslator.stageUnreadable(recordType: type, recordName: name, db: db, now: now)
                     report.unreadable += 1
+                case .waiting(let record):
+                    try SyncTranslator.stageWaitingForKey(record, db: db, now: now)
+                    report.waitingForKey += 1
                 }
             }
             // Sync spec §5.4: the apply (and the batches it completes or flushes) is kept only while it moves no
@@ -323,7 +354,7 @@ public actor SyncEngineCore {
             // Document files (sync spec §9.1): the zone key adopted, each document's file reference kept.
             report.unreadable += try Self.takeDocumentFiles(zoneKeys: keyRecords, saves: incoming.compactMap { if case .save(let payload) = $0 { return payload } else { return nil } },
                                        deletions: ordered.compactMap { if case .delete = $0.1 { return $0.0 } else { return nil } },
-                                       zone: zone, db: db, now: now)
+                                       zone: zone, keyStore: self.keyStore, db: db, now: now)
             if let reconcile {
                 report.reconciled = try SyncTranslator.reconcile(zone: zone, listed: reconcile, db: db, now: now).count
             }
@@ -336,8 +367,22 @@ public actor SyncEngineCore {
 
     func pushAll() async throws -> SyncPushReport {
         try await prepare()
-        try await renewLeaseIfDue()
         var report = SyncPushReport()
+        let busy = try await db.read { db in
+            try !SyncChangeTracker.pending(db: db).isEmpty || SyncImportGate.heldLease(db: db) != nil
+        }
+        guard busy else { return report }
+        // Every record goes sealed under the zone's current key (ruling R15): without it here, nothing is sent and
+        // no key is made while another device's marker names one (it waits for iCloud Keychain).
+        var key: HouseholdKey
+        do {
+            key = try await householdKey(zone: SyncRecordStore.householdZone, create: true)
+        } catch let wait as SyncKeyError {
+            Self.log.error("Sync push waits for the household key (\(String(describing: wait), privacy: .public))")
+            report.keyWait = wait
+            return report
+        }
+        try await renewLeaseIfDue(key)
         var tries: [String: Int] = [:]
         var pulled = false
         var recovered = false
@@ -358,8 +403,8 @@ public actor SyncEngineCore {
                 let chunk = Array(saves[start..<min(start + chunkSize, saves.count)])
                 for change in chunk { tries[change.uuid, default: 0] += 1 }
                 // A long upload keeps a used lease alive (it expires 30 minutes after it was last renewed).
-                try await renewLeaseIfDue()
-                let flags = try await pushSaves(chunk, limits: limits, report: &report)
+                try await renewLeaseIfDue(key)
+                let flags = try await pushSaves(chunk, limits: limits, key: key, report: &report)
                 needsPull = needsPull || flags.needsPull
                 zoneMissing = zoneMissing || flags.zoneMissing
             }
@@ -386,6 +431,13 @@ public actor SyncEngineCore {
                 recovered = true
                 for zone in Self.zones { try await recoverMissingZone(zone) }
                 tries = [:]
+                // The marker went with the zone: published again (the same key) before anything is sent.
+                do {
+                    key = try await householdKey(zone: SyncRecordStore.householdZone, create: true)
+                } catch let wait as SyncKeyError {
+                    report.keyWait = wait
+                    return report
+                }
                 continue
             }
             if needsPull, !pulled {
@@ -404,14 +456,15 @@ public actor SyncEngineCore {
             }
             if !more { break }
         }
-        try await releaseLeaseIfDone()
+        try await releaseLeaseIfDone(key)
         return report
     }
 
     /// Sends one chunk of saves and takes in the results.
-    private func pushSaves(_ chunk: [PendingChange], limits: SyncOperationLimits,
+    private func pushSaves(_ chunk: [PendingChange], limits: SyncOperationLimits, key: HouseholdKey,
                            report: inout SyncPushReport) async throws -> (needsPull: Bool, zoneMissing: Bool) {
         let buildTime = clock()
+        let keys = try keyStore.allKeys(zone: SyncRecordStore.householdZone)
         let built = try await db.write { db -> [(PendingChange, SyncPayload?, Data?)] in
             try chunk.map { change in
                 var payload = try SyncTranslator.outgoing(change, db: db)
@@ -430,7 +483,7 @@ public actor SyncEngineCore {
             }
         }
         // Evidence files go first, sealed (sync spec §9.1); a document whose file can't go now waits.
-        let files = try await attachDocumentFiles(built.compactMap(\.1))
+        let files = try await attachDocumentFiles(built.compactMap(\.1), key: key, keys: keys)
         report.documentsSealed += files.sealed
         let attached = Dictionary(files.payloads.map { ($0.recordName, $0) }, uniquingKeysWith: { first, _ in first })
         var wires: [SyncWireRecord] = []
@@ -447,7 +500,7 @@ public actor SyncEngineCore {
                 report.documentsDeferred += 1
                 continue
             }
-            let (wire, packed) = try SyncLargePayload.wire(for: payload)
+            let (wire, packed) = try SyncLargePayload.wire(for: payload, key: key.key)
             if packed { report.asAssets += 1 }
             wires.append(wire)
             sent[wire.recordName] = change
@@ -460,7 +513,7 @@ public actor SyncEngineCore {
         var servers: [String: (SyncPayload?, SyncServerRecord)] = [:]
         for result in results {
             if case .changed(let server) = result.outcome {
-                servers[result.recordName] = (try? SyncLargePayload.payload(from: server.wire), server)
+                servers[result.recordName] = (try? SyncLargePayload.payload(from: server.wire, keys: keys), server)
             }
         }
         let now = clock()
@@ -491,8 +544,13 @@ public actor SyncEngineCore {
                 case .changed:
                     guard let (payload, server) = serverRecords[result.recordName] else { continue }
                     guard let payload else {
-                        // The server's version can't be read: kept for attention; the local edit waits for it.
-                        try SyncTranslator.stageUnreadable(recordType: server.wire.recordType, recordName: result.recordName, db: db, now: now)
+                        // The server's version can't be read: kept (sealed, when only its key is missing here, else
+                        // for attention); the local edit waits for it.
+                        if let id = FieldSealing.keyId(of: server.wire), keys[id] == nil {
+                            try SyncTranslator.stageWaitingForKey(server, db: db, now: now)
+                        } else {
+                            try SyncTranslator.stageUnreadable(recordType: server.wire.recordType, recordName: result.recordName, db: db, now: now)
+                        }
                         delta.refused += 1
                         continue
                     }
@@ -517,7 +575,8 @@ public actor SyncEngineCore {
             }
             if !merges.isEmpty {
                 // The server's document file references are kept here (the merged record goes with them).
-                try Self.takeDocumentFiles(zoneKeys: [], saves: merges, deletions: [], zone: SyncRecordStore.householdZone, db: db, now: now)
+                try Self.takeDocumentFiles(zoneKeys: [], saves: merges, deletions: [], zone: SyncRecordStore.householdZone,
+                                           keyStore: self.keyStore, db: db, now: now)
                 // Merged field by field with the server's version, unless that would move a filed tax year (§5.4):
                 // then the server's version is held, without its stamp, and the local edit waits for it. The merged
                 // record goes again next round against the server's version (unless that version waits here).
@@ -611,6 +670,8 @@ public actor SyncEngineCore {
     /// Before the first sync: sync is on here, and the zones exist on the server.
     func prepare() async throws {
         let now = clock()
+        // Ruling R15 decision 6: a step 3 keyring kept here moves into the key store, once.
+        for zone in Self.zones { try SyncZoneKeys.migrateLocalKeyring(zone: zone, db: db, keyStore: keyStore, now: now) }
         let (on, ready) = try await db.read { db in
             (try SyncImportGate.isSyncOn(db: db), try Self.zones.filter { try Self.zoneReady($0, db: db) })
         }
@@ -632,8 +693,8 @@ public actor SyncEngineCore {
         try await db.write { db in
             try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [Self.tokenKey(zone)])
             try db.execute(sql: "UPDATE syncRecord SET systemFields = NULL, changeTag = NULL WHERE zone = ?", arguments: [zone])
-            // The zone's file records and key record went with it: files are sealed and uploaded again, under
-            // the same keyring published again (or the one another device published first).
+            // The zone's file records and key marker went with it: files are sealed and uploaded again, under the
+            // same key, its marker published again (or the one another device published first).
             try db.execute(sql: "DELETE FROM syncState WHERE key LIKE ? OR key LIKE ?",
                            arguments: [SyncDocumentFile.referencePrefix + "%", SyncDocumentFile.failedPrefix + "%"])
             if var keys = try SyncZoneKeys.local(zone: zone, db: db) {
@@ -654,7 +715,7 @@ public actor SyncEngineCore {
 
     /// A used lease (a batch confirmed under it) is renewed once it is 10 minutes old; an unused one is never
     /// renewed, and is dropped once it has expired.
-    private func renewLeaseIfDue() async throws {
+    private func renewLeaseIfDue(_ key: HouseholdKey) async throws {
         guard let held = try await db.read({ db in try SyncImportGate.heldLease(db: db) }) else { return }
         let now = clock()
         guard held.used else {
@@ -665,7 +726,7 @@ public actor SyncEngineCore {
         }
         guard now.timeIntervalSince(held.record.expiresAt.addingTimeInterval(-ImportLease.duration)) >= Self.leaseRenewalAge else { return }
         do {
-            let renewed = try await ImportLease.renew(ImportLease.Lease(record: held.record, tag: held.tag), now: now, transport: leaseStore)
+            let renewed = try await ImportLease.renew(ImportLease.Lease(record: held.record, tag: held.tag), now: now, transport: try leaseStore(key))
             let updated = HeldImportLease(record: renewed.record, tag: renewed.tag, used: held.used)
             try await db.write { db in try SyncImportGate.setHeldLease(updated, db: db, now: now) }
         } catch LeaseStoreError.unavailable {
@@ -679,7 +740,7 @@ public actor SyncEngineCore {
     }
 
     /// Releases the lease once the batch it was taken for has closed and its close is uploaded.
-    private func releaseLeaseIfDone() async throws {
+    private func releaseLeaseIfDone(_ key: HouseholdKey) async throws {
         let done = try await db.read { db -> HeldImportLease? in
             guard let held = try SyncImportGate.heldLease(db: db), held.used else { return nil }
             let open = try Bool.fetchOne(db, sql: """
@@ -690,7 +751,7 @@ public actor SyncEngineCore {
         }
         guard let done else { return }
         do {
-            try await ImportLease.release(ImportLease.Lease(record: done.record, tag: done.tag), transport: leaseStore)
+            try await ImportLease.release(ImportLease.Lease(record: done.record, tag: done.tag), transport: try leaseStore(key))
         } catch LeaseStoreError.unavailable {
             // Everything is uploaded: the release is tried again by the next push.
             Self.log.error("Sync import lease couldn't be released now")
@@ -758,43 +819,38 @@ public actor SyncEngineCore {
 
 // MARK: Large payloads
 
-/// Ruling R4: a payload whose record would exceed `SyncEngineCore.largePayloadThreshold` travels in an
-/// asset field of its own record, sealed with AES-GCM under a random key (authenticating the record name
-/// and the field). The record's encrypted fields carry the key and nothing else of the payload.
+/// A record as it goes to the server (ruling R15): its fields sealed under the zone key (`FieldSealing`). Ruling
+/// R4: a payload whose sealed record would exceed `SyncEngineCore.largePayloadThreshold` travels in an asset field
+/// of its own record (`payload`), sealed under the zone key like the fields; the sealed fields then hold only a
+/// stub naming the asset.
 enum SyncLargePayload {
     static let assetField = "payload"
 
-    /// The record to save for `payload`, and whether it was packed.
-    static func wire(for payload: SyncPayload, threshold: Int = SyncEngineCore.largePayloadThreshold) throws -> (SyncWireRecord, Bool) {
-        let plain = try SyncWireRecord(payload)
+    /// The record to save for `payload`, sealed under `key`, and whether it was packed.
+    static func wire(for payload: SyncPayload, key: SymmetricKey, threshold: Int = SyncEngineCore.largePayloadThreshold) throws -> (SyncWireRecord, Bool) {
+        let plain = try FieldSealing.seal(try SyncWireRecord(payload), key: key)
         guard plain.size > threshold else { return (plain, false) }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let key = SymmetricKey(size: .bits256)
-        guard let sealed = try AES.GCM.seal(try encoder.encode(payload), using: key,
-                                            authenticating: additionalData(payload.recordName, assetField)).combined else {
-            throw SyncTransportError.unreadableRecord(payload.recordName)
-        }
         var stub = SyncPayload(recordType: payload.recordType, recordName: payload.recordName, zone: payload.zone, fields: [:])
-        stub.largePayload = SyncLargePayloadReference(assetField: assetField, key: key.withUnsafeBytes { Data($0) })
-        var wire = try SyncWireRecord(stub)
-        wire.assets[assetField] = sealed
-        return (wire, true)
+        stub.largePayload = SyncLargePayloadReference(assetField: assetField)
+        var inner = try SyncWireRecord(stub)
+        inner.assets[assetField] = try encoder.encode(payload)
+        return (try FieldSealing.seal(inner, key: key), true)
     }
 
-    /// The payload a record holds, opening its asset when it is a large one.
-    static func payload(from wire: SyncWireRecord) throws -> SyncPayload {
-        let stub = try wire.payload()
+    /// The payload a sealed record holds, opening its asset when it is a large one. Throws
+    /// `FieldSealing.SealingError.keyMissing` when it was sealed under a key not in `keys`.
+    static func payload(from wire: SyncWireRecord, keys: [String: SymmetricKey]) throws -> SyncPayload {
+        let inner = try FieldSealing.open(wire, keys: keys)
+        let stub = try inner.payload()
         guard let reference = stub.largePayload else { return stub }
-        guard let ciphertext = wire.assets[reference.assetField] else { throw SyncTransportError.unreadableRecord(wire.recordName) }
-        let plaintext = try AES.GCM.open(try AES.GCM.SealedBox(combined: ciphertext), using: SymmetricKey(data: reference.key),
-                                         authenticating: additionalData(wire.recordName, reference.assetField))
-        let payload = try JSONDecoder().decode(SyncPayload.self, from: plaintext)
-        guard payload.recordName == wire.recordName, payload.recordType == wire.recordType else {
+        guard let plaintext = inner.assets[reference.assetField] else { throw SyncTransportError.unreadableRecord(wire.recordName) }
+        var payload = try JSONDecoder().decode(SyncPayload.self, from: plaintext)
+        guard payload.recordName == wire.recordName, payload.recordType == wire.recordType, payload.largePayload == nil else {
             throw SyncTransportError.unreadableRecord(wire.recordName)
         }
+        payload.zone = wire.zone
         return payload
     }
-
-    private static func additionalData(_ recordName: String, _ field: String) -> Data { Data((recordName + "|" + field).utf8) }
 }

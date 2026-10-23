@@ -135,9 +135,11 @@ public actor FakeCloud: SyncTransport {
         return nil
     }
 
-    /// The payload a record holds, opened if it is a large one (`SyncLargePayload`).
-    public func payload(named name: String) throws -> SyncPayload? {
-        try record(named: name).map { try SyncLargePayload.payload(from: $0.wire) }
+    /// The payload a record holds, opened with the zone keys of `keys` (ruling R15), and its asset if it is a
+    /// large one (`SyncLargePayload`).
+    public func payload(named name: String, keys: any SyncKeyStore) throws -> SyncPayload? {
+        guard let server = record(named: name) else { return nil }
+        return try SyncLargePayload.payload(from: server.wire, keys: try keys.allKeys(zone: server.wire.zone))
     }
 
     // MARK: SyncTransport

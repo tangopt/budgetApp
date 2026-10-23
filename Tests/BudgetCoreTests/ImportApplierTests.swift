@@ -292,7 +292,7 @@ final class ImportApplierTests: XCTestCase {
         }
         XCTAssertEqual(try read { db in try ImportRun.fetchCount(db) }, 0, "nothing was written")
 
-        let engine = SyncEngineCore(db: db, transport: FakeCloud(), device: SyncDevice(id: "mac", name: "Mac"))
+        let engine = SyncEngineCore(db: db, transport: FakeCloud(), device: SyncDevice(id: "mac", name: "Mac"), keyStore: InMemorySyncKeyStore())
         try await engine.acquireImportLease()
         let summary = try applier.apply(plan, entryPoint: "Import…")
         XCTAssertGreaterThan(summary.runId, 0)

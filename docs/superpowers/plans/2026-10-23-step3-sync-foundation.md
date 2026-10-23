@@ -198,6 +198,14 @@ Rulings that refine the spec (recorded there too):
 - **R13** (§5.4): the protected years are 2020/21–2024/25 ∪ every year stored filed or paid; a change moving a (year, person) out of filed/paid is held like a figure move. The check holds only the offending records (and their batch) and applies the rest, instead of "writing nothing more".
 - **R14** (§4.2, §9.1): a sealed file travels as its own `documentFile` record (asset = ciphertext only); the wrapped data key and the file record's name stay in the document record's encrypted fields.
 
+## Note, 2026-10-23: field sealing (ruling R15)
+The step 4 kick-off found `encryptedValues` readable in the CloudKit Console (base64 of the plaintext, UK
+account without ADP), so the `zoneKey` record exposed the household key. Plan
+`2026-10-23-field-sealing.md` changes this step's wire format: every record is one AES-GCM box under the zone
+key (`sealed` + `keyId`), the zone key moves to iCloud Keychain (`SyncKeyStore`), and the `zoneKey` record
+becomes a key-id marker. R15 in the spec (§4.2, §9, §9.1) records the decisions. Records written by the step 3
+format (only the demo, Development container) are unreadable to the new build: reset the Development zone.
+
 ## Prerequisite recorded for later steps (ruling R10, 2026-10-23)
 
 Transaction fingerprints embed the importing device's local account id, so the same statement imported on two devices isn't recognised as the same rows. Before any second device can import statements (the member's Mac in step 6, the iPad in step 8), add a **portable fingerprint**:
@@ -210,6 +218,7 @@ Transaction fingerprints embed the importing device's local account id, so the s
 - **Cancellation (step 4 scheduler):** `SyncEngineCore.serialized` runs each entry point in its own unstructured `Task`, so cancelling the caller doesn't cancel the sync or reach the transport. The CloudKit transport now checks cancellation before adding an operation and cancels a running one; the scheduler should keep the entry point's task (or pass cancellation through) if a sync must be stoppable.
 
 - **Unreadable zone key (step 4–6):** after an unreadable `zoneKey` record is staged, the local keyring keeps its `systemFields`, so the push path doesn't recheck the server. If that version was a key rotation by a newer build, this device keeps sealing new documents under the retired key until a device holding the new key rewraps them. No data loss and no filed-year impact. Fix: clear the keyring's `systemFields` when staging an unreadable `zoneKey`, so push rechecks the server and defers documents.
+  *Done with field sealing (R15, 2026-10-23): an unreadable marker clears the local marker's `systemFields`; the next push asks the server again and, while the marker can't be read, sends nothing (`SyncPushReport.keyWait = .unavailable`).*
 
 ## Step-6 follow-up recorded by Task 6 (2026-10-23)
 - Records held by the post-sync filed-year check (`FiledYearSyncCheck.held`, reasons "needs attention: … filed tax year") stay in `syncStaging` and are never retried. A held import batch stays held whole (`SyncBatch` skips a run with a held record), and its local edits wait (push holds back staged UUIDs). Step 6 needs a "release held" action (after a person confirms) that re-feeds the held payloads — the rows keep the full payloads and run UUIDs — so a held batch can come back; children waiting on a held parent come back with it.
