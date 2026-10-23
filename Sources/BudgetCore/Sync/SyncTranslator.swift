@@ -48,6 +48,10 @@ public enum SyncTranslator {
     /// for a row that is no longer there. A referenced row without an identity gets one (and is queued).
     public static func outgoing(_ change: PendingChange, db: Database) throws -> SyncPayload? {
         guard change.kind != .delete, let schema = SyncSchema.table(change.table) else { return nil }
+        if let redirect = try SyncTombstoneRow.fetchOne(db, key: change.uuid), let target = redirect.mergedInto {
+            // This device merged the record into another: it goes out as a redirect, never as a delete.
+            return SyncPayload(recordType: schema.name, recordName: change.uuid, zone: redirect.zone, fields: [:], mergedInto: target)
+        }
         guard let record = try SyncRecordRow.fetchOne(db, sql: "SELECT * FROM syncRecord WHERE tableName = ? AND localId = ?",
                                                       arguments: [change.table, change.localId]),
               record.uuid == change.uuid else { return nil }
@@ -137,48 +141,76 @@ public enum SyncTranslator {
                 }
             }
             saves.sort { (order[$0.recordType] ?? Int.max) < (order[$1.recordType] ?? Int.max) }
-            var applied = false
+            var arrived: Set<String> = []
+            var unknownArrived = false
             for payload in saves {
                 let result = try applySave(payload, db: db, deviceUser: deviceUser, now: now)
                 results[payload.recordName] = result
-                if case .staged = result {} else { applied = true }
+                if case .staged = result {} else { arrived.insert(payload.recordType) }
             }
             let deleteTables = try deletes.map { delete in
                 try delete.type ?? String.fetchOne(db, sql: "SELECT tableName FROM syncRecord WHERE uuid = ?", arguments: [delete.name])
             }
             for (delete, table) in zip(deletes, deleteTables).sorted(by: { (order[$0.1 ?? ""] ?? -1) > (order[$1.1 ?? ""] ?? -1) }) {
                 results[delete.name] = try applyDelete(uuid: delete.name, recordType: table, db: db, deviceUser: deviceUser, now: now)
-                applied = true
+                // A delete of a record of unknown type may be what anything waits for.
+                if let table { arrived.insert(table) } else { unknownArrived = true }
             }
-            if applied {
+            if unknownArrived {
                 for (name, result) in try retryStaged(db: db, deviceUser: deviceUser, now: now) { results[name] = result }
+            } else if !arrived.isEmpty {
+                for (name, result) in try retryStaged(db: db, deviceUser: deviceUser, now: now, arrived: arrived) { results[name] = result }
             }
             try retireRemoved(db: db, now: now)
             return results
         }
     }
 
-    /// Tries every staged record again (parents first) until a pass applies nothing. Returns the records
-    /// that left staging and how.
+    /// Tries staged records again (parents first) until a pass applies nothing: with `arrived`, only those
+    /// waiting on one of those tables (a record that arrives or goes away there may be what they wait for)
+    /// and those whose apply failed; without it, every one. A staged row that can't be read is marked for
+    /// attention and left. Returns the records that left staging and how.
     @discardableResult
-    public static func retryStaged(db: Database, deviceUser: String?, now: Date = Date()) throws -> [String: IncomingResult] {
+    public static func retryStaged(db: Database, deviceUser: String?, now: Date = Date(), arrived: Set<String>? = nil) throws -> [String: IncomingResult] {
         try SyncChangeTracker.applyingIncoming(db: db) {
             var results: [String: IncomingResult] = [:]
+            var arrived = arrived
             let order = Dictionary(uniqueKeysWithValues: SyncSchema.tables.enumerated().map { ($1.name, $0) })
             while true {
                 let staged = try SyncStagingRow.filter(Column("importRunUuid") == nil).fetchAll(db)
+                    .filter { !$0.reason.hasPrefix(needsAttention) }
+                    .filter { row in
+                        guard let arrived else { return true }
+                        if row.reason.hasPrefix(applyFailed) { return true }
+                        return !waitedFor(row.reason).isDisjoint(with: arrived)
+                    }
                     .sorted { (order[$0.tableName] ?? Int.max, $0.id ?? 0) < (order[$1.tableName] ?? Int.max, $1.id ?? 0) }
                 var progressed = false
                 for row in staged {
-                    guard let payload = try? JSONDecoder().decode(SyncPayload.self, from: Data(row.payloadJSON.utf8)) else { continue }
+                    guard let payload = try? JSONDecoder().decode(SyncPayload.self, from: Data(row.payloadJSON.utf8)) else {
+                        log.error("Sync staging row for a \(row.tableName, privacy: .public) record can't be read; marked for attention")
+                        try db.execute(sql: "UPDATE syncStaging SET reason = ? WHERE id = ?", arguments: [needsAttention + "unreadable payload", row.id])
+                        continue
+                    }
                     let result = try applySave(payload, db: db, deviceUser: deviceUser, now: now, fromStaging: true)
                     if case .staged = result { continue }
                     results[payload.recordName] = result
+                    arrived?.insert(payload.recordType)
                     progressed = true
                 }
                 if !progressed { return results }
             }
         }
+    }
+
+    static let waitingFor = "waiting for "
+    static let applyFailed = "apply failed"
+    static let needsAttention = "needs attention: "
+
+    /// The tables a staging reason waits for.
+    static func waitedFor(_ reason: String) -> Set<String> {
+        guard reason.hasPrefix(waitingFor) else { return [] }
+        return Set(reason.dropFirst(waitingFor.count).split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
     }
 
     // MARK: Saves
@@ -188,9 +220,19 @@ public enum SyncTranslator {
         guard let schema = SyncSchema.table(payload.recordType), try db.tableExists(schema.name) else {
             return try stage(payload, reason: "unknown record type", db: db, now: now, fromStaging: fromStaging)
         }
+        if let target = payload.mergedInto {
+            return try applyRedirect(payload.recordName, to: target, schema: schema, db: db, deviceUser: deviceUser, now: now)
+        }
+        var payload = payload
+        if try SyncRecordStore.localId(table: schema.name, uuid: payload.recordName, db: db) == nil,
+           let tombstone = try SyncTombstoneRow.fetchOne(db, key: payload.recordName), let target = tombstone.mergedInto {
+            // A save of a record merged into another here (from a device that hasn't merged yet) is that one.
+            try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [payload.recordName])
+            payload.recordName = target
+        }
         let uuid = payload.recordName
         let existing = try SyncRecordStore.localId(table: schema.name, uuid: uuid, db: db)
-        if existing == nil, try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncTombstone WHERE uuid = ?)", arguments: [uuid]) ?? false {
+        if existing == nil, let tombstone = try SyncTombstoneRow.fetchOne(db, key: uuid), tombstone.mergedInto == nil {
             // A delete wins over an edit made while offline, except that a document is sent again by a
             // device that kept it because a record links to it (`kept`): it comes back.
             guard schema.name == "document" else {
@@ -201,12 +243,29 @@ public enum SyncTranslator {
         }
         let resolver = SyncReferenceResolver(db: db)
         let columns = try Columns(table: schema.name, db: db)
-        let values = try localValues(payload, schema: schema, columns: columns, resolver: resolver)
-        if !resolver.deletedParents.isEmpty || !resolver.missing.isEmpty {
-            let reason = resolver.missing.isEmpty
-                ? "parent deleted: " + resolver.deletedParents.sorted().joined(separator: ", ")
-                : "waiting for " + resolver.missing.sorted().joined(separator: ", ")
-            return try stage(payload, reason: reason, db: db, now: now, fromStaging: fromStaging)
+        var deletedParents: [String: String] = [:]
+        var values = try localValues(payload, schema: schema, columns: columns, resolver: resolver, deletedParents: &deletedParents)
+        if !resolver.missing.isEmpty {
+            return try stage(payload, reason: waitingFor + resolver.missing.sorted().joined(separator: ", "), db: db, now: now, fromStaging: fromStaging)
+        }
+        // A reference to a parent deleted here, by the foreign key's action: SET NULL takes null; otherwise a
+        // new record can't exist (the delete wins: discarded and logged) and an existing one keeps its value.
+        var held: [String: SyncValue] = [:]
+        if !deletedParents.isEmpty {
+            let actions = try foreignKeyActions(schema.name, db: db)
+            for (column, parent) in deletedParents.sorted(by: { $0.key < $1.key }) {
+                if actions[column] == "SET NULL" {
+                    values[column] = .null
+                } else if existing != nil {
+                    values[column] = nil
+                    held[column] = .string(parent)
+                } else {
+                    try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
+                    try SyncMerge.logConflict(table: schema.name, uuid: uuid, field: "*", losing: .string(try json(payload)),
+                                              winner: deviceUser, loser: payload.modifiedBy, db: db, now: now)
+                    return .discarded("parent deleted: " + (schema.foreignKeys[column] ?? column))
+                }
+            }
         }
         // One payload's failure (a constraint this device's data refuses) mustn't undo the others: it is
         // staged with the SQLite code, never the values.
@@ -215,7 +274,7 @@ public enum SyncTranslator {
         do {
             let result: IncomingResult
             if let localId = existing {
-                result = try SyncMerge.merge(payload, into: localId, values: values, schema: schema, db: db, deviceUser: deviceUser, now: now)
+                result = try SyncMerge.merge(payload, into: localId, values: values, held: held, schema: schema, db: db, deviceUser: deviceUser, now: now)
             } else {
                 result = try insert(payload, values: values, schema: schema, db: db, deviceUser: deviceUser, now: now)
             }
@@ -226,24 +285,64 @@ public enum SyncTranslator {
             try db.execute(sql: "ROLLBACK TO \(savepoint)")
             try db.execute(sql: "RELEASE \(savepoint)")
             log.error("Sync apply of a \(schema.name, privacy: .public) record failed: SQLite \(error.extendedResultCode.rawValue)")
-            return try stage(payload, reason: "apply failed: SQLite \(error.extendedResultCode.rawValue)", db: db, now: now, fromStaging: fromStaging)
+            return try stage(payload, reason: applyFailed + ": SQLite \(error.extendedResultCode.rawValue)", db: db, now: now, fromStaging: fromStaging)
         } catch {
             try db.execute(sql: "ROLLBACK TO \(savepoint)")
             try db.execute(sql: "RELEASE \(savepoint)")
-            return try stage(payload, reason: "apply failed: \(type(of: error))", db: db, now: now, fromStaging: fromStaging)
+            return try stage(payload, reason: applyFailed + ": \(type(of: error))", db: db, now: now, fromStaging: fromStaging)
         }
+    }
+
+    /// `old` was merged into `target` on another device: this device's row re-keys to it (never deleted),
+    /// and `old` stays a redirect so references to it resolve.
+    private static func applyRedirect(_ old: String, to target: String, schema: SyncTableSchema, db: Database, deviceUser: String?,
+                                      now: Date) throws -> IncomingResult {
+        try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [old])
+        let row = try SyncRecordStore.localId(table: schema.name, uuid: old, db: db)
+        if let row {
+            if try SyncRecordStore.localId(table: schema.name, uuid: target, db: db) == nil {
+                try SyncMerge.rekey(from: old, to: target, db: db)
+            } else {
+                // Both records are rows here: they can't be fused by a redirect; both stay.
+                log.error("Sync redirect of a \(schema.name, privacy: .public) record whose target is another row here; both kept")
+                return .applied
+            }
+        }
+        try SyncMerge.redirect(old, to: target, table: schema.name, localId: row ?? 0, zone: SyncRecordStore.householdZone,
+                               by: nil, now: now, db: db)
+        return .applied
+    }
+
+    /// `onDelete` of each foreign key column (`CASCADE`, `SET NULL`, `RESTRICT`, `NO ACTION`).
+    static func foreignKeyActions(_ table: String, db: Database) throws -> [String: String] {
+        var actions: [String: String] = [:]
+        for row in try Row.fetchAll(db, sql: "PRAGMA foreign_key_list(\(SyncChangeTracker.quoted(table)))") {
+            actions[row["from"]] = (row["on_delete"] as String).uppercased()
+        }
+        return actions
+    }
+
+    static func json(_ payload: SyncPayload) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(payload), as: UTF8.self)
     }
 
     /// The payload's fields as this device's values, references translated (what's missing is noted on
     /// the resolver). Fields this device's schema doesn't have are ignored.
     static func localValues(_ payload: SyncPayload, schema: SyncTableSchema, columns: Columns,
-                            resolver: SyncReferenceResolver) throws -> [String: DatabaseValue] {
+                            resolver: SyncReferenceResolver, deletedParents: inout [String: String]) throws -> [String: DatabaseValue] {
         let json = SyncJSONTranslator(resolver: resolver, direction: .incoming)
         var values: [String: DatabaseValue] = [:]
         let logical = SyncSchema.logicalReferences(of: schema.name)
         for column in schema.syncedColumns where columns.declared[column] != nil {
             guard let value = payload.fields[column] else { continue }
             if let target = schema.foreignKeys[column] {
+                if case .string(let uuid) = value, try resolver.incoming(table: target, uuid: uuid) == .deleted {
+                    deletedParents[column] = uuid
+                    values[column] = .null
+                    continue
+                }
                 values[column] = try incomingReference(value, nullable: columns.nullable(column)) { try resolver.incomingStrong(table: target, uuid: $0) }
             } else if let target = logical[column] {
                 values[column] = try incomingReference(value, nullable: columns.nullable(column)) { try resolver.incomingWeak(table: target, uuid: $0) }
@@ -279,31 +378,68 @@ public enum SyncTranslator {
     }
 
     /// A record new to this device. Its local id is a fresh one, except `propertyMortgageTerms`, whose id
-    /// is its property's (ruling R2). A row that a unique constraint says is the same record (both
-    /// devices made it: a built-in category, one property's mortgage terms) is merged into instead.
+    /// is its property's (ruling R2). A unique key it collides on resolves as `SyncSchema.uniqueKeys`
+    /// declares: an identity key merges into the existing row; any other keeps both rows (suffix, exclusive
+    /// flag, yield), every other field applying, and logs what it changed.
     private static func insert(_ payload: SyncPayload, values: [String: DatabaseValue], schema: SyncTableSchema, db: Database,
                                deviceUser: String?, now: Date) throws -> IncomingResult {
-        let names = values.keys.sorted()
+        var values = values
+        let original = values
+        var changed: [String] = []
+        var suffixes: [String: Int] = [:]
         let table = SyncChangeTracker.quoted(schema.name)
-        let key = SyncChangeTracker.quoted(schema.localIdColumn)
-        let columnList = names.map(SyncChangeTracker.quoted).joined(separator: ", ")
-        let marks = Array(repeating: "?", count: names.count).joined(separator: ", ")
-        let arguments = StatementArguments(names.map { values[$0]! })
-        let localId: Int64
-        do {
-            try db.execute(sql: "INSERT INTO \(table) (\(columnList)) VALUES (\(marks))", arguments: arguments)
-            localId = schema.syncedColumns.contains(schema.localIdColumn)
+        for _ in 0..<64 {
+            let names = values.keys.sorted()
+            do {
+                try db.execute(sql: "INSERT INTO \(table) (\(names.map(SyncChangeTracker.quoted).joined(separator: ", "))) VALUES (\(Array(repeating: "?", count: names.count).joined(separator: ", ")))",
+                               arguments: StatementArguments(names.map { values[$0]! }))
+            } catch let error as DatabaseError where SyncUniqueIndex.isUniqueViolation(error) {
+                guard let index = try SyncUniqueIndex.violated(by: error, table: schema.name, db: db), let key = index.key,
+                      let other = try index.conflictingRow(values: values, db: db) else { throw error }
+                let otherName = try SyncRecordStore.existingUUID(table: schema.name, localId: other, db: db) ?? ""
+                let incomingLoses = payload.recordName > otherName
+                switch key.resolution {
+                case .identity:
+                    return try SyncMerge.adopt(payload, into: other, values: original, schema: schema, db: db, deviceUser: deviceUser, now: now)
+                case .suffix(let column):
+                    if incomingLoses {
+                        guard let text = String.fromDatabaseValue(original[column] ?? .null) else { throw error }
+                        let n = (suffixes[column] ?? 1) + 1
+                        suffixes[column] = n
+                        values[column] = SyncMerge.suffixed(text, n).databaseValue
+                        changed.append(column)
+                    } else {
+                        try SyncMerge.localSuffix(schema, other, column, db: db, deviceUser: deviceUser, now: now)
+                    }
+                case .exclusiveFlag(let column):
+                    if try SyncMerge.flagWins(payload.clock(column), payload.recordName, over: schema, other, column, db: db) {
+                        try SyncMerge.localSet(schema, other, column, false.databaseValue, db: db, deviceUser: deviceUser, now: now)
+                    } else {
+                        values[column] = false.databaseValue
+                        changed.append(column)
+                    }
+                case .yield(let column, let value):
+                    if incomingLoses {
+                        values[column] = value.databaseValue
+                        changed.append(column)
+                    } else {
+                        try SyncMerge.localSet(schema, other, column, value.databaseValue, db: db, deviceUser: deviceUser, now: now)
+                    }
+                }
+                continue
+            }
+            let localId = schema.syncedColumns.contains(schema.localIdColumn)
                 ? Int64.fromDatabaseValue(values[schema.localIdColumn] ?? .null) ?? db.lastInsertedRowID
                 : db.lastInsertedRowID
-        } catch let error as DatabaseError where [.SQLITE_CONSTRAINT_UNIQUE, .SQLITE_CONSTRAINT_PRIMARYKEY].contains(error.extendedResultCode) {
-            // The row the constraint names: an upsert that changes nothing returns it.
-            guard let same = try Int64.fetchOne(db, sql: """
-                INSERT INTO \(table) (\(columnList)) VALUES (\(marks)) ON CONFLICT DO UPDATE SET \(key) = \(key) RETURNING \(key)
-                """, arguments: arguments) else { throw error }
-            return try SyncMerge.adopt(payload, into: same, values: values, schema: schema, db: db, deviceUser: deviceUser, now: now)
+            try SyncMerge.recordIdentity(payload, localId: localId, table: schema.name, db: db)
+            // What this device changed to make room is a local edit of the incoming record, logged and sent.
+            let fields = Array(Set(changed)).sorted()
+            for field in fields {
+                try SyncMerge.recordLocalEdit(schema, localId, field, old: original[field] ?? .null, db: db, deviceUser: deviceUser, now: now)
+            }
+            return fields.isEmpty ? .applied : .conflicted(fields)
         }
-        try SyncMerge.recordIdentity(payload, localId: localId, table: schema.name, db: db, now: now)
-        return .applied
+        throw DatabaseError(resultCode: .SQLITE_CONSTRAINT, message: "unique collisions unresolved")
     }
 
     private static func stage(_ payload: SyncPayload, reason: String, db: Database, now: Date, fromStaging: Bool) throws -> IncomingResult {
@@ -327,6 +463,10 @@ public enum SyncTranslator {
     private static func applyDelete(uuid: String, recordType: String?, db: Database, deviceUser: String?, now: Date) throws -> IncomingResult {
         let staged = try SyncStagingRow.filter(Column("uuid") == uuid).fetchOne(db)
         try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
+        if try SyncTombstoneRow.fetchOne(db, key: uuid)?.mergedInto != nil {
+            // Merged into another record here: its row belongs to that one and is never deleted for it.
+            return .applied
+        }
         guard let record = try SyncRecordRow.fetchOne(db, sql: "SELECT * FROM syncRecord WHERE uuid = ?", arguments: [uuid]),
               let schema = SyncSchema.table(record.tableName) else {
             // Never seen here (or only staged): remembered, so a reference to it names no row and a late
@@ -356,6 +496,12 @@ public enum SyncTranslator {
             let gone = "s.tableName = ? AND NOT EXISTS (SELECT 1 FROM \(SyncChangeTracker.quoted(table.name)) t WHERE t.\(SyncChangeTracker.quoted(table.localIdColumn)) = s.localId)"
             let orphans = try SyncRecordRow.fetchAll(db, sql: "SELECT s.* FROM syncRecord s WHERE \(gone)", arguments: [table.name])
             for record in orphans {
+                // Removed by a cascade or an app trigger of an incoming delete: logged, so the loss isn't silent
+                // (with what this device still had to send of it).
+                let pending = try String.fetchOne(db, sql: "SELECT kind FROM syncPending WHERE uuid = ?", arguments: [record.uuid])
+                try SyncMerge.logConflict(table: table.name, uuid: record.uuid, field: "*",
+                                          losing: .string(pending.map { "removed with its parent; unsent \($0)" } ?? "removed with its parent"),
+                                          winner: nil, loser: nil, db: db, now: now)
                 try SyncMerge.retire(uuid: record.uuid, table: table.name, localId: record.localId, zone: record.zone, deletedBy: nil, now: now, db: db)
             }
         }

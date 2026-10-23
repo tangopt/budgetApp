@@ -120,9 +120,12 @@ public struct SyncPayload: Codable, Equatable, Sendable {
     public var clocks: [String: SyncClock]
     public var modifiedBy: String?
     public var modifiedAt: Date?
+    /// A redirect, not a record: this record was merged into the one named (both devices made it). It has
+    /// no fields; receivers re-key their row and never delete it.
+    public var mergedInto: String?
 
     public init(recordType: String, recordName: String, zone: String, fields: [String: SyncValue],
-                clocks: [String: SyncClock] = [:], modifiedBy: String? = nil, modifiedAt: Date? = nil) {
+                clocks: [String: SyncClock] = [:], modifiedBy: String? = nil, modifiedAt: Date? = nil, mergedInto: String? = nil) {
         self.recordType = recordType
         self.recordName = recordName
         self.zone = zone
@@ -130,6 +133,7 @@ public struct SyncPayload: Codable, Equatable, Sendable {
         self.clocks = clocks
         self.modifiedBy = modifiedBy
         self.modifiedAt = modifiedAt
+        self.mergedInto = mergedInto
     }
 
     /// When `field` last changed on the sender: its own clock, else the insert's, else never.

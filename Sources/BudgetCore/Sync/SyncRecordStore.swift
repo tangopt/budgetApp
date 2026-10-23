@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 
@@ -32,8 +33,13 @@ public enum SyncRecordStore {
             SELECT EXISTS (SELECT 1 FROM \(SyncChangeTracker.quoted(table)) WHERE \(SyncChangeTracker.quoted(schema.localIdColumn)) = ?)
             """, arguments: [localId]) ?? false
         guard exists else { throw SyncRecordStoreError.noSuchRow(table: table, localId: localId) }
-        try db.cachedStatement(sql: "INSERT INTO syncRecord(tableName, localId, uuid, zone) VALUES (?, ?, \(uuidSQL), ?)")
-            .execute(arguments: [table, localId, householdZone])
+        if let fixed = try seededUUID(table: table, localId: localId, db: db) {
+            try db.execute(sql: "INSERT INTO syncRecord(tableName, localId, uuid, zone) VALUES (?, ?, ?, ?)",
+                           arguments: [table, localId, fixed, householdZone])
+        } else {
+            try db.cachedStatement(sql: "INSERT INTO syncRecord(tableName, localId, uuid, zone) VALUES (?, ?, \(uuidSQL), ?)")
+                .execute(arguments: [table, localId, householdZone])
+        }
         let uuid = try existingUUID(table: table, localId: localId, db: db)!
         try db.cachedStatement(sql: """
             INSERT INTO syncPending(uuid, tableName, localId, kind, revision)
@@ -62,9 +68,21 @@ public enum SyncRecordStore {
     public static func backfill(db: Database) throws -> Int {
         var assigned = 0
         for table in SyncSchema.tables {
+            // Seeded rows every device has get the same UUID everywhere (`seededUUID`); they are queued with
+            // the rest below, being above the mark.
+            let seededMark = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(rowid), 0) FROM syncRecord") ?? 0
+            if table.name == "category" {
+                for row in try Row.fetchAll(db, sql: """
+                    SELECT c.id, c.builtInRole FROM category c WHERE c.builtInRole IS NOT NULL
+                    AND NOT EXISTS (SELECT 1 FROM syncRecord s WHERE s.tableName = 'category' AND s.localId = c.id) ORDER BY c.id
+                    """) {
+                    try db.execute(sql: "INSERT INTO syncRecord(tableName, localId, uuid, zone) VALUES ('category', ?, ?, ?) ON CONFLICT DO NOTHING",
+                                   arguments: [row["id"] as Int64, builtInCategoryUUID(row["builtInRole"]), householdZone])
+                    assigned += db.changesCount
+                }
+            }
             let key = SyncChangeTracker.quoted(table.localIdColumn)
             // New identities get rowids above every existing one, which is how they are found to queue.
-            let mark = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(rowid), 0) FROM syncRecord") ?? 0
             try db.execute(sql: """
                 INSERT INTO syncRecord(tableName, localId, uuid, zone)
                 SELECT ?, t.\(key), \(uuidSQL), ? FROM \(SyncChangeTracker.quoted(table.name)) t
@@ -72,15 +90,34 @@ public enum SyncRecordStore {
                 ORDER BY t.\(key)
                 """, arguments: [table.name, householdZone, table.name])
             let added = db.changesCount
-            guard added > 0 else { continue }
+            let newest = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(rowid), 0) FROM syncRecord") ?? 0
+            guard newest > seededMark else { continue }
             let base = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(revision), 0) FROM syncPending") ?? 0
             try db.execute(sql: """
                 INSERT INTO syncPending(uuid, tableName, localId, kind, revision)
                 SELECT uuid, tableName, localId, 'insert', ? + rowid - ? FROM syncRecord WHERE rowid > ? ORDER BY rowid
                 ON CONFLICT(uuid) DO NOTHING
-                """, arguments: [base, mark, mark])
+                """, arguments: [base, seededMark, seededMark])
             assigned += added
         }
         return assigned
+    }
+
+    /// The UUID of a row every device seeds alike, the same on all of them (so the first sync merges them
+    /// instead of re-keying): built-in categories, by their role. Nil for any other row.
+    static func seededUUID(table: String, localId: Int64, db: Database) throws -> String? {
+        guard table == "category",
+              let role = try String.fetchOne(db, sql: "SELECT builtInRole FROM category WHERE id = ?", arguments: [localId]) else { return nil }
+        return builtInCategoryUUID(role)
+    }
+
+    /// A name-based UUID in the canonical lowercase v4 shape (version digit 4, variant 8–b).
+    static func builtInCategoryUUID(_ role: String) -> String {
+        var hex = Array(SHA256.hash(data: Data("mango.category.builtInRole.\(role)".utf8)).prefix(16).map { String(format: "%02x", $0) }.joined())
+        hex[12] = "4"
+        hex[16] = Array("89ab")[Int(String(hex[16]), radix: 16)! % 4]
+        let s = String(hex)
+        func part(_ a: Int, _ b: Int) -> String { String(s[s.index(s.startIndex, offsetBy: a)..<s.index(s.startIndex, offsetBy: b)]) }
+        return [part(0, 8), part(8, 12), part(12, 16), part(16, 20), part(20, 32)].joined(separator: "-")
     }
 }

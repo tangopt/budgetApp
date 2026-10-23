@@ -42,9 +42,15 @@ final class SyncReferenceResolver {
     }
 
     func incoming(table: String, uuid: String) throws -> Incoming {
-        if let id = try SyncRecordStore.localId(table: table, uuid: uuid, db: db) { return .local(id) }
-        if try Bool.fetchOne(db.cachedStatement(sql: "SELECT EXISTS (SELECT 1 FROM syncTombstone WHERE uuid = ?)"), arguments: [uuid]) ?? false {
-            return .deleted
+        var name = uuid
+        // A record merged into another (`mergedInto`) is that one; follow at most a few redirects.
+        for _ in 0..<8 {
+            if let id = try SyncRecordStore.localId(table: table, uuid: name, db: db) { return .local(id) }
+            guard let tombstone = try Row.fetchOne(db.cachedStatement(sql: "SELECT mergedInto FROM syncTombstone WHERE uuid = ?"), arguments: [name]) else {
+                return .missing
+            }
+            guard let next: String = tombstone["mergedInto"] else { return .deleted }
+            name = next
         }
         return .missing
     }
@@ -239,8 +245,15 @@ struct SyncTextEdits {
 
     mutating func replace(_ range: Range<Int>, with text: String) { edits.append((range, text)) }
 
+    /// Whether two edits touch the same bytes (they would corrupt the text).
+    var overlap: Bool {
+        let sorted = edits.sorted { $0.range.lowerBound < $1.range.lowerBound }
+        return zip(sorted, sorted.dropFirst()).contains { $0.range.upperBound > $1.range.lowerBound }
+    }
+
     func applied(to text: String) -> String {
         guard !edits.isEmpty else { return text }
+        precondition(!overlap, "overlapping JSON edits")
         var bytes = Array(text.utf8)
         for edit in edits.sorted(by: { $0.range.lowerBound > $1.range.lowerBound }) {
             bytes.replaceSubrange(edit.range, with: Array(edit.text.utf8))
@@ -381,19 +394,22 @@ struct SyncJSONTranslator {
         let polymorphic = SyncSchema.polymorphicReferences(of: table)
         let json = Dictionary(SyncSchema.jsonReferences(of: table).map { ($0.column, $0) }, uniquingKeysWith: { first, _ in first })
         let bytes = Array(text.utf8)
+        let stripped = direction == .outgoing ? Set(members.indices.filter { schema.localOnlyColumns.contains(members[$0].key) }) : []
+        // A local-only member goes with the comma before it; a leading run of them goes up to the first
+        // member kept (or the whole content when none is), so no two removals overlap.
+        let firstKept = members.indices.first { !stripped.contains($0) }
+        for index in stripped.sorted() {
+            if let firstKept, index < firstKept {
+                if index == 0 { edits.replace(members[0].keyStart..<members[firstKept].keyStart, with: "") }
+            } else if firstKept == nil {
+                if index == 0 { edits.replace(members[0].keyStart..<members[members.count - 1].value.range.upperBound, with: "") }
+            } else {
+                edits.replace(members[index - 1].value.range.upperBound..<members[index].value.range.upperBound, with: "")
+            }
+        }
         for (index, member) in members.enumerated() {
             let value = member.value
-            if direction == .outgoing, schema.localOnlyColumns.contains(member.key) {
-                // Removed with the comma that joins it to its neighbour.
-                if index > 0 {
-                    edits.replace(members[index - 1].value.range.upperBound..<value.range.upperBound, with: "")
-                } else if members.count > 1 {
-                    edits.replace(member.keyStart..<members[1].keyStart, with: "")
-                } else {
-                    edits.replace(member.keyStart..<value.range.upperBound, with: "")
-                }
-                continue
-            }
+            if stripped.contains(index) { continue }
             if let referenced = foreign[member.key] ?? (member.key == schema.localIdColumn ? table : nil) {
                 if let replacement = try id(value, text: text, table: referenced) { edits.replace(value.range, with: replacement) }
             } else if let reference = polymorphic.first(where: { $0.idColumn == member.key }) {
@@ -471,5 +487,43 @@ extension SyncJSONNode {
         default:
             return []
         }
+    }
+}
+
+// MARK: Ids a JSON value holds
+
+extension SyncJSONNode {
+    /// The local ids of `table` this JSON names at the rules' places (rows and evidence entities).
+    func ids(of table: String, rules: [SyncJSONRule], text: String) -> Set<Int64> {
+        let bytes = Array(text.utf8)
+        let byPath = Dictionary(rules.map { ($0.path, $0.target) }, uniquingKeysWith: { first, _ in first })
+        var found: Set<Int64> = []
+        func number(_ node: SyncJSONNode) -> Int64? {
+            guard case .number = node.kind else { return nil }
+            return Int64(String(decoding: bytes[node.range], as: UTF8.self))
+        }
+        func visit(_ node: SyncJSONNode, _ path: String) {
+            if let target = byPath[path] {
+                switch (target, node.kind) {
+                case (.row(let referenced), _) where referenced == table:
+                    if let id = number(node) { found.insert(id) }
+                case (.evidenceEntity, .object(let members)):
+                    if case .string(let type)? = members.first(where: { $0.key == "type" })?.value.kind,
+                       SyncSchema.evidenceEntityTables[type] == table,
+                       let idNode = members.first(where: { $0.key == "id" })?.value, let id = number(idNode) {
+                        found.insert(id)
+                    }
+                default: break
+                }
+                return
+            }
+            switch node.kind {
+            case .object(let members): for member in members { visit(member.value, path.isEmpty ? member.key : path + "." + member.key) }
+            case .array(let elements): for element in elements { visit(element, path + "[]") }
+            default: break
+            }
+        }
+        visit(self, "")
+        return found
     }
 }

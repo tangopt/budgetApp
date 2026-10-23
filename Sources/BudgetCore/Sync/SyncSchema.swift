@@ -395,3 +395,94 @@ extension SyncSchema {
         jsonReferences.filter { $0.table == table }
     }
 }
+
+// MARK: Unique keys (what two devices making "the same" row means)
+
+/// What to do when an incoming record collides with another row on a unique key.
+public enum SyncUniqueResolution: Equatable, Sendable {
+    /// The key names one real thing (a built-in category, a file by its hash, one property's mortgage terms,
+    /// a link between two records): the two records are the same record and merge.
+    case identity
+    /// Different records that happen to share a text: both are kept, and the one with the greater UUID (the
+    /// same choice on every device) gets the column suffixed, " (2)".
+    case suffix(String)
+    /// A flag only one row may hold (`account.isMain`): the later setting of it wins, the other row's flag is
+    /// cleared.
+    case exclusiveFlag(String)
+    /// Different records competing for a slot: the one with the greater UUID steps out by setting the column
+    /// to the value (a second active transfer link is dismissed).
+    case yield(String, SyncValue)
+}
+
+/// A unique key of a synced table, as `PRAGMA index_xinfo` lists its key columns (`<expr>` for an
+/// expression), or the table's primary key when it is a synced column.
+public struct SyncUniqueKey: Equatable, Sendable {
+    public let table: String
+    public let columns: [String]
+    public let resolution: SyncUniqueResolution
+
+    public init(_ table: String, _ columns: [String], _ resolution: SyncUniqueResolution) {
+        self.table = table
+        self.columns = columns
+        self.resolution = resolution
+    }
+}
+
+extension SyncSchema {
+    /// Every unique key of every synced table. `SyncUniqueKeyTests` fails, naming the index, when one isn't
+    /// listed. Identity is kept to keys that mean the same thing on every device; any other collision keeps
+    /// both records.
+    public static let uniqueKeys: [SyncUniqueKey] = [
+        SyncUniqueKey("person", ["name"], .suffix("name")),
+        SyncUniqueKey("appUser", ["personId"], .identity),                     // one app user per person
+        SyncUniqueKey("appUser", ["cloudKitUserRecordName"], .identity),       // one app user per iCloud user
+        SyncUniqueKey("account", ["isMain"], .exclusiveFlag("isMain")),
+        SyncUniqueKey("account", ["name"], .suffix("name")),
+        SyncUniqueKey("categoryGroup", ["name"], .suffix("name")),
+        SyncUniqueKey("category", ["transferAccountId"], .yield("transferAccountId", .null)),
+        SyncUniqueKey("category", ["builtInRole"], .identity),
+        SyncUniqueKey("category", ["name"], .suffix("name")),
+        SyncUniqueKey("document", ["sha256"], .identity),                      // the same file
+        SyncUniqueKey("importProfile", ["accountId", "format"], .identity),    // the account's profile for a format
+        SyncUniqueKey("importRule", ["kind", "matchKey"], .identity),          // one learnt rule per key (`ImportRuleStore.learn`)
+        SyncUniqueKey("transaction_", ["accountId", "fingerprint"], .suffix("fingerprint")),
+        SyncUniqueKey("transferLink", ["inTransactionId"], .yield("isDismissed", .bool(true))),
+        SyncUniqueKey("payMonthClose", ["year", "month"], .identity),
+        SyncUniqueKey("scenario", ["name"], .suffix("name")),
+        SyncUniqueKey("plannedOccurrenceException", ["entryId", "originalDate"], .identity),
+        SyncUniqueKey("documentLink", ["documentId", "entityType", "entityId"], .identity),
+        SyncUniqueKey("evidenceWaiver", ["requirementId", "entityType", "entityId", "<expr>"], .identity),
+        SyncUniqueKey("property", ["name"], .suffix("name")),
+        SyncUniqueKey("propertyAccount", ["propertyId", "accountId"], .identity),
+        SyncUniqueKey("propertyCategoryGroup", ["propertyId", "categoryGroupId"], .identity),
+        SyncUniqueKey("propertyMortgageTerms", ["propertyId"], .identity),     // the primary key (ruling R2)
+        SyncUniqueKey("mortgageRateOverride", ["propertyId", "periodStart"], .identity),
+        SyncUniqueKey("interestIndexValue", ["indexName", "period", "date"], .identity),
+        SyncUniqueKey("tenancy", ["propertyId", "contractNumber"], .suffix("contractNumber")),
+        SyncUniqueKey("tenancyRent", ["tenancyId", "fromDate"], .identity),
+        SyncUniqueKey("rentReceipt", ["tenancyId", "receiptNumber"], .suffix("receiptNumber")),
+        SyncUniqueKey("rentReceiptPayment", ["rentReceiptId", "transactionId"], .identity),
+        SyncUniqueKey("utilityProvider", ["propertyId", "name"], .suffix("name")),
+        SyncUniqueKey("utilityInvoice", ["providerId", "invoiceNumber"], .suffix("invoiceNumber")),
+        SyncUniqueKey("rechargeStatement", ["tenancyId", "month"], .identity),
+        SyncUniqueKey("rechargeLine", ["statementId", "invoiceId"], .identity),
+        SyncUniqueKey("rechargePayment", ["statementId", "transactionId"], .identity),
+        SyncUniqueKey("rechargeEmailTemplate", ["propertyId", "language"], .identity),
+        SyncUniqueKey("rechargeNettingRule", ["<expr>"], .identity),           // one rule per start year
+        SyncUniqueKey("hmrcRate", ["startYear", "currencyCode"], .identity),
+        SyncUniqueKey("taxYear", ["startYear", "personId"], .identity),
+        // One share per year, person, property and expense type: both devices setting it is one setting
+        // edited twice; every differing field goes to the conflict log.
+        SyncUniqueKey("taxYearSplit", ["startYear", "personId", "propertyId", "<expr>"], .identity),
+        SyncUniqueKey("taxAttributionRule", ["expenseType", "<expr>"], .identity),
+        SyncUniqueKey("taxExpenseTypeMap", ["categoryId"], .identity),
+        SyncUniqueKey("taxNotClaimed", ["startYear", "transactionId"], .identity),
+        SyncUniqueKey("taxNotClaimed", ["startYear", "manualItemId"], .identity),
+        SyncUniqueKey("taxNotClaimed", ["startYear", "policyReceiptId"], .identity),
+        SyncUniqueKey("taxTransactionOwner", ["transactionId"], .identity),
+    ]
+
+    static func uniqueKey(table: String, columns: [String]) -> SyncUniqueKey? {
+        uniqueKeys.first { $0.table == table && $0.columns == columns }
+    }
+}

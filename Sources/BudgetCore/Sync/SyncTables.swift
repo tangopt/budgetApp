@@ -96,14 +96,19 @@ public struct SyncTombstoneRow: Codable, Equatable, FetchableRecord, Persistable
     public var zone: String
     public var deletedBy: String?
     public var deletedAt: Date
+    /// Set when the record wasn't deleted but merged into another (both devices made it): its UUID. Other
+    /// devices re-key their row to it, and references to this UUID resolve to it.
+    public var mergedInto: String?
 
-    public init(uuid: String, tableName: String, localId: Int64, zone: String, deletedBy: String?, deletedAt: Date) {
+    public init(uuid: String, tableName: String, localId: Int64, zone: String, deletedBy: String?, deletedAt: Date,
+                mergedInto: String? = nil) {
         self.uuid = uuid
         self.tableName = tableName
         self.localId = localId
         self.zone = zone
         self.deletedBy = deletedBy
         self.deletedAt = deletedAt
+        self.mergedInto = mergedInto
     }
 
     public static let databaseTableName = "syncTombstone"
@@ -164,6 +169,7 @@ func registerSyncMigration(_ migrator: inout DatabaseMigrator) {
             t.column("zone", .text).notNull()
             t.column("deletedBy", .text)
             t.column("deletedAt", .datetime).notNull()
+            t.column("mergedInto", .text)
         }
         try db.create(table: "syncState") { t in
             t.primaryKey("key", .text)

@@ -207,6 +207,68 @@ final class SyncReferenceClassificationTests: XCTestCase {
         }
     }
 
+    /// Strings that look like they carry ids (a number, or numbers joined by `|` like a fingerprint) at a
+    /// place no rule classifies.
+    private func idBearingStrings(column: String, texts: [String]) -> [String] {
+        let parts = column.split(separator: ".").map(String.init)
+        let reference = SyncSchema.jsonReferences.first { $0.table == parts[0] && $0.column == parts[1] }
+        var classified: Set<String> = []
+        if case .rules(let rules) = reference?.content {
+            for rule in rules where rule.target == .forecastFingerprint { classified.insert(rule.path) }
+        }
+        let pattern = try! NSRegularExpression(pattern: #"^-?\d+$|\d+\|"#)
+        var problems: [String] = []
+        for text in texts {
+            for (path, value) in SyncJSONNode.parse(text)?.stringPaths() ?? [] where !classified.contains(path) {
+                // Map keys that are UUIDs (`importRun.reasonsJSON`) are data, not places.
+                if UUID(uuidString: path) != nil { continue }
+                if pattern.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) != nil, !problems.contains("\(column): \(path)") {
+                    problems.append("\(column): \(path)")
+                }
+            }
+        }
+        return problems
+    }
+
+    func testNoIdBearingStringIsUnclassified() throws {
+        var problems: [String] = []
+        for (column, texts) in try Self.samples().sorted(by: { $0.key < $1.key }) {
+            problems += idBearingStrings(column: column, texts: texts)
+        }
+        XCTAssertEqual(problems, [], problems.joined(separator: "\n"))
+        XCTAssertEqual(idBearingStrings(column: "importRule.actionJSON", texts: [#"{"ref":"12|34","other":"42","label":"Total 3"}"#]),
+                       ["importRule.actionJSON: ref", "importRule.actionJSON: other"])
+        // The journal's fingerprints are covered by their rule.
+        XCTAssertEqual(idBearingStrings(column: "scenarioApplication.journal", texts: [Self.journal()]), [])
+    }
+
+    // MARK: Unique keys
+
+    private func undeclaredUniqueKeys(_ db: Database) throws -> [String] {
+        var problems: [String] = []
+        for table in SyncSchema.tables {
+            for index in try SyncUniqueIndex.all(table: table.name, db: db) where index.key == nil {
+                problems.append("unique key \(table.name)(\(index.columns.joined(separator: ", "))) has no resolution")
+            }
+        }
+        for key in SyncSchema.uniqueKeys {
+            let present = try SyncUniqueIndex.all(table: key.table, db: db).contains { $0.columns == key.columns }
+            if !present { problems.append("declared unique key \(key.table)(\(key.columns.joined(separator: ", "))) doesn't exist") }
+        }
+        return problems
+    }
+
+    func testEveryUniqueKeyHasAResolution() throws {
+        let problems = try migrated().dbQueue.read { try undeclaredUniqueKeys($0) }
+        XCTAssertEqual(problems, [], problems.joined(separator: "\n"))
+    }
+
+    func testAnUndeclaredUniqueKeyFailsByName() throws {
+        let manager = try migrated()
+        try manager.dbQueue.write { db in try db.execute(sql: "CREATE UNIQUE INDEX account_alias ON account(alias)") }
+        XCTAssertEqual(try manager.dbQueue.read { try undeclaredUniqueKeys($0) }, ["unique key account(alias) has no resolution"])
+    }
+
     func testANewIdPathInAKnownShapeFailsByName() {
         XCTAssertEqual(unclassifiedNumbers(column: "evidenceRequirement.scope",
                                            texts: ["{\"transactionsInCategory\":{\"accountId\":2,\"categoryId\":1}}"]),

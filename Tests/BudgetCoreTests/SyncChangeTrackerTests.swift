@@ -348,8 +348,8 @@ final class SyncChangeTrackerTests: XCTestCase {
         try manager.dbQueue.write { db in try SyncChangeTracker.acknowledge(try SyncChangeTracker.pending(db: db), db: db) }
         try manager.dbQueue.write { db in try db.execute(sql: "UPDATE importRun SET backupPath = '/synthetic/backup' WHERE id = ?", arguments: [runId]) }
         XCTAssertEqual(try pending(), [])
-        // The insert's clock and the acknowledge's synced stamp; nothing for the local-only column.
-        XCTAssertEqual(Set(try clocks("importRun", runId).keys), ["*", SyncMerge.syncedClock])
+        // The insert's clock and the base the acknowledge took from it; nothing for the local-only column.
+        XCTAssertEqual(Set(try clocks("importRun", runId).keys), ["*", SyncMerge.basePrefix + "*"])
     }
 
     func testAcknowledgeStampsOnlyWhatTheServerTook() throws {
@@ -357,8 +357,8 @@ final class SyncChangeTrackerTests: XCTestCase {
         let sent = try pending()
         try manager.dbQueue.write { db in try db.execute(sql: "UPDATE account SET alias = 'during upload' WHERE id = ?", arguments: [edited]) }
         try manager.dbQueue.write { db in try SyncChangeTracker.acknowledge(sent, db: db) }
-        XCTAssertNotNil(try clocks("account", taken)[SyncMerge.syncedClock])
-        XCTAssertNil(try clocks("account", edited)[SyncMerge.syncedClock], "an edit made during the upload is still unsent")
+        XCTAssertNotNil(try clocks("account", taken)[SyncMerge.basePrefix + "*"])
+        XCTAssertNil(try clocks("account", edited)[SyncMerge.basePrefix + "*"], "an edit made during the upload is still unsent")
         XCTAssertEqual(try pending().map(\.localId), [edited])
     }
 

@@ -245,9 +245,9 @@ final class SyncTranslatorTests: XCTestCase {
         try setNote(a, uuid, "Note from A")
         let bId = try XCTUnwrap(try b.localId("transaction_", uuid))
         try b.queue.write { db in try db.execute(sql: "UPDATE transaction_ SET rawDescription = 'Renamed on B' WHERE id = ?", arguments: [bId]) }
-        let fromA = try a.push(), fromB = try b.push()
-        XCTAssertEqual(try b.receive(fromA)[uuid], .applied)
-        XCTAssertEqual(try a.receive(fromB)[uuid], .applied)
+        // The server takes one upload; the other device takes that record before its own goes through.
+        XCTAssertEqual(try b.receive(try a.push())[uuid], .applied)
+        XCTAssertEqual(try a.receive(try b.push())[uuid], .applied)
         for device in [a!, b!] {
             let id = try XCTUnwrap(try device.localId("transaction_", uuid))
             try device.queue.read { db in
@@ -433,6 +433,7 @@ final class SyncTranslatorTests: XCTestCase {
             XCTAssertNil(try SyncRecordStore.localId(table: "propertyOwner", uuid: ownerUUID, db: db))
             XCTAssertNotNil(try SyncTombstoneRow.fetchOne(db, key: ownerUUID))
             XCTAssertEqual(try SyncChangeTracker.pending(db: db), [], "retired, not sent")
+            XCTAssertEqual(try SyncConflictRow.filter(Column("uuid") == ownerUUID).fetchOne(db)?.field, "*", "the loss is logged")
         }
     }
 
