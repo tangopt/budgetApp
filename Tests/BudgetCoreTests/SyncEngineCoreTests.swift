@@ -599,6 +599,93 @@ final class SyncEngineCoreTests: XCTestCase {
         XCTAssertEqual(try a.content(), try b.content())
     }
 
+    func testAResentChildWhoseParentWasDeletedHereWaitsForIt() async throws {
+        let (account, batch, coffee) = try base(a)
+        let uuids = (try a.uuid("account", account), try a.uuid("importBatch", batch), try a.uuid("transaction_", coffee))
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        await cloud.expireChangeTokens()
+        try a.write { db in
+            try db.execute(sql: "DELETE FROM transaction_")
+            try db.execute(sql: "DELETE FROM importBatch")
+            try db.execute(sql: "DELETE FROM account")
+        }
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()   // B never saw the deletes: all three go up again, resent
+        let childOnServer = try await cloud.payload(named: uuids.2)
+        let accountOnServer = try await cloud.payload(named: uuids.0)
+        let batchOnServer = try await cloud.payload(named: uuids.1)
+        let child = try XCTUnwrap(childOnServer)
+        let parents = [try XCTUnwrap(accountOnServer), try XCTUnwrap(batchOnServer)]
+        XCTAssertEqual(child.resent, true)
+
+        // The child first: its parents were deleted here, so it waits for them; nothing is taken back yet.
+        let first = try a.write { db in try SyncTranslator.apply([.save(child)], db: db, deviceUser: "user-a") }
+        guard case .staged(let reason) = first[uuids.2] else { return XCTFail("\(first)") }
+        XCTAssertTrue(reason.hasPrefix("waiting for "), reason)
+        XCTAssertNotNil(try a.read { db in try SyncTombstoneRow.fetchOne(db, key: uuids.2) }, "the delete still stands")
+        XCTAssertFalse(try conflictLog(a, uuids.2).contains { $0.contains("brought back") }, "nothing claimed yet")
+
+        // Then the parents: all three come back, each logged.
+        try a.write { db in _ = try SyncTranslator.apply(parents.map { .save($0) }, db: db, deviceUser: "user-a") }
+        XCTAssertNotNil(try transaction(a, uuid: uuids.2))
+        for uuid in [uuids.0, uuids.1, uuids.2] {
+            XCTAssertTrue(try conflictLog(a, uuid).contains { $0.contains("brought back") }, uuid)
+            XCTAssertNil(try a.read { db in try SyncTombstoneRow.fetchOne(db, key: uuid) })
+        }
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        XCTAssertEqual(try a.content(), try b.content())
+    }
+
+    func testAnEditDuringTheResendKeepsResentSoADeviceSeeingOnlyTheLatestVersionTakesItBack() async throws {
+        let (_, _, coffee) = try base(a)
+        let uuid = try a.uuid("transaction_", coffee)
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        await cloud.expireChangeTokens()
+        try a.write { db in try db.execute(sql: "DELETE FROM transaction_ WHERE id = ?", arguments: [coffee]) }
+        try await a.engine.syncNow()
+
+        // B's re-send of the coffee: while its save is on the way, B edits the row.
+        let bCoffee = try XCTUnwrap(b.localId("transaction_", uuid))
+        let device = b!
+        let spy = SaveSpy(watching: uuid) {
+            try? device.write { db in try db.execute(sql: "UPDATE transaction_ SET note = 'During the resend' WHERE id = ?", arguments: [bCoffee]) }
+        }
+        let engine = SyncEngineCore(db: b.queue, transport: SpyTransport(cloud: cloud, spy: spy), device: b.device)
+        try await engine.syncNow()
+        // The Mac only ever sees the latest version (the edit): it must still say "resent", or the Mac,
+        // which deleted the coffee, would discard it and the two would diverge.
+        XCTAssertEqual(spy.resentFlags, [true, true])
+        try await a.engine.syncNow()
+        XCTAssertEqual(try transaction(a, uuid: uuid)?["note"] as String?, "During the resend")
+        XCTAssertEqual(try a.content(), try b.content())
+        // Once taken, the record's later edits are ordinary updates.
+        try b.write { db in try db.execute(sql: "UPDATE transaction_ SET note = 'Later' WHERE id = ?", arguments: [bCoffee]) }
+        try await engine.syncNow()
+        XCTAssertEqual(spy.resentFlags, [true, true, false])
+    }
+
+    func testAnEditThatFindsItsRecordDeletedOnICloudBringsItBackVisibly() async throws {
+        let (_, _, coffee) = try base(a)
+        let uuid = try a.uuid("transaction_", coffee)
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        try a.write { db in try db.execute(sql: "DELETE FROM transaction_ WHERE id = ?", arguments: [coffee]) }
+        try await a.engine.syncNow()
+        await cloud.expireChangeTokens()
+        let bCoffee = try XCTUnwrap(b.localId("transaction_", uuid))
+        try b.write { db in try db.execute(sql: "UPDATE transaction_ SET status = 'confirmed' WHERE id = ?", arguments: [bCoffee]) }
+        // The save finds the record deleted; the pull that follows is a full fetch, which lists no deletions.
+        try await b.engine.pushPending()
+        XCTAssertTrue(try conflictLog(b, uuid).contains { $0.contains("deleted on iCloud; your edit brought it back") })
+        try await a.engine.syncNow()
+        XCTAssertEqual(try transaction(a, uuid: uuid)?["status"] as String?, "confirmed")
+        XCTAssertTrue(try conflictLog(a, uuid).contains { $0.contains("brought back") })
+        XCTAssertEqual(try a.content(), try b.content())
+    }
+
     func testAFirstFetchOnANewDeviceReconcilesNothing() async throws {
         try base(a)
         try await a.engine.syncNow()
@@ -1027,6 +1114,60 @@ final class FakeCloudTests: XCTestCase {
         XCTAssertEqual(Set(wire.encryptedFields.keys), ["f_value", "f_note", "meta"])
         XCTAssertEqual(try wire.payload(), original)
     }
+}
+
+/// Records whether each save of one record carried `resent`, and runs `hook` once, after the first such
+/// save reached the server (before the engine takes its reply in).
+final class SaveSpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flags: [Bool] = []
+    private var hook: (() -> Void)?
+    let watching: String
+
+    init(watching: String, hook: @escaping () -> Void) {
+        self.watching = watching
+        self.hook = hook
+    }
+
+    var resentFlags: [Bool] { lock.withLock { flags } }
+
+    func saw(_ records: [SyncWireRecord]) -> Bool {
+        lock.withLock {
+            var seen = false
+            for record in records where record.recordName == watching {
+                flags.append((try? SyncLargePayload.payload(from: record))?.resent == true)
+                seen = true
+            }
+            return seen
+        }
+    }
+
+    func fireOnce() {
+        let hook = lock.withLock { () -> (() -> Void)? in
+            defer { self.hook = nil }
+            return self.hook
+        }
+        hook?()
+    }
+}
+
+/// `FakeCloud` with a `SaveSpy` on its saves.
+struct SpyTransport: SyncTransport {
+    let cloud: FakeCloud
+    let spy: SaveSpy
+
+    func operationLimits() async -> SyncOperationLimits { await cloud.operationLimits() }
+    func createZone(_ zone: String) async throws { try await cloud.createZone(zone) }
+    func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data], atomic: Bool) async throws -> [SaveResult] {
+        let watched = spy.saw(records)
+        let results = try await cloud.save(records, ifUnchanged: ifUnchanged, atomic: atomic)
+        if watched { spy.fireOnce() }
+        return results
+    }
+    func changes(since token: Data?, zone: String) async throws -> SyncChanges { try await cloud.changes(since: token, zone: zone) }
+    func delete(_ recordNames: [String], zone: String) async throws { try await cloud.delete(recordNames, zone: zone) }
+    func fetch(_ recordName: String, zone: String) async throws -> SyncServerRecord? { try await cloud.fetch(recordName, zone: zone) }
+    func serverTime() async throws -> Date? { try await cloud.serverTime() }
 }
 
 extension SaveResult.Outcome {

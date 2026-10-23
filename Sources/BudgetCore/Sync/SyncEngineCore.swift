@@ -377,11 +377,20 @@ public actor SyncEngineCore {
     /// Sends one chunk of saves and takes in the results.
     private func pushSaves(_ chunk: [PendingChange], limits: SyncOperationLimits,
                            report: inout SyncPushReport) async throws -> (needsPull: Bool, zoneMissing: Bool) {
+        let buildTime = clock()
         let built = try await db.write { db -> [(PendingChange, SyncPayload?, Data?)] in
             try chunk.map { change in
                 var payload = try SyncTranslator.outgoing(change, db: db)
-                if try Bool.fetchOne(db, sql: "SELECT resent FROM syncPending WHERE uuid = ?", arguments: [change.uuid]) == true {
+                let resent = try Int.fetchOne(db, sql: "SELECT resent FROM syncPending WHERE uuid = ?", arguments: [change.uuid]) ?? 0
+                if resent != 0, payload != nil {
                     payload?.resent = true
+                    if resent == SyncTranslator.resentAfterServerDelete {
+                        // No deletion came with the pull that followed (a full fetch lists none): the edit brings
+                        // the record back, visibly, as ruling R12 does.
+                        try SyncMerge.logConflict(table: change.table, uuid: change.uuid, field: "*", losing: .string(SyncTranslator.reconciledEdit),
+                                                  winner: nil, loser: nil, db: db, now: buildTime)
+                        try db.execute(sql: "UPDATE syncPending SET resent = ? WHERE uuid = ?", arguments: [SyncTranslator.resentReconciled, change.uuid])
+                    }
                 }
                 return (change, payload, try payload.flatMap { try Self.systemFields(uuid: $0.recordName, db: db) })
             }
@@ -427,6 +436,10 @@ public actor SyncEngineCore {
                 case .saved(let stamp):
                     acknowledged.append(change)
                     try Self.storeStamp(stamp, uuid: result.recordName, db: db)
+                    // `resent` stays on an edit made meanwhile (still pending at a newer revision): change feeds carry
+                    // only a record's latest version, so a device that deleted it may never see the save that
+                    // recreated it, and would discard a plain update (divergence). It can't override a delete that
+                    // reached the server since: that save is refused (`deleted`) and the pull brings the delete.
                     delta.saved += 1
                 case .changed:
                     guard let (payload, server) = serverRecords[result.recordName] else { continue }
@@ -445,6 +458,8 @@ public actor SyncEngineCore {
                     delta.merged += 1
                 case .deleted:
                     try Self.clearStamp(uuid: result.recordName, db: db)
+                    try db.execute(sql: "UPDATE syncPending SET resent = ? WHERE uuid = ? AND kind <> 'delete'",
+                                   arguments: [SyncTranslator.resentAfterServerDelete, result.recordName])
                     needsPull = true
                 case .zoneNotFound:
                     zoneMissing = true

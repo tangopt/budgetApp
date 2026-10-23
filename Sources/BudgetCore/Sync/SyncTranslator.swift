@@ -236,6 +236,12 @@ public enum SyncTranslator {
     /// Ruling R12's conflict log entries.
     public static let reconciledSent = "needs attention: was missing on iCloud; sent again"
     public static let reconciledHere = "needs attention: deleted here, sent again by another device; brought back"
+    public static let reconciledEdit = "needs attention: deleted on iCloud; your edit brought it back"
+
+    /// `syncPending.resent`: 1 sent again by reconciliation; 2 a save was answered "deleted on the server"
+    /// and the edit is still to go (logged and sent as resent if no deletion arrives first).
+    static let resentReconciled = 1
+    static let resentAfterServerDelete = 2
 
     /// Ruling R12: after a full fetch of `zone`, every synced row of it here that the fetch didn't list, and
     /// that isn't pending or staged, is queued to go up again as an insert (`resent`), with no stamp, and
@@ -254,7 +260,7 @@ public enum SyncTranslator {
             guard !listed.contains(uuid) else { continue }
             let table: String = row["tableName"]
             try SyncMerge.queue(uuid: uuid, table: table, localId: row["localId"], kind: .insert, db: db)
-            try db.execute(sql: "UPDATE syncPending SET resent = 1 WHERE uuid = ?", arguments: [uuid])
+            try db.execute(sql: "UPDATE syncPending SET resent = ? WHERE uuid = ?", arguments: [resentReconciled, uuid])
             try db.execute(sql: "UPDATE syncRecord SET systemFields = NULL, changeTag = NULL WHERE uuid = ?", arguments: [uuid])
             try SyncMerge.logConflict(table: table, uuid: uuid, field: "*", losing: .string(reconciledSent), winner: nil, loser: nil, db: db, now: now)
             queued.append(uuid)
@@ -295,6 +301,9 @@ public enum SyncTranslator {
         let uuid = payload.recordName
         let existing = try SyncRecordStore.localId(table: schema.name, uuid: uuid, db: db)
         var reviveAt: Int64?
+        // Ruling R12: a record sent again (missing on the server) that was deleted here; taken back only once it
+        // has been written.
+        var takeBack = false
         if existing == nil, let tombstone = try SyncTombstoneRow.fetchOne(db, key: uuid), tombstone.mergedInto == nil,
            let localId = revivals[uuid] {
             // An Undo (on another device) brought back a row its import deleted: the same record comes back,
@@ -306,15 +315,13 @@ public enum SyncTranslator {
             // device that kept it because a record links to it (`kept`): it comes back.
             // Ruling R12: a record sent again because it was missing on the server comes back too, visibly
             // (a resurrected row is preferred to silent divergence; step 6 asks a person to confirm).
-            guard schema.name == "document" || payload.resent == true else {
+            if schema.name == "document" {
+                try db.execute(sql: "DELETE FROM syncTombstone WHERE uuid = ?", arguments: [uuid])
+            } else if payload.resent == true {
+                takeBack = true
+            } else {
                 try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
                 return .discarded("deleted here")
-            }
-            try db.execute(sql: "DELETE FROM syncTombstone WHERE uuid = ?", arguments: [uuid])
-            if payload.resent == true, schema.name != "document" {
-                try db.execute(sql: "DELETE FROM syncPending WHERE uuid = ? AND kind = 'delete'", arguments: [uuid])
-                try SyncMerge.logConflict(table: schema.name, uuid: uuid, field: "*", losing: .string(reconciledHere),
-                                          winner: payload.modifiedBy, loser: deviceUser, db: db, now: now)
             }
         }
         let resolver = SyncReferenceResolver(db: db)
@@ -329,6 +336,14 @@ public enum SyncTranslator {
         // A reference to a parent deleted here, by the foreign key's action: SET NULL takes null; otherwise a
         // new record can't exist (the delete wins: discarded and logged) and an existing one keeps its value.
         var held: [String: SyncValue] = [:]
+        if !deletedParents.isEmpty, payload.resent == true, existing == nil {
+            // A record sent again (ruling R12) whose parent was deleted here waits for that parent, which its
+            // sender sends again too, rather than being dropped.
+            let tables = Set(deletedParents.keys.map { column in
+                schema.foreignKeys[column] ?? SyncSchema.logicalReferences(of: schema.name)[column] ?? column
+            })
+            return try stage(payload, reason: waitingFor + tables.sorted().joined(separator: ", "), db: db, now: now, fromStaging: fromStaging)
+        }
         if !deletedParents.isEmpty {
             let actions = try foreignKeyActions(schema.name, db: db)
             for (column, parent) in deletedParents.sorted(by: { $0.key < $1.key }) {
@@ -356,6 +371,13 @@ public enum SyncTranslator {
                                              adopted: redirected, now: now)
             } else {
                 result = try insert(payload, values: values, schema: schema, db: db, deviceUser: deviceUser, now: now, at: reviveAt)
+                if takeBack, try SyncRecordStore.localId(table: schema.name, uuid: uuid, db: db) != nil {
+                    // Written: the delete made here gives way, visibly (step 6 asks a person to confirm).
+                    try db.execute(sql: "DELETE FROM syncTombstone WHERE uuid = ?", arguments: [uuid])
+                    try db.execute(sql: "DELETE FROM syncPending WHERE uuid = ? AND kind = 'delete'", arguments: [uuid])
+                    try SyncMerge.logConflict(table: schema.name, uuid: uuid, field: "*", losing: .string(reconciledHere),
+                                              winner: payload.modifiedBy, loser: deviceUser, db: db, now: now)
+                }
             }
             try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
             try db.execute(sql: "RELEASE \(savepoint)")
