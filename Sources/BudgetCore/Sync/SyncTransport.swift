@@ -118,6 +118,23 @@ public enum SyncTransportError: Error, Equatable {
     case changeTokenExpired
     case zoneNotFound(String)
     case unreadableRecord(String)
+    /// The service can't take the operation now (CloudKit: no network, a failed connection, the service
+    /// unavailable or busy, rate limited): try again, not before `retryAfter` seconds when the server says.
+    case unavailable(retryAfter: TimeInterval?)
+
+    /// Passes with time: the operation is tried again later as it is.
+    public var isPassing: Bool {
+        switch self {
+        case .networkUnavailable, .unavailable: return true
+        case .limitExceeded, .changeTokenExpired, .zoneNotFound, .unreadableRecord: return false
+        }
+    }
+
+    /// How long the server asked to wait before trying again, if it said.
+    public var retryAfter: TimeInterval? {
+        if case .unavailable(let seconds) = self { return seconds }
+        return nil
+    }
 }
 
 /// The cloud as the sync engine sees it (plan Task 5, ruling R11): shaped like `CKDatabase` operations

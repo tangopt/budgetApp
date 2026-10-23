@@ -402,6 +402,21 @@ final class DocumentSyncTests: XCTestCase {
         XCTAssertNotNil(payload.documentFile)
     }
 
+    /// CloudKit's busy or rate-limited server (`unavailable` with a retry-after) defers like no connection.
+    func testADocumentIsDeferredWhileTheServiceIsUnavailable() async throws {
+        let (_, uuid) = try a.add("busy.pdf", Self.bytes("busy"))
+        try await a.engine.pull()
+        await cloud.failSaveOperations(after: 0, with: .unavailable(retryAfter: 30))
+        let report = try await a.engine.pushPending()
+        XCTAssertGreaterThan(report.documentsDeferred, 0)
+        XCTAssertEqual(report.documentsSealed, 0)
+        let pending = try a.read { db in try SyncChangeTracker.pending(db: db).map(\.uuid) }
+        XCTAssertTrue(pending.contains(uuid))
+        await cloud.restoreConnection()
+        let retried = try await a.engine.pushPending()
+        XCTAssertEqual(retried.documentsSealed, 1)
+    }
+
     // MARK: Rotation
 
     func testRotationRewrapsDataKeysWithoutReuploadingFiles() async throws {

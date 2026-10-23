@@ -292,7 +292,7 @@ extension SyncEngineCore {
         let server: SyncServerRecord?
         do {
             server = try await transport.fetch(name, zone: zone)
-        } catch SyncTransportError.networkUnavailable {
+        } catch let error as SyncTransportError where error.isPassing {
             throw SyncDocumentError.zoneKeyUnavailable
         }
         if let server {
@@ -311,7 +311,7 @@ extension SyncEngineCore {
         let results: [SaveResult]
         do {
             results = try await transport.save([wire], ifUnchanged: [:], atomic: false)
-        } catch SyncTransportError.networkUnavailable {
+        } catch let error as SyncTransportError where error.isPassing {
             throw SyncDocumentError.zoneKeyUnavailable
         }
         let now = clock()
@@ -421,7 +421,7 @@ extension SyncEngineCore {
                 let results: [SaveResult]
                 do {
                     results = try await transport.save(operation, ifUnchanged: [:], atomic: false)
-                } catch SyncTransportError.networkUnavailable {
+                } catch let error as SyncTransportError where error.isPassing {
                     results = []
                 }
                 for result in results {

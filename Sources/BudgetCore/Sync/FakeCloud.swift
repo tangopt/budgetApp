@@ -61,6 +61,7 @@ public actor FakeCloud: SyncTransport {
     private var tags = 0
     private var epoch = 0
     private var saveOperationsLeft: Int?
+    private var saveFailure = SyncTransportError.networkUnavailable
     private var failing: [String: Int] = [:]
     private var loseNextReply = false
 
@@ -94,8 +95,12 @@ public actor FakeCloud: SyncTransport {
 
     public func advanceClock(by seconds: TimeInterval) { now = now.addingTimeInterval(seconds) }
     public func setPageSize(_ size: Int) { pageSize = max(1, size) }
-    /// Lets `count` more save operations through, then fails every save with `networkUnavailable`.
-    public func failSaveOperations(after count: Int) { saveOperationsLeft = count }
+    /// Lets `count` more save operations through, then fails every save with `error` (`networkUnavailable`, or
+    /// `unavailable` as CloudKit's busy or rate-limited service).
+    public func failSaveOperations(after count: Int, with error: SyncTransportError = .networkUnavailable) {
+        saveOperationsLeft = count
+        saveFailure = error
+    }
     public func restoreConnection() { saveOperationsLeft = nil }
     /// The next `times` saves of each named record fail with a passing error (`.failed`).
     public func failSaves(of names: Set<String>, times: Int) { for name in names { failing[name] = times } }
@@ -147,7 +152,7 @@ public actor FakeCloud: SyncTransport {
     public func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data], atomic: Bool) async throws -> [SaveResult] {
         calls.append(.save(records.map(\.recordName), atomic: atomic))
         if let left = saveOperationsLeft {
-            guard left > 0 else { throw SyncTransportError.networkUnavailable }
+            guard left > 0 else { throw saveFailure }
             saveOperationsLeft = left - 1
         }
         guard records.count <= limits.maxRecords, records.map(\.size).reduce(0, +) <= limits.maxBytes else {

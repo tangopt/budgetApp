@@ -16,6 +16,10 @@ enum BudgetMain {
         }
         SnapshotRunner.main()
         #else
+        #if DEBUG
+        // `--sync-demo` (CloudKit, the demo database only): refused before anything opens a database.
+        SyncDemoMode.checkOrExit()
+        #endif
         // Theme, appearance and panel state from before the bundle id moved (build step 0).
         AppIdentity.copyLegacyPreferencesOnce()
         BudgetApp.main()
