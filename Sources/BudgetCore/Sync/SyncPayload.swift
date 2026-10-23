@@ -137,6 +137,9 @@ public struct SyncPayload: Codable, Equatable, Sendable {
     /// Set only on the wire (ruling R4): the record was too large for one server record, so its payload
     /// travels as an encrypted asset field of the record, and this names it. The engine reassembles it.
     public var largePayload: SyncLargePayloadReference?
+    /// Ruling R12: sent again because a full fetch found it missing on the server (a delete missed while a
+    /// token was expired, or a zone reset). A receiver that deleted it takes it back, and logs that.
+    public var resent: Bool?
 
     public init(recordType: String, recordName: String, zone: String, fields: [String: SyncValue],
                 clocks: [String: SyncClock] = [:], modifiedBy: String? = nil, modifiedAt: Date? = nil, mergedInto: String? = nil,

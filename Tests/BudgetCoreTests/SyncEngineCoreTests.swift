@@ -544,6 +544,69 @@ final class SyncEngineCoreTests: XCTestCase {
         XCTAssertNotEqual(fields, tag.map { Data($0.utf8) }, "the opaque blob and the compared tag are both kept")
     }
 
+    // MARK: R12: reconciliation after a full fetch
+
+    private func conflictLog(_ device: SyncEngineTestDevice, _ uuid: String) throws -> [String] {
+        try device.read { db in try SyncConflictRow.filter(Column("uuid") == uuid).fetchAll(db).map(\.losingValueJSON) }
+    }
+
+    func testADeleteMissedWhileTheTokenExpiredComesBackVisibly() async throws {
+        let (_, _, coffee) = try base(a)
+        let uuid = try a.uuid("transaction_", coffee)
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        await cloud.expireChangeTokens()
+        try a.write { db in try db.execute(sql: "DELETE FROM transaction_ WHERE id = ?", arguments: [coffee]) }
+        try await a.engine.syncNow()
+        let deletedOnServer = await cloud.record(named: uuid)
+        XCTAssertNil(deletedOnServer)
+
+        let report = try await b.engine.syncNow()
+        XCTAssertEqual(report.pull.reconciled, 1, "B never saw the delete: its row is sent again")
+        XCTAssertTrue(try conflictLog(b, uuid).contains { $0.contains("was missing on iCloud; sent again") })
+        try await a.engine.syncNow()
+        XCTAssertNotNil(try transaction(a, uuid: uuid), "the row is back on the Mac")
+        XCTAssertTrue(try conflictLog(a, uuid).contains { $0.contains("brought back") })
+        XCTAssertNotNil(try transaction(b, uuid: uuid))
+        XCTAssertEqual(try a.content(), try b.content())
+        XCTAssertTrue(try a.read { db in try SyncChangeTracker.pending(db: db) }.isEmpty)
+    }
+
+    func testAZoneResetOnOneDeviceGetsTheOthersRowsBack() async throws {
+        let (account, batch, _) = try base(a)
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        let bAccount = try XCTUnwrap(b.localId("account", try a.uuid("account", account)))
+        let bBatch = try XCTUnwrap(b.localId("importBatch", try a.uuid("importBatch", batch)))
+        let bakery = try b.write { db -> Int64 in
+            var t = Transaction(importBatchId: bBatch, accountId: bAccount, date: Self.day, rawDescription: "Bakery", amountMinorUnits: -450,
+                                categoryId: nil, status: .pendingReview, categorizedBy: .none, fingerprint: "fp-bakery", isManual: true)
+            try t.insert(db)
+            return t.id!
+        }
+        let bakeryUuid = try b.uuid("transaction_", bakery)
+        try await b.engine.syncNow()
+        // The zone goes before the Mac fetched the Bakery: it re-sends only what it has.
+        await cloud.deleteZone("household")
+        try await a.engine.syncNow()
+        let missingOnServer = await cloud.record(named: bakeryUuid)
+        XCTAssertNil(missingOnServer)
+
+        let report = try await b.engine.syncNow()
+        XCTAssertEqual(report.pull.reconciled, 1, "B re-sends what the Mac lacked")
+        try await a.engine.syncNow()
+        XCTAssertEqual(try a.descriptions(), ["Bakery", "Coffee"])
+        XCTAssertEqual(try a.content(), try b.content())
+    }
+
+    func testAFirstFetchOnANewDeviceReconcilesNothing() async throws {
+        try base(a)
+        try await a.engine.syncNow()
+        let report = try await b.engine.syncNow()
+        XCTAssertEqual(report.pull.reconciled, 0)
+        XCTAssertEqual(try b.count("syncConflict"), 0)
+    }
+
     func testTheLeaseStoreReportsPassingFailuresAsUnavailable() async throws {
         try await cloud.createZone("household")
         let store = TransportLeaseStore(transport: cloud)
@@ -955,6 +1018,7 @@ final class FakeCloudTests: XCTestCase {
         original.manifest?.revives = ["back"]
         original.deletedReferences = ["gone"]
         original.largePayload = SyncLargePayloadReference(assetField: "payload", key: Data([1, 2, 3]))
+        original.resent = true
         // Every property is set: a property added later without a value here fails this.
         for child in Mirror(reflecting: original).children {
             XCTAssertNotEqual(String(describing: child.value), "nil", "\(child.label ?? "?") is set in this test")

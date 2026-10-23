@@ -29,6 +29,8 @@ public struct SyncPullReport: Equatable, Sendable {
     public var staged = 0
     /// Received records that couldn't be read: staged for attention.
     public var unreadable = 0
+    /// Rows here a full fetch didn't list, queued to go up again (ruling R12).
+    public var reconciled = 0
 
     public init() {}
 }
@@ -166,6 +168,7 @@ public actor SyncEngineCore {
             report.alreadyHeld += zoneReport.alreadyHeld
             report.staged += zoneReport.staged
             report.unreadable += zoneReport.unreadable
+            report.reconciled += zoneReport.reconciled
         }
         return report
     }
@@ -181,6 +184,9 @@ public actor SyncEngineCore {
         var entries: [String: (position: Int, entry: Entry)] = [:]
         var position = 0
         var alreadyHeld = 0
+        // A fetch from the start lists every record the zone holds (ruling R12 reconciles against it).
+        var full = token == nil
+        var listed: Set<String> = []
         while true {
             let page: SyncChanges
             do {
@@ -191,6 +197,8 @@ public actor SyncEngineCore {
                 token = nil
                 entries = [:]
                 alreadyHeld = 0
+                full = true
+                listed = []
                 continue
             } catch SyncTransportError.zoneNotFound {
                 try await recoverMissingZone(zone)
@@ -203,6 +211,7 @@ public actor SyncEngineCore {
                 switch change {
                 case .record(let record):
                     let name = record.wire.recordName
+                    listed.insert(name)
                     guard !Self.reservedRecordTypes.contains(record.wire.recordType) else { continue }
                     if let tag = held[name], tag == record.stamp.changeTag {
                         // Already held at this version (this device's own upload coming back): skipped,
@@ -228,6 +237,7 @@ public actor SyncEngineCore {
         let ordered = entries.sorted { $0.value.position < $1.value.position }.map { ($0.key, $0.value.entry) }
         let finalToken = token
         let skipped = alreadyHeld
+        let reconcile = full ? listed : nil
         let now = clock()
         return try await db.write { db in
             var report = SyncPullReport()
@@ -257,6 +267,9 @@ public actor SyncEngineCore {
                     // must not, or a later save would overwrite a version this device never merged.
                     try Self.storeStamp(stamp, uuid: name, db: db)
                 }
+            }
+            if let reconcile {
+                report.reconciled = try SyncTranslator.reconcile(zone: zone, listed: reconcile, db: db, now: now).count
             }
             if let finalToken { try Self.setToken(finalToken, zone: zone, db: db, now: now) }
             // Caught up: a closed batch that can't complete any more applies now.
@@ -346,7 +359,10 @@ public actor SyncEngineCore {
                            report: inout SyncPushReport) async throws -> (needsPull: Bool, zoneMissing: Bool) {
         let built = try await db.write { db -> [(PendingChange, SyncPayload?, Data?)] in
             try chunk.map { change in
-                let payload = try SyncTranslator.outgoing(change, db: db)
+                var payload = try SyncTranslator.outgoing(change, db: db)
+                if try Bool.fetchOne(db, sql: "SELECT resent FROM syncPending WHERE uuid = ?", arguments: [change.uuid]) == true {
+                    payload?.resent = true
+                }
                 return (change, payload, try payload.flatMap { try Self.systemFields(uuid: $0.recordName, db: db) })
             }
         }

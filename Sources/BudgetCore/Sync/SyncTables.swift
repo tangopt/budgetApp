@@ -201,6 +201,8 @@ func registerSyncMigration(_ migrator: inout DatabaseMigrator) {
             t.column("localId", .integer).notNull()
             t.column("kind", .text).notNull().check { ["insert", "update", "delete"].contains($0) }
             t.column("revision", .integer).notNull().indexed()
+            // Ruling R12: queued again by reconciliation (it was missing on the server): sent as `resent`.
+            t.column("resent", .boolean).notNull().defaults(to: false)
         }
         // When each synced field last changed here, for field-level last writer wins (sync spec §5.1).
         // Field `*` is the row's insert: every field without its own entry dates from it.

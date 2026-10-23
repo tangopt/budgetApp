@@ -233,6 +233,36 @@ public enum SyncTranslator {
         }
     }
 
+    /// Ruling R12's conflict log entries.
+    public static let reconciledSent = "needs attention: was missing on iCloud; sent again"
+    public static let reconciledHere = "needs attention: deleted here, sent again by another device; brought back"
+
+    /// Ruling R12: after a full fetch of `zone`, every synced row of it here that the fetch didn't list, and
+    /// that isn't pending or staged, is queued to go up again as an insert (`resent`), with no stamp, and
+    /// logged. A delete missed while a token was expired comes back rather than diverging; a zone reset
+    /// elsewhere gets this device's rows back. Returns the UUIDs queued.
+    @discardableResult
+    public static func reconcile(zone: String, listed: Set<String>, db: Database, now: Date) throws -> [String] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT uuid, tableName, localId FROM syncRecord
+            WHERE zone = ? AND uuid NOT IN (SELECT uuid FROM syncPending) AND uuid NOT IN (SELECT uuid FROM syncStaging)
+            ORDER BY rowid
+            """, arguments: [zone])
+        var queued: [String] = []
+        for row in rows {
+            let uuid: String = row["uuid"]
+            guard !listed.contains(uuid) else { continue }
+            let table: String = row["tableName"]
+            try SyncMerge.queue(uuid: uuid, table: table, localId: row["localId"], kind: .insert, db: db)
+            try db.execute(sql: "UPDATE syncPending SET resent = 1 WHERE uuid = ?", arguments: [uuid])
+            try db.execute(sql: "UPDATE syncRecord SET systemFields = NULL, changeTag = NULL WHERE uuid = ?", arguments: [uuid])
+            try SyncMerge.logConflict(table: table, uuid: uuid, field: "*", losing: .string(reconciledSent), winner: nil, loser: nil, db: db, now: now)
+            queued.append(uuid)
+        }
+        if !queued.isEmpty { log.error("Sync reconciliation queued \(queued.count) records missing on the server") }
+        return queued
+    }
+
     static let waitingFor = "waiting for "
     static let applyFailed = "apply failed"
     static let needsAttention = "needs attention: "
@@ -274,11 +304,18 @@ public enum SyncTranslator {
         } else if existing == nil, let tombstone = try SyncTombstoneRow.fetchOne(db, key: uuid), tombstone.mergedInto == nil {
             // A delete wins over an edit made while offline, except that a document is sent again by a
             // device that kept it because a record links to it (`kept`): it comes back.
-            guard schema.name == "document" else {
+            // Ruling R12: a record sent again because it was missing on the server comes back too, visibly
+            // (a resurrected row is preferred to silent divergence; step 6 asks a person to confirm).
+            guard schema.name == "document" || payload.resent == true else {
                 try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
                 return .discarded("deleted here")
             }
             try db.execute(sql: "DELETE FROM syncTombstone WHERE uuid = ?", arguments: [uuid])
+            if payload.resent == true, schema.name != "document" {
+                try db.execute(sql: "DELETE FROM syncPending WHERE uuid = ? AND kind = 'delete'", arguments: [uuid])
+                try SyncMerge.logConflict(table: schema.name, uuid: uuid, field: "*", losing: .string(reconciledHere),
+                                          winner: payload.modifiedBy, loser: deviceUser, db: db, now: now)
+            }
         }
         let resolver = SyncReferenceResolver(db: db)
         resolver.history = SyncSchema.historyTables.contains(schema.name)
