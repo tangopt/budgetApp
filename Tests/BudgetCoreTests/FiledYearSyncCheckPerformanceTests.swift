@@ -137,17 +137,46 @@ final class FiledYearSyncCheckPerformanceTests: XCTestCase {
             }
         }
         XCTAssertEqual(heldNames, [offenderUuid], "only the offender is held")
+        // With a ValueObservation active on the database (as in the app): GRDB's hook can hide written tables
+        // (`TaxFiguresReads.writtenTables` nil), and every recorded statement is replayed.
+        let observation = ValueObservation.tracking { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM transaction_ WHERE note IS NOT NULL") ?? 0 }
+        let cancellable = observation.start(in: b.queue, scheduling: .async(onQueue: DispatchQueue(label: "perf-observation")),
+                                            onError: { _ in }, onChange: { _ in })
+        defer { cancellable.cancel() }
+        var observed: [TimeInterval] = [], observedIsolated: [TimeInterval] = []
+        for _ in 0..<Self.runs {
+            try b.write { db in
+                try db.inSavepoint {
+                    let (outcome, spent) = try time {
+                        try FiledYearSyncCheck.apply(notes, baseline: try FiledYearSyncCheck.baseline(db: db), db: db, deviceUser: user, now: now)
+                    }
+                    XCTAssertNil(outcome.alert)
+                    observed.append(spent)
+                    return .rollback
+                }
+                try db.inSavepoint {
+                    let (outcome, spent) = try time {
+                        try FiledYearSyncCheck.apply(withOffender, baseline: try FiledYearSyncCheck.baseline(db: db), db: db,
+                                                     deviceUser: user, now: now)
+                    }
+                    XCTAssertEqual(outcome.alert?.records.map(\.recordName), [offenderUuid])
+                    observedIsolated.append(spent)
+                    return .rollback
+                }
+            }
+        }
         // And the real thing, end to end.
         let start = Date()
         let report = try await b.engine.pull()
         let engine = Date().timeIntervalSince(start)
         XCTAssertEqual(report.filedYearAlert?.records.map(\.recordName), [offenderUuid])
-        print("SYNC_PERF filed-year check: first pull (no filed years yet, no check) \(String(format: "%.3f", firstPull))s; "
+        print("SYNC_PERF filed-year check: first pull onto an empty device (checked, nothing protected there yet) \(String(format: "%.3f", firstPull))s; "
               + "pull of \(withOffender.count) records, filed years \(filedYears.sorted())")
         print("SYNC_PERF   apply without check \(format(raw))")
         print("SYNC_PERF   baseline \(format(baselines))")
         print("SYNC_PERF   checked apply incl. baseline, nothing held (\(notes.count) records) \(format(checked))")
         print("SYNC_PERF   checked apply incl. baseline, one offender isolated \(format(isolated))")
+        print("SYNC_PERF   with a ValueObservation active: checked apply incl. baseline, nothing held \(format(observed)); one offender \(format(observedIsolated))")
         print("SYNC_PERF   engine pull end to end, one offender \(String(format: "%.3f", engine))s")
     }
 }

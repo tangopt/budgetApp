@@ -448,7 +448,7 @@ final class SyncConflictTests: XCTestCase {
 
     // MARK: Fix round 2 minors
 
-    func testStagedRecordsAreRetriedAtOpen() throws {
+    func testStagedRecordsAreRetriedOnTheFirstPullAfterOpen() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SyncOpen-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -468,9 +468,23 @@ final class SyncConflictTests: XCTestCase {
         let reopened = try DatabaseManager(path: path)
         try reopened.migrate()
         try reopened.dbQueue.read { db in
+            // Not applied at open (it would bypass the filed-year check): the next pull retries it.
+            XCTAssertEqual(try SyncStagingRow.fetchCount(db), 1)
+            XCTAssertTrue(try SyncEngineCore.retryStagedRequested(db: db))
+        }
+        let engine = SyncEngineCore(db: reopened.dbQueue, transport: FakeCloud(), device: SyncDevice(id: "device-b", name: "iPad"))
+        let pulled = expectation(description: "pull")
+        Task {
+            do { _ = try await engine.pull() } catch { XCTFail("\(error)") }
+            pulled.fulfill()
+        }
+        wait(for: [pulled], timeout: 60)
+        try reopened.dbQueue.read { db in
+            XCTAssertFalse(try SyncEngineCore.retryStagedRequested(db: db))
             XCTAssertEqual(try SyncStagingRow.fetchCount(db), 0)
             XCTAssertEqual(try String.fetchAll(db, sql: "SELECT name FROM account"), ["From A"])
-            XCTAssertEqual(try SyncChangeTracker.pending(db: db), [], "applied, not echoed")
+            // (Pending again only as ruling R12's resend: this first fetch of an empty server didn't list it.)
+            XCTAssertTrue(try SyncChangeTracker.pending(db: db).allSatisfy { $0.kind == .insert })
         }
     }
 

@@ -256,7 +256,7 @@ final class FiledYearSyncCheckTests: XCTestCase {
     /// A confirmed import on A, written as `ImportApplier` writes one: three rows, the second a repair in the
     /// filed 2024/25. Returns that row's id.
     @discardableResult
-    private func importWithAFiledYearRow() async throws -> Int64 {
+    private func importWithAFiledYearRow(extraRows: Int = 0) async throws -> Int64 {
         try await a.engine.acquireImportLease()
         return try a.write { db -> Int64 in
             var filed: Int64 = 0
@@ -267,8 +267,9 @@ final class FiledYearSyncCheckTests: XCTestCase {
             try ImportChangeCapture.begin(db: db)
             var batch = ImportBatch(accountId: ids["bank"]!, sourceFileName: "statement.csv", importedAt: Self.date(2026, 5, 1), importRunId: run.id)
             try batch.insert(db)
-            for (i, (day, amount, category)) in [(Self.date(2026, 4, 2), -700, nil), (Self.date(2024, 8, 3), -5_000, ids["repairs"]),
-                                                 (Self.date(2026, 4, 4), -900, nil)].enumerated() {
+            let extra: [(Date, Int, Int64?)] = (0..<extraRows).map { (Self.date(2026, 6, 1 + $0 % 28), -10 - $0, nil) }
+            for (i, (day, amount, category)) in ([(Self.date(2026, 4, 2), -700, nil), (Self.date(2024, 8, 3), -5_000, ids["repairs"]),
+                                                  (Self.date(2026, 4, 4), -900, nil)] + extra).enumerated() {
                 var t = Transaction(importBatchId: batch.id!, accountId: ids["bank"]!, date: day, rawDescription: "ROW \(i)",
                                     amountMinorUnits: amount, categoryId: category, status: .confirmed,
                                     categorizedBy: category == nil ? .none : .rule, fingerprint: "fp-row-\(i)")
@@ -348,9 +349,9 @@ final class FiledYearSyncCheckTests: XCTestCase {
             return try FiledYearSyncCheck.apply(later, baseline: baseline, db: db, deviceUser: user, now: Date())
         }
         let records = try XCTUnwrap(outcome.alert?.records)
-        XCTAssertEqual(records.filter { $0.reason == FiledYearSyncCheck.heldReason }.map(\.recordName), [filedRow])
-        XCTAssertGreaterThanOrEqual(records.filter { $0.reason == FiledYearSyncCheck.heldAlongReason }.count, 4,
-                                    "the batch's records that waited are named, held with it")
+        XCTAssertTrue(records.allSatisfy { $0.reason == FiledYearSyncCheck.heldBatchReason }, "\(records.map(\.reason))")
+        XCTAssertTrue(records.contains { $0.recordName == filedRow })
+        XCTAssertGreaterThanOrEqual(records.count, 5, "the batch's records that waited are named, held with it")
         XCTAssertEqual(try b.count("transaction_"), counts, "none of the batch applies, not even the members that waited")
         XCTAssertEqual(try figures(b), before)
         let local = try b.localId("transaction_", coffee)
@@ -389,7 +390,7 @@ final class FiledYearSyncCheckTests: XCTestCase {
         let plumber = try b.localId("transaction_", try a.uuid("transaction_", ids["plumber"]!))!
         try b.write { db in
             let baseline = try FiledYearSyncCheck.baseline(db: db)
-            XCTAssertEqual(baseline.years, [2024])
+            XCTAssertEqual(baseline.years, [2020, 2021, 2022, 2023, 2024])
             XCTAssertNotNil(baseline.reads, "the baseline is replayable")
             for (sql, moves) in [("UPDATE transaction_ SET note = 'x' WHERE id = \(plumber)", false),
                                  ("UPDATE transaction_ SET amountMinorUnits = -1 WHERE id = \(plumber)", true),
@@ -406,11 +407,197 @@ final class FiledYearSyncCheckTests: XCTestCase {
         }
     }
 
-    func testNoFiledYearNoBaseline() throws {
+    func testTheProtectedYearsAreTheFixedRangeAndWhateverIsFiled() throws {
+        // Ruling R13: 2020/21–2024/25 always, plus any year stored filed or paid.
         let fresh = try DatabaseManager(path: nil)
         try fresh.migrate()
         let baseline = try fresh.dbQueue.write { db in try FiledYearSyncCheck.baseline(db: db) }
-        XCTAssertTrue(baseline.years.isEmpty)
-        XCTAssertNil(baseline.reads)
+        XCTAssertEqual(baseline.years, [2020, 2021, 2022, 2023, 2024])
+        try b.write { db in
+            try db.execute(sql: "INSERT INTO taxYear(startYear, personId, status) SELECT 2026, id, 'paid' FROM person LIMIT 1")
+            XCTAssertEqual(try FiledYearSyncCheck.baseline(db: db).years, [2020, 2021, 2022, 2023, 2024, 2026])
+        }
+    }
+
+    func testAFirstSyncOntoAnEmptyDeviceHoldsNothing() async throws {
+        let c = try SyncEngineTestDevice("user-c", name: "iPhone", cloud: cloud)
+        let report = try await c.engine.pull()
+        XCTAssertNil(report.filedYearAlert)
+        XCTAssertEqual(try figures(c), try figures(a))
+    }
+
+    // MARK: Fix round 1
+
+    /// A's payload of one of its rows, as A would send it (not sent).
+    private func payload(_ table: String, _ id: Int64) throws -> SyncPayload {
+        let uuid = try a.uuid(table, id)
+        return try a.write { db in
+            try XCTUnwrap(SyncTranslator.outgoing(PendingChange(table: table, localId: id, uuid: uuid, kind: .update), db: db))
+        }
+    }
+
+    func testAMergeOnPushThatWouldMoveAFiledYearIsHeld() async throws {
+        let plumber = try a.uuid("transaction_", ids["plumber"]!)
+        let before = try figures(b)
+        try a.write { db in try db.execute(sql: "UPDATE transaction_ SET amountMinorUnits = -20000 WHERE id = ?", arguments: [ids["plumber"]!]) }
+        try await a.engine.syncNow()
+        // B edits the same row offline: its save meets A's newer version on the server.
+        let local = try XCTUnwrap(try b.localId("transaction_", plumber))
+        let stamp = try b.read { db in try SyncEngineCore.systemFields(uuid: plumber, db: db) }
+        try b.write { db in try db.execute(sql: "UPDATE transaction_ SET note = 'Kitchen tap' WHERE id = ?", arguments: [local]) }
+        let report = try await b.engine.pushPending()
+        XCTAssertEqual(report.held, 1)
+        XCTAssertEqual(report.filedYearAlert?.records.map(\.recordName), [plumber])
+        XCTAssertEqual(try amount(b, plumber), -10_000, "the server's version isn't merged in")
+        XCTAssertEqual(try figures(b), before)
+        XCTAssertEqual(try held(b).map(\.uuid), [plumber])
+        XCTAssertEqual(try b.read { db in try SyncEngineCore.systemFields(uuid: plumber, db: db) }, stamp, "no stamp for the held version")
+        XCTAssertEqual(try b.read { db in try SyncChangeTracker.pending(db: db) }.map(\.uuid), [plumber], "the local edit waits")
+        let again = try await b.engine.pushPending()
+        XCTAssertEqual(again.heldBack, 1)
+        XCTAssertEqual(again.saved, 0)
+    }
+
+    func testStagedRecordsAreRetriedThroughTheCheckOnTheNextPullNotAtOpen() async throws {
+        // As an older build would have left them: two records it couldn't apply, one moving the filed year.
+        try a.write { db in
+            try db.execute(sql: "UPDATE transaction_ SET amountMinorUnits = -20000 WHERE id = ?", arguments: [ids["plumber"]!])
+            try db.execute(sql: "UPDATE transaction_ SET note = 'Flat white' WHERE id = ?", arguments: [ids["coffee"]!])
+        }
+        let plumber = try payload("transaction_", ids["plumber"]!), coffee = try payload("transaction_", ids["coffee"]!)
+        try b.write { db in
+            for p in [plumber, coffee] {
+                var row = SyncStagingRow(tableName: "transaction_", uuid: p.recordName, payloadJSON: try SyncTranslator.json(p),
+                                         reason: "unknown record type", receivedAt: Date())
+                try row.insert(db)
+            }
+        }
+        let before = try figures(b)
+        try b.manager.migrate()  // what opening does
+        XCTAssertEqual(try b.read { db in try SyncStagingRow.fetchCount(db) }, 2, "nothing applied at open")
+        XCTAssertTrue(try b.read { db in try SyncEngineCore.retryStagedRequested(db: db) })
+        let report = try await b.engine.pull()
+        XCTAssertEqual(report.filedYearAlert?.records.map(\.recordName), [plumber.recordName])
+        XCTAssertEqual(try figures(b), before)
+        let local = try b.localId("transaction_", coffee.recordName)
+        XCTAssertEqual(try b.read { db in try String.fetchOne(db, sql: "SELECT note FROM transaction_ WHERE id = ?", arguments: [local]) },
+                       "Flat white")
+        XCTAssertFalse(try b.read { db in try SyncEngineCore.retryStagedRequested(db: db) })
+        XCTAssertEqual(try held(b).map(\.uuid), [plumber.recordName])
+    }
+
+    func testAHeldBatchCountsOnceTowardsTheCap() async throws {
+        let plumber = try a.uuid("transaction_", ids["plumber"]!)
+        let coffee = try a.uuid("transaction_", ids["coffee"]!)
+        let before = try figures(b)
+        try await importWithAFiledYearRow(extraRows: 30)
+        try await a.engine.syncNow()
+        try a.write { db in
+            try db.execute(sql: "UPDATE transaction_ SET amountMinorUnits = -20000 WHERE id = ?", arguments: [ids["plumber"]!])
+            try db.execute(sql: "UPDATE transaction_ SET note = 'Flat white' WHERE id = ?", arguments: [ids["coffee"]!])
+        }
+        try await a.engine.syncNow()
+        let report = try await b.engine.pull()
+        let records = try XCTUnwrap(report.filedYearAlert?.records)
+        XCTAssertGreaterThanOrEqual(records.count, 34, "the batch's 33 rows, its run and batch, and the repair")
+        XCTAssertTrue(records.contains { $0.recordName == plumber && $0.reason == FiledYearSyncCheck.heldReason })
+        XCTAssertFalse(records.contains { $0.recordName == coffee })
+        XCTAssertEqual(try figures(b), before)
+        let local = try b.localId("transaction_", coffee)
+        XCTAssertEqual(try b.read { db in try String.fetchOne(db, sql: "SELECT note FROM transaction_ WHERE id = ?", arguments: [local]) },
+                       "Flat white", "the rest of the pull still applies")
+    }
+
+    func testAStagedRecordThatAppliesWhenItsParentArrivesIsTheOneHeld() async throws {
+        // A new import batch row and a repair on it in the filed year; the repair reaches B first and waits.
+        let (batchId, repairId) = try a.write { db -> (Int64, Int64) in
+            var batch = ImportBatch(accountId: ids["bank"]!, sourceFileName: "later.csv", importedAt: Self.date(2026, 2, 1))
+            try batch.insert(db)
+            var t = Transaction(importBatchId: batch.id!, accountId: ids["bank"]!, date: Self.date(2024, 10, 1), rawDescription: "ROOFER",
+                                amountMinorUnits: -7_000, categoryId: ids["repairs"]!, status: .confirmed, categorizedBy: .manual,
+                                fingerprint: "fp-ROOFER")
+            try t.insert(db)
+            return (batch.id!, t.id!)
+        }
+        let batch = try payload("importBatch", batchId), repair = try payload("transaction_", repairId)
+        let before = try figures(b)
+        let user = b.user
+        let outcome = try b.write { db -> FiledYearSyncCheck.Outcome in
+            let waiting = try SyncTranslator.apply([.save(repair)], db: db, deviceUser: user)
+            guard case .staged = waiting[repair.recordName] else { XCTFail("\(waiting)"); return FiledYearSyncCheck.Outcome() }
+            return try FiledYearSyncCheck.apply([.save(batch)], baseline: try FiledYearSyncCheck.baseline(db: db), db: db, deviceUser: user, now: Date())
+        }
+        let records = try XCTUnwrap(outcome.alert?.records)
+        XCTAssertEqual(records.map(\.recordName), [repair.recordName], "the repair is blamed, not its parent")
+        XCTAssertEqual(records.first?.reason, FiledYearSyncCheck.heldReason)
+        XCTAssertNotNil(try b.localId("importBatch", batch.recordName), "the parent applies")
+        XCTAssertNil(try b.localId("transaction_", repair.recordName))
+        XCTAssertEqual(try figures(b), before)
+        XCTAssertEqual(try held(b).map(\.uuid), [repair.recordName])
+    }
+
+    func testAFiledYearSetBackToPreparingIsHeld() async throws {
+        let year = try a.read { db in try Int64.fetchOne(db, sql: "SELECT id FROM taxYear WHERE startYear = 2024")! }
+        let uuid = try a.uuid("taxYear", year)
+        try a.write { db in try db.execute(sql: "UPDATE taxYear SET status = 'preparing' WHERE id = ?", arguments: [year]) }
+        try await a.engine.syncNow()
+        let report = try await b.engine.pull()
+        let alert = try XCTUnwrap(report.filedYearAlert)
+        XCTAssertEqual(alert.records.map(\.recordName), [uuid])
+        XCTAssertTrue(alert.impacts.contains { $0.startYear == 2024 && $0.returnChanges.contains { $0.label == "Status" } }, "\(alert.impacts)")
+        XCTAssertEqual(try b.read { db in try FiledYearGuard.filedYears(db: db) }, [2024])
+    }
+
+    func testAChangeToA2021FigureIsHeldThoughThatYearIsNotStoredFiled() async throws {
+        let before = try figures(b)
+        let repair = try a.write { db -> Int64 in
+            var t = Transaction(importBatchId: ids["batch"]!, accountId: ids["bank"]!, date: Self.date(2021, 8, 1), rawDescription: "GLAZIER",
+                                amountMinorUnits: -5_000, categoryId: ids["repairs"]!, status: .confirmed, categorizedBy: .manual,
+                                fingerprint: "fp-GLAZIER")
+            try t.insert(db)
+            return t.id!
+        }
+        try await a.engine.syncNow()
+        let report = try await b.engine.pull()
+        let alert = try XCTUnwrap(report.filedYearAlert)
+        XCTAssertEqual(alert.records.map(\.recordName), [try a.uuid("transaction_", repair)])
+        XCTAssertTrue(alert.impacts.contains { $0.startYear == 2021 }, "\(alert.impacts.map(\.startYear))")
+        XCTAssertEqual(try figures(b), before)
+    }
+
+    func testAnEarlierYearsLossCarriedIntoTheFiledYearIsCaught() async throws {
+        // Review item 8. The app's UK rules start at 2020/21, so the carry-forward chain does too: a 2019/20
+        // row reaches no return (it applies); a 2020/21 tax year arriving with a loss carried into 2024/25 is held.
+        let before = try figures(b)
+        try a.write { db in
+            let person = try Int64.fetchOne(db, sql: "SELECT id FROM person")!
+            var y2019 = TaxYear(startYear: 2019, personId: person, status: .filed)
+            try y2019.insert(db)
+            var old = Transaction(importBatchId: ids["batch"]!, accountId: ids["bank"]!, date: Self.date(2019, 7, 1), rawDescription: "OLD ROOF",
+                                  amountMinorUnits: -1_000_000, categoryId: ids["repairs"]!, status: .confirmed, categorizedBy: .manual,
+                                  fingerprint: "fp-OLD")
+            try old.insert(db)
+        }
+        try await a.engine.syncNow()
+        let first = try await b.engine.pull()
+        XCTAssertNil(first.filedYearAlert, "\(String(describing: first.filedYearAlert?.impacts))")
+        let (yearId, lossId) = try a.write { db -> (Int64, Int64) in
+            let person = try Int64.fetchOne(db, sql: "SELECT id FROM person")!
+            var y2020 = TaxYear(startYear: 2020, personId: person, status: .preparing)
+            try y2020.insert(db)
+            var loss = Transaction(importBatchId: ids["batch"]!, accountId: ids["bank"]!, date: Self.date(2020, 7, 1), rawDescription: "NEW ROOF",
+                                   amountMinorUnits: -1_000_000, categoryId: ids["repairs"]!, status: .confirmed, categorizedBy: .manual,
+                                   fingerprint: "fp-NEW")
+            try loss.insert(db)
+            return (y2020.id!, loss.id!)
+        }
+        try await a.engine.syncNow()
+        let report = try await b.engine.pull()
+        let alert = try XCTUnwrap(report.filedYearAlert)
+        XCTAssertTrue(alert.records.map(\.recordName).contains(try a.uuid("transaction_", lossId)))
+        XCTAssertTrue(alert.impacts.contains { $0.startYear == 2024 }, "the loss reaches the filed 2024/25: \(alert.impacts.map(\.startYear))")
+        _ = yearId
+        let after = try figures(b).values.filter { $0.key.startYear == 2024 }
+        XCTAssertEqual(after, before.values.filter { $0.key.startYear == 2024 })
     }
 }

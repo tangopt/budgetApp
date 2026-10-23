@@ -36,10 +36,10 @@ public final class DatabaseManager {
         try dbQueue.write { db in
             guard try db.tableExists("syncPending") else { return }
             try SyncChangeTracker.refreshSyncTriggers(db: db)
-            // Records staged by an older build (an unknown record type, say) get another chance now.
+            // Records staged by an older build (an unknown record type, say) get another chance: on the next pull,
+            // through the filed-year check (sync spec §5.4), never applied unchecked here.
             if try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncStaging") ?? 0 > 0 {
-                let writer = try String.fetchOne(db, sql: "SELECT appUserUuid FROM syncWriter WHERE id = 1")
-                try SyncTranslator.apply([], db: db, deviceUser: writer, retryAll: true)
+                try SyncEngineCore.requestStagedRetry(db: db)
             }
         }
     }

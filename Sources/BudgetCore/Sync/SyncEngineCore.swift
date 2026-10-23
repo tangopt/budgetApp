@@ -16,6 +16,11 @@ public struct SyncPushReport: Equatable, Sendable {
     public var asAssets = 0
     /// Local edits not sent because the server's version of the record waits in staging here.
     public var heldBack = 0
+    /// Server versions of refused saves held because merging them would change a filed tax year (§5.4): the
+    /// local edit waits (`heldBack` from the next push on).
+    public var held = 0
+    /// What they would have changed, and who wrote them; nil when nothing was held.
+    public var filedYearAlert: FiledYearSyncAlert?
 
     public init() {}
 }
@@ -273,11 +278,14 @@ public actor SyncEngineCore {
             }
             // Sync spec §5.4: the apply (and the batches it completes or flushes) is kept only while it moves no
             // figure on a filed or paid return; the records that would are held, the rest applies.
-            // (Nothing to apply and no closed batch to flush: nothing can move, nothing is taken.)
+            // Staged records left by an older build are retried here, through the check (not at open).
+            let retryAll = try Self.retryStagedRequested(db: db)
+            // (Nothing to apply or retry and no closed batch to flush: nothing can move, nothing is taken.)
             let closedWaiting = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncBatch WHERE state = 'closed')") ?? true
-            let baseline = incoming.isEmpty && !closedWaiting ? FiledYearBaseline.none : try FiledYearSyncCheck.baseline(db: db)
+            let baseline = incoming.isEmpty && !closedWaiting && !retryAll ? FiledYearBaseline.none : try FiledYearSyncCheck.baseline(db: db)
             // Caught up: a closed batch that can't complete any more applies now (`SyncBatch.flushClosed`, inside).
-            let outcome = try FiledYearSyncCheck.apply(incoming, baseline: baseline, db: db, deviceUser: user, now: now)
+            let outcome = try FiledYearSyncCheck.apply(incoming, baseline: baseline, db: db, deviceUser: user, now: now, retryAll: retryAll)
+            if retryAll { try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [Self.retryStagedKey]) }
             let results = outcome.results
             report.filedYearAlert = outcome.alert
             report.held = outcome.alert?.records.count ?? 0
@@ -430,6 +438,9 @@ public actor SyncEngineCore {
             var zoneMissing = false
             var acknowledged = unsent
             let user = try Self.deviceUser(db: db)
+            // Server versions to merge (refused saves), applied together through the filed-year check below.
+            var merges: [SyncPayload] = []
+            var mergeStamps: [String: SyncServerStamp] = [:]
             for result in results {
                 guard let change = sentChanges[result.recordName] else { continue }
                 switch result.outcome {
@@ -449,13 +460,8 @@ public actor SyncEngineCore {
                         delta.refused += 1
                         continue
                     }
-                    // Merged field by field with the server's version; the merged record goes again next round
-                    // against the server's version (unless that version had to wait in staging here).
-                    let merged = try SyncTranslator.apply([.save(payload)], db: db, deviceUser: user, now: now)
-                    if case .staged = merged[result.recordName] {} else {
-                        try Self.storeStamp(server.stamp, uuid: result.recordName, db: db)
-                    }
-                    delta.merged += 1
+                    merges.append(payload)
+                    mergeStamps[result.recordName] = server.stamp
                 case .deleted:
                     try Self.clearStamp(uuid: result.recordName, db: db)
                     try db.execute(sql: "UPDATE syncPending SET resent = ? WHERE uuid = ? AND kind <> 'delete'",
@@ -473,12 +479,40 @@ public actor SyncEngineCore {
                     delta.refused += 1
                 }
             }
+            if !merges.isEmpty {
+                // Merged field by field with the server's version, unless that would move a filed tax year (§5.4):
+                // then the server's version is held, without its stamp, and the local edit waits for it. The merged
+                // record goes again next round against the server's version (unless that version waits here).
+                let baseline = try FiledYearSyncCheck.baseline(db: db)
+                let outcome = try FiledYearSyncCheck.apply(merges.map { .save($0) }, baseline: baseline, db: db, deviceUser: user, now: now,
+                                                           flush: false)
+                let held = Set(outcome.alert?.records.map(\.recordName) ?? [])
+                for payload in merges {
+                    let name = payload.recordName
+                    if held.contains(name) {
+                        delta.held += 1
+                        continue
+                    }
+                    if case .staged = outcome.results[name] {} else if let stamp = mergeStamps[name] {
+                        try Self.storeStamp(stamp, uuid: name, db: db)
+                    }
+                    delta.merged += 1
+                }
+                delta.filedYearAlert = outcome.alert
+            }
             try SyncChangeTracker.acknowledge(acknowledged, db: db)
             _ = try SyncBatch.closeUploaded(db: db)
             return (delta, needsPull, zoneMissing)
         }
         report.saved += outcome.0.saved
         report.merged += outcome.0.merged
+        report.held += outcome.0.held
+        if let alert = outcome.0.filedYearAlert {
+            var merged = report.filedYearAlert ?? FiledYearSyncAlert(records: [], impacts: [])
+            merged.records += alert.records
+            merged.impacts += alert.impacts
+            report.filedYearAlert = merged
+        }
         report.refused += outcome.0.refused
         return (outcome.1, outcome.2)
     }
@@ -623,6 +657,18 @@ public actor SyncEngineCore {
     // MARK: State
 
     static func tokenKey(_ zone: String) -> String { "changeToken." + zone }
+    /// Set at open when records wait in staging (an older build left them): the next pull retries them all,
+    /// through the filed-year check.
+    static let retryStagedKey = "retryStaged"
+
+    /// Asks the next pull to retry every staged record (at open; nothing is applied there).
+    public static func requestStagedRetry(db: Database, now: Date = Date()) throws {
+        try SyncImportGate.setState(Data([1]), key: retryStagedKey, db: db, now: now)
+    }
+
+    public static func retryStagedRequested(db: Database) throws -> Bool {
+        try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [retryStagedKey]) != nil
+    }
     static func zoneKey(_ zone: String) -> String { "zoneReady." + zone }
 
     static func zoneReady(_ zone: String, db: Database) throws -> Bool {

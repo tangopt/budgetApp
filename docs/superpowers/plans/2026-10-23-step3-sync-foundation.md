@@ -194,3 +194,6 @@ Transaction fingerprints embed the importing device's local account id, so the s
 - a new column computed from the account's UUID;
 - existing rows backfilled by re-deriving each row's occurrence number against its stored local fingerprint, with no existing value changed;
 - used by sync identity and by every importer's duplicate check.
+
+## Step-6 follow-up recorded by Task 6 (2026-10-23)
+- Records held by the post-sync filed-year check (`FiledYearSyncCheck.held`, reasons "needs attention: … filed tax year") stay in `syncStaging` and are never retried. A held import batch stays held whole (`SyncBatch` skips a run with a held record), and its local edits wait (push holds back staged UUIDs). Step 6 needs a "release held" action (after a person confirms) that re-feeds the held payloads — the rows keep the full payloads and run UUIDs — so a held batch can come back; children waiting on a held parent come back with it.

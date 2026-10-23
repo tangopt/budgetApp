@@ -76,6 +76,12 @@ struct TaxFiguresReads {
     /// that can't be told: a write wasn't reported (fewer reports than rows SQLite counts as
     /// changed — a table emptied at once, a table without rowids), the schema changed, or
     /// something else listens to the reports.
+    ///
+    /// Limitation: it takes SQLite's single update hook for the duration of `body` and clears it after,
+    /// rather than restoring a hook installed before. GRDB installs its own hook only while a statement it
+    /// observes runs, so none is installed between statements; one that is (`previous != nil`) makes this
+    /// return nil (callers replay every statement) and is cleared. Statements of `body` that GRDB observes
+    /// (an active `ValueObservation`, say) replace this hook while they run, which shows as missed rows: nil.
     static func writtenTables(db: Database, _ body: () throws -> Void) throws -> Set<String>? {
         final class Written {
             var tables: Set<String> = []

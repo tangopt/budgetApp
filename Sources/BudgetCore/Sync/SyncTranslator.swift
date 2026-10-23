@@ -134,16 +134,20 @@ public enum SyncTranslator {
     /// Records of an import batch (sync spec §5.2) wait in staging until their whole batch is here, then
     /// apply together (`SyncBatch`).
     @discardableResult
-    /// `retryAll`: retry every staged record, not only those the changes unblock (at open, after an upgrade).
+    /// `retryAll`: retry every staged record, not only those the changes unblock (after an upgrade).
+    /// `followOns`: false — only the changes themselves: no staged record is retried and no waiting batch
+    /// applies (the filed-year check uses it to tell what a record does from what it lets through).
     public static func apply(_ changes: [SyncIncomingChange], db: Database, deviceUser: String?, now: Date = Date(),
-                             retryAll: Bool = false) throws -> [String: IncomingResult] {
+                             retryAll: Bool = false, followOns: Bool = true) throws -> [String: IncomingResult] {
         guard db.isInsideTransaction else { throw SyncTranslatorError.notInTransaction }
         return try SyncChangeTracker.applyingIncoming(db: db) {
             let routed = try SyncBatch.route(changes, db: db, now: now)
             var results = routed.results
-            for (name, result) in try applyChanges(routed.direct, db: db, deviceUser: deviceUser, now: now, retryAll: retryAll) {
+            for (name, result) in try applyChanges(routed.direct, db: db, deviceUser: deviceUser, now: now, retryAll: retryAll,
+                                                   retry: followOns) {
                 results[name] = result
             }
+            guard followOns else { return results }
             // Any batch waiting here may be complete now: its last records arrived, or a parent one of them
             // waited for.
             for run in try SyncBatch.waitingRuns(db: db) {
@@ -158,7 +162,7 @@ public enum SyncTranslator {
     /// `apply` without batch routing: what `SyncBatch` applies once a batch is complete. `revivals`: records
     /// an Undo brings back (deleted here; ruling R7), by UUID, with the local id they had here.
     static func applyChanges(_ changes: [SyncIncomingChange], db: Database, deviceUser: String?, now: Date,
-                             retryAll: Bool = false, revivals: [String: Int64] = [:]) throws -> [String: IncomingResult] {
+                             retryAll: Bool = false, retry: Bool = true, revivals: [String: Int64] = [:]) throws -> [String: IncomingResult] {
         try SyncChangeTracker.applyingIncoming(db: db) {
             var results: [String: IncomingResult] = [:]
             let order = Dictionary(uniqueKeysWithValues: SyncSchema.tables.enumerated().map { ($1.name, $0) })
@@ -186,7 +190,9 @@ public enum SyncTranslator {
                 // A delete of a record of unknown type may be what anything waits for.
                 if let table { arrived.insert(table) } else { unknownArrived = true }
             }
-            if unknownArrived || retryAll {
+            if !retry {
+                // The caller retries staging itself.
+            } else if unknownArrived || retryAll {
                 for (name, result) in try retryStaged(db: db, deviceUser: deviceUser, now: now) { results[name] = result }
             } else if !arrived.isEmpty {
                 for (name, result) in try retryStaged(db: db, deviceUser: deviceUser, now: now, arrived: arrived) { results[name] = result }
@@ -201,7 +207,9 @@ public enum SyncTranslator {
     /// and those whose apply failed; without it, every one. A staged row that can't be read is marked for
     /// attention and left. Returns the records that left staging and how.
     @discardableResult
-    public static func retryStaged(db: Database, deviceUser: String?, now: Date = Date(), arrived: Set<String>? = nil) throws -> [String: IncomingResult] {
+    /// `only`: just these records (by UUID), once each.
+    public static func retryStaged(db: Database, deviceUser: String?, now: Date = Date(), arrived: Set<String>? = nil,
+                                   only: Set<String>? = nil) throws -> [String: IncomingResult] {
         try SyncChangeTracker.applyingIncoming(db: db) {
             var results: [String: IncomingResult] = [:]
             var arrived = arrived
@@ -209,6 +217,7 @@ public enum SyncTranslator {
             while true {
                 let staged = try SyncStagingRow.filter(Column("importRunUuid") == nil).fetchAll(db)
                     .filter { !$0.reason.hasPrefix(needsAttention) }
+                    .filter { row in only.map { $0.contains(row.uuid) } ?? true }
                     .filter { row in
                         guard let arrived else { return true }
                         if row.reason.hasPrefix(applyFailed) { return true }
@@ -228,7 +237,7 @@ public enum SyncTranslator {
                     arrived?.insert(payload.recordType)
                     progressed = true
                 }
-                if !progressed { return results }
+                if !progressed || only != nil { return results }
             }
         }
     }
