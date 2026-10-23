@@ -13,7 +13,7 @@ import OSLog
 /// second, the framework's own occlusion verdict (read-only, when the private view answers), what the window
 /// hit-tests at the glyph's centre, the layout passes per second, the window's occlusion state and key
 /// state, when the view moves to or from a window, and when the still copy behind it (`TouchIDGlyphUnderlay`)
-/// is shown or hidden.
+/// is shown or hidden, and when the keep-alive (`TouchIDKeepAlive`) starts or stops.
 @MainActor
 final class TouchIDGlyphDiagnostics {
     nonisolated static let defaultsKey = "auth.diagnoseTouchIDGlyph"
@@ -39,6 +39,11 @@ final class TouchIDGlyphDiagnostics {
     private var stamp: String { String(format: "%.3f", Date().timeIntervalSince(started)) }
 
     func layoutPassed() { layoutPasses += 1 }
+
+    /// The keep-alive that keeps the window compositing (`TouchIDKeepAlive`) started or stopped.
+    func keepAlive(running: Bool, why: String) {
+        Self.log.info("[\(self.stamp, privacy: .public)] keepalive \(running ? "started" : "stopped", privacy: .public): \(why, privacy: .public)")
+    }
 
     /// The still copy behind the glyph (`TouchIDGlyphUnderlay`) came up for a dip or went.
     func underlay(shown: Bool, why: String) {

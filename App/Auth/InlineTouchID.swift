@@ -47,8 +47,8 @@ final class InlineTouchIDPrompt: BiometricPromptContext {
         for waiter in waiting { waiter.resume(returning: isPaired) }
     }
 
-    /// Told when the try ends (`cancel`), after the context is invalidated: the glyph's view stops covering
-    /// for it (`TouchIDGlyphUnderlay.end`).
+    /// Told when the try ends (`cancel`), after the context is invalidated: the glyph's view stops keeping
+    /// the window compositing and stops covering for it (`TouchIDKeepAlive`, `TouchIDGlyphUnderlay.end`).
     fileprivate var onEnd: (() -> Void)?
 
     /// "Use password", another person picked, the lock screen gone, or the try answered: it ends as a cancel.
@@ -123,6 +123,10 @@ private final class PairingContainer: NSView {
     private let diagnostics: TouchIDGlyphDiagnostics?
     /// A still copy behind the live glyph that covers its once-a-second dip (`TouchIDGlyphUnderlay`).
     private let underlay: TouchIDGlyphUnderlay
+    /// Keeps the window compositing so the occlusion check doesn't pause Touch ID every second
+    /// (`TouchIDKeepAlive`).
+    private let keepAlive: TouchIDKeepAlive
+    private var ended = false
 
     init(prompt: InlineTouchIDPrompt) {
         self.prompt = prompt
@@ -133,7 +137,7 @@ private final class PairingContainer: NSView {
         self.diagnostics = diagnostics
         let underlay = TouchIDGlyphUnderlay(live: touchID) { shown, why in diagnostics?.underlay(shown: shown, why: why) }
         self.underlay = underlay
-        prompt.onEnd = { [weak underlay] in underlay?.end() }
+        keepAlive = TouchIDKeepAlive { running, why in diagnostics?.keepAlive(running: running, why: why) }
         let side = InlineTouchIDView.side
         super.init(frame: NSRect(x: 0, y: 0, width: side, height: side))
         // Nothing clipped: a clipping or masking ancestor can read as "covered" to the view's visibility check.
@@ -143,6 +147,9 @@ private final class PairingContainer: NSView {
         let copy = underlay.view
         addSubview(copy)
         addSubview(touchID)
+        // In a corner of the square, clear of the glyph's own frame (its occlusion check's region).
+        keepAlive.setFrameOrigin(.zero)
+        addSubview(keepAlive)
         NSLayoutConstraint.activate([
             touchID.centerXAnchor.constraint(equalTo: centerXAnchor),
             touchID.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -151,6 +158,13 @@ private final class PairingContainer: NSView {
             copy.topAnchor.constraint(equalTo: touchID.topAnchor),
             copy.bottomAnchor.constraint(equalTo: touchID.bottomAnchor),
         ])
+        prompt.onEnd = { [weak self] in self?.tryEnded() }
+    }
+
+    private func tryEnded() {
+        ended = true
+        keepAlive.stop("the try ended")
+        underlay.end()
     }
 
     @available(*, unavailable)
@@ -174,6 +188,7 @@ private final class PairingContainer: NSView {
         super.viewDidMoveToWindow()
         diagnostics?.movedToWindow(window)
         underlay.movedToWindow(window)
+        if window != nil, !ended { keepAlive.start() } else { keepAlive.stop("left the window") }
         if window != nil { prompt.paired() }
     }
 }
