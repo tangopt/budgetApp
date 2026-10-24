@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Combine
+import MangoUI
 
 /// Gives the app's scene `PhoneSceneDelegate`, which owns the cover window.
 final class PhoneAppDelegate: NSObject, UIApplicationDelegate {
@@ -25,6 +26,9 @@ final class PhoneSceneDelegate: NSObject, UIWindowSceneDelegate {
     var window: UIWindow?
     private var cover: UIWindow?
     private var lockObservation: AnyCancellable?
+    /// The cover's and the scene's last state, for `CoverWindowPolicy`.
+    private var wasShown = true
+    private var wasActive = false
     private let lock = PhoneLockModel.shared
     private let activity = PhoneSceneActivity.shared
 
@@ -35,7 +39,6 @@ final class PhoneSceneDelegate: NSObject, UIWindowSceneDelegate {
         let host = UIHostingController(rootView: CoverWindowContent(lock: lock, activity: activity))
         // Opaque whenever it shows (it shows only to cover), even before SwiftUI has drawn the new state.
         host.view.backgroundColor = .systemBackground
-        host.view.accessibilityViewIsModal = true
         cover.rootViewController = host
         self.cover = cover
         update(locked: lock.state != .unlocked)
@@ -66,25 +69,40 @@ final class PhoneSceneDelegate: NSObject, UIWindowSceneDelegate {
         update(locked: lock.state != .unlocked)
     }
 
-    /// Shows the cover window while locked or not active; hides it otherwise. A lock dismisses whatever the content
-    /// presented, after the window is up. `stateLanded` false: called from `$state`, before the new state is set, so
-    /// the content is drawn on the next pass, not now (drawn now, SwiftUI would keep the old state); the window is
-    /// opaque meanwhile.
+    /// Applies `CoverWindowPolicy`: the cover window is opaque over the app while locked or not active, and then
+    /// VoiceOver's modal screen and the target of touches; otherwise it is invisible, hidden from VoiceOver and lets
+    /// every touch through. A lock dismisses whatever the content presented, after the window is up. A change an active
+    /// scene's user can see is announced to VoiceOver. `stateLanded` false: called from `$state`, before the new state
+    /// is set, so the content is drawn on the next pass, not now (drawn now, SwiftUI would keep the old state); the
+    /// window is opaque meanwhile.
     private func update(locked: Bool, stateLanded: Bool = true) {
-        guard let cover else { return }
-        let show = locked || !activity.isActive
-        // Always in the window list (alpha 0 when not needed: invisible, and touches pass to the window below).
+        guard let cover, let root = cover.rootViewController?.view else { return }
+        let policy = CoverWindowPolicy.state(locked: locked, active: activity.isActive, wasShown: wasShown,
+                                             wasActive: wasActive)
+        wasShown = policy.isShown
+        wasActive = activity.isActive
+        // Always in the window list (a hidden window's SwiftUI content didn't redraw when shown again).
         cover.isHidden = false
-        cover.alpha = show ? 1 : 0
-        if show, stateLanded {
-            cover.rootViewController?.view.setNeedsLayout()
+        cover.alpha = policy.isShown ? 1 : 0
+        cover.isUserInteractionEnabled = policy.takesAccessibilityAndTouches
+        cover.accessibilityElementsHidden = !policy.takesAccessibilityAndTouches
+        root.accessibilityElementsHidden = !policy.takesAccessibilityAndTouches
+        root.accessibilityViewIsModal = policy.takesAccessibilityAndTouches
+        if policy.isShown, stateLanded {
+            root.setNeedsLayout()
             cover.layoutIfNeeded()
         }
-        if locked, let scene = cover.windowScene {
+        if policy.dismissesPresented, let scene = cover.windowScene {
             for window in scene.windows where window !== cover {
                 if window.rootViewController?.presentedViewController != nil {
                     window.rootViewController?.dismiss(animated: false)
                 }
+            }
+        }
+        if policy.announcesScreenChange {
+            // After the new state lands, so VoiceOver reads the lock screen (or the app), not the old frame.
+            DispatchQueue.main.async {
+                UIAccessibility.post(notification: .screenChanged, argument: nil)
             }
         }
     }

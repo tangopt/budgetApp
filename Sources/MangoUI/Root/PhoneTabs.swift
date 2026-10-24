@@ -56,6 +56,12 @@ public final class PhoneTabsModel: ObservableObject {
     public nonisolated static func reloadKey(_ status: SyncStatus) -> Date? {
         HomeViewModel.reloadKey(status)
     }
+
+    /// On a lock: closes the tabs' sheets in their state too (the cover window dismisses them in UIKit, which a
+    /// binding doesn't always see), so nothing re-presents after unlocking and a row opens again.
+    public func dismissSheets() {
+        search.detail = nil
+    }
 }
 
 /// The unlocked app: Home · Month · Accounts · Property, and Search as the iOS 26 search tab. Shown inside the lock

@@ -144,6 +144,7 @@ public final class SearchViewModel: ObservableObject {
     private var appliedQuery: String
     private var queryTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
+    private var filterTask: Task<SearchResults?, Never>?
     private var refreshGeneration = 0
     private var data: SearchData?
     private var loadedKey: Date?
@@ -261,10 +262,15 @@ public final class SearchViewModel: ObservableObject {
             return
         }
         let now = today()
+        // A newer search supersedes this one: a filter still waiting to start never runs.
+        filterTask?.cancel()
+        let filter = Task.detached(priority: .userInitiated) { () -> SearchResults? in
+            guard !Task.isCancelled else { return nil }
+            return SearchViewModel.results(data, criteria: criteria, now: now)
+        }
+        filterTask = filter
         refreshTask = Task { [weak self] in
-            let computed = await Task.detached(priority: .userInitiated) {
-                SearchViewModel.results(data, criteria: criteria, now: now)
-            }.value
+            guard let computed = await filter.value else { return }
             guard let self, mine == self.refreshGeneration else { return }
             self.results = computed
             self.resultsCriteria = criteria

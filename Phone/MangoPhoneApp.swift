@@ -43,7 +43,7 @@ struct PhoneRoot: View {
         case failed(String)
     }
 
-    let lock: PhoneLockModel
+    @ObservedObject var lock: PhoneLockModel
     @ObservedObject var sync: PhoneSyncStatusSource
     @State private var stage: Stage = .loading
     @State private var showingSettings = false
@@ -65,6 +65,13 @@ struct PhoneRoot: View {
             }
         }
         .lockCover(lock)
+        .onChange(of: lock.state) { _, state in
+            // The cover window dismisses open sheets in UIKit on a lock; their SwiftUI state is cleared here too, so
+            // nothing re-presents after unlocking and the avatar opens Settings again.
+            guard case .locked = state else { return }
+            showingSettings = false
+            if case .ready(_, let tabs) = stage { tabs.dismissSheets() }
+        }
         .task {
             guard case .loading = stage else { return }
             do {

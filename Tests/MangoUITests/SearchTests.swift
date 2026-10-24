@@ -384,6 +384,19 @@ final class SearchTests: XCTestCase {
 
     // MARK: Tabs
 
+    /// A lock closes the transaction sheet's state too (the cover window dismisses it in UIKit, bypassing the binding),
+    /// so after unlocking nothing re-presents and a row opens again.
+    func testDismissingSheetsClearsTheOpenTransaction() async throws {
+        let day = today
+        let model = PhoneTabsModel(dbQueue: try demoDatabase(), today: { day }, hasProperty: true)
+        await model.search.load()
+        await model.search.settle()
+        model.search.detail = model.search.results.days.first?.rows.first
+        XCTAssertNotNil(model.search.detail)
+        model.dismissSheets()
+        XCTAssertNil(model.search.detail)
+    }
+
     func testThePropertyTabNeedsAPropertyRow() async throws {
         let demo = try demoDatabase()
         let empty = try emptyDatabase()
