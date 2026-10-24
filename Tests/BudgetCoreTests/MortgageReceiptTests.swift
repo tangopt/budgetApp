@@ -211,8 +211,8 @@ final class MortgageReceiptTests: XCTestCase {
     // MARK: Claims
 
     func testANoticeAndAReceiptOfOneDebitAreAPairNotAClaimConflict() {
-        XCTAssertEqual(ImportDuplicates.claimRole(kind: .mortgageNotice, text: Self.noticeText), .mortgageNotice)
-        XCTAssertEqual(ImportDuplicates.claimRole(kind: .mortgageReceipt, text: Self.receiptText), .mortgageReceipt)
+        XCTAssertEqual(ImportDuplicates.claimRole(token: "mortgageNotice", text: Self.noticeText), "mortgageNotice")
+        XCTAssertEqual(ImportDuplicates.claimRole(token: "mortgageReceipt", text: Self.receiptText), "mortgageReceipt")
     }
 }
 
@@ -284,7 +284,7 @@ final class MortgageReceiptImportTests: XCTestCase {
         let first = try place(MortgageReceiptTests.receiptLines, as: "20250331 - Prestacao - Recibo 25:480.pdf")
         let second = try place(other, as: "20250331 - Prestacao - Recibo 25:480 (2).pdf")
         let plan = try await pipeline.plan([first, second])
-        let claimed = plan.items.filter { $0.issues.contains { $0.id == "sharedTransaction.\(self.debitId!)" } }
+        let claimed = plan.items.filter { $0.issues.contains { $0.id == "sameKindOnTransaction.\(self.debitId!)" } }
             + plan.items.filter { $0.duplicate != nil }
         XCTAssertFalse(claimed.isEmpty, "\(plan.items.map(\.issues))")
     }
@@ -296,7 +296,7 @@ final class MortgageReceiptImportTests: XCTestCase {
         let second = try place(other, as: "20250314 - Prestacao (2).pdf")
         let plan = try await pipeline.plan([first, second])
         let flagged = plan.items.filter { item in
-            item.duplicate != nil || item.issues.contains { $0.id == "sharedTransaction.\(self.debitId!)" }
+            item.duplicate != nil || item.issues.contains { $0.id == "sameKindOnTransaction.\(self.debitId!)" }
         }
         XCTAssertFalse(flagged.isEmpty, "\(plan.items.map(\.issues))")
     }

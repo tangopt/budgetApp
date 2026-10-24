@@ -83,7 +83,7 @@ final class ImportDuplicatesTests: XCTestCase {
                                                  fact(.docDate, .date(Self.date(2023, 3, 5))), fact(.amount, .money(-10000, .eur))],
                                          providerId: 7)
         // The issuer-based key keeps the sign (a credit note is not the invoice); the kind-based one is sign-free.
-        XCTAssertEqual(keys, ["atcud:ABCD1234-77", "invoice:7:FT1/23", "ref:123456789012", "ida:demopower:20230305:-10000",
+        XCTAssertEqual(keys, ["atcud:ABCD1234-77", "invoice:7:FT1/23", "ref:123456789012", "ida:utilityInvoice:demopower:20230305:-10000",
                               "ida:utilityInvoice:20230305:10000"])
         let receipt = DocumentIdentity.keys(kind: .rentReceiptPDF, text: nil,
                                             facts: [fact(.reference, .text("998877")), fact(.receiptNumber, .text("12")),
@@ -104,14 +104,14 @@ final class ImportDuplicatesTests: XCTestCase {
         let id = try libraryDocument(sha: "aaa", name: "20230305 - Property - Insurance receipt")
         let annotated = try annotate([item("receipt.pdf", sha: "aaa")])
         XCTAssertEqual(annotated[0].section, .duplicates)
-        XCTAssertEqual(annotated[0].duplicate, ImportDuplicate(level: .file, of: "Already in the library as 20230305 - Property - Insurance receipt",
+        XCTAssertEqual(annotated[0].duplicate, ImportDuplicate(level: .file, of: "Identical file: already in the library as 20230305 - Property - Insurance receipt",
                                                                existingDocumentId: id))
     }
 
     func testSameFileTwiceInOneBatchIsOneReadyOneDuplicate() throws {
         let annotated = try annotate([item("a.pdf", sha: "bbb"), item("copy of a.pdf", sha: "bbb")])
         XCTAssertEqual(annotated.map(\.section), [.ready, .duplicates])
-        XCTAssertEqual(annotated[1].duplicate, ImportDuplicate(level: .file, of: "Same file as a.pdf", originalItemId: annotated[0].id))
+        XCTAssertEqual(annotated[1].duplicate, ImportDuplicate(level: .file, of: "Identical file: same as a.pdf in this import", originalItemId: annotated[0].id))
     }
 
     // MARK: Same document
@@ -123,13 +123,13 @@ final class ImportDuplicatesTests: XCTestCase {
         ])
         XCTAssertEqual(annotated.map(\.section), [.ready, .duplicates])
         XCTAssertEqual(annotated[1].duplicate?.level, .document)
-        XCTAssertEqual(annotated[1].duplicate?.of, "Same document as invoice-a.pdf")
+        XCTAssertEqual(annotated[1].duplicate?.of, "Duplicate of invoice-a.pdf: the same insurance receipt, ATCUD ABCD1234-77")
     }
 
     func testATCUDInLibraryTextIsDocumentDuplicate() throws {
         let id = try libraryDocument(sha: "d0", name: "Insurance receipt March", text: "Demo Insurer ATCUD:ABCD1234-77")
         let annotated = try annotate([item("scan.pdf", sha: "d1", text: "ATCUD:ABCD1234-77")])
-        XCTAssertEqual(annotated[0].duplicate, ImportDuplicate(level: .document, of: "Same document as Insurance receipt March",
+        XCTAssertEqual(annotated[0].duplicate, ImportDuplicate(level: .document, of: "Duplicate of Insurance receipt March: the same insurance receipt, ATCUD ABCD1234-77",
                                                                existingDocumentId: id))
     }
 
@@ -152,7 +152,7 @@ final class ImportDuplicatesTests: XCTestCase {
         }
         let annotated = try annotate([invoiceItem("power.pdf", sha: "e1", provider: providerId),
                                       invoiceItem("water.pdf", sha: "e2", provider: otherProviderId)])
-        XCTAssertEqual(annotated[0].duplicate, ImportDuplicate(level: .document, of: "Same document as 20230305 - Utilities - Invoice - Demo Power",
+        XCTAssertEqual(annotated[0].duplicate, ImportDuplicate(level: .document, of: "Duplicate of 20230305 - Utilities - Invoice - Demo Power: the same utility invoice, invoice number FT 1/23",
                                                                existingDocumentId: documentId))
         XCTAssertNil(annotated[1].duplicate, "the same number of another provider is another invoice")
     }
@@ -169,7 +169,7 @@ final class ImportDuplicatesTests: XCTestCase {
         }
         let annotated = try annotate([item("recibo.pdf", sha: "f1", kind: .rentReceiptPDF,
                                            facts: [fact(.reference, .text("998877")), fact(.receiptNumber, .text("12"))])])
-        XCTAssertEqual(annotated[0].duplicate?.of, "Same document as Rent receipt 12")
+        XCTAssertEqual(annotated[0].duplicate?.of, "Duplicate of Rent receipt 12: the same rent receipt, receipt number 12")
         XCTAssertEqual(annotated[0].duplicate?.existingDocumentId, documentId)
     }
 
@@ -179,8 +179,9 @@ final class ImportDuplicatesTests: XCTestCase {
                                                                                 fact(.amount, .money(12000, .eur))])])
         // Issuer + date + amount is a weak identity: it asks, it never skips.
         XCTAssertNil(annotated[0].duplicate)
-        XCTAssertEqual(annotated[0].needsYouReasons, ["Possibly the same document as Insurance March"])
-        XCTAssertEqual(annotated[0].issues[0].kind, .readerProblem("Possibly the same document as Insurance March"))
+        let reason = "Possibly a duplicate of Insurance March: also an insurance receipt dated 2023-03-05 for €120.00"
+        XCTAssertEqual(annotated[0].needsYouReasons, [reason])
+        XCTAssertEqual(annotated[0].issues[0].kind, .readerProblem(reason))
     }
 
     func testSameAmountDifferentDateIsNotADuplicate() throws {
@@ -214,7 +215,8 @@ final class ImportDuplicatesTests: XCTestCase {
         func entry(_ label: String, day: String) -> DocumentIdentityIndex.Entry {
             var identity = DocumentIdentity.Identity()
             identity.weak = ["ref:987654321098"]
-            identity.kind = .insuranceReceipt
+            identity.kindToken = "insuranceReceipt"
+            identity.role = "insuranceReceipt"
             identity.day = day
             identity.amount = 12000
             return DocumentIdentityIndex.Entry(documentId: nil, label: label, identity: identity)
@@ -232,9 +234,9 @@ final class ImportDuplicatesTests: XCTestCase {
             item(name, sha: name, facts: [issuer, fact(.docDate, .date(Self.date(2023, 3, 5))), fact(.amount, .money(12000, .eur))].compactMap { $0 })
         }
         let named = try annotate([receipt("named.pdf", issuer: issuer), receipt("unnamed.pdf", issuer: nil)])
-        XCTAssertEqual(named[1].needsYouReasons, ["Possibly the same document as named.pdf"])
+        XCTAssertEqual(named[1].needsYouReasons, ["Possibly a duplicate of named.pdf: also an insurance receipt from Demo Insurer dated 2023-03-05 for €120.00"])
         let unnamed = try annotate([receipt("unnamed.pdf", issuer: nil), receipt("named.pdf", issuer: issuer)])
-        XCTAssertEqual(unnamed[1].needsYouReasons, ["Possibly the same document as unnamed.pdf"])
+        XCTAssertEqual(unnamed[1].needsYouReasons, ["Possibly a duplicate of unnamed.pdf: also an insurance receipt from Demo Insurer dated 2023-03-05 for €120.00"])
     }
 
     func testStrongBatchMatchWinsOverWeakLibraryMatch() throws {
@@ -242,8 +244,9 @@ final class ImportDuplicatesTests: XCTestCase {
         let facts = [fact(.docDate, .date(Self.date(2023, 3, 5))), fact(.amount, .money(12000, .eur))]
         let annotated = try annotate([item("invoice-a.pdf", sha: "u1", text: "ATCUD:ABCD1234-77", facts: facts),
                                       item("invoice-b.pdf", sha: "u2", text: "ATCUD:ABCD1234-77", facts: facts)])
-        XCTAssertEqual(annotated[0].needsYouReasons, ["Possibly the same document as Insurance March"])
-        XCTAssertEqual(annotated[1].duplicate, ImportDuplicate(level: .document, of: "Same document as invoice-a.pdf", originalItemId: annotated[0].id))
+        XCTAssertEqual(annotated[0].needsYouReasons, ["Possibly a duplicate of Insurance March: also an insurance receipt dated 2023-03-05 for €120.00"])
+        XCTAssertEqual(annotated[1].duplicate, ImportDuplicate(level: .document, of: "Duplicate of invoice-a.pdf: the same insurance receipt, ATCUD ABCD1234-77",
+                                                               originalItemId: annotated[0].id))
     }
 
     // MARK: Weak matches never skip
@@ -280,7 +283,7 @@ final class ImportDuplicatesTests: XCTestCase {
                                            facts: [fact(.issuer, .text("Demo Power")), fact(.docDate, .date(Self.date(2023, 3, 5))),
                                                    fact(.amount, .money(10000, .eur))])])
         XCTAssertNil(annotated[0].duplicate)
-        XCTAssertEqual(annotated[0].needsYouReasons, ["Possibly the same document as 20230305 - Utilities - Invoice"])
+        XCTAssertEqual(annotated[0].needsYouReasons, ["Possibly a duplicate of 20230305 - Utilities - Invoice: also a utility invoice from Demo Power dated 2023-03-05 for €100.00"])
         XCTAssertEqual(annotated[0].issues[0].offers, [.acknowledge, .leaveOut])
     }
 
@@ -302,7 +305,7 @@ final class ImportDuplicatesTests: XCTestCase {
         let annotated = try annotate([item("P60 again.pdf", sha: "p1", kind: .payrollForm(.p60),
                                            facts: [fact(.issuer, .text("DEMO EMPLOYER LTD")), fact(.taxYear, .year(2022))],
                                            effect: .payrollForm(confirmed))])
-        XCTAssertEqual(annotated[0].duplicate, ImportDuplicate(level: .document, of: "Same document as Tax - P60 Demo Employer Ltd 2022-23",
+        XCTAssertEqual(annotated[0].duplicate, ImportDuplicate(level: .document, of: "Duplicate of Tax - P60 Demo Employer Ltd 2022-23: the same P60, form P60 2022-23",
                                                                existingDocumentId: documentId))
     }
 
@@ -365,7 +368,7 @@ final class ImportDuplicatesTests: XCTestCase {
     func testReissuedInvoiceWithTheSameAmountIsStillADuplicate() throws {
         let (providerId, documentId) = try recordedInvoice(amount: 10_000)
         let annotated = try annotate([reissuedInvoice(providerId: providerId, amount: 10_000)])
-        XCTAssertEqual(annotated[0].duplicate, ImportDuplicate(level: .document, of: "Same document as 20230305 - Utilities - Invoice - Demo Power",
+        XCTAssertEqual(annotated[0].duplicate, ImportDuplicate(level: .document, of: "Duplicate of 20230305 - Utilities - Invoice - Demo Power: the same utility invoice, invoice number FT 1/23",
                                                                existingDocumentId: documentId))
     }
 
@@ -449,7 +452,7 @@ final class ImportDuplicatesTests: XCTestCase {
         }
         let annotated = try annotate([p60("P60 corrected.pdf", sha: "q1"), p60("P60 corrected scan.pdf", sha: "q2")])
         XCTAssertTrue(annotated[0].issues.contains { $0.id == "correctedVersion" })
-        XCTAssertEqual(annotated[1].duplicate, ImportDuplicate(level: .document, of: "Same document as P60 corrected.pdf",
+        XCTAssertEqual(annotated[1].duplicate, ImportDuplicate(level: .document, of: "Duplicate of P60 corrected.pdf: the same P60, form P60 2022-23",
                                                              originalItemId: annotated[0].id))
         XCTAssertFalse(annotated[1].issues.contains { $0.id == "correctedVersion" })
     }
@@ -514,7 +517,7 @@ final class ImportDuplicatesTests: XCTestCase {
         let annotated = try annotate([item("invoice-a.pdf", sha: "r1", text: "ATCUD:ABCD1234-77"),
                                       item("invoice-b.pdf", sha: "r2", text: "ATCUD:ABCD1234-77"),
                                       item("invoice-b copy.pdf", sha: "r2")])
-        XCTAssertEqual(annotated[2].duplicate?.of, "Same file as invoice-a.pdf")
+        XCTAssertEqual(annotated[2].duplicate?.of, "Identical file: same as invoice-a.pdf in this import")
     }
 
     func testReaderMarkedDuplicatesAndChildrenAreLeftAsTheyAre() throws {
@@ -532,11 +535,13 @@ final class ImportDuplicatesTests: XCTestCase {
         var marked = item("marked.pdf", sha: "v1", text: "ATCUD:ABCD1234-77")
         marked.duplicate = ImportDuplicate(level: .document, of: "Invoice FT 1/23 of Demo Power already recorded")
         let annotated = try annotate([marked, item("later.pdf", sha: "v2", text: "ATCUD:ABCD1234-77")])
-        XCTAssertNil(annotated[1].duplicate, "not \"Same document as marked.pdf\": that is a copy, not the original")
+        XCTAssertNil(annotated[1].duplicate, "not a duplicate of marked.pdf: that is a copy, not the original")
     }
 
     // MARK: Transactions claimed twice
 
+    /// Two of one kind certain of one transaction on different days: not duplicates, but the
+    /// automatic links are worth a look.
     func testTwoDocumentsClaimingTheSameTransactionBothNeedYou() throws {
         let transactionId = try transaction(-12000, "DEMO INSURER")
         func claiming(_ name: String, sha: String, date: Date) -> ImportItem {
@@ -547,9 +552,13 @@ final class ImportDuplicatesTests: XCTestCase {
         let annotated = try annotate([claiming("a.pdf", sha: "l1", date: Self.date(2023, 3, 5)),
                                       claiming("b.pdf", sha: "l2", date: Self.date(2023, 3, 6))])
         XCTAssertEqual(annotated.map(\.section), [.needsYou, .needsYou])
+        XCTAssertEqual(annotated.map(\.needsYouReasons), [
+            ["a.pdf and b.pdf — both insurance receipts, 2023-03-05 and 2023-03-06 — were matched to the same transaction"],
+            ["b.pdf and a.pdf — both insurance receipts, 2023-03-06 and 2023-03-05 — were matched to the same transaction"]])
         for annotatedItem in annotated {
             XCTAssertEqual(annotatedItem.links.map(\.confidence), [.needsReview])
-            XCTAssertEqual(annotatedItem.needsYouReasons, ["2 documents in this import claim the same transaction"])
+            XCTAssertEqual(annotatedItem.issues.map(\.id), ["checkLink.\(transactionId)"])
+            XCTAssertEqual(annotatedItem.issues.first?.offers, [.fileWithoutLink])
         }
     }
 
@@ -567,24 +576,34 @@ final class ImportDuplicatesTests: XCTestCase {
         let sure = unsure
         unsure.confidence = .needsReview
         let annotated = try annotate([item("a.pdf", sha: "t1", facts: [fact(.docDate, .date(Self.date(2023, 3, 1)))], links: [unsure]),
-                                      item("b.pdf", sha: "t2", facts: [fact(.docDate, .date(Self.date(2023, 3, 2)))], links: [sure])])
-        XCTAssertTrue(annotated[1].needsYouReasons.contains("That transaction already has an insurance receipt (a.pdf)"))
+                                      item("b.pdf", sha: "t2", facts: [fact(.docDate, .date(Self.date(2023, 3, 1)))], links: [sure])])
+        XCTAssertEqual(annotated[1].needsYouReasons, ["Possibly a duplicate: a.pdf is also an insurance receipt dated 2023-03-01 on this transaction"])
+        XCTAssertEqual(annotated[1].issues.map(\.id), ["sameKindOnTransaction.\(transactionId)"])
+        // Another day: another receipt of the same kind, no alert.
+        let otherDay = try annotate([item("a.pdf", sha: "t1", facts: [fact(.docDate, .date(Self.date(2023, 3, 1)))], links: [unsure]),
+                                     item("b.pdf", sha: "t2", facts: [fact(.docDate, .date(Self.date(2023, 3, 2)))], links: [sure])])
+        XCTAssertEqual(otherDay[1].section, .ready, "\(otherDay[1].needsYouReasons)")
     }
 
     func testTransactionWithADocumentOfTheSameKindNeedsYou() throws {
         let transactionId = try transaction(-12000, "DEMO INSURER")
-        let existing = try libraryDocument(sha: "m0", name: "Insurance March", text: "")
+        let existing = try libraryDocument(sha: "m0", name: "Insurance March", docDate: Self.date(2023, 3, 5), text: "")
         let proof = try libraryDocument(sha: "m1", name: "Transfer proof", kind: .bankTransferProof)
         try db.write { db in
             try EvidenceLinks.link(db: db, documentId: existing, to: .transaction(transactionId))
             try EvidenceLinks.link(db: db, documentId: proof, to: .transaction(transactionId))
         }
         let link = ProposedLink(entity: .transaction(transactionId), label: "DEMO INSURER −€120.00", confidence: .certain, reasons: ["test"])
-        let annotated = try annotate([item("insurance.pdf", sha: "m2", links: [link])])
+        let annotated = try annotate([item("insurance.pdf", sha: "m2", facts: [fact(.docDate, .date(Self.date(2023, 3, 5)))], links: [link])])
         XCTAssertEqual(annotated[0].section, .needsYou)
-        XCTAssertEqual(annotated[0].needsYouReasons, ["That transaction already has an insurance receipt (Insurance March)"])
+        XCTAssertEqual(annotated[0].needsYouReasons, ["Possibly a duplicate: Insurance March is also an insurance receipt dated 2023-03-05 on this transaction"])
         XCTAssertTrue(annotated[0].issues[0].offers.contains(.acknowledge))
         XCTAssertEqual(annotated[0].links.map(\.confidence), [.certain], "linked anyway if the user confirms")
+        // Another day (or none): the transaction's other receipt isn't this one.
+        for facts in [[fact(.docDate, .date(Self.date(2023, 4, 5)))], []] {
+            let other = try annotate([item("insurance.pdf", sha: "m2", facts: facts, links: [link])])
+            XCTAssertEqual(other[0].section, .ready, "\(other[0].needsYouReasons)")
+        }
     }
 
     func testTransactionWithADocumentOfAnotherKindIsFine() throws {
@@ -617,14 +636,15 @@ final class ImportDuplicatesTests: XCTestCase {
     func testTwoReceiptsOrTwoAdvicesOnOneDebitStillNeedYou() throws {
         let transactionId = try transaction(-1000, "XYZ 1234567890123")
         let link = ProposedLink(entity: .transaction(transactionId), label: "XYZ −€10.00", confidence: .certain, reasons: ["test"])
-        let receipts = try annotate([item("a.pdf", sha: "q1", text: "Demo Seguros SA\nTotal 10,00", links: [link]),
-                                     item("b.pdf", sha: "q2", text: "Demo Seguros SA\nTotal 10,00 (2)", links: [link])])
-        XCTAssertEqual(receipts.map(\.needsYouReasons), [["2 documents in this import claim the same transaction"],
-                                                         ["2 documents in this import claim the same transaction"]])
+        let day = [fact(.docDate, .date(Self.date(2023, 3, 5)))]
+        let receipts = try annotate([item("a.pdf", sha: "q1", text: "Demo Seguros SA\nTotal 10,00", facts: day, links: [link]),
+                                     item("b.pdf", sha: "q2", text: "Demo Seguros SA\nTotal 10,00 (2)", facts: day, links: [link])])
+        XCTAssertEqual(receipts.map(\.needsYouReasons), [["Possibly a duplicate: b.pdf is also an insurance receipt dated 2023-03-05 on this transaction"],
+                                                         ["Possibly a duplicate: a.pdf is also an insurance receipt dated 2023-03-05 on this transaction"]])
         let advice = IssuerKeyTests.bareDebitAdvice.joined(separator: "\n")
-        let advices = try annotate([item("a.pdf", sha: "q3", kind: .evidence(.insuranceReceipt), text: advice, links: [link]),
-                                    item("b.pdf", sha: "q4", kind: .evidence(.insuranceReceipt), text: advice + "\n", links: [link])])
-        XCTAssertTrue(advices.allSatisfy { $0.needsYouReasons.contains("2 documents in this import claim the same transaction") },
+        let advices = try annotate([item("a.pdf", sha: "q3", kind: .evidence(.insuranceReceipt), text: advice, facts: day, links: [link]),
+                                    item("b.pdf", sha: "q4", kind: .evidence(.insuranceReceipt), text: advice + "\n", facts: day, links: [link])])
+        XCTAssertTrue(advices.allSatisfy { $0.needsYouReasons.contains { $0.hasPrefix("Possibly a duplicate:") && $0.hasSuffix("is also a bank debit advice dated 2023-03-05 on this transaction") } },
                       "\(advices.map(\.needsYouReasons))")
     }
 
@@ -640,10 +660,105 @@ final class ImportDuplicatesTests: XCTestCase {
     func testTheSameAdviceFiledAgainUnderAnotherKindIsStillCaught() throws {
         let transactionId = try transaction(-1000, "XYZ 1234567890123")
         let advice = IssuerKeyTests.bareDebitAdvice.joined(separator: "\n")
-        let filed = try libraryDocument(sha: "o0", name: "Debit advice", kind: .bankDebitAdvice, text: advice)
+        let filed = try libraryDocument(sha: "o0", name: "Debit advice", kind: .bankDebitAdvice, docDate: Self.date(2023, 3, 5), text: advice)
         try db.write { db in _ = try EvidenceLinks.link(db: db, documentId: filed, to: .transaction(transactionId)) }
         let link = ProposedLink(entity: .transaction(transactionId), label: "XYZ −€10.00", confidence: .certain, reasons: ["test"])
-        let annotated = try annotate([item("advice.pdf", sha: "o1", text: advice + "\n", links: [link])])
-        XCTAssertEqual(annotated[0].needsYouReasons, ["That transaction already has a bank debit advice (Debit advice)"])
+        let annotated = try annotate([item("advice.pdf", sha: "o1", text: advice + "\n", facts: [fact(.docDate, .date(Self.date(2023, 3, 5)))], links: [link])])
+        XCTAssertEqual(annotated[0].needsYouReasons, ["Possibly a duplicate: Debit advice is also a bank debit advice dated 2023-03-05 on this transaction"])
+    }
+
+    // MARK: Same kind and period only (spec §4b)
+
+    func testNoticeReceiptAndInvoiceOfOnePaymentImportTogether() throws {
+        // Same issuer, day and amount; three kinds; all certain of one debit.
+        let t = try transaction(-7995, "DEMO CANALIZACOES")
+        let link = ProposedLink(entity: .transaction(t), label: "DEMO −€79.95", confidence: .certain, reasons: ["test"])
+        let facts = [fact(.issuer, .text("Demo Canalizações")), fact(.docDate, .date(Self.date(2023, 3, 5))), fact(.amount, .money(7995, .eur))]
+        let annotated = try annotate([item("notice.pdf", sha: "a1", kind: .evidence(.imiNotice), facts: facts, links: [link]),
+                                      item("receipt.pdf", sha: "a2", kind: .evidence(.insuranceReceipt), facts: facts, links: [link]),
+                                      item("invoice.pdf", sha: "a3", kind: .evidence(.legalInvoice), facts: facts, links: [link])])
+        XCTAssertEqual(annotated.map(\.section), [.ready, .ready, .ready])
+        XCTAssertTrue(annotated.allSatisfy { $0.issues.isEmpty && $0.duplicate == nil }, "\(annotated.map(\.needsYouReasons))")
+    }
+
+    func testReceiptQuotingItsInvoicesATCUDIsNotADuplicate() throws {
+        try libraryDocument(sha: "b0", name: "Invoice FT 1", kind: .legalInvoice, text: "ATCUD:ABCD1234-77")
+        let annotated = try annotate([item("receipt.pdf", sha: "b1", kind: .evidence(.insuranceReceipt), text: "Recibo RC 9 ATCUD:ZZZZ9999-1 ref. ATCUD:ABCD1234-77")])
+        XCTAssertNil(annotated[0].duplicate)
+        XCTAssertEqual(annotated[0].section, .ready)
+        XCTAssertEqual(annotated[0].notes, ["Refers to Invoice FT 1: same ATCUD ABCD1234-77"])
+        // The pass runs again on every resolution: the note is said once.
+        let again = try annotate(annotated)
+        XCTAssertEqual(again[0].notes, ["Refers to Invoice FT 1: same ATCUD ABCD1234-77"])
+    }
+
+    func testSameKindSameDayIsPossiblyADuplicateWordedWithWhatItCompares() throws {
+        try libraryDocument(sha: "c0", name: "Insurance March", docDate: Self.date(2023, 3, 5), amount: 12000)
+        let annotated = try annotate([item("insurance.pdf", sha: "c1", facts: [fact(.docDate, .date(Self.date(2023, 3, 5))), fact(.amount, .money(12000, .eur))])])
+        XCTAssertEqual(annotated[0].needsYouReasons, ["Possibly a duplicate of Insurance March: also an insurance receipt dated 2023-03-05 for €120.00"])
+        // Another kind of the same day and amount: no alert.
+        let other = try annotate([item("imi.pdf", sha: "c2", kind: .evidence(.imiNotice),
+                                       facts: [fact(.docDate, .date(Self.date(2023, 3, 5))), fact(.amount, .money(12000, .eur))])])
+        XCTAssertEqual(other[0].section, .ready, "\(other[0].needsYouReasons)")
+    }
+
+    private func periodItem(_ name: String, sha: String, day: Date, from: Date, to: Date, links: [ProposedLink]) -> ImportItem {
+        item(name, sha: sha, kind: .utilityInvoice,
+             facts: [fact(.docDate, .date(day)), fact(.periodStart, .date(from)), fact(.periodEnd, .date(to))], links: links)
+    }
+
+    func testSameKindOverlappingPeriodsOnOneTransactionIsPossiblyADuplicate() throws {
+        let t = try transaction(-5000, "DEMO WATER")
+        let link = ProposedLink(entity: .transaction(t), label: "DEMO WATER −€50.00", confidence: .certain, reasons: ["test"])
+        let annotated = try annotate([
+            periodItem("march.pdf", sha: "w1", day: Self.date(2023, 4, 2), from: Self.date(2023, 3, 1), to: Self.date(2023, 3, 31), links: [link]),
+            periodItem("mid-march.pdf", sha: "w2", day: Self.date(2023, 4, 16), from: Self.date(2023, 3, 15), to: Self.date(2023, 4, 14), links: [link])
+        ])
+        XCTAssertEqual(annotated.map(\.section), [.needsYou, .needsYou])
+        XCTAssertEqual(annotated.map(\.needsYouReasons), [
+            ["Possibly a duplicate: mid-march.pdf is also a utility invoice dated 2023-04-16 on this transaction"],
+            ["Possibly a duplicate: march.pdf is also a utility invoice dated 2023-04-02 on this transaction"]])
+        XCTAssertEqual(annotated[0].issues.map(\.id), ["sameKindOnTransaction.\(t)"])
+    }
+
+    func testSameKindDifferentPeriodsAutoLinkedToOneTransactionAskToCheckTheLink() throws {
+        let t = try transaction(-5000, "DEMO WATER")
+        let link = ProposedLink(entity: .transaction(t), label: "DEMO WATER −€50.00", confidence: .certain, reasons: ["test"])
+        let annotated = try annotate([
+            periodItem("jan.pdf", sha: "x1", day: Self.date(2023, 2, 2), from: Self.date(2023, 1, 1), to: Self.date(2023, 1, 31), links: [link]),
+            periodItem("feb.pdf", sha: "x2", day: Self.date(2023, 3, 2), from: Self.date(2023, 2, 1), to: Self.date(2023, 2, 28), links: [link])
+        ])
+        XCTAssertEqual(annotated.map(\.section), [.needsYou, .needsYou])
+        XCTAssertEqual(annotated[0].needsYouReasons,
+                       ["jan.pdf and feb.pdf — both utility invoices, 2023-01-01 to 2023-01-31 and 2023-02-01 to 2023-02-28 — were matched to the same transaction"])
+        for checked in annotated {
+            XCTAssertFalse(checked.needsYouReasons.contains { $0.contains("duplicate") })
+            XCTAssertEqual(checked.links.map(\.confidence), [.needsReview])
+            XCTAssertEqual(checked.issues.map(\.id), ["checkLink.\(t)"])
+            guard case .chooseLink(let candidates) = checked.issues[0].kind else { return XCTFail("\(checked.issues[0].kind)") }
+            XCTAssertEqual(candidates.map(\.entity), [.transaction(t)])
+            XCTAssertEqual(checked.issues[0].offers, [.fileWithoutLink])
+        }
+        XCTAssertEqual(ImportResolutions.transactionId(inIssueId: "checkLink.\(t)"), t)
+        XCTAssertEqual(ImportResolutions.transactionId(inIssueId: "sameKindOnTransaction.\(t)"), t)
+    }
+
+    func testLinksChosenByYouNeverAlert() throws {
+        let t = try transaction(-5000, "DEMO WATER")
+        let link = ProposedLink(entity: .transaction(t), label: "DEMO WATER −€50.00", confidence: .certain, reasons: ["Chosen by you"])
+        let annotated = try annotate([
+            periodItem("jan.pdf", sha: "y1", day: Self.date(2023, 2, 2), from: Self.date(2023, 1, 1), to: Self.date(2023, 1, 31), links: [link]),
+            periodItem("feb.pdf", sha: "y2", day: Self.date(2023, 3, 2), from: Self.date(2023, 2, 1), to: Self.date(2023, 2, 28), links: [link])
+        ])
+        XCTAssertEqual(annotated.map(\.section), [.ready, .ready])
+        XCTAssertTrue(annotated.allSatisfy { $0.issues.isEmpty })
+    }
+
+    func testIdenticalFileWordings() throws {
+        try libraryDocument(sha: "z0", name: "Insurance April")
+        let annotated = try annotate([item("a.pdf", sha: "z1"), item("copy of a.pdf", sha: "z1"), item("scan.pdf", sha: "z0")])
+        XCTAssertEqual(annotated.map(\.section), [.ready, .duplicates, .duplicates])
+        XCTAssertEqual(annotated[1].duplicate?.of, "Identical file: same as a.pdf in this import")
+        XCTAssertEqual(annotated[2].duplicate?.of, "Identical file: already in the library as Insurance April")
     }
 }

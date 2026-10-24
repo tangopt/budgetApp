@@ -529,9 +529,9 @@ public enum ImportResolutions {
         }
     }
 
-    /// The transaction a duplicate-pass issue is about ("transactionHasDocument.<id>", "sharedTransaction.<id>").
+    /// The transaction a duplicate-pass issue is about ("sameKindOnTransaction.<id>", "checkLink.<id>").
     static func transactionId(inIssueId id: String) -> Int64? {
-        for prefix in ["transactionHasDocument.", "sharedTransaction."] where id.hasPrefix(prefix) {
+        for prefix in [ImportDuplicates.sameKindOnTransactionPrefix, ImportDuplicates.checkLinkPrefix] where id.hasPrefix(prefix) {
             return Int64(id.dropFirst(prefix.count))
         }
         return nil

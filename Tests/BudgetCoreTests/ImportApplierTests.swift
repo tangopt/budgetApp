@@ -348,7 +348,7 @@ final class ImportApplierTests: XCTestCase {
                                                   try invoiceItem("invoice-corrected copy.txt", amount: 13_000, providerId: providerId,
                                                                   copy: "\nDownloaded again")])
         XCTAssertEqual(plan.items[0].effect, .file)
-        XCTAssertEqual(plan.items[1].duplicate?.of, "Same document as invoice-corrected.txt", "\(plan.items[1].needsYouReasons)")
+        XCTAssertEqual(plan.items[1].duplicate?.of, "Duplicate of invoice-corrected.txt: the same utility invoice, invoice number FT 1/23", "\(plan.items[1].needsYouReasons)")
     }
 
     func testCorrectedRentReceiptIsFiledAsADocumentOnly() async throws {
@@ -463,7 +463,7 @@ final class ImportApplierTests: XCTestCase {
         let plan = try await pipeline.plan([try waterInvoicePDF(), try waterInvoicePDF(name: "agua-scan.pdf", extra: "Second copy")])
         XCTAssertEqual(plan.items.map(\.effect), [.attachToInvoice(invoiceId: invoice.id!), .attachToInvoice(invoiceId: invoice.id!)])
         XCTAssertEqual(plan.items.map(\.section), [.ready, .duplicates], "\(plan.items.map(\.needsYouReasons))")
-        XCTAssertEqual(plan.items.last?.duplicate?.of, "Same document as agua.pdf")
+        XCTAssertEqual(plan.items.last?.duplicate?.of, "Duplicate of agua.pdf: the same utility invoice")
         XCTAssertNoThrow(try applier.apply(plan, entryPoint: "Import…"))
     }
 

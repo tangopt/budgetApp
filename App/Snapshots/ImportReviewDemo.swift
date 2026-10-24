@@ -201,7 +201,7 @@ enum ImportReviewDemo {
         let duplicate = ImportItem(
             file: file("EDP invoice FT 0451-41022.pdf"), recognition: certain(.utilityInvoice, "EDP layout"),
             title: "EDP invoice FT 0451/41022", effect: .none,
-            duplicate: ImportDuplicate(level: .document, of: "Same document as EDP invoice FT 0451/41022 of 1 May 2026"),
+            duplicate: ImportDuplicate(level: .document, of: "Duplicate of EDP invoice FT 0451/41022 of 1 May 2026: the same utility invoice, invoice number FT 0451/41022"),
             groupKey: "Utility invoices")
 
         let leftOut = ImportItem(

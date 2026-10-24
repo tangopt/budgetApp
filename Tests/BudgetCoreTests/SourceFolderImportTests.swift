@@ -455,7 +455,7 @@ final class SourceFolderImportTests: XCTestCase {
         let kind = try XCTUnwrap(try read { db in try EvidenceDocument.fetchOne(db, key: previous)?.kind })
         let other = base.appendingPathComponent("other-receipt.txt")
         try Data("Another receipt".utf8).write(to: other)
-        let otherDocument = try XCTUnwrap(try library.add(other, metadata: EvidenceMetadata(kind: kind)).document.id)
+        let otherDocument = try XCTUnwrap(try library.add(other, metadata: EvidenceMetadata(kind: kind, docDate: Self.date(2025, 4, 10))).document.id)
         try await db.write { db in
             _ = try EvidenceLinks.link(db: db, documentId: previous, to: .transaction(debitId))
             _ = try EvidenceLinks.link(db: db, documentId: otherDocument, to: .transaction(debitId))
@@ -466,7 +466,7 @@ final class SourceFolderImportTests: XCTestCase {
         let (_, plan) = try await scanAndPlan(folder)
         let item = try XCTUnwrap(plan.items.first { $0.file.fileName == "seguro.pdf" })
         XCTAssertTrue(item.links.contains { $0.entity == .transaction(debitId) && $0.replacing == [previous] }, "\(item.links)")
-        let issue = try XCTUnwrap(item.issues.first { $0.id == "transactionHasDocument.\(debitId)" }, "\(item.issues)")
+        let issue = try XCTUnwrap(item.issues.first { $0.id == "sameKindOnTransaction.\(debitId)" }, "\(item.issues)")
         XCTAssertTrue(issue.reason.contains("other-receipt.txt"), issue.reason)
         XCTAssertEqual(item.section, .needsYou)
     }

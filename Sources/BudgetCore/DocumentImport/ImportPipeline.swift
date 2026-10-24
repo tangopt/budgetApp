@@ -1505,7 +1505,7 @@ public struct ImportPipeline: @unchecked Sendable {
     /// Ids of the issues the duplicate pass raises.
     static func isDuplicatePassIssue(_ id: String) -> Bool {
         id == "possibleDuplicate" || id == ImportDuplicates.correctedVersionIssueId
-            || id.hasPrefix("sharedTransaction.") || id.hasPrefix("transactionHasDocument.")
+            || id.hasPrefix(ImportDuplicates.sameKindOnTransactionPrefix) || id.hasPrefix(ImportDuplicates.checkLinkPrefix)
             || id.hasPrefix(ImportDuplicates.tenancyHasContractPrefix)
     }
 
@@ -1588,7 +1588,7 @@ public struct ImportPipeline: @unchecked Sendable {
     }
 
     /// The item without the duplicate pass's marks: its issues, its duplicate mark (when the
-    /// pass, not the reader, made it) and the links a shared-transaction claim made unsure.
+    /// pass, not the reader, made it) and the links a "check the link" question made unsure.
     private static func strip(_ item: ImportItem, batchDuplicate: Bool) -> ImportItem {
         var item = item
         if batchDuplicate { item.duplicate = nil }
@@ -1598,10 +1598,10 @@ public struct ImportPipeline: @unchecked Sendable {
         return item
     }
 
-    /// A shared-transaction claim made the item's certain link to that transaction unsure:
-    /// with the claim gone (or settled) it is certain again.
+    /// A "check the link" question made the item's certain link to that transaction unsure:
+    /// with the question gone (or settled) it is certain again.
     private static func restoreLinks(_ item: inout ImportItem, for issues: [ImportIssue]) {
-        for issue in issues where issue.id.hasPrefix("sharedTransaction.") {
+        for issue in issues where issue.id.hasPrefix(ImportDuplicates.checkLinkPrefix) {
             guard case .chooseLink(let candidates) = issue.kind else { continue }
             let entities = Set(candidates.map(\.entity))
             for l in item.links.indices where entities.contains(item.links[l].entity) { item.links[l].confidence = .certain }

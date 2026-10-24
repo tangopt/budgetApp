@@ -271,8 +271,8 @@ public struct ImportDuplicate: Equatable, Sendable {
     public enum Level: String, Sendable { case file, document, transactions }
 
     public var level: Level
-    /// What it duplicates, as a whole sentence shown as it is ("Same file as a.pdf",
-    /// "Already in the library as …", "3 rows already imported").
+    /// What it duplicates, as a whole sentence shown as it is ("Identical file: same as a.pdf in this import",
+    /// "Identical file: already in the library as …", "3 rows already imported").
     public var of: String
     public var existingDocumentId: Int64?
     /// The item of the same import it duplicates, when its original is in the batch and not yet

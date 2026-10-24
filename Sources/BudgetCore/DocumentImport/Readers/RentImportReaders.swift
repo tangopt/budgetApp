@@ -332,7 +332,7 @@ public struct TransferAdviceReader: ImportReader {
                                              existingDocumentId: planned.documentId)
         case .duplicate:
             let first = readable.first { $0.sha256 == planned.input.sha256 }?.name ?? planned.input.name
-            item.duplicate = ImportDuplicate(level: .file, of: "Same file as \(first)")
+            item.duplicate = ImportDuplicate(level: .file, of: "Identical file: same as \(first) in this import")
         case .notRent:
             problem("The matching \(creditText) is not from a tenant: not linked")
         case .unconfirmed:
