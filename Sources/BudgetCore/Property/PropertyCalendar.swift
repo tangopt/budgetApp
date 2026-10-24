@@ -38,21 +38,29 @@ public struct PropertyObligation: Equatable, Identifiable, Sendable {
 
 /// A cost that repeats in the property's history.
 public struct PropertyRecurringPattern: Equatable, Sendable {
-    /// "category:<id>" or "mortgage:<account id>".
+    /// "category:<id>/<series key>" or "mortgage:<account id>".
     public var key: String
     public var title: String
     public var categoryId: Int64?
     public var accountId: Int64?
-    /// 1, 3 or 12.
+    /// 1, 3, 6 or 12.
     public var everyMonths: Int
     public var lastDate: Date
     /// Positive, in the transaction's account currency.
     public var lastAmountMinorUnits: Int
     public var currency: Currency
     public var occurrences: Int
+    /// The payee within the category (`PropertyRecurringSeries.keys`); "" for the whole
+    /// category or a mortgage account.
+    public var seriesKey: String = ""
 
     /// The first date after the last occurrence it's due again.
     public var nextDate: Date { MonthRange.calendar.date(byAdding: .month, value: everyMonths, to: lastDate)! }
+
+    /// The series a check decision names.
+    public var series: PropertyRecurringSeriesRef {
+        categoryId != nil ? .init(categoryId: categoryId, accountId: nil, key: seriesKey) : .init(categoryId: nil, accountId: accountId, key: seriesKey)
+    }
 }
 
 /// The property's obligations: fixed rules (IMI, PT IRS, UK Self Assessment), mortgage rate
@@ -190,38 +198,87 @@ public enum PropertyCalendar {
         return result.sorted { ($0.date, $0.kind.rawValue, $0.id) < ($1.date, $1.kind.rawValue, $1.id) }
     }
 
-    /// Costs that repeat monthly, quarterly or yearly in the `historyDays` before `today`: per
-    /// expense category of the property (IMI has its own rule; yearly insurance is a renewal,
-    /// not a recurring cost, unless `includeYearlyInsurance`; rows on the mortgage accounts are
-    /// left out), plus each mortgage account's instalments. The typical (median) gap decides:
-    /// 25–35 days monthly, 80–100 quarterly (3+ occurrences), 330–400 yearly (2+). A pattern
-    /// whose last occurrence is more than two periods before `today` has stopped and is dropped
-    /// (unless `dropStopped` is false: the checks keep chasing it until it occurs again).
+    /// Costs that repeat monthly, quarterly, half-yearly or yearly in the `historyDays` before
+    /// `today`: per payee series (`PropertyRecurringSeries.keys`) of each expense category of the
+    /// property (IMI has its own rule; yearly insurance is a renewal, not a recurring cost, unless
+    /// `includeYearlyInsurance`; rows on the mortgage accounts are left out), plus each mortgage
+    /// account's instalments. The typical (median) gap decides: 25–35 days monthly, 80–100
+    /// quarterly (3+ occurrences), 160–200 half-yearly (3+), 330–400 yearly (2+). A series
+    /// followed by another in the same category (one starting after its last payment) has ended:
+    /// the payee changed. A lone payment that took over an insurance category is a new yearly
+    /// policy. When no payee repeats, the category is read as one series. A pattern whose last
+    /// occurrence is more than two periods before `today` has stopped and is dropped (unless
+    /// `dropStopped` is false: the checks keep chasing it until it occurs again). Series the user
+    /// said are not expected any more (`PropertyCheckDecisions`) are left out unless
+    /// `includeNotExpected`.
     public static func recurringPatterns(db: Database, propertyId: Int64, asOf today: Date,
-                                         includeYearlyInsurance: Bool = false, dropStopped: Bool = true) throws -> [PropertyRecurringPattern] {
+                                         includeYearlyInsurance: Bool = false, dropStopped: Bool = true,
+                                         includeNotExpected: Bool = false) throws -> [PropertyRecurringPattern] {
         let since = MonthRange.calendar.date(byAdding: .day, value: -historyDays, to: today)!
         let mortgageIds = try Properties.accounts(db: db, propertyId: propertyId, role: .mortgage).map(\.accountId)
         let currencies = Dictionary(uniqueKeysWithValues: try Account.fetchAll(db).compactMap { a in a.id.map { ($0, a.currency) } })
+        let notExpected = includeNotExpected ? [:] : try PropertyCheckDecisions.notExpected(db: db, propertyId: propertyId)
         var patterns: [PropertyRecurringPattern] = []
+        func keep(_ pattern: PropertyRecurringPattern) {
+            if !PropertyCheckDecisions.holds(notExpected[pattern.series], for: pattern) { patterns.append(pattern) }
+        }
         for category in try propertyCategories(db: db, propertyId: propertyId) where category.type == .expense {
             guard let id = category.id, !words(category.name).contains("imi") else { continue }
             let rows = try Transaction.filter(Column("categoryId") == id && Column("amountMinorUnits") < 0
                                               && Column("date") >= since && Column("date") <= today
                                               && !mortgageIds.contains(Column("accountId")))
                 .order(Column("date"), Column("id")).fetchAll(db)
-            if let pattern = detect(rows, key: "category:\(id)", title: category.name, categoryId: id, currencies: currencies, asOf: today, dropStopped: dropStopped),
-               includeYearlyInsurance || !(isInsurance(category.name) && pattern.everyMonths == 12) {
-                patterns.append(pattern)
+            let insurance = isInsurance(category.name)
+            let all = series(rows)
+            let live = all.filter { s in !all.contains { $0.key != s.key && $0.first > s.last } }
+            let switched = live.count < all.count
+            for s in live {
+                let title = live.count > 1 ? "\(category.name) · \(PropertyRecurringSeries.label(s.key))" : category.name
+                var pattern = detect(s.rows, key: "category:\(id)/\(s.key)", title: title, categoryId: id, currencies: currencies,
+                                     asOf: today, dropStopped: dropStopped)
+                if pattern == nil, switched, insurance, s.rows.count == 1, let row = s.rows.first {
+                    // A new insurer's first premium: a yearly policy until its payments say otherwise.
+                    let lastDay = PropertyDates.day(row.date)
+                    if !dropStopped || MonthRange.calendar.date(byAdding: .month, value: 24, to: lastDay)! >= PropertyDates.day(today) {
+                        pattern = PropertyRecurringPattern(key: "category:\(id)/\(s.key)", title: title, categoryId: id, accountId: row.accountId,
+                                                           everyMonths: 12, lastDate: lastDay, lastAmountMinorUnits: abs(row.amountMinorUnits),
+                                                           currency: currencies[row.accountId] ?? .gbp, occurrences: 1)
+                    }
+                }
+                guard var pattern, includeYearlyInsurance || !(insurance && pattern.everyMonths == 12) else { continue }
+                pattern.seriesKey = s.key
+                keep(pattern)
             }
         }
         for accountId in mortgageIds {
             let legs = try mortgageLegs(db: db, accountId: accountId, before: today).filter { $0.date >= since }
             if let pattern = detect(legs, key: "mortgage:\(accountId)", title: "Mortgage instalment", categoryId: nil, currencies: currencies, asOf: today,
                                      dropStopped: dropStopped) {
-                patterns.append(pattern)
+                keep(pattern)
             }
         }
         return patterns
+    }
+
+    /// A category's rows split by payee series, oldest first; one series of them all when no
+    /// payee repeats (descriptions that vary every time say nothing about payees).
+    static func series(_ rows: [Transaction]) -> [(key: String, rows: [Transaction], first: Date, last: Date)] {
+        guard !rows.isEmpty else { return [] }
+        let keys = PropertyRecurringSeries.keys(rows.map(\.rawDescription))
+        var order: [String] = []
+        var grouped: [String: [Transaction]] = [:]
+        for (row, key) in zip(rows, keys) {
+            if grouped[key] == nil { order.append(key) }
+            grouped[key, default: []].append(row)
+        }
+        if grouped.count > 1, !grouped.values.contains(where: { $0.count >= 2 }) {
+            order = [""]
+            grouped = ["": rows]
+        }
+        return order.map { key in
+            let rows = grouped[key]!
+            return (key, rows, PropertyDates.day(rows.first!.date), PropertyDates.day(rows.last!.date))
+        }
     }
 
     static func detect(_ rows: [Transaction], key: String, title: String, categoryId: Int64?, currencies: [Int64: Currency],
@@ -234,6 +291,7 @@ public enum PropertyCalendar {
         switch median {
         case 25...35 where rows.count >= 3: months = 1
         case 80...100 where rows.count >= 3: months = 3
+        case 160...200 where rows.count >= 3: months = 6
         case 330...400: months = 12
         default: return nil
         }

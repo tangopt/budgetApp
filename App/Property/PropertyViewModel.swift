@@ -480,6 +480,21 @@ final class PropertyViewModel: ObservableObject {
         }
     }
 
+    /// "Not expected any more" on an overdue recurring cost: its series stops being expected
+    /// (synced, undone with `expectAgain`).
+    func stopExpecting(_ pattern: PropertyRecurringPattern) {
+        guard let propertyId else { return }
+        errorMessage = write { db in try PropertyCheckDecisions.stopExpecting(db: db, propertyId: propertyId, pattern: pattern) }
+        if errorMessage == nil { infoMessage = "\(pattern.title) is no longer expected. Undo it under Not expected any more." }
+    }
+
+    /// Undoes "Not expected any more": the series is expected again.
+    func expectAgain(_ item: PropertyCheckReport.NotExpectedRecurringCost) {
+        guard let propertyId else { return }
+        errorMessage = write { db in try PropertyCheckDecisions.expectAgain(db: db, propertyId: propertyId, series: item.series) }
+        if errorMessage == nil { infoMessage = "\(item.pattern.title) is expected again." }
+    }
+
     func seedEvidenceRules() {
         guard let propertyId else { return }
         do {

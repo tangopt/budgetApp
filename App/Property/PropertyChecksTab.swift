@@ -23,6 +23,7 @@ struct PropertyChecksTab: View {
                 if !checks.receiptsWithoutCredit.isEmpty { receiptsPanel(checks.receiptsWithoutCredit) }
                 if !checks.creditsWithoutReceipt.isEmpty { creditsPanel(checks.creditsWithoutReceipt) }
                 if !checks.missingRecurringCosts.isEmpty { recurringPanel(checks.missingRecurringCosts) }
+                if !checks.notExpectedRecurringCosts.isEmpty { notExpectedPanel(checks.notExpectedRecurringCosts) }
             } else if viewModel.period == nil {
                 InlineBanner(.info, "Pick a range that ends after it starts.")
             }
@@ -181,8 +182,34 @@ struct PropertyChecksTab: View {
                 .text("Cost", { $0.item.pattern.title }),
                 .date("Expected around") { $0.item.expectedDate },
                 // Every row is a cost: as magnitudes (spec §1.4).
-                .money("Last amount", role: .neutral, currency: { $0.item.pattern.currency }) { $0.item.pattern.lastAmountMinorUnits }
+                .money("Last amount", role: .neutral, currency: { $0.item.pattern.currency }) { $0.item.pattern.lastAmountMinorUnits },
+                .actions { row in
+                    [DataTableAction("Not expected any more", systemImage: "bell.slash", inline: true) {
+                        viewModel.stopExpecting(row.item.pattern)
+                    }]
+                }
             ], rows: items.map(RecurringRow.init))
+        }
+    }
+
+    private struct NotExpectedRow: Identifiable {
+        let item: PropertyCheckReport.NotExpectedRecurringCost
+        var id: String { item.pattern.key }
+    }
+
+    /// Series cleared with "Not expected any more", to undo the decision.
+    private func notExpectedPanel(_ items: [PropertyCheckReport.NotExpectedRecurringCost]) -> some View {
+        Panel("Not expected any more", subtitle: "Recurring costs you cleared; a new payment brings one back") {
+            StatusPill("\(items.count)", tone: .neutral)
+        } content: {
+            DataTable(columns: [
+                .text("Cost", { $0.item.pattern.title }),
+                .date("Last paid") { $0.item.pattern.lastDate },
+                .money("Last amount", role: .neutral, currency: { $0.item.pattern.currency }) { $0.item.pattern.lastAmountMinorUnits },
+                .actions { row in
+                    [DataTableAction("Expect again", systemImage: "arrow.uturn.backward", inline: true) { viewModel.expectAgain(row.item) }]
+                }
+            ], rows: items.map(NotExpectedRow.init))
         }
     }
 

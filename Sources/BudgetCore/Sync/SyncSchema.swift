@@ -46,7 +46,7 @@ public struct SyncTableSchema: Equatable, Sendable {
 public enum SyncSchema {
     /// Bumped whenever `tables` or the tracking triggers change (`SyncChangeTrackerTests` pins the hash of
     /// each version). A build never replaces triggers a newer version installed.
-    public static let version = 4
+    public static let version = 5
 
     /// Synced tables, parents before children (each foreign key's table is listed earlier).
     public static let tables: [SyncTableSchema] = [
@@ -151,6 +151,9 @@ public enum SyncSchema {
                         foreignKeys: ["propertyId": "property"]),
         SyncTableSchema("interestIndexValue",
                         synced: ["indexName", "period", "date", "valuePercent", "source", "fetchedAt"]),
+        SyncTableSchema("propertyCheckDecision",
+                        synced: ["propertyId", "categoryId", "accountId", "seriesKey", "lastSeenDate", "decision", "createdAt"],
+                        foreignKeys: ["propertyId": "property", "categoryId": "category", "accountId": "account"]),
         SyncTableSchema("tenancy",
                         synced: ["propertyId", "referenceLabel", "contractNumber", "tenantName", "startDate", "endDate", "advanceRentMonths", "depositMonths", "notes", "tenantEmail"],
                         foreignKeys: ["propertyId": "property"]),
