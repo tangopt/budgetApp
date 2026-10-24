@@ -4,9 +4,15 @@ import Foundation
 /// and a row per category with money in it. Actuals are the Budget grid's
 /// (`BudgetGridCalculator.categoryTotal` over the pay month), plans the calendar month's
 /// confirmed plan (as the grid's), and the summary the Mac dashboard's year chart for the
-/// month (`DashboardCalculator.monthlyFlows`).
-public struct PayMonthReview: Equatable {
-    public struct Row: Equatable, Identifiable {
+/// month (`DashboardCalculator.monthlyFlow`). Rows and summary share `input.payCalendar`.
+public struct PayMonthReview: Equatable, Sendable {
+    /// A pay month's first day ... last moment of its close day.
+    public struct DayRange: Equatable, Sendable {
+        public let start: Date
+        public let end: Date
+    }
+
+    public struct Row: Equatable, Identifiable, Sendable {
         /// The category's id.
         public let id: Int64
         public let category: Category
@@ -18,23 +24,22 @@ public struct PayMonthReview: Equatable {
         public let isOverPlan: Bool
 
         /// What the plan still allows (positive) or how far past it (negative), in the plan's
-        /// direction: expenses outward, income inward, transfers by the plan's sign (else
-        /// outward). "£x left" / "£x over plan".
-        public var remainingMinorUnits: Int { direction * (planMinorUnits - actualMinorUnits) }
-
-        /// +1 for money in, −1 for money out.
-        var direction: Int {
+        /// direction: expenses outward, income inward, transfers by the plan's sign. "£x left"
+        /// / "£x over plan". Nil for income or a transfer with no plan (nothing to measure
+        /// against); an unplanned expense is all over plan.
+        public var remainingMinorUnits: Int? {
             switch category.type {
-            case .income: return 1
-            case .expense, .adjustment: return -1
-            case .transfer: return planMinorUnits > 0 ? 1 : -1
+            case .expense: return actualMinorUnits - planMinorUnits
+            case .income: return planMinorUnits == 0 ? nil : planMinorUnits - actualMinorUnits
+            case .transfer: return planMinorUnits == 0 ? nil : planMinorUnits.signum() * (planMinorUnits - actualMinorUnits)
+            case .adjustment: return nil
             }
         }
     }
 
     public let month: PayMonth
-    /// The pay month's first day ... last moment of its close day (`PayCalendar.range`).
-    public let range: (start: Date, end: Date)
+    /// The pay month's range (`PayCalendar.range`).
+    public let range: DayRange
     /// Projected income (actual for a closed month), positive.
     public let incomeMinorUnits: Int
     /// Spending so far, positive.
@@ -48,23 +53,15 @@ public struct PayMonthReview: Equatable {
 
     public func rows(of type: CategoryType) -> [Row] { rows.filter { $0.category.type == type } }
 
-    public static func == (a: PayMonthReview, b: PayMonthReview) -> Bool {
-        a.month == b.month && a.range.start == b.range.start && a.range.end == b.range.end
-            && a.incomeMinorUnits == b.incomeMinorUnits && a.spentMinorUnits == b.spentMinorUnits
-            && a.stillExpectedMinorUnits == b.stillExpectedMinorUnits && a.leftToSpendMinorUnits == b.leftToSpendMinorUnits
-            && a.rows == b.rows
-    }
-
-    /// `calendar` is normally `input.payCalendar` (the summary figures always use that one).
-    public static func make(month: PayMonth, input: DashboardInput, calendar: PayCalendar) -> PayMonthReview {
-        let range = calendar.range(of: month)
-        let period = PayPeriod(startDate: range.start, endDate: range.end, type: .actual)
+    public static func make(month: PayMonth, input: DashboardInput) -> PayMonthReview {
+        let bounds = input.payCalendar.range(of: month)
+        let period = PayPeriod(startDate: bounds.start, endDate: bounds.end, type: .actual)
         let calendarMonth = MonthRange.of(year: month.year, month: month.month)
         let planPeriod = PayPeriod(startDate: calendarMonth.start, endDate: calendarMonth.end, type: .projected)
         let planned = ForecastCalculator.confirmedTotalsByCategory(period: planPeriod, entries: input.forecastEntries,
                                                                    groups: input.forecastGroups, exceptions: input.exceptions)
         // Only the month's transactions reach the grid's per-category sum.
-        let transactions = input.budgetTransactions.filter { $0.date >= range.start && $0.date <= range.end }
+        let transactions = input.budgetTransactions.filter { $0.date >= bounds.start && $0.date <= bounds.end }
 
         var rows: [Row] = []
         for category in input.categories where category.type != .adjustment {
@@ -86,14 +83,15 @@ public struct PayMonthReview: Equatable {
         }
         rows.sort { (rank($0.category.type), $0.category.name, $0.id) < (rank($1.category.type), $1.category.name, $1.id) }
 
-        let flow = DashboardCalculator.monthlyFlows(input, year: month.year)[month.month - 1]
-        return PayMonthReview(month: month, range: range, incomeMinorUnits: flow.incomeTotal, spentMinorUnits: flow.expenseActual,
-                              stillExpectedMinorUnits: flow.expenseRemaining, leftToSpendMinorUnits: flow.net, rows: rows)
+        let flow = DashboardCalculator.monthlyFlow(input, month: month)
+        return PayMonthReview(month: month, range: DayRange(start: bounds.start, end: bounds.end), incomeMinorUnits: flow.incomeTotal,
+                              spentMinorUnits: flow.expenseActual, stillExpectedMinorUnits: flow.expenseRemaining,
+                              leftToSpendMinorUnits: flow.net, rows: rows)
     }
 
     /// An outflow (expense, or a transfer not planned inward) past its plan; with no plan, any
-    /// outflow unless a reserve covers the category (`excludeFromAutoForecast`, as the
-    /// dashboard's `CategorySpend.isUnplanned`). Income is never over plan.
+    /// expense spending unless a reserve covers the category (`excludeFromAutoForecast`, as the
+    /// dashboard's `CategorySpend.isUnplanned`). Income and unplanned transfers are never over.
     static func isOverPlan(_ category: Category, actual: Int, plan: Int) -> Bool {
         switch category.type {
         case .income, .adjustment:

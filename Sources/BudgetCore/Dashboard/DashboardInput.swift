@@ -96,8 +96,8 @@ public struct DashboardInput {
     var effectiveToday: Date { dataThrough.map { max(today, $0) } ?? today }
 }
 
-public struct DataFreshness: Equatable {
-    public enum Status: Equatable {
+public struct DataFreshness: Equatable, Sendable {
+    public enum Status: Equatable, Sendable {
         case noData
         case upToDate
         /// More than 31 days between the latest transaction and today. `months` is whole
@@ -110,7 +110,7 @@ public struct DataFreshness: Equatable {
     public let dataThrough: Date?
 }
 
-public struct AttentionItems: Equatable {
+public struct AttentionItems: Equatable, Sendable {
     public let uncategorizedCount: Int
     public let staleBalanceCount: Int
     public let oldestStaleSnapshotDate: Date?
@@ -129,7 +129,10 @@ public struct AccountSummary: Equatable, Identifiable {
     public let gbpBalanceMinorUnits: Int
 }
 
-public struct UpcomingBill: Equatable, Identifiable {
+public struct UpcomingBill: Equatable, Identifiable, Sendable {
+    /// The planned occurrence it is (`PlannedOccurrence.id`): unique even when two bills share
+    /// category, day and amount.
+    public let occurrenceId: String
     public let date: Date
     public let categoryName: String
     /// Signed (negative = money out), per occurrence.

@@ -4,9 +4,9 @@ import GRDB
 /// What the iPhone's Home shows (iPhone spec §3.2), packaged from the Mac dashboard's
 /// calculators so the two can't disagree: the freshness line, net worth, this pay month,
 /// what needs attention and what's coming up. Nothing here computes a figure of its own.
-public struct HomeSummary: Equatable {
+public struct HomeSummary: Equatable, Sendable {
     /// One upcoming bill or property obligation.
-    public struct UpcomingItem: Equatable, Identifiable {
+    public struct UpcomingItem: Equatable, Identifiable, Sendable {
         public enum Source: String, Equatable, Sendable {
             /// A confirmed planned expense (`DashboardCalculator.upcomingBills`).
             case bill
@@ -14,7 +14,7 @@ public struct HomeSummary: Equatable {
             case propertyObligation
         }
 
-        /// "bill/<bill id>" or "property/<property id>/<obligation id>".
+        /// "bill/<planned occurrence id>" or "property/<property id>/<obligation id>".
         public let id: String
         public let date: Date
         /// The bill's category, or the obligation's title.
@@ -54,17 +54,21 @@ public struct HomeSummary: Equatable {
     /// waits for the sync records to name devices, step 6.)
     public var isFreshnessAmber: Bool { (dataAgeDays ?? 0) > Self.freshnessAmberDays }
 
-    /// The summary for `today` (normally `input.today`); `db` gives the properties' obligations.
-    public static func make(_ input: DashboardInput, db: Database, today: Date) throws -> HomeSummary {
+    /// The summary on `input.today`, the one day everything counts from: the freshness age
+    /// and Upcoming's window from it, the pay month and days to payday from it but never
+    /// earlier than the data (`effectiveToday`, as the dashboard's current month card).
+    /// `db` gives the properties' obligations.
+    public static func make(_ input: DashboardInput, db: Database) throws -> HomeSummary {
         let calendar = MonthRange.calendar
-        let day = calendar.startOfDay(for: today)
+        let day = calendar.startOfDay(for: input.today)
         let freshness = DashboardCalculator.dataFreshness(input)
         let age = freshness.dataThrough.map { calendar.dateComponents([.day], from: calendar.startOfDay(for: $0), to: day).day ?? 0 }
 
         let month = DashboardCalculator.currentMonth(input)
         let planned = month.expenses.projected
         let payday = input.payCalendar.closeDate(of: input.payCalendar.current)
-        let daysToPayday = max(0, calendar.dateComponents([.day], from: day, to: calendar.startOfDay(for: payday)).day ?? 0)
+        let effectiveDay = calendar.startOfDay(for: input.effectiveToday)
+        let daysToPayday = max(0, calendar.dateComponents([.day], from: effectiveDay, to: calendar.startOfDay(for: payday)).day ?? 0)
 
         return HomeSummary(
             freshness: freshness,
@@ -83,7 +87,7 @@ public struct HomeSummary: Equatable {
     /// by date, then bills before obligations, then title.
     static func upcoming(_ input: DashboardInput, db: Database, today: Date) throws -> [UpcomingItem] {
         let bills = DashboardCalculator.upcomingBills(input, days: upcomingDays).map { bill in
-            UpcomingItem(id: "bill/\(bill.id)", date: bill.date, title: bill.categoryName, amountMinorUnits: -bill.amountMinorUnits,
+            UpcomingItem(id: "bill/\(bill.occurrenceId)", date: bill.date, title: bill.categoryName, amountMinorUnits: -bill.amountMinorUnits,
                          currency: .gbp, source: .bill, isEstimate: false)
         }
         let end = MonthRange.calendar.date(byAdding: .day, value: upcomingDays, to: today)!

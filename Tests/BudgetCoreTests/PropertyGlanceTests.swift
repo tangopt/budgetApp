@@ -55,6 +55,13 @@ final class PropertyGlanceTests: XCTestCase {
         }
         XCTAssertGreaterThan(owed, 0)
         XCTAssertEqual(mortgage.outstandingMinorUnits, owed)
+        // The Mac screen's own path: the loan chart's last point (`PropertyFinance.loanBalances`).
+        let chartOwed = try db.read { db -> Int in
+            let property = try Property.fetchOne(db, key: id)!
+            let accounts = try Properties.accounts(db: db, propertyId: id, role: .mortgage).map(\.accountId)
+            return try PropertyFinance.loanBalances(db: db, property: property, accountIds: accounts, days: [PropertyDates.day(today)]).last!.native
+        }
+        XCTAssertEqual(mortgage.outstandingMinorUnits, chartOwed)
         XCTAssertEqual(mortgage.progress, MortgageHistory.progress(terms: terms, owedMinorUnits: owed, today: today))
         XCTAssertNotNil(mortgage.progress)
         // The estimated history before the first statement starts from the amount borrowed the
@@ -122,5 +129,25 @@ final class PropertyGlanceTests: XCTestCase {
         let all = try db.read { db in try PropertyGlance.all(db: db, today: today) }
         XCTAssertEqual(all.map(\.property.name), [DemoDatabase.propertyName, "Property B"])
         XCTAssertThrowsError(try db.read { db in try PropertyGlance.make(db: db, propertyId: 9_999, today: today) })
+    }
+
+    /// A tenancy that starts mid-month isn't due (or late) before it starts: rent is expected
+    /// from its first day.
+    func testRentNeverLateBeforeTheTenancyStarts() throws {
+        let other = try db.write { db -> Int64 in
+            var property = Property(name: "Property B", country: "PT", currency: .eur)
+            try Properties.save(db: db, &property)
+            var tenancy = Tenancy(propertyId: property.id!, referenceLabel: "Tenancy B", startDate: DemoDatabase.date(2026, 11, 20))
+            try tenancy.insert(db)
+            _ = try Tenancies.setRent(db: db, tenancyId: tenancy.id!, from: DemoDatabase.date(2026, 11, 20), monthlyAmountMinorUnits: 90_000)
+            return property.id!
+        }
+        let before = try db.read { db in try PropertyGlance.make(db: db, propertyId: other, today: DemoDatabase.date(2026, 11, 10)) }
+        XCTAssertEqual(before.rent, PropertyGlance.RentStatus.none)
+        let firstWeek = try db.read { db in try PropertyGlance.make(db: db, propertyId: other, today: DemoDatabase.date(2026, 11, 25)) }
+        XCTAssertEqual(firstWeek.letSince, DemoDatabase.date(2026, 11, 20))
+        XCTAssertEqual(firstWeek.rent, .expected(DemoDatabase.date(2026, 11, 20)))
+        let late = try db.read { db in try PropertyGlance.make(db: db, propertyId: other, today: DemoDatabase.date(2026, 12, 12)) }
+        XCTAssertEqual(late.rent, .late(since: DemoDatabase.date(2026, 12, 1)))
     }
 }

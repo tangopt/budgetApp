@@ -3,41 +3,6 @@ import GRDB
 @testable import BudgetCore
 @testable import BudgetDemo
 
-/// The demo database (`DemoDatabase`, as of 2026-10-15) loaded the way the Mac's dashboard
-/// loads it (`DashboardViewModel.load`), for the phone calculators' tests.
-enum PhoneDemoFixture {
-    static let today = DemoDatabase.defaultAsOf
-
-    /// A fresh in-memory demo database; the caller removes `evidence`.
-    static func build() throws -> (manager: DatabaseManager, evidence: URL) {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
-        let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("PhoneDemoEvidence-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
-        try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
-        return (manager, evidence)
-    }
-
-    /// The input the Mac's dashboard builds (`DashboardViewModel.load`).
-    static func input(_ db: Database, today: Date = today) throws -> DashboardInput {
-        DashboardInput(
-            today: today,
-            accounts: try Account.fetchAll(db),
-            snapshots: try BalanceSnapshot.fetchAll(db),
-            transactions: try LocalActualsSource().transactions(db),
-            categories: try Category.fetchAll(db),
-            categoryGroups: try CategoryGroup.fetchAll(db),
-            forecastEntries: try ForecastEntry.budget(db),
-            forecastGroups: try ForecastGroup.fetchAll(db),
-            exceptions: try PlannedOccurrenceException.fetchAll(db),
-            importBatches: try ImportBatch.fetchAll(db),
-            rate: try ExchangeRateSetting.currentOrDefault(db: db),
-            manualCloses: try PayMonthClose.fetchAll(db),
-            transferLinks: try TransferLink.fetchAll(db)
-        )
-    }
-}
-
 final class HomeSummaryTests: XCTestCase {
     private var manager: DatabaseManager!
     private var evidence: URL!
@@ -53,7 +18,7 @@ final class HomeSummaryTests: XCTestCase {
     private func summary(today: Date = PhoneDemoFixture.today) throws -> (HomeSummary, DashboardInput) {
         try manager.dbQueue.read { db in
             let input = try PhoneDemoFixture.input(db, today: today)
-            return (try HomeSummary.make(input, db: db, today: today), input)
+            return (try HomeSummary.make(input, db: db), input)
         }
     }
 
@@ -138,11 +103,48 @@ final class HomeSummaryTests: XCTestCase {
         let empty = try DatabaseManager(path: nil)
         try empty.migrate()
         let none = try empty.dbQueue.read { db in
-            try HomeSummary.make(try PhoneDemoFixture.input(db, today: day15), db: db, today: day15)
+            try HomeSummary.make(try PhoneDemoFixture.input(db, today: day15), db: db)
         }
         XCTAssertEqual(none.freshness.status, .noData)
         XCTAssertNil(none.dataAgeDays)
         XCTAssertFalse(none.isFreshnessAmber)
         XCTAssertTrue(none.upcoming.isEmpty)
+    }
+
+    /// Two planned bills alike in category, day and amount still get distinct ids (SwiftUI
+    /// identity): each is its own planned occurrence.
+    func testTwinBillsHaveDistinctIds() throws {
+        let d = DashboardFixture.date
+        let today = d(2026, 3, 10)
+        let entries = (1...2).map { id in
+            ForecastEntry(id: Int64(10 + id), groupId: 1, categoryId: DashboardFixture.rentId, amountMinorUnits: -5_000, frequency: .monthly,
+                          interval: 1, startDate: d(2026, 1, 20), endDate: nil, isEnabled: true, status: .manual, note: nil)
+        }
+        let input = DashboardFixture.input(today: today, entries: entries)
+        let empty = try DatabaseManager(path: nil)
+        try empty.migrate()
+        let home = try empty.dbQueue.read { db in try HomeSummary.make(input, db: db) }
+        let bills = home.upcoming.filter { $0.source == .bill && $0.date == d(2026, 3, 20) }
+        XCTAssertEqual(bills.count, 2)
+        XCTAssertEqual(Set(home.upcoming.map(\.id)).count, home.upcoming.count)
+    }
+
+    /// Home's whole day is the input's: the freshness age, Upcoming's window and the days to
+    /// payday all count from `input.today` (never earlier than the data).
+    func testHomeUsesTheInputsToday() throws {
+        let (home, input) = try summary()
+        XCTAssertEqual(input.today, PhoneDemoFixture.today)
+        XCTAssertTrue(home.upcoming.allSatisfy { $0.date >= MonthRange.calendar.startOfDay(for: input.today) })
+        XCTAssertEqual(home.daysToPayday, home.month.daysInMonth - home.month.dayOfMonth)
+    }
+
+    /// The phone's summaries cross actors (a GRDB read in the background, a view on the main actor).
+    func testSummariesAreSendable() {
+        func sendable<T: Sendable>(_: T.Type) {}
+        sendable(HomeSummary.self)
+        sendable(HomeSummary.UpcomingItem.self)
+        sendable(PayMonthReview.self)
+        sendable(PayMonthReview.Row.self)
+        sendable(PropertyGlance.self)
     }
 }

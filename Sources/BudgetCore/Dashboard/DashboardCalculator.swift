@@ -77,7 +77,7 @@ public enum DashboardCalculator {
         let confirmed = ForecastCalculator.confirmedEntries(entries: input.forecastEntries, groups: input.forecastGroups)
         for occurrence in PlannedOccurrences.occurrences(entries: confirmed, exceptions: input.exceptions, in: period) {
             guard let name = expenseCategories[occurrence.categoryId] else { continue }
-            bills.append(UpcomingBill(date: occurrence.date, categoryName: name, amountMinorUnits: occurrence.amountMinorUnits))
+            bills.append(UpcomingBill(occurrenceId: occurrence.id, date: occurrence.date, categoryName: name, amountMinorUnits: occurrence.amountMinorUnits))
         }
         return bills.sorted { $0.date != $1.date ? $0.date < $1.date : $0.categoryName < $1.categoryName }
     }

@@ -15,7 +15,7 @@ final class PayMonthReviewTests: XCTestCase {
 
         // A closed month (September) and the open one (October).
         for month in [calendar.current.previous, calendar.current] {
-            let review = PayMonthReview.make(month: month, input: input, calendar: calendar)
+            let review = PayMonthReview.make(month: month, input: input)
             let range = calendar.range(of: month)
             XCTAssertEqual(review.month, month)
             XCTAssertEqual(review.range.start, range.start)
@@ -56,14 +56,14 @@ final class PayMonthReviewTests: XCTestCase {
         }
 
         // The open month agrees with Home.
-        let home = try manager.dbQueue.read { db in try HomeSummary.make(input, db: db, today: PhoneDemoFixture.today) }
-        let current = PayMonthReview.make(month: calendar.current, input: input, calendar: calendar)
+        let home = try manager.dbQueue.read { db in try HomeSummary.make(input, db: db) }
+        let current = PayMonthReview.make(month: calendar.current, input: input)
         XCTAssertEqual(current.spentMinorUnits, home.month.expenses.actual)
         XCTAssertEqual(current.stillExpectedMinorUnits, home.leftToSpendMinorUnits)
         XCTAssertEqual(current.incomeMinorUnits, home.month.income.projected)
         XCTAssertEqual(current.leftToSpendMinorUnits, home.month.net.projected)
         // A closed month expects nothing more.
-        XCTAssertEqual(PayMonthReview.make(month: calendar.current.previous, input: input, calendar: calendar).stillExpectedMinorUnits, 0)
+        XCTAssertEqual(PayMonthReview.make(month: calendar.current.previous, input: input).stillExpectedMinorUnits, 0)
     }
 
     private func order(_ row: PayMonthReview.Row) -> Int {
@@ -92,7 +92,7 @@ final class PayMonthReviewTests: XCTestCase {
             ],
             excludedId: DashboardFixture.bulkId
         )
-        let review = PayMonthReview.make(month: PayMonth(year: 2026, month: 3), input: input, calendar: input.payCalendar)
+        let review = PayMonthReview.make(month: PayMonth(year: 2026, month: 3), input: input)
         func row(_ id: Int64) throws -> PayMonthReview.Row { try XCTUnwrap(review.rows.first { $0.id == id }) }
 
         XCTAssertEqual(try row(DashboardFixture.rentId).actualMinorUnits, -150_000)
@@ -115,7 +115,7 @@ final class PayMonthReviewTests: XCTestCase {
     func testEmptyMonthHasNoRows() throws {
         let d = DashboardFixture.date
         let input = DashboardFixture.input(today: d(2026, 3, 20), entries: [])
-        let review = PayMonthReview.make(month: PayMonth(year: 2026, month: 3), input: input, calendar: input.payCalendar)
+        let review = PayMonthReview.make(month: PayMonth(year: 2026, month: 3), input: input)
         XCTAssertTrue(review.rows.isEmpty)
         XCTAssertTrue(review.rows(of: .expense).isEmpty)
         XCTAssertEqual(review.incomeMinorUnits, 0)
@@ -127,6 +127,44 @@ final class PayMonthReviewTests: XCTestCase {
         let (manager, evidence) = try PhoneDemoFixture.build()
         defer { try? FileManager.default.removeItem(at: evidence) }
         let demo = try manager.dbQueue.read { db in try PhoneDemoFixture.input(db) }
-        XCTAssertTrue(PayMonthReview.make(month: PayMonth(year: 2015, month: 1), input: demo, calendar: demo.payCalendar).rows.isEmpty)
+        XCTAssertTrue(PayMonthReview.make(month: PayMonth(year: 2015, month: 1), input: demo).rows.isEmpty)
+    }
+
+    /// A transfer or income with no plan has nothing "left": only planned rows (and
+    /// unplanned spending, which is all over plan) carry a remainder.
+    func testUnplannedTransfersAndIncomeHaveNoRemainder() throws {
+        let d = DashboardFixture.date
+        let input = DashboardFixture.input(
+            today: d(2026, 3, 20),
+            transactions: [
+                DashboardFixture.txn(1, d(2026, 3, 11), 50_000, category: DashboardFixture.savingsId),     // inward, unplanned
+                DashboardFixture.txn(2, d(2026, 3, 12), -20_000, category: DashboardFixture.savingsId),    // outward, unplanned
+                DashboardFixture.txn(3, d(2026, 3, 5), -2_000, category: DashboardFixture.groceriesId)     // expense, unplanned
+            ],
+            entries: []
+        )
+        let review = PayMonthReview.make(month: PayMonth(year: 2026, month: 3), input: input)
+        XCTAssertNil(try XCTUnwrap(review.rows.first { $0.id == DashboardFixture.savingsId }).remainingMinorUnits)
+        XCTAssertEqual(try XCTUnwrap(review.rows.first { $0.id == DashboardFixture.groceriesId }).remainingMinorUnits, -2_000)
+
+        let salary = DashboardFixture.input(today: d(2026, 3, 20),
+                                            transactions: [DashboardFixture.txn(1, d(2026, 3, 11), 10_000, category: DashboardFixture.diningId),
+                                                           DashboardFixture.txn(2, d(2026, 3, 12), 30_000, category: DashboardFixture.salaryId)],
+                                            entries: [])
+        let income = PayMonthReview.make(month: PayMonth(year: 2026, month: 3), input: salary)
+        XCTAssertNil(try XCTUnwrap(income.rows.first { $0.id == DashboardFixture.salaryId }).remainingMinorUnits)
+    }
+
+    /// The one-month flow is the year chart's month, for every month of the demo's year.
+    func testOneMonthFlowEqualsTheYearChart() throws {
+        let (manager, evidence) = try PhoneDemoFixture.build()
+        defer { try? FileManager.default.removeItem(at: evidence) }
+        let input = try manager.dbQueue.read { db in try PhoneDemoFixture.input(db) }
+        for year in [2025, 2026] {
+            let flows = DashboardCalculator.monthlyFlows(input, year: year)
+            for month in 1...12 {
+                XCTAssertEqual(DashboardCalculator.monthlyFlow(input, month: PayMonth(year: year, month: month)), flows[month - 1])
+            }
+        }
     }
 }

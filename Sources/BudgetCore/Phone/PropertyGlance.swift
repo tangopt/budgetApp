@@ -6,7 +6,7 @@ import GRDB
 /// through the Mac's property calculators (`PropertyMonthBreakdown`, `RentReceipts`,
 /// `Recharges`, `MortgageRate.status`, `PropertyFinance.balance`, `MortgageHistory.progress`,
 /// `PropertyCalendar`).
-public struct PropertyGlance: Equatable {
+public struct PropertyGlance: Equatable, Sendable {
     public enum RentStatus: Equatable, Sendable {
         /// A rent credit this calendar month, on that day (the latest).
         case received(Date)
@@ -86,7 +86,7 @@ public struct PropertyGlance: Equatable {
             property: property,
             letSince: running?.startDate,
             contractTo: running?.endDate,
-            rent: try rentStatus(db: db, propertyId: propertyId, running: running != nil, thisMonth: thisMonth, today: day),
+            rent: try rentStatus(db: db, propertyId: propertyId, running: running, thisMonth: thisMonth, today: day),
             receipt: try receiptStatus(db: db, running: running, thisMonth: thisMonth),
             lastRecharge: try lastRecharge(db: db, tenancies: tenancies),
             mortgage: try mortgage(db: db, property: property, today: day),
@@ -96,20 +96,22 @@ public struct PropertyGlance: Equatable {
 
     /// Received when this month's cash flow has a rent line (`PropertyFinance.monthBreakdown`);
     /// else, while a tenancy runs, due on the day of the month the last rent came (within the
-    /// three months before) or the 1st, and late past the receipt matching window.
-    static func rentStatus(db: Database, propertyId: Int64, running: Bool, thisMonth: DateInterval, today: Date) throws -> RentStatus {
+    /// three months before) or the 1st — never before the tenancy starts — and late past the
+    /// receipt matching window. (Advance-rent months play no part: the Mac uses them only for
+    /// the deposit check, and a month paid ahead still has its receipt and credit.)
+    static func rentStatus(db: Database, propertyId: Int64, running: Tenancy?, thisMonth: DateInterval, today: Date) throws -> RentStatus {
         let calendar = MonthRange.calendar
         let received = try PropertyFinance.monthBreakdown(db: db, propertyId: propertyId, interval: thisMonth).group(.rent)?.lines
             .filter { $0.counted.native > 0 }.last
         if let received { return .received(PropertyDates.day(received.transaction.date)) }
-        guard running else { return .none }
+        guard let running else { return .none }
 
         let before = DateInterval(start: calendar.date(byAdding: .month, value: -3, to: thisMonth.start)!, end: thisMonth.start)
         let last = try PropertyFinance.monthBreakdown(db: db, propertyId: propertyId, interval: before).group(.rent)?.lines
             .filter { $0.counted.native > 0 }.last
         let length = calendar.range(of: .day, in: .month, for: thisMonth.start)!.count
         let dueDay = min(last.map { calendar.component(.day, from: $0.transaction.date) } ?? 1, length)
-        let due = calendar.date(byAdding: .day, value: dueDay - 1, to: thisMonth.start)!
+        let due = max(calendar.date(byAdding: .day, value: dueDay - 1, to: thisMonth.start)!, PropertyDates.day(running.startDate))
         let lateAfter = calendar.date(byAdding: .day, value: RentReceiptMatching.Options().windowDays, to: due)!
         return today > lateAfter ? .late(since: due) : .expected(due)
     }

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Magnitudes (income and expenses are both positive).
-public struct FlowTotals: Equatable {
+public struct FlowTotals: Equatable, Sendable {
     public var actual: Int
     public var expected: Int
     public var projected: Int
@@ -14,7 +14,7 @@ public struct FlowTotals: Equatable {
 }
 
 /// The pay month containing today (`PayCalendar.current`).
-public struct CurrentMonthTracking: Equatable {
+public struct CurrentMonthTracking: Equatable, Sendable {
     public let year: Int
     public let month: Int
     /// The pay month's range: start of its first day ... last moment of its close day (UTC).
@@ -45,7 +45,7 @@ public struct CurrentMonthTracking: Equatable {
 /// One month of the year-at-a-glance chart. `*Remaining` is the part of the month's
 /// projection that hasn't happened yet (hatched in the chart); it is 0 for actual months
 /// and equals the whole forecast for forecast months. All values are positive magnitudes.
-public struct MonthlyFlow: Equatable, Identifiable {
+public struct MonthlyFlow: Equatable, Identifiable, Sendable {
     public let year: Int
     public let month: Int
     public let monthClass: MonthClass
@@ -217,16 +217,19 @@ extension DashboardCalculator {
     // MARK: Year at a glance
 
     public static func monthlyFlows(_ input: DashboardInput, year: Int) -> [MonthlyFlow] {
-        (1...12).map { month in
-            let monthClass = input.payCalendar.monthClass(PayMonth(year: year, month: month))
-            let totals = monthTotals(input, year: year, month: month, monthClass: monthClass, includeExpected: false)
-            let expenseRemaining = max(totals.expenses.projected - totals.expenses.actual, 0)
-            return MonthlyFlow(
-                year: year, month: month, monthClass: monthClass,
-                incomeActual: totals.income.actual, incomeRemaining: max(totals.income.projected - totals.income.actual, 0),
-                expenseActual: totals.expenses.actual, expenseRemaining: expenseRemaining, reservedRemaining: min(totals.reservedProjected, expenseRemaining)
-            )
-        }
+        (1...12).map { monthlyFlow(input, month: PayMonth(year: year, month: $0)) }
+    }
+
+    /// One month of `monthlyFlows` (the iPhone's Month screen pages month by month).
+    public static func monthlyFlow(_ input: DashboardInput, month: PayMonth) -> MonthlyFlow {
+        let monthClass = input.payCalendar.monthClass(month)
+        let totals = monthTotals(input, year: month.year, month: month.month, monthClass: monthClass, includeExpected: false)
+        let expenseRemaining = max(totals.expenses.projected - totals.expenses.actual, 0)
+        return MonthlyFlow(
+            year: month.year, month: month.month, monthClass: monthClass,
+            incomeActual: totals.income.actual, incomeRemaining: max(totals.income.projected - totals.income.actual, 0),
+            expenseActual: totals.expenses.actual, expenseRemaining: expenseRemaining, reservedRemaining: min(totals.reservedProjected, expenseRemaining)
+        )
     }
 
     public static func yearTotals(_ flows: [MonthlyFlow]) -> YearTotals {
