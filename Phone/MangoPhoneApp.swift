@@ -8,9 +8,8 @@ enum PhoneMain {
     @MainActor
     static func main() {
         #if SNAPSHOTS
-        // The phone's snapshot harness arrives with its routes; until then a snapshot build does nothing.
-        FileHandle.standardError.write(Data("This is a snapshot build of Mango for iPhone: it only runs the snapshot harness.\n".utf8))
-        exit(2)
+        // Phone/Snapshots/PhoneSnapshotRunner.swift: the demo database, every route, then exit.
+        PhoneSnapshotRunner.main()
         #else
         MangoPhoneApp.main()
         #endif

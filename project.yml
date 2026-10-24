@@ -54,6 +54,10 @@ targets:
         product: MangoSync
       - package: BudgetCore
         product: MangoUI
+      # The demo database for the snapshot harness: linked always (XcodeGen can't vary dependencies by build
+      # setting), imported only under SNAPSHOTS (Phone/Snapshots/PhoneSnapshotRunner.swift); the app never calls it.
+      - package: BudgetCore
+        product: BudgetDemo
     # Includes the same uncommitted Signing.local.xcconfig, then the phone's entitlements (Phone/Mango.entitlements).
     configFiles:
       Debug: Config/SigningPhone.xcconfig

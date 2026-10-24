@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs the shared test suites (schemes BudgetCoreTests and MangoSyncTests) on the iOS simulator,
+# Runs the shared test suites (schemes BudgetCoreTests, MangoSyncTests and MangoUITests) on the iOS simulator,
 # serially and without signing. Exits non-zero on any build error or test failure.
 # IOS_SIM_DEVICE picks the simulator (default iPhone 17); LOG keeps the full xcodebuild log.
 set -uo pipefail
@@ -8,10 +8,11 @@ source scripts/package-workspace.sh
 DEVICE="${IOS_SIM_DEVICE:-iPhone 17}"
 OUT="${LOG:-$(mktemp -t test-core-ios)}"
 [ -n "${LOG:-}" ] || trap 'rm -f "$OUT"' EXIT
-# The shared suites: BudgetCore's, then MangoSync's (the CloudKit transport and key store, against fakes).
+# The shared suites: BudgetCore's, then MangoSync's (the CloudKit transport and key store, against fakes), then
+# MangoUI's (the design system's money, fit and stacking rules and the wrap probe).
 # Each scheme is a shared scheme under .swiftpm/xcode/xcshareddata/xcschemes (force-added; see .gitignore).
 STATUS=0
-for SCHEME in BudgetCoreTests MangoSyncTests; do
+for SCHEME in BudgetCoreTests MangoSyncTests MangoUITests; do
   if xcodebuild test -workspace "$(package_workspace)" -scheme "$SCHEME" \
       -destination "platform=iOS Simulator,name=$DEVICE" -parallel-testing-enabled NO \
       -derivedDataPath "${DERIVED_DATA:-${TMPDIR:-/tmp}/budgetcore-ios-test-dd}" \
