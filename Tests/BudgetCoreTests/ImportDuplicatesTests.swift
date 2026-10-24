@@ -517,7 +517,9 @@ final class ImportDuplicatesTests: XCTestCase {
         let annotated = try annotate([item("invoice-a.pdf", sha: "r1", text: "ATCUD:ABCD1234-77"),
                                       item("invoice-b.pdf", sha: "r2", text: "ATCUD:ABCD1234-77"),
                                       item("invoice-b copy.pdf", sha: "r2")])
-        XCTAssertEqual(annotated[2].duplicate?.of, "Identical file: same as invoice-a.pdf in this import")
+        // Named after the file it is identical to; still the original's copy underneath.
+        XCTAssertEqual(annotated[2].duplicate?.of, "Identical file: same as invoice-b.pdf in this import")
+        XCTAssertEqual(annotated[2].duplicate?.originalItemId, annotated[0].id)
     }
 
     func testReaderMarkedDuplicatesAndChildrenAreLeftAsTheyAre() throws {
@@ -716,8 +718,8 @@ final class ImportDuplicatesTests: XCTestCase {
         ])
         XCTAssertEqual(annotated.map(\.section), [.needsYou, .needsYou])
         XCTAssertEqual(annotated.map(\.needsYouReasons), [
-            ["Possibly a duplicate: mid-march.pdf is also a utility invoice dated 2023-04-16 on this transaction"],
-            ["Possibly a duplicate: march.pdf is also a utility invoice dated 2023-04-02 on this transaction"]])
+            ["Possibly a duplicate: mid-march.pdf is also a utility invoice covering 2023-03-15 to 2023-04-14 on this transaction"],
+            ["Possibly a duplicate: march.pdf is also a utility invoice covering 2023-03-01 to 2023-03-31 on this transaction"]])
         XCTAssertEqual(annotated[0].issues.map(\.id), ["sameKindOnTransaction.\(t)"])
     }
 
@@ -741,6 +743,66 @@ final class ImportDuplicatesTests: XCTestCase {
         }
         XCTAssertEqual(ImportResolutions.transactionId(inIssueId: "checkLink.\(t)"), t)
         XCTAssertEqual(ImportResolutions.transactionId(inIssueId: "sameKindOnTransaction.\(t)"), t)
+    }
+
+    func testLinksChosenByYouNeverAlertOnTheSameDayEither() throws {
+        let t = try transaction(-12000, "DEMO INSURER")
+        let chosen = ProposedLink(entity: .transaction(t), label: "DEMO INSURER −€120.00", confidence: .certain, reasons: ["Chosen by you"])
+        var automatic = chosen
+        automatic.reasons = ["Same amount"]
+        let day = [fact(.docDate, .date(Self.date(2023, 3, 5)))]
+        for links in [[chosen, chosen], [chosen, automatic], [automatic, chosen]] {
+            let annotated = try annotate([item("a.pdf", sha: "cy1", facts: day, links: [links[0]]),
+                                          item("b.pdf", sha: "cy2", facts: day, links: [links[1]])])
+            XCTAssertEqual(annotated.map(\.section), [.ready, .ready], "\(annotated.map(\.needsYouReasons))")
+        }
+        // A library document of the same kind and day on the transaction the user chose: no alert either.
+        let existing = try libraryDocument(sha: "cy0", name: "Insurance March", docDate: Self.date(2023, 3, 5))
+        try db.write { db in _ = try EvidenceLinks.link(db: db, documentId: existing, to: .transaction(t)) }
+        let annotated = try annotate([item("c.pdf", sha: "cy3", facts: day, links: [chosen])])
+        XCTAssertEqual(annotated[0].section, .ready, "\(annotated[0].needsYouReasons)")
+    }
+
+    /// Unrecognised documents (`.other`) are no kind to compare: an invoice and a receipt of one
+    /// payment, both unrecognised, never alert on their debit.
+    func testUnrecognisedDocumentsOfOnePaymentNeverAlertOnTheirTransaction() throws {
+        let t = try transaction(-7995, "DEMO CANALIZACOES")
+        let link = ProposedLink(entity: .transaction(t), label: "DEMO −€79.95", confidence: .certain, reasons: ["test"])
+        for days in [(Self.date(2023, 3, 5), Self.date(2023, 3, 5)), (Self.date(2023, 3, 5), Self.date(2023, 3, 9))] {
+            let annotated = try annotate([item("invoice.pdf", sha: "uo1", kind: .evidence(.other), facts: [fact(.docDate, .date(days.0))], links: [link]),
+                                          item("receipt.pdf", sha: "uo2", kind: .evidence(.other), facts: [fact(.docDate, .date(days.1))], links: [link])])
+            XCTAssertEqual(annotated.map(\.section), [.ready, .ready], "\(annotated.map(\.needsYouReasons))")
+            XCTAssertEqual(annotated.map(\.links.first?.confidence), [.certain, .certain])
+        }
+    }
+
+    func testTwoUndatedAutomaticLinksOfOneKindAskToCheckTheLinkOnce() throws {
+        let t = try transaction(-12000, "DEMO INSURER")
+        let link = ProposedLink(entity: .transaction(t), label: "DEMO INSURER −€120.00", confidence: .certain, reasons: ["test"])
+        let annotated = try annotate([item("a.pdf", sha: "ud1", links: [link]), item("b.pdf", sha: "ud2", links: [link])])
+        XCTAssertEqual(annotated.map(\.needsYouReasons), [
+            ["a.pdf and b.pdf — both insurance receipts, neither dated — were matched to the same transaction"],
+            ["b.pdf and a.pdf — both insurance receipts, neither dated — were matched to the same transaction"]])
+        // One dated, one not: "undated" said once.
+        let mixed = try annotate([item("a.pdf", sha: "ud3", facts: [fact(.docDate, .date(Self.date(2023, 3, 5)))], links: [link]),
+                                  item("b.pdf", sha: "ud4", links: [link])])
+        XCTAssertEqual(mixed[0].needsYouReasons, ["a.pdf and b.pdf — both insurance receipts, 2023-03-05 and undated — were matched to the same transaction"])
+    }
+
+    /// Three of one kind on one debit, two of one month and one of another: each asks one question
+    /// about its link (Check the link), never also "possibly a duplicate" for the same transaction.
+    func testThreeOfOneKindOnOneTransactionAskOneQuestionEach() throws {
+        let t = try transaction(-5000, "DEMO WATER")
+        let link = ProposedLink(entity: .transaction(t), label: "DEMO WATER −€50.00", confidence: .certain, reasons: ["test"])
+        let annotated = try annotate([
+            periodItem("jan.pdf", sha: "th1", day: Self.date(2023, 2, 2), from: Self.date(2023, 1, 1), to: Self.date(2023, 1, 31), links: [link]),
+            periodItem("jan copy.pdf", sha: "th2", day: Self.date(2023, 2, 2), from: Self.date(2023, 1, 1), to: Self.date(2023, 1, 31), links: [link]),
+            periodItem("feb.pdf", sha: "th3", day: Self.date(2023, 3, 2), from: Self.date(2023, 2, 1), to: Self.date(2023, 2, 28), links: [link])
+        ])
+        for checked in annotated {
+            XCTAssertEqual(checked.issues.map(\.id), ["checkLink.\(t)"], checked.file.fileName)
+            XCTAssertEqual(checked.links.map(\.confidence), [.needsReview], checked.file.fileName)
+        }
     }
 
     func testLinksChosenByYouNeverAlert() throws {

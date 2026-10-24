@@ -493,6 +493,9 @@ public enum ImportDuplicates {
         var label: String
         var documentId: Int64?
         var itemId: UUID?
+        /// The file of this import whose bytes a later copy has, when the library doesn't hold them
+        /// (the item may itself be a document duplicate of `label`).
+        var fileLabel: String?
 
         init(label: String, documentId: Int64?, itemId: UUID? = nil) {
             self.label = label
@@ -502,7 +505,8 @@ public enum ImportDuplicates {
 
         /// "Identical file: already in the library as <name>" / "Identical file: same as <file> in this import".
         func identicalFile() -> ImportDuplicate {
-            let sentence = documentId != nil ? "Identical file: already in the library as \(label)" : "Identical file: same as \(label) in this import"
+            let sentence = fileLabel.map { "Identical file: same as \($0) in this import" }
+                ?? (documentId != nil ? "Identical file: already in the library as \(label)" : "Identical file: same as \(label) in this import")
             return ImportDuplicate(level: .file, of: sentence, existingDocumentId: documentId, originalItemId: documentId == nil ? itemId : nil)
         }
 
@@ -615,7 +619,11 @@ public enum ImportDuplicates {
                     attaching[invoiceId] = original
                 }
             }
-            if batchFiles[item.file.sha256] == nil { batchFiles[item.file.sha256] = original }
+            if batchFiles[item.file.sha256] == nil {
+                var identical = original
+                if library.byHash[item.file.sha256] == nil { identical.fileLabel = item.file.fileName }
+                batchFiles[item.file.sha256] = identical
+            }
             batch.add(.init(documentId: original.documentId, label: original.label, identity: identity,
                             itemId: original.documentId == nil ? original.itemId : nil))
         }
@@ -766,7 +774,9 @@ public enum ImportDuplicates {
     /// duplicate, left out or row).
     private static func claimingKind(_ item: ImportItem) -> DocumentKind? {
         guard item.parentId == nil, item.duplicate == nil, !item.isLeftOut,
-              let kind = DocumentIdentity.documentKind(of: item.recognition.kind), kind != .bankStatement else { return nil }
+              let kind = DocumentIdentity.documentKind(of: item.recognition.kind), kind != .bankStatement,
+              // Unrecognised documents are no kind to compare: never competing on a transaction.
+              kind != .other else { return nil }
         return kind
     }
 
@@ -817,13 +827,19 @@ public enum ImportDuplicates {
             return day == other.day
         }
 
-        private var periodText: String? {
+        var periodText: String? {
             period.map { $0.lowerBound == $0.upperBound ? DocumentIdentity.isoDay(fromKey: $0.lowerBound)
                 : "\(DocumentIdentity.isoDay(fromKey: $0.lowerBound)) to \(DocumentIdentity.isoDay(fromKey: $0.upperBound))" }
         }
 
-        /// What "dated …" says: its day, else its period.
-        var dated: String { day.map(DocumentIdentity.isoDay(fromKey:)) ?? periodText ?? "undated" }
+        /// What a same-period match says of `self`, the other document: "covering <period>" when
+        /// the periods were compared, else "dated <day>".
+        func matchWording(against own: ClaimPeriod) -> String {
+            if own.period != nil, let periodText { return "covering \(periodText)" }
+            return "dated \(day.map(DocumentIdentity.isoDay(fromKey:)) ?? periodText ?? "")"
+        }
+        var isUndated: Bool { day == nil && period == nil }
+
         /// Its period, else its day ("2023-01-01 to 2023-01-31", "2023-03-05", "undated").
         var described: String { periodText ?? day.map(DocumentIdentity.isoDay(fromKey:)) ?? "undated" }
     }
@@ -844,13 +860,48 @@ public enum ImportDuplicates {
         func role(_ i: Int) -> String? {
             claimingKind(items[i]).map { claimRole(token: $0.rawValue, text: items[i].file.text) }
         }
-        // A certain link to a transaction that already has a document of the same kind (role)
-        // and period: in the library, or another item of this import linked to it (certain or not).
+        // First: items of one kind (role) and different periods certain of the same transaction:
+        // not duplicates, but one of the automatic links is likely wrong. Links the user chose
+        // never ask. A link asked about is no longer certain: the same-kind check below passes it
+        // by, so an item asks one question per transaction.
+        var claimants: [Claim: [Claimant]] = [:]
+        var order: [Claim] = []
+        for i in items.indices {
+            guard let ownRole = role(i) else { continue }
+            let period = ClaimPeriod(facts: items[i].facts)
+            for (l, link) in items[i].links.enumerated() where link.entity.type == .transaction && link.confidence == .certain {
+                let claim = Claim(transactionId: link.entity.id, role: ownRole)
+                if claimants[claim] == nil { order.append(claim) }
+                claimants[claim, default: []].append(Claimant(item: i, link: l, role: ownRole, period: period))
+            }
+        }
+        func chosen(_ claimant: Claimant) -> Bool { isChosen(items[claimant.item].links[claimant.link]) }
+        for claim in order {
+            guard let claiming = claimants[claim], claiming.count >= 2 else { continue }
+            let asking = claiming.compactMap { own -> (Claimant, Claimant)? in
+                guard !chosen(own),
+                      let other = claiming.first(where: { $0.item != own.item && !chosen($0) && !$0.period.isSame(as: own.period) }) else { return nil }
+                return (own, other)
+            }
+            for (own, other) in asking {
+                let link = items[own.item].links[own.link]
+                let periods = own.period.isUndated && other.period.isUndated ? "neither dated" : "\(own.period.described) and \(other.period.described)"
+                let reason = "\(items[own.item].file.fileName) and \(items[other.item].file.fileName) — both \(plural(lowered(kindName(claim.role)))), "
+                    + "\(periods) — were matched to the same transaction"
+                items[own.item].links[own.link].confidence = .needsReview
+                items[own.item].issues.append(ImportIssue(id: "\(checkLinkPrefix)\(claim.transactionId)",
+                                                          kind: .chooseLink([LinkCandidate(entity: link.entity, label: link.label, reasons: link.reasons)]),
+                                                          reason: reason, offers: [.fileWithoutLink]))
+            }
+        }
+        // Then: a certain link (not chosen by the user) to a transaction that already has a
+        // document of the same kind (role) and period: in the library, or another item of this
+        // import linked to it (certain or not, not chosen by the user).
         for i in items.indices {
             // A corrected version filed only is linked where its original is, on purpose.
             guard let kind = claimingKind(items[i]), let ownRole = role(i), !ImportResolutions.isFiledAsCorrectedVersion(items[i]) else { continue }
             let period = ClaimPeriod(facts: items[i].facts)
-            for link in items[i].links where link.entity.type == .transaction && link.confidence == .certain {
+            for link in items[i].links where link.entity.type == .transaction && link.confidence == .certain && !isChosen(link) {
                 // Never the item's own file, already in the library (read again to be recorded), nor a
                 // document the link replaces there (a previous version, a replaced PDF). Of the same
                 // part (`claimRole`), whatever kind each was filed as: a receipt beside the bank's
@@ -864,11 +915,11 @@ public enum ImportDuplicates {
                 if existing == nil {
                     existing = items.indices.first { j in
                         guard j != i, role(j) == ownRole else { return false }
-                        return items[j].links.contains { $0.entity == link.entity } && ClaimPeriod(facts: items[j].facts).isSame(as: period)
+                        return items[j].links.contains { $0.entity == link.entity && !isChosen($0) } && ClaimPeriod(facts: items[j].facts).isSame(as: period)
                     }.map { (name: items[$0].file.fileName, period: ClaimPeriod(facts: items[$0].facts)) }
                 }
                 guard let existing else { continue }
-                let reason = "Possibly a duplicate: \(existing.name) is also \(article(kindName(ownRole))) dated \(existing.period.dated) on this transaction"
+                let reason = "Possibly a duplicate: \(existing.name) is also \(article(kindName(ownRole))) \(existing.period.matchWording(against: period)) on this transaction"
                 items[i].issues.append(ImportIssue(id: "\(sameKindOnTransactionPrefix)\(link.entity.id)", kind: .readerProblem(reason), reason: reason,
                                                    offers: [.acknowledge, .fileWithoutLink]))
             }
@@ -888,40 +939,9 @@ public enum ImportDuplicates {
                                                    offers: [.acknowledge, .fileWithoutLink]))
             }
         }
-        // Items of one kind (role) and different periods certain of the same transaction: not
-        // duplicates, but one of the automatic links is likely wrong. Links the user chose never ask.
-        var claimants: [Claim: [Claimant]] = [:]
-        var order: [Claim] = []
-        for i in items.indices {
-            guard let ownRole = role(i) else { continue }
-            let period = ClaimPeriod(facts: items[i].facts)
-            for (l, link) in items[i].links.enumerated() where link.entity.type == .transaction && link.confidence == .certain {
-                let claim = Claim(transactionId: link.entity.id, role: ownRole)
-                if claimants[claim] == nil { order.append(claim) }
-                claimants[claim, default: []].append(Claimant(item: i, link: l, role: ownRole, period: period))
-            }
-        }
-        func chosen(_ claimant: Claimant) -> Bool {
-            items[claimant.item].links[claimant.link].reasons.contains(ImportResolutions.chosenReason)
-        }
-        for claim in order {
-            guard let claiming = claimants[claim], claiming.count >= 2 else { continue }
-            let asking = claiming.compactMap { own -> (Claimant, Claimant)? in
-                guard !chosen(own),
-                      let other = claiming.first(where: { $0.item != own.item && !chosen($0) && !$0.period.isSame(as: own.period) }) else { return nil }
-                return (own, other)
-            }
-            for (own, other) in asking {
-                let link = items[own.item].links[own.link]
-                let reason = "\(items[own.item].file.fileName) and \(items[other.item].file.fileName) — both \(plural(lowered(kindName(claim.role)))), "
-                    + "\(own.period.described) and \(other.period.described) — were matched to the same transaction"
-                items[own.item].links[own.link].confidence = .needsReview
-                items[own.item].issues.append(ImportIssue(id: "\(checkLinkPrefix)\(claim.transactionId)",
-                                                          kind: .chooseLink([LinkCandidate(entity: link.entity, label: link.label, reasons: link.reasons)]),
-                                                          reason: reason, offers: [.fileWithoutLink]))
-            }
-        }
     }
+
+    private static func isChosen(_ link: ProposedLink) -> Bool { link.reasons.contains(ImportResolutions.chosenReason) }
 
     /// "an insurance receipt", "a P60", "an IMI notice": lower case unless an acronym leads.
     static func article(_ name: String) -> String {
