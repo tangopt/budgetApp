@@ -803,6 +803,12 @@ public actor SyncEngineCore {
         try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [zoneKey(zone)]) != nil
     }
 
+    /// Whether this database has pulled the household zone at least once (it holds a change token). The phone's
+    /// first download is the time before it does.
+    public static func hasChangeToken(db: Database) throws -> Bool {
+        try token(zone: SyncRecordStore.householdZone, db: db) != nil
+    }
+
     static func token(zone: String, db: Database) throws -> Data? {
         try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [tokenKey(zone)])
     }

@@ -121,7 +121,8 @@ public final class PropertyViewModel: ObservableObject {
     /// `.task(id: reloadKey)`'s body: loads the first time, then again only when a new sync has landed. A pushed
     /// property reads its glance from the page, so it refreshes in place.
     public func reload(for key: Date?) async {
-        if state != .idle {
+        // A first load that failed reads again on every sync's start and end (`SyncReloadTrigger`), data or not.
+        if state != .idle, !state.isFailed {
             guard let key, key != loadedKey else { return }
         }
         loadedKey = key
@@ -289,12 +290,12 @@ public enum PropertyCopy {
         PhoneDateFormat.day(obligation.date) + (obligation.isEstimate ? " · est." : "")
     }
 
-    /// "Mortgage instalment, 1 Nov 2026, estimated, spent €700.00".
+    /// "Mortgage instalment, 1 Nov 2026, estimated, due €700.00".
     public static func comingUpSpoken(_ obligation: PropertyObligation, currency: Currency) -> String {
         var parts = [obligation.title, PhoneDateFormat.day(obligation.date)]
         if obligation.isEstimate { parts.append("estimated") }
         parts.append(obligation.expectedMinorUnits.map {
-            MoneyPresentation(minorUnits: $0, currency: obligation.currency ?? currency, role: .expense).spoken
+            MoneyPresentation(minorUnits: $0, currency: obligation.currency ?? currency, role: .due).spoken
         } ?? "amount not known")
         return parts.joined(separator: ", ")
     }
@@ -304,4 +305,12 @@ public enum PropertyCopy {
     public static let amountNotKnown = "Amount not known"
     public static let emptyTitle = "No property set up"
     public static let emptyMessage = "A property set up on the Mac shows here once it syncs."
+}
+
+extension PropertyViewModel.State {
+    /// The first load failed (nothing shown yet).
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
 }

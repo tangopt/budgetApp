@@ -65,17 +65,20 @@ public final class PhoneTabsModel: ObservableObject {
 }
 
 /// The unlocked app: Home · Month · Accounts · Property, and Search as the iOS 26 search tab. Shown inside the lock
-/// cover; `model` lives above it. Every tab reloads itself when `syncStatus`'s last sync moves.
+/// cover; `model` lives above it. Every tab reloads itself when `syncStatus`'s last sync moves, and shows the
+/// offline banner at its top while offline (with the data's age, from `lastSync`).
 public struct PhoneTabs: View {
     @ObservedObject var model: PhoneTabsModel
     let syncStatus: SyncStatus
+    let lastSync: Date?
     let onRefresh: () async -> Void
     let onSettings: () -> Void
 
-    public init(model: PhoneTabsModel, syncStatus: SyncStatus, onRefresh: @escaping () async -> Void,
+    public init(model: PhoneTabsModel, syncStatus: SyncStatus, lastSync: Date? = nil, onRefresh: @escaping () async -> Void,
                 onSettings: @escaping () -> Void) {
         self.model = model
         self.syncStatus = syncStatus
+        self.lastSync = lastSync
         self.onRefresh = onRefresh
         self.onSettings = onSettings
     }
@@ -84,23 +87,28 @@ public struct PhoneTabs: View {
         TabView(selection: $model.selection) {
             Tab("Home", systemImage: "house", value: PhoneTab.home) {
                 HomeView(model: model.home, syncStatus: syncStatus, onRefresh: onRefresh, onSettings: onSettings)
+                    .offlineBanner(syncStatus, lastSync: lastSync)
             }
             Tab("Month", systemImage: "calendar", value: PhoneTab.month) {
                 MonthView(model: model.month, syncStatus: syncStatus, onRefresh: onRefresh)
+                    .offlineBanner(syncStatus, lastSync: lastSync)
             }
             Tab("Accounts", systemImage: "building.columns", value: PhoneTab.accounts) {
                 AccountsView(model: model.accounts, syncStatus: syncStatus, onRefresh: onRefresh)
+                    .offlineBanner(syncStatus, lastSync: lastSync)
             }
             if model.hasProperty {
                 Tab("Property", systemImage: "building.2", value: PhoneTab.property) {
                     PropertyView(model: model.property, syncStatus: syncStatus, onRefresh: onRefresh)
+                        .offlineBanner(syncStatus, lastSync: lastSync)
                 }
             }
             Tab(value: PhoneTab.search, role: .search) {
                 SearchView(model: model.search, syncStatus: syncStatus, onRefresh: onRefresh)
+                    .offlineBanner(syncStatus, lastSync: lastSync)
             }
         }
-        .task(id: PhoneTabsModel.reloadKey(syncStatus)) {
+        .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload(for: PhoneTabsModel.reloadKey(syncStatus))
         }
     }

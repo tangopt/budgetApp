@@ -33,12 +33,13 @@ public struct PropertyView: View {
                 await onRefresh()
                 await model.load()
             }
+            .offlineBannerSlot()
             .navigationTitle(model.state.page?.single?.property.name ?? "Property")
             .navigationDestination(for: PropertyDestination.self) { destination in
                 PropertyDetailScreen(model: model, destination: destination, onRefresh: onRefresh)
             }
         }
-        .task(id: PropertyViewModel.reloadKey(syncStatus)) {
+        .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload(for: PropertyViewModel.reloadKey(syncStatus))
         }
     }

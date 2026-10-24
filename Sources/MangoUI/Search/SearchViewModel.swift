@@ -297,7 +297,8 @@ public final class SearchViewModel: ObservableObject {
 
     /// Loads the first time, then again only when a new sync has landed.
     public func reload(for key: Date?) async {
-        if state != .idle {
+        // A first load that failed reads again on every sync's start and end (`SyncReloadTrigger`), data or not.
+        if state != .idle, !state.isFailed {
             guard let key, key != loadedKey else { return }
         }
         loadedKey = key
@@ -330,5 +331,13 @@ public final class SearchViewModel: ObservableObject {
         let line = "\(shown.days.count) days, \(shown.shownCount) of \(rows.count) matches: "
             + (matches ? "each day's total equal to TransactionSearch.totals" : "DIFFERENT " + (different.isEmpty ? "(no days)" : different.joined(separator: "; ")))
         return (matches, line)
+    }
+}
+
+extension SearchViewModel.State {
+    /// The first load failed (nothing shown yet).
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
     }
 }

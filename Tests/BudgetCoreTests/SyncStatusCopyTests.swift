@@ -75,4 +75,45 @@ final class SyncStatusCopyTests: XCTestCase {
         XCTAssertTrue(SyncStatusCopy.isProblem(.unavailable(.quotaExceeded)))
         XCTAssertTrue(SyncStatusCopy.isProblem(.failed(reason: "x")))
     }
+
+    // MARK: Task 12: the phone's sync states
+
+    private var utc: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }
+
+    /// "Offline · showing data from <time>." — the time alone today, the day and time before; no "N changes" on a
+    /// read-only phone.
+    func testOfflineBannerSaysWhenTheDataIsFrom() {
+        // 1_800_000_000 is 15 Jan 2027, 08:00 UTC.
+        XCTAssertEqual(SyncStatusCopy.offlineBanner(lastSync: now.addingTimeInterval(-3_600), now: now, calendar: utc),
+                       "Offline · showing data from 07:00.")
+        XCTAssertEqual(SyncStatusCopy.offlineBanner(lastSync: now.addingTimeInterval(-3 * 86_400), now: now, calendar: utc),
+                       "Offline · showing data from 12 Jan, 08:00.")
+        XCTAssertEqual(SyncStatusCopy.offlineBanner(lastSync: now.addingTimeInterval(-400 * 86_400), now: now, calendar: utc),
+                       "Offline · showing data from 11 Dec 2025, 08:00.")
+        XCTAssertEqual(SyncStatusCopy.offlineBanner(lastSync: nil, now: now, calendar: utc),
+                       "Offline · showing what's on this iPhone.")
+        for text in [SyncStatusCopy.offlineBanner(lastSync: now, now: now, calendar: utc),
+                     SyncStatusCopy.offlineBanner(lastSync: nil, now: now, calendar: utc)] {
+            XCTAssertFalse(text.contains("change"), text)
+        }
+    }
+
+    func testFirstDownloadCountsTheRecordsSoFar() {
+        XCTAssertEqual(SyncStatusCopy.firstDownload(received: 0), "Downloading the household's records…")
+        XCTAssertEqual(SyncStatusCopy.firstDownload(received: 1), "Downloading the household's records… 1 so far")
+        XCTAssertEqual(SyncStatusCopy.firstDownload(received: 12_345), "Downloading the household's records… 12,345 so far")
+    }
+
+    /// Settings' security line: sealed, or waiting (never an error), or nothing to say while sync is off.
+    func testHouseholdKeyLine() {
+        XCTAssertEqual(SyncStatusCopy.householdKey(held: true), "Records sealed with the household key")
+        XCTAssertEqual(SyncStatusCopy.householdKey(held: false), "Waiting for the household key from iCloud Keychain")
+        XCTAssertEqual(SyncStatusCopy.householdKey(held: nil), "Sync is off")
+        XCTAssertEqual(SyncStatusCopy.householdKey(held: false),
+                       SyncStatusCopy.text(.waitingForKey(since: now), now: now).text, "the same words as the status")
+    }
 }

@@ -16,7 +16,7 @@ struct UpcomingCard: View {
             ForEach(next) { item in
                 FigureRow(label: item.title, secondary: HomeCopy.upcomingSource(item)) {
                     if let amount = item.amountMinorUnits {
-                        MoneyText(minorUnits: amount, currency: item.currency, role: .expense)
+                        MoneyText(minorUnits: amount, currency: item.currency, role: .due)
                     } else {
                         Text("Amount not known")
                             .font(.subheadline)

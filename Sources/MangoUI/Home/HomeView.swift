@@ -38,6 +38,7 @@ public struct HomeView: View {
                 await onRefresh()
                 await model.load()
             }
+            .offlineBannerSlot()
             .navigationTitle("Home")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -51,8 +52,8 @@ public struct HomeView: View {
             }
         }
         // Loads on first appearance, then again whenever a sync brings changes in (its last-sync time moves).
-        .task(id: HomeViewModel.reloadKey(syncStatus)) {
-            await model.reload(for: HomeViewModel.reloadKey(syncStatus))
+        .task(id: SyncReloadTrigger(syncStatus)) {
+            await model.reload(for: SyncReloadTrigger(syncStatus).key)
         }
     }
 
@@ -66,7 +67,7 @@ public struct HomeView: View {
             VStack(spacing: 16) {
                 EmptyState(symbol: "tray", title: "Nothing here yet",
                            message: "The household's budget shows here once it has synced from the Mac.")
-                SyncStatusText(status: syncStatus, now: now())
+                SyncStatusLine(status: syncStatus, now: now())
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 60)
@@ -84,26 +85,5 @@ public struct HomeView: View {
             AttentionCard(lines: AttentionLine.lines(summary.attention, syncStatus: syncStatus, now: now()))
             UpcomingCard(items: summary.upcoming)
         }
-    }
-}
-
-/// The sync status as one line (`SyncStatusCopy`): secondary, or amber's icon for what limits the data. Never red.
-struct SyncStatusText: View {
-    let status: SyncStatus
-    let now: Date
-    @Environment(\.phoneTheme) private var theme
-
-    var body: some View {
-        let copy = SyncStatusCopy.text(status, now: now)
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: copy.tone == .amber ? "exclamationmark.triangle.fill" : "arrow.triangle.2.circlepath")
-                .foregroundStyle(copy.tone == .amber ? theme.pending : Color.secondary)
-                .accessibilityHidden(true)
-            Text(copy.text.figuresUnbroken)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .font(.footnote)
-        .accessibilityElement(children: .combine)
     }
 }

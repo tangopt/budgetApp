@@ -18,7 +18,7 @@ struct ComingUpList: View {
                 if index > 0 { Divider() }
                 FigureRow(label: obligation.title, secondary: PropertyCopy.comingUpCaption(obligation)) {
                     if let amount = obligation.expectedMinorUnits {
-                        MoneyText(minorUnits: amount, currency: obligation.currency ?? currency, role: .expense)
+                        MoneyText(minorUnits: amount, currency: obligation.currency ?? currency, role: .due)
                     } else {
                         Text(PropertyCopy.amountNotKnown)
                             .font(.subheadline)

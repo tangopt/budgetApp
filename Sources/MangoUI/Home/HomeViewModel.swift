@@ -97,7 +97,8 @@ public final class HomeViewModel: ObservableObject {
     /// `.task(id: reloadKey)`'s body: loads the first time, then again only when the key moves to a new sync. A nil
     /// key (a sync running, offline) keeps what is shown.
     public func reload(for key: Date?) async {
-        if state != .idle {
+        // A first load that failed reads again on every sync's start and end (`SyncReloadTrigger`), data or not.
+        if state != .idle, !state.isFailed {
             guard let key, key != loadedKey else { return }
         }
         loadedKey = key
@@ -123,5 +124,13 @@ public final class HomeViewModel: ObservableObject {
         let line = "net worth on \(PhoneDateFormat.day(today)): Home \(homeText), AccountsOverview.netWorthGBP "
             + Money.format(overview.netWorthGBP, currency: .gbp) + (matches ? " (equal)" : " (DIFFERENT)")
         return (matches, line)
+    }
+}
+
+extension HomeViewModel.State {
+    /// The first load failed (nothing shown yet).
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
     }
 }

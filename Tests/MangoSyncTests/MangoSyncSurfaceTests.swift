@@ -12,6 +12,12 @@ final class MangoSyncSurfaceTests: XCTestCase {
         XCTAssertNotEqual(CloudKitTransport.demoKeyScope, CloudKitTransport.containerIdentifier)
     }
 
+    /// `--sync-demo` (Mac and iPhone) keeps its keys under the demo scope; only a real-data sync uses the plain one.
+    func testKeyScopeForTheDemoIsNeverThePlainOne() {
+        XCTAssertEqual(CloudKitTransport.keyScope(demo: true), CloudKitTransport.demoKeyScope)
+        XCTAssertEqual(CloudKitTransport.keyScope(demo: false), CloudKitTransport.containerIdentifier)
+    }
+
     func testKeychainServiceIsUnchanged() {
         XCTAssertEqual(KeychainSyncKeyStore.service, "ubberninja.mango.sync")
     }

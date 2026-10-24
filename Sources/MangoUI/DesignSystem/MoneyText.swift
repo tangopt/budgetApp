@@ -13,8 +13,10 @@ import BudgetCore
 /// - `neutral`: neither gain nor loss (a price, a deposit, an amount on a document, the parts of an all-cost
 ///   breakdown), as given, never coloured.
 /// - `balance`: what an account holds: neutral, or in the expense colour when it is owed (negative).
+/// - `due`: a cost still to come (Upcoming, the next instalment, Coming up), given as a positive magnitude. Drawn as
+///   `expense` is, read as "due £24.99" (never "spent": it hasn't been); a credit to come reads "due back".
 public enum MoneyRole: Sendable, CaseIterable {
-    case income, expense, transfer, neutral, balance
+    case income, expense, transfer, neutral, balance, due
 }
 
 /// The colour family an amount is drawn in (`PhoneTheme.color(_:)`).
@@ -32,7 +34,7 @@ public struct MoneyPresentation: Equatable, Sendable {
     public let spoken: String
 
     public init(minorUnits: Int, currency: Currency, role: MoneyRole) {
-        let shown = role == .expense ? -minorUnits : minorUnits
+        let shown = role == .expense || role == .due ? -minorUnits : minorUnits
         text = Self.format(shown, currency: currency)
         let magnitude = Self.format(abs(shown), currency: currency)
         let bySign: MoneyTone = shown > 0 ? .income : (shown < 0 ? .expense : .neutral)
@@ -42,6 +44,13 @@ public struct MoneyPresentation: Equatable, Sendable {
             spoken = switch bySign {
             case .income: "received \(magnitude)"
             case .expense: "spent \(magnitude)"
+            default: magnitude
+            }
+        case .due:
+            tone = bySign
+            spoken = switch bySign {
+            case .income: "due back \(magnitude)"
+            case .expense: "due \(magnitude)"
             default: magnitude
             }
         case .transfer:

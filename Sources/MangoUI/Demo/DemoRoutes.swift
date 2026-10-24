@@ -74,5 +74,5 @@ public enum DemoRoutes {
         // A long figure below the first screen: the full-height render must measure it.
         DemoRoute(name: "gallery-fold", figuresBelowFold: 1) { _ in AnyView(DesignSystemGalleryFold()) },
     ] + HomeRoutes.all + MonthRoutes.all + AccountsRoutes.all + PropertyRoutes.all
-        + SearchRoutes.all
+        + SearchRoutes.all + SyncRoutes.all
 }

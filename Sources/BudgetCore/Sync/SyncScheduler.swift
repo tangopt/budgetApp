@@ -81,7 +81,11 @@ public actor SyncScheduler {
     }
 
     private var started = false
-    private var lastSync: Date?
+    /// When this device last synced (pulled, or pushed what was pending), as the database first said and then as
+    /// each sync settles; nil: never. The phone's offline banner shows the data's age from it.
+    public private(set) var lastSync: Date?
+    /// The records every pull received while this scheduler lives (the phone's first-download count).
+    public private(set) var receivedRecords = 0
     private var lastSyncLoaded = false
     /// Consecutive failures (the backoff's exponent).
     private var failures = 0
@@ -263,12 +267,12 @@ public actor SyncScheduler {
                 status = .syncing(.pushing)
             }
             report.push = try await engine.pushPending()
-            settle(report)
+            settle(report, pulled: pulled)
             return report
         } catch {
             if error is CancellationError || Task.isCancelled {
                 // A pull that finished is kept: its time, what it held, what waits for the key.
-                if pulled { settle(report) }
+                if pulled { settle(report, pulled: true) }
                 rearmRetry(afterCancel: true)
                 status = restingStatus()
                 throw CancellationError()
@@ -280,14 +284,20 @@ public actor SyncScheduler {
 
     // MARK: Outcomes
 
-    private func settle(_ report: SyncReport) {
+    /// `pulled`: the run pulled (a full sync, or one cancelled after its pull).
+    private func settle(_ report: SyncReport, pulled: Bool) {
         let now = clock()
-        lastSync = now
-        failures = 0
-        problem = nil
-        problemSince = nil
-        retryAt = nil
-        serverRetryAt = nil
+        // A push that sent nothing because it waits for the key isn't a sync (Task 1 review N2).
+        if pulled || report.push.keyWait == nil { lastSync = now }
+        receivedRecords += report.pull.received
+        // The key marker unreachable (offline) continues the offline spell: its backoff and "since" carry on (N1).
+        if report.push.keyWaitCause == nil {
+            failures = 0
+            problem = nil
+            problemSince = nil
+            retryAt = nil
+            serverRetryAt = nil
+        }
         unavailable = nil
         do {
             let (waitingRows, heldRows) = try db.read { db in
@@ -420,7 +430,10 @@ public actor SyncScheduler {
         }
     }
 
+    /// Arms the retry; never while stopped (a sync cancelled by `stop()` settles after it), so `start()` arms it
+    /// again for what is left (Task 1 review N3).
     private func scheduleRetry(after delay: TimeInterval) {
+        guard started else { return }
         retryTask?.cancel()
         retryGeneration += 1
         let generation = retryGeneration
@@ -438,8 +451,9 @@ public actor SyncScheduler {
     }
 
     private func retryFired(_ generation: Int) async {
-        guard generation == retryGeneration, started else { return }
+        guard generation == retryGeneration else { return }
         retryTask = nil
+        guard started else { return }
         _ = try? await enqueue(.full).value
     }
 

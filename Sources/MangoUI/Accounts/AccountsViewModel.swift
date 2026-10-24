@@ -169,7 +169,8 @@ public final class AccountsViewModel: ObservableObject {
     /// `.task(id: reloadKey)`'s body: loads the first time, then again only when a new sync has landed. Details
     /// already made (one may be on screen) read again in place, with their row's new figures.
     public func reload(for key: Date?) async {
-        if state != .idle {
+        // A first load that failed reads again on every sync's start and end (`SyncReloadTrigger`), data or not.
+        if state != .idle, !state.isFailed {
             guard let key, key != loadedKey else { return }
         }
         loadedKey = key
@@ -255,4 +256,12 @@ public enum AccountsCopy {
     public static let notInNetWorth = "Not in net worth"
     public static let emptyTitle = "No accounts yet"
     public static let emptyMessage = "The household's accounts show here once they sync from the Mac."
+}
+
+extension AccountsViewModel.State {
+    /// The first load failed (nothing shown yet).
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
 }

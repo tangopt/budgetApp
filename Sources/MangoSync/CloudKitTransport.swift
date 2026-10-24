@@ -32,6 +32,12 @@ public final class CloudKitTransport: SyncTransport {
     public static let containerIdentifier = "iCloud.ubberninja.mango"
     /// The key-store scope for `--sync-demo` (Mac and iPhone): demo keys never share the real data's scope.
     public static let demoKeyScope = CloudKitTransport.containerIdentifier + "/demo"
+
+    /// The key-store scope (`KeychainSyncKeyStore(container:)`) for a sync: the demo's own under `--sync-demo`,
+    /// else the container's.
+    public static func keyScope(demo: Bool) -> String {
+        demo ? demoKeyScope : containerIdentifier
+    }
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
     private let database: CKDatabase

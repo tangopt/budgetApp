@@ -135,7 +135,8 @@ public final class MonthViewModel: ObservableObject {
 
     /// `.task(id: reloadKey)`'s body: loads the first time, then again only when a new sync has landed.
     public func reload(for key: Date?) async {
-        if state != .idle {
+        // A first load that failed reads again on every sync's start and end (`SyncReloadTrigger`), data or not.
+        if state != .idle, !state.isFailed {
             guard let key, key != loadedKey else { return }
         }
         loadedKey = key
@@ -174,5 +175,13 @@ public final class MonthViewModel: ObservableObject {
         let line = "\(MonthCopy.title(month)): " + shownText.joined(separator: ", ")
             + (matches ? " (equal to PayMonthReview.make)" : " (DIFFERENT)")
         return (matches, line)
+    }
+}
+
+extension MonthViewModel.State {
+    /// The first load failed (nothing shown yet).
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
     }
 }

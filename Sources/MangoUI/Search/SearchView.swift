@@ -36,13 +36,14 @@ public struct SearchView: View {
                 await onRefresh()
                 await model.load()
             }
+            .offlineBannerSlot()
             .navigationTitle("Search")
             .modifier(SearchField(model: model))
         }
         .sheet(item: $model.detail) { row in
             TransactionDetailSheet(row: row)
         }
-        .task(id: SearchViewModel.reloadKey(syncStatus)) {
+        .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload(for: SearchViewModel.reloadKey(syncStatus))
         }
     }

@@ -66,6 +66,9 @@ targets:
       path: Phone/Info.plist
       properties:
         NSFaceIDUsageDescription: Mango unlocks with Face ID so only you see the household's figures.
+        # Settings ▸ About reads them.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

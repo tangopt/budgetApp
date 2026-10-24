@@ -35,12 +35,13 @@ public struct MonthView: View {
                 await onRefresh()
                 await model.load()
             }
+            .offlineBannerSlot()
             .navigationTitle("Month")
             .navigationDestination(for: MonthRowDestination.self) { destination in
                 MonthTransactionsView(model: model.transactionsModel(for: destination))
             }
         }
-        .task(id: MonthViewModel.reloadKey(syncStatus)) {
+        .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload(for: MonthViewModel.reloadKey(syncStatus))
         }
     }

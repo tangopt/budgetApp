@@ -71,6 +71,7 @@ actor ScriptedTransport: SyncTransport {
     /// Changes calls (or saves) still let through before the next one blocks; nil: none blocks.
     private var changesBeforeBlock: Int?
     private var savesBeforeBlock: Int?
+    private var fetchesBeforeBlock: Int?
     private var blocked: CheckedContinuation<Void, Error>?
     private(set) var changesCalls = 0
     private(set) var saveCalls = 0
@@ -84,9 +85,11 @@ actor ScriptedTransport: SyncTransport {
     func block() { changesBeforeBlock = 0 }
     func blockChanges(after count: Int) { changesBeforeBlock = count }
     func blockSaves(after count: Int) { savesBeforeBlock = count }
+    func blockFetches(after count: Int) { fetchesBeforeBlock = count }
     func release() {
         changesBeforeBlock = nil
         savesBeforeBlock = nil
+        fetchesBeforeBlock = nil
         blocked?.resume()
         blocked = nil
     }
@@ -135,6 +138,9 @@ actor ScriptedTransport: SyncTransport {
     func delete(_ recordNames: [String], zone: String) async throws { try await cloud.delete(recordNames, zone: zone) }
     func fetch(_ recordName: String, zone: String) async throws -> SyncServerRecord? {
         if !nextFetchFailures.isEmpty { throw nextFetchFailures.removeFirst() }
+        if let left = fetchesBeforeBlock {
+            if left == 0 { try await waitForRelease() } else { fetchesBeforeBlock = left - 1 }
+        }
         return try await cloud.fetch(recordName, zone: zone)
     }
     func serverTime() async throws -> Date? { try await cloud.serverTime() }
@@ -204,6 +210,10 @@ final class SyncSchedulerTests: XCTestCase {
 
     private func pending(_ queue: DatabaseQueue) throws -> [PendingChange] {
         try queue.read { db in try SyncChangeTracker.pending(db: db) }
+    }
+
+    private func hasToken(_ queue: DatabaseQueue) throws -> Bool {
+        try queue.read { db in try SyncEngineCore.hasChangeToken(db: db) }
     }
 
     private func token(_ queue: DatabaseQueue) throws -> Data? {
@@ -687,5 +697,111 @@ final class SyncSchedulerTests: XCTestCase {
         await phone.scheduler.stop()
         let off = await iterator.next()
         XCTAssertEqual(off, .off)
+    }
+
+    // MARK: Parked from Task 1's review (N1–N3), fixed in Task 12
+
+    /// N1: a key fetch that keeps failing on the network is one offline spell: the backoff keeps doubling and "since"
+    /// stays the first failure's (a pull that succeeded in between doesn't reset them).
+    func testAKeyFetchThatKeepsFailingBacksOffFromTheFirstFailure() async throws {
+        let phone = try await device("user-a")
+        try addAccount(phone.queue, "Synthetic Fetch")
+        await phone.transport.failNextFetch(with: .networkUnavailable)
+        await phone.transport.failNextFetch(with: .networkUnavailable)
+
+        await phone.scheduler.requestSync(.launch)
+        let first = await phone.scheduler.status
+        XCTAssertEqual(first, .offline(since: start, retryAt: start.addingTimeInterval(30)))
+
+        clock.advance(30)
+        sleeper.fire(30)
+        await eventually("the backoff doubled") { self.sleeper.pending(60) == 1 }
+        let second = await phone.scheduler.status
+        XCTAssertEqual(second, .offline(since: start, retryAt: start.addingTimeInterval(90)), "offline since the first failure")
+    }
+
+    /// N2: a push that sent nothing because the household key hasn't arrived isn't a sync: the last sync's time stays.
+    func testAPushThatWaitsForTheKeyDoesntMoveTheLastSync() async throws {
+        let mac = try await device("user-a")
+        try addAccount(mac.queue, "Synthetic Shared")
+        await mac.scheduler.requestSync(.launch)
+        let phone = try await device("user-b", keys: InMemorySyncKeyStore())
+        await phone.scheduler.requestSync(.launch)
+        let pulledAt = await phone.scheduler.lastSync
+        XCTAssertEqual(pulledAt, start)
+
+        try addAccount(phone.queue, "Synthetic Local")
+        clock.advance(100)
+        await phone.scheduler.requestSync(.localChange)
+        await eventually("the debounce armed") { self.sleeper.pending(5) == 1 }
+        sleeper.fire(5)
+        await eventually("the push settled (the key retry armed again)") { self.sleeper.requested.filter { $0 == 300 }.count == 2 }
+        let after = await phone.scheduler.lastSync
+        XCTAssertEqual(after, start, "nothing was sent: the last sync stays the pull's")
+        let status = await phone.scheduler.status
+        XCTAssertEqual(status, .waitingForKey(since: start))
+    }
+
+    /// N3: a sync cancelled by `stop()` after its pull arms no timer while stopped, so `start()` arms the key retry.
+    /// The phone holds the household key and has an edit to send; one record here waits for a key it doesn't hold
+    /// (sealed by a device of another household, synthetic), so the pull leaves it waiting for the key.
+    func testACancelAfterStopArmsNothingUntilStart() async throws {
+        let mac = try await device("user-a")
+        try addAccount(mac.queue, "Synthetic Shared")
+        await mac.scheduler.requestSync(.launch)
+
+        // A record sealed under a key this household's devices never held.
+        let otherCloud = FakeCloud()
+        let other = try DatabaseManager(path: nil)
+        try other.migrate()
+        try await other.dbQueue.write { db in try SyncChangeTracker.setWriter("user-c", db: db) }
+        try addAccount(other.dbQueue, "Synthetic Elsewhere")
+        _ = try await SyncEngineCore(db: other.dbQueue, transport: otherCloud, device: SyncDevice(id: "device-c", name: "c"),
+                                     keyStore: InMemorySyncKeyStore()).syncNow()
+        let stored = await otherCloud.storedRecords()
+        let foreignName = try XCTUnwrap(stored.first { $0.recordType == "account" }?.recordName)
+        let found = await otherCloud.record(named: foreignName)
+        let foreign = try XCTUnwrap(found)
+
+        let phone = try await device("user-b")
+        let now = start
+        try await phone.queue.write { db in try SyncTranslator.stageWaitingForKey(foreign, db: db, now: now) }
+        try addAccount(phone.queue, "Synthetic Local")
+
+        await phone.transport.blockSaves(after: 0)
+        let scheduler = phone.scheduler
+        let outcome = Task { () -> Error? in
+            do { _ = try await scheduler.syncNowAndWait(); return nil } catch { return error }
+        }
+        await eventually("the push is in flight") { await phone.transport.isBlocked }
+        await phone.scheduler.stop()
+        await eventually("cancelled", timeout: 2) { await phone.transport.cancelledWhileBlocked == 1 }
+        await phone.transport.release()
+        let error = await outcome.value
+        XCTAssertTrue(error is CancellationError, "\(String(describing: error))")
+        XCTAssertEqual(sleeper.pending(300), 0, "nothing armed while stopped")
+        let stopped = await phone.scheduler.status
+        XCTAssertEqual(stopped, .off)
+
+        await phone.scheduler.start()
+        await eventually("start arms the key retry") { self.sleeper.pending(300) == 1 }
+        let status = await phone.scheduler.status
+        XCTAssertEqual(status, .waitingForKey(since: start))
+    }
+
+    /// The records each pull received, added up while the scheduler lives (the phone's first-download count).
+    func testReceivedRecordsAddUpEachPull() async throws {
+        let mac = try await device("user-a")
+        try addAccount(mac.queue, "Synthetic One")
+        try addAccount(mac.queue, "Synthetic Two")
+        await mac.scheduler.requestSync(.launch)
+        let phone = try await device("user-b")
+        let none = await phone.scheduler.receivedRecords
+        XCTAssertEqual(none, 0)
+        XCTAssertFalse(try hasToken(phone.queue))
+        await phone.scheduler.requestSync(.launch)
+        let received = await phone.scheduler.receivedRecords
+        XCTAssertGreaterThanOrEqual(received, 2)
+        XCTAssertTrue(try hasToken(phone.queue))
     }
 }

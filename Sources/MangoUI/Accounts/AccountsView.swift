@@ -34,12 +34,13 @@ public struct AccountsView: View {
                 await onRefresh()
                 await model.load()
             }
+            .offlineBannerSlot()
             .navigationTitle("Accounts")
             .navigationDestination(for: AccountDestination.self) { destination in
                 AccountDetailView(model: model.detailModel(for: destination))
             }
         }
-        .task(id: AccountsViewModel.reloadKey(syncStatus)) {
+        .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload(for: AccountsViewModel.reloadKey(syncStatus))
         }
     }

@@ -12,7 +12,7 @@ struct MortgageCard: View {
         Card(title: "Mortgage") {
             FigureRow(label: "Next instalment", secondary: mortgage.nextInstalmentDate.map(PhoneDateFormat.day)) {
                 if let amount = mortgage.nextInstalmentMinorUnits {
-                    MoneyText(minorUnits: amount, currency: currency, role: .expense)
+                    MoneyText(minorUnits: amount, currency: currency, role: .due)
                 } else {
                     Text(PropertyCopy.amountNotKnown)
                         .font(.subheadline)

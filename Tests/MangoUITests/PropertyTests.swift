@@ -190,7 +190,7 @@ final class PropertyTests: XCTestCase {
         estimate.isEstimate = true
         XCTAssertEqual(PropertyCopy.comingUpCaption(known), "1 Nov 2026")
         XCTAssertEqual(PropertyCopy.comingUpCaption(estimate), "1 Nov 2026 · est.")
-        XCTAssertEqual(PropertyCopy.comingUpSpoken(estimate, currency: .eur), "Mortgage instalment, 1 Nov 2026, estimated, spent €700.00")
+        XCTAssertEqual(PropertyCopy.comingUpSpoken(estimate, currency: .eur), "Mortgage instalment, 1 Nov 2026, estimated, due €700.00")
         var unknown = known
         unknown.expectedMinorUnits = nil
         XCTAssertEqual(PropertyCopy.comingUpSpoken(unknown, currency: .eur), "Mortgage instalment, 1 Nov 2026, amount not known")
