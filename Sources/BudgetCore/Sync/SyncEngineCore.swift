@@ -186,15 +186,21 @@ public actor SyncEngineCore {
     }
 
     /// Runs `body` after every entry point called before it has finished (actor methods are reentrant at
-    /// each `await`, so without this two syncs would interleave: double sends, a token going back).
+    /// each `await`, so without this two syncs would interleave: double sends, a token going back). Cancelling the
+    /// caller cancels the run (plan step 4 Task 1): it stops at its next operation, and the transport sees it.
     func serialized<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) async throws -> T {
         let previous = tail
         let task = Task<T, Error> {
             await previous?.value
+            try Task.checkCancellation()
             return try await body()
         }
         tail = Task { _ = try? await task.value }
-        return try await task.value
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     // MARK: Pull
@@ -244,6 +250,8 @@ public actor SyncEngineCore {
         // Every key held here for the zone (ruling R15): what one of them sealed opens; the rest waits for its key.
         let keys = try keyStore.allKeys(zone: zone)
         while true {
+            // Cancelled: stops before the next page; nothing fetched so far is applied, the token stays.
+            try Task.checkCancellation()
             let page: SyncChanges
             do {
                 page = try await transport.changes(since: token, zone: zone)
@@ -300,6 +308,7 @@ public actor SyncEngineCore {
         let reconcile = full ? listed : nil
         let keyRecords = Array(zoneKeys.values)
         let now = clock()
+        try Task.checkCancellation()
         return try await db.write { db in
             var report = SyncPullReport()
             report.alreadyHeld = skipped
@@ -400,6 +409,8 @@ public actor SyncEngineCore {
             }
             report.heldBack = heldBack
             for start in stride(from: 0, to: saves.count, by: chunkSize) {
+                // Cancelled: stops before the next operation; what wasn't acknowledged stays pending.
+                try Task.checkCancellation()
                 let chunk = Array(saves[start..<min(start + chunkSize, saves.count)])
                 for change in chunk { tries[change.uuid, default: 0] += 1 }
                 // A long upload keeps a used lease alive (it expires 30 minutes after it was last renewed).
@@ -414,6 +425,7 @@ public actor SyncEngineCore {
                 try Self.sendableDeletes(db: db).filter { triesAfterSaves[$0.uuid, default: 0] < Self.triesPerPush }
             }
             for start in stride(from: 0, to: deletes.count, by: chunkSize) {
+                try Task.checkCancellation()
                 let chunk = Array(deletes[start..<min(start + chunkSize, deletes.count)])
                 for change in chunk { tries[change.uuid, default: 0] += 1 }
                 let zones = try await db.read { db in try Self.zones(of: chunk, db: db) }

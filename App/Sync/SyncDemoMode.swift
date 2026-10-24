@@ -11,36 +11,18 @@ import BudgetCore
 /// kick-off, never run by tests or tools. Records go sealed under the household key, which it keeps in iCloud
 /// Keychain (`KeychainSyncKeyStore`, ruling R15).
 enum SyncDemoMode {
-    static let argument = "--sync-demo"
+    static let argument = SyncActivation.demoArgument
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
     static var isRequested: Bool { CommandLine.arguments.contains(argument) }
 
-    /// Why the launch can't sync the demo, or nil when it may.
-    static func refusal(environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
-        guard let raw = environment["BUDGET_DB_PATH"], !raw.isEmpty else {
-            return "\(argument) needs BUDGET_DB_PATH pointing at the demo database (MakeDemoDatabase builds one)."
-        }
-        guard raw.hasPrefix("/"), !raw.lowercased().hasPrefix("file:") else {
-            return "\(argument): BUDGET_DB_PATH must be an absolute file path."
-        }
-        let resolved = TaxRegression.resolvedPath(raw)
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDirectory), !isDirectory.boolValue else {
-            return "\(argument): there is no database file at BUDGET_DB_PATH."
-        }
-        guard !TaxRegression.isAppData(resolved) else {
-            return "\(argument) never syncs the app's own database."
-        }
-        guard DemoMarker.isDemoDatabase(atPath: resolved) else {
-            return "\(argument) syncs only the demo database; BUDGET_DB_PATH isn't one (MakeDemoDatabase builds it)."
-        }
-        // CKContainer traps in a build without the iCloud entitlement (CODE_SIGNING_ALLOWED=NO, or no team in
-        // Config/Signing.local.xcconfig): refused here instead.
-        guard hasCloudKitEntitlement() else {
-            return "\(argument) needs a team-signed Debug build with the iCloud entitlement for \(CloudKitTransport.containerIdentifier) (Config/Signing.local.xcconfig names the team); this build has none."
-        }
-        return nil
+    /// Why the launch can't sync the demo, or nil when it may: the rules are BudgetCore's (`SyncActivation`), so
+    /// the iPhone applies the same ones.
+    static func refusal(environment: [String: String] = ProcessInfo.processInfo.environment,
+                        arguments: [String] = CommandLine.arguments) -> String? {
+        let decision = SyncActivation.decision(databasePath: environment["BUDGET_DB_PATH"], arguments: arguments,
+                                               isDebug: true, hasCloudKitEntitlement: hasCloudKitEntitlement())
+        return decision.allowed ? nil : decision.reason
     }
 
     /// Whether this process is signed with the iCloud container entitlement for Mango's container.
