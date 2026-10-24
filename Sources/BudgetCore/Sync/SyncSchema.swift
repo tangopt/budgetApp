@@ -46,7 +46,7 @@ public struct SyncTableSchema: Equatable, Sendable {
 public enum SyncSchema {
     /// Bumped whenever `tables` or the tracking triggers change (`SyncChangeTrackerTests` pins the hash of
     /// each version). A build never replaces triggers a newer version installed.
-    public static let version = 3
+    public static let version = 4
 
     /// Synced tables, parents before children (each foreign key's table is listed earlier).
     public static let tables: [SyncTableSchema] = [
@@ -205,6 +205,9 @@ public enum SyncSchema {
                         synced: ["startYear", "currencyCode", "gbpPerUnit", "unitsPerPound", "source", "fetchedAt", "notes"]),
         SyncTableSchema("taxYear",
                         synced: ["startYear", "personId", "status", "notes", "foreignTaxInPence"],
+                        foreignKeys: ["personId": "person"]),
+        SyncTableSchema("taxFiledBox",
+                        synced: ["startYear", "personId", "field", "valueMinorUnits", "note"],
                         foreignKeys: ["personId": "person"]),
         SyncTableSchema("taxYearSplit",
                         synced: ["startYear", "personId", "propertyId", "expenseType", "shareBasisPoints"],
@@ -479,6 +482,7 @@ extension SyncSchema {
         SyncUniqueKey("rechargeNettingRule", ["<expr>"], .identity),           // one rule per start year
         SyncUniqueKey("hmrcRate", ["startYear", "currencyCode"], .identity),
         SyncUniqueKey("taxYear", ["startYear", "personId"], .identity),
+        SyncUniqueKey("taxFiledBox", ["startYear", "personId", "field"], .identity),
         // One share per year, person, property and expense type: both devices setting it is one setting
         // edited twice; every differing field goes to the conflict log.
         SyncUniqueKey("taxYearSplit", ["startYear", "personId", "propertyId", "<expr>"], .identity),

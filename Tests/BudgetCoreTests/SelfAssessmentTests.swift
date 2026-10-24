@@ -339,8 +339,232 @@ final class SelfAssessmentTests: XCTestCase {
         XCTAssertEqual(result.calculation.selfAssessmentLiability, 0)
         XCTAssertEqual(result.calculation.balancingPayment, -pounds(100))
 
-        XCTAssertThrowsError(try manager.dbQueue.read { try SelfAssessment.compute(db: $0, startYear: 2019, personId: 1) }) {
-            XCTAssertEqual($0 as? SelfAssessment.ComputeError, .noRulesForYear(2019))
+        XCTAssertThrowsError(try manager.dbQueue.read { try SelfAssessment.compute(db: $0, startYear: 2014, personId: 1) }) {
+            XCTAssertEqual($0 as? SelfAssessment.ComputeError, .noRulesForYear(2014))
         }
+    }
+
+    // MARK: The relief as filed
+
+    /// A return that claimed the whole foreign tax although HS263 limits the relief to the UK
+    /// tax on the foreign income: the year is reproduced as filed, with a warning and the
+    /// app's own limit in the step.
+    func testForeignTaxCreditReliefTakenAsFiledWhenTheReturnClaimedMore() {
+        var inputs = SelfAssessment.Inputs(
+            startYear: 2023,
+            employments: [.init(employerName: "Example Ltd", pay: pounds(14_000), taxDeducted: pounds(300))],
+            properties: [.init(name: "Property A", country: "PT", income: pounds(12_000), expenses: pounds(1_500),
+                               financeCosts: pounds(4_000), foreignTax: pounds(1_500))])
+        // Taxable £11,930 × 20% = £2,386; finance relief £800; UK tax on the rent £1,586 − £286 = £1,300: the limit.
+        let own = SelfAssessment.calculate(inputs, rules: UKTaxRules.forYear(2023)!)
+        XCTAssertEqual(own.calculation.foreignTaxCreditRelief, pounds(1_300))
+        XCTAssertEqual(own.calculation.balancingPayment, -pounds(14))
+
+        inputs.filedBoxes["sa106.F1.2"] = .init(value: pounds(1_500), note: "The accountant claimed the whole foreign tax.")
+        let asFiled = SelfAssessment.calculate(inputs, rules: UKTaxRules.forYear(2023)!)
+        XCTAssertEqual(asFiled.calculation.foreignTaxCreditRelief, pounds(1_500))
+        XCTAssertEqual(asFiled.calculation.incomeTaxDue, pounds(86))
+        XCTAssertEqual(asFiled.calculation.balancingPayment, -pounds(214))
+        XCTAssertEqual(asFiled.box(.sa106, "2", section: "Foreign Tax Credit Relief")?.value, .amount(pounds(1_500)))
+        XCTAssertTrue(asFiled.steps.contains { $0.title == "Foreign Tax Credit Relief as filed" && $0.detail.contains("£1,300.00") && $0.detail.contains("whole foreign tax") })
+        XCTAssertEqual(asFiled.box(.sa106, "2", section: "Foreign Tax Credit Relief")?.asFiled, .init(computed: pounds(1_300), note: "The accountant claimed the whole foreign tax."))
+        XCTAssertTrue(asFiled.warnings.contains { $0.contains("£200.00 more") }, asFiled.warnings.joined())
+        // A claim above the tax due is cut to it.
+        inputs.filedBoxes["sa106.F1.2"] = .init(value: pounds(5_000), note: "n")
+        XCTAssertEqual(SelfAssessment.calculate(inputs, rules: UKTaxRules.forYear(2023)!).calculation.foreignTaxCreditRelief, pounds(1_586))
+        // The same claim as the limit changes nothing and says nothing.
+        inputs.filedBoxes["sa106.F1.2"] = .init(value: pounds(1_300), note: "n")
+        let same = SelfAssessment.calculate(inputs, rules: UKTaxRules.forYear(2023)!)
+        XCTAssertEqual(same.calculation, own.calculation)
+        XCTAssertFalse(same.steps.contains { $0.title == "Foreign Tax Credit Relief as filed" })
+    }
+
+    /// Boxes entered as the return filed them: the rent and expenses of the one property replace
+    /// the computed ones (the box keeps the computed value and the reason), and the SA302's
+    /// foreign income can differ from the boxes without moving them.
+    func testBoxesAsFiledReplaceTheComputedOnesAndKeepThem() {
+        var inputs = SelfAssessment.Inputs(
+            startYear: 2021,
+            employments: [.init(employerName: "Example Ltd", pay: pounds(50_000), taxDeducted: pounds(8_000))],
+            properties: [.init(name: "Property A", country: "PT", income: 1_000_050, expenses: 300_050, financeCosts: pounds(500), foreignTax: pounds(600))])
+        let computed = SelfAssessment.calculate(inputs, rules: UKTaxRules.forYear(2021)!)
+        XCTAssertEqual(computed.box(.sa106, "14")?.value, .amount(pounds(10_000)))
+        XCTAssertEqual(computed.box(.sa106, "17")?.value, .amount(pounds(3_001)))
+        XCTAssertNil(computed.box(.sa106, "14")?.asFiled)
+
+        inputs.filedBoxes["sa106.14"] = .init(value: pounds(10_001), note: "The accountant rounded the half share up.")
+        inputs.filedBoxes["sa106.17"] = .init(value: pounds(3_000), note: "The accountant rounded the half share down.")
+        let asFiled = SelfAssessment.calculate(inputs, rules: UKTaxRules.forYear(2021)!)
+        XCTAssertEqual(asFiled.box(.sa106, "14")?.value, .amount(pounds(10_001)))
+        XCTAssertEqual(asFiled.box(.sa106, "14")?.asFiled, .init(computed: pounds(10_000), note: "The accountant rounded the half share up."))
+        XCTAssertEqual(asFiled.box(.sa106, "17")?.value, .amount(pounds(3_000)))
+        XCTAssertEqual(asFiled.box(.sa106, "17")?.asFiled?.computed, pounds(3_001))
+        XCTAssertEqual(asFiled.box(.sa106, "24")?.value, .amount(pounds(7_001)))
+        XCTAssertEqual(asFiled.calculation.propertyProfit, pounds(7_001))
+        XCTAssertEqual(asFiled.calculation.totalIncome, pounds(57_001))
+        XCTAssertTrue(asFiled.steps.contains { $0.title == "As filed" && $0.detail.contains("£10,001.00 as filed (computed £10,000.00)") })
+
+        // The SA302 used another foreign income than the boxes give: the boxes stay, the calculation follows it.
+        inputs.filedBoxes = ["calc.propertyProfit": .init(value: pounds(7_005), note: "The accountant's SA302 used £7,005.")]
+        let sa302 = SelfAssessment.calculate(inputs, rules: UKTaxRules.forYear(2021)!)
+        XCTAssertEqual(sa302.box(.sa106, "24")?.value, .amount(pounds(6_999)))
+        XCTAssertEqual(sa302.box(.sa106, "27")?.value, .amount(pounds(6_999)))
+        XCTAssertEqual(sa302.calculation.propertyProfit, pounds(7_005))
+        XCTAssertEqual(sa302.calculation.totalIncome, pounds(57_005))
+        // The UK tax on the foreign income (the FTCR limit) follows the profit the calculation used:
+        // £270 of the £7,005 at 20% and £6,735 at 40%, less the £100 relief = £2,648.
+        XCTAssertEqual(sa302.foreignTaxCredits.first?.ukTaxOnIncome, pounds(2_648))
+
+        // Two properties: the property boxes can't be placed; a warning says so and nothing moves.
+        inputs.filedBoxes = ["sa106.14": .init(value: pounds(1), note: "n")]
+        inputs.properties.append(.init(name: "Property B", country: "PT", income: pounds(100), expenses: 0, financeCosts: 0, foreignTax: 0))
+        let two = SelfAssessment.calculate(inputs, rules: UKTaxRules.forYear(2021)!)
+        XCTAssertEqual(two.box(.sa106, "14")?.value, .amount(pounds(10_100)))
+        XCTAssertTrue(two.warnings.contains { $0.contains("2 properties: left aside") })
+    }
+
+    /// Boxes stored as filed are read for a filed year only; an open year is worked out by the rules.
+    func testBoxesAsFiledAreReadForFiledYearsOnly() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        let (personId, propertyId) = try manager.dbQueue.write { db -> (Int64, Int64) in
+            var person = Person(name: "Person A")
+            try People.save(db: db, &person)
+            var property = Property(name: "Property A", country: "PT")
+            try Properties.save(db: db, &property)
+            _ = try Properties.setOwners(db: db, propertyId: property.id!, [PropertyOwner(propertyId: property.id!, personId: person.id!, shareBasisPoints: 10_000)])
+            try HMRCRates.set(db: db, startYear: 2024, currencyCode: "EUR", gbpPerUnit: 0.85, unitsPerPound: nil, source: .manual)
+            var rent = TaxManualItem(startYear: 2024, personId: person.id!, propertyId: property.id!, expenseType: .rentalIncome, label: "Rent",
+                                     amountMinorUnits: 1_000_000, currency: .gbp, isWholeProperty: true)
+            try TaxManualItems.save(db: db, &rent)
+            _ = try TaxFiledBoxes.set(db: db, startYear: 2024, personId: person.id!, field: "sa106.14", valueMinorUnits: 1_000_100, note: "Rounded up on the return.")
+            return (person.id!, property.id!)
+        }
+        _ = propertyId
+        let open = try manager.dbQueue.read { db in try SelfAssessment.compute(db: db, startYear: 2024, personId: personId) }
+        XCTAssertEqual(open.box(.sa106, "14")?.value, .amount(1_000_000))
+        XCTAssertTrue(open.warnings.contains { $0.contains("stored as filed") && $0.contains("isn't filed") }, open.warnings.joined())
+        try manager.dbQueue.write { db in try TaxOverview.setStatus(db: db, startYear: 2024, personId: personId, status: .filed) }
+        let filed = try manager.dbQueue.read { db in try SelfAssessment.compute(db: db, startYear: 2024, personId: personId) }
+        XCTAssertEqual(filed.box(.sa106, "14")?.value, .amount(1_000_100))
+        XCTAssertEqual(filed.box(.sa106, "14")?.asFiled?.note, "Rounded up on the return.")
+    }
+
+    /// A box stored as filed with the computed value is not tagged and adds no "As filed" line;
+    /// whole-pound inputs with a box as filed add no "Whole pounds" step.
+    func testBoxAsFiledTaggedOnlyWhenItDiffersAndNoSpuriousWholePounds() {
+        var inputs = SelfAssessment.Inputs(
+            startYear: 2021,
+            employments: [.init(employerName: "Example Ltd", pay: pounds(50_000), taxDeducted: pounds(8_000))],
+            properties: [.init(name: "Property A", country: "PT", income: pounds(10_000), expenses: pounds(3_000), financeCosts: pounds(500), foreignTax: pounds(600))])
+        let computed = SelfAssessment.calculate(inputs, rules: UKTaxRules.forYear(2021)!)
+        XCTAssertFalse(computed.steps.contains { $0.title == "Whole pounds" })
+
+        inputs.filedBoxes["sa106.14"] = .init(value: pounds(10_000), note: "Same as computed.")
+        let same = SelfAssessment.calculate(inputs, rules: UKTaxRules.forYear(2021)!)
+        XCTAssertNil(same.box(.sa106, "14")?.asFiled)
+        XCTAssertFalse(same.steps.contains { $0.title == "As filed" })
+        XCTAssertEqual(same.calculation, computed.calculation)
+
+        inputs.filedBoxes["sa106.14"] = .init(value: pounds(10_001), note: "Rounded up on the return.")
+        let differs = SelfAssessment.calculate(inputs, rules: UKTaxRules.forYear(2021)!)
+        XCTAssertEqual(differs.box(.sa106, "14")?.asFiled?.computed, pounds(10_000))
+        XCTAssertTrue(differs.steps.contains { $0.title == "As filed" })
+        // The inputs were whole pounds already: the filed box doesn't count as rounding.
+        XCTAssertFalse(differs.steps.contains { $0.title == "Whole pounds" })
+    }
+
+    /// The carry-forward follows the filed return: a 2024/25 finance-cost box as filed changes
+    /// the finance costs brought into 2025/26, with a step saying where they come from; with no
+    /// boxes as filed nothing changes and no step is added.
+    func testCarryForwardFollowsTheFiledReturn() throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        let personId = try manager.dbQueue.write { db -> Int64 in
+            var person = Person(name: "Person A")
+            try People.save(db: db, &person)
+            var property = Property(name: "Property A", country: "PT")
+            try Properties.save(db: db, &property)
+            _ = try Properties.setOwners(db: db, propertyId: property.id!, [PropertyOwner(propertyId: property.id!, personId: person.id!, shareBasisPoints: 10_000)])
+            try HMRCRates.set(db: db, startYear: 2024, currencyCode: "EUR", gbpPerUnit: 0.85, unitsPerPound: nil, source: .manual)
+            var rent = TaxManualItem(startYear: 2024, personId: person.id!, propertyId: property.id!, expenseType: .rentalIncome, label: "Rent",
+                                     amountMinorUnits: pounds(20_000), currency: .gbp, isWholeProperty: true)
+            try TaxManualItems.save(db: db, &rent)
+            var interest = TaxManualItem(startYear: 2024, personId: person.id!, propertyId: property.id!, expenseType: .financeCost, label: "Interest",
+                                         amountMinorUnits: pounds(25_000), currency: .gbp, isWholeProperty: true)
+            try TaxManualItems.save(db: db, &interest)
+            try TaxOverview.setStatus(db: db, startYear: 2024, personId: person.id!, status: .filed)
+            return person.id!
+        }
+        func years() throws -> (SelfAssessment.Result, SelfAssessment.Result) {
+            try manager.dbQueue.read { db in
+                (try SelfAssessment.compute(db: db, startYear: 2024, personId: personId),
+                 try SelfAssessment.compute(db: db, startYear: 2025, personId: personId))
+            }
+        }
+        // No boxes as filed: profit £20,000, income above the allowance £7,430 → £17,570 carried forward.
+        let (plain2024, plain2025) = try years()
+        XCTAssertEqual(plain2024.calculation.financeCostsCarriedForward, pounds(17_570))
+        XCTAssertEqual(plain2025.inputs.financeCostsBroughtForward, pounds(17_570))
+        XCTAssertNil(plain2025.inputs.broughtForwardFromFiledReturn)
+        XCTAssertFalse(plain2025.steps.contains { $0.title == "Brought forward from the filed return" })
+
+        // The filed return entered £24,000 of finance costs: £16,570 carried forward, and 2025/26 brings that in.
+        try manager.dbQueue.write { db in
+            _ = try TaxFiledBoxes.set(db: db, startYear: 2024, personId: personId, field: "sa106.24.1", valueMinorUnits: pounds(24_000),
+                                      note: "The return entered less interest.")
+        }
+        let (filed2024, filed2025) = try years()
+        XCTAssertEqual(filed2024.calculation.financeCostsCarriedForward, pounds(16_570))
+        XCTAssertEqual(filed2025.inputs.financeCostsBroughtForward, pounds(16_570))
+        XCTAssertEqual(filed2025.inputs.broughtForwardFromFiledReturn, "2024/25")
+        XCTAssertTrue(filed2025.steps.contains { $0.title == "Brought forward from the filed return" && $0.detail.contains("£16,570.00") && $0.detail.contains("2024/25") },
+                      filed2025.steps.map(\.title).joined(separator: ", "))
+    }
+
+    // MARK: Years before 2020/21: finance costs partly deductible
+
+    /// 2017/18: 75% of the finance costs are an expense and the other 25% get the 20%
+    /// reduction (the phasing of 2017/18–2019/20); the SA106 boxes show the split.
+    func testFinanceCostsPartlyDeductibleIn2017() throws {
+        let rules = try XCTUnwrap(UKTaxRules.forYear(2017))
+        let inputs = SelfAssessment.Inputs(
+            startYear: 2017,
+            employments: [.init(employerName: "Example Ltd", pay: pounds(80_000), taxDeducted: pounds(20_000))],
+            properties: [.init(name: "Property A", country: "PT", income: pounds(17_000), expenses: pounds(3_000),
+                               financeCosts: pounds(2_000), foreignTax: 0)])
+        let result = SelfAssessment.calculate(inputs, rules: rules)
+        let c = result.calculation
+        // 75% of £2,000 deducted: expenses £4,500, profit £12,500; £500 restricted → £100 reduction.
+        XCTAssertEqual(result.box(.sa106, "17")?.value, .amount(pounds(4_500)))
+        XCTAssertEqual(result.box(.sa106, "24")?.value, .amount(pounds(12_500)))
+        XCTAssertEqual(result.box(.sa106, "24.1")?.value, .amount(pounds(500)))
+        XCTAssertEqual(c.propertyProfit, pounds(12_500))
+        XCTAssertEqual(c.financeCosts, pounds(500))
+        XCTAssertEqual(c.financeCostReduction, pounds(100))
+        XCTAssertEqual(c.totalIncome, pounds(92_500))
+        XCTAssertEqual(c.personalAllowance, pounds(11_500))
+        XCTAssertTrue(result.steps.contains { $0.title == "Finance costs" && $0.detail.contains("75%") })
+    }
+
+    /// 2015/16: finance costs are an ordinary expense (nothing restricted); a loss carries forward whole.
+    func testFinanceCostsFullyDeductibleIn2015AndLossCarriesForward() throws {
+        let rules = try XCTUnwrap(UKTaxRules.forYear(2015))
+        let inputs = SelfAssessment.Inputs(
+            startYear: 2015,
+            employments: [.init(employerName: "Example Ltd", pay: pounds(60_000), taxDeducted: pounds(12_000))],
+            properties: [.init(name: "Property A", country: "PT", income: pounds(3_000), expenses: pounds(4_000),
+                               financeCosts: pounds(3_000), foreignTax: 0)])
+        let result = SelfAssessment.calculate(inputs, rules: rules)
+        let c = result.calculation
+        XCTAssertEqual(result.box(.sa106, "17")?.value, .amount(pounds(7_000)))
+        XCTAssertEqual(result.box(.sa106, "24")?.value, .amount(-pounds(4_000)))
+        XCTAssertEqual(result.box(.sa106, "24.1")?.value, .amount(0))
+        XCTAssertEqual(c.propertyProfit, 0)
+        XCTAssertEqual(c.financeCostReduction, 0)
+        XCTAssertEqual(c.financeCostsCarriedForward, 0)
+        XCTAssertEqual(c.propertyLossCarriedForward, pounds(4_000))
+        XCTAssertEqual(c.personalAllowance, pounds(10_600))
+        XCTAssertEqual(c.incomeTaxCharged, pounds(31_785) * 20 / 100 + (pounds(60_000) - pounds(10_600) - pounds(31_785)) * 40 / 100)
     }
 }

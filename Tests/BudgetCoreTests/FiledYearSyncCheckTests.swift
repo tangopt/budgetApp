@@ -597,14 +597,14 @@ final class FiledYearSyncCheckTests: XCTestCase {
     }
 
     func testAnEarlierYearsLossCarriedIntoTheFiledYearIsCaught() async throws {
-        // Review item 8. The app's UK rules start at 2020/21, so the carry-forward chain does too: a 2019/20
+        // Review item 8. The app's UK rules start at 2015/16, so the carry-forward chain does too: a 2014/15
         // row reaches no return (it applies); a 2020/21 tax year arriving with a loss carried into 2024/25 is held.
         let before = try figures(b)
         try a.write { db in
             let person = try Int64.fetchOne(db, sql: "SELECT id FROM person")!
-            var y2019 = TaxYear(startYear: 2019, personId: person, status: .filed)
-            try y2019.insert(db)
-            var old = Transaction(importBatchId: ids["batch"]!, accountId: ids["bank"]!, date: Self.date(2019, 7, 1), rawDescription: "OLD ROOF",
+            var y2014 = TaxYear(startYear: 2014, personId: person, status: .filed)
+            try y2014.insert(db)
+            var old = Transaction(importBatchId: ids["batch"]!, accountId: ids["bank"]!, date: Self.date(2014, 7, 1), rawDescription: "OLD ROOF",
                                   amountMinorUnits: -1_000_000, categoryId: ids["repairs"]!, status: .confirmed, categorizedBy: .manual,
                                   fingerprint: "fp-OLD")
             try old.insert(db)
