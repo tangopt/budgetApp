@@ -110,3 +110,10 @@ Certificates, Identifiers & Profiles:
 Build step 1: desktop authentication, per `2026-10-21-authentication-design.md` plus the accepted
 changes (sync spec §11). It includes `localCredential`, and the rename to Mango, whose icon comes from
 `docs/design/mango-icon.svg` through Icon Composer.
+
+## TestFlight packaging (build step 4, Task 14)
+
+`scripts/archive-phone.sh` archives MangoPhone in Release, team-signed, and exports an `.ipa` for the App Store
+Connect record "Mango Household Budget" (`Config/ExportOptions-TestFlight.plist`). `--upload` runs `altool` and is
+refused unless `MANGO_ASC_KEY_ID`, `MANGO_ASC_ISSUER_ID` and `MANGO_ASC_KEY_FILE` are set. Needs Xcode signed in to
+the Apple ID (Settings ▸ Accounts) so `-allowProvisioningUpdates` can create the distribution profile.
