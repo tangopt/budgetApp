@@ -41,3 +41,43 @@ targets:
           CLOUDKIT_ENVIRONMENT: Development
         Release:
           CLOUDKIT_ENVIRONMENT: Production
+  # The read-only iPhone app (build step 4).
+  MangoPhone:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources: [Phone]
+    dependencies:
+      - package: BudgetCore
+        product: BudgetCore
+      - package: BudgetCore
+        product: MangoSync
+      - package: BudgetCore
+        product: MangoUI
+    # Includes the same uncommitted Signing.local.xcconfig, then the phone's entitlements (Phone/Mango.entitlements).
+    configFiles:
+      Debug: Config/SigningPhone.xcconfig
+      Release: Config/SigningPhone.xcconfig
+    info:
+      path: Phone/Info.plist
+      properties:
+        NSFaceIDUsageDescription: Mango unlocks with Face ID so only you see the household's figures.
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ubberninja.mango.ios
+        PRODUCT_NAME: Mango
+        MARKETING_VERSION: "0.2.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        # Read by Phone/Mango.entitlements (only used when a team is configured).
+        Debug:
+          CLOUDKIT_ENVIRONMENT: Development
+        Release:
+          CLOUDKIT_ENVIRONMENT: Production

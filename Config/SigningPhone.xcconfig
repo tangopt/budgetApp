@@ -1,0 +1,6 @@
+// Signing for the iPhone app (plan step 4 Task 4). Same uncommitted Signing.local.xcconfig as the Mac (it names
+// the team), then the phone's own entitlements: the local file sets the Mac's entitlements path and the hardened
+// runtime, which is macOS only. Without the local file the app builds unsigned for the simulator.
+#include? "Signing.local.xcconfig"
+CODE_SIGN_ENTITLEMENTS = Phone/Mango.entitlements
+ENABLE_HARDENED_RUNTIME = NO

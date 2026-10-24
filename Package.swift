@@ -6,7 +6,8 @@ let package = Package(
     platforms: [.macOS("26.0"), .iOS("26.0")],
     products: [
         .library(name: "BudgetCore", targets: ["BudgetCore"]),
-        .library(name: "MangoSync", targets: ["MangoSync"])
+        .library(name: "MangoSync", targets: ["MangoSync"]),
+        .library(name: "MangoUI", targets: ["MangoUI"])
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.29.0")
@@ -19,6 +20,8 @@ let package = Package(
         .target(name: "BudgetDemo", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
         // CloudKit and Security pieces both apps share and BudgetCore may not import (step 4, Task 3).
         .target(name: "MangoSync", dependencies: ["BudgetCore"]),
+        // The iPhone's views, design-system pieces and view models (SwiftUI), shared with the iPad later (step 4, Task 4).
+        .target(name: "MangoUI", dependencies: ["BudgetCore"]),
         .testTarget(name: "BudgetCoreTests", dependencies: ["BudgetCore", "BudgetDemo"]),
         .testTarget(name: "MangoSyncTests", dependencies: ["MangoSync", "BudgetCore"]),
         .executableTarget(name: "MigrateHistory", dependencies: ["BudgetCore"]),

@@ -1,12 +1,12 @@
 #!/bin/bash
-# Builds the BudgetCore and MangoSync libraries for iOS (no signing). Exits non-zero on any error.
+# Builds the BudgetCore, MangoSync and MangoUI libraries for iOS (no signing). Exits non-zero on any error.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source scripts/package-workspace.sh
 OUT="$(mktemp -t build-core-ios)"
 trap 'rm -f "$OUT"' EXIT
-# BudgetCore, then MangoSync (the CloudKit transport and key store both apps share).
-for SCHEME in BudgetCore MangoSync; do
+# BudgetCore, then MangoSync (the CloudKit transport and key store both apps share), then MangoUI (the phone's views).
+for SCHEME in BudgetCore MangoSync MangoUI; do
   if xcodebuild -workspace "$(package_workspace)" -scheme "$SCHEME" -destination 'generic/platform=iOS' \
       -derivedDataPath "${DERIVED_DATA:-${TMPDIR:-/tmp}/budgetcore-ios-dd}" \
       CODE_SIGNING_ALLOWED=NO build >"$OUT" 2>&1; then

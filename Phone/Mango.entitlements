@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The iPhone app (plan step 4 Task 4). Used only when Config/Signing.local.xcconfig names a team. -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.ubberninja.mango</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<!-- Development for Debug builds, Production for Release. -->
+	<key>com.apple.developer.icloud-container-environment</key>
+	<string>$(CLOUDKIT_ENVIRONMENT)</string>
+	<!-- The Mac's group: without it the synchronizable household key items are invisible here (sync spec §9). -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)ubberninja.mango</string>
+	</array>
+</dict>
+</plist>

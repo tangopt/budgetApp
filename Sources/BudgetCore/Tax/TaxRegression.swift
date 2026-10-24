@@ -430,12 +430,14 @@ public enum TaxRegression {
 
     // MARK: The real database guard
 
-    /// The app's own data folders: `Application Support/Budget`, and the same inside any
-    /// app container (`~/Library/Containers/*/Data/Library/Application Support/Budget`).
+    /// The app's own data folders: `Application Support/Budget` (the Mac's), `Application Support/Mango`
+    /// (the iPhone's, `PhoneDatabasePolicy.folderName`), and the Mac's inside any app container
+    /// (`~/Library/Containers/*/Data/Library/Application Support/Budget`).
     public static func appDataFolders(fileManager: FileManager = .default) -> [URL] {
         var folders: [URL] = []
         if let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             folders.append(support.appendingPathComponent("Budget", isDirectory: true))
+            folders.append(support.appendingPathComponent(PhoneDatabasePolicy.folderName, isDirectory: true))
         }
         #if os(macOS)
         let containers = fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Containers", isDirectory: true)
