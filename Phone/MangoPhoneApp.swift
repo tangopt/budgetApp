@@ -1,4 +1,5 @@
 import SwiftUI
+import MangoUI
 
 /// The iPhone app's entry point. A snapshot build (`SNAPSHOTS`) runs only the snapshot harness, as the Mac's
 /// `BudgetMain` does, so a stray snapshot build never opens the phone's real database; every other build is
@@ -19,35 +20,43 @@ enum PhoneMain {
 struct MangoPhoneApp: App {
     /// Locked on launch (auth spec §10); one model for the app's life, so nothing else needs to know about it.
     @StateObject private var lock = PhoneLockModel()
+    /// The sync status the tabs show (Task 12 replaces the placeholder with the sync controller).
+    @StateObject private var sync = PhoneSyncStatusSource()
 
     var body: some Scene {
         WindowGroup {
-            PhoneRoot(lock: lock)
+            PhoneRoot(lock: lock, sync: sync)
         }
     }
 }
 
-/// Opens the database off the main thread, then shows the app behind the lock. The load runs outside the lock (it
+/// Opens the database off the main thread, then shows the tabs behind the lock. The load runs outside the lock (it
 /// shows nothing), so unlocking doesn't wait for it and relocking doesn't reopen the database; the content itself
-/// is only in the view tree while unlocked.
+/// is only in the view tree while unlocked. The tabs' model (every tab's view model and the selected tab) lives here,
+/// above the lock cover, so a relock keeps where the person was; every sheet is presented inside it.
 struct PhoneRoot: View {
     private enum Stage {
         case loading
-        case ready(PhoneEnvironment)
+        case ready(PhoneEnvironment, PhoneTabsModel)
         case failed(String)
     }
 
     let lock: PhoneLockModel
+    @ObservedObject var sync: PhoneSyncStatusSource
     @State private var stage: Stage = .loading
+    @State private var showingSettings = false
 
     var body: some View {
         Group {
             switch stage {
             case .loading:
                 ProgressView()
-            case .ready:
-                Text("Mango")
-                    .font(.largeTitle.bold())
+            case .ready(_, let tabs):
+                PhoneTabs(model: tabs, syncStatus: sync.status, onRefresh: { await sync.refresh() },
+                          onSettings: { showingSettings = true })
+                    .sheet(isPresented: $showingSettings) {
+                        LockNowSheet(lock: lock)
+                    }
             case .failed(let message):
                 ContentUnavailableView("Mango couldn't open its data", systemImage: "exclamationmark.triangle",
                                        description: Text(message))
@@ -57,7 +66,11 @@ struct PhoneRoot: View {
         .task {
             guard case .loading = stage else { return }
             do {
-                stage = .ready(try await PhoneEnvironment.load())
+                let environment = try await PhoneEnvironment.load()
+                // Property is absent only when the database has no property row; an unreadable answer keeps it.
+                let hasProperty = await PhoneTabsModel.hasProperty(environment.dbQueue) ?? true
+                stage = .ready(environment, PhoneTabsModel(dbQueue: environment.dbQueue, today: environment.today,
+                                                           hasProperty: hasProperty))
             } catch {
                 stage = .failed(error.localizedDescription)
             }
