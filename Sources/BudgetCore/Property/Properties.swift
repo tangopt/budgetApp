@@ -27,6 +27,8 @@ public enum PropertyError: Error, Equatable {
     case duplicateRentDate
     case blankReceiptNumber
     case duplicateReceiptNumber
+    /// A map location outside the globe's range, or a latitude without a longitude.
+    case invalidLocation
     /// Withholding larger than the rent.
     case invalidWithholding
     /// A tenant email that isn't an address.
@@ -107,10 +109,20 @@ public enum Properties {
         property.purchaseDate = property.purchaseDate.map(PropertyDates.day)
         property.matrixArticle = Transaction.normalizedNote(property.matrixArticle)
         property.notes = Transaction.normalizedNote(property.notes)
+        property.setAddress(property.postalAddress)
+        property.postcode = property.postcode?.uppercased()
+        switch (property.latitude, property.longitude) {
+        case (nil, nil): property.locationSource = nil
+        case let (latitude?, longitude?):
+            guard PropertyCoordinate(latitude: latitude, longitude: longitude).isValid else { throw PropertyError.invalidLocation }
+            if property.locationSource == nil { property.locationSource = .adjusted }
+        default: throw PropertyError.invalidLocation
+        }
         var clash = Property.filter(sql: "name = ? COLLATE NOCASE", arguments: [property.name])
         if let id = property.id { clash = clash.filter(Column("id") != id) }
         guard try clash.fetchCount(db) == 0 else { throw PropertyError.duplicateName }
         try property.save(db)
+        try writeAddressColumns(db: db, property)
     }
 
     /// Every property, by name.

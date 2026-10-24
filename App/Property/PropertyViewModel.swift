@@ -376,6 +376,12 @@ final class PropertyViewModel: ObservableObject {
         }
     }
 
+    /// Stores (or clears) the map location of property `propertyId`: the id is passed in, so a lookup that
+    /// finishes after the user moved to another property still lands on the one it was for.
+    func setLocation(propertyId: Int64, _ coordinate: PropertyCoordinate?, source: PropertyLocationSource) -> String? {
+        write { db in try Properties.setLocation(db: db, propertyId: propertyId, coordinate, source: source) }
+    }
+
     func deleteProperty() -> String? {
         guard let propertyId else { return nil }
         let error = write { db in _ = try Properties.delete(db: db, id: propertyId) }
@@ -679,6 +685,7 @@ enum PropertyMessages {
         case .duplicateReceiptNumber: return "That receipt number is already used for this tenancy."
         case .invalidWithholding: return "The withholding can't be more than the rent."
         case let .invalidEmail(text): return "“\(text)” isn't an email address."
+        case .invalidLocation: return "That map location isn't valid."
         }
     }
 

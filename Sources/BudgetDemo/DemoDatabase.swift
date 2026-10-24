@@ -515,6 +515,11 @@ extension DemoDatabase {
                                     purchasePriceMinorUnits: 24_000_000, purchaseDate: date(2023, 9, 1),
                                     notes: "A fictional two-bedroom flat used by the demo database.")
             try Properties.save(db: db, &property)
+            // An invented address with a stored location, so the Profile map needs no lookup. Written on its
+            // own, so a demo built on a database from before the address columns (the rehearsals) still builds.
+            property.setAddress(PropertyAddress(lines: "Rua Fictícia 10\n2.º Dto.", postcode: "1000-000", city: "Lisboa", country: "PT"))
+            property.setLocation(PropertyCoordinate(latitude: 38.7223, longitude: -9.1393), source: .lookedUp)
+            try Properties.writeAddressColumns(db: db, property)
             propertyId = property.id!
             var a = Person(name: DemoDatabase.personA, shortName: "A", ukUtr: "0000000001", ukNino: "QQ123456A", ptNif: "000000001")
             var b = Person(name: DemoDatabase.personB, shortName: "B", ukUtr: "0000000002", ukNino: "QQ654321B", ptNif: "000000002")

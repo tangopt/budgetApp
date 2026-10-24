@@ -575,6 +575,11 @@ enum SnapshotCatalog {
                 let model = await context.propertyModel()
                 return AnyView(PropertyFormSheet(viewModel: model, draft: PropertyDraft(model.property)))
             },
+            sheet("property_address", "Edit address") { context in
+                let model = await context.propertyModel()
+                guard let property = model.property else { throw SnapshotMissing("the demo property") }
+                return AnyView(PropertyAddressSheet(viewModel: model, property: property) { _ in })
+            },
             sheet("owners", "Owners") { context in AnyView(OwnersSheet(viewModel: await context.propertyModel())) },
             sheet("owners_error", "Owners (shares not adding up: Save's error)") { context in
                 // Save's real message: the shares as entered are refused (the write rolls back).

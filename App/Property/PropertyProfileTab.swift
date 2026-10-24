@@ -16,6 +16,8 @@ struct PropertyProfileTab: View {
     @State private var confirmingDelete = false
     @State private var editingPerson: Person?
     @State private var editingMortgageTerms = false
+    @State private var editingAddress: Property?
+    @StateObject private var locator = PropertyLocator()
 
     var body: some View {
         let snapshot = viewModel.snapshot
@@ -24,6 +26,13 @@ struct PropertyProfileTab: View {
                 detailsPanel(snapshot.property)
             } second: {
                 ownersPanel(snapshot)
+            }
+            if let property = snapshot.property {
+                TwoUpRow {
+                    addressPanel(property)
+                } second: {
+                    PropertyMapPanel(viewModel: viewModel, locator: locator, property: property)
+                }
             }
             TwoUpRow {
                 accountsPanel(snapshot)
@@ -41,6 +50,13 @@ struct PropertyProfileTab: View {
         .sheet(item: $editingPerson) { PersonFormSheet(viewModel: viewModel, person: $0) }
         .sheet(isPresented: $linkingAccount) { LinkAccountSheet(viewModel: viewModel) }
         .sheet(isPresented: $editingMortgageTerms) { MortgageTermsSheet(viewModel: viewModel) }
+        .sheet(item: $editingAddress) { property in
+            PropertyAddressSheet(viewModel: viewModel, property: property) { text in
+                guard let id = property.id else { return }
+                locator.lookUp(text, propertyId: id, save: viewModel.setLocation)
+            }
+        }
+        .onChange(of: viewModel.propertyId) { _, _ in locator.reset() }
         .confirmationDialog(snapshot.property.map { "Delete “\($0.name)”?" } ?? "Delete the property?", isPresented: $confirmingDelete) {
             Button("Delete property", role: .destructive) { viewModel.errorMessage = viewModel.deleteProperty() }
         } message: {
@@ -90,6 +106,36 @@ struct PropertyProfileTab: View {
                     if let notes = property.notes, !notes.isEmpty {
                         PropertyFact("Notes") { Text(notes).lineLimit(2).help(notes) }
                     }
+                }
+            }
+        }
+    }
+
+    // MARK: Address
+
+    /// The address as entered (street lines, postcode and city, country); its pin is on the Map beside it.
+    private func addressPanel(_ property: Property) -> some View {
+        let address = property.postalAddress
+        return Panel("Address", subtitle: "Found on the map with Apple Maps when you save it", fillsHeight: true) {
+            Button { editingAddress = property } label: { Image(systemName: "pencil") }
+                .buttonStyle(.borderless)
+                .help("Edit the address")
+                .accessibilityLabel("Edit address")
+        } content: {
+            if address.isEmpty {
+                Text("No address yet: add it with the pencil, and Apple Maps finds it on the map.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                PropertyFacts {
+                    PropertyFact("Street") {
+                        Text(address.streetLines.isEmpty ? "—" : address.streetLines.joined(separator: "\n"))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    PropertyFact("Postcode") { Text(property.postcode ?? "—").textSelection(.enabled) }
+                    PropertyFact("City") { Text(property.city ?? "—") }
+                    PropertyFact("Country") { Text(property.country) }
                 }
             }
         }

@@ -139,5 +139,6 @@ public final class DatabaseManager {
         registerImportRuleMigration(&migrator)
         registerAppUserMigration(&migrator)
         registerSyncMigration(&migrator)
+        registerPropertyAddressMigration(&migrator)
     }
 }
