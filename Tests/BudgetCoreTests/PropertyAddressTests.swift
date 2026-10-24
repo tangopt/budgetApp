@@ -186,6 +186,6 @@ final class PropertyAddressTests: XCTestCase {
         for column in ["address", "postcode", "city", "latitude", "longitude", "locationSource"] {
             XCTAssertTrue(table.syncedColumns.contains(column), column)
         }
-        XCTAssertEqual(SyncSchema.version, 5)
+        XCTAssertEqual(SyncSchema.version, 6)
     }
 }
