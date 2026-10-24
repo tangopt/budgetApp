@@ -56,24 +56,37 @@ final class TestClock: Sendable {
     func advance(_ seconds: TimeInterval) { state.withLock { $0 = $0.addingTimeInterval(seconds) } }
 }
 
-/// `FakeCloud` with scripted change-feed failures, and a change feed that can block until released or cancelled
-/// (a slow network the app is backgrounded on).
+/// A failure that is neither the transport's nor the key's (a database or file error, say).
+struct BrokenDisk: LocalizedError {
+    var errorDescription: String? { "the disk is unhappy" }
+}
+
+/// `FakeCloud` with scripted failures, and a change feed or saves that can block (after letting some through)
+/// until released or cancelled (a slow network the app is backgrounded on).
 actor ScriptedTransport: SyncTransport {
     let cloud: FakeCloud
-    private var nextFailures: [SyncTransportError] = []
-    private var alwaysFailing: SyncTransportError?
-    private var blocking = false
+    private var nextFailures: [any Error] = []
+    private var alwaysFailing: (any Error)?
+    private var nextFetchFailures: [SyncTransportError] = []
+    /// Changes calls (or saves) still let through before the next one blocks; nil: none blocks.
+    private var changesBeforeBlock: Int?
+    private var savesBeforeBlock: Int?
     private var blocked: CheckedContinuation<Void, Error>?
     private(set) var changesCalls = 0
+    private(set) var saveCalls = 0
     private(set) var cancelledWhileBlocked = 0
 
     init(_ cloud: FakeCloud) { self.cloud = cloud }
 
-    func failNextChanges(with error: SyncTransportError) { nextFailures.append(error) }
-    func failChangesAlways(with error: SyncTransportError?) { alwaysFailing = error }
-    func block() { blocking = true }
+    func failNextChanges(with error: any Error) { nextFailures.append(error) }
+    func failChangesAlways(with error: (any Error)?) { alwaysFailing = error }
+    func failNextFetch(with error: SyncTransportError) { nextFetchFailures.append(error) }
+    func block() { changesBeforeBlock = 0 }
+    func blockChanges(after count: Int) { changesBeforeBlock = count }
+    func blockSaves(after count: Int) { savesBeforeBlock = count }
     func release() {
-        blocking = false
+        changesBeforeBlock = nil
+        savesBeforeBlock = nil
         blocked?.resume()
         blocked = nil
     }
@@ -104,17 +117,26 @@ actor ScriptedTransport: SyncTransport {
     func operationLimits() async -> SyncOperationLimits { await cloud.operationLimits() }
     func createZone(_ zone: String) async throws { try await cloud.createZone(zone) }
     func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data], atomic: Bool) async throws -> [SaveResult] {
-        try await cloud.save(records, ifUnchanged: ifUnchanged, atomic: atomic)
+        saveCalls += 1
+        if let left = savesBeforeBlock {
+            if left == 0 { try await waitForRelease() } else { savesBeforeBlock = left - 1 }
+        }
+        return try await cloud.save(records, ifUnchanged: ifUnchanged, atomic: atomic)
     }
     func changes(since token: Data?, zone: String) async throws -> SyncChanges {
         changesCalls += 1
         if !nextFailures.isEmpty { throw nextFailures.removeFirst() }
         if let alwaysFailing { throw alwaysFailing }
-        if blocking { try await waitForRelease() }
+        if let left = changesBeforeBlock {
+            if left == 0 { try await waitForRelease() } else { changesBeforeBlock = left - 1 }
+        }
         return try await cloud.changes(since: token, zone: zone)
     }
     func delete(_ recordNames: [String], zone: String) async throws { try await cloud.delete(recordNames, zone: zone) }
-    func fetch(_ recordName: String, zone: String) async throws -> SyncServerRecord? { try await cloud.fetch(recordName, zone: zone) }
+    func fetch(_ recordName: String, zone: String) async throws -> SyncServerRecord? {
+        if !nextFetchFailures.isEmpty { throw nextFetchFailures.removeFirst() }
+        return try await cloud.fetch(recordName, zone: zone)
+    }
     func serverTime() async throws -> Date? { try await cloud.serverTime() }
 }
 
@@ -151,13 +173,13 @@ final class SyncSchedulerTests: XCTestCase {
         var queue: DatabaseQueue { manager.dbQueue }
     }
 
-    private func device(_ user: String, keys: (any SyncKeyStore)? = nil) async throws -> Device {
+    private func device(_ user: String, keys: (any SyncKeyStore)? = nil, batchSize: Int = 200) async throws -> Device {
         let manager = try DatabaseManager(path: nil)
         try manager.migrate()
         try await manager.dbQueue.write { db in try SyncChangeTracker.setWriter(user, db: db) }
         let transport = ScriptedTransport(cloud)
         let engine = SyncEngineCore(db: manager.dbQueue, transport: transport, device: SyncDevice(id: "device-\(user)", name: user),
-                                    keyStore: keys ?? self.keys)
+                                    keyStore: keys ?? self.keys, batchSize: batchSize)
         let clock = self.clock!
         let sleeper = self.sleeper!
         let scheduler = SyncScheduler(engine: engine, db: manager.dbQueue, clock: { clock.now }, sleep: { try await sleeper.sleep($0) },
@@ -234,7 +256,7 @@ final class SyncSchedulerTests: XCTestCase {
         await mac.scheduler.requestSync(.localChange)
 
         // Each change restarts the debounce: three asked for, only the last one waits.
-        try await eventually("three debounces, one waiting") {
+        await eventually("three debounces, one waiting") {
             self.sleeper.requested.filter { $0 == 5 }.count == 3 && self.sleeper.pending(5) == 1
         }
         let early = await calls(since: mark)
@@ -245,20 +267,20 @@ final class SyncSchedulerTests: XCTestCase {
         let sent = await calls(since: mark)
         XCTAssertTrue(sent.contains { if case .save = $0 { return true } else { return false } })
         XCTAssertFalse(sent.contains { if case .changes = $0 { return true } else { return false } }, "a local change only pushes")
-        try await eventually("idle again") { await mac.scheduler.status == .idle(lastSync: self.start) }
+        await eventually("idle again") { await mac.scheduler.status == .idle(lastSync: self.start) }
     }
 
     // MARK: Retry
 
     func testRetryAfterIsHonoured() async throws {
         let phone = try await device("user-a")
-        await phone.transport.failNextChanges(with: .unavailable(retryAfter: 37))
+        await phone.transport.failNextChanges(with: SyncTransportError.unavailable(retryAfter: 37))
 
         await phone.scheduler.requestSync(.launch)
 
         let status = await phone.scheduler.status
         XCTAssertEqual(status, .offline(since: start, retryAt: start.addingTimeInterval(37)))
-        XCTAssertEqual(sleeper.pending(37), 1, "the next attempt at +37 s (more than the 30 s backoff)")
+        await eventually("the next attempt at +37 s (more than the 30 s backoff)") { self.sleeper.pending(37) == 1 }
         // Nothing reaches the server before then: not a timer, not the app coming back, not a refresh.
         await phone.scheduler.requestSync(.periodic)
         await phone.scheduler.requestSync(.foreground)
@@ -274,21 +296,21 @@ final class SyncSchedulerTests: XCTestCase {
 
         clock.advance(37)
         sleeper.fire(37)
-        try await eventually("the retry succeeds") { await phone.scheduler.status == .idle(lastSync: self.start.addingTimeInterval(37)) }
+        await eventually("the retry succeeds") { await phone.scheduler.status == .idle(lastSync: self.start.addingTimeInterval(37)) }
         let retried = await phone.transport.changesCalls
         XCTAssertEqual(retried, 2)
     }
 
     func testBackoffDoublesTo15Minutes() async throws {
         let phone = try await device("user-a")
-        await phone.transport.failChangesAlways(with: .networkUnavailable)
+        await phone.transport.failChangesAlways(with: SyncTransportError.networkUnavailable)
 
         await phone.scheduler.requestSync(.launch)
-        XCTAssertEqual(sleeper.pending(30), 1)
+        await eventually("a 30 s timer armed") { self.sleeper.pending(30) == 1 }
         var previous: TimeInterval = 30
         for next: TimeInterval in [60, 120, 240, 480, 900, 900] {
             sleeper.fire(previous)
-            try await eventually("retry after \(next) s") { self.sleeper.pending(next) == 1 }
+            await eventually("retry after \(next) s") { self.sleeper.pending(next) == 1 }
             previous = next
         }
         let status = await phone.scheduler.status
@@ -298,10 +320,10 @@ final class SyncSchedulerTests: XCTestCase {
         // Back online: the backoff starts again from 30 s.
         await phone.transport.failChangesAlways(with: nil)
         sleeper.fire(900)
-        try await eventually("back online") { await phone.scheduler.status == .idle(lastSync: self.start) }
-        await phone.transport.failNextChanges(with: .networkUnavailable)
+        await eventually("back online") { await phone.scheduler.status == .idle(lastSync: self.start) }
+        await phone.transport.failNextChanges(with: SyncTransportError.networkUnavailable)
         await phone.scheduler.requestSync(.periodic)
-        XCTAssertEqual(sleeper.pending(30), 1)
+        await eventually("a 30 s timer armed") { self.sleeper.pending(30) == 1 }
     }
 
     // MARK: Waiting for the household key
@@ -318,7 +340,7 @@ final class SyncSchedulerTests: XCTestCase {
 
         let status = await phone.scheduler.status
         XCTAssertEqual(status, .waitingForKey(since: start))
-        XCTAssertEqual(sleeper.pending(300), 1, "retried on the slow schedule")
+        await eventually("retried on the slow schedule") { self.sleeper.pending(300) == 1 }
         XCTAssertEqual(try bKeys.allKeys(zone: zone).count, 0, "no second key created")
         let markers = await cloud.storedRecords().filter { $0.recordType == SyncZoneKeys.recordType }
         XCTAssertEqual(markers.count, 1)
@@ -327,8 +349,8 @@ final class SyncSchedulerTests: XCTestCase {
         // The slow retry: still waiting, the same since, one more timer (no storm).
         clock.advance(300)
         sleeper.fire(300)
-        try await eventually("the retry pulls again") { await phone.transport.changesCalls == 2 }
-        try await eventually("the next slow retry") { self.sleeper.pending(300) == 1 }
+        await eventually("the retry pulls again") { await phone.transport.changesCalls == 2 }
+        await eventually("the next slow retry") { self.sleeper.pending(300) == 1 }
         let still = await phone.scheduler.status
         XCTAssertEqual(still, .waitingForKey(since: start))
         XCTAssertEqual(sleeper.requested.filter { $0 == 300 }.count, 2)
@@ -366,13 +388,13 @@ final class SyncSchedulerTests: XCTestCase {
                 return error
             }
         }
-        try await eventually("the pull is in flight") { await phone.transport.isBlocked }
+        await eventually("the pull is in flight") { await phone.transport.isBlocked }
         let syncing = await phone.scheduler.status
         XCTAssertEqual(syncing, .syncing(.pulling))
         let mark = await cloud.calls.count
 
         await phone.scheduler.cancel()
-        try await eventually("the cancellation reaches the transport", timeout: 2) { await phone.transport.cancelledWhileBlocked == 1 }
+        await eventually("the cancellation reaches the transport", timeout: 2) { await phone.transport.cancelledWhileBlocked == 1 }
         await phone.transport.release()  // (only matters when the cancellation didn't reach it)
 
         let error = await outcome.value
@@ -393,7 +415,7 @@ final class SyncSchedulerTests: XCTestCase {
 
     func testNotAuthenticatedWaitsForForeground() async throws {
         let phone = try await device("user-a")
-        await phone.transport.failNextChanges(with: .notAuthenticated)
+        await phone.transport.failNextChanges(with: SyncTransportError.notAuthenticated)
 
         await phone.scheduler.requestSync(.launch)
         let status = await phone.scheduler.status
@@ -412,7 +434,7 @@ final class SyncSchedulerTests: XCTestCase {
         XCTAssertEqual(back, .idle(lastSync: start))
 
         // A full iCloud storage waits the same way.
-        await phone.transport.failNextChanges(with: .quotaExceeded)
+        await phone.transport.failNextChanges(with: SyncTransportError.quotaExceeded)
         await phone.scheduler.requestSync(.periodic)
         let full = await phone.scheduler.status
         XCTAssertEqual(full, .unavailable(.quotaExceeded))
@@ -445,6 +467,210 @@ final class SyncSchedulerTests: XCTestCase {
         await phone.scheduler.requestSync(.periodic)
         let still = await phone.scheduler.status
         XCTAssertEqual(still, .needsAttention(held: 1, lastSync: start.addingTimeInterval(120)))
+    }
+
+    // MARK: Fix round 1: re-arming, the person's triggers, the key fetch, failures
+
+    func testStopThenStartWhileOfflineRearmsTheRemainingRetryAfter() async throws {
+        let phone = try await device("user-a")
+        await phone.transport.failNextChanges(with: SyncTransportError.unavailable(retryAfter: 37))
+        await phone.scheduler.requestSync(.launch)
+        await eventually("a 37 s timer armed") { self.sleeper.pending(37) == 1 }
+
+        // Backgrounded (stopped), back 10 s later: the retry is armed again for what is left of the server's window.
+        await phone.scheduler.stop()
+        XCTAssertEqual(sleeper.pending(37), 0)
+        clock.advance(10)
+        await phone.scheduler.start()
+        await eventually("re-armed for the remaining 27 s") { self.sleeper.pending(27) == 1 }
+        let status = await phone.scheduler.status
+        XCTAssertEqual(status, .offline(since: start, retryAt: start.addingTimeInterval(37)))
+
+        clock.advance(27)
+        sleeper.fire(27)
+        await eventually("the re-armed retry succeeds") {
+            await phone.scheduler.status == .idle(lastSync: self.start.addingTimeInterval(37))
+        }
+    }
+
+    func testStopThenStartWhileWaitingForTheKeyRearmsTheSlowRetry() async throws {
+        let mac = try await device("user-a")
+        try addAccount(mac.queue, "Synthetic Shared")
+        await mac.scheduler.requestSync(.launch)
+        let phone = try await device("user-b", keys: InMemorySyncKeyStore())
+        await phone.scheduler.requestSync(.launch)
+        await eventually("a 300 s timer armed") { self.sleeper.pending(300) == 1 }
+
+        await phone.scheduler.stop()
+        XCTAssertEqual(sleeper.pending(300), 0)
+        await phone.scheduler.start()
+        await eventually("the key retry is armed again") { self.sleeper.pending(300) == 1 }
+        let status = await phone.scheduler.status
+        XCTAssertEqual(status, .waitingForKey(since: start))
+    }
+
+    func testAnOfflineStatusNeverShowsARetryTimeInThePast() async throws {
+        let phone = try await device("user-a")
+        await phone.transport.failNextChanges(with: SyncTransportError.networkUnavailable)
+        await phone.scheduler.requestSync(.launch)
+        await phone.scheduler.stop()
+        clock.advance(120)
+        await phone.scheduler.start()
+        guard case .offline(let since, let retryAt) = await phone.scheduler.status else { return XCTFail("still offline") }
+        XCTAssertEqual(since, start)
+        if let retryAt { XCTAssertGreaterThanOrEqual(retryAt, clock.now) }
+        await eventually("past due: armed to try again at once") { self.sleeper.pending(0) == 1 }
+    }
+
+    func testPullToRefreshSucceedsRightAfterANetworkFailure() async throws {
+        let phone = try await device("user-a")
+        await phone.transport.failNextChanges(with: SyncTransportError.networkUnavailable)
+        await phone.scheduler.requestSync(.launch)
+        let offline = await phone.scheduler.status
+        XCTAssertEqual(offline, .offline(since: start, retryAt: start.addingTimeInterval(30)))
+
+        // The backoff delays the automatic triggers only.
+        await phone.scheduler.requestSync(.periodic)
+        let tried = await phone.transport.changesCalls
+        XCTAssertEqual(tried, 1)
+        // The person's own refresh goes at once.
+        let report = try await phone.scheduler.syncNowAndWait()
+        XCTAssertEqual(report.pull.unreadable, 0)
+        let back = await phone.scheduler.status
+        XCTAssertEqual(back, .idle(lastSync: start))
+        XCTAssertEqual(sleeper.pending(30), 0, "the backoff retry is dropped")
+
+        // And coming back to the foreground, too.
+        await phone.transport.failNextChanges(with: SyncTransportError.networkUnavailable)
+        await phone.scheduler.requestSync(.periodic)
+        await phone.scheduler.requestSync(.foreground)
+        let calls = await phone.transport.changesCalls
+        XCTAssertEqual(calls, 4)
+        let again = await phone.scheduler.status
+        XCTAssertEqual(again, .idle(lastSync: start))
+    }
+
+    func testAKeyFetchThatCantReachTheServerIsOfflineNotWaiting() async throws {
+        let phone = try await device("user-a")
+        try addAccount(phone.queue, "Synthetic Fetch")
+        await phone.transport.failNextFetch(with: .unavailable(retryAfter: 40))
+
+        await phone.scheduler.requestSync(.launch)
+
+        let status = await phone.scheduler.status
+        XCTAssertEqual(status, .offline(since: start, retryAt: start.addingTimeInterval(40)), "the server's retry-after, not the key wait")
+        await eventually("a 40 s timer armed") { self.sleeper.pending(40) == 1 }
+        XCTAssertEqual(sleeper.pending(300), 0)
+        XCTAssertFalse(try pending(phone.queue).isEmpty, "nothing sent")
+    }
+
+    func testOtherFailuresStopSyncWithTheReasonRetryAndClearOnSuccess() async throws {
+        let phone = try await device("user-a")
+        await phone.transport.failNextChanges(with: BrokenDisk())
+
+        await phone.scheduler.requestSync(.launch)
+        let status = await phone.scheduler.status
+        XCTAssertEqual(status, .failed(reason: "the disk is unhappy"))
+        await eventually("retried with the backoff") { self.sleeper.pending(30) == 1 }
+
+        sleeper.fire(30)
+        await eventually("cleared by the next success") { await phone.scheduler.status == .idle(lastSync: self.start) }
+    }
+
+    // MARK: Fix round 1: cancellation at each boundary
+
+    func testCancelBetweenPagesKeepsTheTokenAndAppliesNothing() async throws {
+        let mac = try await device("user-a")
+        await mac.scheduler.requestSync(.launch)
+        let phone = try await device("user-b")
+        await phone.scheduler.requestSync(.launch)
+        let tokenBefore = try token(phone.queue)
+        for name in ["Synthetic P1", "Synthetic P2", "Synthetic P3"] { try addAccount(mac.queue, name) }
+        await mac.scheduler.requestSync(.userRefresh)
+        await cloud.setPageSize(1)
+
+        await phone.transport.blockChanges(after: 1)
+        let scheduler = phone.scheduler
+        let outcome = Task { () -> Error? in
+            do { _ = try await scheduler.syncNowAndWait(); return nil } catch { return error }
+        }
+        await eventually("blocked on the second page") { await phone.transport.isBlocked }
+        let mark = await cloud.calls.count
+        await phone.scheduler.cancel()
+        await eventually("cancelled", timeout: 2) { await phone.transport.cancelledWhileBlocked == 1 }
+        await phone.transport.release()
+        let error = await outcome.value
+        XCTAssertTrue(error is CancellationError, "\(String(describing: error))")
+        let after = await calls(since: mark)
+        XCTAssertEqual(after, [])
+        XCTAssertEqual(try token(phone.queue), tokenBefore, "the first page isn't applied, the token stays")
+        XCTAssertEqual(try accounts(phone.queue), 0)
+
+        _ = try await phone.scheduler.syncNowAndWait()
+        XCTAssertEqual(try accounts(phone.queue), 3)
+    }
+
+    func testCancelBetweenPullAndPushRecordsThePullAndKeepsTheEditPending() async throws {
+        let mac = try await device("user-a")
+        let ids = try await mac.queue.write { db in try FiledYearSyncCheckTests.fixture(db) }
+        await mac.scheduler.requestSync(.launch)
+        let phone = try await device("user-b")
+        await phone.scheduler.requestSync(.launch)
+        try await mac.queue.write { db in
+            try db.execute(sql: "UPDATE transaction_ SET amountMinorUnits = -20000 WHERE id = ?", arguments: [ids["plumber"]!])
+        }
+        await mac.scheduler.requestSync(.userRefresh)
+        try addAccount(phone.queue, "Synthetic Edit")
+        let editsBefore = try pending(phone.queue)
+
+        clock.advance(60)
+        await phone.transport.blockSaves(after: 0)
+        let scheduler = phone.scheduler
+        let outcome = Task { () -> Error? in
+            do { _ = try await scheduler.syncNowAndWait(); return nil } catch { return error }
+        }
+        await eventually("the push is in flight") { await phone.transport.isBlocked }
+        await phone.scheduler.cancel()
+        await eventually("cancelled", timeout: 2) { await phone.transport.cancelledWhileBlocked == 1 }
+        await phone.transport.release()
+        let error = await outcome.value
+        XCTAssertTrue(error is CancellationError, "\(String(describing: error))")
+
+        XCTAssertEqual(try pending(phone.queue), editsBefore, "the edit waits for the next push")
+        let status = await phone.scheduler.status
+        XCTAssertEqual(status, .needsAttention(held: 1, lastSync: start.addingTimeInterval(60)), "the pull's results are kept")
+    }
+
+    func testCancelBetweenPushChunksKeepsWhatTheServerTook() async throws {
+        let phone = try await device("user-a", batchSize: 1)
+        try addAccount(phone.queue, "Synthetic C0")  // the first push publishes the key marker
+        await phone.scheduler.requestSync(.launch)
+        XCTAssertEqual(try pending(phone.queue), [])
+        for name in ["Synthetic C1", "Synthetic C2", "Synthetic C3"] { try addAccount(phone.queue, name) }
+
+        let savesBefore = await phone.transport.saveCalls
+        await phone.transport.blockSaves(after: 1)
+        let scheduler = phone.scheduler
+        let outcome = Task { () -> Error? in
+            do { _ = try await scheduler.syncNowAndWait(); return nil } catch { return error }
+        }
+        await eventually("blocked on the second chunk") { await phone.transport.isBlocked }
+        await phone.scheduler.cancel()
+        await eventually("cancelled", timeout: 2) { await phone.transport.cancelledWhileBlocked == 1 }
+        await phone.transport.release()
+        let error = await outcome.value
+        XCTAssertTrue(error is CancellationError, "\(String(describing: error))")
+
+        XCTAssertEqual(try pending(phone.queue).count, 2, "the first chunk stays acknowledged; the rest waits")
+        let onServer = await cloud.storedRecords().filter { $0.recordType == "account" }.count
+        XCTAssertEqual(onServer, 2)
+        let saves = await phone.transport.saveCalls
+        XCTAssertEqual(saves, savesBefore + 2, "nothing after the cancelled operation")
+
+        _ = try await phone.scheduler.syncNowAndWait()
+        XCTAssertEqual(try pending(phone.queue), [])
+        let all = await cloud.storedRecords().filter { $0.recordType == "account" }.count
+        XCTAssertEqual(all, 4)
     }
 
     // MARK: Status stream

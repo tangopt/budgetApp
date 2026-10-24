@@ -31,4 +31,8 @@ public enum SyncStatus: Equatable, Sendable {
     case needsAttention(held: Int, lastSync: Date?)
     /// Waits for the person (no iCloud account, iCloud full).
     case unavailable(SyncUnavailableReason)
+    /// A failure that is neither the network's nor the key's (a database error, say): shown to the person as "Sync
+    /// stopped: <reason>", still tried again with the capped backoff, cleared by the next success. The reason names
+    /// the kind of failure, never a value from the data.
+    case failed(reason: String)
 }

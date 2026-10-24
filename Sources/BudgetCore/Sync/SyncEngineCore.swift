@@ -29,6 +29,9 @@ public struct SyncPushReport: Equatable, Sendable {
     /// Why nothing was sent (ruling R15): the household key isn't held here yet, or its marker couldn't be read or
     /// published now. Everything stays pending; nil when the push ran.
     public var keyWait: SyncKeyError?
+    /// With `keyWait == .unavailable`: the passing transport error that kept the key marker from being fetched or
+    /// published (offline, busy, a retry-after), so the scheduler shows it as offline, not as waiting for the key.
+    public var keyWaitCause: SyncTransportError?
 
     public init() {}
 }
@@ -114,6 +117,8 @@ public actor SyncEngineCore {
     let keyStore: any SyncKeyStore
     /// The last entry point started: the next one waits for it.
     private var tail: Task<Void, Never>?
+    /// The passing transport error behind the last `SyncKeyError.unavailable` (set by the key fetch and publish).
+    var keyTransportError: SyncTransportError?
 
     public init(db: any DatabaseWriter, transport: any SyncTransport, device: SyncDevice, keyStore: any SyncKeyStore, batchSize: Int = 200,
                 clock: @escaping @Sendable () -> Date = { Date() }, documents: SyncDocumentFiles? = nil) {
@@ -384,11 +389,13 @@ public actor SyncEngineCore {
         // Every record goes sealed under the zone's current key (ruling R15): without it here, nothing is sent and
         // no key is made while another device's marker names one (it waits for iCloud Keychain).
         var key: HouseholdKey
+        keyTransportError = nil
         do {
             key = try await householdKey(zone: SyncRecordStore.householdZone, create: true)
         } catch let wait as SyncKeyError {
             Self.log.error("Sync push waits for the household key (\(String(describing: wait), privacy: .public))")
             report.keyWait = wait
+            report.keyWaitCause = wait == .unavailable ? keyTransportError : nil
             return report
         }
         try await renewLeaseIfDue(key)
@@ -444,10 +451,12 @@ public actor SyncEngineCore {
                 for zone in Self.zones { try await recoverMissingZone(zone) }
                 tries = [:]
                 // The marker went with the zone: published again (the same key) before anything is sent.
+                keyTransportError = nil
                 do {
                     key = try await householdKey(zone: SyncRecordStore.householdZone, create: true)
                 } catch let wait as SyncKeyError {
                     report.keyWait = wait
+                    report.keyWaitCause = wait == .unavailable ? keyTransportError : nil
                     return report
                 }
                 continue
