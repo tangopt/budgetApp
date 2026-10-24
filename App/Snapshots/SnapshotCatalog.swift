@@ -490,6 +490,14 @@ enum SnapshotCatalog {
                 models.property.tab = .money
                 models.property.sidePanel = .month(august)
             },
+            screen("property", "money_figure", "Property: Money, the Costs figure open", .property, settle: 1.5) { models, _ in
+                models.property.tab = .money
+                models.property.sidePanel = .figure(id: "costs", title: "Costs", drillDown: .costs(categoryId: nil))
+            },
+            screen("property", "money_figure_rent", "Property: Money, Rent received open", .property, settle: 1.5) { models, _ in
+                models.property.tab = .money
+                models.property.sidePanel = .figure(id: "received", title: "Rent received", drillDown: .rentCredits)
+            },
             screen("property", "overview_loan_5y", "Property: Overview, the loan five years each side", .property, settle: 1.3) { models, _ in
                 models.property.tab = .overview
                 models.property.loanRange = .fiveYears
@@ -597,10 +605,6 @@ enum SnapshotCatalog {
                 guard let tenancy = model.snapshot.tenancies.last else { throw SnapshotMissing("a tenancy") }
                 return AnyView(PropertyDocumentsSheet(viewModel: model, entity: EvidenceEntity(type: .tenancy, id: tenancy.id!),
                                                       title: "Documents · \(tenancy.referenceLabel)"))
-            },
-            sheet("money_drill_down", "Money: costs drill-down") { context in
-                let model = await context.propertyModel()
-                return AnyView(PropertyDrillDownSheet(title: "Costs", rows: model.transactions(.costs(categoryId: nil)), openTransaction: { _ in }))
             },
             sheet("recharge_statement_paid", "Recharge statement (paid)") { context in
                 try await context.statementSheet(status: .paid)

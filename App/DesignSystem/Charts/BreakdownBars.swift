@@ -46,11 +46,13 @@ struct BreakdownBars: View {
     /// Keeps the parts of zero or less (a category whose refunds cancel its costs) as rows
     /// without a bar, after the others — still openable.
     var keepsNonPositive = false
+    /// The part whose details are open (its row drawn in the selection colours).
+    var selectedId: String?
     @Environment(\.theme) private var theme
 
     /// Parts in money: amounts as `MoneyText` in `role` (`.neutral` for a breakdown of costs).
     init(items: [BreakdownItem], currency: Currency, role: MoneyRole = .neutral, maxItems: Int = 8, showsShare: Bool = true,
-         otherLabel: String = "Other", keepsNonPositive: Bool = false, selectTitle: @escaping (BreakdownItem) -> String = { "Show \($0.label)" },
+         otherLabel: String = "Other", keepsNonPositive: Bool = false, selectedId: String? = nil, selectTitle: @escaping (BreakdownItem) -> String = { "Show \($0.label)" },
          onSelect: ((BreakdownItem) -> Void)? = nil) {
         self.items = items
         self.measure = .money(currency, role)
@@ -58,6 +60,7 @@ struct BreakdownBars: View {
         self.showsShare = showsShare
         self.otherLabel = otherLabel
         self.keepsNonPositive = keepsNonPositive
+        self.selectedId = selectedId
         self.onSelect = onSelect
         self.selectTitle = selectTitle
     }
@@ -94,8 +97,12 @@ struct BreakdownBars: View {
                     HStack(spacing: 6) {
                         Circle().fill(color).frame(width: 8, height: 8).accessibilityHidden(true)
                         // Labels keep their width; the bar gives way.
-                        Text(part.label).lineLimit(1).fixedSize()
+                        Text(part.label).lineLimit(1).fixedSize().fontWeight(part.id == selectedId ? .semibold : .regular)
                     }
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(part.id == selectedId ? theme.selectionFill : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+                    .contentShape(Rectangle())
+                    .onTapGesture { if part.id != "breakdown.other" { onSelect?(part) } }
                     GeometryReader { proxy in
                         ZStack(alignment: .leading) {
                             Capsule().fill(Color.secondary.opacity(0.12))
@@ -123,13 +130,14 @@ struct BreakdownBars: View {
                                 Image(systemName: "chevron.right").font(.caption.weight(.semibold))
                             }
                             .buttonStyle(.borderless)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(part.id == selectedId ? Color.accentColor : Color.secondary)
                             .help(selectTitle(part))
                             .accessibilityLabel(selectTitle(part))
                         }
                     }
                 }
                 .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(part.id == selectedId ? .isSelected : [])
             }
         }
     }
