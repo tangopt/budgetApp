@@ -90,7 +90,7 @@ public enum EvidenceAnalyzer {
         case .rentReceipt: return ["IMPORTANCIA RECEBIDA", "VALOR DA RENDA", "IMPORTANCIA", "QUANTIA DE", "VALOR"]
         case .courtFee: return ["MONTANTE PAGO", "MONTANTE", "IMPORTANCIA A PAGAR", "VALOR"]
         case .lettingAgentFee: return ["FOI LIQUIDADO", "TOTAL A PAGAR", "TOTAL DOCUMENTO"]
-        case .accountantInvoice, .legalInvoice:
+        case .accountantInvoice, .legalInvoice, .repairInvoice:
             return ["TOTALGBP", "TOTAL GBP", "TOTAL EUR", "QUANTIA DE", "TOTAL A PAGAR", "TOTAL DOCUMENTO", "TOTAL"]
         case .utilityInvoice: return ["QUANTO TENHO A PAGAR", "VALOR A PAGAR", "TOTAL A PAGAR", "MONTANTE", "TOTAL"]
         case .bankTransferProof, .bankDebitAdvice: return ["MONTANTE", "IMPORTANCIA", "VALOR"]

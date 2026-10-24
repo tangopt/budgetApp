@@ -90,11 +90,19 @@ public enum DocumentClassifier {
         static let fileAddendum = make(#"\b(ADITAMENTO|ADENDA|ADDENDUM)S?\b"#)
         /// A tenancy word in a file name, beside an addendum word.
         static let fileTenancy = make(#"\b(ARRENDAMENTO|CONTRATO|TENANCY|RENT|RENTAL|LEASE)\b"#)
-        /// What a repair or maintenance bill is for (a tradesperson's work, the part fixed).
-        static let repairWork = make(#"\b(REPARAC\w*|MANUTENCAO|CANALIZ\w*|ELE(C)?TRICIST\w*|PINTURA|OBRAS|MAO DE OBRA|SUBSTITUICAO|DESENTUPIMENTO|ASSISTENCIA TECNICA|CALDEIRA|ESQUENTADOR|REPAIRS?|MAINTENANCE|PLUMB\w*)\b"#)
-        static let fileRepair = make(#"\b(REPARAC\w*|REPAIRS?|OBRAS|MANUTENCAO|CANALIZ\w*)\b"#)
+        /// What a repair or maintenance bill is for (a tradesperson's work).
+        static let repairWork = make(#"\b(REPARAC\w*|MANUTENCAO|CANALIZ\w*|ELE(C)?TRICIST\w*|PINTURA|OBRAS|MAO DE OBRA|SUBSTITUICAO|DESENTUPIMENTO|ASSISTENCIA TECNICA|CONSERTO|ARRANJO|AVARIA|INSTALACAO|REPAIRS?|MAINTENANCE|PLUMB\w*)\b"#)
+        /// A boiler or water heater as the thing worked on ("da caldeira"), not a surname.
+        static let repairAppliance = make(#"\b(DA|DE|DO|NA|NO|A|O) (CALDEIRA|ESQUENTADOR)\b"#)
+        /// What isn't a property's repair: a car, a phone, software, art, a telecom installation.
+        static let repairElsewhere = make(#"\b(VIATURA|AUTOMOVEL|MATRICULA|TELEMOVEL|ECRA|LICENCA|SOFTWARE|ARTE|INTERNET|FIBRA|TELECOMUNICAC\w*)\b|PINTURA A OLEO"#)
+        /// An invoice's own number heading ("FT 2026/12", "FR A/7", "FS 1").
+        static let invoiceNumber = make(#"\b(FT|FR|FS) ?[A-Z0-9]{0,4}[ /]?\d"#)
+        static let fileRepair = make(#"\b(REPARAC\w*|REPAIRS?|OBRAS|MANUTENCAO|CANALIZ\w*|ELE(C)?TRICIST\w*)\b"#)
         /// Stamp duty in a file name: "selo" as a word, or "stamp duty".
         static let fileStampDuty = make(#"\b(SELO|STAMP DUTY)\b"#)
+        /// IMT (property transfer tax), whose note lists the deed's stamp duty.
+        static let imt = make(#"\bIMT\b|TRANSMISSOES ONEROSAS"#)
     }
 
     /// Text rules, in order.
@@ -194,10 +202,9 @@ public enum DocumentClassifier {
         },
         // A repair or maintenance bill: an invoice word and the work's, after every issuer's rule
         // above (condomínio works, insurance claims, utilities' meter upkeep keep their kinds);
-        // never a bank's account-maintenance fee.
-        Rule(kind: .repairInvoice) {
-            $0.hasSquashed("FATURA", "FACTURA", "RECIBO", "INVOICE") && $0.matches(Patterns.repairWork) && !$0.has("MANUTENCAO DE CONTA")
-        },
+        // never a bank's account-maintenance fee, nor a bank's transfer, advice or statement that
+        // describes the bill (a transfer alone isn't the bill).
+        Rule(kind: .repairInvoice) { isRepairBill($0) },
         // A bare "Fatura-Recibo" says nothing about what it's for: left to the file name or `other`.
         Rule(kind: .bankTransferProof) { $0.has("TRANSFERENCIA") },
         Rule(kind: .bankStatement) { $0.has("EXTRATO") && $0.has("SALDO", "MOVIMENTOS") }
@@ -220,7 +227,9 @@ public enum DocumentClassifier {
         Rule(kind: .tenancyAddendum) { $0.matches(Patterns.fileAddendum) && $0.matches(Patterns.fileTenancy) },
         Rule(kind: .rentReceipt) { $0.has("RECIBO DE RENDA", "RECIBOS DE RENDA", "RECIBO RENDA", "RENT RECEIPT") },
         // Before the IRS and IMI names; not a loan's letter that names its stamp duty.
-        Rule(kind: .stampDuty) { $0.matches(Patterns.fileStampDuty) && !$0.has("PRESTACAO", "EMPRESTIMO", "CREDITO HABITACAO") },
+        Rule(kind: .stampDuty) {
+            $0.matches(Patterns.fileStampDuty) && !$0.has("PRESTACAO", "EMPRESTIMO", "CREDITO HABITACAO") && !$0.isIMI && !$0.isIRS
+        },
         Rule(kind: .ptIRSDeclaration) { $0.isIRS && $0.has("DECLARACAO", "MOD 3", "MODELO 3") },
         Rule(kind: .ptIRSAssessment) { $0.isIRS && $0.has("LIQUIDACAO") },
         Rule(kind: .ptIRSPaymentProof) { $0.isIRS && $0.has("PAGAMENTO RECIBO", "COMPROVATIVO") },
@@ -236,9 +245,10 @@ public enum DocumentClassifier {
         Rule(kind: .courtFee) { $0.matches(Patterns.fileCourt) },
         Rule(kind: .lettingAgentFee) { $0.matches(Patterns.fileLetting) },
         Rule(kind: .legalInvoice) { $0.has("LEGAL FEE", "ADVOGAD") },
-        // Not a transfer or statement named after the works, nor a bank's account-maintenance fee.
+        // Not a transfer or statement named after the works, a bank's account-maintenance fee, or
+        // a utility's own work ("EDP manutencao").
         Rule(kind: .repairInvoice) {
-            $0.matches(Patterns.fileRepair)
+            $0.matches(Patterns.fileRepair) && !$0.matches(Patterns.utilityIssuer)
                 && !$0.has("TRANSFERENCIA", "TRANSFER", "EXTRATO", "STATEMENT", "MANUTENCAO DE CONTA", "MANUTENCAO CONTA")
         },
         Rule(kind: .utilityInvoice) { $0.matches(Patterns.fileUtility) },
@@ -252,14 +262,35 @@ public enum DocumentClassifier {
         subject.has("PAGAMENTOS AO ESTADO", "PAGAMENTO AO ESTADO", "PAGAMENTOS - ESTADO", "PAGAMENTOS-ESTADO") || isTaxAuthorityReceipt(subject)
     }
 
-    /// Stamp duty (Imposto do Selo) with a charge's or a state payment's wording, and none of
-    /// a loan letter's, a fee advice's, a statement's, an IMI's or an IRS's.
+    /// Stamp duty (Imposto do Selo) with a charge's wording (nota / documento de cobrança), a
+    /// state payment's, or a liquidação by the tax authority; and none of the documents that
+    /// itemise stamp duty on something else: a loan letter (interest), an insurer's premium, a
+    /// condomínio's receipt, a bank's commission, a statement, a court fee, IMT, IMI or IRS.
     static func isStampDuty(_ subject: Subject) -> Bool {
-        guard subject.has("IMPOSTO DO SELO", "IMPOSTO SELO"),
-              isStatePayment(subject) || subject.has("NOTA DE COBRANCA", "DOCUMENTO DE COBRANCA", "LIQUIDACAO") else { return false }
-        if subject.has("EMPRESTIMO", "PRESTACAO", "CREDITO HABITACAO", "COMISSAO") { return false }
+        guard subject.has("IMPOSTO DO SELO", "IMPOSTO DE SELO", "IMPOSTO SELO") else { return false }
+        let taxAuthority = isStatePayment(subject) || subject.has("AUTORIDADE TRIBUTARIA", "PORTAL DAS FINANCAS") || subject.matches(duc)
+        guard taxAuthority || subject.has("NOTA DE COBRANCA", "DOCUMENTO DE COBRANCA") else { return false }
+        if subject.has("EMPRESTIMO", "PRESTACAO", "CREDITO HABITACAO", "CREDITO A HABITACAO", "MUTUO", "JUROS", "COMISSAO",
+                       "SEGURO", "PREMIO", "APOLICE", "CONDOMINIO") { return false }
         if subject.has("EXTRATO") && subject.has("SALDO", "MOVIMENTOS") { return false }
+        if subject.stateReferencePrefix == "702" || subject.matches(Patterns.imt) { return false }
         return !subject.isIMI && !subject.isIRS
+    }
+
+    /// A repair or maintenance bill: an invoice's word or number, and the work's word (a boiler
+    /// or water heater counts as the thing worked on); not a car's, phone's, software's or art's,
+    /// not a bank's account-maintenance fee, and not a bank's own document about the payment.
+    static func isRepairBill(_ subject: Subject) -> Bool {
+        guard subject.hasSquashed("FATURA", "FACTURA", "RECIBO", "INVOICE") || subject.matches(Patterns.invoiceNumber),
+              subject.matches(Patterns.repairWork) || subject.matches(Patterns.repairAppliance) else { return false }
+        if subject.matches(Patterns.repairElsewhere) || subject.has("MANUTENCAO DE CONTA") { return false }
+        // A transfer, a debit advice or a statement that describes the bill.
+        let headed = subject.firstLines.prefix(2).contains { line in
+            ["TRANSFERENCIA", "AVISO DE DEBITO", "COMPROVATIVO"].contains { line.hasPrefix($0) }
+        }
+        if headed || subject.has("ORDENANTE", "NOME BENEFICIARIO", "TIPO DE OPERACAO",
+                                                                          "SERVICOS/COMPRAS", "STATEMENT OF ACCOUNT") { return false }
+        return !(subject.has("EXTRATO") && subject.has("SALDO", "MOVIMENTOS"))
     }
 
     /// How far into the text a contract's title starts (characters).

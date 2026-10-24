@@ -177,4 +177,108 @@ final class DocumentClassifierTests: XCTestCase {
     func testRulesVersionIsBumpedForTheNewKinds() {
         XCTAssertEqual(DocumentClassifier.rulesVersion, 2)
     }
+
+    // MARK: Fix round 1: the review's probes (synthetic)
+
+    private func check(_ table: [(String?, String, DocumentKind)], file: StaticString = #filePath, line: UInt = #line) {
+        for (text, name, kind) in table {
+            XCTAssertEqual(DocumentClassifier.classify(text: text, fileName: name), kind, text ?? name, file: file, line: line)
+        }
+    }
+
+    func testStampDutyWordingInOtherIssuersDocumentsKeepsTheirKinds() {
+        check([
+            // Insurers itemise stamp duty on premiums.
+            ("Fidelidade\nDocumento de Cobrança\nSeguro Multirriscos Habitação\nPrémio 200,00\nImposto do Selo 18,00\nINEM 2,00", "x.pdf", .insuranceReceipt),
+            ("Ageas Portugal Companhia de Seguros\nAviso de pagamento\nPrémio Comercial 200,00\nImposto do Selo 18,00\nData de liquidação 2026-01-31", "x.pdf", .other),
+            ("BBVA SEGUROS\nRecibo de prémio\nImposto do Selo 3,00\nLiquidação 2026-01-01", "x.pdf", .insuranceReceipt),
+            // Loan letters without "empréstimo" or "prestação".
+            ("Aviso de débito\nCrédito à habitação 0001\nJuros 300,00\nImposto do Selo 12,00\nData de liquidação 2026-01-31", "x.pdf", .other),
+            ("Comunicação de liquidação\nMútuo hipotecário n.º 0001\nJuros 300,00\nImposto do Selo s/ juros 12,00", "x.pdf", .other),
+            // IMT's note lists the deed's stamp duty.
+            ("Autoridade Tributária e Aduaneira\nDocumento de cobrança\nIMT - Imposto Municipal sobre as Transmissões Onerosas de Imóveis\nImposto do Selo verba 1.1", "x.pdf", .other),
+            ("Condomínio Rua Exemplo\nRecibo N 5\nQuota\nImposto do Selo 0,00\nLiquidação", "x.pdf", .condominioReceipt),
+            ("RECIBO DE RENDA ELETRÓNICO\nImposto do Selo\nLiquidação", "x.pdf", .rentReceipt),
+            // "Liquidação" without the tax authority: an accountant's service.
+            ("Contabilidade Exemplo\nFatura FT 1\nLiquidação de Imposto do Selo (serviço)\nTotal 50,00", "x.pdf", .accountantInvoice),
+            ("PAGAMENTOS AO ESTADO\nReferencia : 702000000000001\nImposto do Selo", "x.pdf", .courtFee),
+            ("Nota de cobrança\nIMI 2025\nImposto do Selo\n", "x.pdf", .imiNotice),
+            ("Nota de cobrança\nIRS 2025\nValor a pagar 900", "x.pdf", .ptIRSPaymentNote),
+            // A state payment with only its reference: left to the file name.
+            ("AVISO DE DÉBITO\nPAGAMENTOS AO ESTADO\nReferencia : 161200000000001\nMONTANTE PAGO : 95,00 EUROS", "x.pdf", .other),
+            ("AVISO DE DÉBITO\nPAGAMENTOS AO ESTADO\nReferencia : 161200000000001\nMONTANTE PAGO : 95,00 EUROS", "Imposto selo.pdf", .stampDuty),
+            // File names: IMI's and IRS's keep theirs.
+            (nil, "IMI e Selo 2025.pdf", .imiNotice),
+            (nil, "IRS selo nota.pdf", .ptIRSPaymentNote)
+        ])
+    }
+
+    func testStampDutyRecall() {
+        check([
+            ("Autoridade Tributária\nDocumento de cobrança\nImposto de Selo\nValor 95,00", "x.pdf", .stampDuty),
+            ("COMPROVATIVO DE PAGAMENTO\nImposto do Selo\nDUC 161200000000001", "x.pdf", .stampDuty),
+            ("Portal das Finanças\nImposto do Selo\nLiquidação n.º 2026 1\nValor a pagar 95,00", "x.pdf", .stampDuty)
+        ])
+    }
+
+    func testRepairWordingInBankDocumentsKeepsTheirKinds() {
+        check([
+            // A transfer that describes the bill is the transfer, never the bill.
+            ("Transferência SEPA\nOrdenante: Exemplo\nDescritivo: Fatura FT 15 reparação\nMontante: 79,95 EUR", "x.pdf", .bankTransferProof),
+            ("AVISO DE DÉBITO\nPAGAMENTOS - SERVIÇOS/COMPRAS\nEntidade: Canalizações Exemplo\nRecibo\nMontante 79,95", "x.pdf", .other),
+            ("Statement of account\nInvoice\nmaintenance", "x.pdf", .other)
+        ])
+        // An invoice asking to be paid by transfer is still the invoice.
+        XCTAssertEqual(DocumentClassifier.classify(text: "Canalizações Exemplo Lda\nFatura FT 2026/9\nReparação de autoclismo\nTotal 79,95 EUR\n"
+                                                   + "Pagamento por transferência bancária para o IBAN PT50 0000 0000 0000 0000 0000 0", fileName: "x.pdf"), .repairInvoice)
+    }
+
+    func testRepairPrecision() {
+        check([
+            ("Clínica Dentária Dra. Ana Caldeira\nFatura-Recibo FR 1\nConsulta\nTotal 50,00", "x.pdf", .other),
+            ("Oficina Auto Exemplo\nFatura FT 1\nReparação de viatura 00-AA-00\nTotal 300,00", "x.pdf", .other),
+            ("Stand Exemplo\nFatura FT 2\nManutenção automóvel matrícula 00-AA-00\nTotal 150,00", "x.pdf", .other),
+            ("Exemplo Software Lda\nFatura FT 1\nManutenção anual licença\nTotal 100,00", "x.pdf", .other),
+            ("Exemplo Lda\nFatura FT 3\nManutenção de software\nTotal 100,00", "x.pdf", .other),
+            ("Loja Exemplo\nFatura\nSubstituição de ecrã telemóvel\nTotal 100,00", "x.pdf", .other),
+            ("Galeria\nFatura\nPintura a óleo\nTotal 400,00", "x.pdf", .other),
+            ("Galeria Exemplo\nFatura FT 4\nPintura, obra de arte\nTotal 400,00", "x.pdf", .other),
+            ("Exemplo Telecomunicações\nFatura FT 5\nInstalação de fibra e internet\nTotal 30,00", "x.pdf", .other),
+            // A water heater or boiler named as the thing worked on.
+            ("Exemplo Lda\nFatura FT 6\nRevisão da caldeira\nTotal 90,00", "x.pdf", .repairInvoice),
+            ("Exemplo Lda\nFatura FT 7\nLimpeza do esquentador\nTotal 45,00", "x.pdf", .repairInvoice)
+        ])
+    }
+
+    func testRepairRecall() {
+        check([
+            ("Exemplo Lda\nFatura FT 1\nConserto de estore\nTotal 80,00", "x.pdf", .repairInvoice),
+            ("Exemplo Lda\nFatura-Recibo\nReparação de avaria máquina de lavar\nTotal 80,00", "x.pdf", .repairInvoice),
+            ("Exemplo Lda\nFatura\nAvaria do estore\nTotal 80,00", "x.pdf", .repairInvoice),
+            ("Exemplo Lda\nFatura\nInstalação de torneira\nTotal 80,00", "x.pdf", .repairInvoice),
+            ("Serralharia Exemplo\nFatura\nArranjo de fechadura\nTotal 80,00", "x.pdf", .repairInvoice),
+            ("Fatura FT 3\nObras de remodelação da casa de banho\nTotal 2.000,00", "x.pdf", .repairInvoice),
+            ("Fatura FT 3\nServiço de canalizador\nTotal 60,00", "x.pdf", .repairInvoice),
+            ("FT 2026/12\nReparação de autoclismo\nTotal 60,00", "x.pdf", .repairInvoice),
+            ("FR A/7\nConserto de porta\nTotal 60,00", "x.pdf", .repairInvoice),
+            ("Fatura simplificada FS 1\nManutenção caldeira\nTotal 60,00", "x.pdf", .repairInvoice),
+            ("Exemplo Lettings Ltd\nInvoice 12\nProperty maintenance: boiler repair\nTotal £120", "x.pdf", .repairInvoice),
+            (nil, "Fatura eletricista.pdf", .repairInvoice),
+            (nil, "Electricista 2026.pdf", .repairInvoice),
+            (nil, "canalizador.pdf", .repairInvoice),
+            (nil, "Manutencao caldeira 2025.pdf", .repairInvoice),
+            (nil, "Manutencao elevador condominio.pdf", .condominioReceipt),
+            (nil, "Obras seguro.pdf", .insuranceReceipt),
+            // A utility's name wins over the repair words.
+            (nil, "EDP manutencao.pdf", .utilityInvoice),
+            (nil, "Galp reparacao contador.pdf", .other)
+        ])
+    }
+
+    func testRepairBillsAreImportedAndTheirTotalRead() {
+        XCTAssertTrue(EvidenceInitialImport.relevantKinds.contains(.repairInvoice))
+        // The total to pay, not the larger estimate before it.
+        let text = "Canalizações Exemplo Lda\nFatura-Recibo FR 2026/15\nReparação de autoclismo\nOrçamento inicial 150,00 €\nTotal a pagar 79,95 €"
+        XCTAssertEqual(EvidenceAnalyzer.amount(in: text, kind: .repairInvoice)?.minorUnits, 7_995)
+    }
 }
