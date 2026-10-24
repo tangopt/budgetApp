@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Files left out of an import can be kept for later (Mango's own copy, re-suggested when Mango learns more) or copied to a folder; users create custom document kinds while importing (stored, synced, renamable, mergeable, learnt); two new built-in kinds (Repair bill, Stamp duty); the "same document" alert fires only for identical files or true same-kind same-period duplicates; one document can evidence several transactions, with instalment and remainder suggestions.
+**Goal:** Files left out of an import can be kept for later (Mango's own copy, synced sealed to the household, re-suggested when Mango learns more) or copied to a folder (Mac); users create custom document kinds while importing (stored, synced, renamable, mergeable, learnt); two new built-in kinds (Repair bill, Stamp duty); the "same document" alert fires only for identical files or true same-kind same-period duplicates; one document can evidence several transactions, with instalment and remainder suggestions; every transaction in the Mac budget shows its documents with a thumbnail and Quick Look.
 
-**Architecture:** All rules live in BudgetCore: `ImportDuplicates` (alert rule and wording), `DocumentClassifier` + `EvidenceMatcher` (new kinds, instalments), a new `CustomDocumentKind` record with a `DocumentKindRef`/`DocumentKindCatalog` façade used wherever a kind is shown or compared, and a local-only `ImportWaitingList`. The App adds the *New kind…* control, a *Kinds…* sheet, a *Set aside* sheet and a *Waiting for later* panel. Custom kinds created in a review stay in the plan until Confirm.
+**Architecture:** All rules live in BudgetCore: `ImportDuplicates` (alert rule and wording), `DocumentClassifier` + `EvidenceMatcher` (new kinds, instalments), a new `CustomDocumentKind` record with a `DocumentKindRef`/`DocumentKindCatalog` façade used wherever a kind is shown or compared, a synced `ImportWaitingList` whose copies ride the existing sealed document-file sync, and `TransactionDocuments` (a transaction's documents and counts). The App adds the *New kind…* control, a *Kinds…* sheet, a *Set aside* sheet, a *Waiting for later* panel and a transaction documents popover. Custom kinds created in a review stay in the plan until Confirm.
 
 **Tech Stack:** Swift 6, SwiftUI (macOS 26), BudgetCore SwiftPM package, GRDB, XCTest.
 
@@ -18,8 +18,9 @@
 - UI fits 1100×700 with no figure wrapping (Panel, DataTable, StatusPill, InlineBanner, MoneyText, DateText, `figureText`).
 - Editors save only on Save (Kinds sheet, evidence rules sheet, inspector details). One-click actions (Keep for later, Copy, Discard after confirmation, Import) are their own save.
 - Nothing is written before Confirm in a review: a kind created there is pending until Confirm.
-- Migrations appended last in `DatabaseManager` (after `registerSyncMigration`), never editing applied ones. New synced tables/columns go into `SyncSchema.tables` (parents first), `uniqueKeys`, `jsonReferences`; `SyncSchema.version` 4 → 5 and the new `pinnedHash` in `SyncChangeTrackerTests`. Local-only tables go into `SyncSchema.localOnlyTables`.
-- The real database is never written by development agents; the one-off tool of Task 3 defaults to a dry run and is run for real only with the user's go.
+- Migrations appended last in `DatabaseManager` (after `registerSyncMigration`), never editing applied ones. New synced tables/columns go into `SyncSchema.tables` (parents first), `uniqueKeys`, `jsonReferences`; `SyncSchema.version` 4 → 5 once for this branch (Tasks 4 and 9 both land in version 5; re-pin `pinnedHash` in `SyncChangeTrackerTests` after each). Local-only columns go in `localOnly`.
+- Sync rules (sync spec R14/R15): every synced row is sealed (`sealed` + `keyId` only); files travel as ciphertext-only file records with zone-key-wrapped data keys; imports take the import lease at Confirm; the filed-year check sees every incoming change. Waiting files live in the household zone.
+- The real database is never written by development agents; the one-off tool of Task 3 defaults to a dry run. The user gave the go to run it for real after the merge (backup first, Mango quit) — the controller runs it then, not an implementer.
 - Build the App target too before merging: `swift test` misses App compile errors.
 - Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
@@ -121,7 +122,7 @@ func testIdenticalFileWordings() throws {
 - Modify: `Sources/BudgetCore/Evidence/DocumentClassifier.swift` (rules + `public static let rulesVersion = 2`)
 - Modify: `Sources/BudgetCore/Evidence/EvidenceMatcher.swift:60` (expectations)
 - Modify: `Sources/BudgetCore/Evidence/EvidenceRequirementDefaults.swift:31` (repair → `[.repairInvoice, .other]`, usual source "Supplier"; new: name contains "selo" or "stamp duty" → `[.stampDuty]`, "Portal das Finanças", checked before the `pt tax`/IRS rule)
-- Modify: `Sources/BudgetCore/Tax/TaxSettings.swift` `TaxExpenseTypeMap.suggestedType` (expense named "selo"/"stamp duty" → the user's answer to open question 2; default `.otherExpense`), before the `imposto` → `.foreignTax` line
+- Modify: `Sources/BudgetCore/Tax/TaxSettings.swift` `TaxExpenseTypeMap.suggestedType` (expense named "selo"/"stamp duty" → `.otherExpense`, user 2026-10-24), before the `imposto` → `.foreignTax` line
 - Modify: every exhaustive `switch` over `DocumentKind` the compiler flags (e.g. `ImportModelProposals`, model prompts)
 - Test: `Tests/BudgetCoreTests/DocumentClassifierTests.swift`, `EvidenceMatcherTests.swift`, `ImportNamingTests.swift`, `EvidenceRequirementDefaultsTests` (in the file that tests `rule(forCategoryName:)`), `TaxExpenseTypeMap` tests
 
@@ -154,7 +155,7 @@ func testStampDutyLinesInLoanLettersAndAdvicesKeepTheirKinds() {
     XCTAssertEqual(DocumentClassifier.classify(text: "Recibo de empréstimo 193/480\nImposto do Selo 12,00", fileName: "h.pdf"), .mortgageReceipt)
 }
 ```
-Plus: `ImportNamingTests` area `"Property"` / `"Tax PT"`; `EvidenceMatcherTests` a repair bill of €79.95 proposes a −€79.95 debit 10 days later; defaults `rule(forCategoryName: "Repairs").kinds == [.repairInvoice, .other]`, `rule(forCategoryName: "Imposto do Selo").kinds == [.stampDuty]`; `TaxExpenseTypeMap.suggestedType(forCategoryName: "Imposto do Selo", type: .expense) == .otherExpense` (or the user's answer).
+Plus: `ImportNamingTests` area `"Property"` / `"Tax PT"`; `EvidenceMatcherTests` a repair bill of €79.95 proposes a −€79.95 debit 10 days later; defaults `rule(forCategoryName: "Repairs").kinds == [.repairInvoice, .other]`, `rule(forCategoryName: "Imposto do Selo").kinds == [.stampDuty]`; `TaxExpenseTypeMap.suggestedType(forCategoryName: "Imposto do Selo", type: .expense) == .otherExpense`; `testRepairBillOnARepairsTransactionIsTheRepairsLinesEvidence` (a `.repairInvoice` linked to a debit in a category mapped to `.repairs` is listed in `TaxEvidencePack` for that year under the repairs line, and a `[.repairInvoice, .other]` rule is satisfied by it but not by a `.bankDebitAdvice` alone).
 
 - [ ] **Step 2: Run** `swift test --filter DocumentClassifierTests` → FAIL (no such cases).
 - [ ] **Step 3: Implement** the cases, names, areas, rules, expectations, defaults, tax suggestion, `rulesVersion = 2`; fix every switch the compiler flags.
@@ -174,13 +175,13 @@ Plus: `ImportNamingTests` area `"Property"` / `"Tax PT"`; `EvidenceMatcherTests`
 - Consumes: Task 2 kinds; `ImportNaming`/`EvidenceNaming` for the new canonical names.
 - Produces: `NewKindsReclassification.plan(db: Database, repairsRuleKinds: [DocumentKind]?) throws -> MortgageReceiptReclassification`-shaped `Plan` (own `DocumentChange` with `newKind`, `RequirementChange`), `apply(_ plan: Plan, db: Database) throws` (refuses with `.documentChanged(id)` if a document changed since planning).
 
-Behaviour: library documents of kind `.other` whose text (else file name) `DocumentClassifier` now reads as `.repairInvoice` or `.stampDuty` get that kind and a canonical name with the new type part; evidence rules whose scope is a category named like "Repairs" and whose kinds are `[]` change to `repairsRuleKinds` when given (nil = rule untouched — the answer to open question 1). The tool prints the plan; `--apply` writes it after a timestamped backup (`MigrationBackup`), like `ReclassifyMortgageReceipts`.
+Behaviour: library documents of kind `.other` whose text (else file name) `DocumentClassifier` now reads as `.repairInvoice` or `.stampDuty` get that kind and a canonical name with the new type part; evidence rules whose scope is a category named like "Repairs" and whose kinds are `[]` change to `repairsRuleKinds` when given (nil = untouched; the user chose `[.repairInvoice, .other]`, 2026-10-24). The tool prints the plan; `--apply` writes it after a timestamped backup (`MigrationBackup`), like `ReclassifyMortgageReceipts`.
 
 - [ ] **Step 1: Failing tests** — `testOtherDocumentsReadAsRepairBillsAreReclassified`, `testDocumentsOfOtherKindsAreLeftAlone` (an `.insuranceReceipt` with repair words stays), `testRepairsRuleChangesOnlyWhenKindsAreGiven` (nil → no `RequirementChange`; `[.repairInvoice, .other]` → one change from `[]`), `testApplyRefusesADocumentChangedSincePlanning`.
 - [ ] **Step 2: Run** `swift test --filter NewKindsReclassificationTests` → FAIL.
 - [ ] **Step 3: Implement** the plan/apply and the tool (dry run unless `--apply`; `--repairs-kinds repairInvoice,other` sets the rule).
 - [ ] **Step 4: Run** → PASS. Dry-run the tool on the demo database only: `swift run ReclassifyNewKinds --database <demo copy>`.
-- [ ] **Step 5: Commit** — `"ReclassifyNewKinds: file existing documents under Repair bill and Stamp duty (dry run by default)"`. Do **not** run it on the real database; the controller asks the user.
+- [ ] **Step 5: Commit** — `"ReclassifyNewKinds: file existing documents under Repair bill and Stamp duty (dry run by default)"`. Do **not** run it on the real database here; the controller runs it after the merge (Task 13).
 
 ---
 
@@ -322,7 +323,7 @@ Import: when no single confident match exists and `instalments` finds exactly on
 - Create: `Sources/BudgetCore/DocumentImport/ImportSetAside.swift` (candidates, copy to a folder)
 - Modify: `Sources/BudgetCore/DocumentImport/ImportApplier.swift` (`ImportRunSummary.setAside: [SetAsideFile]`; mark waiting rows imported in the apply transaction)
 - Modify: `Sources/BudgetCore/DocumentImport/ImportSession.swift` (`setAsideCandidates() -> [SetAsideFile]` for an open review; `waiting: [ImportWaitingFile]`, `refreshWaiting()` re-checking off the main actor; `importWaiting(_ ids: [Int64])` starting a review with entry point "Waiting list")
-- Modify: `Sources/BudgetCore/Database/DatabaseManager.swift` (register last), `Sources/BudgetCore/Sync/SyncSchema.swift` (`"importWaitingFile"` in `localOnlyTables`)
+- Modify: `Sources/BudgetCore/Database/DatabaseManager.swift` (register last), `Sources/BudgetCore/Sync/SyncSchema.swift` (`SyncTableSchema("importWaitingFile", synced: ["sha256","originalFileName","byteCount","storedRelativePath","reason","recognisedAs","keptAt","importedRunId"], foreignKeys: ["importedRunId": "importRun"], localOnly: ["text","textStatus","suggestion","checkedSignature"])` after `importRun`; `SyncUniqueKey("importWaitingFile", ["sha256"], .identity)`; still version 5, re-pin the hash)
 - Test: `Tests/BudgetCoreTests/ImportWaitingListTests.swift`, `ImportSetAsideTests.swift`, `ImportSessionTests`
 
 **Interfaces:**
@@ -333,7 +334,7 @@ Import: when no single confident match exists and `instalments` finds exactly on
   - `public struct ImportWaitingList { static var defaultRoot: URL /* Application Support/Budget/Waiting */; init(root: URL = defaultRoot, database: any DatabaseWriter); func keep(_ files: [SetAsideFile], now: Date) throws -> KeepResult /* kept, alreadyWaiting, failed: [(fileName: String, reason: String)] */; func waiting() throws -> [ImportWaitingFile] /* not imported, or imported by an undone run; newest first */; func fileURL(_ file: ImportWaitingFile) -> URL; func discard(_ ids: [Int64]) throws; func recheck(recognise: (ImportFile) -> ImportRecognition, signature: String) throws -> [Int64] /* ids newly suggested */; func purgeImported(now: Date, olderThanDays: Int = 30) throws -> Int; static func signature(db: Database) throws -> String; static func markImported(db: Database, runId: Int64, sha256s: Set<String>) throws }`
   - `public enum ImportSetAside { static func candidates(_ plan: ImportPlan, discarding: Bool) -> [SetAsideFile]; static func copy(_ files: [SetAsideFile], waitingCopy: (String) -> URL?, to folder: URL) -> CopyResult /* copied: [URL], failed: [(fileName: String, reason: String)] */ }`
 
-Rules: candidates are top-level items (`parentId == nil`) that won't be imported — `isLeftOut` at Confirm, every item when `discarding` — except an `ImportDuplicate.Level.file` whose original is a library document; `reason` is the item's first Needs-you reason, else `"Left out by you"`, else `"Import discarded"`; `recognisedAs` the item's `recognition.kind.displayName`. `keep` copies first (to a temporary name, then moved into place), then inserts the row; a failed copy inserts nothing for that file. `signature` = SHA-256 of `rulesVersion`, the custom kinds (`id:name:area`, by id) and the enabled `documentKind`/`issuer` rules (`id:matchKey:actionJSON`, by id). `recheck` rebuilds an `ImportFile` from the row (url = the copy, stored text) for rows whose `checkedSignature` differs; a recognition other than `.unknown`/`.evidence(.other)` whose `displayName` differs from `recognisedAs` sets `suggestion = "Now recognised as <name>"`; the signature is stored either way. `copy` writes `name 2.ext`, `name 3.ext`… on a clash, never overwrites, copies the original when it exists, else the waiting copy. `markImported` (inside the apply) sets `importedRunId` for rows whose hash the run filed, linked or recorded.
+Rules: candidates are top-level items (`parentId == nil`) that won't be imported — `isLeftOut` at Confirm, every item when `discarding` — except an `ImportDuplicate.Level.file` whose original is a library document; `reason` is the item's first Needs-you reason, else `"Left out by you"`, else `"Import discarded"`; `recognisedAs` the item's `recognition.kind.displayName`. `keep` copies first (to a temporary name, then moved into place), then inserts the row; a failed copy inserts nothing for that file. `signature` = SHA-256 of `rulesVersion`, the custom kinds (`id:name:area`, by id) and the enabled `documentKind`/`issuer` rules (`id:matchKey:actionJSON`, by id). `recheck` rebuilds an `ImportFile` from the row (url = the copy, stored text — or, when this device has none yet (a row that arrived by sync), `ImportFile.load` of the copy, its text then stored) for rows whose `checkedSignature` differs; a recognition other than `.unknown`/`.evidence(.other)` whose `displayName` differs from `recognisedAs` sets `suggestion = "Now recognised as <name>"`; the signature is stored either way. `copy` writes `name 2.ext`, `name 3.ext`… on a clash, never overwrites, copies the original when it exists, else the waiting copy. `markImported` (inside the apply) sets `importedRunId` for rows whose hash the run filed, linked or recorded.
 
 - [ ] **Step 1: Failing tests**
 
@@ -350,7 +351,8 @@ func testCandidatesAtConfirmAreTheLeftOutFilesNotRowsNorIdenticalLibraryFiles() 
 func testCandidatesWhenDiscardingAreEveryFileButIdenticalLibraryFiles() throws
 func testCopyToAFolderNumbersClashesAndNeverOverwrites() throws // existing "a.pdf" → "a 2.pdf"; original untouched (same bytes, same mtime)
 func testCopyFallsBackToTheWaitingCopy() throws
-func testWaitingTableIsLocalOnly() // SyncSchema.localOnlyTables.contains("importWaitingFile"); SyncSchemaTests stays green
+func testWaitingTableSyncsWithoutItsText() // SyncSchema.table("importWaitingFile") synced columns as listed, text/suggestion local-only; SyncSchemaTests, SyncReferenceClassificationTests, the pinned hash stay green
+func testRecheckReadsTheCopyWhenThisDeviceHasNoText() throws // a row arrived by sync (text nil) → recheck loads the copy (ImportFile.load) before recognising
 ```
 - [ ] **Step 2: Run** `swift test --filter "ImportWaitingListTests|ImportSetAsideTests"` → FAIL.
 - [ ] **Step 3: Implement** (file work through `FileManager`, temporary directories in tests).
@@ -359,7 +361,39 @@ func testWaitingTableIsLocalOnly() // SyncSchema.localOnlyTables.contains("impor
 
 ---
 
-### Task 10: App — Set aside sheet and the Waiting for later panel
+### Task 10: Waiting files sync sealed to the household
+
+**Files:**
+- Modify: `Sources/BudgetCore/Sync/SyncDocumentFiles.swift` (from document-only to file-bearing tables)
+- Modify: `Sources/BudgetCore/Sync/DocumentCrypto.swift` (`fileContext(table:uuid:sha256:)`; `documentContext` unchanged byte for byte)
+- Modify: `Sources/BudgetCore/Sync/SyncEngineCore.swift` / `SyncRehearsal.swift` where they pass the library root (add the waiting root)
+- Test: `Tests/BudgetCoreTests/WaitingFileSyncTests.swift` (FakeCloud, in-memory key store, temporary roots), `FieldSealingSyncTests`, `FiledYearSyncCheckTests`
+
+**Interfaces:**
+- Consumes: Task 9 (`ImportWaitingFile`, `ImportWaitingList.defaultRoot`).
+- Produces: `struct SyncFileTable: Sendable { let table: String; let root: URL; func safePath(stored: String, sha256: String) -> String? }` and `SyncFileTables.standard(libraryRoot: URL, waitingRoot: URL) -> [SyncFileTable]` (`document` → the existing `libraryPath` rule; `importWaitingFile` → `"<sha256 lowercased>/<name>"` where name is one path component, not `.`/`..`, no leading dot, no `/` or NUL, ≤ 255 UTF-8 bytes). Every `recordType == "document"` branch in `SyncDocumentFiles` loops over the file tables instead; the file record type stays `documentFile`; references in `syncState` keep the `documentFile.<uuid>` key (UUIDs are unique across tables). The sealed file's authenticated data is `DocumentCrypto.documentContext` for documents (unchanged, so existing records still open) and `fileContext(table: "importWaitingFile", …)` for waiting files. A row deleted remotely removes its local copy.
+
+- [ ] **Step 1: Failing tests**
+
+```swift
+func testAKeptFileArrivesOnTheOtherDeviceWithItsCopy() async throws // device A keeps → push → device B pull: row listed, copy at waitingRoot/<sha>/<name>, bytes hash-equal
+func testTheWaitingRowAndItsFileAreSealed() async throws // outgoing row record has exactly ["sealed","keyId"]; neither the file name nor the reason's bytes appear; the file record's asset never contains the plaintext
+func testTheTextAndSuggestionNeverLeaveTheDevice() async throws
+func testAnUnsafeWaitingPathNeedsAttentionAndWritesNothing() async throws // "../x", ".hidden", "a/b" → conflict log "needs attention", no file written
+func testAFileWhoseBytesDontMatchItsHashIsNeverWritten() async throws
+func testDiscardOnOneDeviceRemovesTheCopyOnTheOther() async throws
+func testDocumentFilesStillOpenWithTheirOldContext() async throws // a document sealed before this change opens unchanged
+func testWaitingFilesNeverTriggerTheFiledYearCheck() async throws // incoming waiting rows → no FiledYearSyncAlert, the check's written tables exclude it
+func testImportingAWaitingFileHidesItOnTheOtherDevice() async throws // run confirmed on A (lease taken) → B pulls → B's waiting() no longer lists it
+```
+- [ ] **Step 2: Run** `swift test --filter "WaitingFileSyncTests|DocumentSyncTests|FieldSealingSyncTests"` → new tests FAIL, existing PASS.
+- [ ] **Step 3: Implement** the file-table generalisation; keep `DocumentSyncTests` green unchanged.
+- [ ] **Step 4: Run** `swift test` (all sync tests and the rehearsal tests) → PASS.
+- [ ] **Step 5: Commit** — `"Sync: waiting files and their copies, sealed, to the household"`
+
+---
+
+### Task 11: App — Set aside sheet and the Waiting for later panel
 
 **Files:**
 - Create: `App/DocumentImport/SetAsideSheet.swift`
@@ -381,14 +415,42 @@ UI copy: sheet title "Files not imported", subtitle "Mango can keep its own copy
 
 ---
 
-### Task 11: Demo data, full verification, install
+### Task 12: A transaction's documents in the budget, with Quick Look
+
+**Files:**
+- Create: `Sources/BudgetCore/Evidence/TransactionDocuments.swift`
+- Create: `App/Documents/TransactionDocumentsPopover.swift`
+- Modify: `App/DesignSystem/GridCellPanel.swift` (paperclip count on transaction rows; click opens the popover), its model protocol `GridCellPanelModel` (`documentCounts: [Int64: Int]`, `documents(for transactionId: Int64) async throws -> [TransactionDocument]`), `App/Budget/BudgetGridViewModel.swift` and the scenario lab's model (implement; counts read with the panel's transactions)
+- Modify: `App/Search/SearchView.swift`, `SearchViewModel.swift` (paperclip column, same popover)
+- Modify: `App/Documents/TransactionDocumentsSection.swift` (Edit transaction: the selected saved document's thumbnail and Quick Look beside the list; staging unchanged)
+- Modify: `App/Snapshots/SnapshotCatalog.swift` (route `budget-transaction-documents`)
+- Test: `Tests/BudgetCoreTests/TransactionDocumentsTests.swift`
+
+**Interfaces:**
+- Consumes: `DocumentKindCatalog` (Task 4), `EvidenceLibrary.fileURL`.
+- Produces:
+  - `public struct TransactionDocument: Equatable, Identifiable, Sendable { id: Int64 /* document */; kindLabel: String; displayName: String; docDate: Date?; amountMinorUnits: Int?; currency: Currency?; storedRelativePath: String; fileExtension: String; role: String?; otherTransactionCount: Int }`
+  - `public enum TransactionDocuments { static func documents(db: Database, transactionId: Int64, catalog: DocumentKindCatalog) throws -> [TransactionDocument]; static func counts(db: Database, transactionIds: [Int64]) throws -> [Int64: Int] }` — documents linked to the transaction plus a recorded utility invoice's document whose `transactionId` is it (once), ordered by date then id; `counts` in one query (chunks of 500 ids).
+  - `EvidenceLibrary.fileURL(storedRelativePath: String) -> URL` and `isOnThisDevice(storedRelativePath:) -> Bool`.
+
+UI: the popover (width ≤ 560) lists kind, canonical name (truncating in the middle), DateText, MoneyText, and "Also on N other transactions"; the selected row's `DocumentThumbnail` (height 220) or "Not on this Mac yet"; a *Quick Look* button and the space bar open `.quickLookPreview($url, in: urls)` over all of the transaction's documents on this device. Quick Look opens the library file itself (no copy). The paperclip shows the count with `figureText` and the help "N documents".
+
+- [ ] **Step 1: Failing tests** — `testSeveralDocumentsOnOneTransactionInDateOrder`, `testADocumentOnTwoTransactionsShowsOnBothWithTheOtherCount`, `testARecordedInvoicesDocumentShowsOnItsDebitOnce` (via `utilityInvoice.transactionId`, and not twice when also linked), `testCountsForManyTransactionsInOneRead` (1,200 ids), `testCustomKindLabelComesFromTheCatalog`.
+- [ ] **Step 2: Run** `swift test --filter TransactionDocumentsTests` → FAIL.
+- [ ] **Step 3: Implement** the BudgetCore API, then the views (reads off the main actor).
+- [ ] **Step 4: Run** `swift test`; build the App; `scripts/render-snapshots.sh` → the route at 1100×700, no wrapped figures; check by hand that space bar opens Quick Look and arrows move between documents.
+- [ ] **Step 5: Commit** — `"Budget: a transaction's documents with a thumbnail and Quick Look"`
+
+---
+
+### Task 13: Demo data, full verification, install
 
 **Files:**
 - Modify: `Sources/BudgetDemo/DemoImportSamples.swift` (synthetic: a repair bill + its receipt + a debit advice for one demo debit; a stamp-duty note; an invoice paid in two instalments; one unknown file to set aside)
-- Modify: `Sources/BudgetDemo/DemoDatabase.swift` (one custom kind "Boiler service", one waiting file; demo "Repairs" rule accepting Repair bill and Other)
+- Modify: `Sources/BudgetDemo/DemoDatabase.swift` (one custom kind "Boiler service", one waiting file; demo "Repairs" rule accepting Repair bill and Other; a demo debit with three documents and an invoice on two debits for the budget popover)
 
 - [ ] **Step 1:** `swift test` → all PASS (filed-year tests included).
 - [ ] **Step 2:** App build → succeeds; `scripts/render-snapshots.sh` → every route renders; review the new ones at 1100×700.
 - [ ] **Step 3:** Run the app on the demo database: import the demo samples — the three documents of one debit import with no alert; the instalment pair is asked; leave the unknown file out → Set aside sheet → Keep for later; create "New kind…" for it in a new import → the waiting file is suggested again.
 - [ ] **Step 4: Commit** — `"Demo: import samples for repair bills, stamp duty, instalments and set-aside"`
-- [ ] **Step 5:** After merge to main: `xcodegen generate`, `scripts/install-app.sh`. The controller then asks the user for open questions 1–3 and for the go to run `ReclassifyNewKinds` on the real database.
+- [ ] **Step 5:** After merge to main: `xcodegen generate`, `scripts/install-app.sh`. Then the controller (user's go, 2026-10-24): quit Mango, back up the real database, run `ReclassifyNewKinds` dry, check the plan, then `--apply --repairs-kinds repairInvoice,other`, and report what changed.

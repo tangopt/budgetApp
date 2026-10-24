@@ -1,8 +1,8 @@
 # Import centre: files set aside, new document kinds, several documents per payment
 
-Status: requirements approved by the user 2026-10-24; design decisions below are marked **(user)** — taken
-from the approved requirements — or **(controller)** — taken while writing this spec from the code, which
-the user can overrule. Builds on `2026-10-20-document-import-design.md` (the import centre) and keeps all
+Status: requirements approved by the user 2026-10-24; the user answered the open questions the same day
+(§6) and added §5. Design decisions are marked **(user)** — from the approved requirements or answers —
+or **(controller)** — taken while writing this spec from the code, which the user can overrule. Builds on `2026-10-20-document-import-design.md` (the import centre) and keeps all
 of its rules (review before anything is saved, one Confirm, undo, filed-year guard, learning).
 
 ## 1. Files left out of an import
@@ -21,8 +21,8 @@ has to find the original again.
   except a file identical (same hash) to a library document — Mango already holds those bytes.
 - **Keep for later (user):** Mango copies the file into its own waiting folder (`Application Support/Budget/
   Waiting/<sha256>/<original name>`), so the original may move or go. The waiting list is a table
-  (`importWaitingFile`) with the name, hash, size, the text already read (no second OCR), why it was set
-  aside, what it was recognised as, and when. Shown in the import centre as a *Waiting for later* panel
+  (`importWaitingFile`) with the name, hash, size, why it was set aside, what it was recognised as, and
+  when; the text already read is kept on this device (no second OCR here). Shown in the import centre as a *Waiting for later* panel
   across restarts, each file with *Import*, *Copy to a folder…* and *Discard…* (confirmed; removes Mango's
   copy only — the user's original is never touched).
 - **Suggested again (user):** when a new kind or a learnt rule appears, Mango re-reads waiting files and
@@ -37,8 +37,20 @@ has to find the original again.
   after their run (when the run still stands).
 - **Copy to a folder… (user):** copies to a chosen folder; originals untouched; a name already there gets
   " 2", " 3"… (never overwrites); the original is copied when it still exists, else Mango's waiting copy.
-- **Not synced (controller):** the waiting list is a Mac import-centre concern and its files are not in the
-  synced library, so `importWaitingFile` is a local-only table (like `sourceFile`).
+- **Synced to the household (user, 2026-10-24):** "import must be done on iMac or iPad, as my wife does a
+  lot of document imports and uses the iPad more than the Mac." The waiting list and Mango's copies sync
+  like library documents: `importWaitingFile` is a synced table (schema version 5) in the **household zone**
+  (until a later step adds private zones), and each copy travels as a sealed file record exactly as a
+  document's does (ruling R14: a separate `documentFile`-type record whose asset is ciphertext only; data
+  key wrapped by the zone key; R15 field sealing — the row carries only `sealed` and `keyId`). A received
+  copy is checked against its hash and its path (`<sha256>/<name>`, no separators or dot-names) before it
+  is written; a mismatch needs attention and writes nothing. Discarding on one device removes the row and
+  copies everywhere. *(controller)* Synced: hash, name, size, stored path, reason, recognised-as, kept-at,
+  imported-by-run. Local to each device: the text read, its status, the re-read signature and the
+  suggestion — every device that runs imports re-reads the files itself (the Mac now, the iPad at step 8).
+  Keeping and discarding are ordinary edits (no import lease); importing a waiting file is an import and
+  takes the lease at Confirm as any import. Waiting files are not filed-year data: they never feed a
+  return and never trigger the filed-year check. *Copy to a folder…* stays Mac-only.
 
 ## 2. New document kinds while importing (custom kinds)
 
@@ -88,15 +100,18 @@ has to find the original again.
   a bank advice that mention stamp duty keep their kinds; a condomínio receipt for works stays condomínio).
 - **Matching (controller):** repair bills: debits from 15 days before to 45 after, category hints repair /
   manutenção / obras; stamp duty: debits from the day before to 60 after, hints PAGEST / ESTADO / SELO.
-- **Evidence rules (user):** the default rule for a *Repairs* category accepts Repair bill (and Other, so
-  documents filed before this kind existed still count) **(controller)**; a category named stamp duty /
-  selo asks for Stamp duty, usual source Portal das Finanças. The user's existing "Lisbon: Repairs" rule
-  (today: any document) and already-filed `other` documents that now read as repair bills or stamp duty are
-  changed only by a one-off tool, dry-run by default, run on the real database with the user's go
-  (precedent: `ReclassifyMortgageReceipts`).
-- **Tax (controller, see open question 2):** kinds never change tax figures. A category named
-  "Imposto do Selo" is today suggested as *Foreign tax* (it matches "imposto"); the suggestion is made
-  explicit for stamp duty. Filed SA years 2020/21–2024/25 must reproduce exactly; any change that moves one
+- **Evidence rules (user, 2026-10-24):** "Lisbon repair and maintenance documents need to be counted for
+  tax deductions." The *Repairs* rule accepts Repair bill and Other (so documents filed before this kind
+  existed still count); a bank advice or transfer proof alone no longer satisfies it. Repair bills linked to
+  repair transactions are the evidence of the tax *Repairs and maintenance* line (its sources' documents and
+  the year's evidence pack). A category named stamp duty / selo asks for Stamp duty, usual source Portal das
+  Finanças. The user's existing "Lisbon: Repairs" rule and already-filed `other` documents that now read as
+  repair bills or stamp duty are changed by a one-off tool (precedent: `ReclassifyMortgageReceipts`),
+  dry-run by default; the user gave the go to run it on the real database after the merge, with a backup
+  first and Mango quit.
+- **Tax (user, 2026-10-24):** a category named stamp duty / selo suggests **Any other expense** (today
+  "Imposto do Selo" is suggested as *Foreign tax*, matching "imposto"). Saved category mappings are not
+  touched; kinds never change tax figures. Filed SA years 2020/21–2024/25 must reproduce exactly; any change that moves one
   stops.
 - The classifier's rules version is bumped, so waiting files are re-read (§1).
 
@@ -159,6 +174,24 @@ document for every transaction it is linked to. Gaps found and fixed:
   document… and missing evidence.
 - A utility invoice still records its debit only when exactly one is linked (unchanged).
 
+## 5. A transaction's documents in the budget (user, 2026-10-24)
+
+- Wherever the Mac's budget shows transactions — the Budget grid cell panel's transaction list, Edit
+  transaction, and the Search table — each transaction shows its attached documents.
+- **Rows:** a small paperclip with the number of documents on a transaction that has any.
+- **The documents:** a list (kind, canonical name, date, amount; "also on N other transactions" for a
+  document linked to several), a thumbnail of the selected document (the existing `DocumentThumbnail`), and
+  Quick Look (space bar or a Quick Look button; arrows move between the transaction's documents) to see it
+  full size. Several documents per transaction and one document on several transactions both show.
+- **Files (user):** files are read through the library API only. On the Mac the library holds each file
+  as itself (sealing applies to what is uploaded), so Quick Look opens the library file and no copy is
+  made; if a later device must decrypt to preview, its temporary file is removed when Quick Look closes.
+  A document whose file isn't on this device yet says so instead of a thumbnail.
+- **Logic in BudgetCore (user):** a transaction's documents and the counts for many transactions are read
+  by one BudgetCore API (documents linked to the transaction, plus a recorded utility invoice's document on
+  its debit), for the iPhone and iPad to reuse.
+- Fits 1100×700 with no figure wrapping.
+
 ## Constraints (all user)
 
 - No personal data in the repo: synthetic fixtures and demo data only.
@@ -167,14 +200,13 @@ document for every transaction it is linked to. Gaps found and fixed:
 - UI fits the 1100×700 minimum window with no figure wrapping (design system: Panel, DataTable,
   StatusPill, figureText).
 - Editors save only on Save (the Kinds sheet, the evidence rules sheet, the document inspector's details).
-- Append-only migrations; new synced tables and columns are added to `SyncSchema` with a version bump and
-  the new pinned hash (`SyncChangeTrackerTests`), local-only ones to `localOnlyTables`.
+- Append-only migrations; new synced tables and columns are added to `SyncSchema` (version 5) with the new
+  pinned hash (`SyncChangeTrackerTests`); local-only columns are listed as such.
+- Sync rules hold: R14/R15 sealing for rows and files, the import lease for imports, the filed-year check.
 
-## Open questions for the user
+## 6. The user's answers (2026-10-24)
 
-1. **"Lisbon: Repairs" rule:** keep it accepting any document, or narrow it to *Repair bill + Other*
-   (the controller's default for the one-off tool; a bank advice alone would then no longer satisfy it)?
-2. **Stamp duty on the return:** which UK line should a stamp-duty category suggest — *Any other expense*
-   (controller's default), *Legal fees*, or *Not deductible*? Saved category mappings and filed years are
-   not touched either way.
-3. **Waiting list on other devices:** local to this Mac (controller's default) or synced with its files?
+1. "Lisbon: Repairs" accepts Repair bill + Other; a bank advice alone doesn't satisfy it (§3).
+2. A stamp-duty category suggests *Any other expense* (§3).
+3. The waiting list syncs with its files to the household (§1).
+4. Go to run `ReclassifyNewKinds` on the real database after the merge, backup first, Mango quit.
