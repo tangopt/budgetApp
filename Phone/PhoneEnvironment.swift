@@ -23,9 +23,9 @@ final class PhoneEnvironment: ObservableObject {
     static func load() async throws -> PhoneEnvironment {
         Logger(subsystem: "ubberninja.mango.ios", category: "Launch").info("Loading the phone environment")
         let (dbQueue, path) = try await Task.detached(priority: .userInitiated) {
-            let path = try PhoneDatabase.path()
-            let queue = try PhoneDatabase.open(at: path)
-            return (queue, path)
+            let location = try PhoneDatabase.location()
+            let queue = try PhoneDatabase.open(location)
+            return (queue, location.path)
         }.value
         return PhoneEnvironment(dbQueue: dbQueue, databasePath: path, today: { Date() })
     }

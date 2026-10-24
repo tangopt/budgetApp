@@ -45,9 +45,53 @@ final class PhoneDatabaseTests: XCTestCase {
         try manager.dbQueue.write { db in
             try CategorySeeder.seedDefaults(db)
         }
-        try manager.dbQueue.read { db in
-            XCTAssertGreaterThan(try PhoneDatabasePolicy.syncedRowCount(db: db), 0, "what the Mac's launch seeds is counted")
+        let seeded = try manager.dbQueue.read { db in try PhoneDatabasePolicy.syncedRowCount(db: db) }
+        XCTAssertGreaterThan(seeded, 0, "what the Mac's launch seeds is counted")
+        // A row of a table other than category counts too.
+        try manager.dbQueue.write { db in
+            try db.execute(sql: "INSERT INTO person (name) VALUES ('Test person')")
         }
+        try manager.dbQueue.read { db in
+            XCTAssertEqual(try PhoneDatabasePolicy.syncedRowCount(db: db), seeded + 1)
+        }
+    }
+
+    /// Review M1: a DEBUG simulator build's `BUDGET_DB_PATH` opens only a demo database outside any app data,
+    /// refused before anything opens or migrates it.
+    func testOverrideOpensOnlyADemoDatabaseOutsideAppData() throws {
+        func make(_ url: URL, demo: Bool) throws {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let queue = try DatabaseQueue(path: url.path)
+            try queue.write { db in
+                try db.execute(sql: "CREATE TABLE t (x INTEGER)")
+                if demo { try DemoMarker.mark(db) }
+            }
+        }
+        let demo = folder.appendingPathComponent("demo/budget.sqlite")
+        try make(demo, demo: true)
+        let real = folder.appendingPathComponent("real/budget.sqlite")
+        try make(real, demo: false)
+        // A demo-marked file under a Mac app's data folder (as the simulator would see the host's).
+        let hostAppData = folder.appendingPathComponent("Library/Application Support/Budget/budget.sqlite")
+        try make(hostAppData, demo: true)
+        let hostContainer = folder.appendingPathComponent("Library/Containers/x/Data/budget.sqlite")
+        try make(hostContainer, demo: true)
+        let realBytes = try Data(contentsOf: real)
+
+        XCTAssertNil(PhoneDatabasePolicy.overrideRefusal(path: demo.path))
+        XCTAssertNotNil(PhoneDatabasePolicy.overrideRefusal(path: real.path), "not the demo database")
+        XCTAssertNotNil(PhoneDatabasePolicy.overrideRefusal(path: hostAppData.path), "a Mac app's data")
+        XCTAssertNotNil(PhoneDatabasePolicy.overrideRefusal(path: hostContainer.path), "a Mac app container's data")
+        XCTAssertNotNil(PhoneDatabasePolicy.overrideRefusal(path: "demo/budget.sqlite"), "relative")
+        XCTAssertNotNil(PhoneDatabasePolicy.overrideRefusal(path: "file:" + demo.path), "a URI")
+        XCTAssertNotNil(PhoneDatabasePolicy.overrideRefusal(path: folder.appendingPathComponent("missing.sqlite").path), "no file")
+        XCTAssertNotNil(PhoneDatabasePolicy.overrideRefusal(path: folder.path), "a folder")
+        // The process's own app data (the phone's folder, the Mac's), by path only: nothing is created there.
+        let support = try XCTUnwrap(FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first)
+        XCTAssertNotNil(PhoneDatabasePolicy.overrideRefusal(path: support.appendingPathComponent("Mango/budget.sqlite").path))
+        XCTAssertNotNil(PhoneDatabasePolicy.overrideRefusal(path: support.appendingPathComponent("Budget/budget.sqlite").path))
+        // Checking opened nothing for writing: the refused database is byte-for-byte unchanged.
+        XCTAssertEqual(try Data(contentsOf: real), realBytes)
     }
 
     /// The phone keeps its database at `Application Support/Mango/budget.sqlite`: the app-data refusal (sync

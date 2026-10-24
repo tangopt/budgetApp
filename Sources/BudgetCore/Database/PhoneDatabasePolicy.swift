@@ -15,6 +15,32 @@ public enum PhoneDatabasePolicy {
     public static let folderName = "Mango"
     public static let fileName = "budget.sqlite"
 
+    /// Why a `BUDGET_DB_PATH` override (DEBUG simulator builds only) can't be opened, or nil when it can. The
+    /// simulator reaches the Mac's files, and inside it `TaxRegression.isAppData` sees only the simulator's own
+    /// container, so the override must name a demo database (`DemoMarker`) that is neither the app's data nor under
+    /// any Mac app's data folder (`Library/Application Support/Budget`, `Library/Containers`). Checked before
+    /// anything opens or migrates the file.
+    public static func overrideRefusal(path: String, fileManager: FileManager = .default) -> String? {
+        guard path.hasPrefix("/"), !path.lowercased().hasPrefix("file:") else {
+            return "BUDGET_DB_PATH must be an absolute file path."
+        }
+        let resolved = TaxRegression.resolvedPath(path, fileManager: fileManager)
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: resolved, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            return "There is no database file at BUDGET_DB_PATH."
+        }
+        let lowered = resolved.lowercased()
+        guard !TaxRegression.isAppData(resolved, fileManager: fileManager),
+              !lowered.contains("/library/application support/budget/"),
+              !lowered.contains("/library/containers/") else {
+            return "BUDGET_DB_PATH is the app's own data; the phone opens only a demo database there."
+        }
+        guard DemoMarker.isDemoDatabase(atPath: resolved, fileManager: fileManager) else {
+            return "BUDGET_DB_PATH isn't the demo database (MakeDemoDatabase builds one)."
+        }
+        return nil
+    }
+
     /// Opens (creating if needed) and migrates the database at `path`. Writes nothing else.
     public static func open(at path: String) throws -> DatabaseManager {
         let manager = try DatabaseManager(path: path)

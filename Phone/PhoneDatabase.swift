@@ -2,22 +2,38 @@ import Foundation
 import BudgetCore
 import GRDB
 
+/// `BUDGET_DB_PATH` named something the phone won't open (`PhoneDatabasePolicy.overrideRefusal`).
+struct PhoneDatabaseOverrideRefused: LocalizedError {
+    let reason: String
+    var errorDescription: String? { reason }
+}
+
 /// Where the phone keeps its database, and how the file is protected (sync spec §9 "On devices"):
 /// `Application Support/Mango/budget.sqlite` in the app's sandbox, file protection
 /// `completeUntilFirstUserAuthentication` (readable by a background sync after the first unlock), excluded from
 /// iCloud backup (the household's data comes back from CloudKit, sealed). Opening only migrates
 /// (`PhoneDatabasePolicy`): nothing is seeded, matched or created before the first pull.
 enum PhoneDatabase {
-    /// The database's path. Simulator Debug builds take `BUDGET_DB_PATH` (a demo database for `--sync-demo`);
-    /// every other build uses the app's own folder.
-    nonisolated static func path(fileManager: FileManager = .default) throws -> String {
+    /// Where the database is, and whether it is the app's own (protected, excluded from backup).
+    struct Location: Sendable {
+        let path: String
+        let isAppsOwn: Bool
+    }
+
+    /// The database's location. Simulator Debug builds take `BUDGET_DB_PATH`, but only a demo database outside
+    /// any app data (`PhoneDatabasePolicy.overrideRefusal`), refused before anything opens it; every other build
+    /// uses the app's own folder.
+    nonisolated static func location(fileManager: FileManager = .default) throws -> Location {
         #if DEBUG && targetEnvironment(simulator)
         if let override = ProcessInfo.processInfo.environment["BUDGET_DB_PATH"], !override.isEmpty {
-            return override
+            if let reason = PhoneDatabasePolicy.overrideRefusal(path: override, fileManager: fileManager) {
+                throw PhoneDatabaseOverrideRefused(reason: reason)
+            }
+            return Location(path: override, isAppsOwn: false)
         }
         #endif
         let folder = try appFolder(fileManager: fileManager)
-        return folder.appendingPathComponent(PhoneDatabasePolicy.fileName).path
+        return Location(path: folder.appendingPathComponent(PhoneDatabasePolicy.fileName).path, isAppsOwn: true)
     }
 
     /// `Application Support/Mango`, created with its protection and backup exclusion. New files inside it (the
@@ -31,11 +47,12 @@ enum PhoneDatabase {
         return folder
     }
 
-    /// Opens and migrates the database at `path`; protects the files when they are the app's own.
-    nonisolated static func open(at path: String, fileManager: FileManager = .default) throws -> DatabaseQueue {
-        let manager = try PhoneDatabasePolicy.open(at: path)
-        let folder = URL(fileURLWithPath: path).deletingLastPathComponent()
-        if let own = try? appFolder(fileManager: fileManager), own.standardizedFileURL.path == folder.standardizedFileURL.path {
+    /// Opens and migrates the database at `location`; protects the files when they are the app's own. A failure
+    /// to protect them throws (the root view shows it) rather than leaving them unprotected.
+    nonisolated static func open(_ location: Location, fileManager: FileManager = .default) throws -> DatabaseQueue {
+        let manager = try PhoneDatabasePolicy.open(at: location.path)
+        let folder = URL(fileURLWithPath: location.path).deletingLastPathComponent()
+        if location.isAppsOwn {
             for name in [PhoneDatabasePolicy.fileName, PhoneDatabasePolicy.fileName + "-journal",
                          PhoneDatabasePolicy.fileName + "-wal", PhoneDatabasePolicy.fileName + "-shm"] {
                 var file = folder.appendingPathComponent(name)
