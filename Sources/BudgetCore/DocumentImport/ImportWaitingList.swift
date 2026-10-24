@@ -90,15 +90,20 @@ public struct ImportWaitingList: Sendable {
         public var failed: [ImportSetAsideFailure] = []
     }
 
-    /// Where the row's copy is.
-    public func fileURL(_ file: ImportWaitingFile) -> URL {
-        root.appendingPathComponent(file.storedRelativePath)
+    /// Where the row's copy is: `<root>/<sha256>/<originalFileName>`, derived from the hash and the
+    /// name, never taken from the stored path (rows arrive by sync). Nil — no copy here — when the hash
+    /// isn't 64 lowercase hex digits, the name isn't one plain path component, or the stored path says
+    /// anything else.
+    public func fileURL(_ file: ImportWaitingFile) -> URL? {
+        guard let path = Self.storedPath(sha256: file.sha256, name: file.originalFileName), path == file.storedRelativePath else { return nil }
+        return root.appendingPathComponent(file.sha256, isDirectory: true).appendingPathComponent(file.originalFileName)
     }
 
-    /// The waiting row as a file to set aside again (Copy to a folder…): Mango's copy.
-    public func setAsideFile(_ file: ImportWaitingFile) -> SetAsideFile {
-        SetAsideFile(url: fileURL(file), fileName: file.originalFileName, sha256: file.sha256, byteCount: file.byteCount, text: file.text,
-                     textStatus: file.textStatus, reason: file.reason, recognisedAs: file.recognisedAs)
+    /// The waiting row as a file to set aside again (Copy to a folder…): Mango's copy (nil: see `fileURL`).
+    public func setAsideFile(_ file: ImportWaitingFile) -> SetAsideFile? {
+        guard let url = fileURL(file) else { return nil }
+        return SetAsideFile(url: url, fileName: file.originalFileName, sha256: file.sha256, byteCount: file.byteCount, text: file.text,
+                            textStatus: file.textStatus, reason: file.reason, recognisedAs: file.recognisedAs)
     }
 
     // MARK: Keep
@@ -122,7 +127,7 @@ public struct ImportWaitingList: Sendable {
                 result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: "Its name can't be used for Mango's copy"))
                 continue
             }
-            let placed: Bool
+            let placed: Placed
             do {
                 placed = try place(file, sha256: sha, path: path)
             } catch {
@@ -152,25 +157,34 @@ public struct ImportWaitingList: Sendable {
                 result.kept.append(row)
             } catch {
                 // No row: the copy placed for it goes too.
-                if placed { try? FileManager.default.removeItem(at: root.appendingPathComponent(sha, isDirectory: true)) }
+                switch placed {
+                case .folder: try? FileManager.default.removeItem(at: root.appendingPathComponent(sha, isDirectory: true))
+                case .file: try? FileManager.default.removeItem(at: root.appendingPathComponent(path))
+                case .alreadyThere: break
+                }
                 throw error
             }
+            // Kept again under another name: the copy under the old name goes.
+            removeOtherFiles(in: root.appendingPathComponent(sha, isDirectory: true), keeping: file.fileName)
         }
         return result
     }
 
-    /// Copies `file` to `path` under the root. True when it placed a new folder for it (removed
-    /// again if the row can't be written); a copy already there with the right content is kept.
-    private func place(_ file: SetAsideFile, sha256 sha: String, path: String) throws -> Bool {
+    /// What `place` put there, to remove again if the row can't be written.
+    private enum Placed { case alreadyThere, file, folder }
+
+    /// Copies `file` (a symlink's target, never the link) to `path` under the root; a copy already
+    /// there with the right content is kept.
+    private func place(_ file: SetAsideFile, sha256 sha: String, path: String) throws -> Placed {
         let manager = FileManager.default
         let destination = root.appendingPathComponent(path)
         let folder = destination.deletingLastPathComponent()
-        if manager.fileExists(atPath: destination.path), (try? EvidenceLibrary.sha256(of: destination)) == sha { return false }
+        if Self.isRegularFile(destination), (try? EvidenceLibrary.sha256(of: destination)) == sha { return .alreadyThere }
         let created = !manager.fileExists(atPath: folder.path)
         try manager.createDirectory(at: folder, withIntermediateDirectories: true)
         let temporary = folder.appendingPathComponent(".\(UUID().uuidString).partial")
         do {
-            try manager.copyItem(at: file.url, to: temporary)
+            try manager.copyItem(at: file.url.resolvingSymlinksInPath(), to: temporary)
             guard try EvidenceLibrary.sha256(of: temporary) == sha else { throw KeepFailure.changed }
             if manager.fileExists(atPath: destination.path) { try manager.removeItem(at: destination) }
             try manager.moveItem(at: temporary, to: destination)
@@ -179,7 +193,19 @@ public struct ImportWaitingList: Sendable {
             if created { try? manager.removeItem(at: folder) }
             throw error
         }
-        return created
+        return created ? .folder : .file
+    }
+
+    private static func isRegularFile(_ url: URL) -> Bool {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType) == .typeRegular
+    }
+
+    /// Removes every file of a copy folder but `name` (and other keeps' partial copies).
+    private func removeOtherFiles(in folder: URL, keeping name: String) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        for other in names where other != name && !other.hasSuffix(".partial") {
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(other))
+        }
     }
 
     private enum KeepFailure: Error { case changed }
@@ -194,13 +220,14 @@ public struct ImportWaitingList: Sendable {
     static func storedPath(sha256: String, name: String) -> String? {
         guard !name.isEmpty, name != ".", name != "..", !name.hasPrefix("."), !name.contains("/"), !name.contains("\0"),
               name.utf8.count <= 255,
-              sha256.count == 64, sha256.allSatisfy({ $0.isHexDigit }) else { return nil }
+              sha256.count == 64, sha256.allSatisfy({ "0123456789abcdef".contains($0) }) else { return nil }
         return "\(sha256)/\(name)"
     }
 
     // MARK: List
 
-    /// The files waiting: not imported, or imported by a run since undone; newest first.
+    /// The files waiting: not imported, or imported by a run since undone, and not in the library (its
+    /// bytes reached it another way); newest first.
     public func waiting() throws -> [ImportWaitingFile] {
         try database.read { db in try Self.waiting(db: db) }
     }
@@ -208,7 +235,8 @@ public struct ImportWaitingList: Sendable {
     static func waiting(db: Database) throws -> [ImportWaitingFile] {
         try ImportWaitingFile.fetchAll(db, sql: """
             SELECT w.* FROM importWaitingFile w LEFT JOIN importRun r ON r.id = w.importedRunId
-            WHERE w.importedRunId IS NULL OR r.id IS NULL OR r.undoneAt IS NOT NULL
+            WHERE (w.importedRunId IS NULL OR r.id IS NULL OR r.undoneAt IS NOT NULL)
+              AND NOT EXISTS (SELECT 1 FROM document d WHERE d.sha256 = w.sha256)
             ORDER BY w.keptAt DESC, w.id DESC
             """)
     }
@@ -218,8 +246,7 @@ public struct ImportWaitingList: Sendable {
     }
 
     private static func isListed(db: Database, _ row: ImportWaitingFile) throws -> Bool {
-        guard let runId = row.importedRunId, let run = try ImportRun.fetchOne(db, key: runId) else { return true }
-        return run.undoneAt != nil
+        try waiting(db: db).contains { $0.id == row.id }
     }
 
     // MARK: Discard
@@ -234,9 +261,12 @@ public struct ImportWaitingList: Sendable {
         removeCopies(removed)
     }
 
-    private func removeCopies(_ rows: [ImportWaitingFile]) {
-        // Only a folder named by a well-formed hash (rows can arrive by sync): never anything else.
+    /// Removes the copy folders of rows deleted: only a folder named by a well-formed hash (rows can
+    /// arrive by sync), and never one whose hash has a row again (kept meanwhile).
+    func removeCopies(_ rows: [ImportWaitingFile]) {
         for row in rows where Self.storedPath(sha256: row.sha256, name: "x") != nil {
+            let keptAgain = (try? database.read { db in try ImportWaitingFile.filter(Column("sha256") == row.sha256).fetchCount(db) > 0 }) ?? true
+            guard !keptAgain else { continue }
             try? FileManager.default.removeItem(at: root.appendingPathComponent(row.sha256, isDirectory: true))
         }
     }
@@ -277,7 +307,8 @@ public struct ImportWaitingList: Sendable {
         var suggested: [Int64] = []
         for var row in stale {
             guard let id = row.id else { continue }
-            let url = fileURL(row)
+            // A row whose stored path isn't its own has no copy here: never read.
+            guard let url = fileURL(row) else { continue }
             if row.textStatus == .unknown {
                 guard FileManager.default.fileExists(atPath: url.path), let read = try? ImportFile.load(url) else { continue }
                 row.text = read.text
@@ -328,7 +359,8 @@ public struct ImportWaitingList: Sendable {
     }
 
     /// Removes the rows (and copies) imported by a run that still stands and was confirmed at least
-    /// `olderThanDays` days before `now`. Returns how many went.
+    /// `olderThanDays` days before `now`, and those whose bytes reached the library that long ago
+    /// another way. Returns how many went.
     @discardableResult
     public func purgeImported(now: Date, olderThanDays: Int = 30) throws -> Int {
         let cutoff = now.addingTimeInterval(-Double(olderThanDays) * 86_400)
@@ -336,7 +368,10 @@ public struct ImportWaitingList: Sendable {
             let rows = try ImportWaitingFile.fetchAll(db, sql: """
                 SELECT w.* FROM importWaitingFile w JOIN importRun r ON r.id = w.importedRunId
                 WHERE r.undoneAt IS NULL AND r.confirmedAt <= ?
-                """, arguments: [cutoff])
+                UNION
+                SELECT w.* FROM importWaitingFile w
+                WHERE EXISTS (SELECT 1 FROM document d WHERE d.sha256 = w.sha256 AND d.addedAt <= ?)
+                """, arguments: [cutoff, cutoff])
             _ = try ImportWaitingFile.deleteAll(db, keys: rows.compactMap(\.id))
             return rows
         }

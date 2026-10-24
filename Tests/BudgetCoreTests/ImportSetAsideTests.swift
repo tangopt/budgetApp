@@ -142,4 +142,19 @@ final class ImportSetAsideTests: XCTestCase {
         XCTAssertEqual(result.failed.map(\.fileName), ["c.pdf"])
         XCTAssertTrue(FileManager.default.fileExists(atPath: waitingCopy.path), "Mango's copy stays")
     }
+
+    /// I2: Copy to a folder hands over the target's bytes, not a link.
+    func testCopyToAFolderCopiesASymlinksTarget() throws {
+        let original = folder.appendingPathComponent("Drop/real.pdf")
+        try write("real bytes", to: original)
+        let link = folder.appendingPathComponent("Links/link.pdf")
+        try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "../Drop/real.pdf")
+        let target = folder.appendingPathComponent("Target", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let result = ImportSetAside.copy([setAside(link, name: "link.pdf")], waitingCopy: { _ in nil }, to: target)
+        let copied = try XCTUnwrap(result.copied.first)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: copied.path)[.type] as? FileAttributeType, .typeRegular)
+        XCTAssertEqual(try String(contentsOf: copied, encoding: .utf8), "real bytes")
+    }
 }

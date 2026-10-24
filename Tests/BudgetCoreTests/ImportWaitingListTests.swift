@@ -320,4 +320,127 @@ final class ImportWaitingListTests: XCTestCase {
         XCTAssertEqual(row.textStatus, .unknown)
         XCTAssertEqual(row.checkedSignature, "")
     }
+
+    // MARK: Fix round 1
+
+    /// I1: a row (arriving by sync) whose stored path leaves the waiting folder, or isn't the
+    /// file's `<sha>/<name>`, has no copy here: never read, imported or copied.
+    func testAHostileStoredPathReadsAsNoCopy() throws {
+        let secret = folder.appendingPathComponent("secret.txt")
+        try Data("outside the waiting folder".utf8).write(to: secret)
+        let sha = String(repeating: "a", count: 64)
+        let hostile = ["../secret.txt", "\(sha)/../../secret.txt", "\(sha)/other.txt", "/etc/hosts"]
+        try db.write { db in
+            for (i, path) in hostile.enumerated() {
+                try db.execute(sql: """
+                    INSERT INTO importWaitingFile(sha256, originalFileName, byteCount, storedRelativePath, reason, recognisedAs, keptAt)
+                    VALUES (?, 'a.txt', 3, ?, 'Not recognised', 'Unknown', ?)
+                    """, arguments: [String(repeating: "\(i)", count: 64), path, Self.now])
+            }
+            // A name that isn't one plain component.
+            try db.execute(sql: """
+                INSERT INTO importWaitingFile(sha256, originalFileName, byteCount, storedRelativePath, reason, recognisedAs, keptAt)
+                VALUES (?, '../secret.txt', 3, ?, 'Not recognised', 'Unknown', ?)
+                """, arguments: [String(repeating: "b", count: 64), "\(String(repeating: "b", count: 64))/../secret.txt", Self.now])
+        }
+        let rows = try list.waiting()
+        XCTAssertEqual(rows.count, 5)
+        for row in rows {
+            XCTAssertNil(list.fileURL(row), row.storedRelativePath)
+            XCTAssertNil(list.setAsideFile(row), row.storedRelativePath)
+        }
+        var asked = 0
+        _ = try list.recheck(recognise: { _ in
+            asked += 1
+            return ImportRecognition(kind: .unknown, confidence: .needsReview, reason: "")
+        }, signature: "s")
+        XCTAssertEqual(asked, 0, "nothing outside the waiting folder is read")
+    }
+
+    /// I2: a symlinked original: Mango keeps the target's bytes, not a link to it.
+    func testKeepCopiesASymlinksTargetNotTheLink() throws {
+        let target = try dropped("target.txt", "The real bytes")
+        let link = folder.appendingPathComponent("Links/link.txt")
+        try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target.url)
+        var file = target
+        file.url = link
+        file.fileName = "link.txt"
+        XCTAssertEqual(try list.keep([file], now: Self.now).kept.count, 1)
+        let copy = root.appendingPathComponent(target.sha256).appendingPathComponent("link.txt")
+        let type = try FileManager.default.attributesOfItem(atPath: copy.path)[.type] as? FileAttributeType
+        XCTAssertEqual(type, .typeRegular)
+        try FileManager.default.removeItem(at: target.url)
+        XCTAssertEqual(try String(contentsOf: copy, encoding: .utf8), "The real bytes", "still there once the original goes")
+    }
+
+    /// M2: kept again under another name (after its run): only the new name's copy stays.
+    func testKeepingAgainUnderANewNameLeavesOneCopy() throws {
+        let first = try dropped("old name.txt", "Same bytes")
+        _ = try list.keep([first], now: Self.now)
+        let runId = try run(confirmedAt: Self.now)
+        try db.write { db in try ImportWaitingList.markImported(db: db, runId: runId, sha256s: [first.sha256]) }
+        var renamed = first
+        renamed.fileName = "new name.txt"
+        XCTAssertEqual(try list.keep([renamed], now: Self.now).kept.map(\.originalFileName), ["new name.txt"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent(first.sha256).path), ["new name.txt"])
+        XCTAssertEqual(try list.waiting().first?.storedRelativePath, "\(first.sha256)/new name.txt")
+    }
+
+    /// M3: the row can't be written: the copy placed for it goes, even into a folder already there.
+    func testAFailedRowWriteLeavesNoCopy() throws {
+        let file = try dropped("refused.txt", "No row for me")
+        let folder = root.appendingPathComponent(file.sha256, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try db.write { db in
+            try db.execute(sql: "CREATE TEMP TRIGGER refuseWaiting BEFORE INSERT ON main.importWaitingFile BEGIN SELECT RAISE(ABORT, 'refused'); END")
+        }
+        XCTAssertThrowsError(try list.keep([file], now: Self.now))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path), [])
+        XCTAssertEqual(try rows(), [])
+    }
+
+    /// M1: a copy folder whose hash has a row again (kept meanwhile) is never removed.
+    func testRemovingCopiesSparesAHashKeptAgain() throws {
+        let file = try dropped("again.txt", "Kept again")
+        let kept = try XCTUnwrap(try list.keep([file], now: Self.now).kept.first)
+        // As if discarded, then kept again before its copy was removed.
+        list.removeCopies([kept])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(file.sha256).appendingPathComponent("again.txt").path))
+    }
+
+    /// M4: a waiting file whose bytes reach the library another way leaves the list (and is
+    /// purged 30 days after).
+    func testAWaitingFileAlreadyInTheLibraryLeavesTheList() throws {
+        let file = try dropped("filed.txt", "Filed elsewhere")
+        let other = try dropped("other.txt", "Still waiting")
+        _ = try list.keep([file, other], now: Self.now)
+        try db.write { db in
+            var document = EvidenceDocument(sha256: file.sha256, storedRelativePath: "x/filed.txt", originalFileName: "filed.txt", byteCount: 1,
+                                            addedAt: Self.now)
+            try document.insert(db)
+        }
+        XCTAssertEqual(try list.waiting().map(\.originalFileName), ["other.txt"])
+        XCTAssertEqual(try list.keep([file], now: Self.now).alreadyWaiting, [], "not waiting: in the library")
+        XCTAssertEqual(try list.purgeImported(now: Self.now.addingTimeInterval(10 * 86_400)), 0)
+        XCTAssertEqual(try list.purgeImported(now: Self.now.addingTimeInterval(31 * 86_400)), 1)
+        XCTAssertEqual(try rows().map(\.originalFileName), ["other.txt"])
+    }
+
+    /// M5: discarding and purging delete the rows on the household's other devices too.
+    func testDiscardAndPurgeQueueSyncDeletes() throws {
+        let discarded = try dropped("discarded.txt", "Discarded")
+        let purged = try dropped("purged.txt", "Purged")
+        let kept = try list.keep([discarded, purged], now: Self.now).kept
+        func pendingKind(_ id: Int64?) throws -> PendingChange.Kind? {
+            try db.read { db in try SyncChangeTracker.pending(db: db).first { $0.table == "importWaitingFile" && $0.localId == id }?.kind }
+        }
+        XCTAssertEqual(try pendingKind(kept[0].id), .insert)
+        try list.discard([try XCTUnwrap(kept[0].id)])
+        XCTAssertEqual(try pendingKind(kept[0].id), .delete)
+        let runId = try run(confirmedAt: Self.now.addingTimeInterval(-31 * 86_400))
+        try db.write { db in try ImportWaitingList.markImported(db: db, runId: runId, sha256s: [purged.sha256]) }
+        XCTAssertEqual(try list.purgeImported(now: Self.now), 1)
+        XCTAssertEqual(try pendingKind(kept[1].id), .delete)
+    }
 }

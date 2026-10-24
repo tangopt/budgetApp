@@ -787,6 +787,11 @@ public final class ImportSession {
 
     // MARK: Set aside and the waiting list
 
+    /// Whether the waiting file is in the open review (its copy is read there: not to discard meanwhile).
+    public func isInOpenReview(_ file: ImportWaitingFile) -> Bool {
+        plan?.items.contains { $0.parentId == nil && $0.file.sha256.lowercased() == file.sha256 } ?? false
+    }
+
     /// The entry point of a review of waiting files.
     public static let waitingEntryPoint = "Waiting list"
 
@@ -847,7 +852,7 @@ public final class ImportSession {
     @discardableResult
     public func importWaiting(_ ids: [Int64]) -> Bool {
         let wanted = Set(ids)
-        let urls = waiting.filter { $0.id.map(wanted.contains) == true }.map(waitingList.fileURL)
+        let urls = waiting.filter { $0.id.map(wanted.contains) == true }.compactMap(waitingList.fileURL)
             .filter { FileManager.default.fileExists(atPath: $0.path) }
         return start(urls, entryPoint: Self.waitingEntryPoint)
     }

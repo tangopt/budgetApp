@@ -98,7 +98,8 @@ public enum ImportSetAside {
             number += 1
             if FileManager.default.fileExists(atPath: destination.path) { continue }
             do {
-                try FileManager.default.copyItem(at: source, to: destination)
+                // A symlink's target, never the link.
+                try FileManager.default.copyItem(at: source.resolvingSymlinksInPath(), to: destination)
                 return destination
             } catch CocoaError.fileWriteFileExists {
                 continue

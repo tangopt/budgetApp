@@ -268,7 +268,7 @@ final class ImportSessionTests: XCTestCase {
         let waiting = try XCTUnwrap(session.waiting.first)
         XCTAssertEqual(session.waiting.count, 1)
         XCTAssertNil(waiting.suggestion)
-        let copy = session.waitingList.fileURL(waiting)
+        let copy = try XCTUnwrap(session.waitingList.fileURL(waiting))
         XCTAssertTrue(copy.path.hasPrefix(folder.appendingPathComponent("Waiting").path), "beside the library: \(copy.path)")
         XCTAssertTrue(FileManager.default.fileExists(atPath: copy.path))
 
@@ -287,6 +287,8 @@ final class ImportSessionTests: XCTestCase {
         await session.settled()
         XCTAssertEqual(session.phase, .review)
         XCTAssertEqual(try XCTUnwrap(session.plan).items.map(\.file.fileName), ["b.pdf"])
+        // In the open review: the panel can't discard it meanwhile (M6).
+        XCTAssertTrue(session.isInOpenReview(waiting))
         session.resolve(try item(session.plan, "b.pdf").id, .chooseKind(.other))
         await session.settled()
         session.confirm(confirmedBy: nil)
@@ -295,6 +297,7 @@ final class ImportSessionTests: XCTestCase {
         XCTAssertEqual(session.runs.first { $0.id == second.runId }?.entryPoint, "Waiting list")
         XCTAssertEqual(second.setAside, [])
         XCTAssertEqual(session.waiting, [], "imported: off the list")
+        XCTAssertFalse(session.isInOpenReview(waiting))
 
         // Undone: back on the list.
         let refused = try await session.undo(second.runId)
@@ -471,5 +474,20 @@ final class ImportSessionTests: XCTestCase {
         XCTAssertEqual(session.phase, .reading(ImportProgress(.filedYears)))
         await session.settled()
         XCTAssertEqual(session.phase, .review)
+    }
+
+    /// The waiting list re-reads files with the recognisers a reading uses, the file-name fallback included.
+    func testWaitingRecheckUsesTheFileNameFallback() async throws {
+        let empty = try store("FileName", demo: false)
+        let session = session(empty)
+        let directory = folder.appendingPathComponent("Named", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("SA302 2023.txt")
+        try Data("nothing to read here".utf8).write(to: url)
+        let read = try ImportFile.load(url, ocr: false)
+        _ = try await session.keep([SetAsideFile(url: url, fileName: read.fileName, sha256: read.sha256, byteCount: read.byteCount, text: read.text,
+                                                 textStatus: read.textStatus, reason: "Left out by you", recognisedAs: "Unknown")])
+        await session.settled()
+        XCTAssertEqual(session.waiting.first?.suggestion, "Now recognised as SA302")
     }
 }
