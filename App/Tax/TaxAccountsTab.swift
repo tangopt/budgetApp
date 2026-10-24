@@ -604,12 +604,18 @@ struct TaxLineSourcesSheet: View {
             },
             // The total row is read as "Total" already (DataTable): nothing more here.
             DataTableColumn("Source", width: .fill(min: 240), accessibilityValue: { row in
-                row.source.map { "\($0.description), \($0.explanation)" }
+                row.source.map { "\($0.description), \($0.explanation)" + ($0.asFiledNote.map { "; as filed: \($0)" } ?? "") }
             }) { row, kind in
                 if let source = row.source {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(source.description).lineLimit(1)
-                        Text(source.explanation).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    HStack(spacing: 6) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(source.description).lineLimit(1)
+                            Text(source.explanation).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        }
+                        if let note = source.asFiledNote {
+                            // The correct figure for a cost that isn't allowable is nothing: shown with the reason.
+                            AsFiledTag(asFiled: .init(computed: 0, note: note), computedLabel: "nothing to deduct")
+                        }
                     }
                     .help("\(source.description)\n\(source.explanation)")
                 } else {

@@ -57,6 +57,11 @@ public struct UKTaxRules: Equatable, Sendable {
     // Property
     /// The tax reduction on residential finance costs (the basic rate, 100% of costs from 2020/21).
     public var residentialFinanceCostReliefRate: Int
+    /// The share (basis points) of residential finance costs still deducted as an expense: all
+    /// of them to 2016/17, then 75% (2017/18), 50% (2018/19), 25% (2019/20) and none from
+    /// 2020/21; the rest gets the reduction above (GOV.UK, "Changes to tax relief for
+    /// residential landlords").
+    public var residentialFinanceCostsDeductibleShare: Int = 0
 
     // Payments on account
     /// No payments on account when the year's Self Assessment liability is below this.
@@ -171,20 +176,50 @@ public struct UKTaxRules: Equatable, Sendable {
     }
 
     static func year(_ startYear: Int, personalAllowance: Int = 12_570, basicRateBand: Int = 37_700, additionalRateThreshold: Int,
-                     dividendAllowance: Int, dividendRates: (Int, Int, Int), sources: [Source]) -> UKTaxRules {
+                     dividendAllowance: Int, dividendRates: (Int, Int, Int), personalSavingsAllowance: (Int, Int) = (1_000, 500),
+                     financeCostsDeductibleShare: Int = 0, sources: [Source]) -> UKTaxRules {
         UKTaxRules(startYear: startYear, personalAllowance: pounds(personalAllowance), personalAllowanceIncomeLimit: pounds(100_000),
                    basicRateBand: pounds(basicRateBand), additionalRateThreshold: pounds(additionalRateThreshold),
                    basicRate: 2_000, higherRate: 4_000, additionalRate: 4_500,
                    startingRateForSavings: 0, startingRateForSavingsLimit: pounds(5_000),
-                   personalSavingsAllowanceBasic: pounds(1_000), personalSavingsAllowanceHigher: pounds(500), personalSavingsAllowanceAdditional: 0,
+                   personalSavingsAllowanceBasic: pounds(personalSavingsAllowance.0), personalSavingsAllowanceHigher: pounds(personalSavingsAllowance.1),
+                   personalSavingsAllowanceAdditional: 0,
                    savingsBasicRate: 2_000, savingsHigherRate: 4_000, savingsAdditionalRate: 4_500,
                    dividendAllowance: pounds(dividendAllowance), dividendOrdinaryRate: dividendRates.0, dividendUpperRate: dividendRates.1,
                    dividendAdditionalRate: dividendRates.2, residentialFinanceCostReliefRate: 2_000,
+                   residentialFinanceCostsDeductibleShare: financeCostsDeductibleShare,
                    paymentsOnAccountThreshold: pounds(1_000), paymentsOnAccountDeductedAtSourceShare: 8_000, sources: sources)
     }
 
-    /// 2020/21 to 2026/27. Scotland's bands differ and are not here.
+    /// The earlier years' figures (GOV.UK "Income Tax rates and allowances: current and past"),
+    /// with the phasing of the finance cost restriction.
+    static func earlierSources(deductible: String) -> [Source] {
+        [
+            Source(covers: "Allowances, bands, rates, savings and dividends", url: ratesCurrentAndPast),
+            Source(covers: "Residential finance costs: \(deductible)", url: financeCosts),
+            Source(covers: "Payments on account: not due under £1,000 or when over 80% was deducted at source", url: paymentsOnAccount)
+        ]
+    }
+
+    /// 2015/16 to 2026/27. Scotland's bands differ and are not here. Before 2016/17 there was
+    /// no personal savings allowance and dividends carried a 10% tax credit instead of an
+    /// allowance (the credit isn't modelled: no dividends have been computed for those years).
     public static let all: [UKTaxRules] = [
+        year(2015, personalAllowance: 10_600, basicRateBand: 31_785, additionalRateThreshold: 150_000, dividendAllowance: 0,
+             dividendRates: (1_000, 3_250, 3_750), personalSavingsAllowance: (0, 0), financeCostsDeductibleShare: 10_000,
+             sources: earlierSources(deductible: "all deductible as an expense (restriction starts 2017/18)")),
+        year(2016, personalAllowance: 11_000, basicRateBand: 32_000, additionalRateThreshold: 150_000, dividendAllowance: 5_000,
+             dividendRates: (750, 3_250, 3_810), financeCostsDeductibleShare: 10_000,
+             sources: earlierSources(deductible: "all deductible as an expense (restriction starts 2017/18)")),
+        year(2017, personalAllowance: 11_500, basicRateBand: 33_500, additionalRateThreshold: 150_000, dividendAllowance: 5_000,
+             dividendRates: (750, 3_250, 3_810), financeCostsDeductibleShare: 7_500,
+             sources: earlierSources(deductible: "75% deductible, 25% gets the 20% reduction")),
+        year(2018, personalAllowance: 11_850, basicRateBand: 34_500, additionalRateThreshold: 150_000, dividendAllowance: 2_000,
+             dividendRates: (750, 3_250, 3_810), financeCostsDeductibleShare: 5_000,
+             sources: earlierSources(deductible: "50% deductible, 50% gets the 20% reduction")),
+        year(2019, personalAllowance: 12_500, basicRateBand: 37_500, additionalRateThreshold: 150_000, dividendAllowance: 2_000,
+             dividendRates: (750, 3_250, 3_810), financeCostsDeductibleShare: 2_500,
+             sources: earlierSources(deductible: "25% deductible, 75% gets the 20% reduction")),
         year(2020, personalAllowance: 12_500, basicRateBand: 37_500, additionalRateThreshold: 150_000, dividendAllowance: 2_000,
              dividendRates: (750, 3_250, 3_810),
              sources: commonSources(annexBudget2020) + [Source(covers: "Personal allowance £12,500, savings and dividend allowances", url: annexBudget2021)]),

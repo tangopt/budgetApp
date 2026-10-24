@@ -75,6 +75,21 @@ public enum RentalAccounts {
         public var documentIds: [Int64]
         /// The bank movement behind it: the transaction, or the debit an item receipt is part of.
         public var transactionId: Int64? = nil
+        /// Set when the source stands as the return filed it although the rules say otherwise
+        /// (an expense manual item of a filed or paid year whose note starts "As filed:"): the
+        /// reason, shown with the figure.
+        public var asFiledNote: String? = nil
+    }
+
+    /// The reason in a manual item's note that marks it as filed ("As filed: …"), if any.
+    static func asFiledNote(_ notes: String?) -> String? {
+        guard let notes else { return nil }
+        let folded = notes.lowercased()
+        for prefix in ["as filed:", "as filed —", "as filed -", "as filed –"] where folded.hasPrefix(prefix) {
+            let reason = notes.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+            return reason.isEmpty ? notes : reason
+        }
+        return nil
     }
 
     public struct Line: Equatable, Sendable {
@@ -555,10 +570,13 @@ public enum RentalAccounts {
             let reference = SourceReference.manualItem(item.id!)
             let notClaimed = isNotClaimed(reference, type: item.expenseType, description: item.label)
             let explanation = item.isWholeProperty ? "Entered for \(taxYear.label), whole property" : "Entered for \(taxYear.label), \(person.name)'s own"
-            let source = Source(
+            var source = Source(
                 reference: reference, date: item.date, description: item.label, currency: item.currency,
                 amountMinorUnits: item.amountMinorUnits, attributedMinorUnits: item.amountMinorUnits, shareBasisPoints: share,
                 explanation: explanation + (notClaimed ? notClaimedNote(reference) : ""), documentIds: itemDocs[item.id!] ?? [])
+            // "As filed:" stands only on a filed (or paid) year's expense: an open year, and
+            // rent, finance costs or foreign tax, are worked out by the rules as usual.
+            if isFiled && item.expenseType.isDeductibleExpense { source.asFiledNote = Self.asFiledNote(item.notes) }
             if notClaimed {
                 notClaimedByType[item.expenseType, default: []].append(source)
             } else {

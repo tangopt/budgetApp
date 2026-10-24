@@ -331,6 +331,26 @@ final class PersonalIncomeTests: XCTestCase {
         ])
     }
 
+    /// A provider's P11D that prints the pound sign as its own word before a whole-pound
+    /// figure ("0 11 = £ 1,375"): the figure is the box's cash equivalent.
+    func testReadsP11DWholePoundsWithSeparatePoundSign() throws {
+        let items = [
+            PayrollFormTestPDFs.Item("P11D Expenses and benefits 2020 to 2021", 278, 806),
+            PayrollFormTestPDFs.Item("Employer name", 18, 771), PayrollFormTestPDFs.Item("Example Ltd", 20, 756),
+            PayrollFormTestPDFs.Item("Employer PAYE reference", 18, 739), PayrollFormTestPDFs.Item("123/AB456", 20, 724),
+            PayrollFormTestPDFs.Item("I", 23, 538), PayrollFormTestPDFs.Item("Private medical treatment or insurance", 38, 540),
+            PayrollFormTestPDFs.Item("Private medical treatment or insurance", 38, 520), PayrollFormTestPDFs.Item("£", 300, 520),
+            PayrollFormTestPDFs.Item("1A", 557, 518),
+            PayrollFormTestPDFs.Item("1,375-", 300, 505), PayrollFormTestPDFs.Item("£", 340, 505),
+            PayrollFormTestPDFs.Item("0", 370, 490), PayrollFormTestPDFs.Item("11", 469, 490), PayrollFormTestPDFs.Item("=", 490, 490),
+            PayrollFormTestPDFs.Item("£", 505, 490), PayrollFormTestPDFs.Item("1,375", 520, 490)
+        ]
+        let extraction = PayrollFormReader.read(PayrollFormTestPDFs.textPDF(items, name: "p11d-pounds.pdf"))
+        XCTAssertEqual(extraction.kind, .p11d)
+        XCTAssertEqual(extraction.startYear, 2020)
+        XCTAssertEqual(extraction.benefits, [.init(kind: .medical, cashEquivalentMinorUnits: 137_500)])
+    }
+
     func testReadsFilledInFormFields() throws {
         let items = [
             PayrollFormTestPDFs.Item("P60 End of Year Certificate", 20, 810, size: 12),

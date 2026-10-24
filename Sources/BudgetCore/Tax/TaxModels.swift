@@ -506,6 +506,74 @@ func registerTaxYearForeignTaxInPenceMigration(_ migrator: inout DatabaseMigrato
     }
 }
 
+/// A box of a filed return entered as filed when it differs from what the app works out
+/// (`TaxFiledBox`): the filed or paid year then shows the return's figure, with the computed
+/// one and the reason beside it.
+public struct TaxFiledBox: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
+    public var id: Int64?
+    public var startYear: Int
+    public var personId: Int64
+    /// The figure's key (`TaxFiledBoxes.fields`): "sa106.14", "sa102.1", "sa106.F1.2", "calc.propertyProfit".
+    public var field: String
+    /// The return's value, pence.
+    public var valueMinorUnits: Int
+    /// Why the return differs from the computed figure, shown with the figure.
+    public var note: String
+
+    public init(id: Int64? = nil, startYear: Int, personId: Int64, field: String, valueMinorUnits: Int, note: String) {
+        self.id = id
+        self.startYear = startYear
+        self.personId = personId
+        self.field = field
+        self.valueMinorUnits = valueMinorUnits
+        self.note = note
+    }
+
+    public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+    public static let databaseTableName = "taxFiledBox"
+}
+
+public enum TaxFiledBoxes {
+    /// The figures a return can carry as filed, with the box they are.
+    public static let fields: [(key: String, label: String)] = [
+        ("sa102.1", "SA102 box 1 pay"), ("sa102.2", "SA102 box 2 UK tax taken off"),
+        ("sa106.14", "SA106 box 14 rents"), ("sa106.17", "SA106 box 17 expenses"), ("sa106.24.1", "SA106 box 24.1 finance costs"),
+        ("sa106.28", "SA106 box 28 foreign tax"), ("sa106.F1.2", "SA106 box 2 Foreign Tax Credit Relief"),
+        ("calc.propertyProfit", "SA302 foreign income (the property profit the calculation used)")
+    ]
+
+    public static func label(_ field: String) -> String { fields.first { $0.key == field }?.label ?? field }
+
+    public static func boxes(db: Database, startYear: Int, personId: Int64) throws -> [TaxFiledBox] {
+        try TaxFiledBox.filter(Column("startYear") == startYear && Column("personId") == personId).order(Column("field")).fetchAll(db)
+    }
+
+    /// Stores (or replaces) the box.
+    public static func set(db: Database, startYear: Int, personId: Int64, field: String, valueMinorUnits: Int, note: String) throws -> TaxFiledBox {
+        var box = try TaxFiledBox.filter(Column("startYear") == startYear && Column("personId") == personId && Column("field") == field).fetchOne(db)
+            ?? TaxFiledBox(startYear: startYear, personId: personId, field: field, valueMinorUnits: valueMinorUnits, note: note)
+        box.valueMinorUnits = valueMinorUnits
+        box.note = note
+        try box.save(db)
+        return box
+    }
+}
+
+/// The boxes of filed returns entered as filed (`TaxFiledBox`).
+func registerTaxFiledBoxMigration(_ migrator: inout DatabaseMigrator) {
+    migrator.registerMigration("addTaxFiledBox") { db in
+        try db.create(table: "taxFiledBox") { t in
+            t.autoIncrementedPrimaryKey("id")
+            t.column("startYear", .integer).notNull()
+            t.column("personId", .integer).notNull().indexed().references("person", onDelete: .cascade)
+            t.column("field", .text).notNull()
+            t.column("valueMinorUnits", .integer).notNull()
+            t.column("note", .text).notNull()
+            t.uniqueKey(["startYear", "personId", "field"])
+        }
+    }
+}
+
 /// One year's attribution window moved by whole months (`TaxAttributionRule.windowShiftMonths`).
 func registerTaxAttributionRuleWindowShiftMigration(_ migrator: inout DatabaseMigrator) {
     migrator.registerMigration("addTaxAttributionRuleWindowShift") { db in

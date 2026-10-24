@@ -863,6 +863,9 @@ extension DemoDatabase {
                 record.status = status
                 try TaxYears.save(db: db, &record)
             }
+            // Boxes the filed 2024/25 return gave another value than the app works out (shown "As filed").
+            _ = try TaxFiledBoxes.set(db: db, startYear: 2024, personId: a, field: "sa106.17", valueMinorUnits: 180_000,
+                                      note: "The accountant's template rounded each half share down; the return was filed with £1,800, so it is shown as filed.")
             // Manual items.
             for (person, year, type, label, amount, currency, day, whole) in [
                 (a, 2024, TaxExpenseType.accountancy, "UK accountant fee", 42_000, Currency.gbp, date(2025, 1, 10), false),
@@ -878,6 +881,13 @@ extension DemoDatabase {
                 try TaxManualItems.save(db: db, &item)
                 count("tax manual items")
             }
+            // A cost the filed 2024/25 return deducted although UK rules don't allow it: kept as filed, labelled.
+            var lifeCover = TaxManualItem(startYear: 2024, personId: a, propertyId: propertyId, expenseType: .insurance,
+                                          label: "Mortgage life cover (as filed)", amountMinorUnits: 24_000, currency: .eur, date: date(2024, 10, 1),
+                                          isWholeProperty: true,
+                                          notes: "As filed: not allowable under UK rules (PIM2110: only fabric, contents and loss-of-rent cover).")
+            try TaxManualItems.save(db: db, &lifeCover)
+            count("tax manual items")
             // The filed 2024/25 return left the PT accountant's fee out: deductible, not claimed.
             if let fee = try Transaction.filter(Column("rawDescription") == "CONTABILIDADE EXEMPLO" && Column("date") >= date(2024, 4, 6)
                                                 && Column("date") < date(2025, 4, 6)).fetchOne(db) {

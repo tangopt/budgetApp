@@ -634,7 +634,17 @@ public enum PayrollFormReader {
             var benefits: [PayrollFormExtraction.Benefit] = []
             for box in words {
                 guard let number = Int(box.text), (9...16).contains(number), box.text.count <= 2 else { continue }
-                let amounts = words(rightOf: (box.rect, box.page), slack: 3).compactMap { PayrollFormReader.pence($0.text) }
+                // A pound sign printed as its own word before a whole-pound figure ("= £ 1,375")
+                // belongs to that figure.
+                let row = words(rightOf: (box.rect, box.page), slack: 3)
+                var amounts: [Int] = []
+                for (index, word) in row.enumerated() {
+                    if word.text == "£", index + 1 < row.count, let joined = PayrollFormReader.pence("£" + row[index + 1].text) {
+                        amounts.append(joined)
+                    } else if let value = PayrollFormReader.pence(word.text) {
+                        amounts.append(value)
+                    }
+                }
                 guard let value = amounts.last, value > 0 else { continue }
                 let section = letters.filter { $0.page == box.page && $0.rect.midY >= box.rect.midY - 3 }
                     .min { ($0.rect.midY - box.rect.midY) < ($1.rect.midY - box.rect.midY) }

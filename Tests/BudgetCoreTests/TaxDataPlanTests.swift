@@ -501,4 +501,29 @@ final class TaxDataPlanTests: XCTestCase {
         XCTAssertEqual(plan.attributionRules, [Self.previousYear])
         XCTAssertEqual(plan.fetchHMRCRates, .init(years: [2025], currencies: ["EUR"]))
     }
+
+    func testBoxesAsFiledAreStoredOnceOnFiledYearsOnlyAndAContradictionRefused() throws {
+        let filed = TaxDataPlan.Plan.TaxYearEntry(startYear: 2023, person: "Person A", status: "filed", note: nil, foreignTaxInPence: nil)
+        let box = TaxDataPlan.Plan.FiledBox(startYear: 2023, person: "Person A", field: "sa106.F1.2", value: "900.00",
+                                            note: "The accountant claimed the whole foreign tax.")
+        let outcome = try apply(plan { $0.taxYears = [filed]; $0.filedBoxes = [box] })
+        XCTAssertTrue(outcome.changes.contains { $0.section == "Boxes as filed" && $0.kind == .added && $0.text.contains("£900.00 as filed") })
+        let stored = try db.read { db in try TaxFiledBoxes.boxes(db: db, startYear: 2023, personId: self.id("A")) }
+        XCTAssertEqual(stored.map { ($0.field, $0.valueMinorUnits, $0.note) }.first.map { "\($0.0)|\($0.1)|\($0.2)" }, "sa106.F1.2|90000|The accountant claimed the whole foreign tax.")
+        // Again: already there.
+        let again = try apply(plan { $0.taxYears = [filed]; $0.filedBoxes = [box] })
+        XCTAssertTrue(again.changes.contains { $0.section == "Boxes as filed" && $0.kind == .unchanged })
+        // Another value, an unknown field, no note, an open year: refused.
+        var other = box
+        other.value = "750.00"
+        XCTAssertTrue(refusal(plan { $0.filedBoxes = [other] }).contains { $0.contains("£900.00 is stored") })
+        var unknown = box
+        unknown.field = "sa999"
+        XCTAssertTrue(refusal(plan { $0.filedBoxes = [unknown] }).contains { $0.contains("unknown field sa999") })
+        var silent = box
+        silent.note = " "
+        XCTAssertTrue(refusal(plan { $0.filedBoxes = [silent] }).contains { $0.contains("needs a note") })
+        let open = TaxDataPlan.Plan.FiledBox(startYear: 2024, person: "Person A", field: "sa106.14", value: "1.00", note: "n")
+        XCTAssertTrue(refusal(plan { $0.filedBoxes = [open] }).contains { $0.contains("is Preparing: a box as filed is for a filed or paid year") })
+    }
 }

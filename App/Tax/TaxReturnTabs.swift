@@ -50,6 +50,8 @@ struct TaxBoxRow: Identifiable {
     let copyText: String
     /// The calculation step behind it ("Why?").
     var step: String?
+    /// Set when the value is the return's, not the computed one (the computed value and why).
+    var asFiled: SelfAssessment.AsFiled?
 
     init(_ box: SelfAssessment.Box) {
         id = "\(box.form.rawValue)|\(box.section)|\(box.number)"
@@ -59,6 +61,7 @@ struct TaxBoxRow: Identifiable {
         isWholePounds = box.isWholePounds
         copyText = box.copyText
         step = box.step
+        asFiled = box.asFiled
     }
 
     init(id: String, value: SelfAssessmentFiling.Value, label: String) {
@@ -94,8 +97,14 @@ enum TaxBoxTable {
                 Text(row.label).lineLimit(1).truncationMode(.tail).help(row.label)
             },
             DataTableColumn("Value", alignment: .trailing, width: .fixed(valueWidth),
-                            accessibilityValue: { TaxBoxValueText.spoken($0.value, wholePounds: $0.isWholePounds) }) { row, _ in
-                TaxBoxValueText(value: row.value, wholePounds: row.isWholePounds)
+                            accessibilityValue: { row in
+                                TaxBoxValueText.spoken(row.value, wholePounds: row.isWholePounds)
+                                    + (row.asFiled.map { ", as filed; " + AsFiledTag.spoken($0, wholePounds: row.isWholePounds) } ?? "")
+                            }) { row, _ in
+                HStack(spacing: 6) {
+                    if let asFiled = row.asFiled { AsFiledTag(asFiled: asFiled, wholePounds: row.isWholePounds, box: row.box) }
+                    TaxBoxValueText(value: row.value, wholePounds: row.isWholePounds)
+                }
             },
             DataTableColumn("", alignment: .trailing, width: .fixed(why == nil ? 34 : 58)) { row, _ in
                 HStack(spacing: 8) {
@@ -116,6 +125,45 @@ enum TaxBoxTable {
                 }
             }
         ]
+    }
+}
+
+/// "As filed" beside a figure the return gave another value than the app works out: a small
+/// tag with an info icon whose tooltip and popover (click, or VoiceOver) give the computed
+/// value and the stored reason.
+struct AsFiledTag: View {
+    let asFiled: SelfAssessment.AsFiled
+    var wholePounds = false
+    /// The box number, for the text ("SA106 box 14").
+    var box: String? = nil
+    /// Where the computed figure comes from, for the text (default: the box).
+    var computedLabel: String? = nil
+    @State private var showing = false
+
+    static func spoken(_ asFiled: SelfAssessment.AsFiled, wholePounds: Bool, computedLabel: String? = nil) -> String {
+        var amount = Money.format(asFiled.computed, currency: .gbp)
+        if wholePounds, amount.hasSuffix(".00") { amount = String(amount.dropLast(3)) }
+        return "Correct value \(amount)" + (computedLabel.map { " (\($0))" } ?? "") + ". \(asFiled.note)"
+    }
+
+    private var text: String { Self.spoken(asFiled, wholePounds: wholePounds, computedLabel: computedLabel ?? box.map { "box \($0)" }) }
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text("As filed").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .background(Capsule().fill(.quaternary))
+            Button { showing.toggle() } label: {
+                Image(systemName: "info.circle").font(.caption).foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .popover(isPresented: $showing, arrowEdge: .bottom) {
+                Text(text).font(.callout).frame(maxWidth: 320).padding(12).fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityLabel("As filed: \(text)")
+        }
+        .fixedSize()
+        .help(text)
     }
 }
 

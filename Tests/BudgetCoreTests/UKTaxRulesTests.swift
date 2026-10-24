@@ -6,10 +6,38 @@ import XCTest
 final class UKTaxRulesTests: XCTestCase {
     private func rules(_ year: Int) throws -> UKTaxRules { try XCTUnwrap(UKTaxRules.forYear(year)) }
 
-    func testEveryYearFrom2020To2026IsKnownOnce() {
-        XCTAssertEqual(UKTaxRules.knownYears, Array(2020...2026))
-        XCTAssertNil(UKTaxRules.forYear(2019))
+    func testEveryYearFrom2015To2026IsKnownOnce() {
+        XCTAssertEqual(UKTaxRules.knownYears, Array(2015...2026))
+        XCTAssertNil(UKTaxRules.forYear(2014))
         XCTAssertNil(UKTaxRules.forYear(2027))
+    }
+
+    /// 2015/16 to 2019/20 (the years of a Worldwide Disclosure Facility disclosure): the
+    /// allowances and bands of each year, and the phased restriction of residential finance
+    /// costs — fully deductible to 2016/17, then 75%, 50% and 25% deductible, the rest getting
+    /// the 20% reduction; nothing deductible from 2020/21.
+    func testEarlierYearsAllowancesBandsAndFinanceCostPhasing() throws {
+        let expected: [(Int, Int, Int, Int)] = [
+            (2015, 10_600, 31_785, 10_000), (2016, 11_000, 32_000, 10_000), (2017, 11_500, 33_500, 7_500),
+            (2018, 11_850, 34_500, 5_000), (2019, 12_500, 37_500, 2_500)
+        ]
+        for (year, allowance, band, share) in expected {
+            let r = try rules(year)
+            XCTAssertEqual(r.personalAllowance, allowance * 100, "\(year)")
+            XCTAssertEqual(r.basicRateBand, band * 100, "\(year)")
+            XCTAssertEqual(r.additionalRateThreshold, 15_000_000, "\(year)")
+            XCTAssertEqual(r.residentialFinanceCostsDeductibleShare, share, "\(year)")
+            XCTAssertEqual(r.residentialFinanceCostReliefRate, 2_000, "\(year)")
+        }
+        for year in 2020...2026 { XCTAssertEqual(try rules(year).residentialFinanceCostsDeductibleShare, 0, "\(year)") }
+        // No personal savings allowance before 2016/17; the dividend allowance £5,000 in 2016/17 and 2017/18, £2,000 from 2018/19.
+        XCTAssertEqual(try rules(2015).personalSavingsAllowance(band: .basic), 0)
+        XCTAssertEqual(try rules(2016).personalSavingsAllowance(band: .basic), 100_000)
+        XCTAssertEqual(try rules(2015).dividendAllowance, 0)
+        XCTAssertEqual(try rules(2016).dividendAllowance, 500_000)
+        XCTAssertEqual(try rules(2017).dividendAllowance, 500_000)
+        XCTAssertEqual(try rules(2018).dividendAllowance, 200_000)
+        XCTAssertEqual(try rules(2019).dividendAllowance, 200_000)
     }
 
     func testPersonalAllowanceAndBands() throws {
@@ -30,23 +58,26 @@ final class UKTaxRulesTests: XCTestCase {
             XCTAssertEqual(r.additionalRateThreshold, 12_514_000, "\(year)")
         }
         for r in UKTaxRules.all {
-            XCTAssertEqual(r.personalAllowanceIncomeLimit, 10_000_000)
-            XCTAssertEqual([r.basicRate, r.higherRate, r.additionalRate], [2_000, 4_000, 4_500])
-            XCTAssertEqual([r.savingsBasicRate, r.savingsHigherRate, r.savingsAdditionalRate], [2_000, 4_000, 4_500])
+            XCTAssertEqual(r.personalAllowanceIncomeLimit, 10_000_000, "\(r.startYear)")
+            XCTAssertEqual([r.basicRate, r.higherRate, r.additionalRate], [2_000, 4_000, 4_500], "\(r.startYear)")
+            XCTAssertEqual([r.savingsBasicRate, r.savingsHigherRate, r.savingsAdditionalRate], [2_000, 4_000, 4_500], "\(r.startYear)")
         }
     }
 
     func testSavingsAndDividends() throws {
+        let recent = UKTaxRules.all.filter { $0.startYear >= 2020 }
         for r in UKTaxRules.all {
             XCTAssertEqual(r.startingRateForSavings, 0)
             XCTAssertEqual(r.startingRateForSavingsLimit, 500_000)
+        }
+        for r in recent {
             XCTAssertEqual(r.personalSavingsAllowance(band: .basic), 100_000)
             XCTAssertEqual(r.personalSavingsAllowance(band: .higher), 50_000)
             XCTAssertEqual(r.personalSavingsAllowance(band: .additional), 0)
         }
-        let allowances = UKTaxRules.all.map { $0.dividendAllowance }
+        let allowances = recent.map { $0.dividendAllowance }
         XCTAssertEqual(allowances, [200_000, 200_000, 200_000, 100_000, 50_000, 50_000, 50_000])
-        let rates = UKTaxRules.all.map { [$0.dividendOrdinaryRate, $0.dividendUpperRate, $0.dividendAdditionalRate] }
+        let rates = recent.map { [$0.dividendOrdinaryRate, $0.dividendUpperRate, $0.dividendAdditionalRate] }
         XCTAssertEqual(rates, [[750, 3_250, 3_810], [750, 3_250, 3_810], [875, 3_375, 3_935], [875, 3_375, 3_935],
                                [875, 3_375, 3_935], [875, 3_375, 3_935], [1_075, 3_575, 3_935]])
     }

@@ -162,6 +162,18 @@ public enum TaxDataPlan {
             public var foreignTaxInPence: Bool?
         }
 
+        /// A box of a filed return entered as filed (`TaxFiledBox`): only for a filed or paid year.
+        public struct FiledBox: Codable, Equatable, Sendable {
+            public var startYear: Int
+            public var person: String
+            /// A `TaxFiledBoxes.fields` key.
+            public var field: String
+            /// Decimal text ("1234.50").
+            public var value: String
+            /// Why the return differs from the computed figure (shown in the app).
+            public var note: String
+        }
+
         /// An attribution rule, stored only when the scope has none, or has the seeded default
         /// (a rule the user set that differs is refused).
         public struct AttributionRule: Codable, Equatable, Sendable {
@@ -204,6 +216,7 @@ public enum TaxDataPlan {
         public var employments: [EmploymentEntry]?
         public var hmrcPayments: [Payment]?
         public var taxYears: [TaxYearEntry]?
+        public var filedBoxes: [FiledBox]?
     }
 
     public enum PlanError: Error, Equatable, CustomStringConvertible {
@@ -223,7 +236,7 @@ public enum TaxDataPlan {
 
     static let keys: [String: Set<String>] = [
         "": ["property", "categorize", "expenseTypes", "policyReceipts", "transactionOwners", "rates", "manualItems", "summaryYears",
-             "attributionRules", "fetchHMRCRates", "notClaimed", "splits", "employments", "hmrcPayments", "taxYears"],
+             "attributionRules", "fetchHMRCRates", "notClaimed", "splits", "employments", "hmrcPayments", "taxYears", "filedBoxes"],
         "categorize": ["account", "date", "amount", "description", "category", "createCategory"],
         "policyReceipts": ["expenseType", "date", "debitDate", "amount", "debitAmount", "currency", "policyYear", "instalment", "of", "coverFrom",
                            "coverTo", "note"],
@@ -236,6 +249,7 @@ public enum TaxDataPlan {
         "employments.benefits": ["kind", "amount", "description"],
         "hmrcPayments": ["person", "startYear", "date", "amount", "kind", "reference", "note"],
         "taxYears": ["startYear", "person", "status", "note", "foreignTaxInPence"],
+        "filedBoxes": ["startYear", "person", "field", "value", "note"],
         "attributionRules": ["expenseType", "rule", "startYear", "coverMonths", "windowShiftMonths"],
         "fetchHMRCRates": ["years", "currencies"]
     ]
@@ -293,7 +307,7 @@ public enum TaxDataPlan {
     public static func years(_ plan: Plan) -> [Int] {
         var years = plan.summaryYears ?? []
         years += (plan.manualItems ?? []).map(\.startYear) + (plan.notClaimed ?? []).map(\.startYear)
-        years += (plan.taxYears ?? []).map(\.startYear) + (plan.employments ?? []).map(\.startYear)
+        years += (plan.taxYears ?? []).map(\.startYear) + (plan.employments ?? []).map(\.startYear) + (plan.filedBoxes ?? []).map(\.startYear)
         years += (plan.splits ?? []).map(\.startYear) + (plan.hmrcPayments ?? []).map(\.startYear)
         years += (plan.rates ?? []).map(\.startYear) + (plan.attributionRules ?? []).compactMap(\.startYear)
         years += plan.fetchHMRCRates?.years ?? []
@@ -328,7 +342,7 @@ public enum TaxDataPlan {
 
     public static let sections = ["Categorised debits", "Expense types", "Policy receipts", "Payment owners", "HMRC rates", "Manual items",
                                   "Attribution rules", "HMRC rates fetched", "Splits", "Employments", "HMRC payments", "Tax years",
-                                  "Not claimed"]
+                                  "Not claimed", "Boxes as filed"]
 
     // MARK: Fetching HMRC's rates (before the write)
 
@@ -390,6 +404,7 @@ public enum TaxDataPlan {
         try state.payments(plan.hmrcPayments ?? [])
         try state.taxYears(plan.taxYears ?? [])
         try state.notClaimed(plan.notClaimed ?? [])
+        try state.filedBoxes(plan.filedBoxes ?? [])
         guard state.problems.isEmpty else { throw PlanError.refused(state.problems) }
         return Outcome(propertyId: propertyId, changes: state.changes, createdCategories: state.created)
     }
@@ -1016,6 +1031,33 @@ public enum TaxDataPlan {
         }
 
         // 12. Debits the year's return left out.
+        // 13. Boxes as filed: only on a filed or paid year; the same value already there is unchanged, another refused.
+        mutating func filedBoxes(_ entries: [Plan.FiledBox]) throws {
+            let section = TaxDataPlan.sections[13]
+            for entry in entries {
+                let label = UKTaxYear(startYear: entry.startYear).label
+                guard let person = try person(entry.person) else { problems.append("\(section): no person named \(entry.person)"); continue }
+                guard TaxFiledBoxes.fields.contains(where: { $0.key == entry.field }) else { problems.append("\(section): unknown field \(entry.field)"); continue }
+                guard let value = Money.parseMinorUnits(entry.value) else { problems.append("\(section): bad value \(entry.value) for \(entry.field)"); continue }
+                guard let reason = Transaction.normalizedNote(entry.note) else { problems.append("\(section): \(label) \(person.name) \(entry.field) needs a note saying why the return differs"); continue }
+                let status = try TaxYears.year(db: db, startYear: entry.startYear, personId: person.id!)?.status ?? .preparing
+                guard status == .filed || status == .paid else {
+                    problems.append("\(section): \(label) \(person.name) is \(status.displayName): a box as filed is for a filed or paid year"); continue
+                }
+                let what = "\(label) \(person.name): \(TaxFiledBoxes.label(entry.field)) \(Money.format(value, currency: .gbp)) as filed"
+                if let stored = try TaxFiledBoxes.boxes(db: db, startYear: entry.startYear, personId: person.id!).first(where: { $0.field == entry.field }) {
+                    if stored.valueMinorUnits == value && stored.note == reason {
+                        note(section, .unchanged, "\(what) already stored")
+                    } else {
+                        problems.append("\(section): \(what): \(Money.format(stored.valueMinorUnits, currency: .gbp)) is stored with another note or value")
+                    }
+                    continue
+                }
+                _ = try TaxFiledBoxes.set(db: db, startYear: entry.startYear, personId: person.id!, field: entry.field, valueMinorUnits: value, note: reason)
+                note(section, .added, what)
+            }
+        }
+
         mutating func notClaimed(_ entries: [Plan.NotClaimed]) throws {
             let section = TaxDataPlan.sections[12]
             let accountIds = Set(try Properties.accounts(db: db, propertyId: propertyId).map(\.accountId))

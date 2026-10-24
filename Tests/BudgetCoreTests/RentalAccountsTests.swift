@@ -573,6 +573,34 @@ extension RentalAccountsTests {
         XCTAssertFalse(page.categoryTypes.isEmpty)
     }
 
+    func testAsFiledTagOnlyOnAFiledYearsExpenseItems() throws {
+        try db.write { db in
+            var fee = TaxManualItem(startYear: 2024, personId: id("A"), propertyId: id("property"), expenseType: .otherExpense,
+                                    label: "Cover the rules don't allow", amountMinorUnits: 5_000, currency: .eur,
+                                    notes: "As filed: kept as the return deducted it")
+            try TaxManualItems.save(db: db, &fee)
+            var interest = TaxManualItem(startYear: 2024, personId: id("A"), propertyId: id("property"), expenseType: .financeCost,
+                                         label: "Interest as filed", amountMinorUnits: 5_000, currency: .eur,
+                                         notes: "As filed: not an expense item")
+            try TaxManualItems.save(db: db, &interest)
+        }
+        func notes() throws -> (expense: String?, finance: String?) {
+            let result = try compute()
+            let expense = result.expenses.first { $0.expenseType == .otherExpense }!.sources.first { $0.description == "Cover the rules don't allow" }!
+            let finance = result.financeCosts.sources.first { $0.description == "Interest as filed" }!
+            return (expense.asFiledNote, finance.asFiledNote)
+        }
+        // An open year: worked out by the rules, no tag.
+        var tags = try notes()
+        XCTAssertNil(tags.expense)
+        XCTAssertNil(tags.finance)
+        // Filed: the expense item carries the reason; the finance cost item doesn't.
+        try db.write { db in try TaxOverview.setStatus(db: db, startYear: 2024, personId: id("A"), status: .filed) }
+        tags = try notes()
+        XCTAssertEqual(tags.expense, "kept as the return deducted it")
+        XCTAssertNil(tags.finance)
+    }
+
     func testManualItemSaveAppliesStagedDocuments() throws {
         try db.write { db in
             var document = EvidenceDocument(sha256: "pp", storedRelativePath: "pp/pp.pdf", originalFileName: "Postage.pdf", byteCount: 1, addedAt: Date())
