@@ -38,8 +38,20 @@ final class PropertyGlanceTests: XCTestCase {
         })
         XCTAssertEqual(summary.rent, .received(PropertyDates.day(rentLine.transaction.date)))
         XCTAssertEqual(summary.rent, .received(DemoDatabase.date(2026, 10, 12)))
+        // The rent figure beside it is that line's amount, in the property's currency.
+        XCTAssertEqual(summary.rentMinorUnits, rentLine.counted.native)
+        XCTAssertGreaterThan(summary.rentMinorUnits ?? 0, 0)
         XCTAssertEqual(summary.receipt, .pending)
         XCTAssertEqual(summary.lastRecharge, .readyToSend)
+        // The latest statement's month and total (`Recharges.statements`).
+        let statement = try XCTUnwrap(try db.read { db -> RechargeStatement? in
+            try Tenancies.all(db: db, propertyId: id).compactMap(\.id)
+                .compactMap { try Recharges.statements(db: db, tenancyId: $0).first }.max { $0.month < $1.month }
+        })
+        XCTAssertEqual(summary.lastRechargeMonth, statement.month)
+        XCTAssertEqual(summary.lastRechargeMonth, DemoDatabase.date(2026, 9, 1))
+        XCTAssertEqual(summary.lastRechargeTotalMinorUnits, statement.totalMinorUnits)
+        XCTAssertGreaterThan(summary.lastRechargeTotalMinorUnits ?? 0, 0)
 
         // Mortgage: outstanding as the Mac's loan chart and summary read it
         // (`PropertyFinance.balance` of the mortgage accounts), progress from
@@ -55,6 +67,14 @@ final class PropertyGlanceTests: XCTestCase {
         }
         XCTAssertGreaterThan(owed, 0)
         XCTAssertEqual(mortgage.outstandingMinorUnits, owed)
+        // In pounds too, as the Mac's property summary (`PropertySummary.outstandingLoan`) reads it to the end of today.
+        let macSummary = try db.read { db in
+            try PropertyFinance.summary(db: db, propertyId: id, period: .custom(DateInterval(
+                start: DemoDatabase.date(2026, 10, 1), end: PropertyDates.nextDay(PropertyDates.day(today)))), today: today)
+        }
+        XCTAssertEqual(mortgage.outstandingMinorUnits, macSummary.outstandingLoan.native)
+        XCTAssertEqual(mortgage.outstandingGBPMinorUnits, macSummary.outstandingLoan.gbp)
+        XCTAssertGreaterThan(mortgage.outstandingGBPMinorUnits, 0)
         // The Mac screen's own path: the loan chart's last point (`PropertyFinance.loanBalances`).
         let chartOwed = try db.read { db -> Int in
             let property = try Property.fetchOne(db, key: id)!
@@ -95,10 +115,16 @@ final class PropertyGlanceTests: XCTestCase {
         let id = try propertyId
         let early = try db.read { db in try PropertyGlance.make(db: db, propertyId: id, today: DemoDatabase.date(2026, 11, 5)) }
         XCTAssertEqual(early.rent, .expected(DemoDatabase.date(2026, 11, 12)))
+        // Not in yet: the tenancy's rent on the day it's due (`Tenancies.rent`).
+        let tenancyId = try XCTUnwrap(try db.read { db in try Tenancies.all(db: db, propertyId: id).last?.id })
+        let due = try db.read { db in try Tenancies.rent(db: db, tenancyId: tenancyId, at: DemoDatabase.date(2026, 11, 12)) }
+        XCTAssertNotNil(due)
+        XCTAssertEqual(early.rentMinorUnits, due)
         let onTheWindow = try db.read { db in try PropertyGlance.make(db: db, propertyId: id, today: DemoDatabase.date(2026, 11, 22)) }
         XCTAssertEqual(onTheWindow.rent, .expected(DemoDatabase.date(2026, 11, 12)))
         let late = try db.read { db in try PropertyGlance.make(db: db, propertyId: id, today: DemoDatabase.date(2026, 11, 23)) }
         XCTAssertEqual(late.rent, .late(since: DemoDatabase.date(2026, 11, 12)))
+        XCTAssertEqual(late.rentMinorUnits, due)
     }
 
     /// A receipt covering the month: issued.
@@ -124,6 +150,9 @@ final class PropertyGlanceTests: XCTestCase {
         XCTAssertEqual(summary.rent, PropertyGlance.RentStatus.none)
         XCTAssertEqual(summary.receipt, PropertyGlance.ReceiptStatus.none)
         XCTAssertNil(summary.lastRecharge)
+        XCTAssertNil(summary.rentMinorUnits)
+        XCTAssertNil(summary.lastRechargeMonth)
+        XCTAssertNil(summary.lastRechargeTotalMinorUnits)
         XCTAssertEqual(summary.comingUp.map(\.date), summary.comingUp.map(\.date).sorted())
 
         let all = try db.read { db in try PropertyGlance.all(db: db, today: today) }
@@ -147,6 +176,7 @@ final class PropertyGlanceTests: XCTestCase {
         let firstWeek = try db.read { db in try PropertyGlance.make(db: db, propertyId: other, today: DemoDatabase.date(2026, 11, 25)) }
         XCTAssertEqual(firstWeek.letSince, DemoDatabase.date(2026, 11, 20))
         XCTAssertEqual(firstWeek.rent, .expected(DemoDatabase.date(2026, 11, 20)))
+        XCTAssertEqual(firstWeek.rentMinorUnits, 90_000)
         let late = try db.read { db in try PropertyGlance.make(db: db, propertyId: other, today: DemoDatabase.date(2026, 12, 12)) }
         XCTAssertEqual(late.rent, .late(since: DemoDatabase.date(2026, 12, 1)))
     }

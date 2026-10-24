@@ -42,6 +42,8 @@ public struct PropertyGlance: Equatable, Sendable {
         public var nextInstalmentDate: Date?
         /// What the mortgage accounts owe at the end of today, in the property's currency.
         public var outstandingMinorUnits: Int
+        /// The same in pounds, at the stored rate (`PropertyFinance.balance`'s `gbp`).
+        public var outstandingGBPMinorUnits: Int
         /// Nil without the amount borrowed.
         public var progress: MortgageHistory.Progress?
         /// The rate of the period in force today.
@@ -55,9 +57,16 @@ public struct PropertyGlance: Equatable, Sendable {
     public var letSince: Date?
     public var contractTo: Date?
     public var rent: RentStatus
+    /// This month's rent, in the property's currency: the received credit's amount; else, while
+    /// it's expected or late, the tenancy's rent on the day it's due (`Tenancies.rent`). Nil
+    /// without a running tenancy (or a rent recorded for it).
+    public var rentMinorUnits: Int?
     public var receipt: ReceiptStatus
     /// Nil when no tenancy has a recharge statement.
     public var lastRecharge: RechargeStatus?
+    /// That statement's month (its first day) and total, in the property's currency.
+    public var lastRechargeMonth: Date?
+    public var lastRechargeTotalMinorUnits: Int?
     /// Nil without a mortgage account.
     public var mortgage: Mortgage?
     /// The obligations over the next `comingUpDays`, by date.
@@ -82,13 +91,18 @@ public struct PropertyGlance: Equatable, Sendable {
         let running = tenancies.last { $0.covers(day) }
 
         let end = calendar.date(byAdding: .day, value: comingUpDays, to: day)!
+        let rent = try rentStatus(db: db, propertyId: propertyId, running: running, thisMonth: thisMonth, today: day)
+        let statement = try latestStatement(db: db, tenancies: tenancies)
         return PropertyGlance(
             property: property,
             letSince: running?.startDate,
             contractTo: running?.endDate,
-            rent: try rentStatus(db: db, propertyId: propertyId, running: running, thisMonth: thisMonth, today: day),
+            rent: rent.status,
+            rentMinorUnits: rent.amount,
             receipt: try receiptStatus(db: db, running: running, thisMonth: thisMonth),
-            lastRecharge: try lastRecharge(db: db, tenancies: tenancies),
+            lastRecharge: statement.map(rechargeStatus),
+            lastRechargeMonth: statement?.month,
+            lastRechargeTotalMinorUnits: statement?.totalMinorUnits,
             mortgage: try mortgage(db: db, property: property, today: day),
             comingUp: try PropertyCalendar.obligations(db: db, propertyId: propertyId, from: day, to: end, today: day)
         )
@@ -99,12 +113,14 @@ public struct PropertyGlance: Equatable, Sendable {
     /// three months before) or the 1st — never before the tenancy starts — and late past the
     /// receipt matching window. (Advance-rent months play no part: the Mac uses them only for
     /// the deposit check, and a month paid ahead still has its receipt and credit.)
-    static func rentStatus(db: Database, propertyId: Int64, running: Tenancy?, thisMonth: DateInterval, today: Date) throws -> RentStatus {
+    /// The amount beside it: the received line's `counted.native`, else the tenancy's rent on the due day.
+    static func rentStatus(db: Database, propertyId: Int64, running: Tenancy?, thisMonth: DateInterval,
+                           today: Date) throws -> (status: RentStatus, amount: Int?) {
         let calendar = MonthRange.calendar
         let received = try PropertyFinance.monthBreakdown(db: db, propertyId: propertyId, interval: thisMonth).group(.rent)?.lines
             .filter { $0.counted.native > 0 }.last
-        if let received { return .received(PropertyDates.day(received.transaction.date)) }
-        guard let running else { return .none }
+        if let received { return (.received(PropertyDates.day(received.transaction.date)), received.counted.native) }
+        guard let running, let tenancyId = running.id else { return (.none, nil) }
 
         let before = DateInterval(start: calendar.date(byAdding: .month, value: -3, to: thisMonth.start)!, end: thisMonth.start)
         let last = try PropertyFinance.monthBreakdown(db: db, propertyId: propertyId, interval: before).group(.rent)?.lines
@@ -113,7 +129,8 @@ public struct PropertyGlance: Equatable, Sendable {
         let dueDay = min(last.map { calendar.component(.day, from: $0.transaction.date) } ?? 1, length)
         let due = max(calendar.date(byAdding: .day, value: dueDay - 1, to: thisMonth.start)!, PropertyDates.day(running.startDate))
         let lateAfter = calendar.date(byAdding: .day, value: RentReceiptMatching.Options().windowDays, to: due)!
-        return today > lateAfter ? .late(since: due) : .expected(due)
+        let amount = try Tenancies.rent(db: db, tenancyId: tenancyId, at: due)
+        return (today > lateAfter ? .late(since: due) : .expected(due), amount)
     }
 
     static func receiptStatus(db: Database, running: Tenancy?, thisMonth: DateInterval) throws -> ReceiptStatus {
@@ -125,10 +142,12 @@ public struct PropertyGlance: Equatable, Sendable {
     }
 
     /// The latest month's statement across the tenancies.
-    static func lastRecharge(db: Database, tenancies: [Tenancy]) throws -> RechargeStatus? {
-        let latest = try tenancies.compactMap(\.id).compactMap { try Recharges.statements(db: db, tenancyId: $0).first }
+    static func latestStatement(db: Database, tenancies: [Tenancy]) throws -> RechargeStatement? {
+        try tenancies.compactMap(\.id).compactMap { try Recharges.statements(db: db, tenancyId: $0).first }
             .max { $0.month < $1.month }
-        guard let latest else { return nil }
+    }
+
+    static func rechargeStatus(_ latest: RechargeStatement) -> RechargeStatus {
         switch latest.status {
         case .paid: return .paid
         case .sent: return .sent
@@ -139,10 +158,11 @@ public struct PropertyGlance: Equatable, Sendable {
     static func mortgage(db: Database, property: Property, today: Date) throws -> Mortgage? {
         guard let propertyId = property.id, let status = try MortgageRate.status(db: db, propertyId: propertyId, today: today) else { return nil }
         let accountIds = try Properties.accounts(db: db, propertyId: propertyId, role: .mortgage).map(\.accountId)
-        let owed = try PropertyFinance.balance(db: db, property: property, conversion: try CurrencyConversion.current(db: db),
-                                               accountIds: accountIds, asOf: today).native
+        let balance = try PropertyFinance.balance(db: db, property: property, conversion: try CurrencyConversion.current(db: db),
+                                                  accountIds: accountIds, asOf: today)
+        let owed = balance.native
         return Mortgage(nextInstalmentMinorUnits: status.nextInstalmentMinorUnits, nextInstalmentDate: status.nextDue,
-                        outstandingMinorUnits: owed,
+                        outstandingMinorUnits: owed, outstandingGBPMinorUnits: balance.gbp,
                         progress: MortgageHistory.progress(terms: status.terms, owedMinorUnits: owed, today: today),
                         ratePercent: status.current?.ratePercent, nextReview: status.nextRevision)
     }
