@@ -175,7 +175,14 @@ extension MissingEvidence {
 
     /// Links a document to the item's record and fills in what it needs to count
     /// (`filledIn`), in the caller's one write.
+    /// On a transaction, a link (with what it fills in) that would move a filed or paid return is
+    /// refused (`EvidenceLinkGuard`).
     public static func link(db: Database, documentId: Int64, to item: Item) throws -> LinkOutcome {
+        guard item.target.entity.type == .transaction else { return try linking(db: db, documentId: documentId, to: item) }
+        return try EvidenceLinkGuard.checked(db: db) { try linking(db: db, documentId: documentId, to: item) }
+    }
+
+    private static func linking(db: Database, documentId: Int64, to item: Item) throws -> LinkOutcome {
         try EvidenceLinks.link(db: db, documentId: documentId, to: item.target.entity)
         guard var document = try EvidenceDocument.fetchOne(db, key: documentId) else { throw EvidenceLibraryError.documentNotFound }
         let (details, filled) = filledIn(EvidenceDocumentDetails(document), for: item)

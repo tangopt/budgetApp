@@ -327,4 +327,73 @@ final class EvidenceBrowsingTests: XCTestCase {
         XCTAssertFalse(suggestions.contains { $0.documentId == 13 }, "already linked")
         XCTAssertFalse(suggestions.contains { $0.documentId == 12 && $0.score >= suggestions[0].score })
     }
+
+    // MARK: One document on several transactions
+
+    /// Two instalments of one repair bill (−40.00, −39.95) and a pounds debit; documents filed with
+    /// their amounts and linked as `links` says.
+    private func instalmentLibrary() throws -> (first: Int64, second: Int64, pounds: Int64) {
+        try manager.dbQueue.write { db in
+            var euros = Account(name: "Bank EUR", currency: .eur, kind: .cash, trackingMode: .imported)
+            try euros.insert(db)
+            var pounds = Account(name: "Bank GBP", currency: .gbp, kind: .cash, trackingMode: .imported)
+            try pounds.insert(db)
+            var ids: [Int64] = []
+            for (account, day, amount, text) in [(euros.id!, 5, -4_000, "PAG CANALIZACOES EXEMPLO 0001"), (euros.id!, 25, -3_995, "PAG CANALIZACOES EXEMPLO 0002"),
+                                                 (pounds.id!, 6, -4_000, "CARD PAYMENT DEMO")] {
+                var batch = ImportBatch(accountId: account, sourceFileName: "f.csv", importedAt: Date())
+                try batch.insert(db)
+                var transaction = Transaction(importBatchId: batch.id!, accountId: account, date: Self.date(2023, 3, day), rawDescription: text,
+                                              amountMinorUnits: amount, categoryId: nil, status: .confirmed, categorizedBy: .none,
+                                              fingerprint: UUID().uuidString)
+                try transaction.insert(db)
+                ids.append(transaction.id!)
+            }
+            return (ids[0], ids[1], ids[2])
+        }
+    }
+
+    private func filed(_ name: String, amount: Int?, currency: Currency? = .eur, linkedTo transactions: [Int64] = []) throws -> Int64 {
+        try manager.dbQueue.write { db in
+            var document = EvidenceDocument(sha256: name, storedRelativePath: "x/\(name).pdf", originalFileName: "\(name).pdf", byteCount: 1,
+                                            canonicalName: name, kind: .repairInvoice, docDate: Self.date(2023, 3, 5),
+                                            amountMinorUnits: amount, currency: amount == nil ? nil : currency, addedAt: Date())
+            try document.insert(db)
+            for id in transactions { try EvidenceLinks.link(db: db, documentId: document.id!, to: .transaction(id)) }
+            return document.id!
+        }
+    }
+
+    func testPartlyPaidDocumentsAreListedWithoutSearching() throws {
+        let (first, second, pounds) = try instalmentLibrary()
+        let partly = try filed("Part paid", amount: 7_995, linkedTo: [first])
+        let unlinked = try filed("Unlinked", amount: 5_000)
+        _ = try filed("Paid", amount: 4_000, linkedTo: [first])
+        _ = try filed("Paid twice", amount: 7_995, linkedTo: [first, second])
+        _ = try filed("Pounds only", amount: 7_995, linkedTo: [pounds])
+        _ = try filed("No amount", amount: nil, linkedTo: [first])
+        let index = try manager.dbQueue.read { db in try EvidenceDocumentSearch.Index(db: db) }
+        let listed = EvidenceDocumentSearch.entries(index, filter: .init(linkState: .unlinkedOrPartlyPaid))
+        XCTAssertEqual(Set(listed.map(\.id)), [partly, unlinked])
+        XCTAssertEqual(index.entries.filter(\.isPartlyPaid).map(\.id), [partly])
+        XCTAssertEqual(EvidenceDocumentSearch.entries(index, filter: .init(linkState: .unlinked)).map(\.id), [unlinked])
+
+        // What each document's linked debits paid, in its own currency.
+        let linked = try manager.dbQueue.read { db in try EvidenceMatcher.linkedDebits(db: db) }
+        XCTAssertEqual(linked[partly], [4_000])
+        XCTAssertNil(linked[unlinked])
+
+        // Link document… on the second instalment proposes the part-paid bill for the rest.
+        let documents = try manager.dbQueue.read { db in try EvidenceDocument.fetchAll(db) }
+        let transactions = try manager.dbQueue.read { db in try Transaction.fetchAll(db) }
+        let accounts = try manager.dbQueue.read { db in try Account.fetchAll(db) }
+        let matcher = EvidenceMatcher.Index(transactions: transactions, accounts: accounts, categories: [])
+        let suggestions = EvidenceMatcher.documentSuggestions(for: second, documents: documents, index: matcher, linkedDebits: linked)
+        let rest = try XCTUnwrap(suggestions.first { $0.documentId == partly })
+        XCTAssertTrue(rest.amountMatched)
+        XCTAssertEqual(rest.reasons.first, "Pays the rest of Part paid: €39.95 after €40.00")
+        XCTAssertEqual(suggestions.first?.documentId, partly)
+        XCTAssertFalse(EvidenceMatcher.documentSuggestions(for: second, documents: documents, index: matcher).contains { $0.documentId == partly && $0.amountMatched },
+                       "without what it already paid, only the date fits")
+    }
 }

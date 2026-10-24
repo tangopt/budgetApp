@@ -147,6 +147,9 @@ extension EvidenceLibrary {
 public enum EvidenceDocumentSearch {
     public enum LinkState: String, CaseIterable, Sendable {
         case any, linked, unlinked
+        /// Not linked, or linked to debits that paid only part of its amount (`Entry.isPartlyPaid`):
+        /// what Link document… lists before anything is typed.
+        case unlinkedOrPartlyPaid
     }
 
     public struct Filter: Equatable, Sendable {
@@ -184,10 +187,23 @@ public enum EvidenceDocumentSearch {
         /// The accounts of its linked transactions, and accounts it links to directly.
         public let accountIds: Set<Int64>
         public let year: Int?
+        /// Its linked debits (in its currency) paid less than its amount: there's a rest to link.
+        public let isPartlyPaid: Bool
         /// Name, file name, kind, note, persons, source path and text, folded.
         let haystack: String
 
         public var id: Int64 { summary.id }
+
+        public init(summary: EvidenceDocumentSummary, linkCount: Int, transactionLinkCount: Int, accountIds: Set<Int64>, year: Int?,
+                    isPartlyPaid: Bool = false, haystack: String) {
+            self.summary = summary
+            self.linkCount = linkCount
+            self.transactionLinkCount = transactionLinkCount
+            self.accountIds = accountIds
+            self.year = year
+            self.isPartlyPaid = isPartlyPaid
+            self.haystack = haystack
+        }
     }
 
     public struct Index: Sendable {
@@ -271,10 +287,12 @@ public enum EvidenceDocumentSearch {
             """, arguments: [EvidenceEntityType.transaction.rawValue, EvidenceEntityType.account.rawValue]) {
             accounts[row[0], default: []].insert(row[1])
         }
+        let paid = try EvidenceMatcher.linkedDebits(db: db, documentIds: ids).mapValues { $0.reduce(0, +) }
         return summaries.map { summary in
-            Entry(summary: summary, linkCount: linkCounts[summary.id] ?? 0, transactionLinkCount: transactionCounts[summary.id] ?? 0,
-                  accountIds: accounts[summary.id] ?? [], year: year(of: summary),
-                  haystack: haystack(summary, kindName: catalog.displayName(summary.kindRef), text: texts[summary.id]))
+            let partly = paid[summary.id].map { $0 > 0 && $0 < abs(summary.amountMinorUnits ?? 0) } ?? false
+            return Entry(summary: summary, linkCount: linkCounts[summary.id] ?? 0, transactionLinkCount: transactionCounts[summary.id] ?? 0,
+                         accountIds: accounts[summary.id] ?? [], year: year(of: summary), isPartlyPaid: partly,
+                         haystack: haystack(summary, kindName: catalog.displayName(summary.kindRef), text: texts[summary.id]))
         }
     }
 
@@ -313,6 +331,7 @@ public enum EvidenceDocumentSearch {
             case .any: break
             case .linked: if entry.linkCount == 0 { return false }
             case .unlinked: if entry.linkCount > 0 { return false }
+            case .unlinkedOrPartlyPaid: if entry.linkCount > 0 && !entry.isPartlyPaid { return false }
             }
             for term in terms {
                 let amountMatches = term.amount != nil && summary.amountMinorUnits.map(abs) == term.amount
@@ -335,14 +354,36 @@ extension EvidenceMatcher {
         public var dateInWindow: Bool
     }
 
+    /// What the debits linked to each document paid: sign-free amounts of its linked debits in
+    /// its own currency, by document (`documentIds` nil: every document). A document with an
+    /// amount paid only in part has a rest to propose (`EvidenceMatcher.remainder`).
+    public static func linkedDebits(db: Database, documentIds: [Int64]? = nil) throws -> [Int64: [Int]] {
+        let filter = documentIds.map { " AND l.documentId IN (\($0.map(String.init).joined(separator: ",")))" } ?? ""
+        var amounts: [Int64: [Int]] = [:]
+        for row in try Row.fetchAll(db, sql: """
+            SELECT l.documentId, -t.amountMinorUnits FROM documentLink l
+            JOIN \(Transaction.databaseTableName) t ON t.id = l.entityId
+            JOIN \(Account.databaseTableName) a ON a.id = t.accountId
+            JOIN \(EvidenceDocument.databaseTableName) d ON d.id = l.documentId
+            WHERE l.entityType = ? AND t.amountMinorUnits < 0 AND a.currency = d.currency\(filter)
+            ORDER BY l.documentId, t.date, t.id
+            """, arguments: [EvidenceEntityType.transaction.rawValue]) {
+            amounts[row[0], default: []].append(row[1])
+        }
+        return amounts
+    }
+
     /// The documents that would propose `transactionId` (`suggestions` among the documents'
     /// own top candidates from `index`, every transaction considered), best first; documents
-    /// already linked to it are left out.
+    /// already linked to it are left out. `linkedDebits` (`linkedDebits(db:)`): a part-paid
+    /// document proposes a debit of its rest.
     public static func documentSuggestions(for transactionId: Int64, documents: [EvidenceDocument], index: Index,
-                                           excluding linkedDocumentIds: Set<Int64> = [], limit: Int = 10) -> [DocumentSuggestion] {
+                                           excluding linkedDocumentIds: Set<Int64> = [], linkedDebits: [Int64: [Int]] = [:],
+                                           limit: Int = 10) -> [DocumentSuggestion] {
         let ranked: [(suggestion: DocumentSuggestion, date: Date)] = documents.compactMap { document in
             guard let documentId = document.id, !linkedDocumentIds.contains(documentId),
-                  let match = suggestions(document: document, index: index, limit: 10).first(where: { $0.transactionId == transactionId })
+                  let match = suggestions(document: document, index: index, limit: 10, linkedAmounts: linkedDebits[documentId] ?? [])
+                    .first(where: { $0.transactionId == transactionId })
             else { return nil }
             return (DocumentSuggestion(documentId: documentId, score: match.score, reasons: match.reasons,
                                        amountMatched: match.amountMatched, dateInWindow: match.dateInWindow),
@@ -369,8 +410,16 @@ public struct EvidenceLinkChanges: Equatable, Sendable {
 
     public var isEmpty: Bool { link.isEmpty && unlink.isEmpty }
 
-    /// Unlinks, then links (a document that's gone is refused, rolling the write back).
+    /// Unlinks, then links (a document that's gone is refused, rolling the write back). On a
+    /// transaction, changes that would move a filed or paid return are refused (`EvidenceLinkGuard`).
     public func apply(db: Database, to entity: EvidenceEntity) throws {
+        guard entity.type != .transaction || isEmpty else {
+            return try EvidenceLinkGuard.checked(db: db) { try write(db: db, to: entity) }
+        }
+        try write(db: db, to: entity)
+    }
+
+    private func write(db: Database, to entity: EvidenceEntity) throws {
         for documentId in unlink {
             try EvidenceLinks.unlink(db: db, documentId: documentId, from: entity)
         }

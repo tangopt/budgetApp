@@ -519,6 +519,11 @@ enum SnapshotCatalog {
                 let demo = ImportReviewDemo.make(context)
                 context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.learntId)
             },
+            // A repair bill two debits of one merchant add up to: Keep both links, or File without a link.
+            screen("imports", "review_instalments", "Imports: review, a bill paid in two instalments", .imports, settle: 1.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.instalmentsId)
+            },
             // A Ready receipt linked to a demo debit, its peek opened in place.
             screen("imports", "review_peek", "Imports: review, a linked transaction's peek opened", .imports, settle: 1.5) { _, context in
                 let demo = ImportReviewDemo.make(context)

@@ -29,6 +29,8 @@ enum ImportReviewDemo {
         let rowId: UUID
         /// A receipt read with learnt rules, a date to check (with "Remember for this issuer") and what it will remember.
         let learntId: UUID
+        /// A repair bill two debits of one merchant add up to: "Keep both links" or "File without a link".
+        let instalmentsId: UUID
     }
 
     static func day(_ year: Int, _ month: Int, _ day: Int) -> Date {
@@ -234,12 +236,29 @@ enum ImportReviewDemo {
                                              actionJSON: "{\"descriptionKey\":\"EXAMPLE SEGUROS\"}", actionLabel: "Paid by “EXAMPLE SEGUROS”",
                                              replaces: "Paid by “EXAMPLE INSURANCE”")]
 
-        let plan = ImportPlan(items: [invoice, held, figures, scan, learnt, statement, statementRows, checked, row, skipped, receipt(51, 5), receipt(52, 6),
-                                      insurance, duplicate, leftOut],
+        // A plumber's bill paid in two instalments: both links proposed, asked (never certain on their own).
+        let instalmentsId = UUID()
+        let instalmentsReason = "Paid in 2 instalments: €40.00 + €39.95"
+        let instalments = ImportItem(
+            id: instalmentsId, file: file("Fatura canalizador.pdf"), recognition: certain(.evidence(.repairInvoice), "Repair bill wording"),
+            title: "Repair bill of 2026-03-05",
+            facts: [fact(.amount, .money(7_995, .eur)), fact(.docDate, .date(day(2026, 3, 5)))],
+            placement: ImportPlacement(metadata: EvidenceMetadata(kind: .repairInvoice, docDate: day(2026, 3, 5), amountMinorUnits: 7_995, currency: .eur),
+                                       canonicalName: "20260305 - Property - Repair bill - Canalizacoes Exemplo"),
+            links: [ProposedLink(entity: .transaction(9_001), label: "PAG CANALIZACOES EXEMPLO · 5 Mar 2026 · −€40.00", confidence: .needsReview,
+                                 reasons: [instalmentsReason]),
+                    ProposedLink(entity: .transaction(9_002), label: "PAG CANALIZACOES EXEMPLO · 25 Mar 2026 · −€39.95", confidence: .needsReview,
+                                 reasons: [instalmentsReason])],
+            issues: [ImportIssue(id: EvidenceDocumentReader.instalmentsIssueId, kind: .readerProblem(instalmentsReason), reason: instalmentsReason,
+                                 offers: [.acknowledge, .fileWithoutLink])],
+            groupKey: "Repair bill documents")
+
+        let plan = ImportPlan(items: [invoice, held, figures, scan, learnt, instalments, statement, statementRows, checked, row, skipped, receipt(51, 5),
+                                      receipt(52, 6), insurance, duplicate, leftOut],
                               ignoredFiles: [".DS_Store"])
         return Demo(plan: plan, invoiceId: invoiceId, heldId: heldId, scanId: scanId, statementId: statementId, figuresId: figuresId,
                     insuranceId: insuranceId, linkedTransactionId: debit?.transaction.id, checkedId: checkedId, rowId: rowId,
-                    learntId: learntId)
+                    learntId: learntId, instalmentsId: instalmentsId)
     }
 }
 

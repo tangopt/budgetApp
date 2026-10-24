@@ -101,11 +101,13 @@ struct LinkEvidenceSheet: View {
     private func load() async {
         let dbQueue = viewModel.dbQueue, item = item
         do {
-            let (index, linked, documents) = try await Task.detached(priority: .userInitiated) {
+            let (index, linked, documents, paid) = try await Task.detached(priority: .userInitiated) {
                 try dbQueue.read { db in
-                    (try EvidenceDocumentSearch.Index(db: db),
-                     Set(try EvidenceLinks.documents(db: db, for: item.target.entity).compactMap(\.id)),
-                     item.target.entity.type == .transaction ? try EvidenceDocument.fetchAll(db) : [])
+                    let isTransaction = item.target.entity.type == .transaction
+                    return (try EvidenceDocumentSearch.Index(db: db),
+                            Set(try EvidenceLinks.documents(db: db, for: item.target.entity).compactMap(\.id)),
+                            isTransaction ? try EvidenceDocument.fetchAll(db) : [],
+                            isTransaction ? try EvidenceMatcher.linkedDebits(db: db) : [:])
                 }
             }.value
             self.index = index
@@ -117,7 +119,7 @@ struct LinkEvidenceSheet: View {
                 let transactionId = item.target.entity.id
                 ranked = await Task.detached(priority: .userInitiated) {
                     EvidenceMatcher.documentSuggestions(for: transactionId, documents: documents, index: catalog.matcherIndex,
-                                                        excluding: linked, limit: 8)
+                                                        excluding: linked, linkedDebits: paid, limit: 8)
                         .filter { suggestion in
                             documents.first { $0.id == suggestion.documentId }.map { item.requirement.accepts($0.kindRef) } ?? false
                         }

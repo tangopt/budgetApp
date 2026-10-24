@@ -67,13 +67,16 @@ final class TransactionDocumentsModel: ObservableObject {
         Task {
             do {
                 async let catalog = TransactionCatalog.load(dbQueue)
-                let (index, all) = try await Task.detached(priority: .userInitiated) {
-                    try dbQueue.read { db in (try EvidenceDocumentSearch.Index(db: db), try EvidenceDocument.fetchAll(db)) }
+                let (index, all, paid) = try await Task.detached(priority: .userInitiated) {
+                    try dbQueue.read { db in
+                        (try EvidenceDocumentSearch.Index(db: db), try EvidenceDocument.fetchAll(db), try EvidenceMatcher.linkedDebits(db: db))
+                    }
                 }.value
                 pickerIndex = index
                 let matcherIndex = try await catalog.matcherIndex
                 pickerSuggestions = await Task.detached(priority: .userInitiated) {
-                    EvidenceMatcher.documentSuggestions(for: transactionId, documents: all, index: matcherIndex, excluding: excluded, limit: 8)
+                    EvidenceMatcher.documentSuggestions(for: transactionId, documents: all, index: matcherIndex, excluding: excluded,
+                                                        linkedDebits: paid, limit: 8)
                 }.value
             } catch {
                 errorMessage = "Couldn't load documents: \(error.localizedDescription)"

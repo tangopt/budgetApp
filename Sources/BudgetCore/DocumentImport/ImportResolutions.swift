@@ -47,7 +47,8 @@ public enum ImportResolutions {
     /// every issue that takes it (`.acknowledge`: the first). Throws `notOffered` otherwise.
     ///
     /// - `.leaveOut`: in or out of the import (again: back in).
-    /// - `.acknowledge`: the issue is dropped.
+    /// - `.acknowledge`: the issue is dropped; on instalments (`EvidenceDocumentReader.instalmentsIssueId`)
+    ///   both proposed links become certain ("Checked by you").
     /// - `.chooseLink`: the link becomes certain ("Chosen by you"), the other candidates go; a
     ///   utility invoice's debit becomes the chosen transaction.
     /// - `.fileWithoutLink`: the issue goes with the links it questioned (and an effect's link);
@@ -152,6 +153,14 @@ public enum ImportResolutions {
         case .acknowledge:
             guard let first = accepting.first, let index = edited.issues.firstIndex(of: first) else { throw refuse() }
             edited.issues.remove(at: index)
+            if first.id == EvidenceDocumentReader.instalmentsIssueId {
+                // Keep both links: the instalments it proposed become certain, checked by the user.
+                for l in edited.links.indices where edited.links[l].entity.type == .transaction && edited.links[l].confidence == .needsReview {
+                    edited.links[l].confidence = .certain
+                    if !edited.links[l].reasons.contains(ImportChecks.checkedReason) { edited.links[l].reasons.append(ImportChecks.checkedReason) }
+                }
+                edited.notes.removeAll { $0.hasPrefix("Not linked:") }
+            }
             return edited
 
         case .confirmFigureRemembering(let field, let value):
@@ -261,6 +270,10 @@ public enum ImportResolutions {
                 if case .chooseLink(let candidates) = issue.kind { dropped.formUnion(candidates.map(\.entity)) }
                 if let id = transactionId(inIssueId: issue.id) { dropped.insert(.transaction(id)) }
                 if let id = tenancyId(inIssueId: issue.id) { dropped.insert(.tenancy(id)) }
+                // The instalments it proposed.
+                if issue.id == EvidenceDocumentReader.instalmentsIssueId {
+                    dropped.formUnion(unsure.filter { $0.entity.type == .transaction }.map(\.entity))
+                }
             }
             edited.issues.removeAll { accepting.contains($0) }
             if let corrected = accepting.first(where: { ImportDuplicates.isCorrectedVersion($0.id) }) {

@@ -581,6 +581,9 @@ public struct EvidenceDocumentReader: ImportReader {
 
     /// Suggestions this close to the best are as good: the user picks.
     static let tieMargin = 20
+    /// The question of a document two debits of one merchant may have paid in instalments
+    /// (`EvidenceMatcher.instalments`): `.acknowledge` keeps both links, `.fileWithoutLink` drops them.
+    public static let instalmentsIssueId = "instalments"
     /// A custom kind's amount, guessed as the largest on the document.
     public static let guessedAmountReason = "Amount guessed (the largest on the document): check it"
 
@@ -689,9 +692,30 @@ public struct EvidenceDocumentReader: ImportReader {
             suggestions.contains { $0.transactionId != match.transactionId && $0.amountMatched && match.score - $0.score <= Self.tieMargin }
                 ? nil : match
         }
+        // No debit of its amount: perhaps two of one merchant paid it in instalments (only ever asked).
+        let instalments = confident == nil && !suggestions.contains(where: \.amountMatched)
+            ? EvidenceMatcher.instalments(document: document, index: index) : []
         if let match = confident {
             item.links = [ProposedLink(entity: .transaction(match.transactionId), label: try entityLabel(db: db, .transaction(match.transactionId)),
                                        confidence: .certain, reasons: match.reasons)]
+        } else if instalments.count == 1, let pair = instalments.first {
+            let reason = pair.reasons.joined(separator: "; ")
+            item.links = try pair.transactionIds.map { id in
+                ProposedLink(entity: .transaction(id), label: try entityLabel(db: db, .transaction(id)), confidence: .needsReview, reasons: pair.reasons)
+            }
+            item.issues.append(ImportIssue(id: Self.instalmentsIssueId, kind: .readerProblem(reason), reason: reason,
+                                           offers: [.acknowledge, .fileWithoutLink]))
+        } else if instalments.count > 1 {
+            // Each pair's debits, in the pairs' order, once.
+            var seen = Set<Int64>()
+            let candidates = try instalments.flatMap { pair in
+                try pair.transactionIds.filter { seen.insert($0).inserted }.map { id in
+                    LinkCandidate(entity: .transaction(id), label: try entityLabel(db: db, .transaction(id)), reasons: pair.reasons)
+                }
+            }
+            item.issues.append(ImportIssue(id: "chooseLink", kind: .chooseLink(candidates),
+                                           reason: "It may have been paid in instalments, and several pairs of payments add up to it: which ones are they?",
+                                           offers: [.fileWithoutLink]))
         } else if suggestions.count == 1, let only = suggestions.first, only.amountMatched, !only.dateInWindow, !only.referenceMatched {
             item.issues.append(ImportIssue(id: "chooseLink", kind: .chooseLink([try candidate(only)]), reason: "Matched on amount only",
                                            offers: [.fileWithoutLink]))

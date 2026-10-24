@@ -227,6 +227,33 @@ final class MissingEvidenceTests: XCTestCase {
         XCTAssertEqual(result[2].target, .transaction(c))
     }
 
+    /// One bill paid in two instalments: the document linked to both debits satisfies both.
+    func testOneDocumentLinkedToTwoDebitsSatisfiesBothInMissingEvidence() throws {
+        try requirement("Repairs", .transactionsInCategory(categoryId: repairs), kinds: [.repairInvoice])
+        let first = try transaction(Self.date(2025, 5, 2), -4_000, category: repairs, description: "PAG CANALIZACOES EXEMPLO 0001")
+        let second = try transaction(Self.date(2025, 5, 22), -3_995, category: repairs, description: "PAG CANALIZACOES EXEMPLO 0002")
+        let bill = try document(.repairInvoice, docDate: Self.date(2025, 5, 2), name: "Repair bill", linkedTo: .transaction(first))
+        XCTAssertEqual(try items(year2025.interval).map(\.status), [.satisfied, .missing])
+        try db.write { db in _ = try EvidenceLinks.link(db: db, documentId: bill, to: .transaction(second)) }
+        let result = try items(year2025.interval)
+        XCTAssertEqual(result.map(\.status), [.satisfied, .satisfied])
+        XCTAssertEqual(result.map { $0.satisfyingDocuments.map(\.id) }, [[bill], [bill]])
+    }
+
+    /// A bank statement linked to three fee debits, under a rule that takes statements: three satisfied.
+    func testStatementLinkedToThreeFeeDebitsSatisfiesThree() throws {
+        let fees = try db.write { db in try insertCategory(db, "Bank fees", .expense, group: nil) }
+        try requirement("Bank fees", .transactionsInCategory(categoryId: fees), kinds: [.bankStatement])
+        let debits = try [5, 6, 7].map { month in try transaction(Self.date(2025, month, 3), -250, category: fees, description: "COMISSAO MANUTENCAO") }
+        let statement = try document(.bankStatement, docDate: Self.date(2025, 7, 31), name: "Statement", linkedTo: .transaction(debits[0]))
+        try db.write { db in
+            for id in debits.dropFirst() { _ = try EvidenceLinks.link(db: db, documentId: statement, to: .transaction(id)) }
+        }
+        let result = try items(year2025.interval)
+        XCTAssertEqual(result.map(\.status), [.satisfied, .satisfied, .satisfied])
+        XCTAssertEqual(result.map(\.target.entity), debits.map(EvidenceEntity.transaction))
+    }
+
     func testMissingEvidenceSatisfiedByACustomKind() throws {
         let boiler = try db.write { db in try XCTUnwrap(try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: Date()).id) }
         try db.write { db in

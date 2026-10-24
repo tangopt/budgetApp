@@ -156,6 +156,7 @@ struct ImportIssueControls: View {
             if issue.id == ImportDuplicates.correctedVersionIssueId { return "Import as the newer version" }
             // A BBVA receipt whose interest the fund/mortgage tool estimated otherwise.
             if issue.id.hasPrefix(Self.estimateIssuePrefix) { return "Replace the estimate" }
+            if issue.id == EvidenceDocumentReader.instalmentsIssueId { return "Keep both links" }
             return "Got it"
         case .fileWithoutLink:
             let documentOnly = issue.id == UtilityInvoiceImportReader.documentOnlyIssueId || ImportDuplicates.isCorrectedVersion(issue.id)
@@ -747,12 +748,9 @@ struct ImportItemChecks: View {
         }
     }
 
-    /// Links to check that no "which one?" offers.
+    /// Links to check that no question ("which one?", instalments) already asks about.
     private var links: [ProposedLink] {
-        let asked = Set(item.issues.flatMap { issue -> [EvidenceEntity] in
-            if case .chooseLink(let candidates) = issue.kind { return candidates.map(\.entity) }
-            return []
-        })
+        let asked = item.linksAskedByIssues
         return item.links.filter { $0.confidence == .needsReview && !asked.contains($0.entity) }
     }
 

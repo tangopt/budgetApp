@@ -259,8 +259,11 @@ final class DocumentsViewModel: ObservableObject {
 
     private func refreshSuggestions() {
         guard let document = selected, let catalog else { suggestions = []; return }
-        let linked = Set(links.filter { $0.link.entityType == .transaction }.map(\.link.entityId))
-        suggestions = EvidenceMatcher.suggestions(document: document, index: catalog.matcherIndex, limit: 8)
+        let linkedIds = links.filter { $0.link.entityType == .transaction }.map(\.link.entityId)
+        let linked = Set(linkedIds)
+        // A part-paid document proposes a debit of its rest.
+        let paid = catalog.matcherIndex.linkedDebits(linkedIds, currency: document.currency)
+        suggestions = EvidenceMatcher.suggestions(document: document, index: catalog.matcherIndex, limit: 8, linkedAmounts: paid)
             .filter { !linked.contains($0.transactionId) }
     }
 

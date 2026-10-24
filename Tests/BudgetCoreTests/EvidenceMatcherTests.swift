@@ -241,4 +241,102 @@ final class EvidenceMatcherTests: XCTestCase {
         XCTAssertEqual(ids(suggestions), [1, 2, 3, 4, 5], "equal scores and distances: by id")
         XCTAssertNil(EvidenceMatcher.confidentMatch(suggestions))
     }
+
+    // MARK: One document on several transactions
+
+    private func repairBill(amount: Int = 7_995, date: String = "2023-03-05") -> EvidenceDocument {
+        var bill = document(.repairInvoice, date: date, amount: amount)
+        bill.canonicalName = "20230305 - Property - Repair bill - Canalizacoes Exemplo"
+        return bill
+    }
+
+    func testTwoDebitsOfOneMerchantAddingUpToTheInvoiceAreInstalments() {
+        let transactions = [
+            transaction(1, "2023-03-05", -4_000, "PAG CANALIZACOES EXEMPLO 0001"),
+            transaction(2, "2023-03-25", -3_995, "PAG CANALIZACOES EXEMPLO 0002"),
+            transaction(3, "2023-03-10", -3_995, "COMPRA SUPERMERCADO 77"),
+            transaction(4, "2023-03-12", -2_000, "PAG CANALIZACOES EXEMPLO 0003")
+        ]
+        let index = EvidenceMatcher.Index(transactions: transactions, accounts: accounts, categories: categories)
+        let matches = EvidenceMatcher.instalments(document: repairBill(), index: index)
+        XCTAssertEqual(matches, [EvidenceMatcher.InstalmentMatch(transactionIds: [1, 2], reasons: ["Paid in 2 instalments: €40.00 + €39.95"])])
+        // No single debit is of its amount: nothing is suggested surely.
+        XCTAssertNil(EvidenceMatcher.confidentMatch(EvidenceMatcher.suggestions(document: repairBill(), index: index)))
+    }
+
+    func testDebitsOfAnotherMerchantOrNotAddingUpAreNot() {
+        func pairs(_ transactions: [Transaction], _ bill: EvidenceDocument? = nil) -> [EvidenceMatcher.InstalmentMatch] {
+            EvidenceMatcher.instalments(document: bill ?? repairBill(),
+                                        index: EvidenceMatcher.Index(transactions: transactions, accounts: accounts, categories: categories))
+        }
+        // Two merchants.
+        XCTAssertEqual(pairs([transaction(1, "2023-03-05", -4_000, "PAG CANALIZACOES EXEMPLO 0001"),
+                              transaction(2, "2023-03-25", -3_995, "PAG ELECTRICIDADE DEMO 0002")]), [])
+        // Not adding up.
+        XCTAssertEqual(pairs([transaction(1, "2023-03-05", -4_000, "PAG CANALIZACOES EXEMPLO 0001"),
+                              transaction(2, "2023-03-25", -3_900, "PAG CANALIZACOES EXEMPLO 0002")]), [])
+        // A credit is not an instalment of a bill.
+        XCTAssertEqual(pairs([transaction(1, "2023-03-05", -4_000, "PAG CANALIZACOES EXEMPLO 0001"),
+                              transaction(2, "2023-03-25", 3_995, "PAG CANALIZACOES EXEMPLO 0002")]), [])
+        // Another currency's debits.
+        XCTAssertEqual(pairs([transaction(1, "2023-03-05", -4_000, "PAG CANALIZACOES EXEMPLO 0001", account: 3),
+                              transaction(2, "2023-03-25", -3_995, "PAG CANALIZACOES EXEMPLO 0002", account: 3)]), [])
+        // Outside the kind's window and its grace (−15…45 days, +30).
+        XCTAssertEqual(pairs([transaction(1, "2023-03-05", -4_000, "PAG CANALIZACOES EXEMPLO 0001"),
+                              transaction(2, "2023-06-30", -3_995, "PAG CANALIZACOES EXEMPLO 0002")]), [])
+        // A debit of the whole amount and a zero one: not instalments.
+        XCTAssertEqual(pairs([transaction(1, "2023-03-05", -7_995, "PAG CANALIZACOES EXEMPLO 0001"),
+                              transaction(2, "2023-03-25", 0, "PAG CANALIZACOES EXEMPLO 0002")]), [])
+        // No amount on the document.
+        XCTAssertEqual(pairs([transaction(1, "2023-03-05", -4_000, "PAG CANALIZACOES EXEMPLO 0001"),
+                              transaction(2, "2023-03-25", -3_995, "PAG CANALIZACOES EXEMPLO 0002")], document(.repairInvoice, date: "2023-03-05", amount: nil)), [])
+        // A rent receipt is for a credit: never paid in instalments of debits.
+        XCTAssertEqual(pairs([transaction(1, "2023-03-05", -4_000, "PAG CANALIZACOES EXEMPLO 0001"),
+                              transaction(2, "2023-03-25", -3_995, "PAG CANALIZACOES EXEMPLO 0002")],
+                             document(.rentReceipt, date: "2023-03-05", amount: 7_995, period: ("2023-03-01", "2023-03-31"))), [])
+    }
+
+    func testSeveralPairsAreListedEarliestFirstAtMostThree() {
+        var transactions: [Transaction] = []
+        for n in 0..<5 {
+            let id = Int64(10 + n * 2)
+            transactions.append(transaction(id, "2023-03-0\(n + 1)", -4_000, "PAG CANALIZACOES EXEMPLO \(n)A"))
+            transactions.append(transaction(id + 1, "2023-03-2\(n + 1)", -3_995, "PAG CANALIZACOES EXEMPLO \(n)B"))
+        }
+        let matches = EvidenceMatcher.instalments(document: repairBill(),
+                                                  index: EvidenceMatcher.Index(transactions: transactions, accounts: accounts, categories: categories))
+        XCTAssertEqual(matches.count, 3)
+        XCTAssertEqual(matches.first?.transactionIds, [10, 11])
+        XCTAssertTrue(matches.allSatisfy { $0.transactionIds.count == 2 })
+        let starts = matches.map { $0.transactionIds[0] }
+        XCTAssertEqual(starts, starts.sorted(), "earliest first")
+    }
+
+    func testRemainderSuggestedForTheSecondInstalment() {
+        let second = transaction(2, "2023-03-25", -3_995, "PAG CANALIZACOES EXEMPLO 0002")
+        let bill = repairBill()
+        let reason = "Pays the rest of 20230305 - Property - Repair bill - Canalizacoes Exemplo: €39.95 after €40.00"
+        let remainder = EvidenceMatcher.remainder(document: bill, linkedAmounts: [4_000], transaction: second, currency: .eur)
+        XCTAssertEqual(remainder?.transactionId, 2)
+        XCTAssertEqual(remainder?.reasons, [reason])
+        XCTAssertEqual(remainder?.amountMatched, true)
+        XCTAssertEqual(remainder?.score, EvidenceMatcher.amountPoints)
+        // Nothing left to pay, another currency, a credit, or another amount: none.
+        XCTAssertNil(EvidenceMatcher.remainder(document: bill, linkedAmounts: [7_995], transaction: second, currency: .eur))
+        XCTAssertNil(EvidenceMatcher.remainder(document: bill, linkedAmounts: [], transaction: second, currency: .eur))
+        XCTAssertNil(EvidenceMatcher.remainder(document: bill, linkedAmounts: [4_000], transaction: second, currency: .gbp))
+        XCTAssertNil(EvidenceMatcher.remainder(document: bill, linkedAmounts: [4_000], transaction: transaction(5, "2023-03-25", 3_995, "X"), currency: .eur))
+        XCTAssertNil(EvidenceMatcher.remainder(document: bill, linkedAmounts: [4_005], transaction: second, currency: .eur))
+
+        // Among the document's suggestions: scored as an exact amount, in the window.
+        let transactions = [transaction(1, "2023-03-05", -4_000, "PAG CANALIZACOES EXEMPLO 0001"), second,
+                            transaction(3, "2023-03-20", -1_500, "PAG CANALIZACOES EXEMPLO 0003")]
+        let index = EvidenceMatcher.Index(transactions: transactions, accounts: accounts, categories: categories)
+        XCTAssertFalse(EvidenceMatcher.suggestions(document: bill, index: index).contains { $0.amountMatched })
+        let suggestions = EvidenceMatcher.suggestions(document: bill, index: index, linkedAmounts: [4_000])
+        XCTAssertEqual(suggestions.first?.transactionId, 2)
+        XCTAssertEqual(suggestions.first?.amountMatched, true)
+        XCTAssertEqual(suggestions.first?.reasons.first, reason)
+        XCTAssertTrue(suggestions.first?.dateInWindow ?? false)
+    }
 }

@@ -149,6 +149,7 @@ public enum EvidenceMatcher {
 
         let byDate: [Entry]
         let byAmount: [Int: [Entry]]
+        let byId: [Int64: Entry]
         let accounts: [Int64: Account]
         let categories: [Int64: Category]
 
@@ -160,8 +161,20 @@ public enum EvidenceMatcher {
             }
             byDate = entries.sorted { ($0.transaction.date, $0.id) < ($1.transaction.date, $1.id) }
             byAmount = Dictionary(grouping: entries) { abs($0.transaction.amountMinorUnits) }
+            byId = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             self.accounts = Dictionary(accounts.compactMap { account in account.id.map { ($0, account) } }, uniquingKeysWith: { first, _ in first })
             self.categories = Dictionary(categories.compactMap { category in category.id.map { ($0, category) } }, uniquingKeysWith: { first, _ in first })
+        }
+
+        /// What the debits among `transactionIds` (a document's linked transactions) paid, sign-free,
+        /// those of accounts in `currency` only: the `linkedAmounts` of a part-paid document.
+        public func linkedDebits(_ transactionIds: [Int64], currency: Currency?) -> [Int] {
+            guard let currency else { return [] }
+            return transactionIds.compactMap { id in
+                guard let transaction = byId[id]?.transaction, transaction.amountMinorUnits < 0,
+                      accounts[transaction.accountId]?.currency == currency else { return nil }
+                return -transaction.amountMinorUnits
+            }
         }
 
         /// Entries dated within `start...end` (binary search).
@@ -187,7 +200,10 @@ public enum EvidenceMatcher {
     }
 
     /// Candidate transactions for `document` from a prepared `index` (many documents, one index).
-    public static func suggestions(document: EvidenceDocument, index: Index, limit: Int = 10) -> [Suggestion] {
+    /// `linkedAmounts`: what the debits already linked to it paid (sign-free, in its currency,
+    /// `linkedDebits(db:)`); a debit of the rest of a part-paid document counts as its exact
+    /// amount (`remainder`).
+    public static func suggestions(document: EvidenceDocument, index: Index, limit: Int = 10, linkedAmounts: [Int] = []) -> [Suggestion] {
         // An addendum amends a tenancy (`TenancyAddendum`): its new rent's credits aren't its to prove.
         guard document.kind != .tenancyAddendum else { return [] }
         let expectation = expectation(for: document.kindRef)
@@ -239,6 +255,11 @@ public enum EvidenceMatcher {
                 amountMatches = true
                 score += amountPoints
                 reasons.append("Amount \(Money.format(documentAmount, currency: currency))")
+            } else if !linkedAmounts.isEmpty, let account,
+                      let rest = remainder(document: document, linkedAmounts: linkedAmounts, transaction: transaction, currency: account.currency) {
+                amountMatches = true
+                score += rest.score
+                reasons += rest.reasons
             }
 
             var distance = Int.max
@@ -293,6 +314,92 @@ public enum EvidenceMatcher {
             return lhs.suggestion.transactionId < rhs.suggestion.transactionId
         }
         return ranked.prefix(limit).map(\.suggestion)
+    }
+
+    // MARK: One document on several transactions
+
+    /// Two debits that together paid a document (spec 2026-10-24 §4c).
+    public struct InstalmentMatch: Equatable, Sendable {
+        /// The two debits, earliest first.
+        public var transactionIds: [Int64]
+        /// "Paid in 2 instalments: €40.00 + €39.95".
+        public var reasons: [String]
+
+        public init(transactionIds: [Int64], reasons: [String]) {
+            self.transactionIds = transactionIds
+            self.reasons = reasons
+        }
+    }
+
+    /// How many instalment pairs are proposed at most.
+    static let maxInstalmentMatches = 3
+
+    /// Pairs of debits that may have paid `document` in two instalments: both debits (a kind
+    /// that proves a credit has none), in the kind's window plus `amountGraceDays` around its
+    /// anchor, of the same merchant (`MerchantKey`), each smaller than the document's amount,
+    /// together exactly its amount in their accounts' currency (the document's). At most
+    /// `maxInstalmentMatches`, earliest first. Only ever a proposal: the importer asks.
+    public static func instalments(document: EvidenceDocument, index: Index) -> [InstalmentMatch] {
+        guard document.kind != .tenancyAddendum, let total = document.amountMinorUnits.map(abs), total > 1,
+              let currency = document.currency else { return [] }
+        let expectation = expectation(for: document.kindRef)
+        guard expectation.direction != .credit else { return [] }
+        let anchor: Date? = switch expectation.anchor {
+        case .docDate: document.docDate
+        case .periodStart: document.periodStart ?? document.docDate
+        case .periodEnd: document.periodEnd ?? document.docDate
+        }
+        guard let anchor else { return [] }
+        let day: TimeInterval = 86_400
+        let pool = index.entries(from: anchor.addingTimeInterval(Double(expectation.window.lowerBound - amountGraceDays) * day),
+                                 to: anchor.addingTimeInterval(Double(expectation.window.upperBound + amountGraceDays) * day))
+            .filter { entry in
+                let amount = -entry.transaction.amountMinorUnits
+                return amount > 0 && amount < total && index.accounts[entry.transaction.accountId]?.currency == currency
+            }
+        // Same merchant, in date order (the pool is).
+        var byMerchant: [String: [Index.Entry]] = [:]
+        var merchants: [String] = []
+        for entry in pool {
+            let key = MerchantKey.make(entry.transaction.rawDescription)
+            if byMerchant[key] == nil { merchants.append(key) }
+            byMerchant[key, default: []].append(entry)
+        }
+        var pairs: [(first: Index.Entry, second: Index.Entry)] = []
+        for key in merchants {
+            let entries = byMerchant[key] ?? []
+            for i in entries.indices {
+                for j in entries.indices where j > i {
+                    if -entries[i].transaction.amountMinorUnits - entries[j].transaction.amountMinorUnits == total {
+                        pairs.append((entries[i], entries[j]))
+                    }
+                }
+            }
+        }
+        pairs.sort { lhs, rhs in
+            (lhs.first.transaction.date, lhs.second.transaction.date, lhs.first.id, lhs.second.id)
+                < (rhs.first.transaction.date, rhs.second.transaction.date, rhs.first.id, rhs.second.id)
+        }
+        return pairs.prefix(maxInstalmentMatches).map { pair in
+            let a = Money.format(-pair.first.transaction.amountMinorUnits, currency: currency)
+            let b = Money.format(-pair.second.transaction.amountMinorUnits, currency: currency)
+            return InstalmentMatch(transactionIds: [pair.first.id, pair.second.id], reasons: ["Paid in 2 instalments: \(a) + \(b)"])
+        }
+    }
+
+    /// `transaction` as the debit of what is left to pay on a part-paid document: its amount (in
+    /// `currency`, its account's, the document's) is the document's amount minus `linkedAmounts`,
+    /// what the debits already linked to it paid, when that is more than nothing. Scored as an
+    /// exact amount; nil otherwise.
+    public static func remainder(document: EvidenceDocument, linkedAmounts: [Int], transaction: Transaction,
+                                 currency: Currency) -> Suggestion? {
+        guard let total = document.amountMinorUnits.map(abs), document.currency == currency, !linkedAmounts.isEmpty,
+              transaction.amountMinorUnits < 0, let id = transaction.id else { return nil }
+        let paid = linkedAmounts.reduce(0) { $0 + abs($1) }
+        let rest = total - paid
+        guard paid > 0, rest > 0, -transaction.amountMinorUnits == rest else { return nil }
+        let reason = "Pays the rest of \(document.displayName): \(Money.format(rest, currency: currency)) after \(Money.format(paid, currency: currency))"
+        return Suggestion(transactionId: id, score: amountPoints, reasons: [reason], amountMatched: true)
     }
 
     /// The single clear winner of `suggestions` (best first), safe to link without asking: the

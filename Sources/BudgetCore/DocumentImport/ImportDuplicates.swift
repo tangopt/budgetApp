@@ -972,7 +972,10 @@ public enum ImportDuplicates {
         }
     }
 
-    private static func isChosen(_ link: ProposedLink) -> Bool { link.reasons.contains(ImportResolutions.chosenReason) }
+    /// Chosen by the user, or proposed and checked by them (instalments kept): never alerts.
+    private static func isChosen(_ link: ProposedLink) -> Bool {
+        link.reasons.contains(ImportResolutions.chosenReason) || link.reasons.contains(ImportChecks.checkedReason)
+    }
 
     /// "an insurance receipt", "a P60", "an IMI notice": lower case unless an acronym leads.
     static func article(_ name: String) -> String {

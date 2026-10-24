@@ -431,9 +431,14 @@ public struct EvidenceLibrary: Sendable {
 
     // MARK: Links
 
+    /// Links by hand; a link to a transaction that would change a filed or paid return is refused
+    /// (`EvidenceLinkGuard`).
     @discardableResult
     public func link(_ documentId: Int64, to entity: EvidenceEntity, role: String? = nil) throws -> DocumentLink {
-        try database.write { db in try EvidenceLinks.link(db: db, documentId: documentId, to: entity, role: role) }
+        try database.write { db in
+            guard entity.type == .transaction else { return try EvidenceLinks.link(db: db, documentId: documentId, to: entity, role: role) }
+            return try EvidenceLinkGuard.checked(db: db) { try EvidenceLinks.link(db: db, documentId: documentId, to: entity, role: role) }
+        }
     }
 
     /// Sets (or, with `nil`, clears) the role of an existing link; `false` when there is none.
