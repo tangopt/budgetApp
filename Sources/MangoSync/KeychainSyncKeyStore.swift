@@ -11,18 +11,19 @@ import BudgetCore
 /// - service `ubberninja.mango.sync`, account `<container>/<zone>/<keyId>`, value the 32 key bytes;
 /// - `kSecAttrGeneric` holds when it was stored here (8 bytes), so `key(zone:)` is the newest.
 ///
-/// Compiled in the App only; never exercised by tests or tools (they use `InMemorySyncKeyStore`).
-final class KeychainSyncKeyStore: SyncKeyStore {
-    static let service = "ubberninja.mango.sync"
+/// In the `MangoSync` target, shared by the Mac and iOS apps; never exercised by tests or tools (they use
+/// `InMemorySyncKeyStore`).
+public final class KeychainSyncKeyStore: SyncKeyStore {
+    public static let service = "ubberninja.mango.sync"
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
-    enum KeychainError: Error, Equatable {
+    public enum KeychainError: Error, Equatable {
         case status(OSStatus)
     }
 
     private let container: String
 
-    init(container: String = CloudKitTransport.containerIdentifier) {
+    public init(container: String = CloudKitTransport.containerIdentifier) {
         self.container = container
     }
 
@@ -35,15 +36,15 @@ final class KeychainSyncKeyStore: SyncKeyStore {
          kSecUseDataProtectionKeychain: true]
     }
 
-    func key(zone: String) throws -> SymmetricKey? {
+    public func key(zone: String) throws -> SymmetricKey? {
         try items(zone: zone).max { $0.storedAt < $1.storedAt }?.key
     }
 
-    func allKeys(zone: String) throws -> [String: SymmetricKey] {
+    public func allKeys(zone: String) throws -> [String: SymmetricKey] {
         Dictionary(try items(zone: zone).map { ($0.id, $0.key) }, uniquingKeysWith: { first, _ in first })
     }
 
-    func store(_ key: SymmetricKey, zone: String) throws {
+    public func store(_ key: SymmetricKey, zone: String) throws {
         let id = DocumentCrypto.zoneKeyId(key)
         var query = baseQuery()
         query[kSecAttrAccount] = prefix(zone) + id

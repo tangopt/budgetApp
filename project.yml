@@ -12,6 +12,9 @@ targets:
     sources: [App]
     dependencies:
       - package: BudgetCore
+        product: BudgetCore
+      - package: BudgetCore
+        product: MangoSync
     # Signing (build step 0): Config/Signing.xcconfig includes the uncommitted Signing.local.xcconfig.
     configFiles:
       Debug: Config/Signing.xcconfig

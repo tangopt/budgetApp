@@ -3,6 +3,7 @@ import Foundation
 import os
 import Security
 import BudgetCore
+import MangoSync
 
 /// The one way to reach `CloudKitTransport` in build step 3 (plan Global Constraints): a DEBUG build launched
 /// with `--sync-demo` and `BUDGET_DB_PATH` naming the demo database (`DemoMarker`). Anything else with the

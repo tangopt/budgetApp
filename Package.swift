@@ -5,7 +5,8 @@ let package = Package(
     name: "BudgetCore",
     platforms: [.macOS("26.0"), .iOS("26.0")],
     products: [
-        .library(name: "BudgetCore", targets: ["BudgetCore"])
+        .library(name: "BudgetCore", targets: ["BudgetCore"]),
+        .library(name: "MangoSync", targets: ["MangoSync"])
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.29.0")
@@ -16,7 +17,10 @@ let package = Package(
         ]),
         // The synthetic demo database (UI snapshots, manual testing): never in the app.
         .target(name: "BudgetDemo", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
+        // CloudKit and Security pieces both apps share and BudgetCore may not import (step 4, Task 3).
+        .target(name: "MangoSync", dependencies: ["BudgetCore"]),
         .testTarget(name: "BudgetCoreTests", dependencies: ["BudgetCore", "BudgetDemo"]),
+        .testTarget(name: "MangoSyncTests", dependencies: ["MangoSync", "BudgetCore"]),
         .executableTarget(name: "MigrateHistory", dependencies: ["BudgetCore"]),
         .executableTarget(name: "MigrateAccountBalances", dependencies: ["BudgetCore"]),
         .executableTarget(name: "ConvertBalances", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
