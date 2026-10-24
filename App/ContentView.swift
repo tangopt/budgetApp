@@ -112,6 +112,8 @@ struct ContentView: View {
     @StateObject private var searchViewModel: SearchViewModel
     /// Kept for the app session, like Search: the document search and filters survive navigation.
     @StateObject private var documentsViewModel: DocumentsViewModel
+    /// The custom kinds' names, for every screen that shows a document's kind.
+    @StateObject private var documentKindsModel: DocumentKindsModel
     /// Kept for the app session: the period and filters survive navigation.
     @StateObject private var missingEvidenceViewModel: MissingEvidenceViewModel
     /// The property page on show (`propertyId`), kept for the session like the others. Held,
@@ -146,6 +148,7 @@ struct ContentView: View {
         _dashboardViewModel = StateObject(wrappedValue: DashboardViewModel(dbQueue: environment.dbQueue))
         _searchViewModel = StateObject(wrappedValue: SearchViewModel(dbQueue: environment.dbQueue))
         _documentsViewModel = StateObject(wrappedValue: DocumentsViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
+        _documentKindsModel = StateObject(wrappedValue: DocumentKindsModel(dbQueue: environment.dbQueue))
         _missingEvidenceViewModel = StateObject(wrappedValue: MissingEvidenceViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary))
         _propertyViewModel = State(initialValue: PropertyViewModel(dbQueue: environment.dbQueue, library: environment.evidenceLibrary,
                                                                                      indexAutoFetch: environment.interestIndexAutoFetch))
@@ -317,6 +320,7 @@ struct ContentView: View {
             }
         }
         .environment(\.documentImport, documentImport)
+        .environment(\.documentKinds, documentKindsModel.catalog)
         .background(WindowReader { windowHolder.window = $0 })
         .onAppear {
             // An Edit transaction save (Budget grid, Categories panel) can add or clear an uncategorised one.

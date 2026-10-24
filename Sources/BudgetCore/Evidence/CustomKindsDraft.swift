@@ -58,6 +58,18 @@ public struct CustomKindsDraft: Equatable, Sendable {
         changes[id] = nil
     }
 
+    /// The draft over `rows` read again (kinds synced, renamed or removed meanwhile), its staged
+    /// edits kept: an edit of a kind that's gone, or a merge into one, is dropped.
+    public func refreshed(rows: [CustomKindRow]) -> CustomKindsDraft {
+        var draft = CustomKindsDraft(rows: rows)
+        let ids = Set(rows.map(\.id))
+        for (id, change) in changes where ids.contains(id) {
+            if case .merge(.custom(let target)) = change, !ids.contains(target) { continue }
+            draft.changes[id] = change
+        }
+        return draft
+    }
+
     // MARK: Reading
 
     public var hasChanges: Bool { !changes.isEmpty }
@@ -113,6 +125,20 @@ public struct CustomKindsDraft: Equatable, Sendable {
             if name.trimmingCharacters(in: .whitespacesAndNewlines) != row.name { return "Renamed from \(row.name)" }
             return area != row.area ? "Moved from \(row.area.libraryArea)" : nil
         }
+    }
+
+    /// What to undo when Save is refused because a filed year would change: only a merge moves a
+    /// figure (a rename changes names only), so the staged merges of kinds that have documents; nil
+    /// when there's none.
+    public var refusalGuidance: String? {
+        let merges = rows.compactMap { row -> (CustomKindRow, DocumentKindRef)? in
+            guard row.documents > 0, let target = mergeTarget(of: row.id) else { return nil }
+            return (row, target)
+        }
+        guard let first = merges.first else { return nil }
+        if merges.count == 1 { return "Undo the merge of \(first.0.name) into \(label(first.1)), then save again." }
+        let names = merges.map(\.0.name)
+        return "Undo the merge of \(names.dropLast().joined(separator: ", ")) or \(names.last!) that moves these documents, then save again."
     }
 
     /// What the kind can merge into: the built-in kinds by name, then the other custom kinds not

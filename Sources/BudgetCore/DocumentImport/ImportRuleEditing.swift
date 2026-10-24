@@ -123,11 +123,13 @@ public enum ImportRuleEditing {
     /// Every learnt rule, oldest first.
     public static func rows(db: Database) throws -> [ImportRuleRow] {
         let names = Dictionary(uniqueKeysWithValues: try AppUser.fetchAll(db).compactMap { user in user.id.map { ($0, user.displayName) } })
+        // Read once for every document-type rule.
+        let catalog = try DocumentKindCatalog.load(db: db)
         return try ImportRuleStore.all(db: db).compactMap { rule in
             guard let id = rule.id else { return nil }
-            let missing = try targetMissing(db: db, rule)
+            let missing = try targetMissing(db: db, rule, catalog: catalog)
             return ImportRuleRow(id: id, kind: rule.kind, kindLabel: kindLabel(rule.kind), when: rule.matchLabel,
-                                 then: missing ? rule.actionLabel : try currentLabel(db: db, rule) ?? rule.actionLabel,
+                                 then: missing ? rule.actionLabel : try currentLabel(db: db, rule, catalog: catalog) ?? rule.actionLabel,
                                  useCount: rule.useCount, lastUsedAt: rule.lastUsedAt, isEnabled: rule.isEnabled, targetMissing: missing,
                                  createdByName: rule.createdByAppUserId.flatMap { names[$0] },
                                  lastLearntByName: rule.lastLearntByAppUserId.flatMap { names[$0] },
@@ -138,10 +140,15 @@ public enum ImportRuleEditing {
     /// Whether the rule's account (a statement account), record (a link) or custom kind (a
     /// document type) no longer exists.
     public static func targetMissing(db: Database, _ rule: ImportRule) throws -> Bool {
+        try targetMissing(db: db, rule, catalog: nil)
+    }
+
+    /// `targetMissing` with the kinds already read (`catalog`; nil: read here when needed).
+    private static func targetMissing(db: Database, _ rule: ImportRule, catalog: DocumentKindCatalog?) throws -> Bool {
         switch rule.kind {
         case .documentKind:
             guard let id = ImportLearning.decode(DocumentKindAction.self, rule.actionJSON)?.customKindId else { return false }
-            return try DocumentKindCatalog.load(db: db).custom(id: id) == nil
+            return try (catalog ?? DocumentKindCatalog.load(db: db)).custom(id: id) == nil
         case .statementAccount:
             guard let action = ImportLearning.decode(StatementAccountAction.self, rule.actionJSON) else { return false }
             return try !Account.exists(db, key: action.accountId)
@@ -225,7 +232,7 @@ public enum ImportRuleEditing {
 
     /// "Account: <name>" / "Link to <title>" / "Kind: <custom kind>" as the record or kind is
     /// called now; nil for the kinds with no record (their stored label stands).
-    private static func currentLabel(db: Database, _ rule: ImportRule) throws -> String? {
+    private static func currentLabel(db: Database, _ rule: ImportRule, catalog: DocumentKindCatalog) throws -> String? {
         switch rule.kind {
         case .statementAccount:
             guard let action = ImportLearning.decode(StatementAccountAction.self, rule.actionJSON),
@@ -236,7 +243,7 @@ public enum ImportRuleEditing {
             return "Link to \(try entityLabel(db: db, entity))"
         case .documentKind:
             guard let id = ImportLearning.decode(DocumentKindAction.self, rule.actionJSON)?.customKindId,
-                  let kind = try DocumentKindCatalog.load(db: db).custom(id: id) else { return nil }
+                  let kind = catalog.custom(id: id) else { return nil }
             return "Kind: \(kind.name)"
         case .issuer, .figurePosition:
             return nil

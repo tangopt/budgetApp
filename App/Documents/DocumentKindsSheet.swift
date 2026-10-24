@@ -10,6 +10,10 @@ import BudgetCore
 struct DocumentKindsSheet: View {
     @ObservedObject var viewModel: DocumentsViewModel
     @Environment(\.dismiss) private var dismiss
+    /// The custom kinds as they are now: when they change (synced, made by an import), the table is read again, staged edits kept.
+    @Environment(\.documentKinds) private var kinds
+    /// Cancel with staged edits: "Discard changes?".
+    @State private var confirmingDiscard = false
     @State private var draft: CustomKindsDraft?
     /// The kind whose rename or merge is being edited under the table.
     @State private var editing: Editing?
@@ -36,7 +40,7 @@ struct DocumentKindsSheet: View {
     var body: some View {
         SheetScaffold(title: "Kinds",
                       subtitle: "The kinds you made while importing. Renames and merges apply together when you save; built-in kinds can't be changed.",
-                      error: error ?? draft?.problem, width: SheetMetrics.listWidth, onCancel: { dismiss() },
+                      error: error ?? draft?.problem, width: SheetMetrics.listWidth, onCancel: cancel,
                       primary: SheetAction(saving ? "Saving…" : "Save", isEnabled: draft?.canSave == true && editing == nil && !saving) { save() }) {
             if let draft {
                 if draft.rows.isEmpty {
@@ -60,12 +64,30 @@ struct DocumentKindsSheet: View {
         }
         .task {
             guard draft == nil else { return }
-            switch await viewModel.loadKinds() {
-            case .success(let rows): draft = CustomKindsDraft(rows: rows)
-            case .failure(let failure): error = "Couldn't read the kinds: \(failure.localizedDescription)"
-            }
+            await reload()
         }
+        .onChange(of: kinds.customKinds) { Task { await reload() } }
         .onChange(of: draft) { error = nil }
+        .interactiveDismissDisabled(draft?.hasChanges == true)
+        .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard) {
+            Button("Discard changes", role: .destructive) { dismiss() }
+            Button("Keep editing", role: .cancel) {}
+        } message: {
+            Text("The renames and merges you staged aren't saved.")
+        }
+    }
+
+    /// Reads the kinds (again), keeping what's staged (`CustomKindsDraft.refreshed`).
+    private func reload() async {
+        switch await viewModel.loadKinds() {
+        case .success(let rows): draft = draft?.refreshed(rows: rows) ?? CustomKindsDraft(rows: rows)
+        case .failure(let failure): error = "Couldn't read the kinds: \(failure.localizedDescription)"
+        }
+        if let state = editing, draft?.rows.contains(where: { $0.id == state.kindId }) != true { editing = nil }
+    }
+
+    private func cancel() {
+        if draft?.hasChanges == true { confirmingDiscard = true } else { dismiss() }
     }
 
     // MARK: Table
@@ -148,6 +170,14 @@ struct DocumentKindsSheet: View {
         }
     }
 
+    /// Why Save was refused; for a filed year, with the staged merge(s) to undo.
+    static func refusal(_ failure: Error, draft: CustomKindsDraft) -> String {
+        guard case .changesFiledYear = failure as? CustomDocumentKinds.Failure, let guidance = draft.refusalGuidance else {
+            return failure.localizedDescription
+        }
+        return failure.localizedDescription + " " + guidance
+    }
+
     private func mergeNote(_ row: CustomKindRow?) -> String {
         let count = row?.documents ?? 0
         let documents = count == 0 ? "Its learnt and evidence rules follow" : "Its \(Self.documents(count)), learnt and evidence rules follow"
@@ -174,8 +204,9 @@ struct DocumentKindsSheet: View {
                 viewModel.infoMessage = CustomKindsDraft.savedMessage(saved)
                 dismiss()
             case .failure(let failure):
-                // A filed year that would move (years and documents named), a name taken meanwhile…: nothing was written.
-                error = failure.localizedDescription
+                // A filed year that would move (years and documents named, and the merge to undo), a name taken
+                // meanwhile…: nothing was written.
+                error = Self.refusal(failure, draft: draft)
             }
         }
     }

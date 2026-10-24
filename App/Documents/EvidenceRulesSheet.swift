@@ -545,7 +545,7 @@ struct PropertyRulesSheet: View {
     private var previewColumns: [DataTableColumn<PreviewRow>] {
         [
             .text("Rule", { preview[$0.id].name }, detail: { viewModel.scopeSummary(preview[$0.id]) }),
-            .text("Needs", width: .fit, { MissingEvidenceViewModel.kindsText(preview[$0.id].kinds) }),
+            .text("Needs", width: .fit, { viewModel.kindsText(preview[$0.id]) }),
             // "—" on screen for no usual source; nothing to VoiceOver.
             DataTableColumn("From", accessibilityValue: { preview[$0.id].usualSource }) { row, _ in
                 Text(preview[row.id].usualSource ?? "—").lineLimit(1)

@@ -118,4 +118,53 @@ final class CustomKindsDraftTests: XCTestCase {
                        "Saved. 3 documents, 1 learnt rule and 2 evidence rules changed.")
         XCTAssertEqual(CustomKindsDraft.savedMessage(KindSaveResult()), "Saved.")
     }
+    func testKindsChangingWhileTheSheetIsOpenKeepTheStagedEdits() throws {
+        let boiler = try create("Boiler service", .property)
+        let lift = try create("Lift service", .property)
+        let fees = try create("Club fees", .other)
+        var draft = try draft()
+        draft.rename(lift, name: "Lift check", area: .property)
+        draft.merge(fees, into: .builtIn(.other))
+        // Meanwhile (sync): a new kind arrives, Club fees goes, Boiler service gets a document.
+        let alarm = try create("Alarm contract", .property)
+        try document("a", customKindId: boiler)
+        try db.write { db in _ = try CustomDocumentKind.deleteOne(db, key: fees) }
+        draft = draft.refreshed(rows: try db.read { db in try CustomDocumentKinds.rows(db: db) })
+        XCTAssertEqual(draft.rows.map(\.id), [alarm, boiler, lift])
+        XCTAssertEqual(draft.rows.first { $0.id == boiler }?.documents, 1)
+        XCTAssertEqual(draft.edits, [KindEdit(kindId: lift, change: .rename(name: "Lift check", area: .property))],
+                       "the edit of a kind gone meanwhile is dropped; the others stay")
+        // A merge into a kind gone meanwhile is dropped too.
+        draft.merge(lift, into: .custom(alarm))
+        try db.write { db in _ = try CustomDocumentKind.deleteOne(db, key: alarm) }
+        draft = draft.refreshed(rows: try db.read { db in try CustomDocumentKinds.rows(db: db) })
+        XCTAssertEqual(draft.edits, [])
+    }
+
+    func testTheRefusalNamesTheStagedEditsThatMoveItsDocuments() throws {
+        let boiler = try create("Boiler service", .property)
+        let lift = try create("Lift service", .property)
+        let fees = try create("Club fees", .other)
+        try document("a", customKindId: boiler)
+        try document("b", customKindId: lift)
+        var draft = try draft()
+        draft.rename(fees, name: "Club dues", area: .other)
+        XCTAssertNil(draft.refusalGuidance, "a rename never moves a figure")
+        draft.merge(boiler, into: .builtIn(.repairInvoice))
+        XCTAssertEqual(draft.refusalGuidance, "Undo the merge of Boiler service into Repair bill, then save again.")
+        draft.merge(lift, into: .builtIn(.other))
+        XCTAssertEqual(draft.refusalGuidance, "Undo the merge of Boiler service or Lift service that moves these documents, then save again.")
+    }
+
+    func testACatalogNamesADocumentsKindCustomOnesIncluded() throws {
+        let boiler = try create("Boiler service", .property)
+        let catalog = try db.read { db in try DocumentKindCatalog.load(db: db) }
+        let custom = EvidenceDocument(sha256: "a", storedRelativePath: "a/a.pdf", originalFileName: "a.pdf", byteCount: 1,
+                                      kind: .other, addedAt: now, customKindId: boiler)
+        let builtIn = EvidenceDocument(sha256: "b", storedRelativePath: "b/b.pdf", originalFileName: "b.pdf", byteCount: 1,
+                                       kind: .rentReceipt, addedAt: now)
+        XCTAssertEqual(catalog.displayName(of: custom), "Boiler service")
+        XCTAssertEqual(catalog.displayName(of: builtIn), DocumentKind.rentReceipt.displayName)
+        XCTAssertEqual(DocumentKindCatalog(customKinds: []).displayName(of: custom), "Other", "a kind not known here reads as Other")
+    }
 }

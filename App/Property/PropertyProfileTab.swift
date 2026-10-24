@@ -9,6 +9,7 @@ import BudgetCore
 /// row actions as icons, each panel's own action in its corner.
 struct PropertyProfileTab: View {
     @ObservedObject var viewModel: PropertyViewModel
+    @Environment(\.documentKinds) private var kinds
 
     @State private var editingProperty: PropertyDraft?
     @State private var editingOwners = false
@@ -297,7 +298,7 @@ struct PropertyProfileTab: View {
                         }
                         .help(document.displayName)
                     },
-                    .status("Kind") { StatusPill($0.kind.displayName) },
+                    .status("Kind") { StatusPill(kinds.displayName(of: $0)) },
                     .date("Date") { $0.docDate },
                     .actions { document in
                         [DataTableAction("Open \(document.displayName)", systemImage: "arrow.up.forward.square", inline: true) {

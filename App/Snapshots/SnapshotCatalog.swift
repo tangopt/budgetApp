@@ -338,7 +338,40 @@ enum SnapshotCatalog {
                 draft.merge(kinds.boiler, into: .builtIn(.repairInvoice))
                 let refusal = CustomDocumentKinds.Failure.changesFiledYear(
                     years: ["2024/25"], documents: ["20250310 - Property - Boiler service - Boiler Repair Lda"])
-                return AnyView(DocumentKindsSheet(viewModel: model, initial: draft, error: refusal.localizedDescription))
+                return AnyView(DocumentKindsSheet(viewModel: model, initial: draft, error: DocumentKindsSheet.refusal(refusal, draft: draft)))
+            },
+            // A custom-kind document wherever documents are listed: a tenancy's documents, the property's
+            // profile, a transaction's documents, the document picker (Lift service, not linked yet).
+            sheet("tenancy_documents_custom_kind", "Tenancy documents (a custom-kind document)", settle: 1) { context in
+                try context.demoCustomKinds()
+                let model = await context.propertyModel()
+                guard let tenancy = model.snapshot.tenancies.last else { throw SnapshotMissing("a tenancy") }
+                return AnyView(PropertyDocumentsSheet(viewModel: model, entity: EvidenceEntity(type: .tenancy, id: tenancy.id!),
+                                                      title: "Documents · \(tenancy.referenceLabel)"))
+            },
+            screen("property", "profile_custom_kind", "Property: Profile, a custom-kind document", .property, settle: 1.3) { models, context in
+                _ = try? context.demoCustomKinds()
+                models.property.tab = .profile
+            },
+            sheet("link_document_custom_kind", "Link document (a custom-kind document to pick)", settle: 1.2) { context in
+                try context.demoCustomKinds()
+                let id = try context.transactionId(description: "BOILER REPAIR LDA")
+                let model = TransactionDocumentsModel(transactionId: id, library: context.library, dbQueue: context.dbQueue)
+                model.load()
+                return AnyView(LinkDocumentSheet(model: model, transactionName: "BOILER REPAIR LDA"))
+            },
+            sheet("edit_transaction_custom_kind", "Edit transaction (its custom-kind document)", settle: 1.2) { context in
+                try context.demoCustomKinds()
+                let model = SearchViewModel(dbQueue: context.dbQueue)
+                model.load()
+                let id = try context.transactionId(description: "BOILER REPAIR LDA")
+                guard let transaction = try await context.dbQueue.read({ db in try Transaction.fetchOne(db, key: id) }) else {
+                    throw SnapshotMissing("a transaction")
+                }
+                return AnyView(EditTransactionSheet(
+                    transaction: transaction, categories: model.categories, groups: model.groups, recentIds: model.recentCategoryIds,
+                    createCategory: model.createCategory, transfer: model.transferActions, manual: model.manualActions,
+                    onSave: { _ in .saved }))
             },
             sheet("new_kind", "New kind… (a name that's already a kind's)") { context in
                 _ = try context.demoCustomKinds()
@@ -597,7 +630,10 @@ enum SnapshotCatalog {
     static func sheet(_ name: String, _ title: String, settle: Double = 0.6,
                       _ make: @escaping @MainActor (SnapshotContext) async throws -> AnyView) -> SnapshotRoute {
         SnapshotRoute(name: "sheet-\(name)", title: "Sheet: \(title)", settleFactor: settle) { context in
-            AnyView(SnapshotSheetCanvas(sheet: try await make(context)))
+            let sheet = try await make(context)
+            // The kinds' names, custom ones included, as ContentView hands them to its sheets.
+            let kinds = (try? await context.dbQueue.read { db in try DocumentKindCatalog.load(db: db) }) ?? DocumentKindCatalog(customKinds: [])
+            return AnyView(SnapshotSheetCanvas(sheet: sheet).environment(\.documentKinds, kinds))
         }
     }
 
@@ -883,10 +919,11 @@ extension SnapshotContext {
     }
 
     /// The demo copy's custom kinds (made once): Boiler service — the demo's boiler repair invoice
-    /// filed under it — Lift service and Club fees.
+    /// filed under it and linked to the property and its tenancies too — Lift service (the first
+    /// document not linked to anything, filed under it) and Club fees.
     @discardableResult
     func demoCustomKinds() throws -> (boiler: Int64, lift: Int64, fees: Int64, documentId: Int64?) {
-        try dbQueue.write { db in
+        let made = try dbQueue.write { db -> (boiler: Int64, lift: Int64, fees: Int64, documentId: Int64?) in
             let catalog = try DocumentKindCatalog.load(db: db)
             func kind(_ name: String, _ area: DocumentArea) throws -> Int64 {
                 if let id = catalog.custom(named: name)?.id { return id }
@@ -901,8 +938,25 @@ extension SnapshotContext {
                 document?.customKindId = boiler
                 try document?.update(db)
             }
+            if try EvidenceDocument.filter(Column("customKindId") == lift).fetchCount(db) == 0,
+               var unlinked = try EvidenceDocument.fetchOne(db, sql: """
+                   SELECT * FROM \(EvidenceDocument.databaseTableName) WHERE id NOT IN (SELECT documentId FROM \(DocumentLink.databaseTableName))
+                   ORDER BY id LIMIT 1
+                   """) {
+                unlinked.kind = .other
+                unlinked.customKindId = lift
+                try unlinked.update(db)
+            }
             return (boiler, lift, fees, document?.id)
         }
+        if let documentId = made.documentId {
+            let tenancyIds = try dbQueue.read { db in try Tenancy.fetchAll(db).compactMap(\.id) }
+            for entity in [try? propertyId()].compactMap({ $0 }).map({ EvidenceEntity(type: .property, id: $0) })
+                + tenancyIds.map({ EvidenceEntity(type: .tenancy, id: $0) }) {
+                _ = try? library.link(documentId, to: entity)
+            }
+        }
+        return made
     }
 
     func documentId(kind: DocumentKind) -> Int64? {

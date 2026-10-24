@@ -119,6 +119,7 @@ struct TransactionDocumentsSection: View {
     @ObservedObject var model: TransactionDocumentsModel
     let transactionName: String
     @Environment(\.theme) private var theme
+    @Environment(\.documentKinds) private var kinds
     @State private var picking = false
 
     var body: some View {
@@ -165,7 +166,7 @@ struct TransactionDocumentsSection: View {
                     if unlinking || linking {
                         Text(unlinking ? "Will be unlinked on Save" : "Will be linked on Save").italic().lineLimit(1)
                     } else {
-                        DocumentCaptionLine(kind: document.kind, date: document.docDate,
+                        DocumentCaptionLine(kindName: kinds.displayName(of: document), date: document.docDate,
                                             amountMinorUnits: document.amountMinorUnits, currency: document.currency)
                     }
                 }

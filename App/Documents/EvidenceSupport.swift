@@ -235,10 +235,11 @@ struct PickerLinkedMark: View {
 struct EvidenceDocumentPickRow: View {
     let summary: EvidenceDocumentSummary
     var reasons: [String] = []
+    @Environment(\.documentKinds) private var kinds
 
     var body: some View {
-        let caption = DocumentFormat.caption(kind: summary.kind, date: summary.docDate, amountMinorUnits: summary.amountMinorUnits,
-                                             currency: summary.currency)
+        let caption = DocumentFormat.caption(kindName: kinds.displayName(of: summary), date: summary.docDate,
+                                             amountMinorUnits: summary.amountMinorUnits, currency: summary.currency)
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: DocumentFormat.icon(summary.textStatus))
                 .foregroundStyle(.secondary)
@@ -246,8 +247,8 @@ struct EvidenceDocumentPickRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(summary.displayName).lineLimit(1).truncationMode(.middle)
-                DocumentCaptionLine(kind: summary.kind, date: summary.docDate, amountMinorUnits: summary.amountMinorUnits,
-                                    currency: summary.currency)
+                DocumentCaptionLine(kindName: kinds.displayName(of: summary), date: summary.docDate,
+                                    amountMinorUnits: summary.amountMinorUnits, currency: summary.currency)
                     .font(.caption).foregroundStyle(.secondary)
                 if !reasons.isEmpty {
                     Text(reasons.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -261,7 +262,8 @@ struct EvidenceDocumentPickRow: View {
 /// `DocumentFormat.caption` on one line — "Mortgage notice · 31 Jan 2024 · €1,234.56" — where
 /// the kind truncates and the day and amount never do.
 struct DocumentCaptionLine: View {
-    let kind: DocumentKind
+    /// The kind's name, a custom kind's included (`DocumentKindCatalog.displayName(of:)`).
+    let kindName: String
     let date: Date?
     let amountMinorUnits: Int?
     let currency: Currency?
@@ -270,7 +272,7 @@ struct DocumentCaptionLine: View {
         let figures = [date.map(DocumentFormat.day),
                        amountMinorUnits.flatMap { amount in currency.map { Money.format(amount, currency: $0) } }].compactMap { $0 }
         HStack(spacing: 0) {
-            Text(kind.displayName).lineLimit(1)
+            Text(kindName).lineLimit(1)
             if !figures.isEmpty {
                 Text(" · " + figures.joined(separator: " · ")).figureText()
             }
@@ -294,8 +296,8 @@ enum DocumentFormat {
     }
 
     /// "Mortgage notice · 31 Jan 2024 · €1,234.56".
-    static func caption(kind: DocumentKind, date: Date?, amountMinorUnits: Int?, currency: Currency?) -> String {
-        var parts = [kind.displayName]
+    static func caption(kindName: String, date: Date?, amountMinorUnits: Int?, currency: Currency?) -> String {
+        var parts = [kindName]
         if let date { parts.append(day(date)) }
         if let amount = amountMinorUnits, let currency { parts.append(Money.format(amount, currency: currency)) }
         return parts.joined(separator: " · ")

@@ -97,6 +97,12 @@ public struct DocumentKindCatalog: Sendable {
         }
     }
 
+    /// A document's kind by name, a custom kind's included (Other when it isn't known here).
+    public func displayName(of document: EvidenceDocument) -> String { displayName(document.kindRef) }
+
+    /// A listed document's kind by name, a custom kind's included.
+    public func displayName(of summary: EvidenceDocumentSummary) -> String { displayName(summary.kindRef) }
+
     /// The `<Area>` of the kind's canonical names; a custom kind that's gone reads as Other.
     public func libraryArea(_ ref: DocumentKindRef) -> String {
         switch ref {

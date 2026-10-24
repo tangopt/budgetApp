@@ -544,6 +544,7 @@ struct PropertyDocumentsSheet: View {
     let entity: EvidenceEntity
     let title: String
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.documentKinds) private var kinds
     @State private var documents: [EvidenceDocument] = []
 
     var body: some View {
@@ -568,12 +569,12 @@ struct PropertyDocumentsSheet: View {
     private var columns: [DataTableColumn<EvidenceDocument>] {
         [
             DataTableColumn("Document", width: .fill(min: 200),
-                            accessibilityValue: { [$0.displayName, $0.kind.displayName].joined(separator: ", ") }) { document, _ in
+                            accessibilityValue: { [$0.displayName, kinds.displayName(of: $0)].joined(separator: ", ") }) { document, _ in
                 HStack(spacing: 8) {
                     Image(systemName: "doc").foregroundStyle(.secondary).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(document.displayName).lineLimit(1).help(document.displayName)
-                        Text(document.kind.displayName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(kinds.displayName(of: document)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
             },
