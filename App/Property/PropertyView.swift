@@ -96,6 +96,8 @@ struct PropertyView: View {
         case let .rechargeMonth(month, tenancyId):
             RechargeMonthPanel(viewModel: viewModel, month: month, tenancyId: tenancyId, openTransaction: openTransaction)
                 .id(month)
+        case let .figure(_, title, drillDown):
+            PropertyFigurePanel(viewModel: viewModel, title: title, drillDown: drillDown, openTransaction: openTransaction)
         case let .receipt(id, tenancyId):
             // Kept (not rebuilt) from one receipt to the next: clicking down the table only
             // changes what it shows.
@@ -202,52 +204,6 @@ struct PropertyFact<Value: View>: View {
         GridRow {
             Text(label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
             value.frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
-
-/// The transactions behind a figure: date, description over account and category, documents,
-/// amount, and Show as an icon.
-struct PropertyDrillDownSheet: View {
-    let title: String
-    let rows: [EvidenceTransactionInfo]
-    let openTransaction: (Transaction) -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        SheetScaffold(title: title, subtitle: "\(rows.count) transaction\(rows.count == 1 ? "" : "s")", width: SheetMetrics.listWidth,
-                      cancelTitle: "Done", onCancel: { dismiss() }) {
-            if rows.isEmpty {
-                SheetEmptyState(systemImage: "list.bullet.rectangle", title: "No transactions", message: "None in this period.", minHeight: 130)
-            } else {
-                List(rows) { row in
-                    HStack(spacing: 8) {
-                        DateText(date: row.transaction.date)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(row.transaction.rawDescription).lineLimit(1)
-                            Text([row.accountName, row.categoryName].compactMap { $0 }.joined(separator: " · "))
-                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                        Spacer(minLength: 8)
-                        TransactionDocumentBadge(transactionId: row.transaction.id)
-                        // A minimum width, so the amounts line up from row to row.
-                        MoneyText(minorUnits: row.transaction.amountMinorUnits, currency: row.currency)
-                            .frame(minWidth: 96, alignment: .trailing)
-                        Button {
-                            dismiss()
-                            openTransaction(row.transaction)
-                        } label: {
-                            Image(systemName: "arrow.right.circle")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Show the transaction: Search, on its day and account, with it selected")
-                        .accessibilityLabel("Show \(row.transaction.rawDescription)")
-                    }
-                }
-                .wrapProbeClips()
-                .frame(minHeight: 320)
-                .sheetListFrame()
-            }
         }
     }
 }

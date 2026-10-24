@@ -96,6 +96,9 @@ final class PropertyViewModel: ObservableObject {
         case rechargeMonth(Date, tenancyId: Int64)
         /// A rent receipt (Tenancies): its details, the credits that paid it, its PDF.
         case receipt(id: Int64, tenancyId: Int64)
+        /// A figure of the Money tab (or a cost category): the transactions behind it. `id` is its
+        /// row's id in the tab, `title` what the panel is called.
+        case figure(id: String, title: String, drillDown: PropertyDrillDown)
     }
 
     /// Bumped when the side panel changed recharges (its statement sheet closed), so the
@@ -557,6 +560,12 @@ final class PropertyViewModel: ObservableObject {
         return nil
     }
 
+    /// The Money row whose transactions are open, for the table's highlight.
+    var openFigureId: String? {
+        if case let .figure(id, _, _) = sidePanel { return id }
+        return nil
+    }
+
     private func closeMonthPanel() {
         if case .month = sidePanel { sidePanel = nil }
     }
@@ -567,6 +576,7 @@ final class PropertyViewModel: ObservableObject {
         case .month: if ![.overview, .money].contains(tab) { sidePanel = nil }
         case .rechargeStatement, .rechargeMonth: if tab != .recharges { sidePanel = nil }
         case .receipt: if tab != .tenancies { sidePanel = nil }
+        case .figure: if tab != .money { sidePanel = nil }
         case nil: break
         }
     }
