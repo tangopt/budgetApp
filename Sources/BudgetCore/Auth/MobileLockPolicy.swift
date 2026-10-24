@@ -20,8 +20,9 @@ public enum MobileLockPolicy {
         /// `canEvaluatePolicy(.deviceOwnerAuthentication)` failed with `passcodeNotSet`: nothing can unlock,
         /// so the app stays locked and explains why.
         case noPasscode
-        /// Any other failure (for example a passcode lockout): stays locked, offers to try again.
-        case unavailable
+        /// Any other failure (for example a passcode lockout): stays locked, offers to try again. Carries the
+        /// device's biometry (nil: passcode only) so the explanation names only what the device has.
+        case unavailable(BiometryKind?)
     }
 
     /// The outcome of `canEvaluatePolicy(.deviceOwnerAuthentication)`, without LocalAuthentication types.
@@ -35,11 +36,12 @@ public enum MobileLockPolicy {
         }
     }
 
-    /// `biometry`: the enrolled biometry the context reports (`nil` when none is enrolled or usable).
+    /// `biometry`: when the check passed, the usable biometry (`nil` when none is enrolled or usable); when it
+    /// failed, the device's biometry hardware, for the `.unavailable` wording.
     public static func availability(deviceOwner: DeviceOwnerCheck, biometry: BiometryKind?) -> Availability {
         switch deviceOwner {
         case .failed(.passcodeNotSet): return .noPasscode
-        case .failed(.other): return .unavailable
+        case .failed(.other): return .unavailable(biometry)
         case .available:
             if let biometry { return .biometrics(biometry) }
             return .passcodeOnly
@@ -61,6 +63,50 @@ public enum MobileLockPolicy {
         return away < 0 || away >= backgroundGrace
     }
 
+    /// When the app went to the background: the wall clock (to catch a clock set backwards) and the continuous
+    /// clock, which counts device sleep and can't be adjusted, and so measures the grace.
+    public struct BackgroundStamp: Equatable, Sendable {
+        public let date: Date
+        public let instant: ContinuousClock.Instant
+
+        public init(date: Date, instant: ContinuousClock.Instant) {
+            self.date = date
+            self.instant = instant
+        }
+
+        public static func now() -> BackgroundStamp {
+            BackgroundStamp(date: Date(), instant: ContinuousClock.now)
+        }
+    }
+
+    /// Whether coming back locks, measured on the continuous clock. The wall clock only adds the guard: set
+    /// backwards, it locks.
+    public static func shouldLock(since: BackgroundStamp?, now: BackgroundStamp) -> Bool {
+        guard let since else { return false }
+        if now.date < since.date { return true }
+        return now.instant - since.instant >= .seconds(backgroundGrace)
+    }
+
+    /// The lock's state, for the timing rules.
+    public enum LockPhase: Sendable {
+        case locked
+        case unlocking
+        case unlocked
+    }
+
+    /// Going to the background is timed while unlocked and while an unlock is in flight (it may succeed there).
+    public static func stampsBackground(_ phase: LockPhase) -> Bool {
+        phase != .locked
+    }
+
+    /// The stamp to keep when an unlock succeeds: the one already taken, else now if the scene isn't active
+    /// (the unlock landed in the background, so it is timed from now), else none.
+    public static func stampAfterUnlock(sceneIsActive: Bool, existing: BackgroundStamp?,
+                                        now: BackgroundStamp) -> BackgroundStamp? {
+        if let existing { return existing }
+        return sceneIsActive ? nil : now
+    }
+
     public static func lockScreenCopy(_ availability: Availability)
         -> (title: String, body: String, primary: String?, secondary: String?) {
         let title = "Mango is locked"
@@ -75,8 +121,13 @@ public enum MobileLockPolicy {
         case .noPasscode:
             return ("Mango needs a device passcode",
                     "Set a passcode in Settings to protect the household's figures.", "Open Settings", nil)
-        case .unavailable:
-            return (title, "Face ID and the passcode can't be used right now. Try again in a moment.", "Try again", nil)
+        case .unavailable(let biometry):
+            let what = switch biometry {
+            case .faceID: "Face ID and the passcode can't"
+            case .touchID: "Touch ID and the passcode can't"
+            case nil: "The passcode can't"
+            }
+            return (title, "\(what) be used right now. Try again in a moment.", "Try again", nil)
         }
     }
 }

@@ -59,6 +59,11 @@ public struct LockScreen: View {
                         }
                     }
                     .disabled(isBusy)
+
+                    if isBusy {
+                        ProgressView()
+                            .accessibilityLabel("Unlocking")
+                    }
                 }
                 .frame(maxWidth: 420)
                 .padding(.horizontal, 24)
@@ -66,6 +71,9 @@ public struct LockScreen: View {
                 .frame(maxWidth: .infinity, minHeight: proxy.size.height)
             }
             .scrollBounceBehavior(.basedOnSize)
+        }
+        .onChange(of: isBusy) { _, busy in
+            if busy { AccessibilityNotification.Announcement("Unlocking").post() }
         }
     }
 

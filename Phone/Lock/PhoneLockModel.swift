@@ -17,8 +17,10 @@ final class PhoneLockModel: ObservableObject {
     @Published private(set) var state: State
     /// What the device could unlock with when last checked (the lock screen keeps showing it while unlocking).
     private(set) var availability: MobileLockPolicy.Availability
-    /// When the scene went to the background while unlocked; nil otherwise.
-    private var backgroundedAt: Date?
+    /// When the scene went to the background while unlocked or unlocking (continuous and wall clock); nil otherwise.
+    private var backgroundStamp: MobileLockPolicy.BackgroundStamp?
+    /// Whether the scene is in front (`scenePhase == .active`), fed by `LockCover`.
+    private var sceneIsActive = true
     /// The lock screen offers Face ID by itself once per lock, never again after a cancel.
     private var autoPromptPending = true
 
@@ -48,7 +50,7 @@ final class PhoneLockModel: ObservableObject {
         // The simulator always reports a usable passcode, so the attended checks pick the state to render.
         switch ProcessInfo.processInfo.environment["MANGO_LOCK_AVAILABILITY"] {
         case "noPasscode": return .noPasscode
-        case "unavailable": return .unavailable
+        case "unavailable": return .unavailable(.faceID)
         case "faceID": return .biometrics(.faceID)
         case "touchID": return .biometrics(.touchID)
         case "passcode": return .passcodeOnly
@@ -67,14 +69,15 @@ final class PhoneLockModel: ObservableObject {
             check = .failed(.other)
         }
         var biometryError: NSError?
-        var biometry: MobileLockPolicy.BiometryKind?
-        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &biometryError) {
-            switch context.biometryType {
-            case .faceID: biometry = .faceID
-            case .touchID: biometry = .touchID
-            default: biometry = nil
-            }
+        let usable = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &biometryError)
+        // biometryType is set by the canEvaluatePolicy calls above, whether they passed or not.
+        let hardware: MobileLockPolicy.BiometryKind? = switch context.biometryType {
+        case .faceID: .faceID
+        case .touchID: .touchID
+        default: nil
         }
+        // Available: only usable biometry is offered. Failed: the hardware names the `.unavailable` wording.
+        let biometry = check == .available ? (usable ? hardware : nil) : hardware
         return MobileLockPolicy.availability(deviceOwner: check, biometry: biometry)
     }
 
@@ -90,7 +93,11 @@ final class PhoneLockModel: ObservableObject {
     func unlock(allowPasscodeOnly: Bool) async {
         guard case .locked = state else { return }
         availability = Self.currentAvailability()
-        guard MobileLockPolicy.canAttemptUnlock(availability), availability != .unavailable else {
+        if case .unavailable = availability {
+            state = .locked(availability)
+            return
+        }
+        guard MobileLockPolicy.canAttemptUnlock(availability) else {
             state = .locked(availability)
             return
         }
@@ -124,32 +131,54 @@ final class PhoneLockModel: ObservableObject {
     }
 
     func lock() {
-        backgroundedAt = nil
+        backgroundStamp = nil
         autoPromptPending = true
         availability = Self.currentAvailability()
         state = .locked(availability)
     }
 
-    func sceneDidEnterBackground(now: Date) {
-        if state == .unlocked { backgroundedAt = now }
+    /// `now` is taken on both clocks (`MobileLockPolicy.BackgroundStamp.now()`). Stamped while unlocking too: an
+    /// unlock that succeeds in the background is then timed from here.
+    func sceneDidEnterBackground(now: MobileLockPolicy.BackgroundStamp) {
+        if MobileLockPolicy.stampsBackground(phase), backgroundStamp == nil { backgroundStamp = now }
     }
 
-    func sceneWillEnterForeground(now: Date) {
+    func sceneActivityChanged(isActive: Bool) {
+        sceneIsActive = isActive
+    }
+
+    func sceneWillEnterForeground(now: MobileLockPolicy.BackgroundStamp) {
         if case .locked = state {
             // A passcode may have been set (or removed) in Settings meanwhile.
             availability = Self.currentAvailability()
             state = .locked(availability)
             return
         }
-        if MobileLockPolicy.shouldLock(backgroundedAt: backgroundedAt, now: now) {
+        if MobileLockPolicy.shouldLock(since: backgroundStamp, now: now) {
             lock()
         }
-        backgroundedAt = nil
+        // Still unlocking (the prompt is up): keep the stamp so a success is timed from the background.
+        if state != .unlocking { backgroundStamp = nil }
     }
 
+    private var phase: MobileLockPolicy.LockPhase {
+        switch state {
+        case .locked: .locked
+        case .unlocking: .unlocking
+        case .unlocked: .unlocked
+        }
+    }
+
+    /// A success that lands while the scene is away keeps (or starts) the background stamp, so the grace still
+    /// applies; in front with no stamp, nothing is timed.
     private func finishUnlock() {
-        backgroundedAt = nil
+        backgroundStamp = MobileLockPolicy.stampAfterUnlock(sceneIsActive: sceneIsActive, existing: backgroundStamp,
+                                                            now: .now())
         state = .unlocked
+        if sceneIsActive, let stamp = backgroundStamp {
+            // Already back in front: decide now rather than waiting for the next background.
+            if MobileLockPolicy.shouldLock(since: stamp, now: .now()) { lock() } else { backgroundStamp = nil }
+        }
     }
 
     private func relock() {

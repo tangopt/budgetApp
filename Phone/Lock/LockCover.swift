@@ -15,7 +15,9 @@ struct LockCover: ViewModifier {
         ZStack {
             switch model.state {
             case .unlocked:
+                // Under the inactive cover the content stays in the tree; VoiceOver must not read it there.
                 content
+                    .accessibilityHidden(scenePhase != .active)
             case .locked(let availability):
                 lockScreen(availability, isBusy: false)
             case .unlocking:
@@ -27,10 +29,11 @@ struct LockCover: ViewModifier {
             }
         }
         .onChange(of: scenePhase) { old, new in
+            model.sceneActivityChanged(isActive: new == .active)
             if new == .background {
-                model.sceneDidEnterBackground(now: Date())
+                model.sceneDidEnterBackground(now: .now())
             } else if old == .background {
-                model.sceneWillEnterForeground(now: Date())
+                model.sceneWillEnterForeground(now: .now())
             }
             if new == .active { offerBiometricsIfDue() }
         }
