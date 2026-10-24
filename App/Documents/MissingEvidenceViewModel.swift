@@ -388,7 +388,12 @@ final class MissingEvidenceViewModel: ObservableObject {
     }
 
     static func kindsText(_ kinds: [DocumentKind]) -> String {
-        kinds.isEmpty ? "Any document" : kinds.map(\.displayName).joined(separator: " or ")
+        kindsText(names: kinds.map(\.displayName))
+    }
+
+    /// An item's kinds by name (custom kinds included); none = any document.
+    static func kindsText(names: [String]) -> String {
+        names.isEmpty ? "Any document" : names.joined(separator: " or ")
     }
 
     /// The usual sources the rules name, for the editor's suggestions.

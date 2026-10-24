@@ -29,7 +29,7 @@ struct LinkEvidenceSheet: View {
                       cancelTitle: "Done", onCancel: { dismiss() }) {
             HStack(spacing: 8) {
                 SearchField("Search names, kinds, notes, text or an amount", text: $query)
-                if !item.expectedKinds.isEmpty {
+                if !item.expectedKindRefs.isEmpty {
                     Toggle("Any kind", isOn: $anyKind)
                         .toggleStyle(.checkbox)
                         .fixedSize()
@@ -72,10 +72,10 @@ struct LinkEvidenceSheet: View {
             let text = query.trimmingCharacters(in: .whitespaces)
             if !text.isEmpty { try? await Task.sleep(for: .milliseconds(150)) }
             guard !Task.isCancelled else { return }
-            let requirement = item.requirement, anyKind = anyKind || item.expectedKinds.isEmpty
+            let requirement = item.requirement, anyKind = anyKind || item.expectedKindRefs.isEmpty
             let found = await Task.detached(priority: .userInitiated) {
                 Array(EvidenceDocumentSearch.entries(index, filter: EvidenceDocumentSearch.Filter(text: text))
-                    .filter { anyKind || requirement.accepts($0.summary.kind) }
+                    .filter { anyKind || requirement.accepts($0.summary.kindRef) }
                     .prefix(100))
             }.value
             if !Task.isCancelled { results = found }
@@ -86,12 +86,12 @@ struct LinkEvidenceSheet: View {
         var parts = [item.title]
         if let date = item.expectedDate { parts.append(DocumentFormat.day(date).unbroken) }
         if let slot = item.expectedPeriod { parts.append(MissingEvidenceFormat.slot(slot).unbroken) }
-        return parts.joined(separator: " · ") + "\nNeeds: " + MissingEvidenceViewModel.kindsText(item.expectedKinds)
+        return parts.joined(separator: " · ") + "\nNeeds: " + MissingEvidenceViewModel.kindsText(names: item.expectedKindNames)
     }
 
     private var sectionTitle: String {
         if !query.trimmingCharacters(in: .whitespaces).isEmpty { return "Search results" }
-        return anyKind || item.expectedKinds.isEmpty ? "All documents" : "Documents of the expected kind"
+        return anyKind || item.expectedKindRefs.isEmpty ? "All documents" : "Documents of the expected kind"
     }
 
     private func entry(_ id: Int64) -> EvidenceDocumentSearch.Entry? {
@@ -119,7 +119,7 @@ struct LinkEvidenceSheet: View {
                     EvidenceMatcher.documentSuggestions(for: transactionId, documents: documents, index: catalog.matcherIndex,
                                                         excluding: linked, limit: 8)
                         .filter { suggestion in
-                            documents.first { $0.id == suggestion.documentId }.map { item.requirement.accepts($0.kind) } ?? false
+                            documents.first { $0.id == suggestion.documentId }.map { item.requirement.accepts($0.kindRef) } ?? false
                         }
                         .map { MissingEvidence.Candidate(documentId: $0.documentId, score: $0.score, reasons: $0.reasons) }
                 }.value

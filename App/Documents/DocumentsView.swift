@@ -352,10 +352,17 @@ private struct DocumentFilterBar: View {
         .controlSize(.small)
     }
 
+    /// The kinds present, built-ins by name then custom kinds by name.
+    private var kindFilterOptions: [(value: DocumentKindRef?, title: String)] {
+        let index = viewModel.index, present = Set(index.kinds)
+        let ordered = DocumentKind.byDisplayName.map(DocumentKindRef.builtIn) + index.catalog.customKinds.compactMap { $0.id.map(DocumentKindRef.custom) }
+        return ordered.filter(present.contains).map { (value: Optional($0), title: index.catalog.displayName($0)) }
+    }
+
     @ViewBuilder
     private var firstChips: some View {
-        FilterPickerChip("All kinds", name: "Kind", all: DocumentKind?.none, selection: $viewModel.filter.kind,
-                         options: DocumentKind.byDisplayName.filter(viewModel.index.kinds.contains).map { (value: Optional($0), title: $0.displayName) })
+        FilterPickerChip("All kinds", name: "Kind", all: DocumentKindRef?.none, selection: $viewModel.filter.kind,
+                         options: kindFilterOptions)
         FilterPickerChip("All years", name: "Year", all: Int?.none, selection: $viewModel.filter.year,
                          options: viewModel.index.years.map { (value: Optional($0), title: String($0)) })
         FilterPickerChip("All accounts", name: "Account", all: Int64?.none, selection: $viewModel.filter.accountId,

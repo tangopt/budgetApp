@@ -226,7 +226,7 @@ final class EvidenceBrowsingTests: XCTestCase {
         try library.link(receipt.id!, to: .transaction(ids.lloydsTransaction))
         try library.link(statement.id!, to: .account(ids.bbva))
 
-        XCTAssertEqual(try names(.init(kind: .imiNotice)), ["notice.pdf"])
+        XCTAssertEqual(try names(.init(kind: .builtIn(.imiNotice))), ["notice.pdf"])
         XCTAssertEqual(try names(.init(year: 2025)), ["receipt.pdf"], "dated by the period's end when there's no date")
         XCTAssertEqual(try names(.init(accountId: ids.bbva)), ["statement.pdf", "notice.pdf"], "through a transaction or directly")
         XCTAssertEqual(try names(.init(linkState: .unlinked)), ["loose.pdf"])
@@ -236,7 +236,7 @@ final class EvidenceBrowsingTests: XCTestCase {
 
         let index = try index()
         XCTAssertEqual(index.years, [2025, 2024])
-        XCTAssertEqual(index.kinds, [.insuranceReceipt, .imiNotice, .bankStatement, .other])
+        XCTAssertEqual(index.kinds, [.builtIn(.insuranceReceipt), .builtIn(.imiNotice), .builtIn(.bankStatement), .builtIn(.other)])
         let entry = try XCTUnwrap(index.entries.first { $0.id == notice.id })
         XCTAssertEqual(entry.linkCount, 1)
         XCTAssertEqual(entry.transactionLinkCount, 1)
@@ -244,6 +244,37 @@ final class EvidenceBrowsingTests: XCTestCase {
         XCTAssertTrue(EvidenceDocumentSearch.Filter().isDefault)
         XCTAssertFalse(EvidenceDocumentSearch.Filter(text: "x").hasFilters)
         XCTAssertTrue(EvidenceDocumentSearch.Filter(year: 2024).hasFilters)
+    }
+
+    func testLibraryFilterByCustomKind() throws {
+        let (boiler, alarm) = try manager.dbQueue.write { db in
+            (try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: Date()).id!,
+             try CustomDocumentKinds.create(db: db, name: "Alarm contract", area: .other, now: Date()).id!)
+        }
+        _ = alarm  // made, but no document is of it: not offered
+        let custom = try add("caldeira.pdf", "1", EvidenceMetadata(kind: .other, docDate: Self.date(2024, 4, 1)))
+        try manager.dbQueue.write { db in
+            try db.execute(sql: "UPDATE document SET customKindId = ? WHERE id = ?", arguments: [boiler, custom.id!])
+        }
+        try add("plain.pdf", "2")
+        try add("p60.pdf", "3", EvidenceMetadata(kind: .p60))
+
+        XCTAssertEqual(try names(.init(kind: .custom(boiler))), ["caldeira.pdf"])
+        XCTAssertEqual(try names(.init(kind: .builtIn(.other))), ["plain.pdf"], "Other is documents with no kind, not custom ones")
+        XCTAssertEqual(try names(.init(text: "boiler")), ["caldeira.pdf"], "searched by its custom kind's name")
+        let index = try index()
+        XCTAssertEqual(index.kinds, [.builtIn(.p60), .builtIn(.other), .custom(boiler)], "built-ins, then the custom kinds present by name")
+        XCTAssertEqual(index.catalog.displayName(.custom(boiler)), "Boiler service")
+
+        // Editing details keeps the custom kind while the kind stays Other; a built-in kind replaces it.
+        var details = EvidenceDocumentDetails(try XCTUnwrap(try library.document(id: custom.id!)))
+        XCTAssertEqual(details.kindRef, .custom(boiler))
+        details.note = "serviced"
+        XCTAssertEqual(try library.updateDetails(custom.id!, details).kindRef, .custom(boiler))
+        details.kindRef = .builtIn(.repairInvoice)
+        let refiled = try library.updateDetails(custom.id!, details)
+        XCTAssertEqual(refiled.kind, .repairInvoice)
+        XCTAssertNil(refiled.customKindId)
     }
 
     func testUpdatingReReadsOnlyTheGivenDocuments() throws {

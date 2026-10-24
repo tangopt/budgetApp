@@ -227,6 +227,75 @@ final class MissingEvidenceTests: XCTestCase {
         XCTAssertEqual(result[2].target, .transaction(c))
     }
 
+    func testMissingEvidenceSatisfiedByACustomKind() throws {
+        let boiler = try db.write { db in try XCTUnwrap(try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: Date()).id) }
+        try db.write { db in
+            var r = EvidenceRequirement(name: "Repairs", scope: .transactionsInCategory(categoryId: repairs), kinds: [.repairInvoice],
+                                        customKindIds: [boiler])
+            try EvidenceRequirements.save(db: db, &r)
+        }
+        let custom = try transaction(Self.date(2025, 5, 2), -8_000, category: repairs)
+        let builtIn = try transaction(Self.date(2025, 6, 2), -5_000, category: repairs)
+        let plain = try transaction(Self.date(2025, 7, 2), -6_000, category: repairs)
+        let service = try document(.other, name: "Boiler service", linkedTo: .transaction(custom))
+        try db.write { db in try db.execute(sql: "UPDATE document SET customKindId = ? WHERE id = ?", arguments: [boiler, service]) }
+        try document(.repairInvoice, name: "Repair bill", linkedTo: .transaction(builtIn))
+        try document(.other, name: "Unknown kind", linkedTo: .transaction(plain))
+        let result = try items(year2025.interval)
+        XCTAssertEqual(result.map(\.status), [.satisfied, .satisfied, .missing])
+        XCTAssertEqual(result[0].satisfyingDocuments.map(\.id), [service])
+        XCTAssertEqual(result[0].expectedKinds, [.repairInvoice])
+        XCTAssertEqual(result[0].expectedKindRefs, [.builtIn(.repairInvoice), .custom(boiler)])
+        XCTAssertEqual(result[0].expectedKindNames, ["Repair bill", "Boiler service"])
+        XCTAssertTrue(MissingEvidence.markdownLine(result[2]).hasSuffix("needs Repair bill or Boiler service"), MissingEvidence.markdownLine(result[2]))
+        // Link existing… offers the custom kind's documents too, named by it.
+        let loose = try document(.other, docDate: Self.date(2025, 7, 2), name: "Boiler, not linked")
+        try db.write { db in try db.execute(sql: "UPDATE document SET customKindId = ? WHERE id = ?", arguments: [boiler, loose]) }
+        let summaries = try db.read { try EvidenceDocumentSummary.fetchAll($0) }
+        let candidates = MissingEvidence.candidates(for: result[2], documents: summaries)
+        XCTAssertEqual(candidates.map(\.documentId), [loose], "the plain Other document isn't of an expected kind")
+        XCTAssertEqual(candidates.first?.reasons, ["Boiler service", "Same day"])
+
+        // A custom-only rule: a dropped document of no kind is filed as the custom kind.
+        let onlyCustom = try db.write { db -> EvidenceRequirement in
+            var r = EvidenceRequirement(name: "Boiler", scope: .transactionsInCategory(categoryId: groceries), kinds: [], customKindIds: [boiler])
+            try EvidenceRequirements.save(db: db, &r)
+            return r
+        }
+        try transaction(Self.date(2025, 8, 2), -1_000, category: groceries)
+        let item = try XCTUnwrap(try items(year2025.interval).first { $0.requirement.id == onlyCustom.id })
+        XCTAssertEqual(item.expectedKinds, [])
+        let (filled, what) = MissingEvidence.filledIn(EvidenceDocumentDetails(), for: item)
+        XCTAssertEqual(filled.kindRef, .custom(boiler))
+        XCTAssertEqual(what, ["kind Boiler service"])
+        XCTAssertNil(MissingEvidence.shortfall(of: filled, for: item))
+        XCTAssertEqual(MissingEvidence.shortfall(of: EvidenceDocumentDetails(kind: .p60), for: item), "it's filed as P60 and this needs Boiler service")
+    }
+
+    /// An id that names no kind (deleted, merged away, or not yet arrived by sync — stored as 0) is as if it
+    /// weren't there: a rule left with no kinds accepts any document.
+    func testUnknownCustomKindIdsAreIgnored() throws {
+        let deadOnly = EvidenceRequirement(name: "Dead", scope: .transactionsInCategory(categoryId: 1), kinds: [], customKindIds: [0])
+        XCTAssertTrue(deadOnly.accepts(.builtIn(.other)))
+        XCTAssertTrue(deadOnly.accepts(.custom(5)))
+        let mixed = EvidenceRequirement(name: "Mixed", scope: .transactionsInCategory(categoryId: 1), kinds: [.repairInvoice], customKindIds: [0])
+        XCTAssertTrue(mixed.accepts(.builtIn(.repairInvoice)))
+        XCTAssertFalse(mixed.accepts(.builtIn(.other)))
+        XCTAssertFalse(mixed.accepts(.custom(0)))
+
+        // A stored rule naming a kind that no longer exists counts any document, like a rule without kinds.
+        try db.write { db in
+            var r = EvidenceRequirement(name: "Repairs", scope: .transactionsInCategory(categoryId: repairs), kinds: [], customKindIds: [404])
+            try EvidenceRequirements.save(db: db, &r)
+        }
+        let paid = try transaction(Self.date(2025, 5, 2), -8_000, category: repairs)
+        try document(.bankDebitAdvice, name: "Advice", linkedTo: .transaction(paid))
+        let result = try items(year2025.interval)
+        XCTAssertEqual(result.map(\.status), [.satisfied])
+        XCTAssertEqual(result[0].requirement.customKindIds, [])
+        XCTAssertEqual(result[0].expectedKindRefs, [])
+    }
+
     func testRepairsRuleAcceptsRepairBillsAndOtherButNotABankAdviceAlone() throws {
         try requirement("Repairs", .transactionsInCategory(categoryId: repairs), kinds: EvidenceRequirementDefaults.rule(forCategoryName: "Repairs").kinds)
         let bill = try transaction(Self.date(2025, 5, 2), -7_995, category: repairs)

@@ -446,6 +446,8 @@ struct DocumentInspector: View {
 /// The inspector's editable fields; days as the date pickers hold them (local midnight).
 struct DocumentDetailsDraft: Equatable {
     var kind: DocumentKind
+    /// Kept while the kind stays Other, so a Save doesn't drop the document's custom kind.
+    var customKindId: Int64?
     var canonicalName: String
     var hasDate: Bool
     var date: Date
@@ -461,6 +463,7 @@ struct DocumentDetailsDraft: Equatable {
         let today = Calendar.current.startOfDay(for: AppClock.now)
         func local(_ date: Date?) -> Date? { date.map { PayCalendar.localDay(sameDayAs: $0, in: .current) } }
         kind = document.kind
+        customKindId = document.customKindId
         canonicalName = document.canonicalName ?? ""
         hasDate = document.docDate != nil
         date = local(document.docDate) ?? today
@@ -491,6 +494,7 @@ struct DocumentDetailsDraft: Equatable {
             kind: kind, docDate: hasDate ? utc(date) : nil,
             periodStart: hasPeriod ? utc(periodStart) : nil, periodEnd: hasPeriod ? utc(periodEnd) : nil,
             amountMinorUnits: amount, currency: amount == nil ? nil : currency,
-            persons: EvidenceDocumentDetails.persons(from: personsText), note: note, canonicalName: canonicalName)
+            persons: EvidenceDocumentDetails.persons(from: personsText), note: note, canonicalName: canonicalName,
+            customKindId: kind == .other ? customKindId : nil)
     }
 }

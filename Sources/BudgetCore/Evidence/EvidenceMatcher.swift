@@ -57,6 +57,14 @@ public enum EvidenceMatcher {
 
     static let bbva = "BBVA"
 
+    /// A custom kind has no usual transaction: the default expectation.
+    static func expectation(for ref: DocumentKindRef) -> Expectation {
+        switch ref {
+        case .builtIn(let kind): return expectation(for: kind)
+        case .custom: return Expectation()
+        }
+    }
+
     static func expectation(for kind: DocumentKind) -> Expectation {
         switch kind {
         case .mortgageNotice:
@@ -182,7 +190,7 @@ public enum EvidenceMatcher {
     public static func suggestions(document: EvidenceDocument, index: Index, limit: Int = 10) -> [Suggestion] {
         // An addendum amends a tenancy (`TenancyAddendum`): its new rent's credits aren't its to prove.
         guard document.kind != .tenancyAddendum else { return [] }
-        let expectation = expectation(for: document.kind)
+        let expectation = expectation(for: document.kindRef)
         let anchor: Date? = switch expectation.anchor {
         case .docDate: document.docDate
         case .periodStart: document.periodStart ?? document.docDate

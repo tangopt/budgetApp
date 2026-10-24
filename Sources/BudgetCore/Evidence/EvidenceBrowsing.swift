@@ -11,6 +11,8 @@ import Foundation
 /// period, amount and currency, persons, note and canonical name.
 public struct EvidenceDocumentDetails: Equatable, Sendable {
     public var kind: DocumentKind
+    /// The custom kind, when `kind` is `.other` and the document is of one.
+    public var customKindId: Int64?
     public var docDate: Date?
     public var periodStart: Date?
     public var periodEnd: Date?
@@ -23,8 +25,9 @@ public struct EvidenceDocumentDetails: Equatable, Sendable {
 
     public init(kind: DocumentKind = .other, docDate: Date? = nil, periodStart: Date? = nil, periodEnd: Date? = nil,
                 amountMinorUnits: Int? = nil, currency: Currency? = nil, persons: [String] = [], note: String? = nil,
-                canonicalName: String? = nil) {
+                canonicalName: String? = nil, customKindId: Int64? = nil) {
         self.kind = kind
+        self.customKindId = customKindId
         self.docDate = docDate
         self.periodStart = periodStart
         self.periodEnd = periodEnd
@@ -38,13 +41,29 @@ public struct EvidenceDocumentDetails: Equatable, Sendable {
     public init(_ document: EvidenceDocument) {
         self.init(kind: document.kind, docDate: document.docDate, periodStart: document.periodStart, periodEnd: document.periodEnd,
                   amountMinorUnits: document.amountMinorUnits, currency: document.currency, persons: document.persons,
-                  note: document.note, canonicalName: document.canonicalName)
+                  note: document.note, canonicalName: document.canonicalName, customKindId: document.customKindId)
     }
 
     public init(_ summary: EvidenceDocumentSummary) {
         self.init(kind: summary.kind, docDate: summary.docDate, periodStart: summary.periodStart, periodEnd: summary.periodEnd,
                   amountMinorUnits: summary.amountMinorUnits, currency: summary.currency, persons: summary.persons,
-                  note: summary.note, canonicalName: summary.canonicalName)
+                  note: summary.note, canonicalName: summary.canonicalName, customKindId: summary.customKindId)
+    }
+
+    /// The kind, built-in or custom; setting it sets `kind` and `customKindId` together.
+    public var kindRef: DocumentKindRef {
+        // A built-in kind other than Other wins, as Save files it (`updateDetails`).
+        get { kind == .other ? customKindId.map(DocumentKindRef.custom) ?? .builtIn(.other) : .builtIn(kind) }
+        set {
+            switch newValue {
+            case .builtIn(let kind):
+                self.kind = kind
+                customKindId = nil
+            case .custom(let id):
+                kind = .other
+                customKindId = id
+            }
+        }
     }
 
     /// "Ana, Bruno" → ["Ana", "Bruno"]: split on commas and semicolons, trimmed, blanks and
@@ -84,6 +103,8 @@ extension EvidenceLibrary {
         return try database.write { db in
             guard var document = try EvidenceDocument.fetchOne(db, key: documentId) else { throw EvidenceLibraryError.documentNotFound }
             document.kind = details.kind
+            // A built-in kind chosen clears the custom one; a custom kind is filed as Other.
+            document.customKindId = details.kind == .other ? details.customKindId : nil
             document.docDate = details.docDate
             document.periodStart = details.periodStart
             document.periodEnd = details.periodEnd
@@ -131,7 +152,8 @@ public enum EvidenceDocumentSearch {
     public struct Filter: Equatable, Sendable {
         /// Words that must all appear (case- and accent-insensitive), or an amount it states.
         public var text: String
-        public var kind: DocumentKind?
+        /// A built-in kind (`.other`: documents of no kind, not custom ones) or a custom kind.
+        public var kind: DocumentKindRef?
         /// The year of the document's date (else its period's end), in UTC like every stored day.
         public var year: Int?
         /// Linked to a transaction in this account, or to the account itself.
@@ -139,7 +161,7 @@ public enum EvidenceDocumentSearch {
         public var linkState: LinkState
         public var sourceFolderId: Int64?
 
-        public init(text: String = "", kind: DocumentKind? = nil, year: Int? = nil, accountId: Int64? = nil,
+        public init(text: String = "", kind: DocumentKindRef? = nil, year: Int? = nil, accountId: Int64? = nil,
                     linkState: LinkState = .any, sourceFolderId: Int64? = nil) {
             self.text = text
             self.kind = kind
@@ -171,21 +193,26 @@ public enum EvidenceDocumentSearch {
     public struct Index: Sendable {
         /// Newest added first.
         public let entries: [Entry]
+        /// Names and areas of the kinds, custom ones included, as they were read.
+        public let catalog: DocumentKindCatalog
 
-        public init(entries: [Entry]) {
+        public init(entries: [Entry], catalog: DocumentKindCatalog = DocumentKindCatalog(customKinds: [])) {
             self.entries = entries
+            self.catalog = catalog
         }
 
         /// Reads every document (the first `indexedTextLength` characters of its text) with its links.
         public init(db: Database) throws {
-            entries = try EvidenceDocumentSearch.entries(db: db, ids: nil)
+            catalog = try DocumentKindCatalog.load(db: db)
+            entries = try EvidenceDocumentSearch.entries(db: db, ids: nil, catalog: catalog)
         }
 
         /// The index with `documentIds`' entries re-read (after an edit or a link change),
         /// keeping its order; a document that's gone is dropped, a new one goes first.
         public func updating(db: Database, documentIds: [Int64]) throws -> Index {
             guard !documentIds.isEmpty else { return self }
-            let fresh = try EvidenceDocumentSearch.entries(db: db, ids: documentIds)
+            let catalog = try DocumentKindCatalog.load(db: db)
+            let fresh = try EvidenceDocumentSearch.entries(db: db, ids: documentIds, catalog: catalog)
             var byId = Dictionary(fresh.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             let wanted = Set(documentIds)
             var updated: [Entry] = []
@@ -196,7 +223,7 @@ public enum EvidenceDocumentSearch {
                     updated.append(entry)
                 }
             }
-            return Index(entries: fresh.filter { byId[$0.id] != nil } + updated)
+            return Index(entries: fresh.filter { byId[$0.id] != nil } + updated, catalog: catalog)
         }
 
         /// The years documents are dated in, latest first.
@@ -204,10 +231,11 @@ public enum EvidenceDocumentSearch {
             Set(entries.compactMap(\.year)).sorted(by: >)
         }
 
-        /// The kinds present (in declaration order).
-        public var kinds: [DocumentKind] {
-            let present = Set(entries.map(\.summary.kind))
-            return DocumentKind.allCases.filter(present.contains)
+        /// The kinds present: built-ins in declaration order, then custom kinds by name.
+        public var kinds: [DocumentKindRef] {
+            let present = Set(entries.map(\.summary.kindRef))
+            return DocumentKind.allCases.map(DocumentKindRef.builtIn).filter(present.contains)
+                + catalog.customKinds.compactMap { $0.id.map(DocumentKindRef.custom) }.filter(present.contains)
         }
     }
 
@@ -216,7 +244,7 @@ public enum EvidenceDocumentSearch {
     public static let indexedTextLength = 20_000
 
     /// Entries for every document (`ids` nil) or for `ids`, newest added first.
-    static func entries(db: Database, ids: [Int64]?) throws -> [Entry] {
+    static func entries(db: Database, ids: [Int64]?, catalog: DocumentKindCatalog) throws -> [Entry] {
         let idList = ids.map { $0.map(String.init).joined(separator: ",") }
         let documentFilter = idList.map { " AND documentId IN (\($0))" } ?? ""
         let summaries = try (ids.map { EvidenceDocumentSummary.newestFirst.filter(keys: $0) } ?? EvidenceDocumentSummary.newestFirst).fetchAll(db)
@@ -246,7 +274,7 @@ public enum EvidenceDocumentSearch {
         return summaries.map { summary in
             Entry(summary: summary, linkCount: linkCounts[summary.id] ?? 0, transactionLinkCount: transactionCounts[summary.id] ?? 0,
                   accountIds: accounts[summary.id] ?? [], year: year(of: summary),
-                  haystack: haystack(summary, text: texts[summary.id]))
+                  haystack: haystack(summary, kindName: catalog.displayName(summary.kindRef), text: texts[summary.id]))
         }
     }
 
@@ -264,8 +292,8 @@ public enum EvidenceDocumentSearch {
         text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
     }
 
-    static func haystack(_ summary: EvidenceDocumentSummary, text: String?) -> String {
-        [summary.canonicalName ?? "", summary.originalFileName, summary.kind.displayName, summary.note ?? "",
+    static func haystack(_ summary: EvidenceDocumentSummary, kindName: String, text: String?) -> String {
+        [summary.canonicalName ?? "", summary.originalFileName, kindName, summary.note ?? "",
          summary.persons.joined(separator: " "), summary.sourceRelativePath ?? "", text ?? ""]
             .map(fold).joined(separator: "\u{1}")
     }
@@ -277,7 +305,7 @@ public enum EvidenceDocumentSearch {
         }
         return index.entries.filter { entry in
             let summary = entry.summary
-            if let kind = filter.kind, summary.kind != kind { return false }
+            if let kind = filter.kind, summary.kindRef != kind { return false }
             if let year = filter.year, entry.year != year { return false }
             if let accountId = filter.accountId, !entry.accountIds.contains(accountId) { return false }
             if let folderId = filter.sourceFolderId, summary.sourceFolderId != folderId { return false }

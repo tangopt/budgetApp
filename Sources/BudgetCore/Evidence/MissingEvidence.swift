@@ -67,8 +67,12 @@ public enum MissingEvidence {
         public var id: String
         public var requirement: EvidenceRequirement
         public var target: Target
-        /// Any of these satisfies it; empty = any document.
+        /// The built-in kinds that satisfy it (see `expectedKindRefs` for every kind).
         public var expectedKinds: [DocumentKind]
+        /// Any of these satisfies it, built-ins first; empty = any document.
+        public var expectedKindRefs: [DocumentKindRef]
+        /// `expectedKindRefs`' names, custom kinds as the catalog names them.
+        public var expectedKindNames: [String]
         /// The transaction's date (transaction scopes).
         public var expectedDate: Date?
         /// The transaction's amount, sign-free, in `currency` (transaction scopes).
@@ -128,9 +132,11 @@ public enum MissingEvidence {
     }
 
     /// The checklist for `period` (`[start, end)`) from `requirements` (all stored ones by
-    /// default), sorted by source, then date or slot, then requirement and title.
+    /// default), sorted by source, then date or slot, then requirement and title. A custom kind a
+    /// rule names that no longer exists (or hasn't arrived) is left out of it.
     public static func items(db: Database, period: DateInterval, requirements: [EvidenceRequirement]? = nil) throws -> [Item] {
-        let requirements = try requirements ?? EvidenceRequirements.all(db: db)
+        let catalog = try DocumentKindCatalog.load(db: db)
+        let requirements = try (requirements ?? EvidenceRequirements.all(db: db)).map { $0.knowingOnly(catalog) }
         let accounts = Dictionary(uniqueKeysWithValues: try Account.fetchAll(db).compactMap { a in a.id.map { ($0, a) } })
         let categoryNames = Dictionary(uniqueKeysWithValues: try Category.fetchAll(db).compactMap { c in c.id.map { ($0, c.name) } })
         let waivers = try EvidenceWaiver.fetchAll(db)
@@ -152,26 +158,26 @@ public enum MissingEvidence {
                 for transaction in transactions {
                     guard let transactionId = transaction.id else { continue }
                     let target = Target.transaction(transactionId)
-                    let documents = try linked.documents(for: target.entity).filter { requirement.accepts($0.kind) }
+                    let documents = try linked.documents(for: target.entity).filter { requirement.accepts($0.kindRef) }
                     let account = accounts[transaction.accountId]
-                    result.append(item(requirement: requirement, target: target, documents: documents, waiver: waiver(target),
+                    result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, waiver: waiver(target),
                                        date: transaction.date, amount: abs(transaction.amountMinorUnits), currency: account?.currency,
                                        period: nil, title: transaction.rawDescription,
                                        categoryName: transaction.categoryId.flatMap { categoryNames[$0] }, accountName: account?.displayName))
                 }
             case let .periodic(entity, every):
-                let all = try linked.documents(for: entity).filter { requirement.accepts($0.kind) }
+                let all = try linked.documents(for: entity).filter { requirement.accepts($0.kindRef) }
                 for slot in slots(of: period, every: every) where slot.start < window.end && slot.end > window.start {
                     let target = Target(entity: entity, slot: slot)
                     let documents = all.filter { covers($0, slot: slot) }
-                    result.append(item(requirement: requirement, target: target, documents: documents, waiver: waiver(target),
+                    result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, waiver: waiver(target),
                                        date: nil, amount: nil, currency: nil, period: slot, title: requirement.name,
                                        categoryName: nil, accountName: nil))
                 }
             case let .single(entity):
                 let target = Target(entity: entity)
-                let documents = try linked.documents(for: entity).filter { requirement.accepts($0.kind) }
-                result.append(item(requirement: requirement, target: target, documents: documents, waiver: waiver(target),
+                let documents = try linked.documents(for: entity).filter { requirement.accepts($0.kindRef) }
+                result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, waiver: waiver(target),
                                    date: nil, amount: nil, currency: nil, period: nil, title: requirement.name,
                                    categoryName: nil, accountName: nil))
             case let .personalIncomeRecords(record):
@@ -180,11 +186,11 @@ public enum MissingEvidence {
                     let target = Target(entity: record.entity)
                     var documents: [EvidenceDocumentSummary] = []
                     for entity in record.documentEntities {
-                        for document in try linked.documents(for: entity) where requirement.accepts(document.kind) && !documents.contains(where: { $0.id == document.id }) {
+                        for document in try linked.documents(for: entity) where requirement.accepts(document.kindRef) && !documents.contains(where: { $0.id == document.id }) {
                             documents.append(document)
                         }
                     }
-                    result.append(item(requirement: requirement, target: target, documents: documents, waiver: waiver(target),
+                    result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, waiver: waiver(target),
                                        date: record.date, amount: record.amountMinorUnits, currency: record.amountMinorUnits == nil ? nil : .gbp,
                                        period: record.period, title: record.title, categoryName: nil, accountName: nil))
                 }
@@ -193,8 +199,8 @@ public enum MissingEvidence {
                                                            overlapping: DateInterval(start: window.start, end: window.end))
                 for record in records {
                     let target = Target(entity: record.entity)
-                    let documents = try linked.documents(for: record.entity).filter { requirement.accepts($0.kind) }
-                    result.append(item(requirement: requirement, target: target, documents: documents, waiver: waiver(target),
+                    let documents = try linked.documents(for: record.entity).filter { requirement.accepts($0.kindRef) }
+                    result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, waiver: waiver(target),
                                        date: record.date, amount: record.amountMinorUnits, currency: record.currency, period: record.period,
                                        title: record.title, categoryName: nil, accountName: nil))
                 }
@@ -291,7 +297,7 @@ public enum MissingEvidence {
         if let category = item.categoryName, category != item.title { parts.append(escape(category)) }
         if let account = item.accountName { parts.append(escape(account)) }
         let what = parts.joined(separator: " · ")
-        let needs = item.expectedKinds.isEmpty ? "any document" : item.expectedKinds.map(\.displayName).joined(separator: " or ")
+        let needs = item.expectedKindNames.isEmpty ? "any document" : item.expectedKindNames.joined(separator: " or ")
         switch item.status {
         case .missing:
             return "- [ ] \(what) — needs \(needs)"
@@ -306,12 +312,13 @@ public enum MissingEvidence {
 
     // MARK: Helpers
 
-    private static func item(requirement: EvidenceRequirement, target: Target, documents: [EvidenceDocumentSummary], waiver: EvidenceWaiver?,
+    private static func item(requirement: EvidenceRequirement, catalog: DocumentKindCatalog, target: Target, documents: [EvidenceDocumentSummary], waiver: EvidenceWaiver?,
                              date: Date?, amount: Int?, currency: Currency?, period: DateInterval?, title: String,
                              categoryName: String?, accountName: String?) -> Item {
         let status: Status = !documents.isEmpty ? .satisfied : (waiver != nil ? .waived : .missing)
         return Item(id: itemId(requirementId: requirement.id ?? 0, target: target), requirement: requirement, target: target,
-                    expectedKinds: requirement.kinds, expectedDate: date, expectedAmountMinorUnits: amount, currency: currency,
+                    expectedKinds: requirement.kinds, expectedKindRefs: requirement.kindRefs,
+                    expectedKindNames: requirement.kindRefs.map(catalog.displayName), expectedDate: date, expectedAmountMinorUnits: amount, currency: currency,
                     expectedPeriod: period, title: title, categoryName: categoryName, accountName: accountName,
                     usualSource: requirement.usualSource, status: status, satisfyingDocuments: documents, waiver: waiver)
     }

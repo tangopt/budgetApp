@@ -545,7 +545,7 @@ struct MissingEvidenceRow: View {
     /// and its slot (a periodic item) for a document without a period of its own.
     static func shortcut(_ item: MissingEvidence.Item) -> ImportShortcut {
         .attach(item.target.entity, role: nil, from: .missingEvidence,
-                expected: item.expectedKinds.count == 1 ? item.expectedKinds.first : nil, period: item.expectedPeriod)
+                expected: item.expectedKindRefs.count == 1 ? item.expectedKinds.first : nil, period: item.expectedPeriod)
     }
 
     var body: some View {
@@ -621,10 +621,10 @@ struct MissingEvidenceRow: View {
     private var evidence: some View {
         switch item.status {
         case .missing:
-            Text("Needs " + MissingEvidenceViewModel.kindsText(item.expectedKinds))
+            Text("Needs " + MissingEvidenceViewModel.kindsText(names: item.expectedKindNames))
                 .font(.callout).foregroundStyle(.secondary)
                 .lineLimit(1)
-                .help("Needs " + MissingEvidenceViewModel.kindsText(item.expectedKinds))
+                .help("Needs " + MissingEvidenceViewModel.kindsText(names: item.expectedKindNames))
         case .satisfied:
             let names = item.satisfyingDocuments.map(\.displayName)
             HStack(spacing: 4) {

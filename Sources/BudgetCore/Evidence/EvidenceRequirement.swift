@@ -123,12 +123,28 @@ public struct EvidenceRequirement: Codable, Equatable, Identifiable, FetchableRe
     }
 
     /// Whether a document of `ref` satisfies the rule: any document when both lists are empty.
+    /// A custom id that can't name a kind (0: one that hadn't arrived or was gone when the rule
+    /// synced) is ignored, as if it weren't there.
     public func accepts(_ ref: DocumentKindRef) -> Bool {
+        let customKindIds = customKindIds.filter { $0 > 0 }
         if kinds.isEmpty && customKindIds.isEmpty { return true }
         switch ref {
         case .builtIn(let kind): return kinds.contains(kind)
         case .custom(let id): return customKindIds.contains(id)
         }
+    }
+
+    /// The rule without custom ids that name no kind in `catalog` (deleted, merged away on
+    /// another device, or not yet arrived): it then reads exactly as if they weren't there.
+    public func knowingOnly(_ catalog: DocumentKindCatalog) -> EvidenceRequirement {
+        var known = self
+        known.customKindIds = customKindIds.filter { catalog.custom(id: $0) != nil }
+        return known
+    }
+
+    /// The kinds that satisfy it, built-ins first; empty = any document.
+    public var kindRefs: [DocumentKindRef] {
+        kinds.map(DocumentKindRef.builtIn) + customKindIds.filter { $0 > 0 }.map(DocumentKindRef.custom)
     }
 
     /// The part of `period` the rule is active in (half-open), or `nil` when none.
@@ -199,6 +215,7 @@ public enum EvidenceRequirements {
         requirement.notes = Transaction.normalizedNote(requirement.notes)
         requirement.excludedAccountIds = requirement.excludedAccountIds.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
         requirement.kinds = requirement.kinds.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
+        requirement.customKindIds = requirement.customKindIds.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
         try requirement.save(db)
     }
 

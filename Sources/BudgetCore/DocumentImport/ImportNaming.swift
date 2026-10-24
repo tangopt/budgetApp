@@ -82,6 +82,11 @@ public enum ImportNaming {
         return ImportPlacement(metadata: metadata, canonicalName: canonical)
     }
 
+    /// The library area of a kind, built-in or custom (a custom kind that's gone files as Other).
+    public static func area(of ref: DocumentKindRef, catalog: DocumentKindCatalog) -> String {
+        catalog.libraryArea(ref)
+    }
+
     /// The library area of a document kind.
     static func area(of kind: DocumentKind) -> String {
         switch kind {
