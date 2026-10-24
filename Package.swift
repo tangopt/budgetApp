@@ -26,7 +26,7 @@ let package = Package(
         .target(name: "MangoUI", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
         .testTarget(name: "BudgetCoreTests", dependencies: ["BudgetCore", "BudgetDemo"]),
         .testTarget(name: "MangoSyncTests", dependencies: ["MangoSync", "BudgetCore"]),
-        .testTarget(name: "MangoUITests", dependencies: ["MangoUI", "BudgetCore"]),
+        .testTarget(name: "MangoUITests", dependencies: ["MangoUI", "BudgetCore", "BudgetDemo"]),
         .executableTarget(name: "MigrateHistory", dependencies: ["BudgetCore"]),
         .executableTarget(name: "MigrateAccountBalances", dependencies: ["BudgetCore"]),
         .executableTarget(name: "ConvertBalances", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),

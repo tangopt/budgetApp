@@ -91,6 +91,8 @@ cp "$SNAPS"/*.png(N) "$OUT/" 2>/dev/null || true
 [[ -f "$SNAPS/wrap-report.txt" ]] && cp "$SNAPS/wrap-report.txt" "$OUT/"
 echo "$(ls "$OUT"/*.png(N) | wc -l | tr -d ' ') PNGs in $OUT"
 [[ -f "$OUT/wrap-report.txt" ]] && head -2 "$OUT/wrap-report.txt"
+# Routes' assertions about their figures (Home's net worth equals the Accounts screen's).
+[[ -f "$OUT/wrap-report.txt" ]] && sed -n '/^Route checks:/,/^Figures checked by render:/p' "$OUT/wrap-report.txt" | sed '$d'
 # A render that measured too little (or any other runner failure) fails the run.
 if [[ -f "$SNAPS/error.txt" ]]; then
     cat "$SNAPS/error.txt" >&2

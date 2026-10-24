@@ -181,7 +181,8 @@ public final class WrapProbeRegistry {
 
     /// The report: a heading, the count line (the script prints both), the coverage problems, then each render's
     /// violations and every render's tally. `problems`: renders that checked too little (`DemoRoute.coverageProblem`).
-    public nonisolated static func report(_ violations: [Violation], renders: [Render], problems: [String], window: CGSize) -> String {
+    public nonisolated static func report(_ violations: [Violation], renders: [Render], problems: [String], window: CGSize,
+                                          checks: [String] = []) -> String {
         var lines: [String] = []
         let byProblem = Violation.Problem.allCases.map { problem in "\(problem.rawValue) \(violations.filter { $0.problem == problem }.count)" }
         let renderCount = Set(violations.map(\.route)).count
@@ -201,6 +202,12 @@ public final class WrapProbeRegistry {
             for violation in found {
                 let text = violation.text.replacingOccurrences(of: "\n", with: " ")
                 lines.append("  \(violation.problem.rawValue)  \(violation.kind)  \"\(text)\"  shown \(size(violation.size)) needs \(size(violation.ideal)) at \(Int(violation.origin.x)),\(Int(violation.origin.y))  \(violation.source)")
+            }
+        }
+        if !checks.isEmpty {
+            lines.append("Route checks:")
+            for check in checks {
+                lines.append("  \(check)")
             }
         }
         lines.append("Figures checked by render:")

@@ -98,6 +98,17 @@ enum PhoneSnapshotRunner {
             fail("no route named \(only.subtracting(known).sorted().joined(separator: ", ")) (routes: \(DemoRoutes.all.map(\.name).joined(separator: ", ")))")
         }
 
+        // Each route's assertion about its figures, before anything renders: a failure ends the run.
+        var checks: [String] = []
+        for route in routes {
+            guard let check = route.check else { continue }
+            do {
+                checks.append(try check(context))
+            } catch {
+                fail("check failed: \(error)")
+            }
+        }
+
         let probe = WrapProbeRegistry.shared
         probe.isActive = true
         var violations: [WrapProbeRegistry.Violation] = []
@@ -144,13 +155,14 @@ enum PhoneSnapshotRunner {
         }
         probe.isActive = false
         if renders.reduce(0, { $0 + $1.checked }) == 0 { problems.append("the run measured no figures at all") }
-        let report = WrapProbeRegistry.report(violations, renders: renders, problems: problems, window: windowSize)
+        let report = WrapProbeRegistry.report(violations, renders: renders, problems: problems, window: windowSize, checks: checks)
         do {
             try report.write(to: outDir.appendingPathComponent("wrap-report.txt"), atomically: true, encoding: .utf8)
         } catch {
             fail("couldn't write wrap-report.txt: \(error.localizedDescription)")
         }
         print(report.split(separator: "\n").prefix(2).joined(separator: "\n"))
+        for check in checks { print("check: \(check)") }
         // A render that measured too little is a failure, not a pass with 0 violations.
         if !problems.isEmpty { fail("coverage: " + problems.joined(separator: "; ")) }
         exit(0)

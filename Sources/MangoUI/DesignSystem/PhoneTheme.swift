@@ -39,7 +39,7 @@ public struct PhoneTheme: Identifiable, Sendable {
         background = clearBackground ? Self.systemBackground(.windowBackground) : color(\.windowBackground)
         surface = color(\.surface)
         income = Self.color(light: Self.incomeToken(palette, .light), dark: Self.incomeToken(palette, .dark))
-        expense = color(\.expense)
+        expense = Self.color(light: Self.expenseToken(palette, .light), dark: Self.expenseToken(palette, .dark))
         transfer = color(\.transfer)
         pending = color(\.pending)
         neutralMoney = color(\.neutralMoney)
@@ -55,10 +55,11 @@ public struct PhoneTheme: Identifiable, Sendable {
         }
     }
 
-    // MARK: Legible income
+    // MARK: Legible money colours
 
-    /// The smallest contrast an income figure keeps against a card in light mode (ruling, fix round 1).
-    public static let minimumLightIncomeContrast = 4.5
+    /// The smallest contrast an income or expense figure keeps against a card in light mode (rulings: income, Task 6
+    /// fix round 1; expense, Task 7).
+    public static let minimumLightMoneyContrast = 4.5
 
     /// A card's colour, opaque: the surface over the screen background over white (light) or black (dark).
     public static func opaqueSurface(_ palette: ThemePalette, _ variant: ThemeVariant) -> ThemeColor {
@@ -71,13 +72,23 @@ public struct PhoneTheme: Identifiable, Sendable {
     /// The income colour the phone draws: in light, the theme's income where it reaches 4.5:1 on a card, else a
     /// darker shade of it that does (Classic's system green is about 2.2:1 on white); in dark, the theme's own.
     public static func incomeToken(_ palette: ThemePalette, _ variant: ThemeVariant) -> ThemeColor {
-        let income = palette.tokens(variant).income
-        guard variant == .light else { return income }
+        legibleOnCard(palette.tokens(variant).income, palette, variant)
+    }
+
+    /// The expense colour the phone draws, by the same rule as income: Classic's system red (about 3.6:1 on white)
+    /// is darkened in light mode; dark keeps the theme's own.
+    public static func expenseToken(_ palette: ThemePalette, _ variant: ThemeVariant) -> ThemeColor {
+        legibleOnCard(palette.tokens(variant).expense, palette, variant)
+    }
+
+    /// `color` as drawn on a light card, darkened if it is under 4.5:1 there; unchanged in dark.
+    private static func legibleOnCard(_ color: ThemeColor, _ palette: ThemePalette, _ variant: ThemeVariant) -> ThemeColor {
+        guard variant == .light else { return color }
         let card = opaqueSurface(palette, .light)
-        let drawn = ColorMath.composite(income, over: card)
-        guard ColorMath.contrastRatio(drawn, card) < minimumLightIncomeContrast else { return income }
+        let drawn = ColorMath.composite(color, over: card)
+        guard ColorMath.contrastRatio(drawn, card) < minimumLightMoneyContrast else { return color }
         // A little past the minimum, so rounding to 8-bit channels can't land under it.
-        let target = (ColorMath.relativeLuminance(card) + 0.05) / (minimumLightIncomeContrast + 0.1) - 0.05
+        let target = (ColorMath.relativeLuminance(card) + 0.05) / (minimumLightMoneyContrast + 0.1) - 0.05
         return ColorMath.shaded(drawn, toLuminance: target)
     }
 

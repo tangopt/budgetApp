@@ -26,6 +26,9 @@ public struct DemoRoute {
     public let minimumFigures: Int
     /// Figures the full-height render must measure below the first screen (852 pt).
     public let figuresBelowFold: Int
+    /// What the route asserts about its figures (Home: its net worth is the Accounts screen's), run once before the
+    /// renders: the line it returns goes in the report; a throw fails the run.
+    public let check: (@MainActor (PhoneDemoContext) throws -> String)?
     public let make: @MainActor (PhoneDemoContext) -> AnyView
 
     /// Default (`.large`), the largest size short of the accessibility sizes (`.xxxLarge`), where figures must still
@@ -33,11 +36,13 @@ public struct DemoRoute {
     public static let standardSizes: [DynamicTypeSize] = [.large, .xxxLarge, .accessibility3]
 
     public init(name: String, sizes: [DynamicTypeSize] = DemoRoute.standardSizes, minimumFigures: Int = 1,
-                figuresBelowFold: Int = 0, make: @escaping @MainActor (PhoneDemoContext) -> AnyView) {
+                figuresBelowFold: Int = 0, check: (@MainActor (PhoneDemoContext) throws -> String)? = nil,
+                make: @escaping @MainActor (PhoneDemoContext) -> AnyView) {
         self.name = name
         self.sizes = sizes
         self.minimumFigures = minimumFigures
         self.figuresBelowFold = figuresBelowFold
+        self.check = check
         self.make = make
     }
 
@@ -53,6 +58,13 @@ public struct DemoRoute {
     }
 }
 
+/// A route's check that didn't hold.
+public struct DemoRouteCheckFailure: Error, CustomStringConvertible {
+    public let message: String
+    public init(message: String) { self.message = message }
+    public var description: String { message }
+}
+
 /// The routes the harness renders, in order. Each later screen adds its routes here.
 public enum DemoRoutes {
     public static let all: [DemoRoute] = [
@@ -61,5 +73,5 @@ public enum DemoRoutes {
         },
         // A long figure below the first screen: the full-height render must measure it.
         DemoRoute(name: "gallery-fold", figuresBelowFold: 1) { _ in AnyView(DesignSystemGalleryFold()) },
-    ]
+    ] + HomeRoutes.all
 }
