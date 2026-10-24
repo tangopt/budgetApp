@@ -94,10 +94,12 @@ public enum DocumentClassifier {
         static let repairWork = make(#"\b(REPARAC\w*|MANUTENCAO|CANALIZ\w*|ELE(C)?TRICIST\w*|PINTURA|OBRAS|MAO DE OBRA|SUBSTITUICAO|DESENTUPIMENTO|ASSISTENCIA TECNICA|CONSERTO|ARRANJO|AVARIA|INSTALACAO|REPAIRS?|MAINTENANCE|PLUMB\w*)\b"#)
         /// A boiler or water heater as the thing worked on ("da caldeira"), not a surname.
         static let repairAppliance = make(#"\b(DA|DE|DO|NA|NO|A|O) (CALDEIRA|ESQUENTADOR)\b"#)
-        /// What isn't a property's repair: a car, a phone, software, art, a telecom installation.
-        static let repairElsewhere = make(#"\b(VIATURA|AUTOMOVEL|MATRICULA|TELEMOVEL|ECRA|LICENCA|SOFTWARE|ARTE|INTERNET|FIBRA|TELECOMUNICAC\w*)\b|PINTURA A OLEO"#)
+        /// What isn't a property's repair: a car (a garage, a tow), a phone, software, art, a
+        /// telecom installation, a deed's deposit.
+        static let repairElsewhere = make(#"\b(VIATURA|AUTOMOVEL|MATRICULA|OFICINA|REBOQUE\w*|ESCRITURA|TELEMOVEL|ECRA|LICENCA|SOFTWARE|ARTE|INTERNET|FIBRA|TELECOMUNICAC\w*)\b|PINTURA A OLEO"#)
         /// An invoice's own number heading ("FT 2026/12", "FR A/7", "FS 1").
-        static let invoiceNumber = make(#"\b(FT|FR|FS) ?[A-Z0-9]{0,4}[ /]?\d"#)
+        /// The tax authority's series form only: never a word that starts so ("Fração 1", "FTSE 100").
+        static let invoiceNumber = make(#"\b(FT|FR|FS) ?[A-Z0-9]{1,6}/\d+|\b(FT|FR|FS) \d"#)
         static let fileRepair = make(#"\b(REPARAC\w*|REPAIRS?|OBRAS|MANUTENCAO|CANALIZ\w*|ELE(C)?TRICIST\w*)\b"#)
         /// Stamp duty in a file name: "selo" as a word, or "stamp duty".
         static let fileStampDuty = make(#"\b(SELO|STAMP DUTY)\b"#)

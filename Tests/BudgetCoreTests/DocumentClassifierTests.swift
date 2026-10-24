@@ -244,6 +244,13 @@ final class DocumentClassifierTests: XCTestCase {
             ("Galeria\nFatura\nPintura a óleo\nTotal 400,00", "x.pdf", .other),
             ("Galeria Exemplo\nFatura FT 4\nPintura, obra de arte\nTotal 400,00", "x.pdf", .other),
             ("Exemplo Telecomunicações\nFatura FT 5\nInstalação de fibra e internet\nTotal 30,00", "x.pdf", .other),
+            // Words that start like an invoice series aren't one; a deed's deposit receipt isn't a bill.
+            ("Escritura\nFração 1\nRecibo de sinal\nInstalação de cozinha", "x.pdf", .other),
+            ("Hotel France 2026\nArranjo floral", "x.pdf", .other),
+            ("FTSE 100 newsletter\nAvaria do mercado", "x.pdf", .other),
+            // A tow truck's or a garage's receipt is a car's.
+            ("Reboques Exemplo\nRecibo\nAvaria na A1, reboque\nTotal 120,00", "x.pdf", .other),
+            ("Oficina Exemplo\nFatura\nConserto do travão\nTotal 120,00", "x.pdf", .other),
             // A water heater or boiler named as the thing worked on.
             ("Exemplo Lda\nFatura FT 6\nRevisão da caldeira\nTotal 90,00", "x.pdf", .repairInvoice),
             ("Exemplo Lda\nFatura FT 7\nLimpeza do esquentador\nTotal 45,00", "x.pdf", .repairInvoice)
