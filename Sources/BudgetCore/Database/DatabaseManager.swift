@@ -134,6 +134,8 @@ public final class DatabaseManager {
         // it as the one migration it lacks.
         registerTaxFiledBoxMigration(&migrator)
         registerTaxPolicyReceiptItemsMigration(&migrator)
+        // Like the filed boxes: before the app-user and sync ones (2026-10-24).
+        registerPropertyCheckDecisionMigration(&migrator)
         registerImportRunMigration(&migrator)
         registerImportRuleMigration(&migrator)
         registerAppUserMigration(&migrator)

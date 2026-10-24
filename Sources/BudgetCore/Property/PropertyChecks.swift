@@ -61,6 +61,14 @@ public struct PropertyCheckReport: Equatable, Sendable {
         public var expectedDate: Date
     }
 
+    /// A recurring series the user said is not expected any more (`PropertyCheckDecisions`):
+    /// listed so the decision can be undone.
+    public struct NotExpectedRecurringCost: Equatable, Sendable {
+        public var pattern: PropertyRecurringPattern
+        public var decision: PropertyCheckDecision
+        public var series: PropertyRecurringSeriesRef { pattern.series }
+    }
+
     public var monthsWithoutReceipt: [MissingReceiptMonth] = []
     /// Issued receipts not fully paid by linked credits.
     public var receiptsWithoutCredit: [RentReceipt] = []
@@ -69,6 +77,8 @@ public struct PropertyCheckReport: Equatable, Sendable {
     /// `nil` when the property has no deposit-role account or no tenancy runs on the day.
     public var deposit: DepositCheck?
     public var missingRecurringCosts: [MissingRecurringCost] = []
+    /// Not an issue: the series cleared with "Not expected any more", whatever the period.
+    public var notExpectedRecurringCosts: [NotExpectedRecurringCost] = []
 
     public init() {}
 
@@ -88,7 +98,8 @@ public enum PropertyChecks {
     /// without a receipt (`RentReceiptMatching`); the deposit held on the earlier of `today`
     /// and the period's last day against the running tenancies' terms; recurring costs
     /// (`PropertyCalendar.recurringPatterns`) whose next occurrence, in the period, is more
-    /// than `recurringGraceDays` overdue.
+    /// than `recurringGraceDays` overdue, except series not expected any more
+    /// (`notExpectedRecurringCosts`).
     public static func run(db: Database, propertyId: Int64, period: DateInterval, today: Date = Date()) throws -> PropertyCheckReport {
         guard let property = try Property.fetchOne(db, key: propertyId) else { throw PropertyError.propertyNotFound }
         let calendar = MonthRange.calendar
@@ -141,7 +152,13 @@ public enum PropertyChecks {
         }
 
         // Overdue recurring costs.
-        for pattern in try PropertyCalendar.recurringPatterns(db: db, propertyId: propertyId, asOf: today, dropStopped: false) {
+        let notExpected = try PropertyCheckDecisions.notExpected(db: db, propertyId: propertyId)
+        for pattern in try PropertyCalendar.recurringPatterns(db: db, propertyId: propertyId, asOf: today, dropStopped: false,
+                                                              includeNotExpected: true) {
+            if let decision = notExpected[pattern.series], PropertyCheckDecisions.holds(decision, for: pattern) {
+                report.notExpectedRecurringCosts.append(.init(pattern: pattern, decision: decision))
+                continue
+            }
             let expected = pattern.nextDate
             guard expected >= period.start, expected < period.end else { continue }
             let overdue = calendar.date(byAdding: .day, value: recurringGraceDays, to: expected)!
