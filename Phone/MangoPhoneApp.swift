@@ -18,14 +18,19 @@ enum PhoneMain {
 }
 
 struct MangoPhoneApp: App {
+    /// Locked on launch (auth spec §10); one model for the app's life, so nothing else needs to know about it.
+    @StateObject private var lock = PhoneLockModel()
+
     var body: some Scene {
         WindowGroup {
-            PhoneRoot()
+            PhoneRoot(lock: lock)
         }
     }
 }
 
-/// Opens the database off the main thread, then shows the app. The lock comes in front of this later.
+/// Opens the database off the main thread, then shows the app behind the lock. The load runs outside the lock (it
+/// shows nothing), so unlocking doesn't wait for it and relocking doesn't reopen the database; the content itself
+/// is only in the view tree while unlocked.
 struct PhoneRoot: View {
     private enum Stage {
         case loading
@@ -33,6 +38,7 @@ struct PhoneRoot: View {
         case failed(String)
     }
 
+    let lock: PhoneLockModel
     @State private var stage: Stage = .loading
 
     var body: some View {
@@ -48,6 +54,7 @@ struct PhoneRoot: View {
                                        description: Text(message))
             }
         }
+        .lockCover(lock)
         .task {
             guard case .loading = stage else { return }
             do {
