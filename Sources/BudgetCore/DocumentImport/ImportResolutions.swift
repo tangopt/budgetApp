@@ -63,7 +63,8 @@ public enum ImportResolutions {
     ///   `.setIssuer`) resolves the model's question once no model figure or kind is left.
     /// - `.linkTransactions`, `.addTransactionLink`, `.unlink`: the item's transaction links as
     ///   the user set them (`withTransactionLinks`); `transactions` names each chosen
-    ///   transaction that exists (`transactionNotFound` otherwise).
+    ///   transaction that exists (`transactionNotFound` otherwise). `.linkTransactions` also
+    ///   answers the pair an instalments question offers: both its debits, certain.
     ///
     /// Corrections (a kind, a figure, a target, links) are taken on any item that is not held
     /// (a filed return, a failed check, an unreadable file: only leaving out), left out or a
@@ -95,7 +96,8 @@ public enum ImportResolutions {
             return nil
 
         case .linkTransactions(let ids):
-            guard issueId == nil, isCorrectable(item), !ids.isEmpty, Set(ids).count == ids.count else { throw refuse() }
+            // A correction, or the pair a question offers (`EvidenceDocumentReader.instalmentPairsIssueId`).
+            guard issueId == nil || !accepting.isEmpty, isCorrectable(item), !ids.isEmpty, Set(ids).count == ids.count else { throw refuse() }
             return try withTransactionLinks(item, ids, chosen: Set(ids), labels: transactions)
 
         case .addTransactionLink(let id):
@@ -271,7 +273,7 @@ public enum ImportResolutions {
                 if let id = transactionId(inIssueId: issue.id) { dropped.insert(.transaction(id)) }
                 if let id = tenancyId(inIssueId: issue.id) { dropped.insert(.tenancy(id)) }
                 // The instalments it proposed.
-                if issue.id == EvidenceDocumentReader.instalmentsIssueId {
+                if isInstalmentsQuestion(issue) {
                     dropped.formUnion(unsure.filter { $0.entity.type == .transaction }.map(\.entity))
                 }
             }
@@ -332,6 +334,11 @@ public enum ImportResolutions {
             }
             return edited
         }
+    }
+
+    /// Whether the issue asks about instalments the reader proposed (one pair, or which pair).
+    static func isInstalmentsQuestion(_ issue: ImportIssue) -> Bool {
+        issue.id == EvidenceDocumentReader.instalmentsIssueId || issue.id == EvidenceDocumentReader.instalmentPairsIssueId
     }
 
     static let chosenReason = "Chosen by you"
@@ -400,6 +407,8 @@ public enum ImportResolutions {
             }
             return false
         }
+        // The transactions set by the user answer the instalments questions too.
+        edited.issues.removeAll(where: isInstalmentsQuestion)
         edited.links.removeAll { $0.entity.type == .transaction }
         var adviceRole: String?
         if case .transferAdvice = item.effect {

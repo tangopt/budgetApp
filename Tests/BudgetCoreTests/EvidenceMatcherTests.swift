@@ -245,7 +245,8 @@ final class EvidenceMatcherTests: XCTestCase {
     // MARK: One document on several transactions
 
     private func repairBill(amount: Int = 7_995, date: String = "2023-03-05") -> EvidenceDocument {
-        var bill = document(.repairInvoice, date: date, amount: amount)
+        var bill = document(.repairInvoice, date: date, amount: amount,
+                            text: "Canalizações Exemplo, Lda. NIF 503504564\nFATURA-RECIBO FR 2023/15\nTotal 79,95 EUR")
         bill.canonicalName = "20230305 - Property - Repair bill - Canalizacoes Exemplo"
         return bill
     }
@@ -333,10 +334,60 @@ final class EvidenceMatcherTests: XCTestCase {
                             transaction(3, "2023-03-20", -1_500, "PAG CANALIZACOES EXEMPLO 0003")]
         let index = EvidenceMatcher.Index(transactions: transactions, accounts: accounts, categories: categories)
         XCTAssertFalse(EvidenceMatcher.suggestions(document: bill, index: index).contains { $0.amountMatched })
-        let suggestions = EvidenceMatcher.suggestions(document: bill, index: index, linkedAmounts: [4_000])
+        let suggestions = EvidenceMatcher.suggestions(document: bill, index: index,
+                                                      linkedDebits: [EvidenceMatcher.LinkedDebit(transactionId: 1, amountMinorUnits: 4_000)])
         XCTAssertEqual(suggestions.first?.transactionId, 2)
         XCTAssertEqual(suggestions.first?.amountMatched, true)
         XCTAssertEqual(suggestions.first?.reasons.first, reason)
         XCTAssertTrue(suggestions.first?.dateInWindow ?? false)
+    }
+
+    /// A pair is the document's only when tied to it: the merchant named in its text, or the kind's
+    /// category or description hints. Debits that already carry a document of its kind are left out.
+    func testInstalmentsAreTiedToTheDocument() {
+        let transactions = [
+            transaction(1, "2023-03-05", -4_000, "COMPRA SUPERMERCADO DEMO 1"),
+            transaction(2, "2023-03-25", -3_995, "COMPRA SUPERMERCADO DEMO 2"),
+            transaction(3, "2023-03-06", -4_000, "PAG OBRAS RAPIDAS 1", category: 18),
+            transaction(4, "2023-03-26", -3_995, "PAG OBRAS RAPIDAS 2", category: 18)
+        ]
+        let withRepairs = categories + [Category(id: 18, name: "Repairs", type: .expense)]
+        let index = EvidenceMatcher.Index(transactions: transactions, accounts: accounts, categories: withRepairs)
+        // The supermarket pair adds up by chance: neither named in the bill nor a repair category.
+        XCTAssertEqual(EvidenceMatcher.instalments(document: repairBill(), index: index).map(\.transactionIds), [[3, 4]])
+        // Already carrying a bill of its kind: not another one's instalment.
+        XCTAssertEqual(EvidenceMatcher.instalments(document: repairBill(), index: index, excluding: [3]), [])
+        // Named in the bill's text: tied without a category.
+        var named = repairBill()
+        named.extractedText = "Supermercado Demo, S.A.\nFatura FT 9\nTotal 79,95 EUR"
+        XCTAssertEqual(EvidenceMatcher.instalments(document: named, index: index).map(\.transactionIds), [[1, 2], [3, 4]])
+        // Bank words alone tie nothing ("COMPRA", "PAG").
+        var bankWords = repairBill()
+        bankWords.extractedText = "Compra de material. Pagamento a 30 dias"
+        XCTAssertEqual(EvidenceMatcher.instalments(document: bankWords, index: index).map(\.transactionIds), [[3, 4]])
+    }
+
+    /// Equal halves: the half already linked is never "the rest"; the other one is.
+    func testEqualHalvesRestSkipsTheLinkedHalf() {
+        let bill = repairBill(amount: 8_000)
+        let transactions = [transaction(1, "2023-03-05", -4_000, "PAG CANALIZACOES EXEMPLO 0001"),
+                            transaction(2, "2023-03-25", -4_000, "PAG CANALIZACOES EXEMPLO 0002")]
+        let index = EvidenceMatcher.Index(transactions: transactions, accounts: accounts, categories: categories)
+        let linked = index.linkedDebits([1], currency: .eur)
+        XCTAssertEqual(linked, [EvidenceMatcher.LinkedDebit(transactionId: 1, amountMinorUnits: 4_000)])
+        let suggestions = EvidenceMatcher.suggestions(document: bill, index: index, linkedDebits: linked)
+        XCTAssertEqual(suggestions.filter(\.amountMatched).map(\.transactionId), [2])
+        XCTAssertFalse(suggestions.contains { $0.transactionId == 1 && $0.reasons.contains { $0.hasPrefix("Pays the rest") } })
+    }
+
+    /// Only a kind paid by debits has a rest: a statement's or a contract's figure never does.
+    func testNoRestForAStatementOrAContract() {
+        let second = transaction(2, "2023-03-25", -3_995, "PAG CANALIZACOES EXEMPLO 0002")
+        for kind in [DocumentKind.bankStatement, .rentContract, .insurancePolicy, .other] {
+            let paper = document(kind, date: "2023-03-05", amount: 7_995)
+            XCTAssertNil(EvidenceMatcher.remainder(document: paper, linkedAmounts: [4_000], transaction: second, currency: .eur), "\(kind)")
+        }
+        XCTAssertTrue(EvidenceMatcher.isPaidByDebits(.builtIn(.imiNotice)), "IMI is paid in instalments")
+        XCTAssertFalse(EvidenceMatcher.isPaidByDebits(.builtIn(.rentReceipt)))
     }
 }

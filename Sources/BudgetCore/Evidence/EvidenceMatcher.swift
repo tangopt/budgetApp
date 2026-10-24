@@ -166,14 +166,14 @@ public enum EvidenceMatcher {
             self.categories = Dictionary(categories.compactMap { category in category.id.map { ($0, category) } }, uniquingKeysWith: { first, _ in first })
         }
 
-        /// What the debits among `transactionIds` (a document's linked transactions) paid, sign-free,
-        /// those of accounts in `currency` only: the `linkedAmounts` of a part-paid document.
-        public func linkedDebits(_ transactionIds: [Int64], currency: Currency?) -> [Int] {
+        /// The debits among `transactionIds` (a document's linked transactions) with what each paid,
+        /// sign-free, those of accounts in `currency` only (credits never pay a document).
+        public func linkedDebits(_ transactionIds: [Int64], currency: Currency?) -> [LinkedDebit] {
             guard let currency else { return [] }
             return transactionIds.compactMap { id in
                 guard let transaction = byId[id]?.transaction, transaction.amountMinorUnits < 0,
                       accounts[transaction.accountId]?.currency == currency else { return nil }
-                return -transaction.amountMinorUnits
+                return LinkedDebit(transactionId: id, amountMinorUnits: -transaction.amountMinorUnits)
             }
         }
 
@@ -200,10 +200,9 @@ public enum EvidenceMatcher {
     }
 
     /// Candidate transactions for `document` from a prepared `index` (many documents, one index).
-    /// `linkedAmounts`: what the debits already linked to it paid (sign-free, in its currency,
-    /// `linkedDebits(db:)`); a debit of the rest of a part-paid document counts as its exact
-    /// amount (`remainder`).
-    public static func suggestions(document: EvidenceDocument, index: Index, limit: Int = 10, linkedAmounts: [Int] = []) -> [Suggestion] {
+    /// `linkedDebits`: the debits already linked to it (`linkedDebits(db:)`); another debit of the
+    /// rest of a part-paid document counts as its exact amount (`remainder`), never a linked one.
+    public static func suggestions(document: EvidenceDocument, index: Index, limit: Int = 10, linkedDebits: [LinkedDebit] = []) -> [Suggestion] {
         // An addendum amends a tenancy (`TenancyAddendum`): its new rent's credits aren't its to prove.
         guard document.kind != .tenancyAddendum else { return [] }
         let expectation = expectation(for: document.kindRef)
@@ -213,6 +212,8 @@ public enum EvidenceMatcher {
         case .periodEnd: document.periodEnd ?? document.docDate
         }
         let documentAmount = document.amountMinorUnits.map(abs)
+        let linkedAmounts = linkedDebits.map(\.amountMinorUnits)
+        let linkedIds = Set(linkedDebits.map(\.transactionId))
 
         // Only transactions that could score: in the window (plus the exact amount's grace)
         // around the anchor, or — undated — of the document's amount.
@@ -255,7 +256,7 @@ public enum EvidenceMatcher {
                 amountMatches = true
                 score += amountPoints
                 reasons.append("Amount \(Money.format(documentAmount, currency: currency))")
-            } else if !linkedAmounts.isEmpty, let account,
+            } else if !linkedAmounts.isEmpty, !linkedIds.contains(entry.id), let account,
                       let rest = remainder(document: document, linkedAmounts: linkedAmounts, transaction: transaction, currency: account.currency) {
                 amountMatches = true
                 score += rest.score
@@ -331,15 +332,57 @@ public enum EvidenceMatcher {
         }
     }
 
+    /// A debit linked to a document, with what it paid (sign-free, in the document's currency).
+    public struct LinkedDebit: Equatable, Sendable {
+        public var transactionId: Int64
+        public var amountMinorUnits: Int
+
+        public init(transactionId: Int64, amountMinorUnits: Int) {
+            self.transactionId = transactionId
+            self.amountMinorUnits = amountMinorUnits
+        }
+    }
+
+    /// Whether a document of this kind is paid by debits (a bill, a notice, a receipt of a
+    /// payment): only those can be part-paid. Never a statement, a contract, a policy, an annual
+    /// form, a kind that proves credits or either way, nor a custom kind (no usual transaction).
+    public static func isPaidByDebits(_ kind: DocumentKindRef) -> Bool {
+        expectation(for: kind).direction == .debit
+    }
+
+    /// Bank words that name no merchant ("PAG", "COMPRA", "TRF"): never enough to tie a debit to a document.
+    static let bankWords: Set<String> = ["COMPRA", "PAGAMENTO", "PAGAMENTOS", "PAGTO", "TRANSFERENCIA", "TRANSF", "DEBITO", "DIRECTO",
+                                         "DIRETO", "CARTAO", "PAYMENT", "CARD", "DIRECT", "DEBIT", "SERVICOS", "COMPRAS", "MBWAY"]
+
+    /// Whether a debit could be the document's: its category or description has one of the kind's
+    /// hints, or a word of its merchant (4+ letters, not a bank word) is in the document's text.
+    /// When the document has no text and its kind no hints, nothing ties them: any debit.
+    static func ties(_ entry: Index.Entry, to document: EvidenceDocument, text: String, expectation: Expectation, index: Index) -> Bool {
+        if expectation.descriptionHints.contains(where: { entry.description.contains($0) }) { return true }
+        if let categoryId = entry.transaction.categoryId, let category = index.categories[categoryId] {
+            let name = EvidenceText.fold(category.name).lowercased()
+            if expectation.categoryHints.contains(where: { name.contains($0) }) { return true }
+        }
+        if !text.isEmpty {
+            let words = MerchantKey.keptTokens(EvidenceText.fold(entry.transaction.rawDescription))
+                .filter { $0.count >= 4 && $0.allSatisfy(\.isLetter) && !bankWords.contains($0) && !MerchantKey.genericTokens.contains($0)
+                    && !MerchantKey.processorTokens.contains($0) }
+            if words.contains(where: { text.contains($0) }) { return true }
+        }
+        return text.isEmpty && expectation.descriptionHints.isEmpty && expectation.categoryHints.isEmpty
+    }
+
     /// How many instalment pairs are proposed at most.
     static let maxInstalmentMatches = 3
 
     /// Pairs of debits that may have paid `document` in two instalments: both debits (a kind
     /// that proves a credit has none), in the kind's window plus `amountGraceDays` around its
-    /// anchor, of the same merchant (`MerchantKey`), each smaller than the document's amount,
-    /// together exactly its amount in their accounts' currency (the document's). At most
+    /// anchor, of the same merchant (`MerchantKey`) tied to the document (`ties`: the kind's
+    /// hints, or the merchant named in its text), each smaller than the document's amount,
+    /// together exactly its amount in their accounts' currency (the document's); never one of
+    /// `excluding` (debits that already carry a document of its kind). At most
     /// `maxInstalmentMatches`, earliest first. Only ever a proposal: the importer asks.
-    public static func instalments(document: EvidenceDocument, index: Index) -> [InstalmentMatch] {
+    public static func instalments(document: EvidenceDocument, index: Index, excluding: Set<Int64> = []) -> [InstalmentMatch] {
         guard document.kind != .tenancyAddendum, let total = document.amountMinorUnits.map(abs), total > 1,
               let currency = document.currency else { return [] }
         let expectation = expectation(for: document.kindRef)
@@ -351,11 +394,14 @@ public enum EvidenceMatcher {
         }
         guard let anchor else { return [] }
         let day: TimeInterval = 86_400
+        let text = EvidenceText.normalized(document.extractedText ?? "")
         let pool = index.entries(from: anchor.addingTimeInterval(Double(expectation.window.lowerBound - amountGraceDays) * day),
                                  to: anchor.addingTimeInterval(Double(expectation.window.upperBound + amountGraceDays) * day))
             .filter { entry in
                 let amount = -entry.transaction.amountMinorUnits
-                return amount > 0 && amount < total && index.accounts[entry.transaction.accountId]?.currency == currency
+                return amount > 0 && amount < total && !excluding.contains(entry.id)
+                    && index.accounts[entry.transaction.accountId]?.currency == currency
+                    && ties(entry, to: document, text: text, expectation: expectation, index: index)
             }
         // Same merchant, in date order (the pool is).
         var byMerchant: [String: [Index.Entry]] = [:]
@@ -387,14 +433,15 @@ public enum EvidenceMatcher {
         }
     }
 
-    /// `transaction` as the debit of what is left to pay on a part-paid document: its amount (in
+    /// `transaction` as the debit of what is left to pay on a part-paid document (of a kind paid by
+    /// debits, `isPaidByDebits`): its amount (in
     /// `currency`, its account's, the document's) is the document's amount minus `linkedAmounts`,
     /// what the debits already linked to it paid, when that is more than nothing. Scored as an
     /// exact amount; nil otherwise.
     public static func remainder(document: EvidenceDocument, linkedAmounts: [Int], transaction: Transaction,
                                  currency: Currency) -> Suggestion? {
-        guard let total = document.amountMinorUnits.map(abs), document.currency == currency, !linkedAmounts.isEmpty,
-              transaction.amountMinorUnits < 0, let id = transaction.id else { return nil }
+        guard isPaidByDebits(document.kindRef), let total = document.amountMinorUnits.map(abs), document.currency == currency,
+              !linkedAmounts.isEmpty, transaction.amountMinorUnits < 0, let id = transaction.id else { return nil }
         let paid = linkedAmounts.reduce(0) { $0 + abs($1) }
         let rest = total - paid
         guard paid > 0, rest > 0, -transaction.amountMinorUnits == rest else { return nil }

@@ -263,7 +263,7 @@ final class DocumentsViewModel: ObservableObject {
         let linked = Set(linkedIds)
         // A part-paid document proposes a debit of its rest.
         let paid = catalog.matcherIndex.linkedDebits(linkedIds, currency: document.currency)
-        suggestions = EvidenceMatcher.suggestions(document: document, index: catalog.matcherIndex, limit: 8, linkedAmounts: paid)
+        suggestions = EvidenceMatcher.suggestions(document: document, index: catalog.matcherIndex, limit: 8, linkedDebits: paid)
             .filter { !linked.contains($0.transactionId) }
     }
 

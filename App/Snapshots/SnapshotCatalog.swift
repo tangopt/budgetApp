@@ -524,6 +524,11 @@ enum SnapshotCatalog {
                 let demo = ImportReviewDemo.make(context)
                 context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.instalmentsId)
             },
+            // A bill several pairs of debits add up to: Keep this pair, for each.
+            screen("imports", "review_instalment_pairs", "Imports: review, which pair of instalments", .imports, settle: 1.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.pairsId)
+            },
             // A Ready receipt linked to a demo debit, its peek opened in place.
             screen("imports", "review_peek", "Imports: review, a linked transaction's peek opened", .imports, settle: 1.5) { _, context in
                 let demo = ImportReviewDemo.make(context)

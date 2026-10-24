@@ -122,6 +122,8 @@ extension EvidenceLibrary {
     /// one write — a new version of a changed file takes over what the old one stood for.
     /// Where `toDocumentId` already links to a record, its own link is kept. Returns how many
     /// links it gained.
+    /// Refused when the move would change a filed or paid return (the new version dated or filed
+    /// otherwise, `EvidenceLinkGuard`).
     @discardableResult
     public func moveLinks(from fromDocumentId: Int64, to toDocumentId: Int64, now: Date = Date()) throws -> Int {
         guard fromDocumentId != toDocumentId else { return 0 }
@@ -129,14 +131,22 @@ extension EvidenceLibrary {
             guard try EvidenceDocument.exists(db, key: fromDocumentId), try EvidenceDocument.exists(db, key: toDocumentId) else {
                 throw EvidenceLibraryError.documentNotFound
             }
-            try db.execute(sql: """
-                INSERT OR IGNORE INTO documentLink (documentId, entityType, entityId, role, createdAt)
-                SELECT ?, entityType, entityId, role, ? FROM documentLink WHERE documentId = ? ORDER BY id
-                """, arguments: [toDocumentId, EvidenceLinks.wholeSeconds(now), fromDocumentId])
-            let gained = db.changesCount
-            try DocumentLink.filter(Column("documentId") == fromDocumentId).deleteAll(db)
-            return gained
+            guard try EvidenceLinkGuard.hasTransactionLinks(db: db, documentId: fromDocumentId)
+                    || EvidenceLinkGuard.hasTransactionLinks(db: db, documentId: toDocumentId) else {
+                return try Self.moveLinks(db: db, from: fromDocumentId, to: toDocumentId, now: now)
+            }
+            return try EvidenceLinkGuard.checked(db: db) { try Self.moveLinks(db: db, from: fromDocumentId, to: toDocumentId, now: now) }
         }
+    }
+
+    private static func moveLinks(db: Database, from fromDocumentId: Int64, to toDocumentId: Int64, now: Date) throws -> Int {
+        try db.execute(sql: """
+            INSERT OR IGNORE INTO documentLink (documentId, entityType, entityId, role, createdAt)
+            SELECT ?, entityType, entityId, role, ? FROM documentLink WHERE documentId = ? ORDER BY id
+            """, arguments: [toDocumentId, EvidenceLinks.wholeSeconds(now), fromDocumentId])
+        let gained = db.changesCount
+        try DocumentLink.filter(Column("documentId") == fromDocumentId).deleteAll(db)
+        return gained
     }
 }
 
@@ -287,9 +297,11 @@ public enum EvidenceDocumentSearch {
             """, arguments: [EvidenceEntityType.transaction.rawValue, EvidenceEntityType.account.rawValue]) {
             accounts[row[0], default: []].insert(row[1])
         }
-        let paid = try EvidenceMatcher.linkedDebits(db: db, documentIds: ids).mapValues { $0.reduce(0, +) }
+        let paid = try EvidenceMatcher.linkedDebits(db: db, documentIds: ids).mapValues { $0.reduce(0) { $0 + $1.amountMinorUnits } }
         return summaries.map { summary in
-            let partly = paid[summary.id].map { $0 > 0 && $0 < abs(summary.amountMinorUnits ?? 0) } ?? false
+            // Only a kind paid by debits (a bill, a notice): never a statement's or a contract's figure.
+            let partly = EvidenceMatcher.isPaidByDebits(summary.kindRef)
+                && paid[summary.id].map { $0 > 0 && $0 < abs(summary.amountMinorUnits ?? 0) } ?? false
             return Entry(summary: summary, linkCount: linkCounts[summary.id] ?? 0, transactionLinkCount: transactionCounts[summary.id] ?? 0,
                          accountIds: accounts[summary.id] ?? [], year: year(of: summary), isPartlyPaid: partly,
                          haystack: haystack(summary, kindName: catalog.displayName(summary.kindRef), text: texts[summary.id]))
@@ -354,21 +366,22 @@ extension EvidenceMatcher {
         public var dateInWindow: Bool
     }
 
-    /// What the debits linked to each document paid: sign-free amounts of its linked debits in
-    /// its own currency, by document (`documentIds` nil: every document). A document with an
-    /// amount paid only in part has a rest to propose (`EvidenceMatcher.remainder`).
-    public static func linkedDebits(db: Database, documentIds: [Int64]? = nil) throws -> [Int64: [Int]] {
+    /// The debits linked to each document and what each paid: sign-free, in the document's own
+    /// currency (credits, such as a refund, never pay it), by document (`documentIds` nil: every
+    /// document). A document with an amount paid only in part has a rest to propose
+    /// (`EvidenceMatcher.remainder`).
+    public static func linkedDebits(db: Database, documentIds: [Int64]? = nil) throws -> [Int64: [LinkedDebit]] {
         let filter = documentIds.map { " AND l.documentId IN (\($0.map(String.init).joined(separator: ",")))" } ?? ""
-        var amounts: [Int64: [Int]] = [:]
+        var amounts: [Int64: [LinkedDebit]] = [:]
         for row in try Row.fetchAll(db, sql: """
-            SELECT l.documentId, -t.amountMinorUnits FROM documentLink l
+            SELECT l.documentId, t.id, -t.amountMinorUnits FROM documentLink l
             JOIN \(Transaction.databaseTableName) t ON t.id = l.entityId
             JOIN \(Account.databaseTableName) a ON a.id = t.accountId
             JOIN \(EvidenceDocument.databaseTableName) d ON d.id = l.documentId
             WHERE l.entityType = ? AND t.amountMinorUnits < 0 AND a.currency = d.currency\(filter)
             ORDER BY l.documentId, t.date, t.id
             """, arguments: [EvidenceEntityType.transaction.rawValue]) {
-            amounts[row[0], default: []].append(row[1])
+            amounts[row[0], default: []].append(LinkedDebit(transactionId: row[1], amountMinorUnits: row[2]))
         }
         return amounts
     }
@@ -378,11 +391,11 @@ extension EvidenceMatcher {
     /// already linked to it are left out. `linkedDebits` (`linkedDebits(db:)`): a part-paid
     /// document proposes a debit of its rest.
     public static func documentSuggestions(for transactionId: Int64, documents: [EvidenceDocument], index: Index,
-                                           excluding linkedDocumentIds: Set<Int64> = [], linkedDebits: [Int64: [Int]] = [:],
+                                           excluding linkedDocumentIds: Set<Int64> = [], linkedDebits: [Int64: [LinkedDebit]] = [:],
                                            limit: Int = 10) -> [DocumentSuggestion] {
         let ranked: [(suggestion: DocumentSuggestion, date: Date)] = documents.compactMap { document in
             guard let documentId = document.id, !linkedDocumentIds.contains(documentId),
-                  let match = suggestions(document: document, index: index, limit: 10, linkedAmounts: linkedDebits[documentId] ?? [])
+                  let match = suggestions(document: document, index: index, limit: 10, linkedDebits: linkedDebits[documentId] ?? [])
                     .first(where: { $0.transactionId == transactionId })
             else { return nil }
             return (DocumentSuggestion(documentId: documentId, score: match.score, reasons: match.reasons,

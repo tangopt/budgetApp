@@ -73,6 +73,15 @@ final class ImportMultiLinkTests: XCTestCase {
                              "Reparacao de autoclismo", "Total 79,95 EUR"])
     }
 
+    private func refusal(_ body: () async throws -> Void) async -> Error? {
+        do {
+            try await body()
+            return nil
+        } catch {
+            return error
+        }
+    }
+
     /// Synchronous database access from the async tests.
     private func write<T>(_ body: (Database) throws -> T) throws -> T { try db.write(body) }
 
@@ -123,19 +132,78 @@ final class ImportMultiLinkTests: XCTestCase {
         XCTAssertEqual(try links(), [first, second])
     }
 
-    func testSeveralPairsAskWhichOne() async throws {
+    /// Several pairs fit: each pair is one answer, and choosing it keeps both its debits.
+    func testSeveralPairsAskWhichPairAndTheAnswerKeepsBoth() async throws {
         let ids = try [(5, -4_000), (25, -3_995), (6, -4_000), (26, -3_995)].map { day, amount in
             try debit(Self.day(2023, 3, day), amount, "PAG CANALIZACOES EXEMPLO \(day)")
         }
-        let plan = try await pipeline.plan([try repairBill()])
+        let (on5, on25, on6, on26) = (ids[0], ids[1], ids[2], ids[3])
+        var plan = try await pipeline.plan([try repairBill()])
         let asked = try item(plan)
-        XCTAssertEqual(asked.links, [])
         XCTAssertFalse(asked.issues.contains { $0.id == EvidenceDocumentReader.instalmentsIssueId })
-        let issue = try XCTUnwrap(asked.issues.first { $0.id == "chooseLink" })
-        guard case .chooseLink(let candidates) = issue.kind else { return XCTFail("\(issue.kind)") }
-        XCTAssertEqual(Set(candidates.map(\.entity)), Set(ids.map(EvidenceEntity.transaction)))
-        XCTAssertTrue(candidates.allSatisfy { $0.reasons == ["Paid in 2 instalments: €40.00 + €39.95"] })
-        XCTAssertEqual(issue.reason, "It may have been paid in instalments, and several pairs of payments add up to it: which ones are they?")
+        let issue = try XCTUnwrap(asked.issues.first { $0.id == EvidenceDocumentReader.instalmentPairsIssueId })
+        XCTAssertEqual(issue.reason, "It may have been paid in 2 instalments, and 3 pairs of payments add up to it: which pair is it?")
+        XCTAssertEqual(issue.offers, [.linkTransactions([on5, on25]), .linkTransactions([on5, on26]), .linkTransactions([on6, on25]),
+                                      .fileWithoutLink], "earliest first, at most 3")
+        XCTAssertEqual(asked.links.map(\.entity), [on5, on25, on26, on6].map(EvidenceEntity.transaction))
+        XCTAssertTrue(asked.links.allSatisfy { $0.confidence == .needsReview })
+        XCTAssertEqual(asked.needsYouReasons, [issue.reason], "one question for all the proposed links")
+
+        // File without a link: every proposed debit goes.
+        let unlinked = try await pipeline.resolve(plan, itemId: asked.id, issueId: issue.id, .fileWithoutLink)
+        XCTAssertEqual(try item(unlinked).links, [])
+
+        // Keep this pair: both its debits certain, the others gone.
+        plan = try await pipeline.resolve(plan, itemId: asked.id, issueId: issue.id, .linkTransactions([on6, on25]))
+        let kept = try item(plan)
+        XCTAssertEqual(kept.links.map(\.entity), [.transaction(on6), .transaction(on25)])
+        XCTAssertEqual(kept.links.map(\.confidence), [.certain, .certain])
+        XCTAssertTrue(kept.links.allSatisfy { $0.reasons.contains(ImportResolutions.chosenReasonText) })
+        XCTAssertEqual(kept.issues, [])
+        XCTAssertEqual(kept.section, .ready, "\(kept.needsYouReasons)")
+        // A pair the question doesn't offer is no answer to it.
+        let refused = await refusal { _ = try await self.pipeline.resolve(plan, itemId: asked.id, issueId: issue.id, .linkTransactions([on5, on6])) }
+        XCTAssertNotNil(refused)
+        _ = try applier.apply(plan, entryPoint: "Test")
+        XCTAssertEqual(try links(), [on25, on6].sorted())
+    }
+
+    /// A debit that already carries a bill of the same kind in the library is no other bill's instalment.
+    func testADebitCarryingABillOfTheSameKindIsNotAnInstalment() async throws {
+        let first = try debit(Self.day(2023, 3, 5), -4_000, "PAG CANALIZACOES EXEMPLO 0001")
+        try debit(Self.day(2023, 3, 25), -3_995, "PAG CANALIZACOES EXEMPLO 0002")
+        try write { db in
+            var other = EvidenceDocument(sha256: "other", storedRelativePath: "x/other.pdf", originalFileName: "other.pdf", byteCount: 1,
+                                         kind: .repairInvoice, docDate: Self.day(2023, 3, 5), amountMinorUnits: 4_000, currency: .eur, addedAt: Date())
+            try other.insert(db)
+            try EvidenceLinks.link(db: db, documentId: other.id!, to: .transaction(first))
+        }
+        let read = try item(try await pipeline.plan([try repairBill()]))
+        XCTAssertFalse(read.issues.contains { ImportResolutions.isInstalmentsQuestion($0) })
+        XCTAssertFalse(read.links.contains { $0.entity == .transaction(first) })
+    }
+
+    /// Ruling (Task 1: links the user chose never alert): a pair kept over a debit that another bill of
+    /// the same kind and day in this import is linked to raises no duplicate or "check the link" alert,
+    /// on either document. The user saw both debits before keeping them.
+    func testAKeptPairOverADebitWithAnotherBillOfTheSameKindRaisesNoAlert() async throws {
+        let first = try debit(Self.day(2023, 3, 5), -4_000, "PAG CANALIZACOES EXEMPLO 0001")
+        let second = try debit(Self.day(2023, 3, 25), -3_995, "PAG CANALIZACOES EXEMPLO 0002")
+        let deposit = try pdf("deposit.pdf", ["Canalizacoes Exemplo Lda NIF 503504564", "FATURA-RECIBO FR 2023/14", "Data: 05/03/2023",
+                                              "Reparacao de autoclismo: sinal", "Total 40,00 EUR"])
+        var plan = try await pipeline.plan([try repairBill(), deposit])
+        let depositItem = try XCTUnwrap(plan.items.first { $0.file.fileName == "deposit.pdf" })
+        XCTAssertEqual(depositItem.links.map(\.entity), [.transaction(first)])
+        XCTAssertEqual(depositItem.links.map(\.confidence), [.certain])
+        plan = try await pipeline.resolve(plan, itemId: try item(plan).id, issueId: EvidenceDocumentReader.instalmentsIssueId, .acknowledge)
+        let bill = try item(plan)
+        XCTAssertEqual(bill.links.map(\.entity), [.transaction(first), .transaction(second)])
+        let both = try XCTUnwrap(plan.items.first { $0.file.fileName == "deposit.pdf" })
+        for checked in [bill, both] {
+            XCTAssertEqual(checked.issues, [], "\(checked.file.fileName): \(checked.issues.map(\.reason))")
+            XCTAssertNil(checked.duplicate)
+            XCTAssertEqual(checked.section, .ready)
+        }
     }
 
     func testADebitOfTheWholeAmountIsNotSplitIntoInstalments() async throws {
@@ -220,7 +288,7 @@ final class ImportMultiLinkTests: XCTestCase {
         // The Documents inspector's Link.
         XCTAssertThrowsError(try library.link(invoice, to: .transaction(paidAfter))) {
             XCTAssertEqual($0 as? EvidenceLinkGuard.Failure, refusal)
-            XCTAssertEqual(($0 as? LocalizedError)?.errorDescription, "Not linked: this would change the filed 2024/25 return.")
+            XCTAssertEqual(($0 as? LocalizedError)?.errorDescription, "Links not changed: this would change the filed 2024/25 return.")
         }
         // Edit transaction's Save, with the link staged from Link document…: nothing saved, the note neither.
         XCTAssertThrowsError(try write { db in
@@ -234,5 +302,92 @@ final class ImportMultiLinkTests: XCTestCase {
         let repair = try bill(.repairInvoice, "repair")
         try library.link(repair, to: .transaction(paidAfter))
         XCTAssertEqual(try links(), [paidBefore, paidBefore, paidAfter])
+    }
+
+    // MARK: Unlinking, moving and deleting by hand
+
+    /// A legal bill dated in the filed 2024/25 year, linked (when the year was filed) to a payment of
+    /// 2025/26 and to one of 2024/25.
+    private func filedYearLinks() throws -> (bill: Int64, paidBefore: Int64, paidAfter: Int64, legal: Int64) {
+        let legal = try filedYearProperty()
+        let paidBefore = try debit(Self.day(2025, 3, 30), -4_000, "PAG ADVOGADOS DEMO 0001", category: legal)
+        let paidAfter = try debit(Self.day(2025, 4, 20), -3_995, "PAG ADVOGADOS DEMO 0002", category: legal)
+        let bill = try write { db -> Int64 in
+            var document = EvidenceDocument(sha256: "legal", storedRelativePath: "x/legal.pdf", originalFileName: "legal.pdf", byteCount: 1,
+                                            kind: .legalInvoice, docDate: Self.day(2025, 3, 30), amountMinorUnits: 7_995, currency: .eur,
+                                            addedAt: Date())
+            try document.insert(db)
+            try EvidenceLinks.link(db: db, documentId: document.id!, to: .transaction(paidBefore))
+            try EvidenceLinks.link(db: db, documentId: document.id!, to: .transaction(paidAfter))
+            return document.id!
+        }
+        return (bill, paidBefore, paidAfter, legal)
+    }
+
+    private let refused = EvidenceLinkGuard.Failure.changesFiledYear(years: ["2024/25"])
+
+    /// Unlinking the bill from the 2025/26 payment would move it out of the filed year: refused, the
+    /// link kept. Unlinking it from the payment in its own year moves nothing: done, and linking it
+    /// again is never trapped.
+    func testUnlinkingThatWouldChangeAFiledYearIsRefusedAndRelinkingIsNotTrapped() throws {
+        let (bill, paidBefore, paidAfter, legal) = try filedYearLinks()
+        XCTAssertThrowsError(try library.unlink(bill, from: .transaction(paidAfter))) {
+            XCTAssertEqual($0 as? EvidenceLinkGuard.Failure, refused)
+            XCTAssertEqual(($0 as? LocalizedError)?.errorDescription, "Links not changed: this would change the filed 2024/25 return.")
+        }
+        XCTAssertEqual(try links(), [paidBefore, paidAfter])
+        // Edit transaction's Save unlinking it: refused too.
+        XCTAssertThrowsError(try write { db in
+            try TransactionEditing.save(db: db, id: paidAfter, changes: TransactionEditChanges(categoryId: legal, note: nil,
+                                                                                                documents: EvidenceLinkChanges(unlink: [bill])))
+        }) { XCTAssertEqual($0 as? EvidenceLinkGuard.Failure, self.refused) }
+        XCTAssertEqual(try links(), [paidBefore, paidAfter])
+
+        XCTAssertTrue(try library.unlink(bill, from: .transaction(paidBefore)))
+        XCTAssertEqual(try links(), [paidAfter])
+        try library.link(bill, to: .transaction(paidBefore))
+        XCTAssertEqual(try links(), [paidBefore, paidAfter])
+    }
+
+    /// Deleting the linked bill, or moving its links to a version that doesn't date payments, would move
+    /// the 2025/26 payment out of the filed year: refused, nothing changed.
+    func testDeletingOrMovingTheLinksOfAFiledYearBillIsRefused() throws {
+        let (bill, paidBefore, paidAfter, _) = try filedYearLinks()
+        XCTAssertThrowsError(try library.remove(bill, force: true)) { XCTAssertEqual($0 as? EvidenceLinkGuard.Failure, self.refused) }
+        XCTAssertNotNil(try library.document(id: bill))
+        let repair = try write { db -> Int64 in
+            var document = EvidenceDocument(sha256: "repair", storedRelativePath: "x/repair.pdf", originalFileName: "repair.pdf", byteCount: 1,
+                                            kind: .repairInvoice, docDate: Self.day(2025, 3, 30), amountMinorUnits: 7_995, currency: .eur,
+                                            addedAt: Date())
+            try document.insert(db)
+            return document.id!
+        }
+        XCTAssertThrowsError(try library.moveLinks(from: bill, to: repair)) { XCTAssertEqual($0 as? EvidenceLinkGuard.Failure, self.refused) }
+        XCTAssertEqual(try links(), [paidBefore, paidAfter])
+        XCTAssertEqual(try library.entities(for: repair), [])
+        // A document on no transaction goes as before.
+        try library.remove(repair)
+        XCTAssertNil(try library.document(id: repair))
+    }
+
+    /// Missing evidence's Link on a transaction is guarded like the others.
+    func testMissingEvidenceLinkThatWouldChangeAFiledYearIsRefused() throws {
+        let legal = try filedYearProperty()
+        let paidAfter = try debit(Self.day(2025, 4, 20), -3_995, "PAG ADVOGADOS DEMO 0002", category: legal)
+        let bill = try write { db -> Int64 in
+            var requirement = EvidenceRequirement(name: "Legal", scope: .transactionsInCategory(categoryId: legal), kinds: [.legalInvoice])
+            try EvidenceRequirements.save(db: db, &requirement)
+            var document = EvidenceDocument(sha256: "legal", storedRelativePath: "x/legal.pdf", originalFileName: "legal.pdf", byteCount: 1,
+                                            kind: .legalInvoice, docDate: Self.day(2025, 3, 30), amountMinorUnits: 3_995, currency: .eur,
+                                            addedAt: Date())
+            try document.insert(db)
+            return document.id!
+        }
+        let item = try XCTUnwrap(try db.read { db in try MissingEvidence.items(db: db, period: UKTaxYear(startYear: 2025).interval) }
+            .first { $0.target.entity == .transaction(paidAfter) })
+        XCTAssertThrowsError(try write { db in try MissingEvidence.link(db: db, documentId: bill, to: item) }) {
+            XCTAssertEqual($0 as? EvidenceLinkGuard.Failure, self.refused)
+        }
+        XCTAssertEqual(try links(), [])
     }
 }

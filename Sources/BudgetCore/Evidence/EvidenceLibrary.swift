@@ -367,11 +367,22 @@ public struct EvidenceLibrary: Sendable {
     /// Deletes the document, its links and its stored copy. A linked document is refused
     /// unless `force`.
     public func remove(_ documentId: Int64, force: Bool = false) throws {
+        try remove(documentId, force: force, guardingFiledYears: true)
+    }
+
+    /// `remove`; `guardingFiledYears` false only for a rehearsal on a copy (`ImportRehearsal`), which
+    /// deletes on purpose and measures what changed.
+    func remove(_ documentId: Int64, force: Bool, guardingFiledYears: Bool) throws {
         let document: EvidenceDocument = try database.write { db in
             guard let document = try EvidenceDocument.fetchOne(db, key: documentId) else { throw EvidenceLibraryError.documentNotFound }
             let linkCount = try DocumentLink.filter(Column("documentId") == documentId).fetchCount(db)
             if linkCount > 0 && !force { throw EvidenceLibraryError.documentIsLinked(linkCount: linkCount) }
-            try document.delete(db) // links cascade
+            // Its transactions' links go with it (cascade): refused if that moves a filed return.
+            if guardingFiledYears, try EvidenceLinkGuard.hasTransactionLinks(db: db, documentId: documentId) {
+                try EvidenceLinkGuard.checked(db: db) { try document.delete(db) }
+            } else {
+                _ = try document.delete(db)
+            }
             return document
         }
         // After the commit: the row is gone for good, so its copy can go.
@@ -449,7 +460,11 @@ public struct EvidenceLibrary: Sendable {
 
     @discardableResult
     public func unlink(_ documentId: Int64, from entity: EvidenceEntity) throws -> Bool {
-        try database.write { db in try EvidenceLinks.unlink(db: db, documentId: documentId, from: entity) }
+        try database.write { db in
+            guard entity.type == .transaction else { return try EvidenceLinks.unlink(db: db, documentId: documentId, from: entity) }
+            // Refused, as a link is, when it would move a filed or paid return (`EvidenceLinkGuard`).
+            return try EvidenceLinkGuard.checked(db: db) { try EvidenceLinks.unlink(db: db, documentId: documentId, from: entity) }
+        }
     }
 
     public func documents(for entity: EvidenceEntity) throws -> [EvidenceDocument] {

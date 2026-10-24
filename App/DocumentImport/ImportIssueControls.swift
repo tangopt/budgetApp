@@ -61,6 +61,7 @@ struct ImportIssueControls: View {
                     .font(.callout)
                 }
                 if !ImportResolutions.onlyLeavesOut(issue, in: item) {
+                    pairRows
                     answers
                 }
                 // A new kind's name refused beside its question (a statement's answers show their own).
@@ -131,11 +132,36 @@ struct ImportIssueControls: View {
         }
     }
 
+    /// "Which pair is it?" (`EvidenceDocumentReader.instalmentPairsIssueId`): each pair's two
+    /// debits, with Keep this pair (both links kept).
+    @ViewBuilder
+    private var pairRows: some View {
+        if issue.id == EvidenceDocumentReader.instalmentPairsIssueId {
+            ForEach(Array(issue.offers.enumerated()), id: \.offset) { _, offer in
+                if case .linkTransactions(let ids) = offer {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(ids, id: \.self) { id in
+                                Text(item.links.first { $0.entity == .transaction(id) }?.label ?? "Transaction #\(id)")
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head) // the date and amount tell the pairs apart
+                            }
+                        }
+                        Spacer(minLength: 6)
+                        Button("Keep this pair") { resolve(offer) }
+                            .controlSize(.small)
+                    }
+                }
+            }
+        }
+    }
+
     /// What the issue offers beyond its kind's controls (and leaving out, which is always last).
     private var extraOffers: [ImportResolution] {
         issue.offers.filter { offer in
             switch (offer, issue.kind) {
             case (.leaveOut, _): return false
+            // Its pair rows make these.
+            case (.linkTransactions, _) where issue.id == EvidenceDocumentReader.instalmentPairsIssueId: return false
             // The controls above already make these.
             case (.chooseLink(let entity), .chooseLink(let candidates)): return !candidates.contains { $0.entity == entity }
             case (.chooseKind, .unknownKind), (.chooseKind, .kindMismatch), (.acknowledge, .kindMismatch): return false

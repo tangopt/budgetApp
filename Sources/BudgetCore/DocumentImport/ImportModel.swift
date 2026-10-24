@@ -823,11 +823,11 @@ public struct ImportItem: Equatable, Identifiable, Sendable {
     }
 
     /// The links an issue already asks about: a choice offering them, or instalments proposing
-    /// them (`EvidenceDocumentReader.instalmentsIssueId`, its unsure transaction links).
+    /// them (`ImportResolutions.isInstalmentsQuestion`: its unsure transaction links).
     public var linksAskedByIssues: Set<EvidenceEntity> {
         Set(issues.flatMap { issue -> [EvidenceEntity] in
             if case .chooseLink(let candidates) = issue.kind { return candidates.map(\.entity) }
-            if issue.id == EvidenceDocumentReader.instalmentsIssueId {
+            if ImportResolutions.isInstalmentsQuestion(issue) {
                 return links.filter { $0.entity.type == .transaction && $0.confidence == .needsReview }.map(\.entity)
             }
             return []
