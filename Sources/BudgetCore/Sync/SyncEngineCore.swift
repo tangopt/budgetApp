@@ -548,7 +548,8 @@ public actor SyncEngineCore {
                         // past; the redirect is sent again over it.
                         try db.execute(sql: "UPDATE syncTombstone SET systemFields = ? WHERE uuid = ?",
                                        arguments: [server.stamp.systemFields, result.recordName])
-                        delta.refused += 1
+                        // Not an error: it goes again in this push, like a merged save.
+                        delta.merged += 1
                         continue
                     }
                     guard let payload else {
@@ -565,6 +566,13 @@ public actor SyncEngineCore {
                     merges.append(payload)
                     mergeStamps[result.recordName] = server.stamp
                 case .deleted:
+                    if try SyncTombstoneRow.fetchOne(db, key: result.recordName)?.mergedInto != nil {
+                        // A redirect whose record the server no longer has: saved afresh (its stale stamp would be
+                        // refused on every push). Not a resurrected edit (R12): nothing to reconcile.
+                        try db.execute(sql: "UPDATE syncTombstone SET systemFields = NULL WHERE uuid = ?", arguments: [result.recordName])
+                        needsPull = true
+                        continue
+                    }
                     try Self.clearStamp(uuid: result.recordName, db: db)
                     try db.execute(sql: "UPDATE syncPending SET resent = ? WHERE uuid = ? AND kind <> 'delete'",
                                    arguments: [SyncTranslator.resentAfterServerDelete, result.recordName])

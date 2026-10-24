@@ -76,8 +76,13 @@ public enum CustomDocumentKinds {
         let name = try checkedName(name)
         if let builtIn = builtInNamed(name) { throw Failure.nameTaken(builtIn.displayName) }
         if let existing = try DocumentKindCatalog.load(db: db).custom(named: name) { throw Failure.nameTaken(existing.name) }
+        try reserveRetiredNames(db: db, matching: name)
         var kind = CustomDocumentKind(name: name, area: area, createdAt: now)
-        try kind.insert(db)
+        do {
+            try kind.insert(db)
+        } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
+            throw Failure.nameTaken(name)
+        }
         return kind
     }
 
@@ -111,6 +116,31 @@ public enum CustomDocumentKinds {
 
     // MARK: Sync
 
+    /// Whether an incoming save of a custom kind redirected here to `targetUUID` is that kind (an identity merge:
+    /// the same name, ignoring case and accents) rather than a kind merged into it from the Kinds sheet.
+    static func isSameKind(_ payload: SyncPayload, as targetUUID: String, db: Database) throws -> Bool {
+        guard case .string(let name)? = payload.fields["name"],
+              let targetId = try SyncRecordStore.localId(table: CustomDocumentKind.databaseTableName, uuid: targetUUID, db: db),
+              let target = try CustomDocumentKind.fetchOne(db, key: targetId) else { return false }
+        return DocumentKindCatalog.key(name) == DocumentKindCatalog.key(target.name)
+    }
+
+    /// Gives retired kinds (merged into a built-in) still holding `name` (or, with nil, any plain name, as a rename
+    /// from another device can leave) their reserved name, so it is free. Tracked.
+    static func reserveRetiredNames(db: Database, matching name: String? = nil) throws {
+        let marker = String(CustomDocumentKind.retiredMarker)
+        var request = CustomDocumentKind.filter(Column("mergedIntoKind") != nil).filter(!Column("name").like("%\(marker)%"))
+        if let name { request = request.filter(sql: "name = ? COLLATE NOCASE", arguments: [name]) }
+        for var kind in try request.fetchAll(db) where !kind.name.contains(CustomDocumentKind.retiredMarker) {
+            kind.name = reservedName(from: kind.name)
+            try SyncChangeTracker.trackingWrites(db: db) { try kind.update(db) }
+        }
+    }
+
+    static func reservedName(from name: String) -> String {
+        "\(name)\(CustomDocumentKind.retiredMarker)\(UUID().uuidString)"
+    }
+
     /// An incoming redirect merged custom kind `oldId` into `targetId` while this device had rows of both:
     /// re-files what names `oldId` here under the target (tracked, so documents only this device filed that
     /// way reach the others), then drops `oldId`'s row and identity, leaving the redirect. Inside the sync apply.
@@ -136,6 +166,7 @@ public enum CustomDocumentKinds {
         guard try db.tableExists(CustomDocumentKind.databaseTableName) else { return KindSaveResult() }
         let retired = try CustomDocumentKind.filter(Column("mergedIntoKind") != nil).fetchAll(db)
         guard !retired.isEmpty else { return KindSaveResult() }
+        try reserveRetiredNames(db: db)
         var plan = Plan(catalog: try DocumentKindCatalog.load(db: db))
         for kind in retired {
             guard let id = kind.id, let target = kind.mergedIntoKind else { continue }
@@ -256,7 +287,7 @@ public enum CustomDocumentKinds {
                     try SyncMerge.queue(uuid: oldUUID, table: table, localId: id, kind: .update, db: db)
                 }
             case .builtIn(let builtIn):
-                kind.name = "\(kind.name)\(CustomDocumentKind.retiredMarker)\(UUID().uuidString)"
+                kind.name = reservedName(from: kind.name)
                 kind.mergedIntoKind = builtIn
                 try kind.update(db)
             }
@@ -273,9 +304,14 @@ public enum CustomDocumentKinds {
         }
         for var kind in renaming {
             guard let id = kind.id, let new = plan.final[id] else { continue }
+            try reserveRetiredNames(db: db, matching: new.name)
             kind.name = new.name
             kind.area = new.area
-            try kind.update(db)
+            do {
+                try kind.update(db)
+            } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
+                throw Failure.nameTaken(new.name)
+            }
         }
         return outcome
     }

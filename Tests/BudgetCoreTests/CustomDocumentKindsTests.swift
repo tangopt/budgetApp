@@ -284,6 +284,47 @@ final class CustomDocumentKindsTests: XCTestCase {
         XCTAssertEqual(try save([KindEdit(kindId: boiler, change: .merge(into: .builtIn(.repairInvoice)))]).documentsChanged, 1)
     }
 
+    /// A kind merged into a built-in keeps a reserved name (never one a person can type), even when a rename from
+    /// another device put its old name back: making that name again works.
+    func testARetiredKindNeverBlocksItsName() throws {
+        let boiler = try create("Boiler service", .property)
+        _ = try save([KindEdit(kindId: boiler, change: .merge(into: .builtIn(.repairInvoice)))])
+        // Another device's rename won the name field over the retirement.
+        try db.write { db in try db.execute(sql: "UPDATE customDocumentKind SET name = 'Boiler service' WHERE id = ?", arguments: [boiler]) }
+        let again = try create("boiler SERVICE", .other)
+        XCTAssertNotEqual(again, boiler)
+        let retired = try XCTUnwrap(try db.read { try CustomDocumentKind.fetchOne($0, key: boiler) })
+        XCTAssertTrue(retired.name.contains(CustomDocumentKind.retiredMarker), retired.name)
+        XCTAssertEqual(retired.retiredFromName, "Boiler service")
+        // After a sync apply, a retired kind holding a plain name is given its reserved name again.
+        try db.write { db in try db.execute(sql: "UPDATE customDocumentKind SET name = 'Gas check' WHERE id = ?", arguments: [boiler]) }
+        try db.write { db in _ = try CustomDocumentKinds.settleRetired(db: db) }
+        let settled = try XCTUnwrap(try db.read { try CustomDocumentKind.fetchOne($0, key: boiler) })
+        XCTAssertTrue(settled.name.contains(CustomDocumentKind.retiredMarker), settled.name)
+        XCTAssertEqual(settled.retiredFromName, "Gas check")
+    }
+
+    /// A name the database refuses (whatever the reason the checks above it missed) is a friendly error, not SQLite's.
+    func testANameTheDatabaseRefusesIsAFriendlyError() throws {
+        try db.write { db in
+            try db.execute(sql: """
+                CREATE TEMP TRIGGER refuseKind BEFORE INSERT ON customDocumentKind WHEN NEW.name = 'Heating'
+                BEGIN SELECT RAISE(ABORT, 'UNIQUE constraint failed: customDocumentKind.name'); END
+                """)
+        }
+        XCTAssertThrowsError(try create("Heating", .property)) { XCTAssertEqual($0 as? CustomDocumentKinds.Failure, .nameTaken("Heating")) }
+        let boiler = try create("Boiler service", .property)
+        try db.write { db in
+            try db.execute(sql: """
+                CREATE TEMP TRIGGER refuseRename BEFORE UPDATE OF name ON customDocumentKind WHEN NEW.name = 'Heating'
+                BEGIN SELECT RAISE(ABORT, 'UNIQUE constraint failed: customDocumentKind.name'); END
+                """)
+        }
+        XCTAssertThrowsError(try save([KindEdit(kindId: boiler, change: .rename(name: "Heating", area: .property))])) {
+            XCTAssertEqual($0 as? CustomDocumentKinds.Failure, .nameTaken("Heating"))
+        }
+    }
+
     func testSaveRefusesBeforeWriting() throws {
         let boiler = try create("Boiler service", .property)
         let filed = try document("aa", name: "20230305 - Property - Boiler service", customKindId: boiler)
@@ -294,6 +335,41 @@ final class CustomDocumentKindsTests: XCTestCase {
     }
 
     // MARK: Sync
+
+    /// A late save of a kind redirected here: an identity merge (the same name made on two devices) is the same
+    /// kind, so its edits merge into the survivor; a kind merged into another from the Kinds sheet is not, so its
+    /// name and area don't overwrite the target's.
+    func testALateSaveOfARedirectedKindMergesOnlyWhenItIsTheSameKind() throws {
+        let a = try SyncTestDevice("user-a"), b = try SyncTestDevice("user-b")
+        let survivor = try b.queue.write { db in try XCTUnwrap(try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: now).id) }
+        let survivorUUID = try b.uuid("customDocumentKind", survivor)
+        func lateSave(name: String) throws -> [SyncIncomingChange] {
+            let id = try a.queue.write { db -> Int64 in
+                try db.execute(sql: "DELETE FROM customDocumentKind")
+                var kind = CustomDocumentKind(name: name, area: .other, createdAt: now.addingTimeInterval(60))
+                try kind.insert(db)
+                return kind.id!
+            }
+            let uuid = try a.uuid("customDocumentKind", id)
+            try b.queue.write { db in
+                try SyncMerge.redirect(uuid, to: survivorUUID, table: "customDocumentKind", localId: 0, zone: SyncRecordStore.householdZone,
+                                       by: nil, now: now, db: db)
+            }
+            return try a.push().filter { if case .save(let p) = $0 { return p.recordName == uuid } else { return false } }
+        }
+        // Merged from the Kinds sheet: discarded.
+        let merged = try lateSave(name: "Gas check")
+        XCTAssertEqual(merged.count, 1)
+        try b.receive(merged)
+        var stored = try XCTUnwrap(try b.queue.read { try CustomDocumentKind.fetchOne($0, key: survivor) })
+        XCTAssertEqual(stored.name, "Boiler service")
+        XCTAssertEqual(stored.area, .property)
+        // Merged by identity: its area edit is kept.
+        try b.receive(try lateSave(name: "BOILER SERVICE"))
+        stored = try XCTUnwrap(try b.queue.read { try CustomDocumentKind.fetchOne($0, key: survivor) })
+        XCTAssertEqual(stored.area, .other, "the identity merge keeps the edit")
+        XCTAssertEqual(try b.queue.read { try CustomDocumentKind.fetchCount($0) }, 1)
+    }
 
     /// A document and an evidence rule that arrive before their custom kind wait for it, then apply naming it.
     func testDocumentAndRuleArrivingBeforeTheirKindWaitThenApply() throws {
@@ -381,11 +457,11 @@ final class CustomDocumentKindMergeSyncTests: XCTestCase {
     }
 
     /// B files a document under Boiler service (not yet sent).
-    private func fileOnB(_ shared: Shared) throws -> String {
+    private func fileOnB(_ shared: Shared, kindName: String = "Boiler service") throws -> String {
         let boiler = try XCTUnwrap(try b.localId("customDocumentKind", shared.boiler))
         let id = try b.write { db -> Int64 in
             var document = EvidenceDocument(sha256: "bb", storedRelativePath: "bb/bb.pdf", originalFileName: "bb.pdf", byteCount: 1,
-                                            canonicalName: "20250402 - Property - Boiler service - Caldeiras Lda", addedAt: now, customKindId: boiler)
+                                            canonicalName: "20250402 - Property - \(kindName) - Caldeiras Lda", addedAt: now, customKindId: boiler)
             try document.insert(db)
             return document.id!
         }
@@ -399,7 +475,7 @@ final class CustomDocumentKindMergeSyncTests: XCTestCase {
 
     /// Both devices: the documents, the learnt rule and the evidence rule under `target`; the merged kind no longer offered.
     private func assertConverged(_ shared: Shared, documentB: String, target: (SyncEngineTestDevice) throws -> DocumentKindRef, name: String,
-                                 file: StaticString = #filePath, line: UInt = #line) throws {
+                                 conflicts expected: [String: Set<String>] = [:], file: StaticString = #filePath, line: UInt = #line) throws {
         for device in [a!, b!] {
             let ref = try target(device)
             for (uuid, date) in [(shared.documentA, "20250301"), (documentB, "20250402")] {
@@ -418,7 +494,7 @@ final class CustomDocumentKindMergeSyncTests: XCTestCase {
             XCTAssertFalse(names.contains("Boiler service"), "\(device.user) \(names)", file: file, line: line)
             XCTAssertEqual(try device.count("syncStaging"), 0, device.user, file: file, line: line)
             let conflicts = try device.read { try String.fetchAll($0, sql: "SELECT tableName || '.' || field FROM syncConflict") }
-            XCTAssertEqual(conflicts, [], device.user, file: file, line: line)
+            XCTAssertEqual(Set(conflicts), expected[device.user] ?? [], device.user, file: file, line: line)
             XCTAssertEqual(try device.read { try SyncChangeTracker.pending(db: $0) }.count, 0, "\(device.user) has nothing left to send", file: file, line: line)
         }
     }
@@ -473,5 +549,104 @@ final class CustomDocumentKindMergeSyncTests: XCTestCase {
         try await b.engine.syncNow()
         try await a.engine.syncNow()
         try assertConverged(shared, documentB: documentB, target: { _ in .builtIn(.repairInvoice) }, name: "Repair bill")
+    }
+
+    // MARK: Redirects refused or gone on the server (fix round 2)
+
+    private func pending(_ device: SyncEngineTestDevice) throws -> Int {
+        try device.read { try SyncChangeTracker.pending(db: $0).count }
+    }
+
+    private func conflicts(_ device: SyncEngineTestDevice) throws -> [String] {
+        try device.read { try String.fetchAll($0, sql: "SELECT tableName || '.' || field FROM syncConflict") }
+    }
+
+    /// B renames Boiler service and sends it; A, without pulling, merges it into Heating: the redirect is refused once
+    /// (the server's version moved), sent again over that version, and both devices end under Heating. The re-send
+    /// is no error in the report.
+    func testARedirectRefusedBecauseTheKindChangedOnTheServerIsSentAgain() async throws {
+        let shared = try await shared()
+        let boilerB = try XCTUnwrap(try b.localId("customDocumentKind", shared.boiler))
+        _ = try b.write { db in try CustomDocumentKinds.save(db: db, edits: [KindEdit(kindId: boilerB, change: .rename(name: "Boiler check", area: .property))]) }
+        try await b.engine.syncNow()
+        try merge(into: { .custom($0) }, shared)
+        let push = try await a.engine.pushPending()
+        XCTAssertEqual(push.refused, 0, "\(push)")
+        XCTAssertGreaterThanOrEqual(push.merged, 1, "\(push)")
+        XCTAssertEqual(try pending(a), 0)
+        let redirect = try await cloud.payload(named: shared.boiler, keys: a.keys)
+        XCTAssertEqual(redirect?.mergedInto, shared.heating)
+        let documentB = try fileOnB(shared, kindName: "Boiler check")
+        try await b.engine.syncNow()
+        try await a.engine.syncNow()
+        // B's rename and A's merge both renamed A's document and relabelled the rule: true concurrent edits, logged
+        // where the merge's later edit won.
+        try assertConverged(shared, documentB: documentB, target: heating(shared), name: "Heating",
+                            conflicts: ["user-a": ["document.canonicalName", "importRule.actionLabel"]])
+    }
+
+    /// The merged kind's record was deleted on the server before the redirect went: its stale stamp is dropped and
+    /// the redirect is saved afresh, once, rather than refused on every push.
+    func testARedirectWhoseRecordTheServerDeletedSettles() async throws {
+        let shared = try await shared()
+        try merge(into: { .custom($0) }, shared)
+        try await cloud.delete([shared.boiler], zone: SyncRecordStore.householdZone)
+        let push = try await a.engine.pushPending()
+        XCTAssertEqual(push.refused, 0, "\(push)")
+        XCTAssertEqual(try pending(a), 0, "nothing left to send")
+        let redirect = try await cloud.payload(named: shared.boiler, keys: a.keys)
+        XCTAssertEqual(redirect?.mergedInto, shared.heating)
+        XCTAssertEqual(try a.read { try Data.fetchOne($0, sql: "SELECT systemFields FROM syncTombstone WHERE uuid = ?", arguments: [shared.boiler]) }, nil)
+        XCTAssertEqual(try conflicts(a), [])
+        let again = try await a.engine.pushPending()
+        XCTAssertEqual(again.saved + again.refused, 0, "settled: \(again)")
+    }
+
+    /// The same name made on both devices, both sent before either pulled: the identity merge redirects one record
+    /// that the server already has (refused once, sent again), and the devices converge on one kind with both
+    /// documents under it. An area edit made to the redirected record before the merge reached its device is kept.
+    func testIdentityMergeOfTwoKindsAlreadyOnTheServerConverges() async throws {
+        func make(_ device: SyncEngineTestDevice, _ sha: String) throws -> (kind: String, document: String) {
+            let ids = try device.write { db -> (Int64, Int64) in
+                let kind = try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: now).id!
+                var document = EvidenceDocument(sha256: sha, storedRelativePath: "\(sha)/\(sha).pdf", originalFileName: "\(sha).pdf", byteCount: 1,
+                                                addedAt: now, customKindId: kind)
+                try document.insert(db)
+                return (kind, document.id!)
+            }
+            return (try device.uuid("customDocumentKind", ids.0), try device.uuid("document", ids.1))
+        }
+        let fromA = try make(a, "aa"), fromB = try make(b, "bb")
+        _ = try await a.engine.pushPending()
+        _ = try await b.engine.pushPending()
+        // The record that loses (the larger UUID) is edited on its device before that device hears of the other.
+        let (loser, loserDevice) = fromA.kind > fromB.kind ? (fromA.kind, a!) : (fromB.kind, b!)
+        let survivor = min(fromA.kind, fromB.kind)
+        let loserId = try XCTUnwrap(try loserDevice.localId("customDocumentKind", loser))
+        try loserDevice.write { db in
+            var kind = try XCTUnwrap(try CustomDocumentKind.fetchOne(db, key: loserId))
+            kind.area = .other
+            try kind.update(db)
+        }
+        _ = try await loserDevice.engine.pushPending()
+        var refused = 0
+        for _ in 0..<3 {
+            refused += try await a.engine.syncNow().push.refused
+            refused += try await b.engine.syncNow().push.refused
+        }
+        XCTAssertEqual(refused, 0)
+        for device in [a!, b!] {
+            let kinds = try device.read { try CustomDocumentKind.fetchAll($0) }
+            XCTAssertEqual(kinds.count, 1, device.user)
+            XCTAssertEqual(kinds.first?.area, .other, "\(device.user): the edit is kept")
+            let id = try XCTUnwrap(try device.localId("customDocumentKind", survivor), device.user)
+            for uuid in [fromA.document, fromB.document] {
+                XCTAssertEqual(try document(device, uuid).kindRef, .custom(id), device.user)
+            }
+            XCTAssertEqual(try device.count("syncStaging"), 0, device.user)
+            XCTAssertEqual(try pending(device), 0, device.user)
+        }
+        let redirect = try await cloud.payload(named: loser, keys: a.keys)
+        XCTAssertEqual(redirect?.mergedInto, survivor)
     }
 }

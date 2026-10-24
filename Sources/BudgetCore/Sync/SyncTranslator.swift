@@ -307,9 +307,10 @@ public enum SyncTranslator {
            let tombstone = try SyncTombstoneRow.fetchOne(db, key: payload.recordName), let target = tombstone.mergedInto {
             // A save of a record merged into another here (from a device that hasn't merged yet) is that one.
             try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [payload.recordName])
-            if schema.name == CustomDocumentKind.databaseTableName {
-                // Except a custom kind merged into another kind: its name and area are the merged one's, not the
-                // target's (what was filed under it follows the redirect).
+            if schema.name == CustomDocumentKind.databaseTableName, try !CustomDocumentKinds.isSameKind(payload, as: target, db: db) {
+                // Except a custom kind merged into another kind (Kinds sheet): its name and area are the merged
+                // one's, not the target's (what was filed under it follows the redirect). A kind merged by identity
+                // (the same name made on two devices) is the same kind: its edits merge.
                 return .discarded("merged into another kind here")
             }
             payload.recordName = target
