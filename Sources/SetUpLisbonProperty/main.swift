@@ -85,16 +85,16 @@ do {
         try fileManager.createDirectory(at: scratch, withIntermediateDirectories: true)
         temporary = scratch
         workingDB = scratch.appendingPathComponent("copy.sqlite").path
-        let source = try DatabaseQueue(path: dbPath, configuration: { var c = Configuration(); c.readonly = true; return c }())
-        try source.backup(to: try DatabaseQueue(path: workingDB))
+        let source = try ToolDatabase.open(path: dbPath, configuration: { var c = Configuration(); c.readonly = true; return c }())
+        try source.backup(to: try ToolDatabase.open(path: workingDB))
     } else {
         // A real run keeps a copy of the database as it was first.
         let stamp = DateFormatter()
         stamp.locale = Locale(identifier: "en_US_POSIX")
         stamp.dateFormat = "yyyyMMdd-HHmmss"
         let backupPath = "\(dbPath).pre-lisbon-setup-backup-\(stamp.string(from: Date()))"
-        let source = try DatabaseQueue(path: dbPath, configuration: { var c = Configuration(); c.readonly = true; return c }())
-        try source.backup(to: try DatabaseQueue(path: backupPath))
+        let source = try ToolDatabase.open(path: dbPath, configuration: { var c = Configuration(); c.readonly = true; return c }())
+        try source.backup(to: try ToolDatabase.open(path: backupPath))
         print("Backup: \(backupPath)")
     }
     let manager = try DatabaseManager(path: workingDB)

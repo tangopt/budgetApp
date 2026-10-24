@@ -21,15 +21,17 @@ public final class KeychainSyncKeyStore: SyncKeyStore {
         case status(OSStatus)
     }
 
-    private let container: String
+    let container: String
+    /// The scope this store's items live under: the container's (real data) or `CloudKitTransport.demoKeyScope`.
+    public var scope: String { container }
 
     public init(container: String = CloudKitTransport.containerIdentifier) {
         self.container = container
     }
 
-    private func prefix(_ zone: String) -> String { "\(container)/\(zone)/" }
+    func prefix(_ zone: String) -> String { "\(container)/\(zone)/" }
 
-    private func baseQuery() -> [CFString: Any] {
+    func baseQuery() -> [CFString: Any] {
         [kSecClass: kSecClassGenericPassword,
          kSecAttrService: Self.service,
          kSecAttrSynchronizable: kCFBooleanTrue as Any,

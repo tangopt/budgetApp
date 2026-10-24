@@ -65,6 +65,16 @@ public final class CloudKitTransport: SyncTransport {
         }
     }
 
+    /// Deletes the zone and everything in it. Only the Mac's DEBUG `--sync-demo-reset` calls it (the Development
+    /// container's demo zone); no sync path does. Throws `zoneNotFound` when it is already gone.
+    public func deleteZone(_ zone: String) async throws {
+        let operation = CKModifyRecordZonesOperation(recordZonesToSave: nil,
+                                                     recordZoneIDsToDelete: [CloudKitRecordMapping.zoneID(zone)])
+        try await run(operation, zone: zone, perRecordResults: false) { finish in
+            operation.modifyRecordZonesResultBlock = { result in finish(result) }
+        }
+    }
+
     public func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data], atomic: Bool) async throws -> [SaveResult] {
         guard !records.isEmpty else { return [] }
         let folder = assetFolder.appendingPathComponent(UUID().uuidString, isDirectory: true)

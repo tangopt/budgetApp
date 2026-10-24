@@ -5,9 +5,8 @@ public final class DatabaseManager {
     public let dbQueue: DatabaseQueue
 
     public init(path: String?) throws {
-        var configuration = Configuration()
-        // A row that `REPLACE` removes fires delete triggers (sync tombstones) only with this on.
-        configuration.prepareDatabase { db in try db.execute(sql: "PRAGMA recursive_triggers = ON") }
+        // The tools' settings too (`ToolDatabase`): `recursive_triggers` on, so `REPLACE` leaves sync tombstones.
+        let configuration = ToolDatabase.configuration()
         if let path {
             dbQueue = try DatabaseQueue(path: path, configuration: configuration)
         } else {

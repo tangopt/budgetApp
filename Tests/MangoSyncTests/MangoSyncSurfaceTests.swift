@@ -56,4 +56,33 @@ final class MangoSyncSurfaceTests: XCTestCase {
         // Temporarily unavailable (signed in, but iCloud needs attention): not usable yet, not "no account".
         XCTAssertEqual(CloudKitAccountStatus.status(for: .temporarilyUnavailable), .couldNotDetermine)
     }
+
+    /// `--sync-demo-reset` removes exactly one item: the real scope's `<container>/household/<keyId>` (the key the
+    /// earlier demo runs kept there), synchronizable, in the data-protection keychain. Pinned through the query
+    /// only: nothing here reaches the Keychain.
+    func testRemovalQueryNamesOneItemOfItsOwnScope() {
+        let id = "0123456789abcdef"
+        let real = KeychainSyncKeyStore(container: CloudKitTransport.containerIdentifier)
+        XCTAssertEqual(real.scope, "iCloud.ubberninja.mango")
+        let query = real.removalQuery(keyId: id, zone: SyncRecordStore.householdZone)
+        XCTAssertEqual(query[kSecAttrAccount] as? String, "iCloud.ubberninja.mango/household/0123456789abcdef")
+        XCTAssertEqual(query[kSecAttrService] as? String, KeychainSyncKeyStore.service)
+        XCTAssertEqual(query[kSecClass] as? String, kSecClassGenericPassword as String)
+        XCTAssertEqual(query[kSecAttrSynchronizable] as? Bool, true)
+        XCTAssertEqual(query[kSecUseDataProtectionKeychain] as? Bool, true)
+        XCTAssertNil(query[kSecMatchLimit], "one item, never a match-all")
+
+        let demo = KeychainSyncKeyStore(container: CloudKitTransport.demoKeyScope)
+        XCTAssertEqual(demo.scope, CloudKitTransport.demoKeyScope)
+        XCTAssertEqual(demo.removalQuery(keyId: id, zone: "household")[kSecAttrAccount] as? String,
+                       "iCloud.ubberninja.mango/demo/household/0123456789abcdef")
+    }
+
+    /// Only a key id (16 lowercase hex digits) can be removed: never a prefix or a pattern.
+    func testRemovalRefusesAnythingButAKeyId() {
+        let store = KeychainSyncKeyStore(container: CloudKitTransport.containerIdentifier)
+        for bad in ["", "*", "0123456789ABCDEF", "0123456789abcde", "0123456789abcdef0", "../household"] {
+            XCTAssertThrowsError(try store.remove(keyId: bad, zone: "household"), bad)
+        }
+    }
 }

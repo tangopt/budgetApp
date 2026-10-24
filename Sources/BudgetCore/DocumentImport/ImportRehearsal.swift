@@ -136,8 +136,8 @@ public enum ImportRehearsal {
         do {
             var readOnly = Configuration()
             readOnly.readonly = true
-            let source = try DatabaseQueue(path: databasePath, configuration: readOnly)
-            let target = try DatabaseQueue(path: copyPath)
+            let source = try ToolDatabase.open(path: databasePath, configuration: readOnly)
+            let target = try ToolDatabase.open(path: copyPath)
             try source.backup(to: target)
             try source.close()
             try target.close()

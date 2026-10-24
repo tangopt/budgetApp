@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import GRDB
 
 /// The household key handed to the iPhone simulator for the sync demo (plan step 4 Task 12): the simulator has no
 /// iCloud Keychain, so a DEBUG simulator launch with `--sync-demo` takes the demo key from
@@ -23,5 +24,20 @@ public enum DemoHouseholdKey {
             index = next
         }
         return SymmetricKey(data: bytes)
+    }
+
+    /// `key` as 64 lowercase hex characters (what `parse` reads).
+    public static func hex(_ key: SymmetricKey) -> String {
+        key.withUnsafeBytes { bytes in bytes.map { String(format: "%02x", $0) }.joined() }
+    }
+
+    /// The household key the zone's marker names, in hex, once that marker is on the server (this database has a
+    /// stamp for it: a sync published or adopted it) and `keyStore` holds it; nil otherwise. The Mac's
+    /// `--print-demo-key` passes only the demo scope's store.
+    public static func confirmedKeyHex(db: any DatabaseReader, keyStore: any SyncKeyStore,
+                                       zone: String = SyncRecordStore.householdZone) throws -> String? {
+        guard let local = try db.read({ db in try SyncZoneKeys.local(zone: zone, db: db) }), local.systemFields != nil,
+              let key = try keyStore.allKeys(zone: zone)[local.marker.keyId] else { return nil }
+        return hex(key)
     }
 }
