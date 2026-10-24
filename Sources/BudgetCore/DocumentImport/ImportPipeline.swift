@@ -304,6 +304,8 @@ public struct ImportPipeline: @unchecked Sendable {
     /// a deleted one asks what the document is ("Its kind <old> no longer exists"). Nil when no
     /// item's kind changed.
     public func rereadingChangedKinds(_ plan: ImportPlan) async throws -> ImportPlan? {
+        // No document filed as a saved custom kind: nothing to read again, and no fresh copy taken.
+        guard plan.usesSavedCustomKinds else { return nil }
         let copy = try session.fresh(from: dbQueue)
         let changed = try await copy.dbQueue.read { db -> [(UUID, ImportRecognition)] in
             let catalog = try DocumentKindCatalog.load(db: db)

@@ -50,6 +50,8 @@ struct ImportPreviewPanel: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        // The kinds every kind chooser of the preview offers, the review's new ones included.
+        .environment(\.importKindChoices, center.session.kindChoices)
         .sheet(item: $center.ruleFitsReview) { review in
             let source = center.plan?.items.first { $0.id == review.sourceId }
             ImportRuleFitsSheet(sourceName: source?.file.fileName ?? "this document",
@@ -79,6 +81,7 @@ private struct ImportPreviewContent: View {
     let resolve: (UUID, String?, ImportResolution) -> Void
     /// The figure being changed (its pencil in Figures).
     @State private var editingField: ImportFigureField?
+    @Environment(\.theme) private var theme
 
     /// A P11D's effect: its benefit rows are corrected in the Benefits table (the amount is their total).
     private var p11d: PayrollFormImport.Confirmed? {
@@ -228,6 +231,11 @@ private struct ImportPreviewContent: View {
                         // Ready items too: any change is checked again (it may move to Needs you).
                         ImportCorrections(item: item, targetNames: targetNames) { resolve(item.id, nil, $0) }
                             .disabled(!isAnswerable)
+                    }
+                    // An answer for the item refused (a new kind's name taken meanwhile).
+                    if let problem = center.answerProblem, problem.itemId == item.id, problem.issueId == nil {
+                        Text(problem.message.figuresUnbroken).font(.caption).foregroundStyle(theme.expense)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }

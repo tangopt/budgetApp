@@ -28,11 +28,11 @@ struct SnapshotMissing: Error, CustomStringConvertible {
 /// link the demo builder (`BudgetDemo`).
 @MainActor
 enum SnapshotCatalog {
-    /// `importRoutes` last: `imports-history` writes to the demo copy; the attribution check after them
+    /// `importRoutes` then `kindRoutes` last: `imports-history` writes to the demo copy, the kind routes add custom kinds to it; the attribution check after them
     /// (it imports too). `settings-sign-in` and the check add synthetic app users to the demo copy.
     static var routes: [SnapshotRoute] {
         screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + AuthSnapshots.routes + [AuthSnapshots.lockedContentRoute] + AuthSnapshots.lockedToolbarRoutes + importRoutes
-            + [AuthSnapshots.attributionRoute, AuthSnapshots.launchLoadsOnceRoute]
+            + kindRoutes + [AuthSnapshots.attributionRoute, AuthSnapshots.launchLoadsOnceRoute]
     }
 
     // MARK: Imports, from the demo's samples
@@ -257,6 +257,17 @@ enum SnapshotCatalog {
                     center.showSnapshotPlan(plan, selecting: item.id)
                 })))
             },
+            // "New kind…": the letter nothing recognises filed as a kind made in this review (saved at Confirm import).
+            SnapshotRoute(name: "imports-review_new_kind", title: "Imports: the samples, a letter filed as a new kind", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                var plan = try await center.snapshotPlan(try importSamples(context))
+                guard let letter = plan.items.first(where: { $0.file.fileName == "Letter.pdf" }) else { throw SnapshotMissing("The sample letter") }
+                plan = try await center.snapshotResolve(plan, itemId: letter.id, .createKind(name: "Boiler service", area: .property))
+                let made = plan
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(made, selecting: letter.id)
+                })))
+            },
             SnapshotRoute(name: "imports-history", title: "Imports: the samples imported, in the history", settleFactor: 1.5) { context in
                 let center = context.environment.importCenter
                 center.discard()
@@ -295,6 +306,45 @@ enum SnapshotCatalog {
                     throw SnapshotMissing("Everyday Current")
                 }
                 return AnyView(CSVMappingWizardView(account: account, csvText: item.file.text ?? "", existingProfile: saved) { _ in })
+            }
+        ]
+    }
+
+    // MARK: Custom kinds
+
+    /// Custom kinds in the demo copy (after the imports: they write to it): the Documents screen with a
+    /// document of a custom kind selected (its pill and kind picker), the Kinds sheet with a rename and
+    /// a merge staged, the same sheet refusing a Save that would change a filed year, and New kind…
+    /// with a name that's already a kind's.
+    static var kindRoutes: [SnapshotRoute] {
+        [
+            screen("documents", "kinds", "Documents: a document of a custom kind selected", .documents) { models, context in
+                models.documents.selectedId = (try? context.demoCustomKinds())?.documentId
+            },
+            sheet("document_kinds", "Kinds (a rename and a merge staged)", settle: 1) { context in
+                let kinds = try context.demoCustomKinds()
+                let model = DocumentsViewModel(dbQueue: context.dbQueue, library: context.library)
+                var draft = CustomKindsDraft(rows: try await context.dbQueue.read { db in try CustomDocumentKinds.rows(db: db) })
+                draft.rename(kinds.lift, name: "Lift maintenance", area: .property)
+                draft.merge(kinds.fees, into: .builtIn(.other))
+                let editing = DocumentKindsSheet.Editing(kindId: kinds.boiler, mode: .merge, name: "Boiler service", area: .property,
+                                                         target: .builtIn(.repairInvoice))
+                return AnyView(DocumentKindsSheet(viewModel: model, initial: draft, editing: editing))
+            },
+            sheet("document_kinds_refused", "Kinds (Save refused: a filed year would change)", settle: 1) { context in
+                let kinds = try context.demoCustomKinds()
+                let model = DocumentsViewModel(dbQueue: context.dbQueue, library: context.library)
+                var draft = CustomKindsDraft(rows: try await context.dbQueue.read { db in try CustomDocumentKinds.rows(db: db) })
+                draft.merge(kinds.boiler, into: .builtIn(.repairInvoice))
+                let refusal = CustomDocumentKinds.Failure.changesFiledYear(
+                    years: ["2024/25"], documents: ["20250310 - Property - Boiler service - Boiler Repair Lda"])
+                return AnyView(DocumentKindsSheet(viewModel: model, initial: draft, error: refusal.localizedDescription))
+            },
+            sheet("new_kind", "New kind… (a name that's already a kind's)") { context in
+                _ = try context.demoCustomKinds()
+                let catalog = try await context.dbQueue.read { db in try DocumentKindCatalog.load(db: db) }
+                return AnyView(NewKindPopover(choices: ImportKindChoice.choices(catalog: catalog, pending: []), initialName: "repair bill",
+                                              create: { _, _ in }, cancel: {}))
             }
         ]
     }
@@ -830,6 +880,29 @@ extension SnapshotContext {
     func propertyId() throws -> Int64 {
         guard let id = try dbQueue.read({ db in try Property.order(Column("id")).fetchOne(db)?.id }) else { throw SnapshotMissing("a property") }
         return id
+    }
+
+    /// The demo copy's custom kinds (made once): Boiler service — the demo's boiler repair invoice
+    /// filed under it — Lift service and Club fees.
+    @discardableResult
+    func demoCustomKinds() throws -> (boiler: Int64, lift: Int64, fees: Int64, documentId: Int64?) {
+        try dbQueue.write { db in
+            let catalog = try DocumentKindCatalog.load(db: db)
+            func kind(_ name: String, _ area: DocumentArea) throws -> Int64 {
+                if let id = catalog.custom(named: name)?.id { return id }
+                guard let id = try CustomDocumentKinds.create(db: db, name: name, area: area, now: AppClock.now).id else {
+                    throw SnapshotMissing("The custom kind \(name)")
+                }
+                return id
+            }
+            let boiler = try kind("Boiler service", .property), lift = try kind("Lift service", .property), fees = try kind("Club fees", .other)
+            var document = try EvidenceDocument.filter(Column("originalFileName") == "Boiler repair invoice.pdf").fetchOne(db)
+            if document?.customKindId == nil, document?.kind == .other {
+                document?.customKindId = boiler
+                try document?.update(db)
+            }
+            return (boiler, lift, fees, document?.id)
+        }
     }
 
     func documentId(kind: DocumentKind) -> Int64? {

@@ -114,6 +114,12 @@ final class ImportCustomKindTests: XCTestCase {
         XCTAssertEqual(choices[builtIns + 1], ImportKindChoice(kind: .customEvidence(.pending(pending.id)), label: "Boiler service"))
         XCTAssertEqual(choices[builtIns + 1].resolution, .chooseCustomKind(.pending(pending.id)))
         XCTAssertEqual(choices.first { $0.label == "Insurance receipt" }?.resolution, .chooseKind(.insuranceReceipt))
+        // "New kind…" says a taken name before Create, as the review refuses it (ignoring case, accents and spaces).
+        XCTAssertEqual(ImportKindChoice.takenName(" repair BILL ", among: choices), "Repair bill")
+        XCTAssertEqual(ImportKindChoice.takenName("álarm contract", among: choices), "Alarm contract")
+        XCTAssertEqual(ImportKindChoice.takenName("boiler service", among: choices), "Boiler service")
+        XCTAssertNil(ImportKindChoice.takenName("Lift service", among: choices))
+        XCTAssertNil(ImportKindChoice.takenName("  ", among: choices))
         // A pending kind unknown to the review is refused.
         let unknown = await refusal { _ = try await self.pipeline.resolve(plan, itemId: b, .chooseCustomKind(.pending(UUID()))) }
         XCTAssertNotNil(unknown)
@@ -372,6 +378,8 @@ final class ImportCustomKindTests: XCTestCase {
         let rule = try XCTUnwrap(try read { db in try ImportRuleStore.all(db: db) }.first)
         XCTAssertEqual(rule.actionLabel, "Kind: boiler sérvice")
         XCTAssertEqual(ImportLearning.decode(DocumentKindAction.self, rule.actionJSON)?.customKindId, saved)
+        // Task 6 N3: the summary says the review's name and area weren't used.
+        XCTAssertEqual(summary.notes, ["Boiler service (Property) was filed under the kind “boiler sérvice” (Other), saved meanwhile"])
         pipeline.discardPlanningCopy()
 
         _ = try ImportUndo.undo(dbQueue: db, library: library, runId: summary.runId)
@@ -402,6 +410,41 @@ final class ImportCustomKindTests: XCTestCase {
         let plan = try await pipeline.plan([receipt], intent: shortcut.intent)
         let issue = try XCTUnwrap(try item(plan, "r.pdf").issues.first { $0.id == "kindMismatch" })
         XCTAssertEqual(issue.reason, "Expected a Boiler service, this looks like a Insurance receipt")
+    }
+
+    /// Task 6 N1: the found side names a learnt custom kind too.
+    func testAMismatchNamesTheFoundCustomKind() async throws {
+        let propertyId = try write { db -> Int64 in
+            var property = Property(name: "Property A", country: "PT")
+            try Properties.save(db: db, &property)
+            let kindId = try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: Date()).id!
+            try ImportRuleStore.learn(db: db, kind: .documentKind, key: Self.issuerKey, matchLabel: "Exemplo Termica, Lda.",
+                                      action: DocumentKindAction(kind: .other, customKindId: kindId), actionLabel: "Kind: Boiler service",
+                                      now: Date())
+            return property.id!
+        }
+        let shortcut = ImportShortcut.attach(.property(propertyId), role: nil, from: .missingEvidence, expected: .builtIn(.insuranceReceipt))
+        let plan = try await pipeline.plan([try letter("a.pdf", date: "05/03/2023")], intent: shortcut.intent)
+        let issue = try XCTUnwrap(try item(plan, "a.pdf").issues.first { $0.id == "kindMismatch" })
+        XCTAssertEqual(issue.reason, "Expected a Insurance receipt, this looks like a Boiler service")
+    }
+
+    /// Task 6 N2: a plan that files nothing under a saved custom kind is never read again (no fresh copy taken).
+    func testAPlanWithoutSavedCustomKindsIsNotReadAgain() async throws {
+        var plan = try await pipeline.plan([try letter("a.pdf", date: "05/03/2023")])
+        XCTAssertFalse(plan.usesSavedCustomKinds)
+        let copy = try XCTUnwrap(pipeline.planningCopyPath)
+        let reread = try await pipeline.rereadingChangedKinds(plan)
+        XCTAssertNil(reread)
+        XCTAssertEqual(pipeline.planningCopyPath, copy, "no fresh copy for a plan with no saved custom kind")
+
+        // A pending kind isn't saved yet either; a saved one is.
+        plan = try await pipeline.resolve(plan, itemId: try item(plan, "a.pdf").id, .createKind(name: "Boiler service", area: .property))
+        XCTAssertFalse(plan.usesSavedCustomKinds)
+        let kindId = try write { db in try CustomDocumentKinds.create(db: db, name: "Lift service", area: .property, now: Date()).id! }
+        plan = try await pipeline.plan(adding: [try letter("b.pdf", date: "07/04/2023")], to: plan, intent: .none)
+        plan = try await pipeline.resolve(plan, itemId: try item(plan, "b.pdf").id, .chooseCustomKind(.saved(kindId)))
+        XCTAssertTrue(plan.usesSavedCustomKinds)
     }
 
     func testANewKindComparesAsASavedKindOfItsName() async throws {

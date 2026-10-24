@@ -137,6 +137,14 @@ public struct ImportKindChoice: Hashable, Sendable {
         }
     }
 
+    /// The label of the choice `name` would repeat, ignoring case, accents and surrounding spaces
+    /// (as "New kind…" refuses it, `ImportResolutionError.kindNameTaken`); nil when it is free or blank.
+    public static func takenName(_ name: String, among choices: [ImportKindChoice]) -> String? {
+        let key = DocumentKindCatalog.key(name)
+        guard !key.isEmpty else { return nil }
+        return choices.first { DocumentKindCatalog.key($0.label) == key }?.label
+    }
+
     /// The built-in kinds by name, the saved custom kinds by name, then `pending` by name.
     public static func choices(catalog: DocumentKindCatalog, pending: [PendingDocumentKind]) -> [ImportKindChoice] {
         func ordered(_ a: ImportKindChoice, _ b: ImportKindChoice) -> Bool { a.label.localizedStandardCompare(b.label) == .orderedAscending }
@@ -838,6 +846,14 @@ public struct ImportPlan: Equatable, Sendable {
     public var ignoredFiles: [String]
     /// The kinds made with "New kind…" in this review: inserted first at Confirm, forgotten on Discard.
     public var pendingKinds: [PendingDocumentKind] = []
+    /// Whether a document of the review is filed as a saved custom kind: only then can a kind merged
+    /// or deleted since make Confirm fail and the review be read again (`ImportPipeline.rereadingChangedKinds`).
+    public var usesSavedCustomKinds: Bool {
+        items.contains { item in
+            guard item.parentId == nil, case .customEvidence(.saved) = item.recognition.kind else { return false }
+            return true
+        }
+    }
     /// What the pipeline remembers between resolutions (`ImportPipeline`).
     var state = ImportPlanState()
 

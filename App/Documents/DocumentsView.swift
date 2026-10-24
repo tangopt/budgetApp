@@ -20,6 +20,8 @@ struct DocumentsView: View {
     /// The document the list's Link… and Remove… act on.
     @State private var linkingFromList = false
     @State private var removing: EvidenceDocument?
+    /// The Kinds… sheet (custom kinds: rename and merge).
+    @State private var editingKinds = false
 
     var body: some View {
         // An HStack, not an HSplitView: the split view asked the window for 1209 pt (its panes'
@@ -39,6 +41,9 @@ struct DocumentsView: View {
             if let document = viewModel.selected {
                 LinkTransactionSheet(documentName: document.displayName, viewModel: viewModel)
             }
+        }
+        .sheet(isPresented: $editingKinds) {
+            DocumentKindsSheet(viewModel: viewModel)
         }
         .confirmationDialog("Remove “\(removing?.displayName ?? "")” from the library?",
                             isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { document in
@@ -76,6 +81,15 @@ struct DocumentsView: View {
                 .buttonStyle(.borderless)
                 .menuIndicator(.hidden)
                 .help("Review a folder: import the files it has that aren't in the library")
+            }
+            .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .primaryAction) {
+                Button { editingKinds = true } label: {
+                    Image(systemName: "tag")
+                        .accessibilityLabel("Kinds")
+                }
+                .buttonStyle(.borderless)
+                .help("Kinds…: rename or merge the kinds you made")
             }
             .sharedBackgroundVisibility(.hidden)
         }
@@ -224,7 +238,7 @@ private struct DocumentsTable: View {
             // takes the extra width.
             .width(min: 110, ideal: 120)
             TableColumn("Kind") { entry in
-                StatusPill(entry.summary.kind.displayName)
+                StatusPill(viewModel.kindName(entry.summary.kindRef))
             }
             .width(min: 96, ideal: 100, max: 124)
             TableColumn("Date") { entry in
@@ -424,7 +438,7 @@ private struct DocumentsOverview: View {
                     }
                     TwoUpRow {
                         Panel("By kind", fillsHeight: true) {
-                            BreakdownBars(counts: overview.byKind.map { BreakdownItem($0.kind.displayName, count: $0.count, id: $0.kind.rawValue) },
+                            BreakdownBars(counts: overview.byKind.map { BreakdownItem($0.name, count: $0.count, id: Self.id(of: $0.kind)) },
                                           maxItems: 10, otherLabel: "Other kinds")
                         }
                     } second: {
@@ -461,7 +475,7 @@ private struct DocumentsOverview: View {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             VStack(alignment: .leading, spacing: 1) {
                                 DocumentNameCell(summary: entry.summary)
-                                Text(entry.summary.kind.displayName)
+                                Text(viewModel.kindName(entry.summary.kindRef))
                                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                     .padding(.leading, 21)
                             }
@@ -475,6 +489,14 @@ private struct DocumentsOverview: View {
                     .help("Show \(entry.summary.displayName)")
                 }
             }
+        }
+    }
+
+    /// A kind's bar id: the built-in's raw value, "custom:<id>" for a custom kind.
+    private static func id(of kind: DocumentKindRef) -> String {
+        switch kind {
+        case .builtIn(let kind): return kind.rawValue
+        case .custom(let id): return "custom:\(id)"
         }
     }
 

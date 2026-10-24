@@ -34,7 +34,7 @@ final class DocumentsViewModel: ObservableObject {
         didSet { if queryText != oldValue { scheduleQuery() } }
     }
     @Published private(set) var index = EvidenceDocumentSearch.Index(entries: []) {
-        didSet { overview = LibrarySummary(index.entries) }
+        didSet { overview = LibrarySummary(index.entries, catalog: index.catalog) }
     }
     @Published private(set) var entries: [EvidenceDocumentSearch.Entry] = [] {
         didSet { sections = YearSection.sections(entries) }
@@ -183,6 +183,9 @@ final class DocumentsViewModel: ObservableObject {
         if let selected, selected.id == id { return selected }
         return try? library.document(id: id)
     }
+
+    /// A kind's name, a custom kind's included (as the library was last read).
+    func kindName(_ ref: DocumentKindRef) -> String { index.catalog.displayName(ref) }
 
     func entry(_ id: Int64?) -> EvidenceDocumentSearch.Entry? {
         guard let id else { return nil }
@@ -344,6 +347,36 @@ final class DocumentsViewModel: ObservableObject {
         if let id = selected?.id { refreshEntries(for: [id]) }
     }
 
+    // MARK: Kinds
+
+    /// The custom kinds with their document counts, read off the main thread (the Kinds sheet).
+    func loadKinds() async -> Result<[CustomKindRow], Error> {
+        let dbQueue = dbQueue
+        return await Task.detached(priority: .userInitiated) {
+            Result { try dbQueue.read { db in try CustomDocumentKinds.rows(db: db) } }
+        }.value
+    }
+
+    /// Applies the Kinds sheet's staged edits in one write, off the main thread; the library is read
+    /// again after (names, kinds and filters change). Returns what changed, or the refusal (a taken
+    /// name, a kind gone, a filed year that would move: nothing is written).
+    func saveKinds(_ edits: [KindEdit]) async -> Result<KindSaveResult, Error> {
+        let dbQueue = dbQueue, now = AppClock.now
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try dbQueue.write { db in try CustomDocumentKinds.save(db: db, edits: edits, now: now) } }
+        }.value
+        if case .success = result {
+            // A kind merged away can't stay the filter.
+            let merged = Set(edits.compactMap { edit -> Int64? in
+                if case .merge = edit.change { return edit.kindId }
+                return nil
+            })
+            if case .custom(let id)? = filter.kind, merged.contains(id) { filter.kind = nil }
+            reloadIndex(select: selectedId)
+        }
+        return result
+    }
+
     // MARK: Files
 
     func fileURL(_ document: EvidenceDocument) -> URL { library.fileURL(for: document) }
@@ -406,26 +439,28 @@ extension DocumentsViewModel {
         var unlinked = 0
         /// Scans and photos: no text to search or match.
         var imageOnly = 0
-        /// Documents per kind, most first.
-        var byKind: [(kind: DocumentKind, count: Int)] = []
+        /// Documents per kind (custom kinds by their own name), most first.
+        var byKind: [(kind: DocumentKindRef, name: String, count: Int)] = []
         /// The newest-added documents not linked to anything yet.
         var recentUnlinked: [EvidenceDocumentSearch.Entry] = []
 
-        init(_ entries: [EvidenceDocumentSearch.Entry], unlinkedShown: Int = 8) {
+        init(_ entries: [EvidenceDocumentSearch.Entry], catalog: DocumentKindCatalog = DocumentKindCatalog(customKinds: []),
+             unlinkedShown: Int = 8) {
             total = entries.count
             linked = entries.filter { $0.linkCount > 0 }.count
             unlinked = total - linked
             imageOnly = entries.filter { $0.summary.textStatus == .image }.count
-            var counts: [DocumentKind: Int] = [:]
-            for entry in entries { counts[entry.summary.kind, default: 0] += 1 }
-            byKind = counts.map { (kind: $0.key, count: $0.value) }
-                .sorted { ($0.count, $1.kind.displayName) > ($1.count, $0.kind.displayName) }
+            var counts: [DocumentKindRef: Int] = [:]
+            for entry in entries { counts[entry.summary.kindRef, default: 0] += 1 }
+            byKind = counts.map { (kind: $0.key, name: catalog.displayName($0.key), count: $0.value) }
+                .sorted { ($0.count, $1.name) > ($1.count, $0.name) }
             recentUnlinked = Array(entries.filter { $0.linkCount == 0 }.prefix(unlinkedShown))
         }
 
         static func == (lhs: LibrarySummary, rhs: LibrarySummary) -> Bool {
             lhs.total == rhs.total && lhs.linked == rhs.linked && lhs.imageOnly == rhs.imageOnly
-                && lhs.byKind.map(\.kind) == rhs.byKind.map(\.kind) && lhs.byKind.map(\.count) == rhs.byKind.map(\.count)
+                && lhs.byKind.map(\.kind) == rhs.byKind.map(\.kind) && lhs.byKind.map(\.name) == rhs.byKind.map(\.name)
+                && lhs.byKind.map(\.count) == rhs.byKind.map(\.count)
                 && lhs.recentUnlinked == rhs.recentUnlinked
         }
     }

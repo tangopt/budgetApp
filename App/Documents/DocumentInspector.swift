@@ -75,7 +75,7 @@ struct DocumentInspector: View {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 6) {
-                StatusPill(document.kind.displayName)
+                StatusPill(viewModel.kindName(document.kindRef))
                 if viewModel.links.isEmpty {
                     StatusPill("Not linked", tone: .warning, systemImage: "circle.dashed")
                 } else {
@@ -341,7 +341,19 @@ struct DocumentInspector: View {
                     LabeledContent("Kind") {
                         Picker("Kind", selection: $draft.kind) {
                             ForEach(DocumentKind.byDisplayName, id: \.self) { kind in
-                                Text(kind.displayName).tag(kind)
+                                Text(kind.displayName).tag(DocumentKindRef.builtIn(kind))
+                            }
+                            // The kinds the user made, after the built-ins.
+                            let custom = viewModel.index.catalog.customKinds.compactMap { kind in kind.id.map { (id: $0, name: kind.name) } }
+                            if !custom.isEmpty {
+                                Divider()
+                                ForEach(custom, id: \.id) { kind in
+                                    Text(kind.name).tag(DocumentKindRef.custom(kind.id))
+                                }
+                            }
+                            // A custom kind gone since the library was read stays shown until changed.
+                            if case .custom(let id) = draft.kind, viewModel.index.catalog.custom(id: id) == nil {
+                                Text(viewModel.kindName(draft.kind)).tag(draft.kind)
                             }
                         }
                     }
@@ -445,9 +457,8 @@ struct DocumentInspector: View {
 
 /// The inspector's editable fields; days as the date pickers hold them (local midnight).
 struct DocumentDetailsDraft: Equatable {
-    var kind: DocumentKind
-    /// Kept while the kind stays Other, so a Save doesn't drop the document's custom kind.
-    var customKindId: Int64?
+    /// Built-in or custom (a custom kind is saved as Other naming it).
+    var kind: DocumentKindRef
     var canonicalName: String
     var hasDate: Bool
     var date: Date
@@ -462,8 +473,7 @@ struct DocumentDetailsDraft: Equatable {
     init(_ document: EvidenceDocument) {
         let today = Calendar.current.startOfDay(for: AppClock.now)
         func local(_ date: Date?) -> Date? { date.map { PayCalendar.localDay(sameDayAs: $0, in: .current) } }
-        kind = document.kind
-        customKindId = document.customKindId
+        kind = document.kindRef
         canonicalName = document.canonicalName ?? ""
         hasDate = document.docDate != nil
         date = local(document.docDate) ?? today
@@ -490,11 +500,12 @@ struct DocumentDetailsDraft: Equatable {
         guard problem == nil else { return nil }
         func utc(_ day: Date) -> Date { PayCalendar.utcDay(sameDayAs: day, in: .current) }
         let amount = amountIsEmpty ? nil : Money.parseMinorUnits(amountText).map(abs)
-        return EvidenceDocumentDetails(
-            kind: kind, docDate: hasDate ? utc(date) : nil,
+        var details = EvidenceDocumentDetails(
+            docDate: hasDate ? utc(date) : nil,
             periodStart: hasPeriod ? utc(periodStart) : nil, periodEnd: hasPeriod ? utc(periodEnd) : nil,
             amountMinorUnits: amount, currency: amount == nil ? nil : currency,
-            persons: EvidenceDocumentDetails.persons(from: personsText), note: note, canonicalName: canonicalName,
-            customKindId: kind == .other ? customKindId : nil)
+            persons: EvidenceDocumentDetails.persons(from: personsText), note: note, canonicalName: canonicalName)
+        details.kindRef = kind
+        return details
     }
 }

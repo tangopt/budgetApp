@@ -59,10 +59,10 @@ public struct ImportRuleRow: Equatable, Identifiable, Sendable {
 }
 
 /// A new action for a learnt rule, from the Rules page's Edit Rule sheet: one per kind (a link
-/// either to a record or to a merchant's transactions).
+/// either to a record or to a merchant's transactions; a document type built-in or custom).
 public enum ImportRuleEdit: Equatable, Hashable, Sendable {
     case account(Int64)
-    case documentKind(DocumentKind)
+    case documentKind(DocumentKindRef)
     case issuerName(String)
     case link(EvidenceEntity)
     case merchant(String)
@@ -135,16 +135,20 @@ public enum ImportRuleEditing {
         }
     }
 
-    /// Whether the rule's account (a statement account) or record (a link) no longer exists.
+    /// Whether the rule's account (a statement account), record (a link) or custom kind (a
+    /// document type) no longer exists.
     public static func targetMissing(db: Database, _ rule: ImportRule) throws -> Bool {
         switch rule.kind {
+        case .documentKind:
+            guard let id = ImportLearning.decode(DocumentKindAction.self, rule.actionJSON)?.customKindId else { return false }
+            return try DocumentKindCatalog.load(db: db).custom(id: id) == nil
         case .statementAccount:
             guard let action = ImportLearning.decode(StatementAccountAction.self, rule.actionJSON) else { return false }
             return try !Account.exists(db, key: action.accountId)
         case .link:
             guard let entity = ImportLearning.decode(LinkAction.self, rule.actionJSON)?.entity else { return false }
             return try !EvidenceLinks.entityExists(db: db, entity)
-        case .documentKind, .issuer, .figurePosition:
+        case .issuer, .figurePosition:
             return false
         }
     }
@@ -182,7 +186,7 @@ public enum ImportRuleEditing {
         case .statementAccount:
             return ImportLearning.decode(StatementAccountAction.self, rule.actionJSON).map { .account($0.accountId) }
         case .documentKind:
-            return ImportLearning.decode(DocumentKindAction.self, rule.actionJSON).map { .documentKind($0.kind) }
+            return ImportLearning.decode(DocumentKindAction.self, rule.actionJSON).map { .documentKind($0.kindRef) }
         case .issuer:
             return ImportLearning.decode(IssuerAction.self, rule.actionJSON).map { .issuerName($0.name) }
         case .link:
@@ -219,8 +223,8 @@ public enum ImportRuleEditing {
 
     // MARK: Private
 
-    /// "Account: <name>" / "Link to <title>" as the record is called now; nil for the kinds
-    /// with no record (their stored label stands).
+    /// "Account: <name>" / "Link to <title>" / "Kind: <custom kind>" as the record or kind is
+    /// called now; nil for the kinds with no record (their stored label stands).
     private static func currentLabel(db: Database, _ rule: ImportRule) throws -> String? {
         switch rule.kind {
         case .statementAccount:
@@ -230,7 +234,11 @@ public enum ImportRuleEditing {
         case .link:
             guard let entity = ImportLearning.decode(LinkAction.self, rule.actionJSON)?.entity else { return nil }
             return "Link to \(try entityLabel(db: db, entity))"
-        case .documentKind, .issuer, .figurePosition:
+        case .documentKind:
+            guard let id = ImportLearning.decode(DocumentKindAction.self, rule.actionJSON)?.customKindId,
+                  let kind = try DocumentKindCatalog.load(db: db).custom(id: id) else { return nil }
+            return "Kind: \(kind.name)"
+        case .issuer, .figurePosition:
             return nil
         }
     }
@@ -245,8 +253,12 @@ public enum ImportRuleEditing {
         case (.statementAccount, .account(let accountId)):
             guard let account = try Account.fetchOne(db, key: accountId) else { throw ImportRuleEditError.missingTarget }
             return (try json(StatementAccountAction(accountId: accountId)), "Account: \(account.displayName)")
-        case (.documentKind, .documentKind(let kind)):
+        case (.documentKind, .documentKind(.builtIn(let kind))):
             return (try json(DocumentKindAction(kind: kind)), "Kind: \(kind.displayName)")
+        case (.documentKind, .documentKind(.custom(let id))):
+            // A custom kind is filed as Other naming it: never rewritten to plain Other.
+            guard let kind = try DocumentKindCatalog.load(db: db).custom(id: id) else { throw ImportRuleEditError.missingTarget }
+            return (try json(DocumentKindAction(kind: .other, customKindId: id)), "Kind: \(kind.name)")
         case (.issuer, .issuerName(let name)):
             let name = try text(name)
             return (try json(IssuerAction(name: name)), "Name: \(name)")

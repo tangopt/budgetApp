@@ -80,7 +80,7 @@ final class RulesViewModel: ObservableObject {
         } catch ImportRuleEditError.noLetters {
             return "Enter text with at least one letter."
         } catch ImportRuleEditError.missingTarget {
-            return "That record no longer exists: choose another."
+            return "That record or kind no longer exists: choose another."
         } catch {
             return "Couldn't save the rule: \(error.localizedDescription)"
         }
@@ -89,7 +89,7 @@ final class RulesViewModel: ObservableObject {
     }
 
     /// What the Edit Rule sheet needs: the rule's action as an edit, the accounts, the records a
-    /// link can go to.
+    /// link can go to, the document kinds (custom ones included).
     func importRuleEditContext(id: Int64) throws -> ImportRuleEditContext? {
         try dbQueue.read { db in
             guard let rule = try ImportRule.fetchOne(db, key: id), let edit = ImportRuleEditing.currentEdit(rule) else { return nil }
@@ -97,8 +97,10 @@ final class RulesViewModel: ObservableObject {
             if case .link(let entity) = edit { current = entity }
             let accounts = try Account.order(Column("name").collating(.localizedCaseInsensitiveCompare), Column("id")).fetchAll(db)
                 .compactMap { account in account.id.map { (id: $0, name: account.displayName) } }
+            let catalog = try DocumentKindCatalog.load(db: db)
             return ImportRuleEditContext(ruleId: id, kind: rule.kind, when: rule.matchLabel, edit: edit, accounts: accounts,
-                                         linkTargets: try ImportRuleEditing.linkTargets(db: db, current: current))
+                                         linkTargets: try ImportRuleEditing.linkTargets(db: db, current: current),
+                                         documentKinds: catalog.all.map { (ref: $0, name: catalog.displayName($0)) })
         }
     }
 
@@ -162,5 +164,7 @@ struct ImportRuleEditContext: Identifiable {
     let edit: ImportRuleEdit
     let accounts: [(id: Int64, name: String)]
     let linkTargets: [ImportRuleTarget]
+    /// The built-in kinds by name, then the custom kinds by name.
+    var documentKinds: [(ref: DocumentKindRef, name: String)] = []
     var id: Int64 { ruleId }
 }

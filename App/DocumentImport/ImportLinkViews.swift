@@ -439,7 +439,7 @@ struct ImportCorrections: View {
             }
             .controlSize(.small)
             if changingKind, !kindAsked {
-                ImportKindChooser(initial: ImportIssueControls.documentKind(item.recognition.kind) ?? .other, keep: nil, resolve: resolve)
+                ImportKindChooser(initial: item.recognition.kind, keep: nil, resolve: resolve)
             }
             if changingTarget, let target, !options.isEmpty {
                 ImportTargetChooser(kind: target, options: options, names: targetNames, resolve: resolve)

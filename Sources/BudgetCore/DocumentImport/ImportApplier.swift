@@ -207,19 +207,26 @@ public struct ImportApplier: Sendable {
 
     /// The review's new kinds the applied items use, saved (inside the run, so Undo removes them):
     /// a kind of the same name saved meanwhile (on another device) is that kind, never a second one.
-    static func savePendingKinds(db: Database, _ items: [ImportItem], pending: [PendingDocumentKind], now: Date) throws -> [UUID: Int64] {
+    /// `notes`: a line for each such kind spelt otherwise or in another area than the review showed.
+    static func savePendingKinds(db: Database, _ items: [ImportItem], pending: [PendingDocumentKind], now: Date) throws
+        -> (saved: [UUID: Int64], notes: [String]) {
         var used: [UUID] = []
         for item in items {
             if case .customEvidence(.pending(let id)) = item.recognition.kind, !used.contains(id) { used.append(id) }
         }
         var saved: [UUID: Int64] = [:]
-        guard !used.isEmpty else { return saved }
+        var notes: [String] = []
+        guard !used.isEmpty else { return (saved, notes) }
         // Read once; the kinds saved here are told apart by name (no two pending kinds share one).
         let catalog = try DocumentKindCatalog.load(db: db)
         for id in used {
             guard let kind = pending.first(where: { $0.id == id }) else { throw ImportApplyError.notConfirmable }
             if let existing = catalog.custom(named: kind.name), let existingId = existing.id {
                 saved[id] = existingId
+                // Spelt otherwise or in another area than the review showed: the summary says so.
+                if existing.name != kind.name || existing.area != kind.area {
+                    notes.append("\(kind.name) (\(kind.area.libraryArea)) was filed under the kind \u{201C}\(existing.name)\u{201D} (\(existing.area.libraryArea)), saved meanwhile")
+                }
             } else {
                 guard let newId = try CustomDocumentKinds.create(db: db, name: kind.name, area: kind.area, now: now).id else {
                     throw ImportApplyError.notConfirmable
@@ -227,7 +234,7 @@ public struct ImportApplier: Sendable {
                 saved[id] = newId
             }
         }
-        return saved
+        return (saved, notes)
     }
 
     /// The canonical name of an item filed as the custom kind `kind`, from its facts and the kind's
@@ -312,7 +319,7 @@ public struct ImportApplier: Sendable {
         let raw = try TaxFigures.snapshot(db: db)
         let folders = try SourceFolder.fetchAll(db)
         // The review's new kinds first, so the documents can be filed under them.
-        let newKinds = try Self.savePendingKinds(db: db, applied, pending: plan.pendingKinds, now: now)
+        let (newKinds, kindNotes) = try Self.savePendingKinds(db: db, applied, pending: plan.pendingKinds, now: now)
         // The custom kinds as they are now: documents are named after the kind's current name and
         // area (renamed during the review, or a kind of the same name saved meanwhile).
         let kindsNow = try DocumentKindCatalog.load(db: db)
@@ -394,7 +401,7 @@ public struct ImportApplier: Sendable {
 
         var summary = ImportRunSummary(runId: runId, filed: 0, linked: 0, recorded: 0, transactions: 0, duplicates: 0, leftOut: 0,
                                        backupPath: backupPath)
-        summary.notes = learningNotes
+        summary.notes = kindNotes + learningNotes
         let leftOut = Self.leftOutIds(plan)
         let byId = Dictionary(uniqueKeysWithValues: plan.items.map { ($0.id, $0) })
         summary.filed = Set(documents.values).count

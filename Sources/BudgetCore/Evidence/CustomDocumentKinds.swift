@@ -114,6 +114,23 @@ public enum CustomDocumentKinds {
         return outcome.result
     }
 
+    /// Checks `edits` against `catalog` as `save` does before writing (names free, kinds that exist,
+    /// no kind merged into itself), throwing the same `Failure`: the Kinds sheet says it before Save.
+    public static func check(_ edits: [KindEdit], catalog: DocumentKindCatalog) throws {
+        _ = try Plan(catalog: catalog, edits: edits)
+    }
+
+    /// The custom kinds in use, by name, with how many documents each has (the Kinds sheet).
+    public static func rows(db: Database) throws -> [CustomKindRow] {
+        let counts = Dictionary(uniqueKeysWithValues: try Row.fetchAll(db, sql: """
+            SELECT customKindId, COUNT(*) AS n FROM \(EvidenceDocument.databaseTableName)
+            WHERE customKindId IS NOT NULL GROUP BY customKindId
+            """).map { row -> (Int64, Int) in (row["customKindId"], row["n"]) })
+        return try DocumentKindCatalog.load(db: db).customKinds.compactMap { kind in
+            kind.id.map { CustomKindRow(id: $0, name: kind.name, area: kind.area, documents: counts[$0] ?? 0) }
+        }
+    }
+
     // MARK: Sync
 
     /// Whether an incoming save of a custom kind redirected here to `targetUUID` is that kind (an identity merge:
@@ -219,7 +236,11 @@ public enum CustomDocumentKinds {
         }
 
         init(db: Database, edits: [KindEdit]) throws {
-            self.init(catalog: try DocumentKindCatalog.load(db: db))
+            try self.init(catalog: try DocumentKindCatalog.load(db: db), edits: edits)
+        }
+
+        init(catalog: DocumentKindCatalog, edits: [KindEdit]) throws {
+            self.init(catalog: catalog)
             var changes: [Int64: KindEdit.Change] = [:]
             for edit in edits {
                 guard catalog.custom(id: edit.kindId) != nil else { throw Failure.notFound(edit.kindId) }

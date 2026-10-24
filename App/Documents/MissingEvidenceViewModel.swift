@@ -29,6 +29,8 @@ final class MissingEvidenceViewModel: ObservableObject {
     struct Snapshot: Equatable, Sendable {
         var requirements: [EvidenceRequirement]
         var items: [MissingEvidence.Item]
+        /// The custom kinds (the rules' names for them, the editor's choices).
+        var customKinds: [CustomDocumentKind] = []
     }
 
     let dbQueue: DatabaseQueue
@@ -47,6 +49,8 @@ final class MissingEvidenceViewModel: ObservableObject {
     /// The tax years offered, latest first.
     @Published private(set) var years: [UKTaxYear]
     @Published private(set) var requirements: [EvidenceRequirement] = []
+    /// Every kind's name, the custom kinds included (read with the rules).
+    @Published private(set) var kindCatalog = DocumentKindCatalog(customKinds: [])
     /// The whole checklist for the period (the filters don't change it).
     @Published private(set) var items: [MissingEvidence.Item] = [] {
         didSet {
@@ -122,12 +126,14 @@ final class MissingEvidenceViewModel: ObservableObject {
 
     func loadReferenceData() {
         do {
-            let (accounts, categories, groups, earliest, titles) = try dbQueue.read { db in
+            let (accounts, categories, groups, earliest, titles, kinds) = try dbQueue.read { db in
                 (try Account.fetchAll(db), try Category.order(Column("name").collating(.localizedCaseInsensitiveCompare)).fetchAll(db),
                  try CategoryGroup.order(Column("name").collating(.localizedCaseInsensitiveCompare)).fetchAll(db),
-                 try Date.fetchOne(db, sql: "SELECT MIN(date) FROM transaction_"), try PropertyEvidence.entityTitles(db: db))
+                 try Date.fetchOne(db, sql: "SELECT MIN(date) FROM transaction_"), try PropertyEvidence.entityTitles(db: db),
+                 try DocumentKindCatalog.load(db: db))
             }
             entityTitles = titles
+            kindCatalog = kinds
             self.accounts = accounts.sortedForDisplay()
             self.categories = categories
             categoryGroups = groups
@@ -181,7 +187,7 @@ final class MissingEvidenceViewModel: ObservableObject {
                     let related = try PropertyEvidence.relatedRequirementIds(db: db, propertyId: propertyId)
                     items = items.filter { $0.requirement.id.map(related.contains) ?? false }
                 }
-                return Snapshot(requirements: requirements, items: items)
+                return Snapshot(requirements: requirements, items: items, customKinds: try CustomDocumentKind.fetchAll(db))
             }
             .removeDuplicates()
             .values(in: dbQueue)
@@ -190,6 +196,7 @@ final class MissingEvidenceViewModel: ObservableObject {
                 for try await snapshot in values {
                     guard let self, !Task.isCancelled else { return }
                     self.requirements = snapshot.requirements
+                    self.kindCatalog = DocumentKindCatalog(customKinds: snapshot.customKinds)
                     self.items = snapshot.items
                     self.isLoading = false
                 }
@@ -389,6 +396,11 @@ final class MissingEvidenceViewModel: ObservableObject {
 
     static func kindsText(_ kinds: [DocumentKind]) -> String {
         kindsText(names: kinds.map(\.displayName))
+    }
+
+    /// The kinds that satisfy a rule by name, its custom kinds included (those not known here left out).
+    func kindsText(_ requirement: EvidenceRequirement) -> String {
+        Self.kindsText(names: requirement.knowingOnly(kindCatalog).kindRefs.map(kindCatalog.displayName))
     }
 
     /// An item's kinds by name (custom kinds included); none = any document.
