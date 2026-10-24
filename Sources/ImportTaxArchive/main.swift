@@ -111,7 +111,7 @@ if isInside(archive, library) { fail("The archive folder is the library itself."
 
 /// Puts the database back from `backup` and removes every library file not in `filesBefore`.
 func restore(backup: String, filesBefore: Set<String>, libraryFiles: () -> Set<String>) throws {
-    try DatabaseQueue(path: backup).backup(to: DatabaseQueue(path: dbPath))
+    try ToolDatabase.open(path: backup).backup(to: ToolDatabase.open(path: dbPath))
     for relative in libraryFiles().subtracting(filesBefore).sorted(by: { $0.count > $1.count }) {
         let path = (library as NSString).appendingPathComponent(relative)
         var isFolder: ObjCBool = false
@@ -153,8 +153,8 @@ do {
     do {
         var readOnly = Configuration()
         readOnly.readonly = true
-        let source = try DatabaseQueue(path: dbPath, configuration: readOnly)
-        let target = try DatabaseQueue(path: copyPath)
+        let source = try ToolDatabase.open(path: dbPath, configuration: readOnly)
+        let target = try ToolDatabase.open(path: copyPath)
         try source.backup(to: target)
         try source.close()
         try target.close()
@@ -183,7 +183,7 @@ do {
         // The real run, exactly as rehearsed.
         let backupPath = dbPath + ".pre-tax-archive-backup-" + stamp.string(from: Date())
         guardWrite(backupPath, "the backup")
-        try DatabaseQueue(path: dbPath).backup(to: DatabaseQueue(path: backupPath))
+        try ToolDatabase.open(path: dbPath).backup(to: ToolDatabase.open(path: backupPath))
         print("Backup: \(backupPath)")
         /// Every file in the library before the run, so what the run adds can be taken back.
         func libraryFiles() -> Set<String> {
