@@ -18,6 +18,9 @@ public struct ImportRunSummary: Equatable, Sendable {
     public var backupPath: String?
     /// What the run didn't do and why ("Not learnt: different choices for …").
     public var notes: [String] = []
+    /// The files it left unimported that can be set aside (kept for later, copied to a folder): not
+    /// those already waiting, identical to a library document or read from the library.
+    public var setAside: [SetAsideFile] = []
 
     public init(runId: Int64, filed: Int, linked: Int, recorded: Int, transactions: Int, duplicates: Int, leftOut: Int,
                 backupPath: String?) {
@@ -441,6 +444,13 @@ public struct ImportApplier: Sendable {
             try file.insert(db)
         }
         _ = try ImportChangeCapture.finish(db: db, runId: runId)
+        // After the capture: Undo leaves the mark, and a run undone lists its waiting files again
+        // (`ImportWaitingList.waiting`). Inside the run's sync batch.
+        try ImportWaitingList.markImported(db: db, runId: runId, sha256s: Set(applied.filter { documents[$0.id] != nil }.map(\.file.sha256)))
+        let waiting = try ImportWaitingList.waitingHashes(db: db)
+        let libraryPath = library.root.standardizedFileURL.path + "/"
+        summary.setAside = ImportSetAside.candidates(plan, discarding: false, names: ImportKindNames(catalog: kindsNow, pending: plan.pendingKinds))
+            .filter { !waiting.contains($0.sha256.lowercased()) && !$0.url.standardizedFileURL.path.hasPrefix(libraryPath) }
         run.summary = summary.text
         try run.update(db)
         try SyncBatch.open(runId: runId, since: syncMark, db: db)

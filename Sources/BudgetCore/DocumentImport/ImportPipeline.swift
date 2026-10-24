@@ -97,7 +97,7 @@ public struct ImportPipeline: @unchecked Sendable {
     private let library: EvidenceLibrary
     private let categorizationService: CategorizationService
     private let readers: [any ImportReader]?
-    private let detector: ImportDetector?
+    let detector: ImportDetector?
     /// The on-device model asked about what nothing else recognises (`ImportModelProposals`); nil: never asked.
     private let modelReader: (any DocumentModelReading)?
     /// Each model call's deadline (tests shorten it).

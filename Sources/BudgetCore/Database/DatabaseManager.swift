@@ -141,5 +141,6 @@ public final class DatabaseManager {
         registerCustomDocumentKindMigration(&migrator)
         registerCustomDocumentKindMergedIntoMigration(&migrator)
         registerSyncRedirectStampMigration(&migrator)
+        registerImportWaitingFileMigration(&migrator)
     }
 }

@@ -83,6 +83,9 @@ public final class ImportSession {
     /// user to say whether those changes go too.
     public var pendingUndo: PendingUndo?
 
+    /// The files kept for later (spec 2026-10-24 §1), newest first, as last read (`refreshWaiting`).
+    public private(set) var waiting: [ImportWaitingFile] = []
+
     /// Each phase as it is set (the Mac's model republishes it; tests record it).
     @ObservationIgnored public var onPhaseChange: (@MainActor (Phase) -> Void)?
     /// An import was applied or undone: the screens showing what it changed re-read.
@@ -94,6 +97,8 @@ public final class ImportSession {
     @ObservationIgnored public let pipeline: ImportPipeline
     /// Confirm import's writer.
     @ObservationIgnored private let applier: ImportApplier
+    /// The waiting list and Mango's copies of its files.
+    @ObservationIgnored public let waitingList: ImportWaitingList
 
     /// The people's and tenants' NIFs, never an issuer's (`IssuerKey.knownParties`): read with the target names.
     /// Nil until first read: no issuer key is worked out before (a person's own NIF would key one).
@@ -128,8 +133,9 @@ public final class ImportSession {
 
     /// `modelReader`: the on-device model asked about what nothing else recognises (nil: never asked).
     /// `now`: the current time as the app sees it (runs and undos are stamped with it).
+    /// `waitingRoot`: where kept files are copied (nil: `Waiting` beside the library's folder).
     public init(dbQueue: DatabaseQueue, databasePath: String?, library: EvidenceLibrary, categorizationService: CategorizationService,
-                modelReader: (any DocumentModelReading)?, now: @escaping @MainActor () -> Date = { Date() }) {
+                modelReader: (any DocumentModelReading)?, waitingRoot: URL? = nil, now: @escaping @MainActor () -> Date = { Date() }) {
         self.dbQueue = dbQueue
         self.library = library
         self.now = now
@@ -137,6 +143,8 @@ public final class ImportSession {
         self.pipeline = ImportPipeline(dbQueue: dbQueue, library: library, categorizationService: categorizationService,
                                        modelReader: modelReader)
         self.applier = ImportApplier(dbQueue: dbQueue, databasePath: databasePath, library: library)
+        self.waitingList = ImportWaitingList(root: waitingRoot ?? library.root.deletingLastPathComponent().appendingPathComponent("Waiting", isDirectory: true),
+                                             database: dbQueue)
     }
 
     /// Whether a review is open (reading more files into it counts).
@@ -536,6 +544,8 @@ public final class ImportSession {
             phase = .finished(summary)
             selectedRunId = summary.runId
             loadRuns()
+            // Imported waiting files leave the list; a rule learnt may suggest others.
+            refreshWaiting()
             libraryCounts.invalidate()
             onDataChanged?()
         case .failure(let error):
@@ -757,6 +767,8 @@ public final class ImportSession {
         case .success:
             undoRefusals[runId] = nil
             loadRuns()
+            // Its waiting files come back.
+            refreshWaiting()
             libraryCounts.invalidate()
             onDataChanged?()
             return []
@@ -771,5 +783,72 @@ public final class ImportSession {
     /// Hides why a run's undo was refused.
     public func dismissUndoRefusal(_ runId: Int64) {
         undoRefusals[runId] = nil
+    }
+
+    // MARK: Set aside and the waiting list
+
+    /// The entry point of a review of waiting files.
+    public static let waitingEntryPoint = "Waiting list"
+
+    /// The open review's files that can be set aside before it is discarded
+    /// (`ImportSetAside.candidates`, discarding): not those already waiting or read from the library.
+    public func setAsideCandidates() -> [SetAsideFile] {
+        guard let plan else { return [] }
+        let waitingHashes = Set(waiting.map(\.sha256))
+        let libraryPath = library.root.standardizedFileURL.path + "/"
+        return ImportSetAside.candidates(plan, discarding: true, names: ImportKindNames(catalog: kindCatalog, pending: plan.pendingKinds))
+            .filter { !waitingHashes.contains($0.sha256.lowercased()) && !$0.url.standardizedFileURL.path.hasPrefix(libraryPath) }
+    }
+
+    /// Re-reads the waiting list off the main actor: rows imported by a run standing 30 days purged,
+    /// files read again when the recognisers changed (`ImportWaitingList.recheck`), then listed.
+    /// Call on opening the Imports screen and after a kind is created, renamed or merged; Confirm
+    /// import, Undo, keeping and discarding call it themselves.
+    public func refreshWaiting() {
+        spawn { [weak self] in await self?.reloadWaiting() }
+    }
+
+    /// `refreshWaiting`, finished when the list is read.
+    public func reloadWaiting() async {
+        let list = waitingList, pipeline = pipeline, dbQueue = dbQueue, now = now()
+        let result = await Task.detached(priority: .utility) { () -> Result<[ImportWaitingFile], Error> in
+            Result {
+                try list.purgeImported(now: now)
+                let reading = try dbQueue.read { db in try pipeline.waitingRecogniser(db: db) }
+                try list.recheck(recognise: reading.recognise, kindName: reading.kindName, signature: reading.signature)
+                return try list.waiting()
+            }
+        }.value
+        switch result {
+        case .success(let rows):
+            waiting = rows
+        case .failure(let error):
+            logger.error("Reading the waiting list failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Keeps `files` for later (off the main actor), then re-reads the list.
+    public func keep(_ files: [SetAsideFile]) async throws -> ImportWaitingList.KeepResult {
+        let list = waitingList, now = now()
+        let result = try await Task.detached(priority: .userInitiated) { try list.keep(files, now: now) }.value
+        refreshWaiting()
+        return result
+    }
+
+    /// Removes the waiting files `ids` and Mango's copies (the user confirmed), then re-reads the list.
+    public func discardWaiting(_ ids: [Int64]) async throws {
+        let list = waitingList
+        try await Task.detached(priority: .userInitiated) { try list.discard(ids) }.value
+        refreshWaiting()
+    }
+
+    /// Reads the waiting files `ids` (Mango's copies) into a review, entry point "Waiting list" — or into
+    /// the open one. False when none of them is here (a copy not arrived yet).
+    @discardableResult
+    public func importWaiting(_ ids: [Int64]) -> Bool {
+        let wanted = Set(ids)
+        let urls = waiting.filter { $0.id.map(wanted.contains) == true }.map(waitingList.fileURL)
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        return start(urls, entryPoint: Self.waitingEntryPoint)
     }
 }

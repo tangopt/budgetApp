@@ -67,6 +67,12 @@ public enum SyncSchema {
                         synced: ["confirmedAt", "entryPoint", "summary", "reasonsJSON", "undoneAt", "undoSummary", "appUserId"],
                         foreignKeys: ["appUserId": "appUser"],
                         localOnly: ["backupPath"]),
+        // Files kept for later (spec 2026-10-24 §1): the household's list; each device reads the text
+        // and suggests on its own.
+        SyncTableSchema("importWaitingFile",
+                        synced: ["sha256", "originalFileName", "byteCount", "storedRelativePath", "reason", "recognisedAs", "keptAt", "importedRunId"],
+                        foreignKeys: ["importedRunId": "importRun"],
+                        localOnly: ["text", "textStatus", "suggestion", "checkedSignature"]),
         SyncTableSchema("importBatch",
                         synced: ["accountId", "sourceFileName", "importedAt", "importRunId"],
                         foreignKeys: ["importRunId": "importRun", "accountId": "account"],
@@ -464,6 +470,7 @@ extension SyncSchema {
         SyncUniqueKey("document", ["sha256"], .identity),                      // the same file
         SyncUniqueKey("importProfile", ["accountId", "format"], .identity),    // the account's profile for a format
         SyncUniqueKey("importRule", ["kind", "matchKey"], .identity),          // one learnt rule per key (`ImportRuleStore.learn`)
+        SyncUniqueKey("importWaitingFile", ["sha256"], .identity),             // one waiting row per file content
         SyncUniqueKey("transaction_", ["accountId", "fingerprint"], .identity),   // the same statement row (ruling R9)
         SyncUniqueKey("transferLink", ["inTransactionId"], .yield("isDismissed", .bool(true))),
         SyncUniqueKey("payMonthClose", ["year", "month"], .identity),

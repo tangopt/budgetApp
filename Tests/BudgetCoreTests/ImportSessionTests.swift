@@ -239,6 +239,76 @@ final class ImportSessionTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(session.plan).items.map(\.file.fileName), ["new.pdf"])
     }
 
+    // MARK: Set aside and the waiting list
+
+    /// A file left out at Confirm is offered to set aside; kept, it waits (Mango's copy); a new
+    /// learnt rule suggests it again; imported from the waiting list it leaves the list, and
+    /// comes back when that run is undone.
+    func testSetAsideKeepImportFromTheWaitingListAndUndo() async throws {
+        let empty = try store("Waiting", demo: false)
+        let session = session(empty)
+        session.start([try letter("a.pdf", day: "1"), try letter("b.pdf", day: "2")], entryPoint: "Test")
+        await session.settled()
+        session.resolve(try item(session.plan, "a.pdf").id, .chooseKind(.other))
+        session.resolve(try item(session.plan, "b.pdf").id, .leaveOut)
+        await session.settled()
+        let reason = try XCTUnwrap(try item(session.plan, "b.pdf").needsYouReasons.first)
+        // An open review offers every file (Discard ▸ Set files aside…).
+        XCTAssertEqual(session.setAsideCandidates().map(\.fileName), ["a.pdf", "b.pdf"])
+        session.confirm(confirmedBy: nil)
+        await session.settled()
+        guard case .finished(let summary) = session.phase else { return XCTFail("\(session.phase) \(String(describing: session.problem))") }
+        XCTAssertEqual(summary.setAside.map(\.fileName), ["b.pdf"])
+        XCTAssertEqual(summary.setAside.first?.reason, reason)
+        XCTAssertEqual(session.waiting, [])
+
+        let kept = try await session.keep(summary.setAside)
+        XCTAssertEqual(kept.kept.map(\.originalFileName), ["b.pdf"])
+        await session.settled()
+        let waiting = try XCTUnwrap(session.waiting.first)
+        XCTAssertEqual(session.waiting.count, 1)
+        XCTAssertNil(waiting.suggestion)
+        let copy = session.waitingList.fileURL(waiting)
+        XCTAssertTrue(copy.path.hasPrefix(folder.appendingPathComponent("Waiting").path), "beside the library: \(copy.path)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: copy.path))
+
+        // A learnt rule now knows the letters' issuer: the waiting file is suggested again.
+        try await empty.db.write { db in
+            let issuer = try XCTUnwrap(IssuerKey.derive(text: waiting.text, fileName: waiting.originalFileName, ownNIFs: []))
+            _ = try ImportRuleStore.learn(db: db, kind: .documentKind, key: ImportRuleKind.matchKey(issuer: issuer), matchLabel: "Example Seguros",
+                                          action: DocumentKindAction(kind: .insuranceReceipt), actionLabel: "Kind: Insurance receipt", now: Self.fixedNow)
+        }
+        session.refreshWaiting()
+        await session.settled()
+        XCTAssertEqual(session.waiting.first?.suggestion, "Now recognised as Insurance receipt")
+
+        // Imported from the waiting list: a review of Mango's copy, entry point "Waiting list".
+        XCTAssertTrue(session.importWaiting([try XCTUnwrap(waiting.id)]))
+        await session.settled()
+        XCTAssertEqual(session.phase, .review)
+        XCTAssertEqual(try XCTUnwrap(session.plan).items.map(\.file.fileName), ["b.pdf"])
+        session.resolve(try item(session.plan, "b.pdf").id, .chooseKind(.other))
+        await session.settled()
+        session.confirm(confirmedBy: nil)
+        await session.settled()
+        guard case .finished(let second) = session.phase else { return XCTFail("\(session.phase) \(String(describing: session.problem))") }
+        XCTAssertEqual(session.runs.first { $0.id == second.runId }?.entryPoint, "Waiting list")
+        XCTAssertEqual(second.setAside, [])
+        XCTAssertEqual(session.waiting, [], "imported: off the list")
+
+        // Undone: back on the list.
+        let refused = try await session.undo(second.runId)
+        XCTAssertEqual(refused, [])
+        await session.settled()
+        XCTAssertEqual(session.waiting.map(\.originalFileName), ["b.pdf"])
+
+        // Discarded: Mango's copy goes.
+        try await session.discardWaiting([try XCTUnwrap(waiting.id)])
+        await session.settled()
+        XCTAssertEqual(session.waiting, [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path))
+    }
+
     // MARK: Confirm
 
     func testConfirmUsesTheGivenUser() async throws {
