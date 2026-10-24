@@ -30,7 +30,8 @@ mkdir -p "$CACHE_DIR"
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
-if pgrep -x Mango >/dev/null || pgrep -x Budget >/dev/null; then
+# Only the Mac app counts: the iPhone simulator's Mango is also a process named "Mango".
+if pgrep -f '/Mango\.app/Contents/MacOS/Mango$' >/dev/null || pgrep -f '/Budget\.app/Contents/MacOS/Budget$' >/dev/null; then
     echo "Quit Mango first, then run this again." >&2
     exit 1
 fi
