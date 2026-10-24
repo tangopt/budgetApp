@@ -124,6 +124,39 @@ final class EvidenceMatcherTests: XCTestCase {
         XCTAssertTrue(suggestions[0].reasons.contains("Description mentions BBVASEG"))
     }
 
+    func testRepairBillMatchesItsDebitWithinFortyFiveDays() {
+        let repairs = Category(id: 18, name: "Repairs", type: .expense)
+        let bill = document(.repairInvoice, date: "2026-02-02", amount: 7_995)
+        let transactions = [
+            transaction(1, "2026-02-12", -7_995, "TRF CANALIZACOES EXEMPLO", category: 18), // 10 days later
+            transaction(2, "2026-02-12", 7_995, "TRF RECEBIDA"), // a credit: never a bill's payment
+            transaction(3, "2026-03-15", -2_000, "OBRAS", category: 18) // 41 days, another amount: in the window only
+        ]
+        let suggestions = EvidenceMatcher.suggestions(document: bill, transactions: transactions, accounts: accounts,
+                                                      categories: categories + [repairs])
+        XCTAssertEqual(ids(suggestions), [1])
+        XCTAssertTrue(suggestions[0].dateInWindow)
+        XCTAssertTrue(suggestions[0].reasons.contains("10 days after"))
+        XCTAssertTrue(suggestions[0].reasons.contains("Category Repairs"))
+        XCTAssertEqual(EvidenceMatcher.confidentMatch(suggestions)?.transactionId, 1)
+    }
+
+    func testStampDutyMatchesTheStatePaymentWithinSixtyDays() {
+        let stampDuty = Category(id: 19, name: "Imposto do Selo", type: .expense)
+        let note = document(.stampDuty, date: "2026-01-10", amount: 9_500)
+        let transactions = [
+            transaction(1, "2026-02-20", -9_500, "PG PAGEST 000000000000001", category: 19), // 41 days later
+            transaction(2, "2026-01-08", -9_500, "PG PAGEST 000000000000002") // 2 days before: outside, amount only
+        ]
+        let suggestions = EvidenceMatcher.suggestions(document: note, transactions: transactions, accounts: accounts,
+                                                      categories: categories + [stampDuty])
+        XCTAssertEqual(ids(suggestions), [1, 2])
+        XCTAssertTrue(suggestions[0].dateInWindow)
+        XCTAssertFalse(suggestions[1].dateInWindow)
+        XCTAssertTrue(suggestions[0].reasons.contains("Description mentions PAGEST"))
+        XCTAssertTrue(suggestions[0].reasons.contains("Category Imposto do Selo"))
+    }
+
     func testRentReceiptMatchesTheCreditInItsRentMonth() {
         let receipt = document(.rentReceipt, date: "2025-03-05", amount: 230_000, period: ("2025-03-01", "2025-03-31"))
         let transactions = [

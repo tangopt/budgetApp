@@ -625,6 +625,28 @@ extension RentalAccountsTests {
         XCTAssertEqual(insurance.map(\.fileName).sorted(), ["20240101 - Lisbon- Insurance.pdf", "Insurance.pdf"])
         XCTAssertEqual(TaxEvidencePack.folderName(year: year, personName: "Person A"), "Evidence 2024-25 - Person A")
     }
+
+    func testRepairBillOnARepairsTransactionIsTheRepairsLinesEvidence() throws {
+        let before = try compute().line(.repairs)?.amount
+        let debit = try transaction("bank", "repairs", (2024, 10, 14), -7_995, "TRF CANALIZACOES EXEMPLO")
+        let billId = try db.write { db -> Int64 in
+            var bill = EvidenceDocument(sha256: "rb", storedRelativePath: "rb/rb.pdf", originalFileName: "Fatura.pdf", byteCount: 1,
+                                        canonicalName: "20241004 - Property - Repair bill - Canalizacoes Exemplo", kind: .repairInvoice,
+                                        docDate: Self.date(2024, 10, 4), amountMinorUnits: 7_995, currency: .eur, addedAt: Date())
+            try bill.insert(db)
+            try EvidenceLinks.link(db: db, documentId: bill.id!, to: .transaction(debit))
+            return bill.id!
+        }
+        let accounts = try compute()
+        let repairs = try XCTUnwrap(accounts.line(.repairs))
+        XCTAssertTrue(repairs.sources.contains { $0.documentIds.contains(billId) })
+        // The kind moves no figure: the debit counts by its own date, as any repair did before.
+        XCTAssertEqual(repairs.amount.native, (before?.native ?? 0) + 3_998)   // A's half of €79.95, rounded
+        let files = try db.read { db in try TaxEvidencePack.files(db: db, accounts: accounts, taxYearId: nil) }
+        let filed = try XCTUnwrap(files.first { $0.documentId == billId })
+        XCTAssertTrue(filed.folder.hasSuffix("Repairs and maintenance"), filed.folder)
+        XCTAssertEqual(filed.fileName, "20241004 - Property - Repair bill - Canalizacoes Exemplo.pdf")
+    }
 }
 
 // MARK: - Export polish

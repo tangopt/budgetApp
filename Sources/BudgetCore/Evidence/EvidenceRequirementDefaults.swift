@@ -14,9 +14,9 @@ public enum EvidenceRequirementDefaults {
     /// The kinds and usual source a category's transactions need, from its name (case and
     /// accent-insensitive), first match wins: insurance (incl. "Mortgage insurance") → receipt
     /// or policy, Mortgage interest → mortgage notice, receipt or interest statement, IMI → notice or
-    /// payment, Condomínio → receipt, PT tax → IRS liquidação or payment, PT accountant →
-    /// accountant invoice, Legal fees → legal invoice or court fee, Repairs → any document
-    /// (invoices classify as `other`), Utilities (electricity, gas, water) → utility invoice, bank fees → bank
+    /// payment, Condomínio → receipt, stamp duty / selo → stamp duty, PT tax → IRS liquidação or
+    /// payment, PT accountant → accountant invoice, Legal fees → legal invoice or court fee,
+    /// Repairs → repair bill or other (documents filed before the kind), Utilities (electricity, gas, water) → utility invoice, bank fees → bank
     /// statement; any other name → any document, no usual source.
     public static func rule(forCategoryName name: String) -> CategoryRule {
         let folded = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
@@ -25,12 +25,16 @@ public enum EvidenceRequirementDefaults {
         if folded.contains("mortgage") { return CategoryRule(kinds: [.mortgageNotice, .mortgageReceipt, .mortgageInterestStatement], usualSource: "BBVA app") }
         if words.contains("imi") { return CategoryRule(kinds: [.imiNotice, .imiPayment], usualSource: "Portal das Finanças") }
         if folded.contains("condominio") { return CategoryRule(kinds: [.condominioReceipt], usualSource: "Condomínio administrator") }
+        // Stamp duty before the PT tax names ("PT tax: Imposto do Selo").
+        if words.contains("selo") || folded.contains("stamp duty") { return CategoryRule(kinds: [.stampDuty], usualSource: "Portal das Finanças") }
         if folded.contains("pt tax") || words.contains("irs") {
             return CategoryRule(kinds: [.ptIRSAssessment, .ptIRSPaymentNote, .ptIRSPaymentProof], usualSource: "Portal das Finanças")
         }
         if folded.contains("accountant") { return CategoryRule(kinds: [.accountantInvoice], usualSource: "Accountant") }
         if folded.contains("legal") { return CategoryRule(kinds: [.legalInvoice, .courtFee], usualSource: "Lawyer / court") }
-        if folded.contains("repair") { return CategoryRule(kinds: [], usualSource: "Supplier") }
+        // Repair bills, and `other` for the documents filed before that kind existed; a bank's
+        // advice or transfer proof alone isn't the bill.
+        if folded.contains("repair") { return CategoryRule(kinds: [.repairInvoice, .other], usualSource: "Supplier") }
         // One utility invoice per utility debit (electricity, gas, water too).
         if RechargeNetting.isUtilityName(name) { return CategoryRule(kinds: [.utilityInvoice], usualSource: "Utility provider") }
         if words.contains("fees") || words.contains("fee") { return CategoryRule(kinds: [.bankStatement], usualSource: "BBVA app") }

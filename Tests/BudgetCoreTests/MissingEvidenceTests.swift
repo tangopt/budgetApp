@@ -227,6 +227,17 @@ final class MissingEvidenceTests: XCTestCase {
         XCTAssertEqual(result[2].target, .transaction(c))
     }
 
+    func testRepairsRuleAcceptsRepairBillsAndOtherButNotABankAdviceAlone() throws {
+        try requirement("Repairs", .transactionsInCategory(categoryId: repairs), kinds: EvidenceRequirementDefaults.rule(forCategoryName: "Repairs").kinds)
+        let bill = try transaction(Self.date(2025, 5, 2), -7_995, category: repairs)
+        let older = try transaction(Self.date(2025, 6, 2), -5_000, category: repairs)
+        let adviceOnly = try transaction(Self.date(2025, 7, 2), -6_000, category: repairs)
+        try document(.repairInvoice, name: "Repair bill", linkedTo: .transaction(bill))
+        try document(.other, name: "Filed before the kind existed", linkedTo: .transaction(older))
+        try document(.bankDebitAdvice, name: "Advice", linkedTo: .transaction(adviceOnly))
+        XCTAssertEqual(try items(year2025.interval).map(\.status), [.satisfied, .satisfied, .missing])
+    }
+
     func testEmptyKindsAcceptAnyDocument() throws {
         try requirement("Repairs", .transactionsInCategory(categoryId: repairs), kinds: [])
         let t = try transaction(Self.date(2025, 5, 2), -100, category: repairs)
@@ -519,8 +530,12 @@ final class MissingEvidenceTests: XCTestCase {
         XCTAssertEqual(rule("PT tax").kinds, [.ptIRSAssessment, .ptIRSPaymentNote, .ptIRSPaymentProof])
         XCTAssertEqual(rule("PT accountant").kinds, [.accountantInvoice])
         XCTAssertEqual(rule("Legal fees").kinds, [.legalInvoice, .courtFee])
-        XCTAssertEqual(rule("Repairs").kinds, [])
+        XCTAssertEqual(rule("Repairs").kinds, [.repairInvoice, .other])
         XCTAssertEqual(rule("Repairs").usualSource, "Supplier")
+        XCTAssertEqual(rule("Repairs and maintenance").kinds, [.repairInvoice, .other])
+        XCTAssertEqual(rule("Imposto do Selo"), .init(kinds: [.stampDuty], usualSource: "Portal das Finanças"))
+        XCTAssertEqual(rule("Stamp duty").kinds, [.stampDuty])
+        XCTAssertEqual(rule("PT tax: imposto do selo").kinds, [.stampDuty])
         XCTAssertEqual(rule("Utilities").kinds, [.utilityInvoice])
         XCTAssertEqual(rule("BBVA fees").kinds, [.bankStatement])
         XCTAssertEqual(rule("Other"), .init(kinds: [], usualSource: nil))

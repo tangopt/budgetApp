@@ -249,6 +249,8 @@ public enum TaxExpenseTypeMap {
         if has("mortgage", "interest", "juros") { return .financeCost }
         if has("condominio", "service charge") { return .serviceCharge }
         if words.contains("imi") || has("council tax") { return .councilTax }
+        // Stamp duty isn't a tax on the rental income (user, 2026-10-24): any other expense.
+        if words.contains("selo") || has("stamp duty") { return .otherExpense }
         if has("pt tax", "imposto") || words.contains("irs") { return .foreignTax }
         if has("accountan", "contabil") { return .accountancy }
         if has("legal", "advogad", "solicitador", "court") { return .legalFees }

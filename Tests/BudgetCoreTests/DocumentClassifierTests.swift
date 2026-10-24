@@ -112,4 +112,69 @@ final class DocumentClassifierTests: XCTestCase {
         // Unreadable text (a font with shifted codes) falls back to the name.
         XCTAssertEqual(DocumentClassifier.classify(text: "$9&$3,7­26$/*8(,5 'HDFRUGRFRP", fileName: "20250128 - Água .pdf"), .utilityInvoice)
     }
+
+    // MARK: Repair bills and stamp duty (synthetic texts)
+
+    func testRepairBills() {
+        XCTAssertEqual(DocumentClassifier.classify(text: "Canalizações Exemplo Lda\nFATURA-RECIBO FR 2026/15\nReparação de autoclismo\nMão de obra 40,00\nTotal 79,95 EUR", fileName: "doc.pdf"), .repairInvoice)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Demo Handyman Ltd\nINVOICE 12\nBoiler repair and maintenance\nTotal £120.00", fileName: "x.pdf"), .repairInvoice)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Exemplo Eletricistas Lda\nFatura FT 2026/3\nSubstituição de quadro elétrico\nTotal 150,00 EUR", fileName: "y.pdf"), .repairInvoice)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Fatura FT 2026/4\nDesentupimento de esgoto\nTotal 60,00 EUR", fileName: "z.pdf"), .repairInvoice)
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "Fatura reparacao esquentador.pdf"), .repairInvoice)
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "20260110 - Obras cozinha.pdf"), .repairInvoice)
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "Canalizador_fatura.pdf"), .repairInvoice)
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "Boiler repair invoice.pdf"), .repairInvoice)
+    }
+
+    func testRepairWordingInOtherIssuersKeepsTheirKinds() {
+        // condomínio receipt for works, insurance receipt, bank fee "Manutenção de conta", utility invoice
+        XCTAssertEqual(DocumentClassifier.classify(text: "Condomínio Rua Exemplo 1\nRecibo N 44\nQuota extra obras fachada", fileName: "a.pdf"), .condominioReceipt)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Extrato\nSaldo\nComissão manutenção de conta", fileName: "b.pdf"), .bankStatement)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Fatura-Recibo FR 2026/7\nComissão de manutenção de conta 5,00\nImposto do Selo 0,20", fileName: "c.pdf"), .other)
+        XCTAssertEqual(DocumentClassifier.classify(text: "MAPFRE SEGUROS GERAIS\nFatura/Recibo\nSeguro Multirriscos: danos por água, reparação\nTotal 50,00 €", fileName: "d.pdf"), .insuranceReceipt)
+        XCTAssertEqual(DocumentClassifier.classify(text: "EDP Comercial\nFatura FT 0423/1\nManutenção do contador\nValor a Pagar: 25,00 €", fileName: "e.pdf"), .utilityInvoice)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Exemplo Lda\nFatura-recibo FR 2026/2\nServiço de Assistência fiscal: obras dedutíveis", fileName: "f.pdf"), .accountantInvoice)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Fatura-recibo FR 2026/3\nHonorários Advogada: litígio sobre obras", fileName: "g.pdf"), .legalInvoice)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Comprovativo de transferência\nTipo de Operação: Transferência a crédito SEPA\nDescritivo: Fatura reparação\nMontante: 79,95 EUR", fileName: "h.pdf"), .bankTransferProof)
+        // "OBRAS" as a word only ("sobras", "manobras").
+        XCTAssertEqual(DocumentClassifier.classify(text: "Fatura FT 2026/5\nSobras de jantar\nTotal 12,00", fileName: "i.pdf"), .other)
+        // File names: the other kinds' rules and bank words keep theirs.
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "Condominio obras 2026.pdf"), .condominioReceipt)
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "Seguro reparacao.pdf"), .insuranceReceipt)
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "Transferencia obras.pdf"), .bankTransferProof)
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "Extrato manutencao.pdf"), .bankStatement)
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "Comissao manutencao de conta.pdf"), .other)
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "Prestacao - Recibo 12:480.pdf"), .mortgageReceipt)
+    }
+
+    func testStampDuty() {
+        XCTAssertEqual(DocumentClassifier.classify(text: "Autoridade Tributária e Aduaneira\nDOCUMENTO DE COBRANÇA\nImposto do Selo\nVerba 2 Arrendamento\nValor a pagar 95,00 €", fileName: "d.pdf"), .stampDuty)
+        XCTAssertEqual(DocumentClassifier.classify(text: "COMPROVATIVO DE PAGAMENTO\nPortal das Finanças\nImposto do Selo\nValor 95,00", fileName: "e.pdf"), .stampDuty)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Pagamentos ao Estado\nImposto do Selo\n95,00 EUR", fileName: "f.pdf"), .stampDuty)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Nota de cobrança\nImposto Selo\nLiquidação n.º 2026 000001\nValor a pagar 30,00 €", fileName: "g.pdf"), .stampDuty)
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "Imposto do Selo 2026.pdf"), .stampDuty)
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "Stamp duty - lease.pdf"), .stampDuty)
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "Selo_contrato_2026.pdf"), .stampDuty)
+    }
+
+    func testStampDutyLinesInLoanLettersAndAdvicesKeepTheirKinds() {
+        XCTAssertEqual(DocumentClassifier.classify(text: "Aviso débito prestação\nEmpréstimo 0001\nJuros 300,00\nImposto do Selo 12,00", fileName: "g.pdf"), .mortgageNotice)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Recibo de empréstimo 193/480\nImposto do Selo 12,00", fileName: "h.pdf"), .mortgageReceipt)
+        // With a settlement ("liquidação") line, as loan letters have.
+        XCTAssertEqual(DocumentClassifier.classify(text: "Aviso de débito prestação\nCrédito habitação 0001\nData de liquidação 2026-01-31\nImposto do Selo s/ juros 12,00", fileName: "i.pdf"), .mortgageNotice)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Recibo de empréstimo 193/480\nLiquidação da prestação\nImposto do Selo 12,00", fileName: "j.pdf"), .mortgageReceipt)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Encargos com imóveis\nEmpréstimo 0001\nLiquidação de juros\nImposto do Selo 140,00", fileName: "k.pdf"), .mortgageInterestStatement)
+        // A bank's fee advice lists stamp duty on its commission.
+        XCTAssertEqual(DocumentClassifier.classify(text: "AVISO DE DÉBITO\nComissão de manutenção\nData de liquidação 2026-01-31\nImposto do Selo 0,20", fileName: "l.pdf"), .other)
+        // IMI, IRS and statements that mention stamp duty keep theirs.
+        XCTAssertEqual(DocumentClassifier.classify(text: "AVISO DE DÉBITO\nPAGAMENTOS AO ESTADO\nReferencia : 111122000000001\nImposto do Selo\nMONTANTE PAGO : 100,00 EUROS", fileName: "m.pdf"), .imiPayment)
+        XCTAssertEqual(DocumentClassifier.classify(text: "NOTA DE COBRANÇA DE IRS\nImposto do Selo\nImportância a pagar 900,00", fileName: "n.pdf"), .ptIRSPaymentNote)
+        XCTAssertEqual(DocumentClassifier.classify(text: "Movimentos da conta\nPagamentos ao Estado 95,00\nImposto do Selo 0,20\nExtrato\nSaldo final 1.000,00", fileName: "o.pdf"), .bankStatement)
+        // Loan file names keep theirs.
+        XCTAssertEqual(DocumentClassifier.classify(text: nil, fileName: "Prestacao imposto selo.pdf"), .mortgageNotice)
+    }
+
+    func testRulesVersionIsBumpedForTheNewKinds() {
+        XCTAssertEqual(DocumentClassifier.rulesVersion, 2)
+    }
 }

@@ -4,6 +4,11 @@ import Foundation
 /// wins): the text's rules first — they are specific to each issuer's wording — then the file
 /// name's, for files without readable text or with wording no rule knows. The user confirms.
 public enum DocumentClassifier {
+    /// The rules' version: bumped whenever a rule or kind is added or changed, so documents
+    /// read under an older version (files waiting to be imported) are read again.
+    /// 2: Repair bill and Stamp duty.
+    public static let rulesVersion = 2
+
     /// A rule: the kind, and the test on the normalized text (`EvidenceText.normalized`).
     struct Rule {
         let kind: DocumentKind
@@ -85,6 +90,11 @@ public enum DocumentClassifier {
         static let fileAddendum = make(#"\b(ADITAMENTO|ADENDA|ADDENDUM)S?\b"#)
         /// A tenancy word in a file name, beside an addendum word.
         static let fileTenancy = make(#"\b(ARRENDAMENTO|CONTRATO|TENANCY|RENT|RENTAL|LEASE)\b"#)
+        /// What a repair or maintenance bill is for (a tradesperson's work, the part fixed).
+        static let repairWork = make(#"\b(REPARAC\w*|MANUTENCAO|CANALIZ\w*|ELE(C)?TRICIST\w*|PINTURA|OBRAS|MAO DE OBRA|SUBSTITUICAO|DESENTUPIMENTO|ASSISTENCIA TECNICA|CALDEIRA|ESQUENTADOR|REPAIRS?|MAINTENANCE|PLUMB\w*)\b"#)
+        static let fileRepair = make(#"\b(REPARAC\w*|REPAIRS?|OBRAS|MANUTENCAO|CANALIZ\w*)\b"#)
+        /// Stamp duty in a file name: "selo" as a word, or "stamp duty".
+        static let fileStampDuty = make(#"\b(SELO|STAMP DUTY)\b"#)
     }
 
     /// Text rules, in order.
@@ -134,6 +144,10 @@ public enum DocumentClassifier {
         // Portuguese taxes
         Rule(kind: .ptIRSAssessment) { $0.has("DEMONSTRACAO DE LIQUIDACAO DE IRS") },
         Rule(kind: .ptIRSDeclaration) { $0.has("DECLARACAO DE RENDIMENTOS") && $0.isIRS },
+        // Stamp duty's own note, receipt or state-payment advice; never a loan letter (mortgage
+        // notices and receipts list stamp duty on their interest), a bank's fee advice (stamp
+        // duty on its commission), a statement, or an IMI or IRS document that mentions it.
+        Rule(kind: .stampDuty) { isStampDuty($0) },
         // The tax authority's receipt for an IMI payment, before the notes of payment.
         Rule(kind: .imiPayment) { isTaxAuthorityReceipt($0) && $0.isIMI },
         // Notes of payment (their instructions mention "Pagamentos ao Estado") before payments.
@@ -178,6 +192,12 @@ public enum DocumentClassifier {
             $0.matches(Patterns.utilityIssuer)
                 || $0.has("LISBOAGAS", "LISBOA GAS", "SERVICOS INTERMUNICIPALIZADOS", "AGUAS DO", "CONSUMO [KWH]", "CONSUMO [M3]")
         },
+        // A repair or maintenance bill: an invoice word and the work's, after every issuer's rule
+        // above (condomínio works, insurance claims, utilities' meter upkeep keep their kinds);
+        // never a bank's account-maintenance fee.
+        Rule(kind: .repairInvoice) {
+            $0.hasSquashed("FATURA", "FACTURA", "RECIBO", "INVOICE") && $0.matches(Patterns.repairWork) && !$0.has("MANUTENCAO DE CONTA")
+        },
         // A bare "Fatura-Recibo" says nothing about what it's for: left to the file name or `other`.
         Rule(kind: .bankTransferProof) { $0.has("TRANSFERENCIA") },
         Rule(kind: .bankStatement) { $0.has("EXTRATO") && $0.has("SALDO", "MOVIMENTOS") }
@@ -199,6 +219,8 @@ public enum DocumentClassifier {
         // An addendum of a tenancy ("Aditamento contrato"), not of a mortgage or a policy.
         Rule(kind: .tenancyAddendum) { $0.matches(Patterns.fileAddendum) && $0.matches(Patterns.fileTenancy) },
         Rule(kind: .rentReceipt) { $0.has("RECIBO DE RENDA", "RECIBOS DE RENDA", "RECIBO RENDA", "RENT RECEIPT") },
+        // Before the IRS and IMI names; not a loan's letter that names its stamp duty.
+        Rule(kind: .stampDuty) { $0.matches(Patterns.fileStampDuty) && !$0.has("PRESTACAO", "EMPRESTIMO", "CREDITO HABITACAO") },
         Rule(kind: .ptIRSDeclaration) { $0.isIRS && $0.has("DECLARACAO", "MOD 3", "MODELO 3") },
         Rule(kind: .ptIRSAssessment) { $0.isIRS && $0.has("LIQUIDACAO") },
         Rule(kind: .ptIRSPaymentProof) { $0.isIRS && $0.has("PAGAMENTO RECIBO", "COMPROVATIVO") },
@@ -214,6 +236,11 @@ public enum DocumentClassifier {
         Rule(kind: .courtFee) { $0.matches(Patterns.fileCourt) },
         Rule(kind: .lettingAgentFee) { $0.matches(Patterns.fileLetting) },
         Rule(kind: .legalInvoice) { $0.has("LEGAL FEE", "ADVOGAD") },
+        // Not a transfer or statement named after the works, nor a bank's account-maintenance fee.
+        Rule(kind: .repairInvoice) {
+            $0.matches(Patterns.fileRepair)
+                && !$0.has("TRANSFERENCIA", "TRANSFER", "EXTRATO", "STATEMENT", "MANUTENCAO DE CONTA", "MANUTENCAO CONTA")
+        },
         Rule(kind: .utilityInvoice) { $0.matches(Patterns.fileUtility) },
         Rule(kind: .bankTransferProof) { $0.has("TRANSFERENCIA", "TRANSFER") },
         Rule(kind: .bankStatement) { $0.has("EXTRATO", "STATEMENT") }
@@ -223,6 +250,16 @@ public enum DocumentClassifier {
     /// authority's receipt titled "Comprovativo de pagamento".
     static func isStatePayment(_ subject: Subject) -> Bool {
         subject.has("PAGAMENTOS AO ESTADO", "PAGAMENTO AO ESTADO", "PAGAMENTOS - ESTADO", "PAGAMENTOS-ESTADO") || isTaxAuthorityReceipt(subject)
+    }
+
+    /// Stamp duty (Imposto do Selo) with a charge's or a state payment's wording, and none of
+    /// a loan letter's, a fee advice's, a statement's, an IMI's or an IRS's.
+    static func isStampDuty(_ subject: Subject) -> Bool {
+        guard subject.has("IMPOSTO DO SELO", "IMPOSTO SELO"),
+              isStatePayment(subject) || subject.has("NOTA DE COBRANCA", "DOCUMENTO DE COBRANCA", "LIQUIDACAO") else { return false }
+        if subject.has("EMPRESTIMO", "PRESTACAO", "CREDITO HABITACAO", "COMISSAO") { return false }
+        if subject.has("EXTRATO") && subject.has("SALDO", "MOVIMENTOS") { return false }
+        return !subject.isIMI && !subject.isIRS
     }
 
     /// How far into the text a contract's title starts (characters).

@@ -4,7 +4,7 @@ import Foundation
 /// amount (sign-free, in the transaction's account currency) is the strongest signal, then a
 /// payment reference the description repeats, the date within the kind's window (a mortgage
 /// notice's value date ±3 days, a mortgage receipt its own date ±3 (a weekend's debit), an IMI payment the same day, an insurance receipt ±10 days, a
-/// rent receipt's rent-period month for the credit …), and the category, account and
+/// rent receipt's rent-period month for the credit, a repair bill −15…45 days, stamp duty −1…60 …), and the category, account and
 /// description the kind usually has (the Lisbon categories, the BBVA account). Equal scores are
 /// left equal — `confidentMatch` only picks a single clear winner.
 public enum EvidenceMatcher {
@@ -91,6 +91,13 @@ public enum EvidenceMatcher {
         case .rentReceipt:
             // The rent for a month arrives in that month, or in the last days of the one before.
             return Expectation(direction: .credit, window: -10...30, anchor: .periodStart, categoryHints: ["rent"], descriptionHints: ["RENDA", "RENT"], accountHint: bbva)
+        case .repairInvoice:
+            // Paid on the spot, by deposit before the work, or weeks after the invoice.
+            return Expectation(direction: .debit, window: -15...45, categoryHints: ["repair", "manuten", "obras"])
+        case .stampDuty:
+            // Paid by the note's deadline: from the day before to two months after.
+            return Expectation(direction: .debit, window: -1...60, anchor: .docDate, categoryHints: ["selo", "stamp"],
+                               descriptionHints: ["PAGEST", "ESTADO", "SELO"], accountHint: bbva)
         case .accountantInvoice:
             return Expectation(direction: .debit, window: -15...30, categoryHints: ["accountant", "contabil"],
                                descriptionHints: ["CONTABIL", "ACCOUNTAN", "TAX ADVISER"])

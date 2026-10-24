@@ -86,11 +86,11 @@ public enum ImportNaming {
     static func area(of kind: DocumentKind) -> String {
         switch kind {
         case .mortgageNotice, .mortgageReceipt, .mortgageInterestStatement, .mortgageContract, .insuranceReceipt, .insurancePolicy, .imiNotice,
-             .imiPayment, .condominioReceipt, .rentReceipt, .rentContract, .tenancyAddendum, .utilityInvoice, .accountantInvoice, .legalInvoice,
+             .imiPayment, .condominioReceipt, .rentReceipt, .rentContract, .tenancyAddendum, .utilityInvoice, .repairInvoice, .accountantInvoice, .legalInvoice,
              .courtFee, .lettingAgentFee, .propertyDeed, .certificate:
             return "Property"
         case .p60, .p45, .p11d, .taxCodeNotice, .hmrcPaymentProof, .sa302, .taxReturn, .hmrcLetter: return "Tax UK"
-        case .ptIRSDeclaration, .ptIRSAssessment, .ptIRSPaymentNote, .ptIRSPaymentProof: return "Tax PT"
+        case .ptIRSDeclaration, .ptIRSAssessment, .ptIRSPaymentNote, .ptIRSPaymentProof, .stampDuty: return "Tax PT"
         case .bankTransferProof, .bankDebitAdvice, .bankStatement: return "Bank"
         case .other: return "Other"
         }
