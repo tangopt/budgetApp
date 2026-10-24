@@ -136,7 +136,7 @@ final class SyncSchemaTests: XCTestCase {
         let kinds = try XCTUnwrap(names.firstIndex(of: "customDocumentKind"))
         XCTAssertLessThan(kinds, try XCTUnwrap(names.firstIndex(of: "document")))
         XCTAssertLessThan(kinds, try XCTUnwrap(names.firstIndex(of: "evidenceRequirement")))
-        XCTAssertEqual(SyncSchema.table("customDocumentKind")?.syncedColumns, ["name", "area", "createdAt"])
+        XCTAssertEqual(SyncSchema.table("customDocumentKind")?.syncedColumns, ["name", "area", "createdAt", "mergedIntoKind"])
         XCTAssertTrue(SyncSchema.table("document")?.syncedColumns.contains("customKindId") ?? false)
         XCTAssertTrue(SyncSchema.table("evidenceRequirement")?.syncedColumns.contains("customKindIds") ?? false)
     }

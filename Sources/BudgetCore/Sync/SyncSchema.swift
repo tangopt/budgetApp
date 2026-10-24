@@ -76,7 +76,7 @@ public enum SyncSchema {
                         foreignKeys: ["runId": "importRun"],
                         batchKey: "runId"),
         SyncTableSchema("customDocumentKind",
-                        synced: ["name", "area", "createdAt"]),
+                        synced: ["name", "area", "createdAt", "mergedIntoKind"]),
         SyncTableSchema("document",
                         synced: ["sha256", "storedRelativePath", "originalFileName", "byteCount", "canonicalName", "kind", "docDate", "periodStart", "periodEnd", "amountMinorUnits", "currency", "persons", "textStatus", "addedAt", "note", "customKindId"],
                         foreignKeys: ["customKindId": "customDocumentKind"],
@@ -368,6 +368,7 @@ extension SyncSchema {
         SyncJSONReference(table: "importRule", column: "actionJSON", content: .rules([
             SyncJSONRule("accountId", .row("account")),
             SyncJSONRule("entity", .evidenceEntity),
+            SyncJSONRule("customKindId", .row("customDocumentKind")),
         ]), plainNumbers: ["occurrence"]),
         SyncJSONReference(table: "scenarioApplication", column: "journal", content: .rules([
             SyncJSONRule("operations[].differenceId", .row("forecastEntry")),

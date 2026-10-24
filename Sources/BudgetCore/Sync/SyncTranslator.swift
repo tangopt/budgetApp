@@ -199,6 +199,8 @@ public enum SyncTranslator {
                 for (name, result) in try retryStaged(db: db, deviceUser: deviceUser, now: now, arrived: arrived) { results[name] = result }
             }
             try retireRemoved(db: db, now: now)
+            // Custom kinds merged into a built-in kind (here or elsewhere): what still names them is re-filed.
+            try CustomDocumentKinds.settleRetired(db: db)
             return results
         }
     }
@@ -305,6 +307,11 @@ public enum SyncTranslator {
            let tombstone = try SyncTombstoneRow.fetchOne(db, key: payload.recordName), let target = tombstone.mergedInto {
             // A save of a record merged into another here (from a device that hasn't merged yet) is that one.
             try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [payload.recordName])
+            if schema.name == CustomDocumentKind.databaseTableName {
+                // Except a custom kind merged into another kind: its name and area are the merged one's, not the
+                // target's (what was filed under it follows the redirect).
+                return .discarded("merged into another kind here")
+            }
             payload.recordName = target
             redirected = true
         }
@@ -413,6 +420,12 @@ public enum SyncTranslator {
         if row != nil {
             if try SyncRecordStore.localId(table: schema.name, uuid: target, db: db) == nil {
                 try SyncMerge.rekey(from: old, to: target, db: db)
+            } else if schema.name == CustomDocumentKind.databaseTableName, let oldId = row,
+                      let targetId = try SyncRecordStore.localId(table: schema.name, uuid: target, db: db) {
+                // A custom kind merged into another elsewhere: what this device files under it moves to the target.
+                try CustomDocumentKinds.absorbIncomingMerge(db: db, from: oldId, into: targetId, oldUUID: old, targetUUID: target,
+                                                            deviceUser: deviceUser, now: now)
+                return .applied
             } else {
                 // Both records are rows here: they can't be fused by a redirect; both stay.
                 log.error("Sync redirect of a \(schema.name, privacy: .public) record whose target is another row here; both kept")

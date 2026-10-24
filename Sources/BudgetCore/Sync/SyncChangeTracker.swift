@@ -107,6 +107,24 @@ public enum SyncChangeTracker {
         return result
     }
 
+    /// Runs `body` with tracking on even inside `applyingIncoming`: for a write an incoming change makes
+    /// this device do on its own rows (re-filing what still named a merged kind), which the other devices
+    /// must hear about because only this one had those rows that way.
+    static func trackingWrites<T>(db: Database, _ body: () throws -> T) throws -> T {
+        let applying = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncApplying)") ?? false
+        guard applying else { return try body() }
+        try db.execute(sql: "DELETE FROM syncApplying")
+        let result: T
+        do {
+            result = try body()
+        } catch {
+            try? db.execute(sql: "INSERT OR IGNORE INTO syncApplying(id) VALUES (1)")
+            throw error
+        }
+        try db.execute(sql: "INSERT OR IGNORE INTO syncApplying(id) VALUES (1)")
+        return result
+    }
+
     // MARK: Triggers
 
     /// The schema version and hash whose triggers are installed (`syncState` key `triggerSchema`).

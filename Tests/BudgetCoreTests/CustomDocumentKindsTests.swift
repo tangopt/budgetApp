@@ -124,7 +124,7 @@ final class CustomDocumentKindsTests: XCTestCase {
         // A name freed by a kind merged in the same Save can be taken.
         _ = try save([KindEdit(kindId: alarm, change: .merge(into: .builtIn(.repairInvoice))),
                       KindEdit(kindId: boiler, change: .rename(name: "Boiler service", area: .property))])
-        XCTAssertEqual(try db.read { try CustomDocumentKind.fetchAll($0).map(\.name) }, ["Boiler service"])
+        XCTAssertEqual(try db.read { try DocumentKindCatalog.load(db: $0).customKinds.map(\.name) }, ["Boiler service"])
     }
 
     // MARK: Merge
@@ -150,7 +150,16 @@ final class CustomDocumentKindsTests: XCTestCase {
         XCTAssertEqual(try storedRequirement(alreadyHasTarget).kinds, [.repairInvoice, .other], "no duplicates")
         XCTAssertEqual(try storedRequirement(alreadyHasTarget).customKindIds, [])
         XCTAssertEqual(try storedRequirement(unrelated).kinds, [.imiNotice])
-        XCTAssertNil(try db.read { try CustomDocumentKind.fetchOne($0, key: boiler) }, "the merged kind is gone")
+        // Merged into a built-in, the kind stays as a retired row (so other devices re-file what names it), its name freed.
+        let retired = try XCTUnwrap(try db.read { try CustomDocumentKind.fetchOne($0, key: boiler) })
+        XCTAssertEqual(retired.mergedIntoKind, .repairInvoice)
+        XCTAssertEqual(retired.retiredFromName, "Boiler service")
+        let catalog = try db.read { try DocumentKindCatalog.load(db: $0) }
+        XCTAssertEqual(catalog.customKinds, [], "no longer offered")
+        XCTAssertNil(catalog.custom(id: boiler))
+        XCTAssertEqual(catalog.displayName(.custom(boiler)), "Repair bill")
+        XCTAssertEqual(catalog.libraryArea(.custom(boiler)), "Property")
+        XCTAssertNotNil(try create("Boiler service", .other), "its name can be used again")
         // The learnt rule's action no longer names the custom kind at all.
         let json = try XCTUnwrap(try db.read { try ImportRule.fetchOne($0, key: rule)?.actionJSON })
         XCTAssertFalse(json.contains("customKindId"), json)
@@ -197,7 +206,85 @@ final class CustomDocumentKindsTests: XCTestCase {
         XCTAssertEqual(try db.read { try CustomDocumentKind.fetchCount($0) }, 2)
     }
 
-    func testAFailedSaveWritesNothing() throws {
+    func testMergeIntoOtherNamesDocumentsLikeImports() throws {
+        let boiler = try create("Boiler service", .property)
+        let filed = try document("aa", name: "20230305 - Property - Boiler service - Caldeiras Lda", customKindId: boiler)
+        let rule = try kindRule("issuer-1", DocumentKindAction(kind: .other, customKindId: boiler), label: "Kind: Boiler service")
+        _ = try save([KindEdit(kindId: boiler, change: .merge(into: .builtIn(.other)))])
+        XCTAssertEqual(try storedDocument(filed).canonicalName, "20230305 - Other - Document - Caldeiras Lda")
+        XCTAssertEqual(try storedDocument(filed).kindRef, .builtIn(.other))
+        XCTAssertEqual(try storedRule(rule).label, "Kind: Other")
+    }
+
+    /// A Save that fails after it has started writing (here a rule update the database refuses) leaves nothing written.
+    func testASaveFailingPartWayLeavesNothing() throws {
+        let boiler = try create("Boiler service", .property)
+        let filed = try document("aa", name: "20230305 - Property - Boiler service", customKindId: boiler)
+        let rule = try kindRule("issuer-1", DocumentKindAction(kind: .other, customKindId: boiler), label: "Kind: Boiler service")
+        let requirementId = try requirement("Boiler", kinds: [], customKindIds: [boiler])
+        try db.write { db in
+            try db.execute(sql: "CREATE TEMP TRIGGER refuseRuleUpdate BEFORE UPDATE ON importRule BEGIN SELECT RAISE(ABORT, 'refused'); END")
+        }
+        XCTAssertThrowsError(try save([KindEdit(kindId: boiler, change: .merge(into: .builtIn(.repairInvoice)))]))
+        let document = try storedDocument(filed)
+        XCTAssertEqual(document.kindRef, .custom(boiler), "the document re-filed before the failure is back")
+        XCTAssertEqual(document.canonicalName, "20230305 - Property - Boiler service")
+        XCTAssertEqual(try storedRule(rule).action, DocumentKindAction(kind: .other, customKindId: boiler))
+        XCTAssertEqual(try storedRequirement(requirementId).customKindIds, [boiler])
+        XCTAssertEqual(try db.read { try CustomDocumentKind.fetchOne($0, key: boiler) }?.mergedIntoKind, nil)
+    }
+
+    /// Re-filing a document as an invoice dates its expense by the invoice: a Save that would move a filed
+    /// year's figures is refused, naming the year and the document, and writes nothing.
+    func testASaveThatWouldChangeAFiledYearIsRefused() throws {
+        let (boiler, filed) = try db.write { db -> (Int64, Int64) in
+            var person = Person(name: "Person A", shortName: "A")
+            try People.save(db: db, &person)
+            var year = TaxYear(startYear: 2024, personId: person.id!, status: .filed)
+            try year.insert(db)
+            var property = Property(name: "Property A", country: "PT", currency: .gbp)
+            try Properties.save(db: db, &property)
+            _ = try Properties.setOwners(db: db, propertyId: property.id!, [PropertyOwner(propertyId: property.id!, personId: person.id!, shareBasisPoints: 10_000)])
+            var account = Account(name: "Bank A", currency: .gbp, kind: .cash, trackingMode: .imported)
+            try account.insert(db)
+            var batch = ImportBatch(accountId: account.id!, sourceFileName: "synthetic.csv", importedAt: now)
+            try batch.insert(db)
+            try Properties.setAccount(db: db, propertyId: property.id!, accountId: account.id!, role: .current)
+            var group = CategoryGroup(name: "Property A")
+            try group.insert(db)
+            try Properties.addCategoryGroup(db: db, propertyId: property.id!, categoryGroupId: group.id!)
+            var utilities = Category(name: "Utilities", type: .expense, groupId: group.id)
+            try utilities.insert(db)
+            try TaxExpenseTypeMap.seed(db: db, propertyId: property.id!)
+            try TaxExpenseTypeMap.set(db: db, categoryId: utilities.id!, expenseType: .utilities)
+            // Paid in 2025/26 (not filed); the bill is dated in the filed 2024/25.
+            var payment = Transaction(importBatchId: batch.id!, accountId: account.id!, date: MonthRange.calendar.date(from: DateComponents(year: 2025, month: 4, day: 10))!,
+                                      rawDescription: "POWER CO", amountMinorUnits: -4_000, categoryId: utilities.id, status: .confirmed,
+                                      categorizedBy: .manual, fingerprint: "fp-power")
+            try payment.insert(db)
+            let boiler = try CustomDocumentKinds.create(db: db, name: "Power bill", area: .property, now: now).id!
+            var document = EvidenceDocument(sha256: "aa", storedRelativePath: "aa/aa.pdf", originalFileName: "aa.pdf", byteCount: 1,
+                                            canonicalName: "20250315 - Property - Power bill - Power Co", kind: .other,
+                                            docDate: MonthRange.calendar.date(from: DateComponents(year: 2025, month: 3, day: 15))!,
+                                            addedAt: now, customKindId: boiler)
+            try document.insert(db)
+            try EvidenceLinks.link(db: db, documentId: document.id!, to: .transaction(payment.id!))
+            return (boiler, document.id!)
+        }
+        XCTAssertThrowsError(try save([KindEdit(kindId: boiler, change: .merge(into: .builtIn(.utilityInvoice)))])) {
+            XCTAssertEqual($0 as? CustomDocumentKinds.Failure,
+                           .changesFiledYear(years: ["2024/25"], documents: ["20250315 - Property - Utility invoice - Power Co"]))
+            XCTAssertEqual(($0 as? LocalizedError)?.errorDescription,
+                           "Not saved: this would change the filed 2024/25 return. Documents involved: 20250315 - Property - Utility invoice - Power Co.")
+        }
+        XCTAssertEqual(try storedDocument(filed).kindRef, .custom(boiler))
+        XCTAssertEqual(try storedDocument(filed).canonicalName, "20250315 - Property - Power bill - Power Co")
+        XCTAssertNotNil(try db.read { try DocumentKindCatalog.load(db: $0).custom(id: boiler) })
+        // A kind that doesn't date expenses moves nothing: saved.
+        XCTAssertEqual(try save([KindEdit(kindId: boiler, change: .merge(into: .builtIn(.repairInvoice)))]).documentsChanged, 1)
+    }
+
+    func testSaveRefusesBeforeWriting() throws {
         let boiler = try create("Boiler service", .property)
         let filed = try document("aa", name: "20230305 - Property - Boiler service", customKindId: boiler)
         XCTAssertThrowsError(try save([KindEdit(kindId: boiler, change: .rename(name: "Heating", area: .property)),
@@ -247,5 +334,144 @@ final class CustomDocumentKindsTests: XCTestCase {
             XCTAssertEqual(requirement.customKindIds, [boilerB])
             XCTAssertTrue(requirement.accepts(document.kindRef))
         }
+    }
+}
+
+/// A merge reaches every device (review I1): two devices syncing through `FakeCloud`; device A merges kind X
+/// while device B files a new document under X and an evidence rule names it. Both end with everything under
+/// the target, whichever reaches the cloud first. Synthetic data.
+final class CustomDocumentKindMergeSyncTests: XCTestCase {
+    private var cloud: FakeCloud!
+    private var a: SyncEngineTestDevice!
+    private var b: SyncEngineTestDevice!
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    override func setUp() async throws {
+        cloud = FakeCloud()
+        let keys = InMemorySyncKeyStore()
+        a = try SyncEngineTestDevice("user-a", name: "Mac", cloud: cloud, keys: keys)
+        b = try SyncEngineTestDevice("user-b", name: "iPad", cloud: cloud, keys: keys)
+    }
+
+    private struct Shared {
+        var boiler: String, heating: String, documentA: String, rule: String, requirement: String
+    }
+
+    /// Kinds "Boiler service" and "Heating", a document of Boiler service, a learnt rule and an evidence rule naming it, on both devices.
+    private func shared() async throws -> Shared {
+        let ids = try a.write { db -> (Int64, Int64, Int64, Int64, Int64) in
+            let boiler = try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: now).id!
+            let heating = try CustomDocumentKinds.create(db: db, name: "Heating", area: .property, now: now).id!
+            var document = EvidenceDocument(sha256: "aa", storedRelativePath: "aa/aa.pdf", originalFileName: "aa.pdf", byteCount: 1,
+                                            canonicalName: "20250301 - Property - Boiler service - Caldeiras Lda", addedAt: now, customKindId: boiler)
+            try document.insert(db)
+            var rule = ImportRule(kind: .documentKind, matchKey: "issuer-caldeiras", matchLabel: "Caldeiras Lda",
+                                  actionJSON: ImportLearning.encode(DocumentKindAction(kind: .other, customKindId: boiler))!,
+                                  actionLabel: "Kind: Boiler service", createdAt: now)
+            try rule.insert(db)
+            var requirement = EvidenceRequirement(name: "Boiler", scope: .transactionsMatching(categoryIds: [], accountIds: [], descriptionContains: "boiler"),
+                                                  kinds: [], customKindIds: [boiler], createdAt: now)
+            try requirement.insert(db)
+            return (boiler, heating, document.id!, rule.id!, requirement.id!)
+        }
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        return Shared(boiler: try a.uuid("customDocumentKind", ids.0), heating: try a.uuid("customDocumentKind", ids.1),
+                      documentA: try a.uuid("document", ids.2), rule: try a.uuid("importRule", ids.3), requirement: try a.uuid("evidenceRequirement", ids.4))
+    }
+
+    /// B files a document under Boiler service (not yet sent).
+    private func fileOnB(_ shared: Shared) throws -> String {
+        let boiler = try XCTUnwrap(try b.localId("customDocumentKind", shared.boiler))
+        let id = try b.write { db -> Int64 in
+            var document = EvidenceDocument(sha256: "bb", storedRelativePath: "bb/bb.pdf", originalFileName: "bb.pdf", byteCount: 1,
+                                            canonicalName: "20250402 - Property - Boiler service - Caldeiras Lda", addedAt: now, customKindId: boiler)
+            try document.insert(db)
+            return document.id!
+        }
+        return try b.uuid("document", id)
+    }
+
+    private func document(_ device: SyncEngineTestDevice, _ uuid: String) throws -> EvidenceDocument {
+        let id = try XCTUnwrap(try device.localId("document", uuid))
+        return try XCTUnwrap(try device.read { try EvidenceDocument.fetchOne($0, key: id) })
+    }
+
+    /// Both devices: the documents, the learnt rule and the evidence rule under `target`; the merged kind no longer offered.
+    private func assertConverged(_ shared: Shared, documentB: String, target: (SyncEngineTestDevice) throws -> DocumentKindRef, name: String,
+                                 file: StaticString = #filePath, line: UInt = #line) throws {
+        for device in [a!, b!] {
+            let ref = try target(device)
+            for (uuid, date) in [(shared.documentA, "20250301"), (documentB, "20250402")] {
+                let stored = try document(device, uuid)
+                XCTAssertEqual(stored.kindRef, ref, "\(device.user) \(uuid)", file: file, line: line)
+                XCTAssertEqual(stored.canonicalName, "\(date) - Property - \(name) - Caldeiras Lda", device.user, file: file, line: line)
+            }
+            let ruleId = try XCTUnwrap(try device.localId("importRule", shared.rule))
+            let rule = try XCTUnwrap(try device.read { try ImportRule.fetchOne($0, key: ruleId) })
+            XCTAssertEqual(ImportLearning.decode(DocumentKindAction.self, rule.actionJSON)?.kindRef, ref, device.user, file: file, line: line)
+            XCTAssertEqual(rule.actionLabel, "Kind: \(name)", device.user, file: file, line: line)
+            let requirementId = try XCTUnwrap(try device.localId("evidenceRequirement", shared.requirement))
+            let requirement = try XCTUnwrap(try device.read { try EvidenceRequirement.fetchOne($0, key: requirementId) })
+            XCTAssertEqual(requirement.kindRefs, [ref], device.user, file: file, line: line)
+            let names = try device.read { try DocumentKindCatalog.load(db: $0).customKinds.map(\.name) }
+            XCTAssertFalse(names.contains("Boiler service"), "\(device.user) \(names)", file: file, line: line)
+            XCTAssertEqual(try device.count("syncStaging"), 0, device.user, file: file, line: line)
+            let conflicts = try device.read { try String.fetchAll($0, sql: "SELECT tableName || '.' || field FROM syncConflict") }
+            XCTAssertEqual(conflicts, [], device.user, file: file, line: line)
+            XCTAssertEqual(try device.read { try SyncChangeTracker.pending(db: $0) }.count, 0, "\(device.user) has nothing left to send", file: file, line: line)
+        }
+    }
+
+    private func merge(into target: (Int64) -> DocumentKindRef, _ shared: Shared) throws {
+        let boiler = try XCTUnwrap(try a.localId("customDocumentKind", shared.boiler))
+        let heating = try XCTUnwrap(try a.localId("customDocumentKind", shared.heating))
+        _ = try a.write { db in try CustomDocumentKinds.save(db: db, edits: [KindEdit(kindId: boiler, change: .merge(into: target(heating)))], now: now) }
+    }
+
+    private func heating(_ shared: Shared) -> (SyncEngineTestDevice) throws -> DocumentKindRef {
+        { device in .custom(try XCTUnwrap(try device.localId("customDocumentKind", shared.heating))) }
+    }
+
+    func testMergeIntoACustomKindReachesADocumentFiledElsewhereAfterIt() async throws {
+        let shared = try await shared()
+        let documentB = try fileOnB(shared)
+        try merge(into: { .custom($0) }, shared)
+        try await a.engine.syncNow()   // the merge reaches the cloud first
+        try await b.engine.syncNow()   // B re-files its own document, and sends it
+        try await a.engine.syncNow()
+        try assertConverged(shared, documentB: documentB, target: heating(shared), name: "Heating")
+    }
+
+    func testMergeIntoACustomKindReachesADocumentFiledElsewhereBeforeIt() async throws {
+        let shared = try await shared()
+        let documentB = try fileOnB(shared)
+        try await b.engine.syncNow()   // B's document reaches the cloud first
+        try merge(into: { .custom($0) }, shared)
+        try await a.engine.syncNow()   // A pulls it under the redirect, then sends the merge
+        try await b.engine.syncNow()
+        try await a.engine.syncNow()
+        try assertConverged(shared, documentB: documentB, target: heating(shared), name: "Heating")
+    }
+
+    func testMergeIntoABuiltInKindReachesADocumentFiledElsewhereAfterIt() async throws {
+        let shared = try await shared()
+        let documentB = try fileOnB(shared)
+        try merge(into: { _ in .builtIn(.repairInvoice) }, shared)
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        try await a.engine.syncNow()
+        try assertConverged(shared, documentB: documentB, target: { _ in .builtIn(.repairInvoice) }, name: "Repair bill")
+    }
+
+    func testMergeIntoABuiltInKindReachesADocumentFiledElsewhereBeforeIt() async throws {
+        let shared = try await shared()
+        let documentB = try fileOnB(shared)
+        try await b.engine.syncNow()
+        try merge(into: { _ in .builtIn(.repairInvoice) }, shared)
+        try await a.engine.syncNow()
+        try await b.engine.syncNow()
+        try await a.engine.syncNow()
+        try assertConverged(shared, documentB: documentB, target: { _ in .builtIn(.repairInvoice) }, name: "Repair bill")
     }
 }

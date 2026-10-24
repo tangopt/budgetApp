@@ -543,6 +543,14 @@ public actor SyncEngineCore {
                     delta.saved += 1
                 case .changed:
                     guard let (payload, server) = serverRecords[result.recordName] else { continue }
+                    if try SyncTombstoneRow.fetchOne(db, key: result.recordName)?.mergedInto != nil {
+                        // A redirect: merged here, so the server's version (edited elsewhere meanwhile) is that record's
+                        // past; the redirect is sent again over it.
+                        try db.execute(sql: "UPDATE syncTombstone SET systemFields = ? WHERE uuid = ?",
+                                       arguments: [server.stamp.systemFields, result.recordName])
+                        delta.refused += 1
+                        continue
+                    }
                     guard let payload else {
                         // The server's version can't be read: kept (sealed, when only its key is missing here, else
                         // for attention); the local edit waits for it.
@@ -799,8 +807,14 @@ public actor SyncEngineCore {
         return result
     }
 
+    /// The server version a save names: the record's, or for a redirect (its row merged into another here) the
+    /// one its tombstone kept.
     static func systemFields(uuid: String, db: Database) throws -> Data? {
-        try Data.fetchOne(db.cachedStatement(sql: "SELECT systemFields FROM syncRecord WHERE uuid = ?"), arguments: [uuid])
+        if try Bool.fetchOne(db.cachedStatement(sql: "SELECT EXISTS (SELECT 1 FROM syncRecord WHERE uuid = ?)"), arguments: [uuid]) ?? false {
+            return try Data.fetchOne(db.cachedStatement(sql: "SELECT systemFields FROM syncRecord WHERE uuid = ?"), arguments: [uuid])
+        }
+        return try Data.fetchOne(db.cachedStatement(sql: "SELECT systemFields FROM syncTombstone WHERE uuid = ? AND mergedInto IS NOT NULL"),
+                                 arguments: [uuid])
     }
 
     static func storeStamp(_ stamp: SyncServerStamp, uuid: String, db: Database) throws {

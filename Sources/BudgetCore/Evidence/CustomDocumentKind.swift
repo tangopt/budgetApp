@@ -28,12 +28,26 @@ public struct CustomDocumentKind: Codable, Equatable, Identifiable, FetchableRec
     public var name: String
     public var area: DocumentArea
     public var createdAt: Date
+    /// Set when the kind was merged into a built-in kind (spec 2026-10-24 §2): the row stays, retired, so
+    /// every device re-files what still names it (`CustomDocumentKinds.settleRetired`), including documents
+    /// filed under it elsewhere meanwhile. Its `name` then carries `retiredMarker` and a UUID, freeing the
+    /// name; `retiredFromName` is the name it had.
+    public var mergedIntoKind: DocumentKind?
 
-    public init(id: Int64? = nil, name: String, area: DocumentArea, createdAt: Date = Date()) {
+    public init(id: Int64? = nil, name: String, area: DocumentArea, createdAt: Date = Date(), mergedIntoKind: DocumentKind? = nil) {
         self.id = id
         self.name = name
         self.area = area
         self.createdAt = EvidenceLinks.wholeSeconds(createdAt)
+        self.mergedIntoKind = mergedIntoKind
+    }
+
+    /// Separates a retired kind's former name from the UUID that keeps its `name` unique.
+    static let retiredMarker: Character = "\u{1F}"
+
+    /// The name before it was retired (its `name` when it isn't).
+    public var retiredFromName: String {
+        name.split(separator: Self.retiredMarker, maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? name
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -51,12 +65,18 @@ public enum DocumentKindRef: Hashable, Codable, Sendable {
 
 /// Every kind with its name and library area, read once (spec 2026-10-24 §2).
 public struct DocumentKindCatalog: Sendable {
+    /// The custom kinds in use (retired ones, merged into a built-in, left out), by name.
     public let customKinds: [CustomDocumentKind]
     private let customById: [Int64: CustomDocumentKind]
+    /// Retired kinds: the built-in each was merged into.
+    private let retired: [Int64: DocumentKind]
 
     public init(customKinds: [CustomDocumentKind]) {
-        self.customKinds = customKinds.sorted { Self.ordered($0.name, $1.name) }
-        self.customById = Dictionary(customKinds.compactMap { kind in kind.id.map { ($0, kind) } }, uniquingKeysWith: { first, _ in first })
+        let live = customKinds.filter { $0.mergedIntoKind == nil }
+        self.customKinds = live.sorted { Self.ordered($0.name, $1.name) }
+        self.customById = Dictionary(live.compactMap { kind in kind.id.map { ($0, kind) } }, uniquingKeysWith: { first, _ in first })
+        self.retired = Dictionary(customKinds.compactMap { kind in kind.id.flatMap { id in kind.mergedIntoKind.map { (id, $0) } } },
+                                  uniquingKeysWith: { first, _ in first })
     }
 
     public static func load(db: Database) throws -> DocumentKindCatalog {
@@ -73,7 +93,7 @@ public struct DocumentKindCatalog: Sendable {
     public func displayName(_ ref: DocumentKindRef) -> String {
         switch ref {
         case .builtIn(let kind): return kind.displayName
-        case .custom(let id): return customById[id]?.name ?? DocumentKind.other.displayName
+        case .custom(let id): return customById[id]?.name ?? (retired[id] ?? .other).displayName
         }
     }
 
@@ -81,7 +101,7 @@ public struct DocumentKindCatalog: Sendable {
     public func libraryArea(_ ref: DocumentKindRef) -> String {
         switch ref {
         case .builtIn(let kind): return ImportNaming.area(of: kind)
-        case .custom(let id): return customById[id]?.area.libraryArea ?? ImportNaming.area(of: .other)
+        case .custom(let id): return customById[id]?.area.libraryArea ?? ImportNaming.area(of: retired[id] ?? .other)
         }
     }
 
@@ -91,7 +111,7 @@ public struct DocumentKindCatalog: Sendable {
         return customKinds.first { Self.key($0.name) == wanted }
     }
 
-    /// A custom kind by id.
+    /// A custom kind in use by id (nil for one that's gone or retired).
     public func custom(id: Int64) -> CustomDocumentKind? {
         customById[id]
     }
@@ -102,6 +122,15 @@ public struct DocumentKindCatalog: Sendable {
 
     private static func ordered(_ a: String, _ b: String) -> Bool {
         a.localizedStandardCompare(b) == .orderedAscending
+    }
+}
+
+func registerCustomDocumentKindMergedIntoMigration(_ migrator: inout DatabaseMigrator) {
+    // Only adds a nullable column.
+    migrator.registerMigration("customDocumentKindMergedInto") { db in
+        try db.alter(table: "customDocumentKind") { t in
+            t.add(column: "mergedIntoKind", .text)
+        }
     }
 }
 
