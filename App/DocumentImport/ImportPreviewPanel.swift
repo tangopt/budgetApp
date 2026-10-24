@@ -170,7 +170,8 @@ private struct ImportPreviewContent: View {
                                                         problem.itemId == item.id && problem.issueId == issue.id ? problem.message : nil
                                                     },
                                                     issuer: issuer,
-                                                    resolveItem: { resolve(item.id, nil, $0) }) { resolution in
+                                                    resolveItem: { resolve(item.id, nil, $0) },
+                                                    kindLabel: { center.kindLabel($0) }) { resolution in
                                     resolve(item.id, issue.id, resolution)
                                 }
                             }

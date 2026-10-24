@@ -213,9 +213,12 @@ public struct ImportApplier: Sendable {
             if case .customEvidence(.pending(let id)) = item.recognition.kind, !used.contains(id) { used.append(id) }
         }
         var saved: [UUID: Int64] = [:]
+        guard !used.isEmpty else { return saved }
+        // Read once; the kinds saved here are told apart by name (no two pending kinds share one).
+        let catalog = try DocumentKindCatalog.load(db: db)
         for id in used {
             guard let kind = pending.first(where: { $0.id == id }) else { throw ImportApplyError.notConfirmable }
-            if let existing = try DocumentKindCatalog.load(db: db).custom(named: kind.name), let existingId = existing.id {
+            if let existing = catalog.custom(named: kind.name), let existingId = existing.id {
                 saved[id] = existingId
             } else {
                 guard let newId = try CustomDocumentKinds.create(db: db, name: kind.name, area: kind.area, now: now).id else {
@@ -225,6 +228,15 @@ public struct ImportApplier: Sendable {
             }
         }
         return saved
+    }
+
+    /// The canonical name of an item filed as the custom kind `kind`, from its facts and the kind's
+    /// current name and area.
+    static func canonicalName(of item: ImportItem, as kind: CustomDocumentKind) -> String? {
+        guard let id = kind.id else { return item.placement?.canonicalName }
+        let custom = ImportCustomKind(key: .saved(id), name: kind.name, area: kind.area)
+        return ImportNaming.placement(kind: .customEvidence(.saved(id)), facts: item.facts, file: item.file,
+                                      persons: item.placement?.metadata.persons ?? [], customKind: custom).canonicalName
     }
 
     /// Refuses (`.planOutdated`) when a record an applied item writes to or links to no longer
@@ -301,6 +313,9 @@ public struct ImportApplier: Sendable {
         let folders = try SourceFolder.fetchAll(db)
         // The review's new kinds first, so the documents can be filed under them.
         let newKinds = try Self.savePendingKinds(db: db, applied, pending: plan.pendingKinds, now: now)
+        // The custom kinds as they are now: documents are named after the kind's current name and
+        // area (renamed during the review, or a kind of the same name saved meanwhile).
+        let kindsNow = try DocumentKindCatalog.load(db: db)
 
         var documents: [UUID: Int64] = [:]
         var touched: Set<Int64>? = []
@@ -311,6 +326,9 @@ public struct ImportApplier: Sendable {
                 switch key {
                 case .saved(let id): filing.customKindId = id
                 case .pending(let id): filing.customKindId = newKinds[id]
+                }
+                if let id = filing.customKindId, let kind = kindsNow.custom(id: id) {
+                    filing.canonicalName = Self.canonicalName(of: item, as: kind)
                 }
             }
             let documentId: Int64
@@ -346,12 +364,18 @@ public struct ImportApplier: Sendable {
         // What the review's corrections taught, and the learnt rules the items used: inside the run.
         // Items that taught different things about one issuer (and family) teach none of them.
         let drafts = applied.flatMap(\.ruleDrafts).compactMap { draft -> ImportRuleDraft? in
-            // A new kind's rule names the id it was saved with.
-            guard let pending = draft.pendingKindId else { return draft }
-            guard let id = newKinds[pending], let json = ImportLearning.encode(DocumentKindAction(kind: .other, customKindId: id)) else { return nil }
             var resolved = draft
-            resolved.actionJSON = json
-            resolved.pendingKindId = nil
+            if let pending = draft.pendingKindId {
+                // A new kind's rule names the id it was saved with.
+                guard let id = newKinds[pending], let json = ImportLearning.encode(DocumentKindAction(kind: .other, customKindId: id)) else { return nil }
+                resolved.actionJSON = json
+                resolved.pendingKindId = nil
+            }
+            // Labelled with the kind's name as it is now.
+            if resolved.kind == .documentKind, let id = ImportLearning.decode(DocumentKindAction.self, resolved.actionJSON)?.customKindId,
+               let kind = kindsNow.custom(id: id) {
+                resolved.actionLabel = "Kind: \(kind.name)"
+            }
             return resolved
         }
         let (learnable, learningNotes) = ImportLearning.learnable(drafts)

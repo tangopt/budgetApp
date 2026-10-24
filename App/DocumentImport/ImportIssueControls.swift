@@ -21,6 +21,8 @@ struct ImportIssueControls: View {
     /// An answer for the item rather than this question (a model figure corrected field by
     /// field); nil: `resolve`.
     var resolveItem: ((ImportResolution) -> Void)? = nil
+    /// A kind's name, a custom kind's (saved or new in this review) included (`ImportSession.kindLabel`).
+    var kindLabel: (ImportKind) -> String = { $0.displayName }
     let resolve: (ImportResolution) -> Void
 
     static let leaveOutTitle = "Leave out of this import"
@@ -135,7 +137,7 @@ struct ImportIssueControls: View {
     func title(of offer: ImportResolution) -> String {
         switch offer {
         case .acknowledge:
-            if case .kindMismatch(_, let found) = issue.kind { return "Keep as \(found.displayName)" }
+            if case .kindMismatch(_, let found) = issue.kind { return "Keep as \(found == item.recognition.kind ? item.kindName : kindLabel(found))" }
             if issue.id == ImportDuplicates.correctedVersionIssueId { return "Import as the newer version" }
             // A BBVA receipt whose interest the fund/mortgage tool estimated otherwise.
             if issue.id.hasPrefix(Self.estimateIssuePrefix) { return "Replace the estimate" }
@@ -145,7 +147,7 @@ struct ImportIssueControls: View {
                 || issue.id == UtilityInvoiceImportReader.chooseInvoiceIssueId
             return documentOnly ? "File the document only" : "File without a link"
         case .chooseKind(let kind): return "File as \(kind.displayName)"
-        case .chooseCustomKind: return "File as this kind"
+        case .chooseCustomKind(let key): return "File as \(kindLabel(.customEvidence(key)))"
         case .createKind(let name, _): return "File as \(name)"
         case .chooseLink(let entity): return "Link to \(entity.type.displayName.lowercased()) #\(entity.id)"
         case .confirmFigure(let field, _), .confirmFigureRemembering(let field, _): return "Use this \(field.displayName.lowercased())"

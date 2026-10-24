@@ -139,6 +139,8 @@ public enum ImportRuleFits {
         var issuers: [UUID: IssuerKey] = [:]
         var recognisesItself: Set<UUID> = []
         var payments: [Int64: Payment] = [:]
+        /// The custom kinds' names now (saved and the review's new ones).
+        var kindNames = ImportKindNames()
     }
 
     /// The draft kinds a fit applies (the remembered statement account isn't about an issuer).
@@ -177,8 +179,7 @@ public enum ImportRuleFits {
             switch draft.kind {
             case .documentKind:
                 guard let action = ImportLearning.decode(DocumentKindAction.self, draft.actionJSON) else { return nil }
-                return Rule(key: draft.key, action: .kind(DocumentKindTarget(action: action, pendingKindId: draft.pendingKindId,
-                                                                                 label: draft.actionLabel)))
+                return Rule(key: draft.key, action: .kind(DocumentKindTarget(action: action, pendingKindId: draft.pendingKindId)))
             case .issuer:
                 return ImportLearning.decode(IssuerAction.self, draft.actionJSON).map { Rule(key: draft.key, action: .name($0.name)) }
             case .link:
@@ -255,7 +256,7 @@ public enum ImportRuleFits {
             guard kind != item.recognition.kind, !chosen, !context.recognisesItself.contains(item.id) else { return nil }
             let before = item.kindName
             return ImportRuleChange(aspect: .kind, label: "Kind", before: .text(before),
-                                    after: .text(target.name), resolution: target.resolution)
+                                    after: .text(target.name(in: context.kindNames)), resolution: target.resolution)
 
         case .name(let name):
             guard rule.key == ImportRuleKind.matchKey(issuer: issuer), ImportResolutions.takesIssuerName(item) else { return nil }
@@ -438,15 +439,19 @@ final class ImportRuleFitCache: @unchecked Sendable {
 struct DocumentKindTarget: Sendable {
     var ref: DocumentKindRef
     var pendingKindId: UUID?
-    var name: String
 
-    init(action: DocumentKindAction, pendingKindId: UUID?, label: String) {
+    init(action: DocumentKindAction, pendingKindId: UUID?) {
         ref = action.kindRef
         self.pendingKindId = pendingKindId
-        let prefix = "Kind: "
-        name = pendingKindId != nil || action.customKindId != nil
-            ? (label.hasPrefix(prefix) ? String(label.dropFirst(prefix.count)) : label)
-            : action.kind.displayName
+    }
+
+    /// The kind's name now (`names`: the catalog's and the review's new kinds).
+    func name(in names: ImportKindNames) -> String {
+        if let pendingKindId { return names.displayName(.customEvidence(.pending(pendingKindId))) }
+        switch ref {
+        case .builtIn(let kind): return kind.displayName
+        case .custom(let id): return names.displayName(.customEvidence(.saved(id)))
+        }
     }
 
     func importKind(fileExtension: String) -> ImportKind {

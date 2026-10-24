@@ -502,6 +502,18 @@ public final class ImportSession {
             // The batch would move a filed return: every item is checked again so the holds
             // land on the items that cause it.
             var rechecked: ImportPlan?
+            if case .failure(ImportApplyError.notConfirmable) = result {
+                // A kind the items are filed as was merged or deleted since: those items are read
+                // again (Needs you), never left Ready behind a Confirm that keeps failing.
+                do {
+                    if let reread = try await DetachedWork.run(priority: .userInitiated, { try await pipeline.rereadingChangedKinds(plan) }) {
+                        self.applyFinished(.failure(ImportApplyError.notConfirmable), rechecked: reread, kindsChanged: true)
+                        return
+                    }
+                } catch {
+                    self.logger.error("Reading again the items whose kind changed failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
             if case .failure(ImportApplyError.filedYearChanged(_)) = result {
                 do {
                     rechecked = try await DetachedWork.run(priority: .userInitiated) { try await pipeline.recheckFiledYears(plan) }
@@ -513,7 +525,10 @@ public final class ImportSession {
         }
     }
 
-    private func applyFinished(_ result: Result<ImportRunSummary, Error>, rechecked: ImportPlan? = nil) {
+    /// The problem shown when Confirm import found a kind merged or deleted since the review read it.
+    public static let kindsChangedProblem = "A kind these documents were filed as was merged or deleted: they were read again. Check them in Needs you"
+
+    private func applyFinished(_ result: Result<ImportRunSummary, Error>, rechecked: ImportPlan? = nil, kindsChanged: Bool = false) {
         switch result {
         case .success(let summary):
             logger.notice("Import confirmed: run \(summary.runId, privacy: .public), \(summary.filed, privacy: .public) filed, \(summary.linked, privacy: .public) linked, \(summary.recorded, privacy: .public) recorded, \(summary.transactions, privacy: .public) transactions")
@@ -529,7 +544,9 @@ public final class ImportSession {
                 plan = rechecked
                 if let held = rechecked.items.first(where: \.isHeldByFiledYear) { selectedItemId = held.id }
             }
-            let shown = Self.problem(for: error, held: rechecked?.items.filter(\.isHeldByFiledYear).map(\.title) ?? [])
+            if kindsChanged, let rechecked, let first = rechecked.items(in: .needsYou).first { selectedItemId = first.id }
+            let shown = kindsChanged ? Problem(title: Self.kindsChangedProblem, lines: [])
+                : Self.problem(for: error, held: rechecked?.items.filter(\.isHeldByFiledYear).map(\.title) ?? [])
             problem = shown
             // No review left to show the problem in: the failure is the phase.
             if plan == nil { phase = .failed(shown.title) }

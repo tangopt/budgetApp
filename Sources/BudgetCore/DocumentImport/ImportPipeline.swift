@@ -191,6 +191,20 @@ public struct ImportPipeline: @unchecked Sendable {
     private func plan(adding urls: [URL], to plan: ImportPlan, intent: ImportIntent, sources: [String: SourceFolderImport.Input],
                       names: [String: String] = [:],
                       timings: ImportPlanTimings?, progress: @escaping @Sendable (ImportProgress) -> Void) async throws -> ImportPlan {
+        // A custom kind expected (Missing evidence ▸ Add) is named for the mismatch wording.
+        var named = intent
+        if case .customEvidence(let key)? = intent.expected {
+            let pending = plan.pendingKinds
+            named.expectedKindName = try await dbQueue.read { db in
+                ImportKindNames(catalog: try DocumentKindCatalog.load(db: db), pending: pending)[key]?.name
+            }
+        }
+        return try await planNamed(adding: urls, to: plan, intent: named, sources: sources, names: names, timings: timings, progress: progress)
+    }
+
+    private func planNamed(adding urls: [URL], to plan: ImportPlan, intent: ImportIntent, sources: [String: SourceFolderImport.Input],
+                           names: [String: String],
+                           timings: ImportPlanTimings?, progress: @escaping @Sendable (ImportProgress) -> Void) async throws -> ImportPlan {
         try await cancellable {
             try Task.checkCancellation()
             let collected = ImportFileCollector.collect(urls)
@@ -282,6 +296,47 @@ public struct ImportPipeline: @unchecked Sendable {
     @discardableResult
     public static func removeStalePlanningCopies() -> Int {
         ImportPlanningCopy.removeStale()
+    }
+
+    /// The items filed as a saved custom kind merged or deleted since they were read (Confirm import
+    /// refused them, `ImportApplier.checkKinds`), read again on a fresh copy of the database: a kind
+    /// merged into another becomes that kind, to check ("<old> was merged into <new>: check it");
+    /// a deleted one asks what the document is ("Its kind <old> no longer exists"). Nil when no
+    /// item's kind changed.
+    public func rereadingChangedKinds(_ plan: ImportPlan) async throws -> ImportPlan? {
+        let copy = try session.fresh(from: dbQueue)
+        let changed = try await copy.dbQueue.read { db -> [(UUID, ImportRecognition)] in
+            let catalog = try DocumentKindCatalog.load(db: db)
+            var found: [(UUID, ImportRecognition)] = []
+            for item in plan.items where item.parentId == nil {
+                guard case .customEvidence(.saved(let id)) = item.recognition.kind, catalog.custom(id: id) == nil else { continue }
+                let old = item.placement?.customKind?.name
+                if let target = try CustomDocumentKinds.successor(of: id, db: db) {
+                    let reason = "\(old ?? "Its kind") was merged into \(catalog.displayName(target)): check it"
+                    found.append((item.id, ImportRecognition(kind: ImportResolutions.importKind(for: target, fileExtension: item.file.fileExtension),
+                                                             confidence: .needsReview, reason: reason)))
+                } else {
+                    let reason = old.map { "Its kind \($0) no longer exists" } ?? "Its kind no longer exists"
+                    found.append((item.id, ImportRecognition(kind: .unknown, confidence: .needsReview, reason: reason)))
+                }
+            }
+            return found
+        }
+        guard !changed.isEmpty else { return nil }
+        var result = plan
+        for (itemId, recognition) in changed {
+            guard var item = result.items.first(where: { $0.id == itemId }) else { continue }
+            let drafts = item.ruleDrafts
+            item.recognition = recognition
+            result.state.chosenKinds.remove(itemId)
+            result = try await reread(item, in: result, .acknowledge)
+            // The corrections it still carries (not the kind that's gone).
+            if let index = result.items.firstIndex(where: { $0.id == itemId }) {
+                let reread = result.items[index]
+                result.items[index].ruleDrafts = try await copy.dbQueue.read { db in try ImportLearning.carried(drafts, by: reread, db: db) }
+            }
+        }
+        return result
     }
 
     /// The current planning copy's file (tests).
@@ -639,7 +694,8 @@ public struct ImportPipeline: @unchecked Sendable {
     /// built-in recogniser reads (each file worked out once, `ruleFitCache`), and the merchant,
     /// amount and currency of the transactions the "which one?" questions offer.
     private func ruleFitContext(_ plan: ImportPlan) async throws -> ImportRuleFits.Context {
-        try await ruleFitContext(plan.items.filter { $0.parentId == nil && !ImportResolutions.isStatement($0) }, into: ImportRuleFits.Context())
+        try await ruleFitContext(plan.items.filter { $0.parentId == nil && !ImportResolutions.isStatement($0) }, into: ImportRuleFits.Context(),
+                                 pending: plan.pendingKinds)
     }
 
     /// `context` with `item` (as an answer left it) worked out again.
@@ -647,16 +703,18 @@ public struct ImportPipeline: @unchecked Sendable {
         var context = context
         context.issuers[item.id] = nil
         context.recognisesItself.remove(item.id)
-        return try await ruleFitContext(ImportResolutions.isStatement(item) ? [] : [item], into: context)
+        return try await ruleFitContext(ImportResolutions.isStatement(item) ? [] : [item], into: context, pending: plan.pendingKinds)
     }
 
-    private func ruleFitContext(_ items: [ImportItem], into start: ImportRuleFits.Context) async throws -> ImportRuleFits.Context {
+    private func ruleFitContext(_ items: [ImportItem], into start: ImportRuleFits.Context,
+                                pending: [PendingDocumentKind]) async throws -> ImportRuleFits.Context {
         let copy = try session.current(from: dbQueue)
         let cache = ruleFitCache
         return try await copy.dbQueue.read { db in
             let own = try IssuerKey.knownParties(db: db)
             let providers = try UtilityProvider.fetchAll(db)
             var context = start
+            context.kindNames = ImportKindNames(catalog: try DocumentKindCatalog.load(db: db), pending: pending)
             var offered: Set<Int64> = []
             for item in items {
                 let entry = cache.entry(for: item.file, ownNIFs: own, providers: providers)
@@ -1539,7 +1597,7 @@ public struct ImportPipeline: @unchecked Sendable {
     /// The item with a kind mismatch issue when the user said what the files are and this is
     /// something else.
     private static func withIntentIssue(_ item: ImportItem, intent: ImportIntent) -> ImportItem {
-        guard item.parentId == nil, let issue = ImportDetector.intentIssue(item.recognition, intent: intent),
+        guard item.parentId == nil, let issue = ImportDetector.intentIssue(item.recognition, intent: intent, foundName: item.kindName),
               !item.issues.contains(where: { $0.id == issue.id }) else { return item }
         var item = item
         item.issues.append(issue)

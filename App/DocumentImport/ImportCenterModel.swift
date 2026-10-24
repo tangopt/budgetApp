@@ -45,6 +45,8 @@ final class ImportCenterModel: ObservableObject {
     var targetNames: ImportTargetNames { session.targetNames }
     /// The accounts by id: a statement's layout wizard and its account picker.
     var accounts: [Int64: Account] { session.accounts }
+    /// A kind's name, a custom kind's included.
+    func kindLabel(_ kind: ImportKind) -> String { session.kindLabel(kind) }
     /// The last answer refused beside its question.
     var answerProblem: AnswerProblem? {
         get { session.answerProblem }

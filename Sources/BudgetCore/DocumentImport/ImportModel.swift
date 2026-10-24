@@ -370,6 +370,9 @@ public struct ImportIntent: Equatable, Sendable {
     /// document matches (Missing evidence ▸ Add: a P60 read by the payroll reader is the P60 the
     /// item asks for; a BBVA extrato or a CSV is a bank statement).
     public var expectedByDocumentKind = false
+    /// The name of the custom kind `expected` names (set when the files are planned), for the
+    /// mismatch wording ("Expected a <name>…").
+    public var expectedKindName: String?
     /// The period the target record asks a document for (`[start, end)`; Missing evidence ▸ Add's
     /// slot): a filed document without period facts gets it (`ImportPipeline.withIntentPeriod`).
     public var period: DateInterval?

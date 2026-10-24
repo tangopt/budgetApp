@@ -581,6 +581,8 @@ public struct EvidenceDocumentReader: ImportReader {
 
     /// Suggestions this close to the best are as good: the user picks.
     static let tieMargin = 20
+    /// A custom kind's amount, guessed as the largest on the document.
+    public static let guessedAmountReason = "Amount guessed (the largest on the document): check it"
 
     /// `readings`: the issuer's learnt positions, as read.
     private func item(file: ImportFile, recognition: ImportRecognition, context: ImportContext, index: EvidenceMatcher.Index,
@@ -617,6 +619,13 @@ public struct EvidenceDocumentReader: ImportReader {
         }
         let source: ImportFactSource = file.usedOCR ? .ocr : .textLayer
         let body = file.text.map(EvidenceText.fold) ?? ""
+        // A custom kind has no labels of its own: the analyzer's general guess, to check.
+        var amountGuessed = false
+        if custom != nil, metadata.amountMinorUnits == nil, let guess = EvidenceAnalyzer.largestAmount(in: body) {
+            metadata.amountMinorUnits = guess.minorUnits
+            metadata.currency = guess.currency ?? EvidenceAnalyzer.defaultCurrency(for: .other, text: body)
+            amountGuessed = true
+        }
 
         var facts: [ImportFact] = []
         if let date = metadata.docDate {
@@ -633,8 +642,9 @@ public struct EvidenceDocumentReader: ImportReader {
             facts.append(ImportFact(field: .periodEnd, value: .date(end), source: source, confidence: .certain, reason: "Period on the document"))
         }
         if let amount = metadata.amountMinorUnits, let currency = metadata.currency {
-            facts.append(ImportFact(field: .amount, value: .money(amount, currency), source: source, confidence: .certain,
-                                    reason: "Amount on the document"))
+            facts.append(ImportFact(field: .amount, value: .money(amount, currency), source: source,
+                                    confidence: amountGuessed ? .needsReview : .certain,
+                                    reason: amountGuessed ? Self.guessedAmountReason : "Amount on the document"))
         }
         // A mortgage receipt's instalment ("193/480"), named in its canonical name.
         if kind == .mortgageReceipt, let instalment = MortgageReceipt.instalment(text: file.text, fileName: file.fileName) {

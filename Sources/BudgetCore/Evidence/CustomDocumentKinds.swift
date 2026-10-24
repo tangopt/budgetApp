@@ -159,6 +159,25 @@ public enum CustomDocumentKinds {
                                by: deviceUser, now: now, db: db)
     }
 
+    /// What became of a custom kind: itself while in use; the kind it was merged into (a built-in for a
+    /// retired kind, else the target its sync redirect names, followed to a kind in use); nil when it
+    /// was deleted.
+    public static func successor(of id: Int64, db: Database) throws -> DocumentKindRef? {
+        let table = CustomDocumentKind.databaseTableName
+        let catalog = try DocumentKindCatalog.load(db: db)
+        var current = id
+        var seen: Set<Int64> = []
+        while seen.insert(current).inserted {
+            if catalog.custom(id: current) != nil { return .custom(current) }
+            if let builtIn = try CustomDocumentKind.fetchOne(db, key: current)?.mergedIntoKind { return .builtIn(builtIn) }
+            let sql = "SELECT mergedInto FROM syncTombstone WHERE tableName = ? AND localId = ? AND mergedInto IS NOT NULL ORDER BY deletedAt DESC LIMIT 1"
+            guard let target = try String.fetchOne(db, sql: sql, arguments: [table, current]),
+                  let next = try SyncRecordStore.localId(table: table, uuid: target, db: db) else { return nil }
+            current = next
+        }
+        return nil
+    }
+
     /// Re-files what still names a retired kind (merged into a built-in) under that built-in: after a sync
     /// apply brought the retirement, or a document or rule filed under the kind elsewhere meanwhile. Tracked.
     @discardableResult

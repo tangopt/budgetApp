@@ -530,7 +530,18 @@ public enum ImportDuplicates {
     public static func annotate(_ items: [ImportItem], db: Database, library: DocumentIdentityIndex? = nil,
                                 pendingKinds: [PendingDocumentKind] = []) throws -> [ImportItem] {
         let library = try library ?? DocumentIdentityIndex.load(db: db)
-        let names = ImportKindNames(catalog: try DocumentKindCatalog.load(db: db), pending: pendingKinds).byToken
+        let catalog = try DocumentKindCatalog.load(db: db)
+        let names = ImportKindNames(catalog: catalog, pending: pendingKinds).byToken
+        // A new kind whose name a saved kind has now (saved meanwhile, on another device) is that kind:
+        // Confirm files it there, so it is compared as it.
+        var aliases: [UUID: Int64] = [:]
+        for kind in pendingKinds {
+            if let id = catalog.custom(named: kind.name)?.id { aliases[kind.id] = id }
+        }
+        func compared(_ kind: ImportKind) -> ImportKind {
+            if case .customEvidence(.pending(let id)) = kind, let saved = aliases[id] { return .customEvidence(.saved(saved)) }
+            return kind
+        }
         var batch = DocumentIdentityIndex()
         /// Hash → the original's name, library id and (when in the batch only) item.
         var batchFiles: [String: Original] = [:]
@@ -547,7 +558,7 @@ public enum ImportDuplicates {
             if isStatement || awaitsMapping { result[i].notes.removeAll { $0.hasPrefix(libraryNotePrefix) } }
             result[i].notes.removeAll { $0 == libraryInvoiceNote || $0.hasPrefix(refersToNotePrefix) }
             let item = result[i]
-            let identity = DocumentIdentity.identity(kind: item.recognition.kind, text: item.file.text, facts: item.facts,
+            let identity = DocumentIdentity.identity(kind: compared(item.recognition.kind), text: item.file.text, facts: item.facts,
                                                      providerId: providerId(item), personId: personId(item))
             var original = Original(label: item.file.fileName, documentId: nil, itemId: item.id)
             if let duplicate = item.duplicate {
@@ -641,7 +652,8 @@ public enum ImportDuplicates {
         }
         // A changed source-folder file takes its previous version's links before the claims are checked.
         for i in result.indices { result[i] = try ImportPipeline.withPreviousVersion(result[i], db: db) }
-        try annotateClaims(&result, db: db, names: names)
+        let tokenAliases = Dictionary(uniqueKeysWithValues: aliases.map { (CustomKindKey.pending($0.key).token, CustomKindKey.saved($0.value).token) })
+        try annotateClaims(&result, db: db, names: names, aliases: tokenAliases)
         return result
     }
 
@@ -873,9 +885,11 @@ public enum ImportDuplicates {
         var role: String
     }
 
-    private static func annotateClaims(_ items: inout [ImportItem], db: Database, names: [String: String] = [:]) throws {
+    /// `aliases`: new kinds' tokens compared as the saved kind of their name.
+    private static func annotateClaims(_ items: inout [ImportItem], db: Database, names: [String: String] = [:],
+                                       aliases: [String: String] = [:]) throws {
         func role(_ i: Int) -> String? {
-            claimingKind(items[i]).map { claimRole(token: $0, text: items[i].file.text) }
+            claimingKind(items[i]).map { claimRole(token: aliases[$0] ?? $0, text: items[i].file.text) }
         }
         // First: items of one kind (role) and different periods certain of the same transaction:
         // not duplicates, but one of the automatic links is likely wrong. Links the user chose

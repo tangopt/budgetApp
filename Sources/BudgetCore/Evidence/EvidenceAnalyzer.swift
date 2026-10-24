@@ -190,7 +190,14 @@ public enum EvidenceAnalyzer {
             if let amount = EvidenceAmountParser.amounts(in: before).last(where: { $0.minorUnits > 0 }) { return amount }
         }
         guard !labelledAmountOnly.contains(kind) else { return nil }
-        // The largest amount marked with a currency, bar the issuer's share capital.
+        return largestAmount(in: body)
+    }
+
+    /// The general guess: the largest amount marked with a currency, bar the issuer's share capital
+    /// (`body` folded, `EvidenceText.fold`). A custom kind's amount, to check.
+    static func largestAmount(in body: String) -> EvidenceAmountParser.Found? {
+        guard !body.isEmpty else { return nil }
+        let text = body as NSString
         return EvidenceAmountParser.amounts(in: body).filter { amount in
             guard amount.currency != nil else { return false }
             let start = max(0, amount.range.location - 30)

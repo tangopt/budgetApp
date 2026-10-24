@@ -45,7 +45,7 @@ final class ImportCustomKindTests: XCTestCase {
     }
 
     /// A letter nothing built in recognises, dated `date` (dd/MM/yyyy), for `total` when given.
-    private func letter(_ name: String, date: String, total: String? = "85,00", note: String = "") throws -> URL {
+    private func letter(_ name: String, date: String, total: String? = nil, note: String = "") throws -> URL {
         var lines = [Self.issuerLine, "Rua Exemplo 1, Lisboa", "Data: \(date)", "Caro senhor, segue a informacao pedida. \(note)"]
         if let total { lines.append("TOTAL \(total) €") }
         return try pdf(name, lines)
@@ -319,6 +319,131 @@ final class ImportCustomKindTests: XCTestCase {
         XCTAssertFalse(added.issues.contains { $0.id == "kindMismatch" })
     }
 
+    func testACustomKindsAmountIsGuessedToCheck() async throws {
+        var plan = try await pipeline.plan([try pdf("a.pdf", [Self.issuerLine, "Data: 05/03/2023", "Deslocacao 10,00 €",
+                                                              "Valor final 85,00 €"])])
+        let a = try item(plan, "a.pdf").id
+        plan = try await pipeline.resolve(plan, itemId: a, .createKind(name: "Boiler service", area: .property))
+        var read = try item(plan, "a.pdf")
+        let amount = try XCTUnwrap(read.facts.first { $0.field == .amount })
+        XCTAssertEqual(amount.value, .money(8500, .eur))
+        XCTAssertEqual(amount.confidence, .needsReview)
+        XCTAssertEqual(amount.reason, EvidenceDocumentReader.guessedAmountReason)
+        XCTAssertEqual(read.section, .needsYou)
+        XCTAssertTrue(read.needsYouReasons.contains(EvidenceDocumentReader.guessedAmountReason))
+        plan = try await pipeline.resolve(plan, itemId: a, .confirmFigure(.amount, .money(8500, .eur)))
+        read = try item(plan, "a.pdf")
+        XCTAssertEqual(read.section, .ready, "\(read.needsYouReasons)")
+        XCTAssertTrue(read.placement?.canonicalName.hasPrefix("20230305 - Property - Boiler service - ") == true)
+    }
+
+    // MARK: Kinds changed before Confirm
+
+    func testConfirmAfterAKindMergedIntoABuiltInReadsTheItemAgain() async throws {
+        let boiler = try write { db in try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: Date()).id! }
+        var plan = try await pipeline.plan([try letter("a.pdf", date: "05/03/2023")])
+        let a = try item(plan, "a.pdf").id
+        plan = try await pipeline.resolve(plan, itemId: a, .chooseCustomKind(.saved(boiler)))
+        XCTAssertTrue(plan.canConfirm)
+        try write { db in _ = try CustomDocumentKinds.save(db: db, edits: [KindEdit(kindId: boiler, change: .merge(into: .builtIn(.repairInvoice)))]) }
+        XCTAssertThrowsError(try applier.apply(plan, entryPoint: "Test")) { XCTAssertEqual($0 as? ImportApplyError, .notConfirmable) }
+
+        let reread = try await XCTUnwrapAsync(try await pipeline.rereadingChangedKinds(plan))
+        let item = try self.item(reread, "a.pdf")
+        XCTAssertEqual(item.recognition.kind, .evidence(.repairInvoice))
+        XCTAssertEqual(item.recognition.confidence, .needsReview)
+        XCTAssertEqual(item.recognition.reason, "Boiler service was merged into Repair bill: check it")
+        XCTAssertEqual(item.section, .needsYou)
+        XCTAssertFalse(item.ruleDrafts.contains { $0.actionJSON.contains("customKindId") }, "the gone kind isn't learnt")
+        let nothing = try await pipeline.rereadingChangedKinds(reread)
+        XCTAssertNil(nothing)
+    }
+
+    func testANewKindSavedMeanwhileUnderItsNameIsReused() async throws {
+        var plan = try await pipeline.plan([try letter("a.pdf", date: "05/03/2023")])
+        plan = try await pipeline.resolve(plan, itemId: try item(plan, "a.pdf").id, .createKind(name: "Boiler service", area: .property))
+        // Saved meanwhile (another device), spelt otherwise and in another area.
+        let saved = try write { db in try CustomDocumentKinds.create(db: db, name: "boiler sérvice", area: .other, now: Date()).id! }
+        let summary = try applier.apply(plan, entryPoint: "Test")
+        XCTAssertEqual(try kinds().map(\.id), [saved])
+        let document = try XCTUnwrap(try read { db in try EvidenceDocument.fetchOne(db) })
+        XCTAssertEqual(document.customKindId, saved)
+        XCTAssertEqual(document.canonicalName, "20230305 - Other - boiler sérvice")
+        let rule = try XCTUnwrap(try read { db in try ImportRuleStore.all(db: db) }.first)
+        XCTAssertEqual(rule.actionLabel, "Kind: boiler sérvice")
+        XCTAssertEqual(ImportLearning.decode(DocumentKindAction.self, rule.actionJSON)?.customKindId, saved)
+        pipeline.discardPlanningCopy()
+
+        _ = try ImportUndo.undo(dbQueue: db, library: library, runId: summary.runId)
+        XCTAssertEqual(try kinds().map(\.id), [saved], "the run didn't make it: Undo leaves it")
+        XCTAssertEqual(try read { db in try EvidenceDocument.fetchCount(db) }, 0)
+    }
+
+    func testAKindRenamedDuringTheReviewNamesTheDocument() async throws {
+        let boiler = try write { db in try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: Date()).id! }
+        var plan = try await pipeline.plan([try letter("a.pdf", date: "05/03/2023")])
+        plan = try await pipeline.resolve(plan, itemId: try item(plan, "a.pdf").id, .chooseCustomKind(.saved(boiler)))
+        XCTAssertEqual(try item(plan, "a.pdf").placement?.canonicalName, "20230305 - Property - Boiler service")
+        try write { db in _ = try CustomDocumentKinds.save(db: db, edits: [KindEdit(kindId: boiler, change: .rename(name: "Boiler check", area: .other))]) }
+        _ = try applier.apply(plan, entryPoint: "Test")
+        let document = try XCTUnwrap(try read { db in try EvidenceDocument.fetchOne(db) })
+        XCTAssertEqual(document.canonicalName, "20230305 - Other - Boiler check")
+        XCTAssertEqual(try read { db in try ImportRuleStore.all(db: db) }.first?.actionLabel, "Kind: Boiler check")
+    }
+
+    func testAMismatchNamesTheExpectedCustomKind() async throws {
+        let (kindId, propertyId) = try write { db -> (Int64, Int64) in
+            var property = Property(name: "Property A", country: "PT")
+            try Properties.save(db: db, &property)
+            return (try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: Date()).id!, property.id!)
+        }
+        let shortcut = ImportShortcut.attach(.property(propertyId), role: nil, from: .missingEvidence, expected: .custom(kindId))
+        let receipt = try pdf("r.pdf", [Self.issuerLine, "SEGURO MULTI-RISCO HABITACAO", "Data: 05/03/2023", "TOTAL 120,00 €"])
+        let plan = try await pipeline.plan([receipt], intent: shortcut.intent)
+        let issue = try XCTUnwrap(try item(plan, "r.pdf").issues.first { $0.id == "kindMismatch" })
+        XCTAssertEqual(issue.reason, "Expected a Boiler service, this looks like a Insurance receipt")
+    }
+
+    func testANewKindComparesAsASavedKindOfItsName() async throws {
+        var plan = try await pipeline.plan([try letter("a.pdf", date: "05/03/2023")])
+        let a = try item(plan, "a.pdf").id
+        plan = try await pipeline.resolve(plan, itemId: a, .createKind(name: "Boiler service", area: .property))
+        plan = try await pipeline.resolve(plan, itemId: a, .confirmFigure(.amount, .money(8500, .eur)))
+        // Meanwhile (another device): the kind under that name, and a document of it of the same day and amount.
+        try write { db in
+            let kindId = try CustomDocumentKinds.create(db: db, name: "boiler service", area: .property, now: Date()).id!
+            let url = try self.letter("library.pdf", date: "05/03/2023", note: "biblioteca")
+            var document = try self.library.add(db: db, url, metadata: EvidenceMetadata(kind: .other), analysis: nil).result.document
+            document.customKindId = kindId
+            document.docDate = MonthRange.calendar.date(from: DateComponents(year: 2023, month: 3, day: 5))
+            document.amountMinorUnits = 8500
+            document.currency = .eur
+            try document.update(db)
+        }
+        // More files join the review: a fresh copy, and the pass compares the new kind as the saved one.
+        plan = try await pipeline.plan(adding: [try letter("other.pdf", date: "01/01/2024", note: "outra")], to: plan, intent: .none)
+        let first = try item(plan, "a.pdf")
+        let issue = try XCTUnwrap(first.issues.first { $0.id == "possibleDuplicate" }, "\(first.issues.map(\.reason))")
+        XCTAssertTrue(issue.reason.contains("also a boiler service dated 2023-03-05"), issue.reason)
+    }
+
+    func testUndoOfANewKindLeavesASyncTombstone() async throws {
+        var plan = try await pipeline.plan([try letter("a.pdf", date: "05/03/2023")])
+        plan = try await pipeline.resolve(plan, itemId: try item(plan, "a.pdf").id, .createKind(name: "Boiler service", area: .property))
+        let summary = try applier.apply(plan, entryPoint: "Test")
+        let kindId = try XCTUnwrap(try kinds().first?.id)
+        let uuid = try XCTUnwrap(try read { db in try SyncRecordStore.existingUUID(table: "customDocumentKind", localId: kindId, db: db) })
+        pipeline.discardPlanningCopy()
+        _ = try ImportUndo.undo(dbQueue: db, library: library, runId: summary.runId)
+        let tombstones = try read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncTombstone WHERE uuid = ? AND tableName = 'customDocumentKind'", arguments: [uuid])
+        }
+        XCTAssertEqual(tombstones, 1)
+        let pending = try read { db in try SyncChangeTracker.pending(db: db) }
+        XCTAssertTrue(pending.contains { $0.uuid == uuid && $0.kind == .delete } || !pending.contains { $0.uuid == uuid },
+                      "the kind goes out as a delete, or never went out at all: \(pending.filter { $0.uuid == uuid })")
+    }
+
     // MARK: Duplicates
 
     func testTwoFilesOfOneCustomKindAndDayAreDuplicates() async throws {
@@ -352,5 +477,88 @@ final class ImportCustomKindTests: XCTestCase {
         let third = try item(plan, "c.pdf")
         let again = try XCTUnwrap(third.issues.first { $0.id == "possibleDuplicate" }, "\(third.issues.map(\.reason))")
         XCTAssertTrue(again.reason.contains("also a boiler service"), again.reason)
+    }
+
+    private func XCTUnwrapAsync<T>(_ value: T?, file: StaticString = #filePath, line: UInt = #line) async throws -> T {
+        try XCTUnwrap(value, file: file, line: line)
+    }
+}
+
+/// Confirm import refused because a kind changed (`ImportSession`): the items are read again, never stuck.
+@MainActor
+final class ImportCustomKindSessionTests: XCTestCase {
+    private var folder: URL!
+    private var session: ImportSession!
+
+    override func setUp() async throws {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent("ImportCustomKindSessionTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() async throws {
+        session?.discard()
+        await session?.settled()
+        session?.pipeline.discardPlanningCopy()
+        try? FileManager.default.removeItem(at: folder)
+    }
+
+    private func letter(_ name: String, date: String) throws -> URL {
+        let made = EvidenceTestPDFs.textPDF(["Exemplo Termica, Lda. NIF 503504564", "Data: \(date)", "Caro senhor, segue a informacao."], name: name)
+        let url = folder.appendingPathComponent(name)
+        try FileManager.default.moveItem(at: made, to: url)
+        return url
+    }
+
+    private nonisolated static func write<T>(_ db: DatabaseQueue, _ body: (Database) throws -> T) throws -> T { try db.write(body) }
+
+    func testConfirmAfterKindsWereMergedOrDeletedReadsTheirItemsAgain() async throws {
+        let manager = try DatabaseManager(path: nil)
+        try manager.migrate()
+        let db = manager.dbQueue
+        let (boiler, heating, alarm) = try Self.write(db) { db -> (Int64, Int64, Int64) in
+            try CategorySeeder.seedDefaults(db)
+            return (try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: Date()).id!,
+                    try CustomDocumentKinds.create(db: db, name: "Heating", area: .property, now: Date()).id!,
+                    try CustomDocumentKinds.create(db: db, name: "Alarm contract", area: .property, now: Date()).id!)
+        }
+        let library = EvidenceLibrary(root: folder.appendingPathComponent("Library", isDirectory: true), database: db)
+        session = ImportSession(dbQueue: db, databasePath: nil, library: library,
+                                categorizationService: CategorizationService(categorizer: FakeCategorizer()), modelReader: nil)
+        session.start([try letter("a.pdf", date: "05/03/2023"), try letter("b.pdf", date: "07/04/2023")], entryPoint: "Test")
+        await session.settled()
+        func item(_ name: String) throws -> ImportItem { try XCTUnwrap(session.plan?.items.first { $0.file.fileName == name }) }
+        session.resolve(try item("a.pdf").id, .chooseCustomKind(.saved(boiler)))
+        session.resolve(try item("b.pdf").id, .chooseCustomKind(.saved(alarm)))
+        await session.settled()
+        XCTAssertEqual(session.plan?.canConfirm, true)
+
+        try Self.write(db) { db in
+            _ = try CustomDocumentKinds.save(db: db, edits: [KindEdit(kindId: boiler, change: .merge(into: .custom(heating)))])
+            _ = try CustomDocumentKind.deleteOne(db, key: alarm)
+        }
+        session.confirm(confirmedBy: nil)
+        await session.settled()
+        XCTAssertEqual(session.phase, .review)
+        XCTAssertEqual(session.problem?.title, ImportSession.kindsChangedProblem)
+        let merged = try item("a.pdf")
+        XCTAssertEqual(merged.recognition.kind, .customEvidence(.saved(heating)))
+        XCTAssertEqual(merged.recognition.reason, "Boiler service was merged into Heating: check it")
+        XCTAssertEqual(merged.kindName, "Heating")
+        XCTAssertEqual(merged.section, .needsYou)
+        let gone = try item("b.pdf")
+        XCTAssertEqual(gone.recognition.kind, .unknown)
+        XCTAssertTrue(gone.needsYouReasons.contains("Its kind Alarm contract no longer exists"), "\(gone.needsYouReasons)")
+        XCTAssertTrue(gone.issues.contains { if case .unknownKind = $0.kind { return true }; return false })
+        XCTAssertEqual(session.selectedItemId, merged.id)
+
+        // Answered, the review confirms.
+        session.resolve(merged.id, .chooseCustomKind(.saved(heating)))
+        session.resolve(gone.id, .createKind(name: "Alarm contract", area: .property))
+        await session.settled()
+        XCTAssertEqual(session.plan?.canConfirm, true, "\(session.plan?.items.map(\.needsYouReasons) ?? [])")
+        session.confirm(confirmedBy: nil)
+        await session.settled()
+        guard case .finished(let summary) = session.phase else { return XCTFail("\(session.phase) \(String(describing: session.problem))") }
+        XCTAssertEqual(summary.filed, 2)
     }
 }

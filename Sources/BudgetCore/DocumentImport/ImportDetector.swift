@@ -39,19 +39,24 @@ public struct ImportDetector: Sendable {
     }
 
     /// `kindMismatch` when the user said what the files are and this one is something else.
-    public static func intentIssue(_ recognition: ImportRecognition, intent: ImportIntent) -> ImportIssue? {
+    /// A custom kind is named by `intent.expectedKindName` (expected) and `foundName` (found).
+    public static func intentIssue(_ recognition: ImportRecognition, intent: ImportIntent, foundName: String? = nil) -> ImportIssue? {
         guard let expected = intent.expected, !matches(expected, recognition.kind, byDocumentKind: intent.expectedByDocumentKind) else { return nil }
         return ImportIssue(id: "kindMismatch", kind: .kindMismatch(expected: expected, found: recognition.kind),
-                           reason: mismatchReason(expected: expected, found: recognition.kind))
+                           reason: mismatchReason(expected: expected, found: recognition.kind,
+                                                  expectedName: intent.expectedKindName, foundName: foundName))
     }
 
     /// "Expected a <kind>, this looks like a <kind>"; when both kinds have the same name (the
     /// importer's own kind and the library's evidence kind of it), the expected one by what sets
     /// it apart: "Expected the portal's rent receipt, this looks like another rent receipt".
-    public static func mismatchReason(expected: ImportKind, found: ImportKind) -> String {
-        if found == .unknown { return "Expected a \(expected.displayName), but this file isn't recognised" }
-        guard expected.displayName.lowercased() == found.displayName.lowercased() else {
-            return "Expected a \(expected.displayName), this looks like a \(found.displayName)"
+    /// `expectedName` / `foundName`: a custom kind's name (its `displayName` is generic).
+    public static func mismatchReason(expected: ImportKind, found: ImportKind, expectedName: String? = nil, foundName: String? = nil) -> String {
+        let expectedShown = expected.customKindKey != nil ? expectedName ?? expected.displayName : expected.displayName
+        let foundShown = found.customKindKey != nil ? foundName ?? found.displayName : found.displayName
+        if found == .unknown { return "Expected a \(expectedShown), but this file isn't recognised" }
+        guard expectedShown.lowercased() == foundShown.lowercased() else {
+            return "Expected a \(expectedShown), this looks like a \(foundShown)"
         }
         return "Expected \(specificName(expected)), this looks like another \(lowercasedName(found))"
     }
