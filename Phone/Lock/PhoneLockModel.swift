@@ -26,6 +26,9 @@ final class PhoneLockModel: ObservableObject {
 
     private static let log = Logger(subsystem: "ubberninja.mango.ios", category: "Lock")
 
+    /// The app's one lock: the SwiftUI root and the scene delegate's cover window share it.
+    static let shared = PhoneLockModel()
+
     init() {
         let availability = Self.currentAvailability()
         self.availability = availability

@@ -18,8 +18,10 @@ enum PhoneMain {
 }
 
 struct MangoPhoneApp: App {
-    /// Locked on launch (auth spec §10); one model for the app's life, so nothing else needs to know about it.
-    @StateObject private var lock = PhoneLockModel()
+    /// The scene delegate puts the lock screen and the privacy cover in a window above every sheet and alert.
+    @UIApplicationDelegateAdaptor(PhoneAppDelegate.self) private var appDelegate
+    /// Locked on launch (auth spec §10); one model for the app's life, shared with the cover window.
+    @ObservedObject private var lock = PhoneLockModel.shared
     /// The sync status the tabs show (Task 12 replaces the placeholder with the sync controller).
     @StateObject private var sync = PhoneSyncStatusSource()
 

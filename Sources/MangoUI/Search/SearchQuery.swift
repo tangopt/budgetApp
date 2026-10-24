@@ -93,7 +93,11 @@ public enum SearchQuery {
             switch kind {
             case .moreThan: criteria.minAmountMinorUnits = max(criteria.minAmountMinorUnits ?? 0, amount + 1)
             case .atLeast: criteria.minAmountMinorUnits = max(criteria.minAmountMinorUnits ?? 0, amount)
-            case .lessThan: criteria.maxAmountMinorUnits = min(criteria.maxAmountMinorUnits ?? .max, max(amount - 1, 0))
+            case .lessThan where amount == 0:
+                // Nothing is below zero (bounds are on the absolute amount): an empty range, so nothing matches.
+                criteria.maxAmountMinorUnits = 0
+                criteria.minAmountMinorUnits = max(criteria.minAmountMinorUnits ?? 0, 1)
+            case .lessThan: criteria.maxAmountMinorUnits = min(criteria.maxAmountMinorUnits ?? .max, amount - 1)
             case .atMost: criteria.maxAmountMinorUnits = min(criteria.maxAmountMinorUnits ?? .max, amount)
             }
         }

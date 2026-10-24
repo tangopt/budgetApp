@@ -93,6 +93,12 @@ public struct SearchView: View {
             ForEach(results.days) { day in
                 Card {
                     SearchDayHeader(day: day)
+                    if day.listsUncountedTransfer {
+                        Text(SearchCopy.transferNote)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     ForEach(day.rows) { row in
                         Divider()
                         Button {
@@ -101,6 +107,7 @@ public struct SearchView: View {
                             TransactionRow(row: row)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityHint("Shows the transaction")
                     }
                 }
             }

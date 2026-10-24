@@ -37,6 +37,7 @@ final class SearchTests: XCTestCase {
         let day = today
         let model = SearchViewModel(dbQueue: queue, today: { day }, queryDelay: .zero)
         await model.load()
+        await model.settle()
         guard case .loaded = model.state else { throw XCTSkip("not loaded: \(model.state)") }
         return model
     }
@@ -97,9 +98,16 @@ final class SearchTests: XCTestCase {
         XCTAssertNil(trailing.minAmountMinorUnits)
     }
 
-    /// "<0" can match nothing: kept as a bound of 0, never negative.
-    func testLessThanZeroNeverGoesNegative() {
-        XCTAssertEqual(SearchQuery.criteria(text: "<0", tokens: []).maxAmountMinorUnits, 0)
+    /// "<0": nothing has an absolute amount below zero, so the range is empty and matches nothing.
+    func testLessThanZeroMatchesNothing() async throws {
+        let criteria = SearchQuery.criteria(text: "<0", tokens: [])
+        XCTAssertEqual(criteria.maxAmountMinorUnits, 0)
+        XCTAssertEqual(criteria.minAmountMinorUnits, 1)
+        let model = try await loadedModel(try demoDatabase())
+        model.query = "<0"
+        await model.settle()
+        XCTAssertFalse(model.isBrowsing)
+        XCTAssertEqual(model.results.matchCount, 0)
     }
 
     // MARK: Tokens
@@ -129,18 +137,40 @@ final class SearchTests: XCTestCase {
         XCTAssertEqual(some, [.account(id: 1, name: "Everyday")])
     }
 
-    /// Typing reaches the results after the pause; clearing at once.
+    /// Typing reaches the results only once the pause is over (a gate the test opens, no wall clock); clearing at once.
     func testTypingAppliesAfterAPause() async throws {
         let day = today
-        let model = SearchViewModel(dbQueue: try demoDatabase(), today: { day }, queryDelay: .milliseconds(50))
+        let gate = PauseGate()
+        let model = SearchViewModel(dbQueue: try demoDatabase(), today: { day }, queryDelay: .milliseconds(150),
+                                    pause: { _ in await gate.wait() })
         await model.load()
+        await model.settle()
         model.query = "streamflix"
-        XCTAssertTrue(model.isBrowsing)
-        try await Task.sleep(for: .milliseconds(300))
+        await gate.waitUntilWaiting()
+        XCTAssertTrue(model.isBrowsing, "applied before the pause ended")
+        await gate.open()
+        await model.settle()
         XCTAssertFalse(model.isBrowsing)
         XCTAssertTrue(model.results.days.flatMap(\.rows).allSatisfy { $0.description == "STREAMFLIX" })
         model.query = ""
+        await model.settle()
         XCTAssertTrue(model.isBrowsing)
+    }
+
+    /// A day listing an incoming transfer leg that its total leaves out says so.
+    func testADayWithAnUncountedTransferLegSaysSo() {
+        let out = row(2, day(14), -5_000)
+        let inLegTransaction = Transaction(id: 3, importBatchId: 1, accountId: 2, date: day(14), rawDescription: "IN", amountMinorUnits: 5_000,
+                                           categoryId: nil, status: .confirmed, categorizedBy: .none, fingerprint: "f3")
+        let inLeg = TransactionSearch.Row(transaction: inLegTransaction, category: nil, categoryName: "", accountName: "B", currency: .gbp,
+                                          isLinkedTransfer: true, outgoingTransactionId: 2)
+        let once = SearchResults.make(rows: [inLeg, out], eurToGbpRate: 1, countsTransfersOnce: true, rowLimit: 100)
+        XCTAssertTrue(once.days[0].listsUncountedTransfer)
+        XCTAssertEqual(once.days[0].totals.netMinorUnits, -5_000)
+        let byAccount = SearchResults.make(rows: [inLeg, out], eurToGbpRate: 1, countsTransfersOnce: false, rowLimit: 100)
+        XCTAssertFalse(byAccount.days[0].listsUncountedTransfer)
+        XCTAssertFalse(SearchResults.make(rows: [out], eurToGbpRate: 1, countsTransfersOnce: true, rowLimit: 100).days[0].listsUncountedTransfer)
+        XCTAssertEqual(SearchCopy.transferNote, "Transfers between your accounts aren't counted in the total")
     }
 
     func testTokenTitles() {
@@ -206,6 +236,7 @@ final class SearchTests: XCTestCase {
     func testUncategorisedTokenListsTheDemosFiveWaitingRows() async throws {
         let model = try await loadedModel(try demoDatabase())
         model.tokens = [.uncategorised]
+        await model.settle()
         XCTAssertFalse(model.isBrowsing)
         let rows = model.results.days.flatMap(\.rows)
         XCTAssertEqual(rows.count, 5)
@@ -217,7 +248,9 @@ final class SearchTests: XCTestCase {
     func testAnAmountBoundKeepsOnlyLargerAmounts() async throws {
         let model = try await loadedModel(try demoDatabase())
         model.query = ">100"
+        await model.settle()
         model.tokens = [.period(.thisMonth)]
+        await model.settle()
         let rows = model.results.days.flatMap(\.rows)
         XCTAssertFalse(rows.isEmpty)
         XCTAssertTrue(rows.allSatisfy { $0.amountMinorUnits.magnitude > 10_000 })
@@ -229,6 +262,7 @@ final class SearchTests: XCTestCase {
     func testTheFieldMatchesTheCategory() async throws {
         let model = try await loadedModel(try demoDatabase())
         model.query = "streaming"
+        await model.settle()
         let rows = model.results.days.flatMap(\.rows)
         XCTAssertFalse(rows.isEmpty)
         XCTAssertTrue(rows.allSatisfy { $0.categoryName == "Streaming" })
@@ -238,6 +272,7 @@ final class SearchTests: XCTestCase {
     func testAnExactAmountFindsThatAmount() async throws {
         let model = try await loadedModel(try demoDatabase())
         model.query = "10.99"
+        await model.settle()
         let rows = model.results.days.flatMap(\.rows)
         XCTAssertFalse(rows.isEmpty)
         XCTAssertTrue(rows.allSatisfy { $0.amountMinorUnits.magnitude == 1_099 })
@@ -246,6 +281,7 @@ final class SearchTests: XCTestCase {
     func testNothingMatches() async throws {
         let model = try await loadedModel(try demoDatabase())
         model.query = "zzqx"
+        await model.settle()
         XCTAssertTrue(model.results.days.isEmpty)
         XCTAssertEqual(model.results.matchCount, 0)
         XCTAssertEqual(SearchCopy.emptyTitle, "Nothing matches")
@@ -256,6 +292,7 @@ final class SearchTests: XCTestCase {
         let queue = try demoDatabase()
         let model = try await loadedModel(queue)
         model.tokens = [.period(.thisMonth)]
+        await model.settle()
         let check = try SearchViewModel.dayTotalsCheck(dbQueue: queue, today: today, criteria: model.criteria, shown: model.results)
         XCTAssertTrue(check.matches, check.line)
         var wrong = model.results
@@ -276,6 +313,7 @@ final class SearchTests: XCTestCase {
         let model = try await loadedModel(try demoDatabase())
         XCTAssertTrue(model.suggestedTokens.contains { $0.title == "Everyday Current" })
         model.tokens = [.period(.thisMonth)]
+        await model.settle()
         XCTAssertFalse(model.suggestedTokens.contains(.period(.thisYear)))
     }
 
@@ -285,10 +323,12 @@ final class SearchTests: XCTestCase {
         try demoDatabase().backup(to: queue)
         let model = try await loadedModel(queue)
         model.tokens = [.uncategorised]
+        await model.settle()
         let shown = model.results.days.flatMap(\.rows)
         model.detail = shown[0]
         try await queue.write { db in _ = try Transaction.deleteOne(db, key: shown[0].id) }
         await model.reload(for: Date())
+        await model.settle()
         XCTAssertEqual(model.tokens, [.uncategorised])
         XCTAssertEqual(model.results.days.flatMap(\.rows).count, 4)
         XCTAssertNil(model.detail)
@@ -300,9 +340,12 @@ final class SearchTests: XCTestCase {
         let model = try await loadedModel(queue)
         let key = Date()
         await model.reload(for: key)
+        await model.settle()
         model.tokens = [.uncategorised]
+        await model.settle()
         try await queue.write { db in _ = try Transaction.filter(Column("categoryId") == nil).deleteAll(db) }
         await model.reload(for: key)
+        await model.settle()
         XCTAssertEqual(model.results.days.flatMap(\.rows).count, 5)
     }
 
@@ -311,6 +354,7 @@ final class SearchTests: XCTestCase {
     func testARowsAmountRoleFollowsItsCategory() async throws {
         let model = try await loadedModel(try demoDatabase())
         model.query = "salary"
+        await model.settle()
         let salary = try XCTUnwrap(model.results.days.first?.rows.first)
         let shown = TransactionRowPresentation(salary)
         XCTAssertEqual(shown.amount.role, .income)
@@ -318,6 +362,7 @@ final class SearchTests: XCTestCase {
         XCTAssertGreaterThan(shown.amount.minorUnits, 0)
         XCTAssertEqual(shown.secondary, "Everyday Current · Income")
         model.query = "streamflix"
+        await model.settle()
         let spend = try XCTUnwrap(model.results.days.first?.rows.first)
         XCTAssertLessThan(TransactionRowPresentation(spend).amount.minorUnits, 0)
     }
@@ -325,6 +370,7 @@ final class SearchTests: XCTestCase {
     func testTheDetailShowsTheTransactionsFields() async throws {
         let model = try await loadedModel(try demoDatabase())
         model.query = "boiler"
+        await model.settle()
         let repair = try XCTUnwrap(model.results.days.first?.rows.first)
         let detail = TransactionDetailPresentation(repair)
         XCTAssertEqual(detail.description, "BOILER REPAIR LDA")
@@ -351,5 +397,31 @@ final class SearchTests: XCTestCase {
         await model.reload(for: Date())
         XCTAssertFalse(model.hasProperty)
         XCTAssertEqual(model.selection, .home)
+    }
+}
+
+/// A pause the test ends: `wait()` suspends until `open()`.
+private actor PauseGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var arrivals: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        for arrival in arrivals { arrival.resume() }
+        arrivals.removeAll()
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    /// Returns once someone is waiting at the gate.
+    func waitUntilWaiting() async {
+        if !waiters.isEmpty { return }
+        await withCheckedContinuation { arrivals.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        for waiter in waiters { waiter.resume() }
+        waiters.removeAll()
     }
 }

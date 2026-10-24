@@ -202,6 +202,17 @@ final class TransactionSearchTests: XCTestCase {
         XCTAssertEqual(TransactionSearch.rows(data, criteria: .init(), now: now, timeZone: utcZone).map(\.id), [2, 3, 1])
     }
 
+    /// The Index keeps its rows newest first (ties: the later id first) from the start, so a search never sorts.
+    func testIndexIsPresortedNewestFirstWithIdTieBreak() {
+        let data = input([tx(4, "A", -1, date: day(2026, 1, 1)), tx(9, "B", -1, date: day(2026, 3, 1)), tx(2, "C", -1, date: day(2026, 3, 1)),
+                          tx(7, "D", -1, date: day(2026, 2, 1))])
+        let index = TransactionSearch.Index(data)
+        XCTAssertEqual(index.allRows.map(\.id), [9, 2, 7, 4])
+        let rows = TransactionSearch.rows(index, criteria: .init(), now: now, timeZone: utcZone)
+        XCTAssertEqual(rows.map(\.id), TransactionSearch.sorted(rows, by: .date, ascending: false).map(\.id))
+        XCTAssertEqual(rows.map(\.id), [9, 2, 7, 4])
+    }
+
     func testSortByEachColumn() {
         let data = input([
             tx(1, "beta", -300, date: day(2026, 1, 1), category: 2),

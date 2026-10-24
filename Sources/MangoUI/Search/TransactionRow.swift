@@ -74,7 +74,5 @@ public struct TransactionRow: View {
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityHint("Shows the transaction")
     }
 }

@@ -13,6 +13,8 @@ public enum SearchCopy {
     public static let noTransactionsMessage = "Transactions appear here once the household's data arrives."
     public static let recentTitle = "Recent"
     public static let detailFooter = "Edit on iPad or Mac"
+    /// Under a day's total when the day lists an incoming transfer leg that the total leaves out.
+    public static let transferNote = "Transfers between your accounts aren't counted in the total"
 
     public static func matches(_ count: Int) -> String {
         count == 1 ? "1 match" : "\(count) matches"
@@ -31,6 +33,10 @@ public struct SearchDay: Equatable, Sendable, Identifiable {
     public let rows: [TransactionSearch.Row]
     public let totals: TransactionSearch.Totals
     public var id: Date { day }
+
+    /// The day lists the incoming leg of a transfer between the household's accounts that its total leaves out (the
+    /// transfer counts once, as sent).
+    public var listsUncountedTransfer: Bool { totals.excludedTransferLegCount > 0 }
 
     public init(day: Date, rows: [TransactionSearch.Row], totals: TransactionSearch.Totals) {
         self.day = day
@@ -53,30 +59,33 @@ public struct SearchResults: Equatable, Sendable {
 
     /// `rows` newest first (as `TransactionSearch.rows` returns them). Each day's total is `TransactionSearch.totals`
     /// over all of that day's rows, with `countsTransfersOnce` as the Mac's search uses it (no account filter).
+    /// Grouping stops at the first new day once `rowLimit` rows are listed: the rest is never grouped.
     public static func make(rows: [TransactionSearch.Row], eurToGbpRate: Double, countsTransfersOnce: Bool, rowLimit: Int) -> SearchResults {
         var days: [SearchDay] = []
         var shown = 0
-        for (day, dayRows) in group(rows) {
-            if shown >= rowLimit { break }
-            days.append(SearchDay(day: day, rows: dayRows,
-                                  totals: TransactionSearch.totals(dayRows, eurToGbpRate: eurToGbpRate, countsTransfersOnce: countsTransfersOnce)))
-            shown += dayRows.count
+        var openDay: Date?
+        var openRows: [TransactionSearch.Row] = []
+        func close() {
+            guard let day = openDay else { return }
+            days.append(SearchDay(day: day, rows: openRows,
+                                  totals: TransactionSearch.totals(openRows, eurToGbpRate: eurToGbpRate, countsTransfersOnce: countsTransfersOnce)))
+            shown += openRows.count
+            openRows.removeAll(keepingCapacity: true)
         }
-        return SearchResults(days: days, matchCount: rows.count)
-    }
-
-    /// Consecutive rows on the same UTC day, in order.
-    static func group(_ rows: [TransactionSearch.Row]) -> [(Date, [TransactionSearch.Row])] {
-        var result: [(Date, [TransactionSearch.Row])] = []
         for row in rows {
             let day = MonthRange.calendar.startOfDay(for: row.date)
-            if let last = result.indices.last, result[last].0 == day {
-                result[last].1.append(row)
-            } else {
-                result.append((day, [row]))
+            if day != openDay {
+                close()
+                if shown >= rowLimit {
+                    openDay = nil
+                    break
+                }
+                openDay = day
             }
+            openRows.append(row)
         }
-        return result
+        close()
+        return SearchResults(days: days, matchCount: rows.count)
     }
 }
 
@@ -89,8 +98,8 @@ public struct SearchData: Sendable {
     let rowsById: [Int64: TransactionSearch.Row]
 }
 
-/// Search's state (iPhone spec §3.4). One read per load builds `TransactionSearch.Index`; typing and tokens only
-/// filter it (`TransactionSearch.rows`), on the main actor, as the Mac's search does. Nothing here computes a figure:
+/// Search's state (iPhone spec §3.4). One read per load builds `TransactionSearch.Index` (kept newest first, so a
+/// search never sorts); typing and tokens only filter it (`TransactionSearch.rows`), off the main actor. Nothing here computes a figure:
 /// the day totals are `TransactionSearch.totals`.
 ///
 /// The pattern of the other tabs: `load()` reads off the main actor; `.task(id: reloadKey)` reloads after a sync; the
@@ -121,24 +130,32 @@ public final class SearchViewModel: ObservableObject {
         didSet { if tokens != oldValue { refresh() } }
     }
     @Published public private(set) var results: SearchResults = .empty
+    /// What `results` are for (they follow `criteria` a moment later, off the main actor).
+    @Published public private(set) var resultsCriteria = TransactionSearch.Criteria()
     /// The transaction open in the detail sheet.
     @Published public var detail: TransactionSearch.Row?
 
     private let dbQueue: any DatabaseReader
     private let today: () -> Date
     private let queryDelay: Duration
+    /// Waits out the typing pause (`Task.sleep`; tests pass a gate they open themselves).
+    private let pause: @Sendable (Duration) async -> Void
     /// The query the results are for (`query` after the pause).
     private var appliedQuery: String
     private var queryTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
+    private var refreshGeneration = 0
     private var data: SearchData?
     private var loadedKey: Date?
     private var generation = 0
 
-    /// `queryDelay`: the pause in typing before the results follow the field (`.zero`: at once, for tests).
-    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, queryDelay: Duration = .milliseconds(150)) {
+    /// `queryDelay`: the pause in typing before the results follow the field (`.zero`: at once). `pause` waits it out.
+    public init(dbQueue: any DatabaseReader, today: @escaping () -> Date, queryDelay: Duration = .milliseconds(150),
+                pause: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
         self.dbQueue = dbQueue
         self.today = today
         self.queryDelay = queryDelay
+        self.pause = pause
         self.query = ""
         self.appliedQuery = ""
         self.tokens = []
@@ -151,12 +168,18 @@ public final class SearchViewModel: ObservableObject {
         self.dbQueue = dbQueue
         self.today = today
         self.queryDelay = .zero
+        self.pause = { _ in }
         self.query = query
         self.appliedQuery = query
         self.tokens = tokens
         self.data = data
         self.state = data == nil ? .failed(Self.loadFailureMessage) : .loaded
-        refresh()
+        // The route's first frame needs its results: computed here, at once.
+        let criteria = SearchQuery.criteria(text: query, tokens: tokens)
+        if let data {
+            results = Self.results(data, criteria: criteria, now: today())
+            resultsCriteria = criteria
+        }
     }
 
     /// What the results are for: the applied query and the tokens.
@@ -164,8 +187,8 @@ public final class SearchViewModel: ObservableObject {
         SearchQuery.criteria(text: appliedQuery, tokens: tokens)
     }
 
-    /// Nothing typed and no token: the list is the newest transactions.
-    public var isBrowsing: Bool { criteria.isDefault }
+    /// The results shown are for nothing typed and no token: the list is the newest transactions.
+    public var isBrowsing: Bool { resultsCriteria.isDefault }
 
     public var suggestedTokens: [SearchToken] {
         SearchQuery.suggestions(accounts: data?.accountTokens ?? [], chosen: tokens)
@@ -202,12 +225,11 @@ public final class SearchViewModel: ObservableObject {
         let rate = try ExchangeRateSetting.currentOrDefault(db: db).eurToGbpRate
         let index = TransactionSearch.Index(TransactionSearch.Input(transactions: transactions, categories: categories, accounts: accounts,
                                                                     links: links, eurToGbpRate: rate))
-        let all = TransactionSearch.rows(index, criteria: TransactionSearch.Criteria())
         let tokens = accounts.sortedForDisplay().compactMap { account in
             account.id.map { SearchToken.account(id: $0, name: account.displayName) }
         }
         return SearchData(index: index, eurToGbpRate: rate, accountTokens: tokens,
-                          rowsById: Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }))
+                          rowsById: Dictionary(index.allRows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }))
     }
 
     private func scheduleQuery() {
@@ -219,21 +241,40 @@ public final class SearchViewModel: ObservableObject {
             return
         }
         let delay = queryDelay
+        let pause = pause
         queryTask = Task { [weak self] in
-            try? await Task.sleep(for: delay)
+            await pause(delay)
             guard !Task.isCancelled, let self, self.query == text else { return }
             self.appliedQuery = text
             self.refresh()
         }
     }
 
-    /// The results for the applied query and the tokens.
+    /// The results for the applied query and the tokens, computed off the main actor; a later refresh wins.
     private func refresh() {
+        refreshGeneration += 1
+        let mine = refreshGeneration
+        let criteria = criteria
         guard let data else {
             results = .empty
+            resultsCriteria = criteria
             return
         }
-        results = Self.results(data, criteria: criteria, now: today())
+        let now = today()
+        refreshTask = Task { [weak self] in
+            let computed = await Task.detached(priority: .userInitiated) {
+                SearchViewModel.results(data, criteria: criteria, now: now)
+            }.value
+            guard let self, mine == self.refreshGeneration else { return }
+            self.results = computed
+            self.resultsCriteria = criteria
+        }
+    }
+
+    /// Waits for a pending typing pause and refresh (tests; the view just watches `results`).
+    public func settle() async {
+        await queryTask?.value
+        await refreshTask?.value
     }
 
     nonisolated static func results(_ data: SearchData, criteria: TransactionSearch.Criteria, now: Date) -> SearchResults {
