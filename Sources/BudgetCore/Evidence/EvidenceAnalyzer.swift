@@ -108,7 +108,7 @@ public enum EvidenceAnalyzer {
     /// policies, mortgage notices listing capital and balances).
     static let labelledAmountOnly: Set<DocumentKind> = [
         .mortgageNotice, .mortgageReceipt, .mortgageInterestStatement, .mortgageContract, .insurancePolicy, .p60, .p45, .p11d, .sa302,
-        .taxReturn, .taxCodeNotice, .ptIRSDeclaration, .ptIRSAssessment, .bankStatement, .rentContract, .tenancyAddendum, .propertyDeed,
+        .taxReturn, .taxCodeNotice, .hmrcLetter, .ptIRSDeclaration, .ptIRSAssessment, .bankStatement, .rentContract, .tenancyAddendum, .propertyDeed,
         .certificate, .other
     ]
 
@@ -199,7 +199,7 @@ public enum EvidenceAnalyzer {
         }.max { $0.minorUnits < $1.minorUnits }
     }
 
-    static let ukKinds: Set<DocumentKind> = [.p60, .p45, .p11d, .taxCodeNotice, .hmrcPaymentProof, .sa302, .taxReturn]
+    static let ukKinds: Set<DocumentKind> = [.p60, .p45, .p11d, .taxCodeNotice, .hmrcPaymentProof, .sa302, .taxReturn, .hmrcLetter]
     /// Dated by the end of the tax year they cover.
     static let taxYearKinds: Set<DocumentKind> = [.p60, .p11d, .sa302, .taxReturn]
 

@@ -75,6 +75,10 @@ public enum DocumentClassifier {
         static let fileUtility = make(#"\b(LUZ|GAS|AGUA|SMAS|EDP|ELECTRICITY|WATER)\b"#)
         static let fileCourt = make(#"\b(IGFEJ|TAXA DE JUSTICA|CUSTAS)\b"#)
         static let fileLetting = make(#"\b(LETTING|ERA|MEDIACAO)\b"#)
+        /// HMRC letters named by what they are: a UTR letter, an SA1, a 64-8, a WDF letter.
+        static let fileHMRC = make(#"\b(UTR|SA1|WDF|HMRC)\b"#)
+        /// HMRC's exchange rates in a file name ("HMRC rates"), a word of its own.
+        static let fileRate = make(#"\bRATES?\b"#)
         /// An addendum's heading word; not a contract's clause about "any addendum" to it.
         static let addendum = make(#"(?<!QUALQUER )(?<!EVENTUAL )(?<!EVENTUAIS )(?<!NENHUM )\b(ADITAMENTO|ADENDA)S?\b"#)
         static let addendumTitle = make(#"(?<!QUALQUER )(?<!EVENTUAL )(?<!NENHUM )\b(ADITAMENTO|ADENDA) (AO|DO|DE) CONTRATO DE ARRENDAMENTO"#)
@@ -97,6 +101,16 @@ public enum DocumentClassifier {
         Rule(kind: .p11d) { $0.matches(Patterns.p11d) && $0.has("EXPENSES AND BENEFITS") },
         Rule(kind: .p45) { $0.matches(Patterns.p45) && $0.has("LEAVING") },
         Rule(kind: .p60) { $0.matches(Patterns.p60) && $0.has("END OF YEAR CERTIFICATE") },
+        // Other HMRC letters and GOV.UK printouts about the person's UK tax.
+        // Never an invoice, a receipt or a cover letter that mentions HMRC: those keep their kinds.
+        Rule(kind: .hmrcLetter) {
+            !$0.hasSquashed("INVOICE", "FATURA", "FACTURA", "RECIBO", "TOTAL GBP", "SUBTOTAL")
+                && ($0.has("ANNUAL TAX SUMMARY", "REGISTER FOR SELF ASSESSMENT", "REGISTER FOR SELF-ASSESSMENT", "AUTHORISING YOUR AGENT",
+                           "WORLDWIDE DISCLOSURE FACILITY", "DIGITAL DISCLOSURE SERVICE", "TAX YEAR OVERVIEW",
+                           "CHECK YOUR INCOME TAX")
+                    || ($0.has("HM REVENUE & CUSTOMS", "HM REVENUE AND CUSTOMS") && $0.has("DEAR M")
+                        && $0.has("NATIONAL INSURANCE NUMBER", "UNIQUE TAXPAYER REFERENCE")))
+        },
         // Tenancy. An addendum is headed so ("Aditamento" / "Adenda" ao contrato de arrendamento),
         // before the contract: an addendum is never read as the contract it amends.
         Rule(kind: .tenancyAddendum) {
@@ -178,6 +192,10 @@ public enum DocumentClassifier {
         Rule(kind: .p45) { $0.matches(Patterns.fileP45) },
         Rule(kind: .p60) { $0.matches(Patterns.fileP60) },
         Rule(kind: .taxCodeNotice) { $0.has("TAX CODE") },
+        // An accountant's invoice named after the HMRC work it bills is the invoice, not a letter.
+        Rule(kind: .accountantInvoice) { $0.has("ACCOUNTANCY", "CONTABILIDADE", "ACCOUNTANT") },
+        // Not HMRC's exchange rates ("HMRC rates 2023"): "RATE" as a word, so "SEPARATE" still counts.
+        Rule(kind: .hmrcLetter) { ($0.has("ANNUAL TAX SUMMARY", "64 - 8") || $0.matches(Patterns.fileHMRC)) && !$0.matches(Patterns.fileRate) },
         // An addendum of a tenancy ("Aditamento contrato"), not of a mortgage or a policy.
         Rule(kind: .tenancyAddendum) { $0.matches(Patterns.fileAddendum) && $0.matches(Patterns.fileTenancy) },
         Rule(kind: .rentReceipt) { $0.has("RECIBO DE RENDA", "RECIBOS DE RENDA", "RECIBO RENDA", "RENT RECEIPT") },
@@ -196,7 +214,6 @@ public enum DocumentClassifier {
         Rule(kind: .courtFee) { $0.matches(Patterns.fileCourt) },
         Rule(kind: .lettingAgentFee) { $0.matches(Patterns.fileLetting) },
         Rule(kind: .legalInvoice) { $0.has("LEGAL FEE", "ADVOGAD") },
-        Rule(kind: .accountantInvoice) { $0.has("ACCOUNTANCY", "CONTABILIDADE", "ACCOUNTANT") },
         Rule(kind: .utilityInvoice) { $0.matches(Patterns.fileUtility) },
         Rule(kind: .bankTransferProof) { $0.has("TRANSFERENCIA", "TRANSFER") },
         Rule(kind: .bankStatement) { $0.has("EXTRATO", "STATEMENT") }
