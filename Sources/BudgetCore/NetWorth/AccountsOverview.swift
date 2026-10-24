@@ -40,7 +40,7 @@ public enum BalanceStaleness {
     }
 }
 
-public struct AccountRow: Equatable, Identifiable {
+public struct AccountRow: Equatable, Identifiable, Sendable {
     public let account: Account
     public let nativeBalanceMinorUnits: Int
     public let gbpBalanceMinorUnits: Int
@@ -50,7 +50,7 @@ public struct AccountRow: Equatable, Identifiable {
     public var id: Int64 { account.id! }
 }
 
-public struct AccountGroup: Equatable, Identifiable {
+public struct AccountGroup: Equatable, Identifiable, Sendable {
     public let kind: AccountKind
     /// The rows that count toward net worth (`Account.includeInNetWorth`), summed.
     public let subtotalGBP: Int
@@ -59,7 +59,7 @@ public struct AccountGroup: Equatable, Identifiable {
     public var id: String { kind.rawValue }
 }
 
-public struct AccountsOverview: Equatable {
+public struct AccountsOverview: Equatable, Sendable {
     /// The accounts that count toward net worth (`Account.includeInNetWorth`); the groups still
     /// list the others, their balances left out of the subtotals.
     public let netWorthGBP: Int

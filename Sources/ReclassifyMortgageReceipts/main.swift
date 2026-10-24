@@ -92,10 +92,10 @@ do {
         stamp.dateFormat = "yyyyMMdd-HHmmss"
         let backupPath = sourcePath + ".pre-mortgage-receipts-backup-" + stamp.string(from: Date())
         if fileManager.fileExists(atPath: backupPath) { fail("The backup \(backupPath) already exists: try again in a second.") }
-        try DatabaseQueue(path: sourcePath).backup(to: DatabaseQueue(path: backupPath))
+        try ToolDatabase.open(path: sourcePath).backup(to: ToolDatabase.open(path: backupPath))
         print("Backup: \(backupPath)")
     }
-    let queue = try DatabaseQueue(path: sourcePath, configuration: configuration)
+    let queue = try ToolDatabase.open(path: sourcePath, configuration: configuration)
     print("Mortgage receipts\(apply ? "" : " (dry run: nothing written)")\nDatabase: \(sourcePath)\n")
     if apply {
         // One transaction: the plan is made and written together.

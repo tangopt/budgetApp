@@ -1,20 +1,20 @@
 import Foundation
 
-public struct YearEndForecast: Equatable {
+public struct YearEndForecast: Equatable, Sendable {
     public let year: Int
     public let valueMinorUnits: Int
     public let changeMinorUnits: Int
     public let percent: Double?
 }
 
-public struct BehindBalances: Equatable {
+public struct BehindBalances: Equatable, Sendable {
     /// Accounts needing updates (`BalanceStaleness.needsUpdates`) whose last activity is
     /// older than the data-through month.
     public let accountCount: Int
     public let oldestSnapshotDate: Date
 }
 
-public struct NetWorthSeries: Equatable {
+public struct NetWorthSeries: Equatable, Sendable {
     /// Month values from the first month with a balance through the data-through month.
     public let actual: [NetWorthPoint]
     /// Starts at the actual series' last month (the calendar month of the data-through date,

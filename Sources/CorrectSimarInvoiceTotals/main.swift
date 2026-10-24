@@ -92,10 +92,10 @@ do {
         stamp.dateFormat = "yyyyMMdd-HHmmss"
         let backupPath = sourcePath + ".pre-simar-totals-backup-" + stamp.string(from: Date())
         if fileManager.fileExists(atPath: backupPath) { fail("The backup \(backupPath) already exists: try again in a second.") }
-        try DatabaseQueue(path: sourcePath).backup(to: DatabaseQueue(path: backupPath))
+        try ToolDatabase.open(path: sourcePath).backup(to: ToolDatabase.open(path: backupPath))
         print("Backup: \(backupPath)")
     }
-    let queue = try DatabaseQueue(path: sourcePath, configuration: configuration)
+    let queue = try ToolDatabase.open(path: sourcePath, configuration: configuration)
     let providers = try queue.read { db in try UtilityInvoiceTotalCorrection.simarProviderIds(db: db) }
     guard providers.count == 1, let providerId = providers.first else {
         fail("Expected one SIMAR provider, found \(providers.count): nothing done.")

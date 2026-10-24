@@ -27,8 +27,17 @@ import BudgetCore
 ///
 /// Build step 3: the household zone in the admin's **private** database. Not reachable from the UI: only the
 /// DEBUG `--sync-demo` launch argument with a demo database makes one (`SyncDemoMode`).
-final class CloudKitTransport: SyncTransport {
-    static let containerIdentifier = "iCloud.ubberninja.mango"
+/// Shared by the Mac and iOS apps through the `MangoSync` target (step 4).
+public final class CloudKitTransport: SyncTransport {
+    public static let containerIdentifier = "iCloud.ubberninja.mango"
+    /// The key-store scope for `--sync-demo` (Mac and iPhone): demo keys never share the real data's scope.
+    public static let demoKeyScope = CloudKitTransport.containerIdentifier + "/demo"
+
+    /// The key-store scope (`KeychainSyncKeyStore(container:)`) for a sync: the demo's own under `--sync-demo`,
+    /// else the container's.
+    public static func keyScope(demo: Bool) -> String {
+        demo ? demoKeyScope : containerIdentifier
+    }
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
     private let database: CKDatabase
@@ -36,7 +45,7 @@ final class CloudKitTransport: SyncTransport {
     /// instances' folders are never touched unless a day old.
     private let assetFolder: URL
 
-    init(database: CKDatabase = CKContainer(identifier: CloudKitTransport.containerIdentifier).privateCloudDatabase,
+    public init(database: CKDatabase = CKContainer(identifier: CloudKitTransport.containerIdentifier).privateCloudDatabase,
          assetRoot: URL = FileManager.default.temporaryDirectory.appendingPathComponent("MangoSyncAssets", isDirectory: true),
          now: Date = Date()) {
         self.database = database
@@ -46,9 +55,9 @@ final class CloudKitTransport: SyncTransport {
 
     deinit { try? FileManager.default.removeItem(at: assetFolder) }
 
-    func operationLimits() async -> SyncOperationLimits { CloudKitRecordMapping.operationLimits }
+    public func operationLimits() async -> SyncOperationLimits { CloudKitRecordMapping.operationLimits }
 
-    func createZone(_ zone: String) async throws {
+    public func createZone(_ zone: String) async throws {
         let operation = CKModifyRecordZonesOperation(recordZonesToSave: [CKRecordZone(zoneID: CloudKitRecordMapping.zoneID(zone))],
                                                      recordZoneIDsToDelete: nil)
         try await run(operation, zone: zone, perRecordResults: false) { finish in
@@ -56,7 +65,17 @@ final class CloudKitTransport: SyncTransport {
         }
     }
 
-    func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data], atomic: Bool) async throws -> [SaveResult] {
+    /// Deletes the zone and everything in it. Only the Mac's DEBUG `--sync-demo-reset` calls it (the Development
+    /// container's demo zone); no sync path does. Throws `zoneNotFound` when it is already gone.
+    public func deleteZone(_ zone: String) async throws {
+        let operation = CKModifyRecordZonesOperation(recordZonesToSave: nil,
+                                                     recordZoneIDsToDelete: [CloudKitRecordMapping.zoneID(zone)])
+        try await run(operation, zone: zone, perRecordResults: false) { finish in
+            operation.modifyRecordZonesResultBlock = { result in finish(result) }
+        }
+    }
+
+    public func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data], atomic: Bool) async throws -> [SaveResult] {
         guard !records.isEmpty else { return [] }
         let folder = assetFolder.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -87,7 +106,7 @@ final class CloudKitTransport: SyncTransport {
         return CloudKitSaveAssembly.results(records, refused: refused, taken: taken.withLock { $0 })
     }
 
-    func changes(since token: Data?, zone: String) async throws -> SyncChanges {
+    public func changes(since token: Data?, zone: String) async throws -> SyncChanges {
         let zoneID = CloudKitRecordMapping.zoneID(zone)
         let configuration = CKFetchRecordZoneChangesOperation.ZoneConfiguration()
         configuration.previousServerChangeToken = try token.map(CloudKitRecordMapping.unarchiveToken)
@@ -132,7 +151,7 @@ final class CloudKitTransport: SyncTransport {
         return SyncChanges(changes: fetched.changes, token: next, moreComing: fetched.moreComing)
     }
 
-    func delete(_ recordNames: [String], zone: String) async throws {
+    public func delete(_ recordNames: [String], zone: String) async throws {
         guard !recordNames.isEmpty else { return }
         let operation = CKModifyRecordsOperation(recordsToSave: nil,
                                                  recordIDsToDelete: recordNames.map { CloudKitRecordMapping.recordID($0, zone: zone) })
@@ -151,7 +170,7 @@ final class CloudKitTransport: SyncTransport {
         if let error = failure.withLock({ $0 }) { throw error }
     }
 
-    func fetch(_ recordName: String, zone: String) async throws -> SyncServerRecord? {
+    public func fetch(_ recordName: String, zone: String) async throws -> SyncServerRecord? {
         let id = CloudKitRecordMapping.recordID(recordName, zone: zone)
         let operation = CKFetchRecordsOperation(recordIDs: [id])
         let fetched = OSAllocatedUnfairLock<Result<SyncServerRecord?, Error>?>(initialState: nil)

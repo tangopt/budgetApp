@@ -91,7 +91,7 @@ do {
     var readOnly = Configuration()
     readOnly.readonly = true
     let plan = try BBVAEarlierHistoryImport.decodePlan(Data(contentsOf: URL(fileURLWithPath: normalized(planPath))))
-    let source = try DatabaseQueue(path: sourcePath, configuration: readOnly)
+    let source = try ToolDatabase.open(path: sourcePath, configuration: readOnly)
     let applied = (try? source.read { db in try BBVAEarlierHistoryImport.isApplied(db: db, plan: plan) }) ?? false
     if applied {
         print("Already applied: batch “\(plan.batchName)” exists. Nothing written.")
@@ -144,12 +144,12 @@ let result = Result<String, Error> {
         // The source is only read.
         var readOnly = Configuration()
         readOnly.readonly = true
-        let source = try DatabaseQueue(path: sourcePath, configuration: readOnly)
-        let target = try DatabaseQueue(path: copy.path)
+        let source = try ToolDatabase.open(path: sourcePath, configuration: readOnly)
+        let target = try ToolDatabase.open(path: copy.path)
         try source.backup(to: target)
         dbPath = copy.path
     } else if let backupPath {
-        try DatabaseQueue(path: sourcePath).backup(to: DatabaseQueue(path: backupPath))
+        try ToolDatabase.open(path: sourcePath).backup(to: ToolDatabase.open(path: backupPath))
         print("Backup: \(backupPath)")
     }
     let manager = try DatabaseManager(path: dbPath)

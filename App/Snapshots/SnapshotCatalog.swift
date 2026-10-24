@@ -471,7 +471,16 @@ enum SnapshotCatalog {
                 let rows = plan.items.first { $0.parentId == demo.statementId }?.id
                 context.environment.importCenter.showSnapshotPlan(plan, selecting: rows)
             },
-            SnapshotRoute(name: "settings-main", title: "Settings window") { _ in AnyView(SnapshotStandaloneCanvas(content: SettingsView())) }
+            SnapshotRoute(name: "settings-main", title: "Settings window") { _ in AnyView(SnapshotStandaloneCanvas(content: SettingsView())) },
+            // Settings ▸ Sync: off for the real database (no switch), and the DEBUG demo's live pane.
+            SnapshotRoute(name: "settings-sync", title: "Settings ▸ Sync, off") { _ in
+                AnyView(SnapshotStandaloneCanvas(content: SettingsView(pane: .sync)))
+            },
+            SnapshotRoute(name: "settings-sync_demo", title: "Settings ▸ Sync, the demo syncing") { _ in
+                AnyView(SnapshotStandaloneCanvas(content: SyncSettingsPane(status: .syncing(.pulling), isRunning: true, report: nil,
+                                                                           onSyncNow: {})
+                    .scenePadding().frame(width: 640)))
+            }
         ]
     }
 
