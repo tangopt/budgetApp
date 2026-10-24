@@ -212,7 +212,7 @@ private struct ImportPreviewContent: View {
                 }
             }
 
-            block("Recognised as \(item.recognition.kind.displayName)") {
+            block("Recognised as \(item.kindName)") {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(item.recognition.reason.figuresUnbroken).fixedSize(horizontal: false, vertical: true)

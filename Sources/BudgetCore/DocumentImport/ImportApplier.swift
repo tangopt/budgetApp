@@ -91,6 +91,7 @@ public struct ImportApplier: Sendable {
         try dbQueue.read { db in
             // With sync on, one import is confirmed at a time per household (sync spec §5.2).
             try SyncImportGate.check(db: db, now: now)
+            try Self.checkKinds(db: db, applied, pending: plan.pendingKinds)
             try Self.checkCurrent(db: db, applied)
         }
 
@@ -189,6 +190,43 @@ public struct ImportApplier: Sendable {
 
     // MARK: Outdated plan
 
+    /// Refuses (`.notConfirmable`: the review is read again) when an applied item is filed as a
+    /// saved custom kind that is gone or merged since it was read, or as a new kind the plan
+    /// doesn't hold.
+    static func checkKinds(db: Database, _ items: [ImportItem], pending: [PendingDocumentKind]) throws {
+        let keys = items.compactMap { $0.recognition.kind.customKindKey }
+        guard !keys.isEmpty else { return }
+        let catalog = try DocumentKindCatalog.load(db: db)
+        for key in keys {
+            switch key {
+            case .saved(let id): if catalog.custom(id: id) == nil { throw ImportApplyError.notConfirmable }
+            case .pending(let id): if !pending.contains(where: { $0.id == id }) { throw ImportApplyError.notConfirmable }
+            }
+        }
+    }
+
+    /// The review's new kinds the applied items use, saved (inside the run, so Undo removes them):
+    /// a kind of the same name saved meanwhile (on another device) is that kind, never a second one.
+    static func savePendingKinds(db: Database, _ items: [ImportItem], pending: [PendingDocumentKind], now: Date) throws -> [UUID: Int64] {
+        var used: [UUID] = []
+        for item in items {
+            if case .customEvidence(.pending(let id)) = item.recognition.kind, !used.contains(id) { used.append(id) }
+        }
+        var saved: [UUID: Int64] = [:]
+        for id in used {
+            guard let kind = pending.first(where: { $0.id == id }) else { throw ImportApplyError.notConfirmable }
+            if let existing = try DocumentKindCatalog.load(db: db).custom(named: kind.name), let existingId = existing.id {
+                saved[id] = existingId
+            } else {
+                guard let newId = try CustomDocumentKinds.create(db: db, name: kind.name, area: kind.area, now: now).id else {
+                    throw ImportApplyError.notConfirmable
+                }
+                saved[id] = newId
+            }
+        }
+        return saved
+    }
+
     /// Refuses (`.planOutdated`) when a record an applied item writes to or links to no longer
     /// exists: each certain link's record; the export's property; the receipt PDF's receipt and
     /// tenancy; the advice's credits; the invoice's provider and debit; the payroll form's
@@ -248,6 +286,7 @@ public struct ImportApplier: Sendable {
 
     private func applyAll(db: Database, plan: ImportPlan, applied: [ImportItem], entryPoint: String, reasons: [UUID: String], appUserId: Int64?,
                        backupPath: String?, folderRoots: [Int64: URL], now: Date, placed: inout [URL]) throws -> ImportRunSummary {
+        try Self.checkKinds(db: db, applied, pending: plan.pendingKinds)
         try Self.checkCurrent(db: db, applied)
         try SyncImportGate.require(db: db, now: now)
         // Everything the run writes from here on is one sync batch (sync spec §5.2).
@@ -260,11 +299,20 @@ public struct ImportApplier: Sendable {
         // The figures as stored, before any change (not after a matching baseline).
         let raw = try TaxFigures.snapshot(db: db)
         let folders = try SourceFolder.fetchAll(db)
+        // The review's new kinds first, so the documents can be filed under them.
+        let newKinds = try Self.savePendingKinds(db: db, applied, pending: plan.pendingKinds, now: now)
 
         var documents: [UUID: Int64] = [:]
         var touched: Set<Int64>? = []
         for item in applied {
-            let filing = Self.metadata(for: item, folders: folders)
+            var filing = Self.metadata(for: item, folders: folders)
+            if case .customEvidence(let key) = item.recognition.kind {
+                filing.kind = .other
+                switch key {
+                case .saved(let id): filing.customKindId = id
+                case .pending(let id): filing.customKindId = newKinds[id]
+                }
+            }
             let documentId: Int64
             if let parentId = item.parentId, let parentDocument = documents[parentId] {
                 // Part of a file already filed (a statement's child): the same document.
@@ -297,7 +345,16 @@ public struct ImportApplier: Sendable {
         try Self.recordSourceFiles(db: db, plan: plan, documents: documents)
         // What the review's corrections taught, and the learnt rules the items used: inside the run.
         // Items that taught different things about one issuer (and family) teach none of them.
-        let (learnable, learningNotes) = ImportLearning.learnable(applied.flatMap(\.ruleDrafts))
+        let drafts = applied.flatMap(\.ruleDrafts).compactMap { draft -> ImportRuleDraft? in
+            // A new kind's rule names the id it was saved with.
+            guard let pending = draft.pendingKindId else { return draft }
+            guard let id = newKinds[pending], let json = ImportLearning.encode(DocumentKindAction(kind: .other, customKindId: id)) else { return nil }
+            var resolved = draft
+            resolved.actionJSON = json
+            resolved.pendingKindId = nil
+            return resolved
+        }
+        let (learnable, learningNotes) = ImportLearning.learnable(drafts)
         for draft in learnable {
             try ImportRuleStore.learn(db: db, kind: draft.kind, key: draft.key, matchLabel: draft.matchLabel,
                                       actionJSON: draft.actionJSON, actionLabel: draft.actionLabel, now: now, by: appUserId)

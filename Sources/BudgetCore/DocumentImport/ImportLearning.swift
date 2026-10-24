@@ -45,6 +45,18 @@ public enum ImportLearning {
         switch resolution {
         case .chooseKind(let kind):
             return draft(.documentKind, DocumentKindAction(kind: kind), "Kind: \(kind.displayName)")
+        case .chooseCustomKind(let customKey):
+            // Named by the item as read (its placement's custom kind); a kind made in this review
+            // gets its id at Confirm import (`pendingKindId`).
+            guard let custom = item.placement?.customKind, custom.key == customKey else { return [] }
+            switch customKey {
+            case .saved(let id):
+                return draft(.documentKind, DocumentKindAction(kind: .other, customKindId: id), "Kind: \(custom.name)")
+            case .pending(let id):
+                guard let json = encode(DocumentKindAction(kind: .other)) else { return [] }
+                return [ImportRuleDraft(kind: .documentKind, key: key, matchLabel: issuer.label, actionJSON: json,
+                                        actionLabel: "Kind: \(custom.name)", pendingKindId: id)]
+            }
         case .setIssuer(let name), .confirmFigure(.issuer, .text(let name)), .confirmFigureRemembering(.issuer, .text(let name)):
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? [] : draft(.issuer, IssuerAction(name: trimmed), "Name: \(trimmed)")
@@ -115,7 +127,7 @@ public enum ImportLearning {
     /// change for the links. Empty: the answer teaches nothing.
     static func replacedKinds(by resolution: ImportResolution) -> Set<ImportRuleKind> {
         switch resolution {
-        case .chooseKind: return [.documentKind]
+        case .chooseKind, .chooseCustomKind, .createKind: return [.documentKind]
         case .setIssuer, .confirmFigure(.issuer, _), .confirmFigureRemembering(.issuer, _): return [.issuer]
         case .chooseLink, .linkTransactions, .addTransactionLink, .unlink, .fileWithoutLink: return [.link]
         default: return []
@@ -150,7 +162,8 @@ public enum ImportLearning {
         drafts.map { draft in
             var named = draft
             let rule = ImportRuleStore.existing(in: rules, kind: draft.kind, key: draft.key)
-            named.replaces = rule.flatMap { $0.actionJSON == draft.actionJSON ? nil : $0.actionLabel }
+            // A kind made in this review is never what a rule does already.
+            named.replaces = rule.flatMap { $0.actionJSON == draft.actionJSON && draft.pendingKindId == nil ? nil : $0.actionLabel }
             return named
         }
     }
@@ -160,7 +173,7 @@ public enum ImportLearning {
     static func learnable(_ drafts: [ImportRuleDraft]) -> (drafts: [ImportRuleDraft], notes: [String]) {
         struct Slot: Hashable { let kind: ImportRuleKind; let key: String }
         var actions: [Slot: Set<String>] = [:]
-        for draft in drafts { actions[Slot(kind: draft.kind, key: draft.key), default: []].insert(draft.actionJSON) }
+        for draft in drafts { actions[Slot(kind: draft.kind, key: draft.key), default: []].insert(draft.actionIdentity) }
         var notes: [String] = [], noted: Set<Slot> = []
         var kept: [ImportRuleDraft] = []
         for draft in drafts {
@@ -193,8 +206,9 @@ public enum ImportLearning {
     static func isCarried(_ draft: ImportRuleDraft, by item: ImportItem, descriptions: [Int64: String]) -> Bool {
         switch draft.kind {
         case .documentKind:
+            if let pending = draft.pendingKindId { return item.recognition.kind == .customEvidence(.pending(pending)) }
             guard let action = decode(DocumentKindAction.self, draft.actionJSON) else { return false }
-            return ImportResolutions.importKind(for: action.kind, fileExtension: item.file.fileExtension) == item.recognition.kind
+            return ImportResolutions.importKind(for: action.kindRef, fileExtension: item.file.fileExtension) == item.recognition.kind
         case .issuer:
             guard let action = decode(IssuerAction.self, draft.actionJSON) else { return false }
             return item.facts.contains { $0.field == .issuer && $0.source == .user && $0.value == .text(action.name) }
@@ -243,18 +257,25 @@ public enum ImportLearning {
     /// certain (to check when the file was read by text recognition, or when the issuer is known
     /// only by its first line: "… Learnt from the first line “<line>”: check it"), "Learnt: <issuer> → <kind>",
     /// the rule on the recognition (`ruleId`).
-    public static func recogniser(rules: [ImportRule], ownNIFs: Set<String>) -> ImportRecogniser {
-        var byKey: [String: (rule: ImportRule, kind: DocumentKind)] = [:]
+    /// A rule naming a custom kind that's gone (`catalog`: the kinds in use) is skipped.
+    public static func recogniser(rules: [ImportRule], ownNIFs: Set<String>, catalog: DocumentKindCatalog = DocumentKindCatalog(customKinds: [])) -> ImportRecogniser {
+        var byKey: [String: (rule: ImportRule, kind: DocumentKindRef, name: String)] = [:]
         for rule in rules where rule.isEnabled && rule.kind == .documentKind && rule.id != nil && byKey[rule.matchKey] == nil {
-            if let action = decode(DocumentKindAction.self, rule.actionJSON) { byKey[rule.matchKey] = (rule, action.kind) }
+            guard let action = decode(DocumentKindAction.self, rule.actionJSON) else { continue }
+            if let id = action.customKindId {
+                guard let custom = catalog.custom(id: id) else { continue }
+                byKey[rule.matchKey] = (rule, .custom(id), custom.name)
+            } else {
+                byKey[rule.matchKey] = (rule, .builtIn(action.kind), action.kind.displayName)
+            }
         }
         let learnt = byKey
         return { file in
             guard !learnt.isEmpty, let issuer = IssuerKey.derive(text: file.text, fileName: file.fileName, ownNIFs: ownNIFs),
-                  let (rule, kind) = learnt[ImportRuleKind.matchKey(issuer: issuer)] else { return nil }
+                  let (rule, kind, name) = learnt[ImportRuleKind.matchKey(issuer: issuer)] else { return nil }
             // Keyed by a first line (no number): the kind is suggested, to check.
             let line = IssuerKey.isLineKey(rule.matchKey)
-            let reason = "Learnt: \(rule.matchLabel) → \(kind.displayName)"
+            let reason = "Learnt: \(rule.matchLabel) → \(name)"
             return ImportRecognition(kind: ImportResolutions.importKind(for: kind, fileExtension: file.fileExtension),
                                      confidence: file.usedOCR || line ? .needsReview : .certain,
                                      reason: line ? IssuerKey.lineKeyReason(reason, line: rule.matchLabel) : reason, ruleId: rule.id)
@@ -299,7 +320,8 @@ public enum ImportLearning {
                                          reason: line ? IssuerKey.lineKeyReason(label, line: rule.matchLabel) : label))
             if item.placement != nil {
                 item.placement = ImportNaming.placement(kind: item.recognition.kind, facts: item.facts, file: item.file,
-                                                        persons: item.placement?.metadata.persons ?? [])
+                                                        persons: item.placement?.metadata.persons ?? [],
+                                                customKind: item.placement?.customKind)
             }
             item.appliedRules.append(ImportRuleUse(ruleId: rule.id!, kind: .issuer, label: label))
         }

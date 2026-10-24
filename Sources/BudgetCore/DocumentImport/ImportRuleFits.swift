@@ -160,7 +160,8 @@ public enum ImportRuleFits {
     /// A draft with its action decoded once (per source, not per document checked).
     struct Rule: Sendable {
         enum Action: Sendable {
-            case kind(DocumentKind)
+            /// The kind filed as (a built-in or custom one), its name and the answer that chooses it.
+            case kind(DocumentKindTarget)
             case name(String)
             case link(LinkAction, ImportLinkFamily)
             case figure(FigurePositionAction)
@@ -175,7 +176,9 @@ public enum ImportRuleFits {
         drafts.compactMap { draft in
             switch draft.kind {
             case .documentKind:
-                return ImportLearning.decode(DocumentKindAction.self, draft.actionJSON).map { Rule(key: draft.key, action: .kind($0.kind)) }
+                guard let action = ImportLearning.decode(DocumentKindAction.self, draft.actionJSON) else { return nil }
+                return Rule(key: draft.key, action: .kind(DocumentKindTarget(action: action, pendingKindId: draft.pendingKindId,
+                                                                                 label: draft.actionLabel)))
             case .issuer:
                 return ImportLearning.decode(IssuerAction.self, draft.actionJSON).map { Rule(key: draft.key, action: .name($0.name)) }
             case .link:
@@ -244,14 +247,15 @@ public enum ImportRuleFits {
     static func change(_ rule: Rule, on item: ImportItem, issuer: IssuerKey, plan: ImportPlan,
                        context: Context) -> ImportRuleChange? {
         switch rule.action {
-        case .kind(let documentKind):
+        case .kind(let target):
             guard rule.key == ImportRuleKind.matchKey(issuer: issuer) else { return nil }
-            let kind = ImportResolutions.importKind(for: documentKind, fileExtension: item.file.fileExtension)
+            let kind = target.importKind(fileExtension: item.file.fileExtension)
             let chosen = plan.state.chosenKinds.contains(item.id)
                 || (item.recognition.confidence == .certain && userRecognitionReasons.contains(item.recognition.reason))
             guard kind != item.recognition.kind, !chosen, !context.recognisesItself.contains(item.id) else { return nil }
-            return ImportRuleChange(aspect: .kind, label: "Kind", before: .text(item.recognition.kind.displayName),
-                                    after: .text(kind.displayName), resolution: .chooseKind(documentKind))
+            let before = item.kindName
+            return ImportRuleChange(aspect: .kind, label: "Kind", before: .text(before),
+                                    after: .text(target.name), resolution: target.resolution)
 
         case .name(let name):
             guard rule.key == ImportRuleKind.matchKey(issuer: issuer), ImportResolutions.takesIssuerName(item) else { return nil }
@@ -427,5 +431,34 @@ final class ImportRuleFitCache: @unchecked Sendable {
             worked += 1
         }
         return made
+    }
+}
+
+/// The kind a `documentKind` draft files as: built-in, saved custom, or made in this review.
+struct DocumentKindTarget: Sendable {
+    var ref: DocumentKindRef
+    var pendingKindId: UUID?
+    var name: String
+
+    init(action: DocumentKindAction, pendingKindId: UUID?, label: String) {
+        ref = action.kindRef
+        self.pendingKindId = pendingKindId
+        let prefix = "Kind: "
+        name = pendingKindId != nil || action.customKindId != nil
+            ? (label.hasPrefix(prefix) ? String(label.dropFirst(prefix.count)) : label)
+            : action.kind.displayName
+    }
+
+    func importKind(fileExtension: String) -> ImportKind {
+        if let pendingKindId { return .customEvidence(.pending(pendingKindId)) }
+        return ImportResolutions.importKind(for: ref, fileExtension: fileExtension)
+    }
+
+    var resolution: ImportResolution {
+        if let pendingKindId { return .chooseCustomKind(.pending(pendingKindId)) }
+        switch ref {
+        case .builtIn(let kind): return .chooseKind(kind)
+        case .custom(let id): return .chooseCustomKind(.saved(id))
+        }
     }
 }

@@ -9,6 +9,32 @@ public enum ImportResolutionError: Error, Equatable {
     case transactionNotFound(Int64)
     /// Import anyway needs a reason that isn't blank.
     case reasonRequired
+    /// "New kind…" with a name a built-in, a saved custom kind or another of the review's new
+    /// kinds already has (ignoring case and accents): that kind's name.
+    case kindNameTaken(String)
+    /// "New kind…" with a blank name.
+    case kindNameEmpty
+}
+
+extension ImportResolutionError: LocalizedError {
+    /// A "New kind…" name that can't be used (blank or taken): said beside the question.
+    public var isKindName: Bool {
+        switch self {
+        case .kindNameTaken, .kindNameEmpty: return true
+        default: return false
+        }
+    }
+
+    public var errorDescription: String? {
+        switch self {
+        case .itemNotFound: return "That document is no longer in the review."
+        case .notOffered: return "That answer isn't offered for this document."
+        case .transactionNotFound: return "That transaction no longer exists."
+        case .reasonRequired: return "Write why it is imported anyway first."
+        case .kindNameTaken(let name): return "There's already a kind called \u{201C}\(name)\u{201D}."
+        case .kindNameEmpty: return "Give the kind a name."
+        }
+    }
 }
 
 /// The user's answers to an item's questions, as pure edits of the item. Only offered
@@ -56,7 +82,7 @@ public enum ImportResolutions {
             edited.isLeftOut.toggle()
             return edited
 
-        case .chooseKind:
+        case .chooseKind, .chooseCustomKind, .createKind:
             guard !accepting.isEmpty || (issueId == nil && (item.recognition.confidence == .needsReview || isCorrectable(item))) else {
                 throw refuse()
             }
@@ -96,7 +122,8 @@ public enum ImportResolutions {
             edited.facts.append(ImportFact(field: .issuer, value: .text(trimmed), source: .user, confidence: .certain, reason: "Named by you"))
             if edited.placement != nil {
                 edited.placement = ImportNaming.placement(kind: edited.recognition.kind, facts: edited.facts, file: edited.file,
-                                                          persons: item.placement?.metadata.persons ?? [])
+                                                          persons: item.placement?.metadata.persons ?? [],
+                                                customKind: item.placement?.customKind)
             }
             edited.effect = effect(edited.effect, with: .issuer, .text(trimmed))
             ImportModelProposals.settle(&edited)
@@ -149,7 +176,8 @@ public enum ImportResolutions {
                                            reason: existed ? "Checked by you" : enteredReason))
             if edited.placement != nil {
                 edited.placement = ImportNaming.placement(kind: edited.recognition.kind, facts: edited.facts, file: edited.file,
-                                                          persons: item.placement?.metadata.persons ?? [])
+                                                          persons: item.placement?.metadata.persons ?? [],
+                                                customKind: item.placement?.customKind)
             }
             edited.effect = effect(edited.effect, with: field, value)
             // A model figure corrected: the model's reading resolved field by field.
@@ -187,7 +215,8 @@ public enum ImportResolutions {
             // Filed with the total the rows give (as a corrected figure is).
             if edited.placement != nil {
                 edited.placement = ImportNaming.placement(kind: edited.recognition.kind, facts: edited.facts, file: edited.file,
-                                                          persons: item.placement?.metadata.persons ?? [])
+                                                          persons: item.placement?.metadata.persons ?? [],
+                                                customKind: item.placement?.customKind)
             }
             return edited
 
@@ -493,7 +522,8 @@ public enum ImportResolutions {
         if case .filedYear = issue.kind { return false }
         if issue.id == FiledYearGuard.checkFailedIssueId { return false }
         switch (issue.kind, resolution) {
-        case (.unknownKind, .chooseKind), (.kindMismatch, .chooseKind), (.kindMismatch, .acknowledge), (.confirmModelReading, .acceptModelReading):
+        case (.unknownKind, .chooseKind), (.kindMismatch, .chooseKind), (.kindMismatch, .acknowledge), (.confirmModelReading, .acceptModelReading),
+             (.unknownKind, .chooseCustomKind), (.kindMismatch, .chooseCustomKind), (.unknownKind, .createKind), (.kindMismatch, .createKind):
             return true
         case (.confirmFigure(let field), .confirmFigure(let chosen, let value)), (.missingFigure(let field), .confirmFigure(let chosen, let value)):
             return field == chosen && fits(value, chosen)
@@ -514,6 +544,14 @@ public enum ImportResolutions {
             return profile.accountId == accountId && profile.format == format
         default:
             return false
+        }
+    }
+
+    /// The import kind a kind, built-in or custom, is read as.
+    static func importKind(for ref: DocumentKindRef, fileExtension: String) -> ImportKind {
+        switch ref {
+        case .builtIn(let kind): return importKind(for: kind, fileExtension: fileExtension)
+        case .custom(let id): return .customEvidence(.saved(id))
         }
     }
 

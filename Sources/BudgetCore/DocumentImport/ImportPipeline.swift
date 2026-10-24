@@ -199,12 +199,13 @@ public struct ImportPipeline: @unchecked Sendable {
             let files = collected.files + urls.filter { sources[$0.path] != nil && !listed.contains($0.path) }
             let copy = try timings.measure(.copy) { try session.fresh(from: dbQueue) }
             let queue = copy.dbQueue
-            let (providers, rules, ownNIFs) = try await queue.read { db in
-                (try UtilityProvider.fetchAll(db), try ImportLearning.enabledRules(db: db), try IssuerKey.knownParties(db: db))
+            let (providers, rules, ownNIFs, catalog) = try await queue.read { db in
+                (try UtilityProvider.fetchAll(db), try ImportLearning.enabledRules(db: db), try IssuerKey.knownParties(db: db),
+                 try DocumentKindCatalog.load(db: db))
             }
             let readers = self.readers ?? ImportReaders.defaultReaders(providers: providers)
             // Learnt kinds after the built-in recognisers (a given detector is used as it is).
-            let detector = self.detector ?? ImportDetector(providers: providers, learnt: [ImportLearning.recogniser(rules: rules, ownNIFs: ownNIFs)])
+            let detector = self.detector ?? ImportDetector(providers: providers, learnt: [ImportLearning.recogniser(rules: rules, ownNIFs: ownNIFs, catalog: catalog)])
             var loaded = try await load(files, sources: sources, names: names, detector: detector, readers: readers, timings: timings,
                                         progress: progress)
             try Task.checkCancellation()
@@ -213,7 +214,8 @@ public struct ImportPipeline: @unchecked Sendable {
                 let file = loaded[i].file
                 let read = !file.usedOCR && file.textStatus == .text
                     && file.text.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } == true
-                guard let declared = ImportDetector.declared(loaded[i].recognition, intent: intent, read: read) else { continue }
+                guard let declared = ImportDetector.declared(loaded[i].recognition, intent: intent, read: read,
+                                                             kindNames: ImportKindNames(catalog: catalog, pending: plan.pendingKinds)) else { continue }
                 loaded[i].recognition = declared
                 loaded[i].file = readers.first { $0.handles(declared.kind) }?.prepare(loaded[i].file, recognition: declared) ?? loaded[i].file
             }
@@ -222,7 +224,7 @@ public struct ImportPipeline: @unchecked Sendable {
             let entries = loaded
             try Task.checkCancellation()
             let now = Date()
-            let context = try await queue.read { try ImportContext.load(db: $0, intent: intent, now: now) }
+            let context = try await queue.read { try ImportContext.load(db: $0, intent: intent, now: now).pending(plan.pendingKinds) }
             let stageStart = Date()
             if entries.contains(where: { Self.isStatement($0, readers: readers) }) { progress(ImportProgress(.statements)) }
             let contexts = Array(repeating: context, count: entries.count)
@@ -340,10 +342,47 @@ public struct ImportPipeline: @unchecked Sendable {
         return result
     }
 
+    /// The custom kinds as the planning copy holds them.
+    private func kindCatalog() async throws -> DocumentKindCatalog {
+        let copy = try session.current(from: dbQueue)
+        return try await copy.dbQueue.read { db in try DocumentKindCatalog.load(db: db) }
+    }
+
+    /// "New kind…": `name` trimmed, refused when blank or when a built-in, a saved custom kind
+    /// (`catalog`) or another of the plan's new kinds has it, ignoring case and accents.
+    static func pendingKind(name: String, area: DocumentArea, catalog: DocumentKindCatalog, plan: ImportPlan) throws -> PendingDocumentKind {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains(CustomDocumentKind.retiredMarker) else { throw ImportResolutionError.kindNameEmpty }
+        let key = DocumentKindCatalog.key(trimmed)
+        if let builtIn = DocumentKind.allCases.first(where: { DocumentKindCatalog.key($0.displayName) == key }) {
+            throw ImportResolutionError.kindNameTaken(builtIn.displayName)
+        }
+        if let saved = catalog.custom(named: trimmed) { throw ImportResolutionError.kindNameTaken(saved.name) }
+        if let other = plan.pendingKinds.first(where: { DocumentKindCatalog.key($0.name) == key }) {
+            throw ImportResolutionError.kindNameTaken(other.name)
+        }
+        return PendingDocumentKind(name: trimmed, area: area)
+    }
+
     /// `resolve`, keeping a rule change's record (`applyRule` answers through it).
     private func answering(_ plan: ImportPlan, itemId: UUID, issueId: String? = nil,
                            _ resolution: ImportResolution) async throws -> ImportPlan {
         switch resolution {
+        case .createKind(let name, let area):
+            // A new kind is part of the plan (pending) until Confirm import; then chosen like any other.
+            let catalog = try await kindCatalog()
+            let pending = try Self.pendingKind(name: name, area: area, catalog: catalog, plan: plan)
+            var withKind = plan
+            withKind.pendingKinds.append(pending)
+            return try await answering(withKind, itemId: itemId, issueId: issueId, .chooseCustomKind(.pending(pending.id)))
+        case .chooseCustomKind(let key):
+            // Only a kind the review knows: a saved one in use, or one of its own new kinds.
+            let known: Bool
+            switch key {
+            case .pending(let id): known = plan.pendingKinds.contains { $0.id == id }
+            case .saved(let id): known = try await kindCatalog().custom(id: id) != nil
+            }
+            guard known else { throw ImportResolutionError.notOffered(resolution) }
         case .markChecked(let target):
             guard issueId == nil else { throw ImportResolutionError.notOffered(resolution) }
             return try await check(plan, itemId: itemId, target, mark: true)
@@ -807,6 +846,10 @@ public struct ImportPipeline: @unchecked Sendable {
             recognition = ImportRecognition(kind: ImportResolutions.importKind(for: kind, fileExtension: item.file.fileExtension),
                                             confidence: .certain, reason: ImportResolutions.chosenReason)
             result.state.chosenKinds.insert(item.id)
+        case .chooseCustomKind(let key):
+            intent = plan.state.plannedIntents[item.id] ?? .none
+            recognition = ImportRecognition(kind: .customEvidence(key), confidence: .certain, reason: ImportResolutions.chosenReason)
+            result.state.chosenKinds.insert(item.id)
         case .chooseTarget(let kind, let id):
             chosenTarget = (kind, id)
             switch kind {
@@ -848,7 +891,9 @@ public struct ImportPipeline: @unchecked Sendable {
         let entries = [Entry(file: file, recognition: recognition, failure: ImportResolutions.isUnreadable(item) ? item : nil)]
         let now = Date()
         let declined = plan.state.declinedRules[item.id] ?? []
-        let context = try await queue.read { [intent] in try ImportContext.load(db: $0, intent: intent, now: now).declining(declined) }
+        let context = try await queue.read { [intent] in
+            try ImportContext.load(db: $0, intent: intent, now: now).declining(declined).pending(plan.pendingKinds)
+        }
         // The statements before it in the review are the earlier ones of the batch.
         let before = plan.items.firstIndex { $0.id == item.id }.map { Array(plan.items[..<$0]) } ?? []
         let staged = try await stageStatements(entries, contexts: [context], skipped: plan.state.skippedRows, readers: readers, queue: queue,
@@ -1401,7 +1446,8 @@ public struct ImportPipeline: @unchecked Sendable {
         item.facts.append(ImportFact(field: .periodStart, value: .date(period.start), source: .intent, confidence: .certain, reason: reason))
         item.facts.append(ImportFact(field: .periodEnd, value: .date(max(last, period.start)), source: .intent, confidence: .certain, reason: reason))
         item.placement = ImportNaming.placement(kind: item.recognition.kind, facts: item.facts, file: item.file,
-                                                persons: item.placement?.metadata.persons ?? [])
+                                                persons: item.placement?.metadata.persons ?? [],
+                                                customKind: item.placement?.customKind)
         return item
     }
 
@@ -1547,7 +1593,9 @@ public struct ImportPipeline: @unchecked Sendable {
         let stripped = try timings.measure(.statementChecks) {
             try StatementChecks.recheck(previous.map { strip($0, batchDuplicate: plan.state.batchDuplicates.contains($0.id)) }, db: db)
         }
-        var items = try timings.measure(.duplicates) { try ImportDuplicates.annotate(stripped, db: db, library: library) }
+        var items = try timings.measure(.duplicates) {
+            try ImportDuplicates.annotate(stripped, db: db, library: library, pendingKinds: plan.pendingKinds)
+        }
         result.state.batchDuplicates = Set(items.indices.filter { stripped[$0].duplicate == nil && items[$0].duplicate != nil }.map { items[$0].id })
         // An "import anyway" answers its mismatch only while it lasts: a statement whose balance
         // now matches (or is left out) asks again for a reason the next time it doesn't.

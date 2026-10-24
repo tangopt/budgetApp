@@ -44,6 +44,17 @@ public final class ImportSession {
     /// The names of the properties, people, accounts, tenancies and providers a "which one?"
     /// question offers, read when a review opens.
     public private(set) var targetNames = ImportTargetNames()
+    /// The custom kinds in use, read with the target names (`kindChoices`, `kindLabel`).
+    public private(set) var kindCatalog = DocumentKindCatalog(customKinds: [])
+    /// The kinds the review's chooser offers: the built-ins, the saved custom kinds, then the
+    /// review's new (pending) ones, each by name.
+    public var kindChoices: [ImportKindChoice] {
+        ImportKindChoice.choices(catalog: kindCatalog, pending: plan?.pendingKinds ?? [])
+    }
+    /// An import kind's name, a custom kind's (saved or new in this review) included.
+    public func kindLabel(_ kind: ImportKind) -> String {
+        ImportKindNames(catalog: kindCatalog, pending: plan?.pendingKinds ?? []).displayName(kind)
+    }
     /// The accounts by id, read with the target names: a statement's layout wizard and its
     /// account picker (bank region first).
     public private(set) var accounts: [Int64: Account] = [:]
@@ -443,6 +454,9 @@ public final class ImportSession {
             case .failure(ImportResolutionError.reasonRequired):
                 // Beside the question: the item stays in Needs you as it was.
                 self.answerProblem = AnswerProblem(itemId: itemId, issueId: issueId, message: "Write why it is imported anyway first")
+            case .failure(let error as ImportResolutionError) where error.isKindName:
+                // "New kind…" with a name that can't be used: said beside the question.
+                self.answerProblem = AnswerProblem(itemId: itemId, issueId: issueId, message: error.localizedDescription)
             case .failure(let error):
                 self.logger.error("Resolving an import item failed: \(error.localizedDescription, privacy: .public)")
                 self.problem = Problem(title: "Couldn't apply that answer: \(error.localizedDescription)", lines: [])
@@ -663,11 +677,14 @@ public final class ImportSession {
     private func loadTargetNames() {
         let dbQueue = dbQueue
         spawn { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { () -> Result<(ImportTargetNames, [Account], Set<String>), Error> in
-                Result { try dbQueue.read { db in (try ImportTargetNames.read(db), try Account.fetchAll(db), try IssuerKey.knownParties(db: db)) } }
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<(ImportTargetNames, [Account], Set<String>, DocumentKindCatalog), Error> in
+                Result { try dbQueue.read { db in
+                    (try ImportTargetNames.read(db), try Account.fetchAll(db), try IssuerKey.knownParties(db: db), try DocumentKindCatalog.load(db: db))
+                } }
             }.value
             switch result {
-            case .success(let (names, accounts, parties)):
+            case .success(let (names, accounts, parties, catalog)):
+                self?.kindCatalog = catalog
                 if self?.knownParties != parties {
                     self?.knownParties = parties
                     self?.issuerKeys = [:]

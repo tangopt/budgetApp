@@ -83,7 +83,23 @@ public struct ImportDetector: Sendable {
     /// forms, utility invoices, statements, rent receipts): their readers must read them.
     /// `read`: whether the file's text layer was read (not OCR, not unreadable); otherwise the
     /// declared kind is to check ("Not read: check it's the <kind>").
-    public static func declared(_ recognition: ImportRecognition, intent: ImportIntent, read: Bool = true) -> ImportRecognition? {
+    /// A custom kind expected (Missing evidence ▸ Add for a rule asking for one) is declared the
+    /// same way, named from `kindNames`.
+    public static func declared(_ recognition: ImportRecognition, intent: ImportIntent, read: Bool = true,
+                                kindNames: ImportKindNames = ImportKindNames()) -> ImportRecognition? {
+        if case .customEvidence(let key)? = intent.expected {
+            guard recognition.ruleId == nil, let name = kindNames[key]?.name else { return nil }
+            switch recognition.kind {
+            case .unknown, .evidence(.other): break
+            case .evidence: guard recognition.confidence == .needsReview && !recognition.proposedByModel else { return nil }
+            default: return nil
+            }
+            guard read else {
+                return ImportRecognition(kind: .customEvidence(key), confidence: .needsReview, reason: "Not read: check it's the \(name)")
+            }
+            let from = intent.entryPoint.map { " from \($0)" } ?? ""
+            return ImportRecognition(kind: .customEvidence(key), confidence: .certain, reason: "You added it as a \(name)\(from)")
+        }
         // Payroll forms, utility invoices and statements read as their own kinds; a rent receipt as the portal's PDF.
         guard case .evidence(let kind)? = intent.expected, kind != .other, kind != .rentReceipt,
               case .evidence = ImportResolutions.importKind(for: kind, fileExtension: "") else { return nil }

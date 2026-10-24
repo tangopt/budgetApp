@@ -81,7 +81,8 @@ public enum ImportChecks {
         }
         if edited.placement != nil {
             edited.placement = ImportNaming.placement(kind: edited.recognition.kind, facts: edited.facts, file: edited.file,
-                                                      persons: item.placement?.metadata.persons ?? [])
+                                                      persons: item.placement?.metadata.persons ?? [],
+                                                customKind: item.placement?.customKind)
         }
         ImportModelProposals.settle(&edited)
         return edited
@@ -142,7 +143,8 @@ public enum ImportChecks {
         }
         if restored.placement != nil {
             restored.placement = ImportNaming.placement(kind: restored.recognition.kind, facts: restored.facts, file: restored.file,
-                                                        persons: item.placement?.metadata.persons ?? [])
+                                                        persons: item.placement?.metadata.persons ?? [],
+                                                customKind: item.placement?.customKind)
         }
         return restored
     }

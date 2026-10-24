@@ -561,6 +561,7 @@ public struct EvidenceDocumentReader: ImportReader {
         // Bank debit advices have their own reader (`BBVADebitAdviceReader`), which hands back
         // the ones it can't read.
         if case .evidence(let documentKind) = kind { return documentKind != .bankDebitAdvice }
+        if case .customEvidence = kind { return true }
         return kind == .unknown
     }
 
@@ -584,12 +585,22 @@ public struct EvidenceDocumentReader: ImportReader {
     /// `readings`: the issuer's learnt positions, as read.
     private func item(file: ImportFile, recognition: ImportRecognition, context: ImportContext, index: EvidenceMatcher.Index,
                       targetLabel: String?, db: Database, readings: inout [LearntFigures.Reading]) throws -> ImportItem {
-        guard case .evidence(let kind) = recognition.kind else {
+        // A custom kind is read as Other, then named and filed as itself (a kind that's gone: Other).
+        var custom: ImportCustomKind?
+        let kind: DocumentKind
+        switch recognition.kind {
+        case .evidence(let evidenceKind):
+            kind = evidenceKind
+        case .customEvidence(let key):
+            kind = .other
+            custom = context.customKinds[key]
+        default:
             var item = ImportItem(file: file, recognition: recognition, title: file.fileName, groupKey: "Other documents")
             item.issues.append(ImportIssue(id: "unknownKind", kind: .unknownKind(proposed: nil), reason: "What kind of document is this?"))
             item.placement = ImportNaming.placement(kind: .unknown, facts: [], file: file, persons: [])
             return item
         }
+        let kindName = custom?.name ?? kind.displayName
         let analysis = EvidenceAnalyzer.analyze(text: file.text, textStatus: file.textStatus, fileName: file.fileName)
         var metadata = analysis.metadata
         // The issuer's learnt positions, before the transaction is matched on them (`LearntFigures.apply` names them).
@@ -636,10 +647,10 @@ public struct EvidenceDocumentReader: ImportReader {
             return try addendumItem(file: file, recognition: recognition, facts: facts, date: metadata.docDate, context: context,
                                     targetLabel: targetLabel, db: db)
         }
-        var item = ImportItem(file: file, recognition: recognition, title: kind.displayName, facts: facts,
-                              groupKey: "\(kind.displayName) documents")
-        item.placement = ImportNaming.placement(kind: recognition.kind, facts: facts, file: file, persons: [])
-        if let date = metadata.docDate { item.title = "\(kind.displayName) of \(isoDay(date))" }
+        var item = ImportItem(file: file, recognition: recognition, title: kindName, facts: facts,
+                              groupKey: "\(kindName) documents")
+        item.placement = ImportNaming.placement(kind: recognition.kind, facts: facts, file: file, persons: [], customKind: custom)
+        if let date = metadata.docDate { item.title = "\(kindName) of \(isoDay(date))" }
 
         // The link, by fixed rules: the user's target, a single clear match, else the user picks.
         if let target = context.intent.target {
@@ -656,7 +667,8 @@ public struct EvidenceDocumentReader: ImportReader {
                                         byteCount: file.byteCount, kind: kind, docDate: metadata.docDate,
                                         periodStart: metadata.periodStart, periodEnd: metadata.periodEnd,
                                         amountMinorUnits: metadata.amountMinorUnits, currency: metadata.currency,
-                                        textStatus: file.textStatus, extractedText: file.text, addedAt: context.now)
+                                        textStatus: file.textStatus, extractedText: file.text, addedAt: context.now,
+                                        customKindId: custom?.key.savedId)
         let suggestions = EvidenceMatcher.suggestions(document: document, index: index)
         func candidate(_ suggestion: EvidenceMatcher.Suggestion) throws -> LinkCandidate {
             LinkCandidate(entity: .transaction(suggestion.transactionId), label: try entityLabel(db: db, .transaction(suggestion.transactionId)),

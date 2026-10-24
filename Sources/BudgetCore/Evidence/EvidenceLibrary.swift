@@ -38,6 +38,8 @@ public struct EvidenceMetadata: Equatable, Sendable {
     /// How readable the file is and its text (`EvidenceAnalyzer`); `.unknown` when not analysed.
     public var textStatus: DocumentTextStatus
     public var extractedText: String?
+    /// The custom kind it is filed as (with `kind` `.other`), spec 2026-10-24 §2.
+    public var customKindId: Int64? = nil
 
     public init(kind: DocumentKind = .other, docDate: Date? = nil, periodStart: Date? = nil, periodEnd: Date? = nil,
                 amountMinorUnits: Int? = nil, currency: Currency? = nil, persons: [String] = [], canonicalName: String? = nil,
@@ -157,7 +159,7 @@ public struct EvidenceLibrary: Sendable {
     static func merged(_ metadata: EvidenceMetadata, with analysis: EvidenceAnalysis) -> EvidenceMetadata {
         var merged = metadata
         let proposed = analysis.metadata
-        if merged.kind == .other { merged.kind = proposed.kind }
+        if merged.kind == .other, merged.customKindId == nil { merged.kind = proposed.kind }
         merged.docDate = merged.docDate ?? proposed.docDate
         if merged.periodStart == nil && merged.periodEnd == nil {
             merged.periodStart = proposed.periodStart
@@ -255,7 +257,8 @@ public struct EvidenceLibrary: Sendable {
             textStatus: metadata.textStatus, extractedText: metadata.extractedText,
             sourceFolderId: metadata.sourceFolderId, sourceRelativePath: metadata.sourceRelativePath,
             sourceModifiedAt: metadata.sourceModifiedAt.map(EvidenceLinks.wholeSeconds),
-            addedAt: EvidenceLinks.wholeSeconds(now), note: Transaction.normalizedNote(metadata.note))
+            addedAt: EvidenceLinks.wholeSeconds(now), note: Transaction.normalizedNote(metadata.note),
+            customKindId: metadata.kind == .other ? metadata.customKindId : nil)
     }
 
     /// What `add(db:…)` did: the document, and the stored copy it placed — to remove if the

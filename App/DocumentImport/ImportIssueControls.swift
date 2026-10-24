@@ -145,6 +145,8 @@ struct ImportIssueControls: View {
                 || issue.id == UtilityInvoiceImportReader.chooseInvoiceIssueId
             return documentOnly ? "File the document only" : "File without a link"
         case .chooseKind(let kind): return "File as \(kind.displayName)"
+        case .chooseCustomKind: return "File as this kind"
+        case .createKind(let name, _): return "File as \(name)"
         case .chooseLink(let entity): return "Link to \(entity.type.displayName.lowercased()) #\(entity.id)"
         case .confirmFigure(let field, _), .confirmFigureRemembering(let field, _): return "Use this \(field.displayName.lowercased())"
         case .chooseTarget(let kind, let id): return "Use \(targetNames.name(kind, id))"
@@ -766,7 +768,7 @@ struct ImportModelReading: View {
                 if proposesKind {
                     GridRow {
                         label("Kind")
-                        Text(item.recognition.kind.displayName).font(.callout).figureText()
+                        Text(item.kindName).font(.callout).figureText()
                             .frame(maxWidth: .infinity, alignment: .leading)
                         pencil(Self.kindRow, "kind")
                     }

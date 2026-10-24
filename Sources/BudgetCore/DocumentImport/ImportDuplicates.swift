@@ -24,7 +24,8 @@ public enum DocumentIdentity {
         var weak: Set<String> = []
         /// The kind-based `ida:` key (matches only where one side names no issuer).
         var kindKey: String?
-        /// The kind it is filed as: `"<DocumentKind.rawValue>"` for a built-in kind.
+        /// The kind it is filed as: `"<DocumentKind.rawValue>"` for a built-in kind, `"custom:<id>"`
+        /// or `"pending:<uuid>"` for a custom one (`CustomKindKey.token`).
         var kindToken: String?
         /// The part it plays (`ImportDuplicates.claimRole`): what "the same kind" compares.
         var role: String?
@@ -122,10 +123,16 @@ public enum DocumentIdentity {
         "payroll:\(form):\(year):\(employer):\(personId)"
     }
 
-    /// The kind token of a recognised file (`"<DocumentKind.rawValue>"`); `nil` for receipts
-    /// exports and unknown files.
+    /// The kind token of a recognised file (`"<DocumentKind.rawValue>"`, a custom kind's
+    /// `"custom:<id>"` / `"pending:<uuid>"`); `nil` for receipts exports and unknown files.
     static func kindToken(of kind: ImportKind) -> String? {
-        documentKind(of: kind)?.rawValue
+        if case .customEvidence(let key) = kind { return key.token }
+        return documentKind(of: kind)?.rawValue
+    }
+
+    /// A library document's kind token (`kindToken(of:)`).
+    static func kindToken(of document: EvidenceDocument) -> String {
+        document.customKindId.map { CustomKindKey.saved($0).token } ?? document.kind.rawValue
     }
 
     /// The period the facts state ("yyyyMMdd"…"yyyyMMdd"): start and end, either alone a single day.
@@ -160,6 +167,7 @@ public enum DocumentIdentity {
         case .payrollForm(let form): return form.documentKind
         case .bankStatementCSV, .bankStatementPDF, .bbvaStatement: return .bankStatement
         case .evidence(let documentKind): return documentKind
+        case .customEvidence: return .other
         case .rentReceiptsExport, .unknown: return nil
         }
     }
@@ -275,7 +283,8 @@ public struct DocumentIdentityIndex {
             for (field, date) in [(ImportFigureField.periodStart, document.periodStart), (.periodEnd, document.periodEnd)] {
                 if let date { facts.append(ImportFact(field: field, value: .date(date), source: .matchedRecord, confidence: .certain, reason: "")) }
             }
-            var identity = DocumentIdentity.identity(kind: .evidence(document.kind), text: document.extractedText, facts: facts,
+            let kind: ImportKind = document.customKindId.map { .customEvidence(.saved($0)) } ?? .evidence(document.kind)
+            var identity = DocumentIdentity.identity(kind: kind, text: document.extractedText, facts: facts,
                                                      providerId: nil, personId: nil)
             // The amount as the document states it (its currency unknown when it has none).
             identity.figures[.amount] = document.amountMinorUnits.map { DocumentIdentity.Figure(amount: abs($0), currency: document.currency) }
@@ -517,8 +526,11 @@ public enum ImportDuplicates {
         }
     }
 
-    public static func annotate(_ items: [ImportItem], db: Database, library: DocumentIdentityIndex? = nil) throws -> [ImportItem] {
+    /// `pendingKinds`: the review's new kinds, named in the wording as the saved ones are.
+    public static func annotate(_ items: [ImportItem], db: Database, library: DocumentIdentityIndex? = nil,
+                                pendingKinds: [PendingDocumentKind] = []) throws -> [ImportItem] {
         let library = try library ?? DocumentIdentityIndex.load(db: db)
+        let names = ImportKindNames(catalog: try DocumentKindCatalog.load(db: db), pending: pendingKinds).byToken
         var batch = DocumentIdentityIndex()
         /// Hash → the original's name, library id and (when in the batch only) item.
         var batchFiles: [String: Original] = [:]
@@ -588,7 +600,7 @@ public enum ImportDuplicates {
                 let strong = libraryStrong + batchStrong
                 if let copied = strong.first(where: { changes(from: $0, to: item).isEmpty }) {
                     let copy = Original(label: copied.label, documentId: copied.documentId, itemId: copied.itemId)
-                    result[i].duplicate = copy.sameDocument(sameDocumentWording(identity, copied, facts: item.facts))
+                    result[i].duplicate = copy.sameDocument(sameDocumentWording(identity, copied, facts: item.facts, names: names))
                     original = copy
                 } else if let newest = batchStrong.last ?? libraryStrong.max(by: { ($0.documentId ?? 0) < ($1.documentId ?? 0) }) {
                     // Another amount, pay or tax than every original holds: the user decides
@@ -602,7 +614,7 @@ public enum ImportDuplicates {
                         if !result[i].notes.contains(note) { result[i].notes.append(note) }
                     }
                     if let entry = library.possibleDocument(identity, excluding: replaced) ?? batch.possibleDocument(identity) {
-                        let reason = possibleDuplicateReason(identity, entry)
+                        let reason = possibleDuplicateReason(identity, entry, names: names)
                         result[i].issues.append(ImportIssue(id: "possibleDuplicate", kind: .readerProblem(reason), reason: reason,
                                                             offers: [.acknowledge, .leaveOut]))
                     }
@@ -629,7 +641,7 @@ public enum ImportDuplicates {
         }
         // A changed source-folder file takes its previous version's links before the claims are checked.
         for i in result.indices { result[i] = try ImportPipeline.withPreviousVersion(result[i], db: db) }
-        try annotateClaims(&result, db: db)
+        try annotateClaims(&result, db: db, names: names)
         return result
     }
 
@@ -663,8 +675,9 @@ public enum ImportDuplicates {
     }
 
     /// "the same insurance receipt, ATCUD ABCD1234-77".
-    static func sameDocumentWording(_ identity: DocumentIdentity.Identity, _ entry: DocumentIdentityIndex.Entry, facts: [ImportFact]) -> String {
-        let kind = lowered(kindName(identity.role ?? entry.identity.role))
+    static func sameDocumentWording(_ identity: DocumentIdentity.Identity, _ entry: DocumentIdentityIndex.Entry, facts: [ImportFact],
+                                    names: [String: String] = [:]) -> String {
+        let kind = lowered(kindName(identity.role ?? entry.identity.role, names: names))
         guard let key = sharedStrongKey(identity, entry.identity) else { return "the same \(kind)" }
         let shared = describe(strongKey: key, facts: facts)
         return "the same \(kind), \(shared.name) \(shared.value)"
@@ -672,8 +685,9 @@ public enum ImportDuplicates {
 
     /// "Possibly a duplicate of <name>: also an insurance receipt from <issuer> dated 2023-03-05 for €120.00"
     /// (what is unknown left out).
-    static func possibleDuplicateReason(_ identity: DocumentIdentity.Identity, _ entry: DocumentIdentityIndex.Entry) -> String {
-        var reason = "Possibly a duplicate of \(entry.label): also \(article(kindName(entry.identity.role ?? identity.role)))"
+    static func possibleDuplicateReason(_ identity: DocumentIdentity.Identity, _ entry: DocumentIdentityIndex.Entry,
+                                        names: [String: String] = [:]) -> String {
+        var reason = "Possibly a duplicate of \(entry.label): also \(article(kindName(entry.identity.role ?? identity.role, names: names)))"
         if let issuer = identity.issuerName ?? entry.identity.issuerName { reason += " from \(issuer)" }
         if let day = identity.day ?? entry.identity.day { reason += " dated \(DocumentIdentity.isoDay(fromKey: day))" }
         if let amount = identity.amount ?? entry.identity.amount {
@@ -682,10 +696,13 @@ public enum ImportDuplicates {
         return reason
     }
 
-    /// A kind token's name ("Insurance receipt").
-    static func kindName(_ token: String?) -> String {
+    /// A kind token's name ("Insurance receipt"; a custom kind's from `names`, by token).
+    static func kindName(_ token: String?, names: [String: String] = [:]) -> String {
         guard let token else { return DocumentKind.other.displayName }
-        return DocumentKind(rawValue: token)?.displayName ?? token
+        if let name = names[token] { return name }
+        if let kind = DocumentKind(rawValue: token) { return kind.displayName }
+        // A custom kind the review doesn't know (gone meanwhile) reads as Other.
+        return token.hasPrefix("custom:") || token.hasPrefix("pending:") ? DocumentKind.other.displayName : token
     }
 
     /// The note of a utility invoice whose file is already in the library but isn't recorded as
@@ -770,14 +787,14 @@ public enum ImportDuplicates {
         return nil
     }
 
-    /// The library kind of an item that will be imported as a document (not a statement,
-    /// duplicate, left out or row).
-    private static func claimingKind(_ item: ImportItem) -> DocumentKind? {
+    /// The kind token (`DocumentIdentity.kindToken`) of an item that will be imported as a
+    /// document (not a statement, duplicate, left out or row); a custom kind is a kind like any other.
+    private static func claimingKind(_ item: ImportItem) -> String? {
         guard item.parentId == nil, item.duplicate == nil, !item.isLeftOut,
-              let kind = DocumentIdentity.documentKind(of: item.recognition.kind), kind != .bankStatement,
+              let token = DocumentIdentity.kindToken(of: item.recognition.kind), token != DocumentKind.bankStatement.rawValue,
               // Unrecognised documents are no kind to compare: never competing on a transaction.
-              kind != .other else { return nil }
-        return kind
+              token != DocumentKind.other.rawValue else { return nil }
+        return token
     }
 
     /// The part a document plays on its transaction, as a kind token: the bank's proof of the
@@ -856,9 +873,9 @@ public enum ImportDuplicates {
         var role: String
     }
 
-    private static func annotateClaims(_ items: inout [ImportItem], db: Database) throws {
+    private static func annotateClaims(_ items: inout [ImportItem], db: Database, names: [String: String] = [:]) throws {
         func role(_ i: Int) -> String? {
-            claimingKind(items[i]).map { claimRole(token: $0.rawValue, text: items[i].file.text) }
+            claimingKind(items[i]).map { claimRole(token: $0, text: items[i].file.text) }
         }
         // First: items of one kind (role) and different periods certain of the same transaction:
         // not duplicates, but one of the automatic links is likely wrong. Links the user chose
@@ -886,7 +903,7 @@ public enum ImportDuplicates {
             for (own, other) in asking {
                 let link = items[own.item].links[own.link]
                 let periods = own.period.isUndated && other.period.isUndated ? "neither dated" : "\(own.period.described) and \(other.period.described)"
-                let reason = "\(items[own.item].file.fileName) and \(items[other.item].file.fileName) — both \(plural(lowered(kindName(claim.role)))), "
+                let reason = "\(items[own.item].file.fileName) and \(items[other.item].file.fileName) — both \(plural(lowered(kindName(claim.role, names: names)))), "
                     + "\(periods) — were matched to the same transaction"
                 items[own.item].links[own.link].confidence = .needsReview
                 items[own.item].issues.append(ImportIssue(id: "\(checkLinkPrefix)\(claim.transactionId)",
@@ -908,7 +925,7 @@ public enum ImportDuplicates {
                 // advice of its debit is normal, the same advice filed again under another kind is not.
                 var existing = try EvidenceLinks.documents(db: db, for: link.entity)
                     .first { document in
-                        claimRole(token: document.kind.rawValue, text: document.extractedText) == ownRole
+                        claimRole(token: DocumentIdentity.kindToken(of: document), text: document.extractedText) == ownRole
                             && document.sha256 != items[i].file.sha256 && !link.replacing.contains(document.id ?? 0)
                             && ClaimPeriod(document: document).isSame(as: period)
                     }.map { (name: $0.displayName, period: ClaimPeriod(document: $0)) }
@@ -919,18 +936,18 @@ public enum ImportDuplicates {
                     }.map { (name: items[$0].file.fileName, period: ClaimPeriod(facts: items[$0].facts)) }
                 }
                 guard let existing else { continue }
-                let reason = "Possibly a duplicate: \(existing.name) is also \(article(kindName(ownRole))) \(existing.period.matchWording(against: period)) on this transaction"
+                let reason = "Possibly a duplicate: \(existing.name) is also \(article(kindName(ownRole, names: names))) \(existing.period.matchWording(against: period)) on this transaction"
                 items[i].issues.append(ImportIssue(id: "\(sameKindOnTransactionPrefix)\(link.entity.id)", kind: .readerProblem(reason), reason: reason,
                                                    offers: [.acknowledge, .fileWithoutLink]))
             }
             // A contract certain of a tenancy that already has one (in the library, or another item
             // of this import): two contracts of one tenancy ask. Its addenda never claim it.
-            for link in items[i].links where kind == .rentContract && link.entity.type == .tenancy && link.confidence == .certain {
+            for link in items[i].links where kind == DocumentKind.rentContract.rawValue && link.entity.type == .tenancy && link.confidence == .certain {
                 var existing = try EvidenceLinks.documents(db: db, for: link.entity)
                     .first { $0.kind == .rentContract && $0.sha256 != items[i].file.sha256 && !link.replacing.contains($0.id ?? 0) }?.displayName
                 if existing == nil {
                     existing = items.indices.first { j in
-                        j != i && claimingKind(items[j]) == .rentContract && items[j].links.contains { $0.entity == link.entity }
+                        j != i && claimingKind(items[j]) == DocumentKind.rentContract.rawValue && items[j].links.contains { $0.entity == link.entity }
                     }.map { items[$0].file.fileName }
                 }
                 guard let existing else { continue }
