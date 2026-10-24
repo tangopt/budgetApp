@@ -24,6 +24,9 @@ public enum SyncRoutes {
         DemoRoute(name: "first-download", minimumFigures: 0) { _ in
             AnyView(FirstDownloadView(received: 1_284))
         },
+        DemoRoute(name: "first-download-waiting", minimumFigures: 0) { _ in
+            AnyView(FirstDownloadView(received: 0, waiting: true))
+        },
         DemoRoute(name: "settings", minimumFigures: 0) { context in
             let today = context.today
             return AnyView(SettingsSheet(appearance: .constant(.system), themeId: .constant(PhoneTheme.classic.id),

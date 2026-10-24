@@ -69,6 +69,8 @@ targets:
         # Settings ▸ About reads them.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # "YES" only in a team-signed build (Config/SigningPhone.xcconfig); read by CloudKitAvailability.
+        MangoCloudKit: $(MANGO_CLOUDKIT)
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

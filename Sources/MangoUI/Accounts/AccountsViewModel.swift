@@ -258,10 +258,4 @@ public enum AccountsCopy {
     public static let emptyMessage = "The household's accounts show here once they sync from the Mac."
 }
 
-extension AccountsViewModel.State {
-    /// The first load failed (nothing shown yet).
-    var isFailed: Bool {
-        if case .failed = self { return true }
-        return false
-    }
-}
+extension AccountsViewModel.State: ScreenLoadState {}

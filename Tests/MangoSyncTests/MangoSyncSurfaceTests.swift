@@ -18,6 +18,27 @@ final class MangoSyncSurfaceTests: XCTestCase {
         XCTAssertEqual(CloudKitTransport.keyScope(demo: false), CloudKitTransport.containerIdentifier)
     }
 
+    /// Whether the phone may make a `CKContainer` (fix round 1, I1): only a team-signed build says so (Info.plist's
+    /// `MangoCloudKit` = YES, set by Config/SigningPhone.xcconfig), and a simulator build must also carry the
+    /// container in its entitlements. Anything else fails closed. A device never reads a provisioning profile
+    /// (TestFlight and App Store installs have none).
+    func testCloudKitAvailabilityFailsClosed() {
+        let container = CloudKitTransport.containerIdentifier
+        let signed: [String: Any] = [CloudKitAvailability.containersEntitlement: [container]]
+        let other: [String: Any] = [CloudKitAvailability.containersEntitlement: ["iCloud.example.other"]]
+        // Device: the build flag decides.
+        XCTAssertTrue(CloudKitAvailability.isAvailable(buildFlag: "YES", isSimulator: false, simulatorEntitlements: nil))
+        for flag in [nil, "", "NO", "yes", "$(MANGO_CLOUDKIT)"] {
+            XCTAssertFalse(CloudKitAvailability.isAvailable(buildFlag: flag, isSimulator: false, simulatorEntitlements: signed), "\(String(describing: flag))")
+        }
+        // Simulator: the flag and the entitlement.
+        XCTAssertTrue(CloudKitAvailability.isAvailable(buildFlag: "YES", isSimulator: true, simulatorEntitlements: signed))
+        XCTAssertFalse(CloudKitAvailability.isAvailable(buildFlag: "YES", isSimulator: true, simulatorEntitlements: nil))
+        XCTAssertFalse(CloudKitAvailability.isAvailable(buildFlag: "YES", isSimulator: true, simulatorEntitlements: other))
+        XCTAssertFalse(CloudKitAvailability.isAvailable(buildFlag: "NO", isSimulator: true, simulatorEntitlements: signed))
+        XCTAssertEqual(CloudKitAvailability.infoKey, "MangoCloudKit")
+    }
+
     func testKeychainServiceIsUnchanged() {
         XCTAssertEqual(KeychainSyncKeyStore.service, "ubberninja.mango.sync")
     }

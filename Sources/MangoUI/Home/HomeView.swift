@@ -53,7 +53,7 @@ public struct HomeView: View {
         }
         // Loads on first appearance, then again whenever a sync brings changes in (its last-sync time moves).
         .task(id: SyncReloadTrigger(syncStatus)) {
-            await model.reload(for: SyncReloadTrigger(syncStatus).key)
+            await model.reload(for: HomeViewModel.reloadKey(syncStatus))
         }
     }
 

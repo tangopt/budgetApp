@@ -85,6 +85,10 @@ public enum SyncStatusCopy {
         return "\(base) \(formatter.string(from: NSNumber(value: received)) ?? String(received)) so far"
     }
 
+    /// The first download's line while there's nothing to download yet (the Mac hasn't shared the household's zone;
+    /// the read-only phone never makes it).
+    public static let firstDownloadWaiting = "Waiting for the household's records from the Mac"
+
     /// Settings' security line: whether this device holds the household key (nil: sync is off here). Waiting is
     /// worded as the waiting status is, never as a failure.
     public static func householdKey(held: Bool?) -> String {

@@ -127,10 +127,4 @@ public final class HomeViewModel: ObservableObject {
     }
 }
 
-extension HomeViewModel.State {
-    /// The first load failed (nothing shown yet).
-    var isFailed: Bool {
-        if case .failed = self { return true }
-        return false
-    }
-}
+extension HomeViewModel.State: ScreenLoadState {}

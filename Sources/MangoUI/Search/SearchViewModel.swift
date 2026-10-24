@@ -334,10 +334,4 @@ public final class SearchViewModel: ObservableObject {
     }
 }
 
-extension SearchViewModel.State {
-    /// The first load failed (nothing shown yet).
-    var isFailed: Bool {
-        if case .failed = self { return true }
-        return false
-    }
-}
+extension SearchViewModel.State: ScreenLoadState {}

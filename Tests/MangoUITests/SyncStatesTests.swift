@@ -61,6 +61,19 @@ final class SyncStatesTests: XCTestCase {
         if case .failed = search.state { XCTFail("search not retried") }
     }
 
+    /// One shared helper tells a failed state from the others, for every tab.
+    func testIsFailedIsTheFailedCaseOnly() {
+        XCTAssertTrue(HomeViewModel.State.failed("x").isFailed)
+        XCTAssertFalse(HomeViewModel.State.idle.isFailed)
+        XCTAssertFalse(HomeViewModel.State.empty.isFailed)
+        XCTAssertTrue(MonthViewModel.State.failed("x").isFailed)
+        XCTAssertFalse(MonthViewModel.State.idle.isFailed)
+        XCTAssertTrue(AccountsViewModel.State.failed("x").isFailed)
+        XCTAssertTrue(PropertyViewModel.State.failed("x").isFailed)
+        XCTAssertTrue(SearchViewModel.State.failed("x").isFailed)
+        XCTAssertFalse(SearchViewModel.State.idle.isFailed)
+    }
+
     // MARK: Money due
 
     /// A future obligation (Upcoming, the next instalment, Coming up) is drawn as a cost and read as "due", never

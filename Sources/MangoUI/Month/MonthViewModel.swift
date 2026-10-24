@@ -178,10 +178,4 @@ public final class MonthViewModel: ObservableObject {
     }
 }
 
-extension MonthViewModel.State {
-    /// The first load failed (nothing shown yet).
-    var isFailed: Bool {
-        if case .failed = self { return true }
-        return false
-    }
-}
+extension MonthViewModel.State: ScreenLoadState {}

@@ -108,6 +108,12 @@ final class SyncStatusCopyTests: XCTestCase {
         XCTAssertEqual(SyncStatusCopy.firstDownload(received: 12_345), "Downloading the household's records… 12,345 so far")
     }
 
+    /// Before the Mac has shared the household (its zone doesn't exist yet): waiting, never an error.
+    func testFirstDownloadWaitingForTheMac() {
+        XCTAssertEqual(SyncStatusCopy.firstDownloadWaiting, "Waiting for the household's records from the Mac")
+        for word in ["error", "failed", "failure"] { XCTAssertFalse(SyncStatusCopy.firstDownloadWaiting.lowercased().contains(word)) }
+    }
+
     /// Settings' security line: sealed, or waiting (never an error), or nothing to say while sync is off.
     func testHouseholdKeyLine() {
         XCTAssertEqual(SyncStatusCopy.householdKey(held: true), "Records sealed with the household key")

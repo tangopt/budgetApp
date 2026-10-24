@@ -39,7 +39,8 @@ struct MangoPhoneApp: App {
 /// above the lock cover, so a relock keeps where the person was; every sheet is presented inside it.
 ///
 /// In front of the tabs, while it applies: the iCloud explanation (no account, or restricted; "Show what's here" goes
-/// to the tabs for this run of the app), then the first download (before this iPhone's first pull lands).
+/// to the tabs for this run of the app), then the first download (before this iPhone's first pull lands, or waiting
+/// for the Mac while the household's zone doesn't exist yet).
 struct PhoneRoot: View {
     private enum Stage {
         case loading
@@ -127,6 +128,9 @@ struct PhoneRoot: View {
             ICloudUnavailableView(state: state, onOpenSettings: openSettings, onShowLocal: { showsLocalData = true })
         } else if sync.isFirstDownload, case .syncing = sync.status {
             FirstDownloadView(received: sync.downloadedRecords)
+        } else if sync.isFirstDownload, case .idle = sync.status {
+            // Synced, yet nothing to download: the Mac hasn't shared the household's zone.
+            FirstDownloadView(received: 0, waiting: true)
         } else {
             PhoneTabs(model: tabs, syncStatus: sync.status, lastSync: sync.lastSync, onRefresh: { await sync.syncNow() },
                       onSettings: { showingSettings = true })

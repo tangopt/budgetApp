@@ -13,8 +13,9 @@ import MangoUI
 ///   database (`BUDGET_DB_PATH`, honoured by simulator builds only, and the very database the phone opened) syncs;
 ///   the phone's own database (Application Support/Mango) never does. Otherwise the status stays `.off` and the
 ///   reason is logged.
-/// - **Read-only:** the phone has nothing pending, so each sync only pulls (the push finds nothing and makes no key).
-///   It never takes the import lease. Documents aren't downloaded (`documents: nil`).
+/// - **Read-only:** the engine is made `readOnly`: it only pulls, never creates the zone (a missing one is "nothing
+///   to download yet", the first download waiting for the Mac), never pushes, makes no key and takes no lease.
+///   Documents aren't downloaded (`documents: nil`).
 /// - **Keys:** iCloud Keychain under the demo scope for `--sync-demo` (`CloudKitTransport.keyScope`); the simulator
 ///   may be handed the demo key (`PhoneSyncDemoMode`).
 /// - **Triggers:** `.launch` once the database is open, `.foreground` when the scene comes back, a cancel when it goes
@@ -42,6 +43,8 @@ final class PhoneSyncController: ObservableObject {
     private var keyStore: (any SyncKeyStore)?
     private var statusTask: Task<Void, Never>?
     private var wentToBackground = false
+    private var accountCheck: Task<Void, Never>?
+    private var accountGeneration = 0
     private let canUseCloudKit = PhoneEntitlements.hasCloudKitContainer()
 
     /// Sync runs here (so "Sync now" means something).
@@ -53,7 +56,7 @@ final class PhoneSyncController: ObservableObject {
     func attach(_ environment: PhoneEnvironment) async {
         guard dbQueue == nil else { return }
         dbQueue = environment.dbQueue
-        Task { await checkAccount() }
+        checkAccount()
         if let refusal = Self.refusal(databasePath: environment.databasePath, canUseCloudKit: canUseCloudKit) {
             Self.log.info("Sync is off on this iPhone: \(refusal, privacy: .public)")
             return
@@ -72,7 +75,7 @@ final class PhoneSyncController: ObservableObject {
         }
         let engine = SyncEngineCore(db: dbQueue, transport: CloudKitTransport(),
                                     device: SyncDevice(id: deviceId, name: UIDevice.current.name),
-                                    keyStore: keyStore, documents: nil)
+                                    keyStore: keyStore, documents: nil, readOnly: true)
         let scheduler = SyncScheduler(engine: engine, db: dbQueue)
         self.scheduler = scheduler
         self.keyStore = keyStore
@@ -111,10 +114,8 @@ final class PhoneSyncController: ObservableObject {
     func sceneBecameActive() {
         guard wentToBackground else { return }
         wentToBackground = false
-        Task {
-            await checkAccount()
-            await scheduler?.requestSync(.foreground)
-        }
+        checkAccount()
+        Task { await scheduler?.requestSync(.foreground) }
     }
 
     /// The scene went to the background: a running sync stops at its next operation (token and stamps unchanged).
@@ -154,13 +155,22 @@ final class PhoneSyncController: ObservableObject {
         }
     }
 
-    private func checkAccount() async {
+    /// Asks CloudKit for the account, one check at a time: a newer check cancels the older, whose answer is dropped
+    /// (the latest wins).
+    private func checkAccount() {
         guard canUseCloudKit else { return }
-        account = switch await CloudKitAccountStatus.current() {
-        case .available: .available
-        case .noAccount: .noAccount
-        case .restricted: .restricted
-        case .couldNotDetermine: .couldNotDetermine
+        accountCheck?.cancel()
+        accountGeneration += 1
+        let generation = accountGeneration
+        accountCheck = Task { [weak self] in
+            let status = await CloudKitAccountStatus.current()
+            guard !Task.isCancelled, let self, self.accountGeneration == generation else { return }
+            self.account = switch status {
+            case .available: .available
+            case .noAccount: .noAccount
+            case .restricted: .restricted
+            case .couldNotDetermine: .couldNotDetermine
+            }
         }
     }
 }

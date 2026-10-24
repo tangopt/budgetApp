@@ -14,3 +14,17 @@ public struct SyncReloadTrigger: Hashable, Sendable {
         if case .syncing = status { syncing = true } else { syncing = false }
     }
 }
+
+/// A screen's load state, as `reload(for:)` asks it: a first load that failed reads again on every sync's start and
+/// end. The five tabs' states conform (each has `case failed(String)`).
+protocol ScreenLoadState {
+    var isFailed: Bool { get }
+}
+
+extension ScreenLoadState {
+    var isFailed: Bool {
+        // Every conforming state spells its failure `.failed(String)`: an enum case's payload is a child labelled
+        // with the case's name.
+        Mirror(reflecting: self).children.first?.label == "failed"
+    }
+}

@@ -115,14 +115,23 @@ public actor SyncEngineCore {
     let documents: SyncDocumentFiles?
     /// Where the zone keys are (iCloud Keychain in the apps; ruling R15).
     let keyStore: any SyncKeyStore
+    /// Pulls only, never writes to the server (the read-only iPhone, plan step 4 Task 12): no zone is created (a
+    /// missing one is "nothing to download yet"), nothing is pushed, no key marker is published, no lease is taken.
+    public nonisolated let readOnly: Bool
+
+    /// A read-only engine was asked to write.
+    public enum ReadOnlyError: Error, Equatable {
+        case readOnly
+    }
     /// The last entry point started: the next one waits for it.
     private var tail: Task<Void, Never>?
     /// The passing transport error behind the last `SyncKeyError.unavailable` (set by the key fetch and publish).
     var keyTransportError: SyncTransportError?
 
     public init(db: any DatabaseWriter, transport: any SyncTransport, device: SyncDevice, keyStore: any SyncKeyStore, batchSize: Int = 200,
-                clock: @escaping @Sendable () -> Date = { Date() }, documents: SyncDocumentFiles? = nil) {
+                clock: @escaping @Sendable () -> Date = { Date() }, documents: SyncDocumentFiles? = nil, readOnly: Bool = false) {
         self.db = db
+        self.readOnly = readOnly
         self.documents = documents
         self.transport = transport
         self.device = device
@@ -162,6 +171,7 @@ public actor SyncEngineCore {
     /// `ImportLeaseError.heldBy` ("Importing on <device>") while another device holds it, and
     /// `SyncKeyError.waitingForHouseholdKey` while this device doesn't hold the household key yet.
     public func acquireImportLease() async throws {
+        guard !readOnly else { throw ReadOnlyError.readOnly }
         try await serialized {
             try await self.prepare()
             let key = try await self.householdKey(zone: SyncRecordStore.householdZone, create: true)
@@ -176,6 +186,7 @@ public actor SyncEngineCore {
     /// Gives the lease up without importing (the user cancelled). A batch's lease is released by the push
     /// that uploads the batch's close.
     public func releaseImportLease() async throws {
+        guard !readOnly else { throw ReadOnlyError.readOnly }
         try await serialized {
             guard let held = try await self.db.read({ db in try SyncImportGate.heldLease(db: db) }) else { return }
             let key = try await self.householdKey(zone: SyncRecordStore.householdZone, create: false)
@@ -271,6 +282,8 @@ public actor SyncEngineCore {
                 zoneKeys = [:]
                 continue
             } catch SyncTransportError.zoneNotFound {
+                // Read-only: the household hasn't been shared up yet; nothing to download, nothing made here.
+                if readOnly { return SyncPullReport() }
                 try await recoverMissingZone(zone)
                 return SyncPullReport()
             }
@@ -380,6 +393,8 @@ public actor SyncEngineCore {
     // MARK: Push
 
     func pushAll() async throws -> SyncPushReport {
+        // Read-only: nothing is ever sent (nor a key made or a lease renewed).
+        if readOnly { return SyncPushReport() }
         try await prepare()
         var report = SyncPushReport()
         let busy = try await db.read { db in
@@ -696,7 +711,8 @@ public actor SyncEngineCore {
         let (on, ready) = try await db.read { db in
             (try SyncImportGate.isSyncOn(db: db), try Self.zones.filter { try Self.zoneReady($0, db: db) })
         }
-        let missing = Self.zones.filter { !ready.contains($0) }
+        // Read-only: zones are the Mac's to make; none is marked ready here.
+        let missing = readOnly ? [] : Self.zones.filter { !ready.contains($0) }
         for zone in missing { try await transport.createZone(zone) }
         guard !on || !missing.isEmpty else { return }
         try await db.write { db in

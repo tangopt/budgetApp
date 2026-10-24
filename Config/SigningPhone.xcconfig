@@ -4,3 +4,14 @@
 #include? "Signing.local.xcconfig"
 CODE_SIGN_ENTITLEMENTS = Phone/Mango.entitlements
 ENABLE_HARDENED_RUNTIME = NO
+
+// Info.plist's MangoCloudKit (CloudKitAvailability, plan step 4 Task 12 fix round 1): "YES" only when a team is
+// named (Signing.local.xcconfig) and signing is allowed; empty otherwise, which the app reads as no CloudKit (an
+// unsigned build has no container entitlement and CKContainer would trap). Indirection, since xcconfig has no "if":
+// MANGO_CLOUDKIT_NO_TEAM is NO without a team and empty with one; then YES only for signing YES and a team.
+MANGO_CLOUDKIT_TEAM_ = NO
+MANGO_CLOUDKIT_NO_TEAM = $(MANGO_CLOUDKIT_TEAM_$(DEVELOPMENT_TEAM))
+MANGO_CLOUDKIT_HAS_TEAM_ = YES
+MANGO_CLOUDKIT_HAS_TEAM = $(MANGO_CLOUDKIT_HAS_TEAM_$(MANGO_CLOUDKIT_NO_TEAM))
+MANGO_CLOUDKIT_SIGNED_YES_YES = YES
+MANGO_CLOUDKIT = $(MANGO_CLOUDKIT_SIGNED_$(CODE_SIGNING_ALLOWED)_$(MANGO_CLOUDKIT_HAS_TEAM))

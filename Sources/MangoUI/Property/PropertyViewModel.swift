@@ -307,10 +307,4 @@ public enum PropertyCopy {
     public static let emptyMessage = "A property set up on the Mac shows here once it syncs."
 }
 
-extension PropertyViewModel.State {
-    /// The first load failed (nothing shown yet).
-    var isFailed: Bool {
-        if case .failed = self { return true }
-        return false
-    }
-}
+extension PropertyViewModel.State: ScreenLoadState {}

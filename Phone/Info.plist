@@ -18,6 +18,8 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>MangoCloudKit</key>
+	<string>$(MANGO_CLOUDKIT)</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Mango unlocks with Face ID so only you see the household's figures.</string>
 	<key>UIApplicationSceneManifest</key>
