@@ -29,6 +29,26 @@ public enum HomeCopy {
         }
     }
 
+    /// What VoiceOver reads for the sparkline: where it ends now and the year-end forecast.
+    /// "now £129,358.48, forecast for the end of 2026 £134,622.20".
+    public static func sparklineValue(_ netWorth: NetWorthSeries) -> String {
+        var parts: [String] = []
+        if let current = netWorth.currentNetWorthMinorUnits {
+            parts.append("now \(MoneyPresentation(minorUnits: current, currency: .gbp, role: .neutral).text)")
+        }
+        if let yearEnd = netWorth.yearEnds.first {
+            parts.append("forecast for the end of \(String(yearEnd.year)) \(MoneyPresentation(minorUnits: yearEnd.valueMinorUnits, currency: .gbp, role: .neutral).text)")
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    /// What VoiceOver reads for the pay month's bar: "spent £2,722.82, still expected £1,193.51, of £3,916.33 planned".
+    public static func payMonthBarValue(_ summary: HomeSummary) -> String {
+        func amount(_ minorUnits: Int) -> String { MoneyPresentation(minorUnits: minorUnits, currency: .gbp, role: .neutral).text }
+        return "spent \(amount(summary.month.expenses.actual)), still expected \(amount(summary.leftToSpendMinorUnits)), "
+            + "of \(amount(summary.plannedSpendingMinorUnits)) planned"
+    }
+
     /// The next items, at most `upcomingLimit`.
     public static func nextUpcoming(_ items: [HomeSummary.UpcomingItem]) -> [HomeSummary.UpcomingItem] {
         Array(items.prefix(upcomingLimit))

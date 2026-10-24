@@ -74,6 +74,7 @@ struct NetWorthCard: View {
             .chartYScale(domain: .automatic(includesZero: false))
             .frame(height: 64)
             .accessibilityLabel("Net worth over the last year, with the forecast dashed")
+            .accessibilityValue(HomeCopy.sparklineValue(netWorth))
         }
     }
 }

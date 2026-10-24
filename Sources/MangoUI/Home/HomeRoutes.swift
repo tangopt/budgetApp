@@ -39,18 +39,15 @@ public enum HomeRoutes {
 
     @MainActor
     private static func home(_ dbQueue: DatabaseQueue, today: Date, status: SyncStatus) -> AnyView {
-        let model = HomeViewModel(dbQueue: dbQueue, today: { today })
-        model.load()
+        let model = HomeViewModel(dbQueue: dbQueue, today: { today }, preloaded: HomeViewModel.readNow(dbQueue, today: today))
         return AnyView(HomeView(model: model, syncStatus: status, onRefresh: {}, onSettings: {}, now: { today }))
     }
 
     /// Home's net worth equals `AccountsOverview.netWorthGBP` on the demo's day; throws when it doesn't.
     @MainActor
     private static func netWorthCheck(_ context: PhoneDemoContext) throws -> String {
-        let model = HomeViewModel(dbQueue: context.dbQueue, today: { context.today })
-        model.load()
-        guard case let .loaded(summary) = model.state else {
-            throw DemoRouteCheckFailure(message: "home: the demo didn't load (\(model.state))")
+        guard case let .loaded(summary) = HomeViewModel.readNow(context.dbQueue, today: context.today) else {
+            throw DemoRouteCheckFailure(message: "home: the demo didn't load")
         }
         let check = try HomeViewModel.netWorthCheck(dbQueue: context.dbQueue, today: context.today, shown: summary)
         guard check.matches else { throw DemoRouteCheckFailure(message: "home: \(check.line)") }

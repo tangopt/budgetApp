@@ -58,6 +58,7 @@ struct PayMonthCard: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Spent and still expected, out of the planned spending")
+        .accessibilityValue(HomeCopy.payMonthBarValue(summary))
     }
 
     private func legend<Swatch: View>(_ swatch: Swatch, _ label: String) -> some View {

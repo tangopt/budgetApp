@@ -3,7 +3,8 @@ import BudgetCore
 
 /// Home (iPhone spec §3.2): the freshness line, then Net worth, This pay month, Needs attention and Upcoming, in
 /// that order. Read-only: nothing here edits. The avatar button top right opens Settings (`onSettings`, Task 12);
-/// pull to refresh asks for changes (`onRefresh`) and then reads again.
+/// pull to refresh asks for changes (`onRefresh`) and then reads again; a change of `syncStatus`'s last-sync time
+/// (a scheduled sync, the first download) reads again too.
 ///
 /// `model` belongs to whoever shows Home, above the lock cover, so a relock keeps it.
 public struct HomeView: View {
@@ -35,7 +36,7 @@ public struct HomeView: View {
             .background(theme.background)
             .refreshable {
                 await onRefresh()
-                model.load()
+                await model.load()
             }
             .navigationTitle("Home")
             .toolbar {
@@ -49,8 +50,9 @@ public struct HomeView: View {
                 }
             }
         }
-        .task {
-            if model.state == .idle { model.load() }
+        // Loads on first appearance, then again whenever a sync brings changes in (its last-sync time moves).
+        .task(id: HomeViewModel.reloadKey(syncStatus)) {
+            await model.reload(for: HomeViewModel.reloadKey(syncStatus))
         }
     }
 

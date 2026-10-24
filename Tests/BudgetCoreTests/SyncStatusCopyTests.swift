@@ -20,13 +20,30 @@ final class SyncStatusCopyTests: XCTestCase {
             (.needsAttention(held: 1, lastSync: nil), "1 change needs attention on the Mac", .amber),
             (.unavailable(.noICloudAccount), "Sign in to iCloud to sync", .amber),
             (.unavailable(.quotaExceeded), "iCloud storage is full", .amber),
-            (.failed(reason: "the database couldn't be read"), "Sync stopped: the database couldn't be read", .amber),
+            (.failed(reason: "the database couldn't be read"), "Sync stopped — will try again", .amber),
         ]
         for (status, text, tone) in cases {
             let copy = SyncStatusCopy.text(status, now: now)
             XCTAssertEqual(copy.text, text, "\(status)")
             XCTAssertEqual(copy.tone, tone, "\(status)")
         }
+    }
+
+    /// A failure's reason (which may quote an error) never reaches the status line; it is only the details.
+    func testAFailureReadsAsStoppedAndKeepsItsReasonForTheDetails() {
+        let status = SyncStatus.failed(reason: "SQLite error 1: query failed")
+        let copy = SyncStatusCopy.text(status, now: now)
+        XCTAssertEqual(copy.text, "Sync stopped — will try again")
+        XCTAssertFalse(copy.text.lowercased().contains("error") || copy.text.lowercased().contains("failed"))
+        XCTAssertEqual(SyncStatusCopy.detail(status), "SQLite error 1: query failed")
+        XCTAssertNil(SyncStatusCopy.detail(.offline(since: now, retryAt: nil)))
+    }
+
+    /// A retry time already past (the status not yet updated) reads "shortly", never "5 seconds ago".
+    func testARetryTimeInThePastReadsShortly() {
+        XCTAssertEqual(SyncStatusCopy.text(.offline(since: now, retryAt: now.addingTimeInterval(-5)), now: now).text,
+                       "Offline · trying again shortly")
+        XCTAssertEqual(SyncStatusCopy.text(.offline(since: now, retryAt: now), now: now).text, "Offline · trying again shortly")
     }
 
     func testWaitingForKeyIsNeutralAndNeverAnError() {
@@ -40,7 +57,7 @@ final class SyncStatusCopyTests: XCTestCase {
     func testNoStatusSaysErrorOrFailed() {
         let statuses: [SyncStatus] = [.off, .idle(lastSync: now), .syncing(.pulling), .waitingForKey(since: now),
                                       .offline(since: now, retryAt: nil), .needsAttention(held: 2, lastSync: now),
-                                      .unavailable(.noICloudAccount), .failed(reason: "the database couldn't be read")]
+                                      .unavailable(.noICloudAccount), .failed(reason: "an error: the read failed")]
         for status in statuses {
             let text = SyncStatusCopy.text(status, now: now).text.lowercased()
             XCTAssertFalse(text.contains("error") || text.contains("failed") || text.contains("failure"), text)

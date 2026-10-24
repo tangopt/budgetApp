@@ -350,7 +350,7 @@ public actor SyncScheduler {
         status = restingStatus()
     }
 
-    /// What the person is told after "Sync stopped:": the kind of failure, never a value from the data.
+    /// The failure's kind for the details under "Sync stopped — will try again" (`SyncStatusCopy.detail`), never a value from the data.
     static func reason(_ error: Error) -> String {
         if let database = error as? DatabaseError { return "the database reported an error (\(database.resultCode))" }
         if let transport = error as? SyncTransportError { return "iCloud refused the operation (\(transport))" }

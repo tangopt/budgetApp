@@ -26,6 +26,8 @@ public enum SyncStatusCopy {
             return ("Waiting for the household key from iCloud Keychain", .neutral)
         case .offline(_, let retryAt):
             guard let retryAt else { return ("Offline", .amber) }
+            // Already due (the scheduler hasn't moved on yet): never "trying again 5 seconds ago".
+            guard retryAt > now else { return ("Offline · trying again shortly", .amber) }
             return ("Offline · trying again \(relative(retryAt, now: now))", .amber)
         case .needsAttention(let held, _):
             return (held == 1 ? "1 change needs attention on the Mac" : "\(held) changes need attention on the Mac", .amber)
@@ -33,9 +35,16 @@ public enum SyncStatusCopy {
             return ("Sign in to iCloud to sync", .amber)
         case .unavailable(.quotaExceeded):
             return ("iCloud storage is full", .amber)
-        case .failed(let reason):
-            return ("Sync stopped: \(reason)", .amber)
+        case .failed:
+            // The reason may quote an error; it is only the details (`detail`), never the line.
+            return ("Sync stopped — will try again", .amber)
         }
+    }
+
+    /// What a details view (Settings ▸ About) may add under the line: a failure's reason. Nil for every other status.
+    public static func detail(_ status: SyncStatus) -> String? {
+        if case .failed(let reason) = status { return reason }
+        return nil
     }
 
     /// A status worth the person's attention (Home's Needs attention): everything but off, up to date and a sync

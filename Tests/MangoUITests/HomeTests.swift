@@ -29,55 +29,113 @@ final class HomeTests: XCTestCase {
 
     // MARK: View model
 
-    func testAnEmptyDatabaseIsTheEmptyState() throws {
+    func testAnEmptyDatabaseIsTheEmptyState() async throws {
         let model = HomeViewModel(dbQueue: try emptyDatabase(), today: { Self.day(2026, 10, 15) })
         XCTAssertEqual(model.state, .idle)
-        model.load()
+        await model.load()
         XCTAssertEqual(model.state, .empty)
     }
 
     /// The figure Home shows is the Accounts screen's net worth on the same day (plan Task 7 step 2).
-    func testTheDemoNetWorthIsTheAccountsOverviewsNetWorth() throws {
+    func testTheDemoNetWorthIsTheAccountsOverviewsNetWorth() async throws {
         let queue = try demoDatabase()
         let today = DemoDatabase.defaultAsOf
         let model = HomeViewModel(dbQueue: queue, today: { today })
-        model.load()
+        await model.load()
         guard case let .loaded(summary) = model.state else { return XCTFail("not loaded: \(model.state)") }
-        let overview = try queue.read { db in
+        let netWorthGBP = try await queue.read { db in
             AccountsOverview.make(accounts: try Account.fetchAll(db), snapshots: try BalanceSnapshot.fetchAll(db),
-                                  transactions: try Transaction.fetchAll(db), rate: try ExchangeRateSetting.currentOrDefault(db: db), today: today)
+                                  transactions: try Transaction.fetchAll(db), rate: try ExchangeRateSetting.currentOrDefault(db: db), today: today).netWorthGBP
         }
-        XCTAssertEqual(summary.netWorth.currentNetWorthMinorUnits, overview.netWorthGBP)
+        XCTAssertEqual(summary.netWorth.currentNetWorthMinorUnits, netWorthGBP)
         XCTAssertEqual(try HomeViewModel.netWorthCheck(dbQueue: queue, today: today, shown: summary).matches, true)
     }
 
-    func testAFailedReadKeepsTheLastSummary() throws {
+    func testAFailedReadKeepsTheLastSummary() async throws {
         let queue = try demoDatabase()
         let model = HomeViewModel(dbQueue: queue, today: { DemoDatabase.defaultAsOf })
-        model.load()
+        await model.load()
         guard case .loaded = model.state else { return XCTFail("not loaded") }
-        try queue.writeWithoutTransaction { db in
+        try await queue.writeWithoutTransaction { db in
             try db.execute(sql: "PRAGMA foreign_keys = OFF")
             try db.execute(sql: "DROP TABLE account")
         }
-        model.load()
+        await model.load()
         guard case .loaded = model.state else { return XCTFail("the summary was dropped: \(model.state)") }
-        XCTAssertNotNil(model.errorMessage)
+        // A fixed sentence, never the database's own message.
+        XCTAssertEqual(model.errorMessage, HomeViewModel.loadFailureMessage)
+        XCTAssertFalse(model.errorMessage!.contains("SQL"))
+    }
+
+    func testAFirstReadThatFailsShowsTheFixedSentence() async throws {
+        let queue = try emptyDatabase()
+        try await queue.writeWithoutTransaction { db in
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            try db.execute(sql: "DROP TABLE account")
+        }
+        let model = HomeViewModel(dbQueue: queue, today: { Self.day(2026, 10, 15) })
+        await model.load()
+        XCTAssertEqual(model.state, .failed(HomeViewModel.loadFailureMessage))
+    }
+
+    // MARK: Reloading after a sync
+
+    func testTheReloadKeyIsTheLastSyncTime() {
+        let t = Self.day(2026, 10, 15)
+        XCTAssertEqual(HomeViewModel.reloadKey(.idle(lastSync: t)), t)
+        XCTAssertEqual(HomeViewModel.reloadKey(.needsAttention(held: 1, lastSync: t)), t)
+        XCTAssertNil(HomeViewModel.reloadKey(.syncing(.pulling)))
+        XCTAssertNil(HomeViewModel.reloadKey(.offline(since: t, retryAt: nil)))
+        XCTAssertNil(HomeViewModel.reloadKey(.idle(lastSync: nil)))
+    }
+
+    /// A sync that brings the first records in (empty → data) reloads Home; a sync in progress or the same sync
+    /// again doesn't.
+    func testHomeReloadsWhenANewSyncHasLanded() async throws {
+        let queue = try emptyDatabase()
+        let model = HomeViewModel(dbQueue: queue, today: { DemoDatabase.defaultAsOf })
+        await model.reload(for: nil)
+        XCTAssertEqual(model.state, .empty)
+
+        let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("HomeTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: evidence) }
+        try DemoDatabase.build(dbQueue: queue, evidenceRoot: evidence)
+
+        await model.reload(for: nil)  // syncing: keeps what is shown
+        XCTAssertEqual(model.state, .empty)
+        let synced = Self.day(2026, 10, 15)
+        await model.reload(for: synced)
+        guard case .loaded = model.state else { return XCTFail("not reloaded: \(model.state)") }
+    }
+
+    func testTheSameSyncDoesNotReloadAgain() async throws {
+        let queue = try emptyDatabase()
+        let model = HomeViewModel(dbQueue: queue, today: { DemoDatabase.defaultAsOf })
+        let synced = Self.day(2026, 10, 15)
+        await model.reload(for: synced)
+        XCTAssertEqual(model.state, .empty)
+        let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("HomeTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: evidence) }
+        try DemoDatabase.build(dbQueue: queue, evidenceRoot: evidence)
+        await model.reload(for: synced)
+        XCTAssertEqual(model.state, .empty)
     }
 
     // MARK: Freshness
 
-    func testFreshnessNamesTheLastDayAndTurnsAmberPastFourteenDays() throws {
+    func testFreshnessNamesTheLastDayAndTurnsAmberPastFourteenDays() async throws {
         let queue = try demoDatabase()
         let model = HomeViewModel(dbQueue: queue, today: { DemoDatabase.defaultAsOf })
-        model.load()
+        await model.load()
         guard case let .loaded(fresh) = model.state else { return XCTFail() }
         XCTAssertFalse(fresh.isFreshnessAmber)
         XCTAssertTrue(HomeCopy.freshness(fresh).hasPrefix("Data through "), HomeCopy.freshness(fresh))
         XCTAssertFalse(HomeCopy.freshness(fresh).contains("days old"))
 
         let later = HomeViewModel(dbQueue: queue, today: { HomeRoutes.staleToday(from: DemoDatabase.defaultAsOf) })
-        later.load()
+        await later.load()
         guard case let .loaded(stale) = later.state else { return XCTFail() }
         XCTAssertTrue(stale.isFreshnessAmber)
         XCTAssertTrue(HomeCopy.freshness(stale).contains("\(stale.dataAgeDays!) days old"), HomeCopy.freshness(stale))
@@ -147,9 +205,9 @@ final class HomeTests: XCTestCase {
     }
 
     /// The demo has something coming up for the Upcoming card to show.
-    func testTheDemoHasUpcomingItems() throws {
+    func testTheDemoHasUpcomingItems() async throws {
         let model = HomeViewModel(dbQueue: try demoDatabase(), today: { DemoDatabase.defaultAsOf })
-        model.load()
+        await model.load()
         guard case let .loaded(summary) = model.state else { return XCTFail() }
         XCTAssertFalse(summary.upcoming.isEmpty)
     }
