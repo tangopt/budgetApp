@@ -20,16 +20,44 @@ final class SyncRehearsalTests: XCTestCase {
     }
 
     /// The demo database as the installed app (before step 3) would hold it: migrated up to the last migration
-    /// before `createSync`, so the rehearsal's migration does the real work.
+    /// before `createSync`, so the rehearsal's migration does the real work. The demo is built by today's
+    /// code, which writes columns later migrations add, so it's built in a fully migrated database and its
+    /// rows are copied into the pre-sync one, column by column of the pre-sync schema.
     private func preSyncDemo() throws -> (database: String, library: URL) {
         let path = folder.appendingPathComponent("demo.sqlite").path
         let library = folder.appendingPathComponent("Evidence", isDirectory: true)
         try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        let builtPath = folder.appendingPathComponent("built.sqlite").path
+        let built = try DatabaseManager(path: builtPath)
+        try built.migrate()
+        try DemoDatabase.build(dbQueue: built.dbQueue, evidenceRoot: library)
+        try built.dbQueue.close()
+
         let manager = try DatabaseManager(path: path)
         try manager.migrate(upTo: "createAppUser")
-        try manager.dbQueue.write { db in try DemoMarker.mark(db) }
-        try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: library)
+        try manager.dbQueue.writeWithoutTransaction { db in
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            try db.execute(sql: "ATTACH DATABASE ? AS built", arguments: [builtPath])
+            try db.inTransaction {
+                let tables = try String.fetchAll(db, sql: """
+                    SELECT name FROM main.sqlite_master WHERE type = 'table' AND name NOT IN ('grdb_migrations') AND name NOT LIKE 'sqlite_%'
+                    """)
+                // Every table emptied first, so delete triggers find nothing left to remove.
+                for table in tables { try db.execute(sql: "DELETE FROM main.\"\(table)\"") }
+                for table in tables {
+                    let columns = try db.columns(in: table, in: "main").map { "\"\($0.name)\"" }.joined(separator: ", ")
+                    try db.execute(sql: "INSERT INTO main.\"\(table)\" (\(columns)) SELECT \(columns) FROM built.\"\(table)\"")
+                }
+                try db.execute(sql: "DELETE FROM main.sqlite_sequence")
+                try db.execute(sql: "INSERT INTO main.sqlite_sequence SELECT * FROM built.sqlite_sequence WHERE name IN (SELECT name FROM main.sqlite_master)")
+                return .commit
+            }
+            try db.execute(sql: "DETACH DATABASE built")
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+            try DemoMarker.mark(db)
+        }
         try manager.dbQueue.close()
+        try FileManager.default.removeItem(atPath: builtPath)
         return (path, library)
     }
 

@@ -69,7 +69,7 @@ public enum NewKindsReclassification {
         if let repairsRuleKinds, !repairsRuleKinds.isEmpty {
             let repairCategories = try repairCategoryIds(db: db)
             for requirement in try EvidenceRequirement.order(Column("id")).fetchAll(db) {
-                guard let id = requirement.id, requirement.kinds.isEmpty, isRepairs(requirement.scope, repairCategories) else { continue }
+                guard let id = requirement.id, requirement.kinds.isEmpty, requirement.customKindIds.isEmpty, isRepairs(requirement.scope, repairCategories) else { continue }
                 requirements.append(RequirementChange(requirementId: id, name: requirement.name, oldKinds: requirement.kinds,
                                                       newKinds: repairsRuleKinds))
             }
@@ -90,7 +90,7 @@ public enum NewKindsReclassification {
         let repairCategories = try repairCategoryIds(db: db)
         for planned in plan.requirements {
             guard var requirement = try EvidenceRequirement.fetchOne(db, key: planned.requirementId),
-                  requirement.kinds == planned.oldKinds, isRepairs(requirement.scope, repairCategories)
+                  requirement.kinds == planned.oldKinds, requirement.customKindIds.isEmpty, isRepairs(requirement.scope, repairCategories)
             else { throw Failure.requirementChanged(planned.requirementId) }
             requirement.kinds = planned.newKinds
             try EvidenceRequirements.save(db: db, &requirement)

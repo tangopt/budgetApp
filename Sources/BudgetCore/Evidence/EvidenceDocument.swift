@@ -159,12 +159,15 @@ public struct EvidenceDocument: Codable, Equatable, Identifiable, FetchableRecor
     public var sourceModifiedAt: Date?
     public var addedAt: Date
     public var note: String?
+    /// The custom kind the document is (`kind` is then `other`); `nil` for a built-in kind.
+    public var customKindId: Int64?
 
     public init(id: Int64? = nil, sha256: String, storedRelativePath: String, originalFileName: String, byteCount: Int64,
                 canonicalName: String? = nil, kind: DocumentKind = .other, docDate: Date? = nil, periodStart: Date? = nil,
                 periodEnd: Date? = nil, amountMinorUnits: Int? = nil, currency: Currency? = nil, persons: [String] = [],
                 textStatus: DocumentTextStatus = .unknown, extractedText: String? = nil, sourceFolderId: Int64? = nil,
-                sourceRelativePath: String? = nil, sourceModifiedAt: Date? = nil, addedAt: Date, note: String? = nil) {
+                sourceRelativePath: String? = nil, sourceModifiedAt: Date? = nil, addedAt: Date, note: String? = nil,
+                customKindId: Int64? = nil) {
         self.id = id
         self.sha256 = sha256
         self.storedRelativePath = storedRelativePath
@@ -185,6 +188,7 @@ public struct EvidenceDocument: Codable, Equatable, Identifiable, FetchableRecor
         self.sourceModifiedAt = sourceModifiedAt
         self.addedAt = addedAt
         self.note = note
+        self.customKindId = customKindId
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -192,6 +196,11 @@ public struct EvidenceDocument: Codable, Equatable, Identifiable, FetchableRecor
     }
 
     public static let databaseTableName = "document"
+
+    /// The document's kind: its custom kind when it has one, else its built-in kind.
+    public var kindRef: DocumentKindRef {
+        customKindId.map(DocumentKindRef.custom) ?? .builtIn(kind)
+    }
 
     /// The name to show: the canonical name, else the original file name.
     public var displayName: String {
@@ -226,12 +235,14 @@ public struct EvidenceDocumentSummary: Codable, Equatable, Identifiable, Fetchab
     public var sourceModifiedAt: Date?
     public var addedAt: Date
     public var note: String?
+    public var customKindId: Int64?
 
     public static let databaseTableName = EvidenceDocument.databaseTableName
 
     enum CodingKeys: String, CodingKey, CaseIterable {
         case id, sha256, storedRelativePath, originalFileName, byteCount, canonicalName, kind, docDate, periodStart, periodEnd,
-             amountMinorUnits, currency, persons, textStatus, sourceFolderId, sourceRelativePath, sourceModifiedAt, addedAt, note
+             amountMinorUnits, currency, persons, textStatus, sourceFolderId, sourceRelativePath, sourceModifiedAt, addedAt, note,
+             customKindId
     }
 
     public static var databaseSelection: [any SQLSelectable] { CodingKeys.allCases.map { Column($0.rawValue) } }
@@ -244,6 +255,11 @@ public struct EvidenceDocumentSummary: Codable, Equatable, Identifiable, Fetchab
     public var displayName: String {
         if let canonicalName, !canonicalName.isEmpty { return canonicalName }
         return originalFileName
+    }
+
+    /// The document's kind: its custom kind when it has one, else its built-in kind.
+    public var kindRef: DocumentKindRef {
+        customKindId.map(DocumentKindRef.custom) ?? .builtIn(kind)
     }
 }
 

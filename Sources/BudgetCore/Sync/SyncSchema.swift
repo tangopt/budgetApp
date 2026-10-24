@@ -46,7 +46,7 @@ public struct SyncTableSchema: Equatable, Sendable {
 public enum SyncSchema {
     /// Bumped whenever `tables` or the tracking triggers change (`SyncChangeTrackerTests` pins the hash of
     /// each version). A build never replaces triggers a newer version installed.
-    public static let version = 4
+    public static let version = 5
 
     /// Synced tables, parents before children (each foreign key's table is listed earlier).
     public static let tables: [SyncTableSchema] = [
@@ -75,8 +75,11 @@ public enum SyncSchema {
                         synced: ["runId", "seq", "tableName", "rowId", "operation", "beforeJSON", "afterJSON", "rowUuid"],
                         foreignKeys: ["runId": "importRun"],
                         batchKey: "runId"),
+        SyncTableSchema("customDocumentKind",
+                        synced: ["name", "area", "createdAt"]),
         SyncTableSchema("document",
-                        synced: ["sha256", "storedRelativePath", "originalFileName", "byteCount", "canonicalName", "kind", "docDate", "periodStart", "periodEnd", "amountMinorUnits", "currency", "persons", "textStatus", "addedAt", "note"],
+                        synced: ["sha256", "storedRelativePath", "originalFileName", "byteCount", "canonicalName", "kind", "docDate", "periodStart", "periodEnd", "amountMinorUnits", "currency", "persons", "textStatus", "addedAt", "note", "customKindId"],
+                        foreignKeys: ["customKindId": "customDocumentKind"],
                         localOnly: ["sourceFolderId", "sourceRelativePath", "sourceModifiedAt", "extractedText"]),
         SyncTableSchema("importRunFile",
                         synced: ["runId", "fileName", "sha256", "documentId", "outcome", "detail"],
@@ -127,7 +130,7 @@ public enum SyncSchema {
                         synced: ["documentId", "entityType", "entityId", "role", "createdAt"],
                         foreignKeys: ["documentId": "document"]),
         SyncTableSchema("evidenceRequirement",
-                        synced: ["name", "scope", "kinds", "direction", "excludedAccountIds", "usualSource", "activeFrom", "activeTo", "notes", "createdAt"]),
+                        synced: ["name", "scope", "kinds", "direction", "excludedAccountIds", "usualSource", "activeFrom", "activeTo", "notes", "createdAt", "customKindIds"]),
         SyncTableSchema("evidenceWaiver",
                         synced: ["requirementId", "entityType", "entityId", "slotStart", "reason", "note", "createdAt"],
                         foreignKeys: ["requirementId": "evidenceRequirement"]),
@@ -350,6 +353,9 @@ extension SyncSchema {
         SyncJSONReference(table: "evidenceRequirement", column: "excludedAccountIds", content: .rules([
             SyncJSONRule("[]", .row("account")),
         ]), plainNumbers: []),
+        SyncJSONReference(table: "evidenceRequirement", column: "customKindIds", content: .rules([
+            SyncJSONRule("[]", .row("customDocumentKind")),
+        ]), plainNumbers: []),
         SyncJSONReference(table: "evidenceRequirement", column: "scope", content: .rules([
             SyncJSONRule("transactionsInCategory.categoryId", .row("category")),
             SyncJSONRule("transactionsInCategoryGroup.groupId", .row("categoryGroup")),
@@ -453,6 +459,7 @@ extension SyncSchema {
         SyncUniqueKey("category", ["transferAccountId"], .yield("transferAccountId", .null)),
         SyncUniqueKey("category", ["builtInRole"], .identity),
         SyncUniqueKey("category", ["name"], .suffix("name")),
+        SyncUniqueKey("customDocumentKind", ["name"], .identity),              // one kind per name (ignoring case) on every device
         SyncUniqueKey("document", ["sha256"], .identity),                      // the same file
         SyncUniqueKey("importProfile", ["accountId", "format"], .identity),    // the account's profile for a format
         SyncUniqueKey("importRule", ["kind", "matchKey"], .identity),          // one learnt rule per key (`ImportRuleStore.learn`)
