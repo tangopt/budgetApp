@@ -5,6 +5,7 @@ import BudgetCore
 /// arrive. Synthetic values only.
 struct DesignSystemGallery: View {
     @Environment(\.phoneTheme) private var theme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         ScrollView {
@@ -14,7 +15,12 @@ struct DesignSystemGallery: View {
                 InlineBanner(tone: .amber, text: "Offline · showing data from 09:41. Your 3 changes will sync when you're back online.")
                 InlineBanner(tone: .neutral, text: "Waiting for the household key from iCloud Keychain")
                 Card(title: "Figures") {
-                    HStack(spacing: 12) {
+                    // Side by side, top-aligned so the labels line up when one figure shrinks; stacked at
+                    // accessibility sizes, where two figures can't share the width.
+                    let tiles = AmountRowLayout.stacks(at: dynamicTypeSize)
+                        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                        : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+                    tiles {
                         tile("Net worth") {
                             MoneyText(minorUnits: 123_456_789, currency: .gbp, role: .balance, fit: .shrink())
                                 .font(.title2.weight(.semibold))
@@ -41,22 +47,14 @@ struct DesignSystemGallery: View {
                     }
                 }
                 Card(title: "Days and counts") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Tenancy started")
-                            Spacer()
+                    VStack(spacing: 0) {
+                        FigureRow(label: "Tenancy started") {
                             DateText(MonthRange.calendar.date(from: DateComponents(year: 2026, month: 1, day: 8)))
                         }
-                        HStack {
-                            Text("Next statement")
-                            Spacer()
-                            DateText(nil)
-                        }
-                        HStack {
-                            Text("Evidence found")
-                            Spacer()
-                            Text("3 of 5").figureText()
-                        }
+                        Divider()
+                        FigureRow(label: "Next statement") { DateText(nil) }
+                        Divider()
+                        FigureRow(label: "Evidence found") { Text("3 of 5").figureText() }
                     }
                 }
                 Card {
@@ -75,5 +73,28 @@ struct DesignSystemGallery: View {
             figure()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Route `gallery-fold`: a long figure below the first screen (852 pt), which only the full-height render reaches; the
+/// harness fails if it isn't measured.
+struct DesignSystemGalleryFold: View {
+    @Environment(\.phoneTheme) private var theme
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Card(title: "Above the fold") {
+                    AmountRow(label: "Opening balance", amount: MoneyText(minorUnits: 100_000, currency: .gbp, role: .balance))
+                }
+                Color.clear.frame(height: 900)
+                Card(title: "Below the fold") {
+                    AmountRow(label: "Largest balance", secondary: "Held since 8 Jan 2026",
+                              amount: MoneyText(minorUnits: 987_654_321, currency: .eur, role: .balance))
+                }
+            }
+            .padding(16)
+        }
+        .background(theme.background)
     }
 }

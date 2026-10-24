@@ -17,6 +17,11 @@ public enum PhoneDateFormat {
     public static func day(_ date: Date?) -> String {
         date.map { formatter.string(from: $0) } ?? "—"
     }
+
+    /// What VoiceOver reads: the day, or "No date".
+    public static func spoken(_ date: Date?) -> String {
+        date == nil ? "No date" : day(date)
+    }
 }
 
 /// A day as one line in tabular digits ("8 Jan 2026"); "—", secondary, when there is none. Never wraps; checked by
@@ -38,6 +43,6 @@ public struct DateText: View {
             .font(font.monospacedDigit())
             .foregroundStyle(date == nil ? Color.secondary : Color.primary)
             .modifier(FigureFitModifier(fit: fit, kind: "DateText", text: text, source: nil))
-            .accessibilityLabel(date == nil ? "No date" : text)
+            .accessibilityLabel(PhoneDateFormat.spoken(date))
     }
 }

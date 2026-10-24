@@ -17,11 +17,17 @@ import MangoUI
 ///
 /// Builds the demo database in-process (`DemoDatabase`, in the app's temporary folder, never Application Support),
 /// opens it read-only, and renders each route of `DemoRoutes.all` in a 393×852 window (iPhone 17), light and dark,
-/// at each of the route's Dynamic Type sizes, to `Documents/snapshots/<route>-<appearance>-<size>.png`, with the
-/// wrap probe's `wrap-report.txt`; then exits. A failure writes `Documents/snapshots/error.txt` and exits 1.
+/// at each of the route's Dynamic Type sizes, to `Documents/snapshots/<route>-<appearance>-<size>.png`; then again
+/// at 393×4000 so the probe measures everything below the fold (`…-full.png`, light only, cropped to the content);
+/// with the wrap probe's `wrap-report.txt`; then exits. A failure, including a render that measured fewer figures
+/// than its route requires (`DemoRoute.coverageProblem`), writes `Documents/snapshots/error.txt` and exits 1.
 @MainActor
 enum PhoneSnapshotRunner {
     static let windowSize = CGSize(width: 393, height: 852)
+    /// The full-height pass: the same width, tall enough that a screen's whole content is laid out.
+    static let fullSize = CGSize(width: 393, height: 4000)
+    /// How far the full pass grows for taller content.
+    static let maximumFullHeight: CGFloat = 12_000
     static let appearances: [(name: String, style: UIUserInterfaceStyle)] = [("light", .light), ("dark", .dark)]
 
     static func main() -> Never {
@@ -95,43 +101,95 @@ enum PhoneSnapshotRunner {
         let probe = WrapProbeRegistry.shared
         probe.isActive = true
         var violations: [WrapProbeRegistry.Violation] = []
-        var renders: [(name: String, checked: Int)] = []
-        for route in routes {
-            for appearance in appearances {
-                for size in route.sizes {
-                    let name = "\(route.name)-\(appearance.name)-\(String(describing: size))"
-                    probe.reset()
-                    window.overrideUserInterfaceStyle = appearance.style
-                    let root = route.make(context)
-                        .environment(\.dynamicTypeSize, size)
-                        .environment(\.phoneTheme, .classic)
-                    window.rootViewController = UIHostingController(rootView: root)
-                    window.layoutIfNeeded()
-                    await settle(probe)
-                    violations += probe.violations(route: name, window: windowSize)
-                    renders.append((name, probe.checkedCount))
-                    let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
-                        _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        var renders: [WrapProbeRegistry.Render] = []
+        var problems: [String] = []
+        // Two passes: the first screen as the person sees it (393×852), then the same width at full height
+        // (393×4000) so everything below the fold is laid out and measured too; its PNGs, light only, are cropped
+        // to the content.
+        for full in [false, true] {
+            for route in routes {
+                for appearance in appearances {
+                    for size in route.sizes {
+                        let name = "\(route.name)-\(appearance.name)-\(String(describing: size))" + (full ? "-full" : "")
+                        probe.reset()
+                        window.overrideUserInterfaceStyle = appearance.style
+                        let root = route.make(context)
+                            .environment(\.dynamicTypeSize, size)
+                            .environment(\.phoneTheme, .classic)
+                        window.frame = CGRect(origin: .zero, size: full ? fullSize : windowSize)
+                        window.rootViewController = UIHostingController(rootView: root)
+                        window.layoutIfNeeded()
+                        await settle(probe)
+                        // Content taller than the full window (the gallery at AX5): grow to it and measure again.
+                        // The probe keeps its entries: figures that don't move don't report again, and any that do
+                        // update theirs.
+                        if full, let content = scrollContentHeight(window), content > window.bounds.height {
+                            window.frame.size.height = min(content.rounded(.up), maximumFullHeight)
+                            window.layoutIfNeeded()
+                            await settle(probe)
+                        }
+                        violations += probe.violations(route: name, window: window.bounds.size)
+                        let render = WrapProbeRegistry.Render(name: name, checked: probe.checkedCount,
+                                                              belowFold: probe.checkedCount(below: windowSize.height))
+                        renders.append(render)
+                        if let problem = route.coverageProblem(render: render, full: full) { problems.append(problem) }
+                        if !full || appearance.style == .light {
+                            let height = full ? contentHeight(window, lowestFigure: probe.lowestFigure) : windowSize.height
+                            write(window, height: height, offScreen: full, to: "\(name).png")
+                        }
+                        window.rootViewController = nil
                     }
-                    guard let png = image.pngData() else { fail("couldn't encode \(name).png") }
-                    do {
-                        try png.write(to: outDir.appendingPathComponent("\(name).png"))
-                    } catch {
-                        fail("couldn't write \(name).png: \(error.localizedDescription)")
-                    }
-                    window.rootViewController = nil
                 }
             }
         }
         probe.isActive = false
-        let report = WrapProbeRegistry.report(violations, renders: renders, window: windowSize)
+        if renders.reduce(0, { $0 + $1.checked }) == 0 { problems.append("the run measured no figures at all") }
+        let report = WrapProbeRegistry.report(violations, renders: renders, problems: problems, window: windowSize)
         do {
             try report.write(to: outDir.appendingPathComponent("wrap-report.txt"), atomically: true, encoding: .utf8)
         } catch {
             fail("couldn't write wrap-report.txt: \(error.localizedDescription)")
         }
         print(report.split(separator: "\n").prefix(2).joined(separator: "\n"))
+        // A render that measured too little is a failure, not a pass with 0 violations.
+        if !problems.isEmpty { fail("coverage: " + problems.joined(separator: "; ")) }
         exit(0)
+    }
+
+    /// The full-height window's content: the tallest scroll view's content (its insets included), else just past
+    /// the lowest figure; at least the first screen, at most the window.
+    private static func contentHeight(_ window: UIWindow, lowestFigure: CGFloat) -> CGFloat {
+        let height = scrollContentHeight(window) ?? (lowestFigure + 80)
+        return min(max(height, windowSize.height), window.bounds.height).rounded(.up)
+    }
+
+    /// How tall the window's tallest scroll view's content reaches (its insets included), or nil without one.
+    private static func scrollContentHeight(_ window: UIWindow) -> CGFloat? {
+        func scrollViews(_ view: UIView) -> [UIScrollView] {
+            (view as? UIScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews)
+        }
+        return scrollViews(window).map { scroll in
+            scroll.convert(CGPoint.zero, to: window).y + scroll.adjustedContentInset.top + scroll.contentSize.height
+                + scroll.adjustedContentInset.bottom
+        }.max()
+    }
+
+    /// The top `height` points of the window as `<outDir>/<file>`. A window taller than the screen (`offScreen`)
+    /// is drawn from its layers: the screen-capture path (`drawHierarchy`) draws nothing past the display.
+    private static func write(_ window: UIWindow, height: CGFloat, offScreen: Bool, to file: String) {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: window.bounds.width, height: height)).image { context in
+            if offScreen {
+                window.layer.render(in: context.cgContext)
+            } else {
+                _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+        }
+        guard let png = image.pngData() else { fail("couldn't encode \(file)") }
+        do {
+            try png.write(to: outDir.appendingPathComponent(file))
+        } catch {
+            fail("couldn't write \(file): \(error.localizedDescription)")
+        }
     }
 
     /// Waits for the render to lay out and its figures to report: until the count of checked figures holds still

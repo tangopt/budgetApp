@@ -39,9 +39,11 @@ struct FigureFitModifier: ViewModifier {
     let kind: String
     let text: String?
     let source: String?
+    /// Set by a stacked `FigureRow`: there a natural figure may shrink to fit the row's width.
+    @Environment(\.stackedFigureRowSize) private var stackedRowSize
 
     func body(content: Content) -> some View {
-        switch fit {
+        switch stackedRowSize.map({ AmountRowLayout.fit(fit, at: $0) }) ?? fit {
         case .natural:
             content
                 .lineLimit(1)
@@ -54,4 +56,9 @@ struct FigureFitModifier: ViewModifier {
                 .wrapProbe(kind, text: text, source: source, minimumScale: minimumScale)
         }
     }
+}
+
+extension EnvironmentValues {
+    /// The Dynamic Type size of the stacked `FigureRow` a figure is in (nil: not in one).
+    @Entry var stackedFigureRowSize: DynamicTypeSize?
 }

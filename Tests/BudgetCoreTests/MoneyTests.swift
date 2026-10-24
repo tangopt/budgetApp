@@ -2,6 +2,22 @@ import XCTest
 @testable import BudgetCore
 
 final class MoneyTests: XCTestCase {
+    /// Grouped in threes with "," whatever the device's locale (an en_IN phone would group 12,34,567 with a
+    /// NumberFormatter); the same strings on the Mac and the phone.
+    func testFormatGroupsInThreesWhateverTheLocale() {
+        XCTAssertEqual(Money.format(123_456_789_012, currency: .gbp), "£1,234,567,890.12")
+        XCTAssertEqual(Money.format(123_456_789, currency: .eur), "€1,234,567.89")
+        XCTAssertEqual(Money.format(-100_000, currency: .gbp), "-£1,000.00")
+        XCTAssertEqual(Money.format(99_999, currency: .gbp), "£999.99")
+    }
+
+    func testFormatUnderOnePound() {
+        XCTAssertEqual(Money.format(5, currency: .gbp), "£0.05")
+        XCTAssertEqual(Money.format(-5, currency: .gbp), "-£0.05")
+        XCTAssertEqual(Money.format(0, currency: .eur), "€0.00")
+        XCTAssertEqual(Money.format(-99, currency: .eur), "-€0.99")
+    }
+
     func testFormatInputExamples() {
         XCTAssertEqual(Money.formatInput(4400751), "44,007.51")
         XCTAssertEqual(Money.formatInput(0), "0.00")

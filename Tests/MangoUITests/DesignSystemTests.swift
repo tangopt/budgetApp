@@ -41,6 +41,21 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertEqual(out.spoken, "moved £500.00")
     }
 
+    func testAPositiveTransferHasNoPlusAndStaysInTheTransferTone() {
+        let into = MoneyPresentation(minorUnits: 50_000, currency: .gbp, role: .transfer)
+        XCTAssertEqual(into.text, "£500.00")
+        XCTAssertEqual(into.tone, .transfer)
+        XCTAssertEqual(into.spoken, "moved £500.00")
+    }
+
+    func testAmountsUnderOnePound() {
+        XCTAssertEqual(MoneyPresentation(minorUnits: 5, currency: .gbp, role: .neutral).text, "£0.05")
+        XCTAssertEqual(MoneyPresentation(minorUnits: -5, currency: .gbp, role: .neutral).text, "\u{2212}£0.05")
+        let spent = MoneyPresentation(minorUnits: 99, currency: .eur, role: .expense)
+        XCTAssertEqual(spent.text, "\u{2212}€0.99")
+        XCTAssertEqual(spent.spoken, "spent €0.99")
+    }
+
     func testNeutralIsNeverColoured() {
         XCTAssertEqual(MoneyPresentation(minorUnits: -12_345, currency: .gbp, role: .neutral).tone, .neutral)
         XCTAssertEqual(MoneyPresentation(minorUnits: 12_345, currency: .gbp, role: .neutral).tone, .neutral)
@@ -83,11 +98,20 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertTrue(AmountRowLayout.stacks(at: .accessibility5))
     }
 
+    func testAStackedRowLetsANaturalFigureShrinkToTheMinimum() {
+        XCTAssertEqual(AmountRowLayout.fit(.natural, at: .large), .natural)
+        XCTAssertEqual(AmountRowLayout.fit(.natural, at: .xxxLarge), .natural)
+        XCTAssertEqual(AmountRowLayout.fit(.natural, at: .accessibility3), .shrink(minimumScale: 0.7))
+        XCTAssertEqual(AmountRowLayout.fit(.shrink(minimumScale: 0.8), at: .accessibility5), .shrink(minimumScale: 0.8))
+    }
+
     // MARK: Days
 
     func testADayReadsAsDayMonthYearWhateverTheDeviceLocale() {
         XCTAssertEqual(PhoneDateFormat.day(MonthRange.calendar.date(from: DateComponents(year: 2026, month: 1, day: 8))!), "8 Jan 2026")
         XCTAssertEqual(PhoneDateFormat.day(nil), "—")
+        XCTAssertEqual(PhoneDateFormat.spoken(nil), "No date")
+        XCTAssertEqual(PhoneDateFormat.spoken(MonthRange.calendar.date(from: DateComponents(year: 2026, month: 1, day: 8))!), "8 Jan 2026")
     }
 
     // MARK: Themes
@@ -95,5 +119,18 @@ final class DesignSystemTests: XCTestCase {
     func testEveryCatalogueThemeHasAPhoneTheme() {
         XCTAssertEqual(PhoneTheme.all.map(\.id), ThemePalette.all.map(\.id))
         XCTAssertEqual(PhoneTheme.named("no-such-theme").id, "classic")
+    }
+
+    /// Income figures stay legible in light mode: at least 4.5:1 on a card (ruling, fix round 1); dark keeps the
+    /// theme's own income colour.
+    func testLightIncomeReachesFourPointFiveToOneOnACardAndDarkIsUnchanged() {
+        for palette in ThemePalette.all {
+            let light = PhoneTheme.incomeToken(palette, .light)
+            let card = PhoneTheme.opaqueSurface(palette, .light)
+            XCTAssertGreaterThanOrEqual(ColorMath.contrastRatio(light, card), 4.5, palette.id)
+            XCTAssertEqual(PhoneTheme.incomeToken(palette, .dark), palette.dark.income, palette.id)
+        }
+        // Classic's system green (about 2.2:1 on white) is darkened, not kept.
+        XCTAssertNotEqual(PhoneTheme.incomeToken(ThemePalette.named("classic"), .light), ThemePalette.named("classic").light.income)
     }
 }

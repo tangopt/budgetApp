@@ -38,7 +38,7 @@ public struct PhoneTheme: Identifiable, Sendable {
         let clearBackground = light.windowBackground.alpha == 0 && dark.windowBackground.alpha == 0
         background = clearBackground ? Self.systemBackground(.windowBackground) : color(\.windowBackground)
         surface = color(\.surface)
-        income = color(\.income)
+        income = Self.color(light: Self.incomeToken(palette, .light), dark: Self.incomeToken(palette, .dark))
         expense = color(\.expense)
         transfer = color(\.transfer)
         pending = color(\.pending)
@@ -53,6 +53,32 @@ public struct PhoneTheme: Identifiable, Sendable {
         case .transfer: transfer
         case .neutral: neutralMoney
         }
+    }
+
+    // MARK: Legible income
+
+    /// The smallest contrast an income figure keeps against a card in light mode (ruling, fix round 1).
+    public static let minimumLightIncomeContrast = 4.5
+
+    /// A card's colour, opaque: the surface over the screen background over white (light) or black (dark).
+    public static func opaqueSurface(_ palette: ThemePalette, _ variant: ThemeVariant) -> ThemeColor {
+        let tokens = palette.tokens(variant)
+        let base = ThemeColor.hex(variant == .light ? 0xFFFFFF : 0x000000)
+        let screen = ColorMath.composite(tokens.windowBackground, over: base)
+        return ColorMath.composite(tokens.surface, over: screen)
+    }
+
+    /// The income colour the phone draws: in light, the theme's income where it reaches 4.5:1 on a card, else a
+    /// darker shade of it that does (Classic's system green is about 2.2:1 on white); in dark, the theme's own.
+    public static func incomeToken(_ palette: ThemePalette, _ variant: ThemeVariant) -> ThemeColor {
+        let income = palette.tokens(variant).income
+        guard variant == .light else { return income }
+        let card = opaqueSurface(palette, .light)
+        let drawn = ColorMath.composite(income, over: card)
+        guard ColorMath.contrastRatio(drawn, card) < minimumLightIncomeContrast else { return income }
+        // A little past the minimum, so rounding to 8-bit channels can't land under it.
+        let target = (ColorMath.relativeLuminance(card) + 0.05) / (minimumLightIncomeContrast + 0.1) - 0.05
+        return ColorMath.shaded(drawn, toLuminance: target)
     }
 
     public static let all: [PhoneTheme] = ThemePalette.all.map(PhoneTheme.init)

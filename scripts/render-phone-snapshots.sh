@@ -4,7 +4,10 @@
 # ubberninja.mango.ios.snapshots so the simulator's development install is left alone) that runs nothing but
 # Phone/Snapshots/PhoneSnapshotRunner.swift. The runner builds the demo database in-process (BudgetDemo) in its own
 # temporary folder, renders each route in a 393×852 window, light and dark, at each route's Dynamic Type sizes
-# (.large and .xxxLarge), writes the PNGs and the wrap probe's wrap-report.txt to its Documents/snapshots, and exits.
+# (.large, .xxxLarge, .accessibility3; the gallery also .accessibility5), then again at 393×4000 so everything below
+# the fold is measured (<route>-light-<size>-full.png, light only), writes the PNGs and the wrap probe's
+# wrap-report.txt to its Documents/snapshots, and exits. A render that measured fewer figures than its route needs
+# fails the run.
 # This script copies them to <outDir>, prints the report's first two lines and uninstalls the snapshot build.
 # Never the phone's real data, the Keychain or iCloud: the snapshot build is unsigned and has no entitlements.
 #
@@ -81,13 +84,15 @@ xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_I
 
 CONTAINER="$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data)"
 SNAPS="$CONTAINER/Documents/snapshots"
+[[ -f "$SNAPS/wrap-report.txt" || -f "$SNAPS/error.txt" ]] || { echo "The run wrote no wrap report (log: $RUN_LOG)." >&2; tail -20 "$RUN_LOG" >&2; exit 1; }
+
+rm -f "$OUT"/*.png(N) "$OUT/wrap-report.txt"
+cp "$SNAPS"/*.png(N) "$OUT/" 2>/dev/null || true
+[[ -f "$SNAPS/wrap-report.txt" ]] && cp "$SNAPS/wrap-report.txt" "$OUT/"
+echo "$(ls "$OUT"/*.png(N) | wc -l | tr -d ' ') PNGs in $OUT"
+[[ -f "$OUT/wrap-report.txt" ]] && head -2 "$OUT/wrap-report.txt"
+# A render that measured too little (or any other runner failure) fails the run.
 if [[ -f "$SNAPS/error.txt" ]]; then
     cat "$SNAPS/error.txt" >&2
     exit 1
 fi
-[[ -f "$SNAPS/wrap-report.txt" ]] || { echo "The run wrote no wrap report (log: $RUN_LOG)." >&2; tail -20 "$RUN_LOG" >&2; exit 1; }
-
-rm -f "$OUT"/*.png(N) "$OUT/wrap-report.txt"
-cp "$SNAPS"/*.png(N) "$SNAPS/wrap-report.txt" "$OUT/"
-echo "$(ls "$OUT"/*.png(N) | wc -l | tr -d ' ') PNGs in $OUT"
-head -2 "$OUT/wrap-report.txt"

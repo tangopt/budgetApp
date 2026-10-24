@@ -7,7 +7,7 @@ import SwiftUI
 ///
 /// - **wrapped**: taller than one line of its font (its ideal height).
 /// - **truncated**: narrower than its ideal width, beyond what its shrink allows.
-/// - **cut off**: outside the window sideways.
+/// - **cut off**: outside the window sideways, or outside the card (`Card`) or region (`wrapProbeClips()`) it is in.
 ///
 /// MangoUI is a package and can't see the app's `SNAPSHOTS` condition, so the switch is `isActive`, off unless the
 /// harness sets it: in the app the probe adds no geometry readers and reports nothing.
@@ -25,6 +25,21 @@ public final class WrapProbeRegistry {
         var minimumScale: CGFloat
         var frame: CGRect?
         var ideal: CGSize?
+        /// The card or region it must stay inside sideways (`wrapProbeClips()`).
+        var clipRegion: UUID?
+    }
+
+    /// One render's tally for the report: figures checked, and how many of them lie below the first screen.
+    public struct Render: Equatable, Sendable {
+        public let name: String
+        public let checked: Int
+        public let belowFold: Int
+
+        public init(name: String, checked: Int, belowFold: Int) {
+            self.name = name
+            self.checked = checked
+            self.belowFold = belowFold
+        }
     }
 
     public struct Violation: Hashable, Sendable {
@@ -60,6 +75,8 @@ public final class WrapProbeRegistry {
     }
 
     private var entries: [UUID: Entry] = [:]
+    /// Cards' and regions' frames (`wrapProbeClips()`), by region.
+    var clipRegions: [UUID: CGRect] = [:]
 
     public init() {}
 
@@ -68,17 +85,29 @@ public final class WrapProbeRegistry {
         entries.values.filter { $0.frame != nil && $0.ideal != nil }.count
     }
 
-    public func reset() {
-        entries = [:]
+    /// How many measured figures start below `y` (the fold: 852 on an iPhone 17).
+    public func checkedCount(below y: CGFloat) -> Int {
+        entries.values.filter { entry in entry.ideal != nil && (entry.frame.map { $0.minY >= y } ?? false) }.count
     }
 
-    func update(_ id: UUID, kind: String, text: String?, source: String?, minimumScale: CGFloat,
+    /// The lowest measured figure's bottom edge (0 when none).
+    public var lowestFigure: CGFloat {
+        entries.values.compactMap { $0.ideal == nil ? nil : $0.frame?.maxY }.max() ?? 0
+    }
+
+    public func reset() {
+        entries = [:]
+        clipRegions = [:]
+    }
+
+    func update(_ id: UUID, kind: String, text: String?, source: String?, minimumScale: CGFloat, clipRegion: UUID? = nil,
                 frame: CGRect? = nil, ideal: CGSize? = nil) {
         var entry = entries[id] ?? Entry(kind: kind, text: text, source: source, minimumScale: minimumScale)
         entry.kind = kind
         entry.text = text
         entry.source = source
         entry.minimumScale = minimumScale
+        if let clipRegion { entry.clipRegion = clipRegion }
         if let frame { entry.frame = frame }
         if let ideal { entry.ideal = ideal }
         entries[id] = entry
@@ -100,7 +129,12 @@ public final class WrapProbeRegistry {
             }
             if frame.height > ideal.height + 1 { add(.wrapped) }
             if frame.width < ideal.width * entry.minimumScale - 1 { add(.truncated) }
-            if frame.width > 0, frame.maxX > window.width + 1 || frame.minX < -1 { add(.cutOff) }
+            if frame.width > 0 {
+                let outsideWindow = frame.maxX > window.width + 1 || frame.minX < -1
+                let outsideRegion = entry.clipRegion.flatMap { clipRegions[$0] }
+                    .map { frame.maxX > $0.maxX + 1 || frame.minX < $0.minX - 1 } ?? false
+                if outsideWindow || outsideRegion { add(.cutOff) }
+            }
         }
         return found
     }
@@ -145,15 +179,20 @@ public final class WrapProbeRegistry {
 
     // MARK: Report
 
-    /// The report: a heading, the count line (the script prints both), then each render's violations.
-    /// `renders`: each render's name ("gallery-dark-xxxLarge") and how many figures it checked.
-    public nonisolated static func report(_ violations: [Violation], renders: [(name: String, checked: Int)], window: CGSize) -> String {
+    /// The report: a heading, the count line (the script prints both), the coverage problems, then each render's
+    /// violations and every render's tally. `problems`: renders that checked too little (`DemoRoute.coverageProblem`).
+    public nonisolated static func report(_ violations: [Violation], renders: [Render], problems: [String], window: CGSize) -> String {
         var lines: [String] = []
         let byProblem = Violation.Problem.allCases.map { problem in "\(problem.rawValue) \(violations.filter { $0.problem == problem }.count)" }
         let renderCount = Set(violations.map(\.route)).count
-        lines.append("Wrap probe at \(Int(window.width))×\(Int(window.height)) (iPhone)")
-        lines.append("\(renders.count) renders, \(renders.reduce(0) { $0 + $1.checked }) figures checked; \(violations.count) violations in \(renderCount) renders (\(byProblem.joined(separator: ", ")))")
+        let checked = renders.reduce(0) { $0 + $1.checked }
+        let belowFold = renders.reduce(0) { $0 + $1.belowFold }
+        lines.append("Wrap probe at \(Int(window.width))×\(Int(window.height)) (iPhone; -full renders \(Int(window.width)) wide, full height)")
+        lines.append("\(renders.count) renders, \(checked) figures checked (\(belowFold) below the fold); \(violations.count) violations in \(renderCount) renders (\(byProblem.joined(separator: ", "))); \(problems.count) coverage problems")
         lines.append("")
+        for problem in problems {
+            lines.append("coverage: \(problem)")
+        }
         for render in renders {
             let found = violations.filter { $0.route == render.name }
                 .sorted { ($0.problem.rawValue, $0.origin.y, $0.origin.x) < ($1.problem.rawValue, $1.origin.y, $1.origin.x) }
@@ -166,7 +205,7 @@ public final class WrapProbeRegistry {
         }
         lines.append("Figures checked by render:")
         for render in renders {
-            lines.append("  \(render.name) \(render.checked)")
+            lines.append("  \(render.name) \(render.checked)" + (render.belowFold > 0 ? " (\(render.belowFold) below the fold)" : ""))
         }
         return lines.joined(separator: "\n") + "\n"
     }
@@ -183,6 +222,12 @@ extension View {
         modifier(WrapProbeModifier(kind: kind, text: text, source: source, minimumScale: minimumScale))
     }
 
+    /// Marks a region figures must stay inside sideways (a card, a scroll view's or list's frame): the probe reports
+    /// a figure that runs past it as cut off, even inside the window. Does nothing unless the probe is active.
+    public func wrapProbeClips() -> some View {
+        modifier(WrapProbeClipRegion())
+    }
+
     /// Marks hidden copies laid out only to be measured: the probe leaves their figures out.
     public func wrapProbeIgnored() -> some View {
         environment(\.wrapProbeIsReference, true)
@@ -192,6 +237,25 @@ extension View {
 extension EnvironmentValues {
     /// Inside the probe's own measuring copy (or a hidden one), which reports nothing.
     @Entry var wrapProbeIsReference = false
+    /// The innermost region its figures must stay inside (`wrapProbeClips()`).
+    @Entry var wrapProbeClipRegion: UUID?
+}
+
+/// Reports a region's frame to the probe and hands its id to the figures inside it.
+struct WrapProbeClipRegion: ViewModifier {
+    @State private var id = UUID()
+
+    func body(content: Content) -> some View {
+        if WrapProbeRegistry.shared.isActive {
+            content
+                .environment(\.wrapProbeClipRegion, id)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                    WrapProbeRegistry.shared.clipRegions[id] = frame
+                }
+        } else {
+            content
+        }
+    }
 }
 
 /// Reports one figure view's frame and its ideal, one-line size to `WrapProbeRegistry`.
@@ -201,6 +265,7 @@ struct WrapProbeModifier: ViewModifier {
     let source: String?
     let minimumScale: CGFloat
     @Environment(\.wrapProbeIsReference) private var isReference
+    @Environment(\.wrapProbeClipRegion) private var clipRegion
     @State private var id = UUID()
 
     func body(content: Content) -> some View {
@@ -209,7 +274,8 @@ struct WrapProbeModifier: ViewModifier {
         } else {
             content
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
-                    WrapProbeRegistry.shared.update(id, kind: kind, text: text, source: source, minimumScale: minimumScale, frame: frame)
+                    WrapProbeRegistry.shared.update(id, kind: kind, text: text, source: source, minimumScale: minimumScale,
+                                                    clipRegion: clipRegion, frame: frame)
                 }
                 .background {
                     // The same view at its ideal size: one line, as wide as it needs.
