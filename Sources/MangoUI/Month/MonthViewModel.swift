@@ -95,8 +95,7 @@ public final class MonthViewModel: ObservableObject {
         let firstDay = input.transactions.map(\.date).min()
         let first = min(firstDay.map(calendar.month(containing:)) ?? current, current)
         let shown = min(max(month ?? current, first), current)
-        return MonthPage(review: PayMonthReview.make(month: shown, input: input), months: first...current,
-                         isClosed: calendar.isClosed(shown))
+        return MonthPage(review: PayMonthReview.make(month: shown, input: input), months: first...current)
     }
 
     // MARK: ‹ ›
@@ -140,8 +139,12 @@ public final class MonthViewModel: ObservableObject {
             guard let key, key != loadedKey else { return }
         }
         loadedKey = key
-        transactionModels = [:]
         await load()
+        // Lists already made (one may be on screen) read again in place, with their row's new figures.
+        let rows = page?.review.rows ?? []
+        for (destination, model) in transactionModels {
+            await model.refresh(row: rows.first { $0.id == destination.row.id && page?.review.range == destination.range })
+        }
     }
 
     // MARK: A row's transactions

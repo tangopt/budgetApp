@@ -9,7 +9,7 @@ import BudgetDemo
 /// `PayMonthReview` and `TransactionSearch`; these tests pin what Month does with them.
 @MainActor
 final class MonthTests: XCTestCase {
-    private static func day(_ year: Int, _ month: Int, _ day: Int) -> Date {
+    nonisolated private static func day(_ year: Int, _ month: Int, _ day: Int) -> Date {
         MonthRange.calendar.date(from: DateComponents(year: year, month: month, day: day))!
     }
 
@@ -256,7 +256,7 @@ final class MonthTests: XCTestCase {
         XCTAssertEqual(shown.status, "£3,000.00 to come")
         XCTAssertFalse(shown.isOverPlan)
         XCTAssertEqual(CategoryRowPresentation(row(.income, actual: 450_000, plan: 400_000)).status, "£500.00 more than planned")
-        XCTAssertEqual(CategoryRowPresentation(row(.income, actual: 400_000, plan: 400_000)).status, "As planned")
+        XCTAssertEqual(CategoryRowPresentation(row(.income, actual: 400_000, plan: 400_000)).status, "On plan")
         XCTAssertNil(CategoryRowPresentation(row(.income, actual: 5_000, plan: 0)).status)
     }
 
@@ -270,6 +270,13 @@ final class MonthTests: XCTestCase {
         XCTAssertFalse(unplanned.isOverPlan)
     }
 
+    /// Exactly at plan reads "On plan" whatever the type (ruling, Task 8 fix round 1).
+    func testExactlyAtPlanIsOnPlanForEveryType() {
+        XCTAssertEqual(CategoryRowPresentation(row(.expense, actual: -40_000, plan: -40_000)).status, "On plan")
+        XCTAssertEqual(CategoryRowPresentation(row(.income, actual: 400_000, plan: 400_000)).status, "On plan")
+        XCTAssertEqual(CategoryRowPresentation(row(.transfer, actual: -50_000, plan: -50_000)).status, "On plan")
+    }
+
     func testARowReadsItsFiguresToVoiceOver() {
         let shown = CategoryRowPresentation(row(.expense, actual: -32_000, plan: -40_000))
         XCTAssertEqual(shown.spoken, "£320.00 of £400.00 planned, £80.00 left")
@@ -277,25 +284,93 @@ final class MonthTests: XCTestCase {
 
     // MARK: A row's transactions
 
-    /// The transactions a row opens add up to the row's actual (compared where they're all in pounds, as the review
-    /// converts euro amounts).
+    /// The transactions a row opens add up to the row's actual, for every row of the demo's month.
     func testARowsTransactionsAddUpToItsActual() async throws {
         let queue = try demoDatabase()
-        let today = DemoDatabase.defaultAsOf
-        let review = try review(queue, month: nil, today: today)
-        var compared = 0
-        for row in review.rows(of: .expense) {
+        let review = try review(queue, month: nil, today: DemoDatabase.defaultAsOf)
+        XCTAssertFalse(review.rows(of: .transfer).isEmpty)
+        for row in review.rows {
             let model = MonthTransactionsModel(dbQueue: queue, row: row, range: review.range)
             await model.load()
             guard case let .loaded(days) = model.state else { return XCTFail("\(row.category.name): not loaded") }
             let rows = days.flatMap(\.rows)
             XCTAssertTrue(rows.allSatisfy { $0.transaction.categoryId == row.id })
             XCTAssertTrue(rows.allSatisfy { $0.date >= review.range.start && $0.date <= review.range.end })
-            guard rows.allSatisfy({ $0.currency == .gbp }) else { continue }
-            XCTAssertEqual(rows.reduce(0) { $0 + $1.amountMinorUnits }, row.actualMinorUnits, row.category.name)
-            compared += 1
+            XCTAssertEqual(rows.reduce(0) { $0 + $1.gbpMinorUnits }, row.actualMinorUnits, row.category.name)
         }
-        XCTAssertGreaterThan(compared, 3)
+    }
+
+    /// A pending transaction, a euro one and the incoming leg of a linked transfer: the list is exactly what each
+    /// row's figure counts (confirmed, budget-facing, in pounds), for expense, income and transfer rows.
+    func testTheListIsExactlyWhatTheFigureCounts() async throws {
+        let queue = try emptyDatabase()
+        let today = Self.day(2026, 10, 20)
+        let ids = try await queue.write { db -> (expense: Int64, income: Int64, transfer: Int64, pending: Int64, euro: Int64, inLeg: Int64) in
+            var pounds = Account(name: "Current", currency: .gbp, kind: .cash, trackingMode: .imported)
+            try pounds.insert(db)
+            var euros = Account(name: "Euro", currency: .eur, kind: .cash, trackingMode: .imported)
+            try euros.insert(db)
+            var savings = Account(name: "Savings", currency: .gbp, kind: .cash, trackingMode: .imported)
+            try savings.insert(db)
+            _ = try ExchangeRateSetting(eurToGbpRate: 0.85, updatedAt: today).inserted(db)
+            var batch = ImportBatch(accountId: pounds.id!, sourceFileName: "f", importedAt: today)
+            try batch.insert(db)
+            var expense = Category(name: "Groceries", type: .expense)
+            try expense.insert(db)
+            var income = Category(name: "Salary", type: .income)
+            try income.insert(db)
+            var transfer = Category(name: "Savings", type: .transfer)
+            try transfer.insert(db)
+            func add(_ account: Int64, _ day: Int, _ amount: Int, _ category: Int64, _ status: TransactionStatus = .confirmed) throws -> Int64 {
+                var transaction = Transaction(importBatchId: batch.id!, accountId: account, date: Self.day(2026, 10, day),
+                                              rawDescription: "ITEM \(day)", amountMinorUnits: amount, categoryId: category,
+                                              status: status, categorizedBy: .manual, fingerprint: UUID().uuidString)
+                try transaction.insert(db)
+                return transaction.id!
+            }
+            _ = try add(pounds.id!, 3, -4_000, expense.id!)
+            let pending = try add(pounds.id!, 4, -9_999, expense.id!, .pendingReview)
+            let euro = try add(euros.id!, 5, -10_000, expense.id!)
+            _ = try add(pounds.id!, 6, 300_000, income.id!)
+            _ = try add(euros.id!, 7, 20_000, income.id!)
+            let out = try add(pounds.id!, 8, -50_000, transfer.id!)
+            let inLeg = try add(savings.id!, 8, 50_000, transfer.id!)
+            var link = TransferLink(outTransactionId: out, inTransactionId: inLeg, origin: .manual)
+            try link.insert(db)
+            return (expense.id!, income.id!, transfer.id!, pending, euro, inLeg)
+        }
+        let review = try review(queue, month: nil, today: today)
+        for categoryId in [ids.expense, ids.income, ids.transfer] {
+            guard let row = review.rows.first(where: { $0.id == categoryId }) else { return XCTFail("no row \(categoryId)") }
+            guard case let .loaded(days) = MonthTransactionsModel.readNow(queue, row: row, range: review.range) else {
+                return XCTFail("not loaded")
+            }
+            let rows = days.flatMap(\.rows)
+            XCTAssertEqual(rows.reduce(0) { $0 + $1.gbpMinorUnits }, row.actualMinorUnits, row.category.name)
+            XCTAssertFalse(rows.contains { $0.id == ids.pending || $0.id == ids.inLeg })
+        }
+        guard let expense = review.rows.first(where: { $0.id == ids.expense }),
+              case let .loaded(days) = MonthTransactionsModel.readNow(queue, row: expense, range: review.range),
+              let euro = days.flatMap(\.rows).first(where: { $0.id == ids.euro }) else { return XCTFail("no euro row") }
+        XCTAssertEqual(expense.actualMinorUnits, -4_000 - 8_500)
+        XCTAssertEqual(euro.gbpMinorUnits, -8_500)
+        XCTAssertEqual(euro.originalMinorUnits, -10_000)
+        XCTAssertEqual(MonthTransactionsModel.secondary(euro), "Euro \u{00B7} \u{2212}€100.00")
+    }
+
+    /// A sync reloads a pushed list in place with its row's new figures.
+    func testASyncRefreshesAPushedListInPlace() async throws {
+        let queue = try demoDatabase()
+        let model = MonthViewModel(dbQueue: queue, today: { DemoDatabase.defaultAsOf })
+        await model.reload(for: Self.day(2026, 10, 1))
+        guard case let .loaded(page) = model.state, let row = page.rows(.spending).first else { return XCTFail("not loaded") }
+        let destination = MonthRowDestination(row: row, range: page.review.range)
+        let list = model.transactionsModel(for: destination)
+        await list.load()
+        await model.reload(for: Self.day(2026, 10, 2))
+        XCTAssertTrue(model.transactionsModel(for: destination) === list)
+        guard case .loaded = list.state else { return XCTFail("the list was reset: \(list.state)") }
+        XCTAssertEqual(list.row, row)
     }
 
     func testTransactionsAreGroupedByDayNewestFirst() async throws {

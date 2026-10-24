@@ -7,12 +7,13 @@ import GRDB
 public struct MonthTransactionDay: Equatable, Sendable, Identifiable {
     /// The day (UTC start of day, as transactions are stored).
     public let day: Date
-    public let rows: [TransactionSearch.Row]
+    public let rows: [PayMonthReview.RowTransaction]
     public var id: Date { day }
 }
 
 /// A category row's transactions in its pay month (iPhone spec §3.3, "tapping a row opens its transactions"):
-/// `TransactionSearch` with the category and the month's dates, newest first, grouped by day. Read-only.
+/// exactly the ones its figure sums (`PayMonthReview.transactions`: confirmed, budget-facing, in GBP), newest
+/// first, grouped by day. Read-only.
 @MainActor
 public final class MonthTransactionsModel: ObservableObject {
     public enum State: Equatable, Sendable {
@@ -24,7 +25,8 @@ public final class MonthTransactionsModel: ObservableObject {
     public static let loadFailureMessage = "Mango couldn't read these transactions. Go back and try again."
 
     @Published public private(set) var state: State
-    public let row: PayMonthReview.Row
+    /// The row as the month last showed it (a sync can change its figures).
+    @Published public private(set) var row: PayMonthReview.Row
     public let range: PayMonthReview.DayRange
     private let dbQueue: any DatabaseReader
 
@@ -35,6 +37,7 @@ public final class MonthTransactionsModel: ObservableObject {
         self.state = preloaded
     }
 
+    /// Reads the list off the main actor; a failed read keeps a list already shown.
     public func load() async {
         let reader = dbQueue
         let categoryId = row.id
@@ -47,6 +50,13 @@ public final class MonthTransactionsModel: ObservableObject {
         }
     }
 
+    /// After a sync: the row's new figures (if the month still has it) and the list read again, in place, so a
+    /// pushed list neither flickers nor stays stale.
+    public func refresh(row updated: PayMonthReview.Row?) async {
+        if let updated, updated.id == row.id { row = updated }
+        await load()
+    }
+
     /// The same read, now (the snapshot routes).
     public nonisolated static func readNow(_ dbQueue: any DatabaseReader, row: PayMonthReview.Row, range: PayMonthReview.DayRange) -> State {
         do {
@@ -57,26 +67,34 @@ public final class MonthTransactionsModel: ObservableObject {
     }
 
     nonisolated static func read(_ db: Database, categoryId: Int64, range: PayMonthReview.DayRange) throws -> [MonthTransactionDay] {
-        let input = TransactionSearch.Input(transactions: try Transaction.fetchAll(db), categories: try Category.fetchAll(db),
-                                            accounts: try Account.fetchAll(db), links: try TransferLink.fetchAll(db),
-                                            eurToGbpRate: try ExchangeRateSetting.currentOrDefault(db: db).eurToGbpRate)
-        let criteria = TransactionSearch.Criteria(date: .custom(from: range.start, to: range.end), categoryIds: [categoryId])
-        let rows = TransactionSearch.rows(input, criteria: criteria, now: range.end, timeZone: MonthRange.calendar.timeZone)
-        return days(rows)
+        days(try PayMonthReview.transactions(db: db, categoryId: categoryId, range: range))
     }
 
     /// Rows (newest first) grouped by their day, newest day first.
-    nonisolated static func days(_ rows: [TransactionSearch.Row]) -> [MonthTransactionDay] {
+    nonisolated static func days(_ rows: [PayMonthReview.RowTransaction]) -> [MonthTransactionDay] {
         var result: [MonthTransactionDay] = []
+        var day: Date?
+        var current: [PayMonthReview.RowTransaction] = []
         for row in rows {
-            let day = MonthRange.calendar.startOfDay(for: row.date)
-            if let last = result.last, last.day == day {
-                result[result.count - 1] = MonthTransactionDay(day: day, rows: last.rows + [row])
-            } else {
-                result.append(MonthTransactionDay(day: day, rows: [row]))
+            let rowDay = MonthRange.calendar.startOfDay(for: row.date)
+            if let open = day, open != rowDay {
+                result.append(MonthTransactionDay(day: open, rows: current))
+                current.removeAll(keepingCapacity: true)
             }
+            day = rowDay
+            current.append(row)
         }
+        if let open = day { result.append(MonthTransactionDay(day: open, rows: current)) }
         return result
+    }
+
+    /// Under the description: the account, and the account's own amount when it was converted to pounds
+    /// ("Euro Account · €100.00"). Nil with neither.
+    nonisolated static func secondary(_ row: PayMonthReview.RowTransaction) -> String? {
+        var parts: [String] = []
+        if !row.accountName.isEmpty { parts.append(row.accountName) }
+        if row.isConverted { parts.append(MoneyPresentation.format(row.originalMinorUnits, currency: row.originalCurrency)) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// A transaction's amount as `MoneyText` takes it, by its category's role: a spend as a cost (so a refund reads
@@ -138,9 +156,9 @@ public struct MonthTransactionsView: View {
                     DateText(day.day, font: .subheadline.weight(.semibold))
                         .accessibilityAddTraits(.isHeader)
                     ForEach(day.rows) { row in
-                        let amount = MonthTransactionsModel.amount(row.amountMinorUnits, type: model.row.category.type)
-                        AmountRow(label: row.description, secondary: row.accountName.isEmpty ? nil : row.accountName,
-                                  amount: MoneyText(minorUnits: amount.minorUnits, currency: row.currency, role: amount.role))
+                        let amount = MonthTransactionsModel.amount(row.gbpMinorUnits, type: model.row.category.type)
+                        AmountRow(label: row.description, secondary: MonthTransactionsModel.secondary(row),
+                                  amount: MoneyText(minorUnits: amount.minorUnits, currency: .gbp, role: amount.role))
                     }
                 }
             }

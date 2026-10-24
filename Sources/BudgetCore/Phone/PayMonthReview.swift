@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 
 /// One pay month as the iPhone's Month screen shows it (iPhone spec §3.3): the summary grid
 /// and a row per category with money in it. Actuals are the Budget grid's
@@ -102,6 +103,48 @@ public struct PayMonthReview: Equatable, Sendable {
             guard spent > 0 else { return false }
             if allowed == 0 { return category.type == .expense && !category.excludeFromAutoForecast && !category.isReserved }
             return spent > allowed
+        }
+    }
+
+    // MARK: A row's transactions
+
+    /// One transaction behind a row's actual, as the row counts it: the amount in pounds (euro amounts at the
+    /// stored rate, as `DashboardInput.budgetTransactions`), with the account's own amount when it isn't pounds.
+    public struct RowTransaction: Equatable, Identifiable, Sendable {
+        /// The transaction with `amountMinorUnits` in GBP.
+        public let transaction: Transaction
+        public let accountName: String
+        /// The account's currency and the amount in it (equal to the GBP amount for a pounds account).
+        public let originalCurrency: Currency
+        public let originalMinorUnits: Int
+
+        public var id: Int64 { transaction.id ?? -1 }
+        public var date: Date { transaction.date }
+        public var description: String { transaction.rawDescription }
+        public var gbpMinorUnits: Int { transaction.amountMinorUnits }
+        public var isConverted: Bool { originalCurrency != .gbp }
+    }
+
+    /// Exactly the transactions a row's actual sums (`BudgetGridCalculator.categoryTotal` over
+    /// `budgetTransactions`): the category's confirmed, budget-facing transactions (no incoming leg of an
+    /// active transfer link) within `range`, in GBP; newest first. Filtered in SQL, so a tap reads one
+    /// category's month, not the ledger.
+    public static func transactions(db: Database, categoryId: Int64, range: DayRange) throws -> [RowTransaction] {
+        let found = try Transaction.budgetFacing
+            .filter(Column("categoryId") == categoryId && Column("status") == TransactionStatus.confirmed.rawValue
+                    && Column("date") >= range.start && Column("date") <= range.end)
+            .order(Column("date").desc, Column("id").desc)
+            .fetchAll(db)
+        let accounts = try Account.fetchAll(db)
+        let conversion = CurrencyConversion(accounts: accounts, rate: try ExchangeRateSetting.currentOrDefault(db: db))
+        let names = Dictionary(accounts.compactMap { account in account.id.map { ($0, account.displayName) } },
+                               uniquingKeysWith: { first, _ in first })
+        return found.map { original in
+            var counted = original
+            counted.amountMinorUnits = conversion.gbp(original)
+            return RowTransaction(transaction: counted, accountName: names[original.accountId] ?? "",
+                                  originalCurrency: conversion.currency(ofAccount: original.accountId),
+                                  originalMinorUnits: original.amountMinorUnits)
         }
     }
 }

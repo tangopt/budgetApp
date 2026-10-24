@@ -38,8 +38,6 @@ public enum MonthSegment: String, CaseIterable, Identifiable, Sendable {
 public struct MonthPage: Equatable, Sendable {
     public let review: PayMonthReview
     public let months: ClosedRange<PayMonth>
-    /// The month has closed (a salary or a manual close ends it), so nothing is still expected.
-    public let isClosed: Bool
 
     public func rows(_ segment: MonthSegment) -> [PayMonthReview.Row] { review.rows(of: segment.categoryType) }
 
@@ -72,8 +70,8 @@ public struct MonthSummaryTile: Equatable, Sendable, Identifiable {
     }
 }
 
-/// A category row's words (iPhone spec §3.3): "actual / plan", how far along the plan it is, and "£x left" or
-/// "£x over plan". Wording only: the figures are the review's (`PayMonthReview.Row`).
+/// A category row's words (iPhone spec §3.3): "actual / plan", how far along the plan it is, and "£x left", "£x over plan"
+/// or "On plan". Wording only: the figures are the review's (`PayMonthReview.Row`).
 public struct CategoryRowPresentation: Equatable, Sendable {
     /// "£320.00 / £400.00"; just the actual without a plan.
     public let amounts: String
@@ -89,6 +87,9 @@ public struct CategoryRowPresentation: Equatable, Sendable {
     public let isOverPlan: Bool
     /// What VoiceOver reads after the name: "£320.00 of £400.00 planned, £80.00 left".
     public let spoken: String
+
+    /// Exactly at plan, for every type.
+    public static let onPlan = "On plan"
 
     public init(_ row: PayMonthReview.Row) {
         func money(_ minorUnits: Int) -> String { MoneyPresentation.format(minorUnits, currency: .gbp) }
@@ -118,13 +119,14 @@ public struct CategoryRowPresentation: Equatable, Sendable {
         case .income:
             if let remaining = row.remainingMinorUnits {
                 status = remaining > 0 ? "\(money(remaining)) to come"
-                    : remaining < 0 ? "\(money(-remaining)) more than planned" : "As planned"
+                    : remaining < 0 ? "\(money(-remaining)) more than planned" : Self.onPlan
             } else {
                 status = nil
             }
         case .expense, .transfer, .adjustment:
             if let remaining = row.remainingMinorUnits {
-                status = remaining >= 0 ? "\(money(remaining)) left" : "\(money(-remaining)) over plan"
+                status = remaining > 0 ? "\(money(remaining)) left"
+                    : remaining < 0 ? "\(money(-remaining)) over plan" : Self.onPlan
             } else {
                 status = nil
             }

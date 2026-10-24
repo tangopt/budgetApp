@@ -100,6 +100,9 @@ struct CategoryRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(row.category.name)
         .accessibilityValue(shown.spoken)
+        // Always inside Month's NavigationLink: say it opens the list.
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Shows the transactions")
     }
 
     private func barColor(_ shown: CategoryRowPresentation) -> Color {
