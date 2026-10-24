@@ -40,6 +40,9 @@ public enum DocumentKind: String, Codable, CaseIterable, Sendable {
     case hmrcPaymentProof
     case sa302
     case taxReturn
+    /// Any other HMRC letter or GOV.UK printout: a tax summary, a registration (SA1), an agent
+    /// authority (64-8), a UTR letter, a disclosure letter, a tax year overview, an income check.
+    case hmrcLetter
     // Portuguese IRS
     case ptIRSDeclaration
     case ptIRSAssessment
@@ -84,6 +87,7 @@ extension DocumentKind {
         case .taxCodeNotice: return "Tax code notice"
         case .hmrcPaymentProof: return "HMRC payment proof"
         case .sa302: return "SA302"
+        case .hmrcLetter: return "HMRC letter"
         case .taxReturn: return "Tax return"
         case .ptIRSDeclaration: return "PT IRS declaration"
         case .ptIRSAssessment: return "PT IRS assessment"

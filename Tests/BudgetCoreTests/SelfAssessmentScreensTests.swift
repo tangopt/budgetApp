@@ -52,8 +52,8 @@ final class SelfAssessmentScreensTests: XCTestCase {
 
             try PersonalIncomeEvidence.seedRules(db: db)
             XCTAssertTrue(try SelfAssessmentOverview.incomePage(db: db, startYear: 2024, personId: personId).hasEvidenceRules)
-            XCTAssertEqual(try TaxOverview.page(db: db, personId: personId, startYear: 2019)?.selfAssessmentError,
-                           "The UK tax rules for 2019/20 aren't in the app yet.")
+            XCTAssertEqual(try TaxOverview.page(db: db, personId: personId, startYear: 2014)?.selfAssessmentError,
+                           "The UK tax rules for 2014/15 aren't in the app yet.")
         }
     }
 

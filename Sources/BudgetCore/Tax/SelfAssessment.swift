@@ -97,6 +97,12 @@ public enum SelfAssessment {
         /// The return entered the foreign tax paid in pounds and pence: kept as it is when
         /// rounding to whole pounds (`TaxYear.foreignTaxInPence`).
         public var foreignTaxInPence: Bool
+        /// Boxes of a filed return taken as filed (`TaxFiledBox`, by field key): the return's
+        /// value replaces the computed one, which is kept beside it with the reason.
+        public var filedBoxes: [String: FiledBox] = [:]
+        /// The earlier year ("2024/25") whose filed return the brought-forward finance costs and
+        /// loss come from: its boxes were taken as filed, so its carry-forward is the filed one.
+        public var broughtForwardFromFiledReturn: String? = nil
 
         public init(startYear: Int, employments: [EmploymentInput] = [], properties: [PropertyInput] = [], otherNonSavingsIncome: Int = 0,
                     savingsIncome: Int = 0, dividendIncome: Int = 0, savingsTaxDeducted: Int = 0, grossPensionContributions: Int = 0,
@@ -169,6 +175,28 @@ public enum SelfAssessment {
         case cross
     }
 
+    /// A figure entered as the return filed it, with why it differs from the computed one.
+    public struct FiledBox: Equatable, Sendable {
+        public var value: Int
+        public var note: String
+
+        public init(value: Int, note: String) {
+            self.value = value
+            self.note = note
+        }
+    }
+
+    /// What a box shows when it is taken as filed: the value the app works out and the reason.
+    public struct AsFiled: Equatable, Sendable {
+        public var computed: Int
+        public var note: String
+
+        public init(computed: Int, note: String) {
+            self.computed = computed
+            self.note = note
+        }
+    }
+
     /// One box of the return, grouped like HMRC online ("Employment 1", "Land and property abroad").
     public struct Box: Equatable, Sendable {
         public var form: Form
@@ -178,6 +206,8 @@ public enum SelfAssessment {
         public var value: BoxValue
         /// The title of the calculation step the value comes from (drill-down).
         public var step: String? = nil
+        /// Set when the value is the return's, not the computed one.
+        public var asFiled: AsFiled? = nil
     }
 
     /// A line of the income tax charge: an amount in a band at a rate.
@@ -340,17 +370,84 @@ public enum SelfAssessment {
     // MARK: Calculating
 
     public static func calculate(_ given: Inputs, rules: UKTaxRules, personId: Int64? = nil) -> Result {
-        let inputs = given.roundToWholePounds ? given.wholePounds : given
+        // Before 2020/21 part (or all) of the residential finance costs is still an expense; only
+        // the rest is restricted to the basic-rate reduction (the 2017/18–2019/20 phasing). Split
+        // in pence, before the whole-pound rounding, so the two parts round like any expense and
+        // finance cost would.
+        var split = given
+        var deducted = 0, restricted = 0
+        if rules.residentialFinanceCostsDeductibleShare > 0 {
+            split.properties = given.properties.map { property in
+                var property = property
+                let deductible = UKTaxRules.apply(rules.residentialFinanceCostsDeductibleShare, to: property.financeCosts)
+                property.expenses += deductible
+                property.financeCosts -= deductible
+                deducted += deductible
+                restricted += property.financeCosts
+                return property
+            }
+        }
+        var inputs = given.roundToWholePounds ? split.wholePounds : split
+        // Compared before the boxes as filed replace any value: only the rounding counts here.
+        let roundedToWholePounds = given.roundToWholePounds && inputs != split
         var steps: [Step] = []
         var warnings: [String] = []
         var boxes: [Box] = []
         func money(_ pence: Int) -> String { Money.format(pence, currency: .gbp) }
         func rate(_ basisPoints: Int) -> String { UKTaxRulesFormat.percent(basisPoints) }
-        if given.roundToWholePounds && inputs != given {
+
+        // Boxes as filed: the return's figure replaces the computed one (kept for the box's note).
+        // Pay and tax need one employment, the property boxes one property; the FTCR and the
+        // SA302's foreign income are applied where they are worked out below.
+        var asFiled: [String: AsFiled] = [:]
+        var asFiledLines: [String] = []
+        func takeAsFiled(_ key: String, computed: Int, apply: (Int) -> Void) {
+            guard let filed = inputs.filedBoxes[key] else { return }
+            // Tagged only when the return's figure differs from the computed one (as the FTCR is).
+            if filed.value != computed {
+                asFiled[key] = AsFiled(computed: computed, note: filed.note)
+                asFiledLines.append("\(TaxFiledBoxes.label(key)) \(money(filed.value)) as filed (computed \(money(computed))): \(filed.note)")
+            }
+            apply(filed.value)
+        }
+        for key in ["sa102.1", "sa102.2"] where inputs.filedBoxes[key] != nil {
+            if inputs.employments.count == 1 {
+                takeAsFiled(key, computed: key == "sa102.1" ? inputs.employments[0].pay : inputs.employments[0].taxDeducted) { value in
+                    if key == "sa102.1" { inputs.employments[0].pay = value } else { inputs.employments[0].taxDeducted = value }
+                }
+            } else {
+                warnings.append("\(TaxFiledBoxes.label(key)) is stored as filed, but the year has \(inputs.employments.count) employments: left aside.")
+            }
+        }
+        for key in ["sa106.14", "sa106.17", "sa106.24.1", "sa106.28"] where inputs.filedBoxes[key] != nil {
+            if inputs.properties.count == 1 {
+                let p = inputs.properties[0]
+                let computed = key == "sa106.14" ? p.income : key == "sa106.17" ? p.expenses : key == "sa106.24.1" ? p.financeCosts : p.foreignTax
+                takeAsFiled(key, computed: computed) { value in
+                    switch key {
+                    case "sa106.14": inputs.properties[0].income = value
+                    case "sa106.17": inputs.properties[0].expenses = value
+                    case "sa106.24.1": inputs.properties[0].financeCosts = value
+                    default: inputs.properties[0].foreignTax = value
+                    }
+                }
+            } else {
+                warnings.append("\(TaxFiledBoxes.label(key)) is stored as filed, but the year has \(inputs.properties.count) properties: left aside.")
+            }
+        }
+        if roundedToWholePounds {
             steps.append(Step(title: "Whole pounds",
                               detail: "The return takes whole pounds: income is rounded down; expenses, tax paid, finance costs and losses are rounded up. The calculation uses those box values, as HMRC's does."
                                 + (given.foreignTaxInPence ? " The foreign tax paid stays in pounds and pence, as this year's return entered it." : ""),
                               amount: nil))
+        }
+        if deducted > 0 {
+            let share = rate(rules.residentialFinanceCostsDeductibleShare)
+            steps.append(Step(title: "Finance costs",
+                              detail: share == "100%"
+                                ? "In \(UKTaxYear(startYear: inputs.startYear).label) finance costs are an ordinary expense: \(money(deducted)) is deducted with the other expenses (the restriction starts in 2017/18)."
+                                : "In \(UKTaxYear(startYear: inputs.startYear).label) \(share) of the finance costs, \(money(deducted)), is deducted as an expense; the other \(money(restricted)) gets the \(rate(rules.residentialFinanceCostReliefRate)) tax reduction.",
+                              amount: deducted))
         }
 
         // Employment (SA102).
@@ -383,7 +480,14 @@ public enum SelfAssessment {
             let afterLoss = profit - inputs.propertyLossBroughtForward
             return afterLoss >= 0 ? (afterLoss, 0) : (0, -afterLoss)
         }
-        let (propertyProfit, lossCarriedForward) = taxableProperty(adjustedProfit)
+        var (propertyProfit, lossCarriedForward) = taxableProperty(adjustedProfit)
+        // The SA106 boxes (27, 30) always show the profit the boxes give.
+        let boxedProfit = propertyProfit
+        // The SA302's "foreign income" as the return's calculation used it (a pack whose
+        // calculation and boxes disagree): the boxes keep their values, the calculation takes this.
+        if inputs.filedBoxes["calc.propertyProfit"] != nil {
+            takeAsFiled("calc.propertyProfit", computed: propertyProfit) { propertyProfit = $0 }
+        }
         let reducedProfits = columnF(properties)
         if !properties.isEmpty {
             let section = "Land and property abroad"
@@ -425,7 +529,7 @@ public enum SelfAssessment {
                                  value: .amount(inputs.propertyLossBroughtForward)))
             }
             if adjustedProfit >= 0 {
-                boxes.append(Box(form: .sa106, section: section, number: "27", label: "Total taxable profits", value: .amount(propertyProfit)))
+                boxes.append(Box(form: .sa106, section: section, number: "27", label: "Total taxable profits", value: .amount(boxedProfit)))
             }
             boxes.append(Box(form: .sa106, section: section, number: "28", label: "Total foreign tax", value: .amount(foreignTax)))
             let totalF = reducedProfits.reduce(0, +)
@@ -475,7 +579,20 @@ public enum SelfAssessment {
         steps.append(Step(title: "Income Tax charged", detail: "The bands above add up to \(money(full.charged)).", amount: full.charged))
 
         // Finance cost reduction.
+        // The carry-forward (finance costs here, the property loss above) is worked out from the
+        // figures the calculation used: on a filed year with boxes taken as filed, the filed
+        // return's (finance costs, profit, the SA302's foreign income). HMRC holds those, and
+        // they are what the next year's return builds on.
         let carriedForward = max(0, costsAvailable - full.financeBase)
+        if let filedYear = inputs.broughtForwardFromFiledReturn,
+           inputs.financeCostsBroughtForward > 0 || inputs.propertyLossBroughtForward > 0 {
+            var parts: [String] = []
+            if inputs.financeCostsBroughtForward > 0 { parts.append("finance costs \(money(inputs.financeCostsBroughtForward))") }
+            if inputs.propertyLossBroughtForward > 0 { parts.append("property loss \(money(inputs.propertyLossBroughtForward))") }
+            steps.append(Step(title: "Brought forward from the filed return",
+                              detail: "The \(parts.joined(separator: " and ")) brought forward come from the \(filedYear) return as filed (its boxes taken as filed), the figures HMRC holds.",
+                              amount: nil))
+        }
         if costsAvailable > 0 {
             let limit = [("finance costs", costsAvailable), ("property profits", propertyProfit),
                          ("adjusted total income above the allowance", max(0, nonSavings - full.personalAllowance))]
@@ -501,7 +618,9 @@ public enum SelfAssessment {
         var included = Array(properties.indices)
         func dueWith(_ indices: [Int]) -> Int {
             let subset = indices.map { properties[$0] }
-            let profit = taxableProperty(subset.reduce(0) { $0 + $1.profit }).taxable
+            var profit = taxableProperty(subset.reduce(0) { $0 + $1.profit }).taxable
+            // With every property in, the profit the calculation uses (the SA302's, when taken as filed).
+            if subset.count == properties.count { profit = propertyProfit }
             let costs = subset.reduce(0) { $0 + $1.financeCosts } + (subset.isEmpty ? 0 : inputs.financeCostsBroughtForward)
             return liability(nonSavings: employmentIncome + profit + inputs.otherNonSavingsIncome, savings: inputs.savingsIncome,
                              dividends: inputs.dividendIncome, propertyProfit: profit, financeCosts: costs,
@@ -525,10 +644,27 @@ public enum SelfAssessment {
             steps.append(Step(title: "Foreign Tax Credit Relief: \(property.name)", detail: explanation, amount: credit))
         }
 
+        // The relief as the return claimed it, when it differs from the HS263 limit above: a
+        // filed year is reproduced as filed; the step keeps the app's own figure in view.
+        if let filed = inputs.filedBoxes["sa106.F1.2"], filed.value != ftcrTotal {
+            let taken = min(filed.value, full.due)
+            var detail = "The return claimed \(money(filed.value)) of Foreign Tax Credit Relief"
+            if taken < filed.value { detail += " (\(money(taken)) of it within the tax due)" }
+            detail += "; the HS263 limit — the UK tax on the foreign income — works out as \(money(ftcrTotal)). The claim is taken as filed: \(filed.note)"
+            if filed.value > ftcrTotal {
+                warnings.append("Foreign Tax Credit Relief is taken as filed, \(money(filed.value)): \(money(filed.value - ftcrTotal)) more than the UK tax on the foreign income allows under HS263.")
+            }
+            steps.append(Step(title: "Foreign Tax Credit Relief as filed", detail: detail, amount: taken))
+            asFiled["sa106.F1.2"] = AsFiled(computed: ftcrTotal, note: filed.note)
+            ftcrTotal = taken
+        }
         if ftcrTotal > 0 {
             // SA106 page F 1 box 2, in whole pounds (HMRC works out its own relief from the columns).
             boxes.append(Box(form: .sa106, section: "Foreign Tax Credit Relief", number: "2", label: "Total Foreign Tax Credit Relief on your income",
-                             value: .amount(Inputs.down(ftcrTotal))))
+                             value: .amount(Inputs.down(ftcrTotal)), asFiled: asFiled["sa106.F1.2"].map { AsFiled(computed: Inputs.down($0.computed), note: $0.note) }))
+        }
+        if !asFiledLines.isEmpty {
+            steps.append(Step(title: "As filed", detail: asFiledLines.joined(separator: " "), amount: nil))
         }
         let incomeTaxDue = full.due - ftcrTotal
         steps.append(Step(title: "Income Tax due after tax reductions",
@@ -574,6 +710,21 @@ public enum SelfAssessment {
             warnings.append("Savings and dividends are in the calculation; their SA100 / SA106 boxes aren't listed yet.")
         }
 
+        // Boxes taken as filed carry the computed value and the reason.
+        for index in boxes.indices {
+            let box = boxes[index]
+            let key: String?
+            switch (box.form, box.number) {
+            case (.sa102, "1"): key = "sa102.1"
+            case (.sa102, "2"): key = "sa102.2"
+            case (.sa106, "14"): key = "sa106.14"
+            case (.sa106, "17"): key = "sa106.17"
+            case (.sa106, "24.1"): key = "sa106.24.1"
+            case (.sa106, "28"): key = "sa106.28"
+            default: key = nil
+            }
+            if let key, let filed = asFiled[key], box.asFiled == nil { boxes[index].asFiled = filed }
+        }
         // Each box points at the step that explains it.
         for index in boxes.indices {
             let section = boxes[index].section
@@ -687,8 +838,11 @@ public enum SelfAssessment {
             if UKTaxRules.forYear(startYear - 1) != nil {
                 previous = try compute(db: db, startYear: startYear - 1, personId: personId, memo: memo)
             }
+            // The previous year's carry-forward as its calculation left it: for a filed year with
+            // boxes taken as filed, the filed return's figures (what HMRC holds).
             inputs.financeCostsBroughtForward = options.financeCostsBroughtForward ?? previous?.calculation.financeCostsCarriedForward ?? 0
             inputs.propertyLossBroughtForward = options.propertyLossBroughtForward ?? previous?.calculation.propertyLossCarriedForward ?? 0
+            if let previous, !previous.inputs.filedBoxes.isEmpty { inputs.broughtForwardFromFiledReturn = previous.taxYear.label }
         } else {
             inputs.financeCostsBroughtForward = options.financeCostsBroughtForward!
             inputs.propertyLossBroughtForward = options.propertyLossBroughtForward!
@@ -704,7 +858,17 @@ public enum SelfAssessment {
         var warnings: [String] = []
         var inputs = Inputs(startYear: startYear)
         let year = UKTaxYear(startYear: startYear)
-        inputs.foreignTaxInPence = try TaxYears.year(db: db, startYear: startYear, personId: personId)?.foreignTaxInPence ?? false
+        let taxYear = try TaxYears.year(db: db, startYear: startYear, personId: personId)
+        inputs.foreignTaxInPence = taxYear?.foreignTaxInPence ?? false
+        // Boxes as filed stand only for a filed or paid year: an open year is computed by the rules.
+        let filedBoxes = try TaxFiledBoxes.boxes(db: db, startYear: startYear, personId: personId)
+        if !filedBoxes.isEmpty {
+            if taxYear?.status == .filed || taxYear?.status == .paid {
+                for box in filedBoxes { inputs.filedBoxes[box.field] = FiledBox(value: box.valueMinorUnits, note: box.note) }
+            } else {
+                warnings.append("\(filedBoxes.count) box\(filedBoxes.count == 1 ? "" : "es") stored as filed (\(filedBoxes.map { TaxFiledBoxes.label($0.field) }.joined(separator: ", "))) are left aside: \(year.label) isn't filed, so it is worked out by the rules.")
+            }
+        }
 
         for employment in try Employments.employments(db: db, startYear: startYear, personId: personId) {
             let income = try Employments.effectiveIncome(db: db, employmentId: employment.id!)

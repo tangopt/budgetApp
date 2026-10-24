@@ -34,6 +34,20 @@ public enum SelfAssessmentRegression {
             /// Field (`fields`) → decimal text, as filed. SA110 box 1 negative when overpaid.
             public var filed: [String: String]
             public var note: String?
+            /// How far (pence) the app's figure may be from `filed` and still count as equal
+            /// (default 1): a disclosure worked out in pence rather than whole pounds takes 100.
+            public var tolerancePence: Int?
+
+            public init(person: String, startYear: Int, forms: [Form]? = nil, payments: [Payment]? = nil, filed: [String: String],
+                        note: String? = nil, tolerancePence: Int? = nil) {
+                self.person = person
+                self.startYear = startYear
+                self.forms = forms
+                self.payments = payments
+                self.filed = filed
+                self.note = note
+                self.tolerancePence = tolerancePence
+            }
         }
 
         public var personYears: [PersonYear]

@@ -129,6 +129,10 @@ public final class DatabaseManager {
         registerTaxNotClaimedMigration(&migrator)
         registerTaxYearForeignTaxInPenceMigration(&migrator)
         registerTaxAttributionRuleWindowShiftMigration(&migrator)
+        // Registered with the other tax migrations (before the app-user and sync ones), so a
+        // database migrated up to those has the table too; an already migrated database runs
+        // it as the one migration it lacks.
+        registerTaxFiledBoxMigration(&migrator)
         registerTaxPolicyReceiptItemsMigration(&migrator)
         registerImportRunMigration(&migrator)
         registerImportRuleMigration(&migrator)

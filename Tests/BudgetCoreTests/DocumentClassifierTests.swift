@@ -36,6 +36,16 @@ final class DocumentClassifierTests: XCTestCase {
             ("HM Revenue & Customs Tax Return for the year ended 5 April 2024. Tax calculation summary", .taxReturn),
             ("Payment complete Your payment reference is 1234567890K Tax Self Assessment Amount £2,000.00", .hmrcPaymentProof),
             ("Your tax code notice This is to tell you your tax code(s) for 6 April 2025 to 5 April 2026 tax calculation", .taxCodeNotice),
+            ("HM Revenue & Customs Your Annual Tax Summary 2016-17 Dear MR P EXAMPLE This is how we worked out your tax", .hmrcLetter),
+            ("Check details The information below will be sent to HM Revenue & Customs Register for Self Assessment", .hmrcLetter),
+            ("Authorising your agent Please read the notes on the back before completing this authority", .hmrcLetter),
+            ("Dear Mr Example Disclosure under the Worldwide Disclosure Facility Thank you for your offer", .hmrcLetter),
+            ("HMRC: Tax years Tax year overview Tax year ending 05 Apr 2021 Description Amount", .hmrcLetter),
+            ("HM Revenue & Customs Dear MR P EXAMPLE National Insurance number QQ 12 34 56 C Your tax account", .hmrcLetter),
+            // An accountant's invoice for a disclosure, a cover letter and a return page keep their kinds.
+            ("Example Tax Advisers Invoice Invoice Date 15 May 2021 Description Worldwide Disclosure Facility for tax years 2015/16 - 2019/20 Subtotal 1,000.00 TOTAL GBP 1,200.00", .accountantInvoice),
+            ("Dear Mr Example, please find your Self Assessment return for HMRC attached. Kind regards, Example Tax Advisers", .other),
+            ("Tax Return 2024 Unique Taxpayer Reference (UTR) 1234567890 Your personal details", .other),
             ("Something unrelated entirely", .other),
             ("Fatura-Recibo FR 2025/9 Serviços diversos", .other),
             ("EXTRATO COMBINADO Saldo anterior 1.000,00 Movimentos SEPADD/EDP COM -50,00 SEPADD/BBVASEG -100,00 COBR. REC. TOT PRESTACAO", .bankStatement),
@@ -78,6 +88,16 @@ final class DocumentClassifierTests: XCTestCase {
             ("Letting fee-20250413-ERA-€2400.pdf", .lettingAgentFee),
             ("BBVApt-ContaOrdem-Transferencia-000000000000-20220101120000.pdf", .bankTransferProof),
             ("Recibo de Renda 2025-03.pdf", .rentReceipt),
+            ("20210615 - UTR Letter.png", .hmrcLetter),
+            ("SA1 - Register for Self-assessment - 2.pdf", .hmrcLetter),
+            ("Example-64-8 form.pdf", .hmrcLetter),
+            ("HMRC rates 2024.pdf", .other),
+            ("HMRC exchange rate 2023.pdf", .other),
+            // "RATE" only as a word: a letter named "separate" or "accurate" is still a letter.
+            ("UTR letter - separate copy.pdf", .hmrcLetter),
+            // An accountant's invoice for HMRC work is the invoice.
+            ("HMRC WDF accountancy fee 2021.pdf", .accountantInvoice),
+            ("Accountant invoice - SA1 registration.pdf", .accountantInvoice),
             ("IMG_3015.JPG", .other)
         ]
         for (name, kind) in table {

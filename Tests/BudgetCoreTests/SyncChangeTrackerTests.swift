@@ -244,7 +244,7 @@ final class SyncChangeTrackerTests: XCTestCase {
     func testSchemaHashIsPinnedToItsVersion() throws {
         // Changing SyncSchema or the trigger template changes the hash: bump SyncSchema.version and
         // update this pin, so an older build can tell its triggers are older than the database's.
-        XCTAssertEqual(SyncSchema.version, 3)
+        XCTAssertEqual(SyncSchema.version, 4)
         XCTAssertEqual(SyncChangeTracker.schemaHash(SyncSchema.tables), Self.pinnedHash)
     }
 
@@ -705,5 +705,5 @@ final class SyncChangeTrackerTests: XCTestCase {
     }
 
     /// `SyncChangeTracker.schemaHash(SyncSchema.tables)` for `SyncSchema.version` 1.
-    private static let pinnedHash = "5313f98dd2a75df67fb152552503b499da05a5c479339e7ae428fcd73c3f562d"
+    private static let pinnedHash = "b30b323905567abeb6b72e4029d2bba3fea6fff08dcdac63e426241fe59e138d"
 }
