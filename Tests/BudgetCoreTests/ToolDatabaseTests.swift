@@ -85,4 +85,36 @@ final class ToolDatabaseTests: XCTestCase {
         XCTAssertGreaterThan(checked, checkedTools)
         XCTAssertEqual(offenders, [])
     }
+
+    /// The tools package resolves its own dependencies (Tools/Package.resolved; the root's file is ignored when the
+    /// root is a dependency), and the tools write the real database: every package both files pin must be pinned at
+    /// the same revision and version, so a GRDB bump in the root can't leave the tools on the old one. After a bump,
+    /// run `swift package --package-path Tools update`.
+    func testToolsPinTheSamePackagesAsTheRoot() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        struct Resolved: Decodable {
+            struct Pin: Decodable {
+                struct State: Decodable { let revision: String?; let version: String?; let branch: String? }
+                let identity: String
+                let state: State
+            }
+            let pins: [Pin]
+        }
+        func pins(_ path: String) throws -> [String: Resolved.Pin.State] {
+            let data = try Data(contentsOf: root.appendingPathComponent(path))
+            return Dictionary(try JSONDecoder().decode(Resolved.self, from: data).pins.map { ($0.identity, $0.state) },
+                              uniquingKeysWith: { first, _ in first })
+        }
+        let app = try pins("Package.resolved")
+        let tools = try pins("Tools/Package.resolved")
+        let shared = Set(app.keys).intersection(tools.keys)
+        XCTAssertTrue(shared.contains("grdb.swift"), "GRDB isn't pinned in both Package.resolved files")
+        for identity in shared.sorted() {
+            let (a, t) = (app[identity]!, tools[identity]!)
+            XCTAssertEqual(a.revision, t.revision, "\(identity): Tools/Package.resolved pins another revision than Package.resolved")
+            XCTAssertEqual(a.version, t.version, "\(identity): Tools/Package.resolved pins another version than Package.resolved")
+            XCTAssertEqual(a.branch, t.branch, "\(identity): Tools/Package.resolved pins another branch than Package.resolved")
+        }
+    }
 }

@@ -515,7 +515,7 @@ final class CustomDocumentKindMergeSyncTests: XCTestCase {
     }
 
     /// Merging into a custom kind and into a built-in kind, each with B's document reaching the cloud after the merge
-    /// and before it. Every case starts on fresh devices.
+    /// and before it. Every case starts on fresh devices; a case that throws is recorded and the next one still runs.
     func testMergeReachesADocumentFiledElsewhere() async throws {
         enum Order { case after, before }
         let cases: [(name: String, builtIn: Bool, order: Order)] = [
@@ -546,6 +546,9 @@ final class CustomDocumentKindMergeSyncTests: XCTestCase {
                 try assertConverged(shared, documentB: documentB,
                                     target: testCase.builtIn ? { _ in .builtIn(.repairInvoice) } : heating(shared),
                                     name: testCase.builtIn ? "Repair bill" : "Heating", context: testCase.name)
+            } catch {
+                // One case throwing doesn't hide the others: record it under its name and go on.
+                XCTFail("\(testCase.name): \(error)")
             }
         }
     }
