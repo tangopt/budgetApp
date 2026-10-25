@@ -935,7 +935,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// `onTransactionEdited` runs. A refusal writes nothing; an edit that would change a filed
     /// return asks first (`FiledYearEditCheck`, plan Task 14).
     func saveTransactionEdit(id: Int64, changes: TransactionEditChanges, gate: FiledYearGate, done: @escaping (SaveOutcome) -> Void) {
-        let edit = FiledYearEditNames.transactionEdit(changes, transactionId: id, dbQueue: dbQueue, categories: categories)
+        let edit = FiledYearEditNames.transactionEdit(changes, transactionId: id)
         checkedWrite(edit: edit, scope: .transactionEdit(id: id, changes: changes), gate: gate, done: done) { db in
             try TransactionEditing.save(db: db, id: id, changes: changes)
         }
@@ -946,7 +946,7 @@ final class BudgetGridViewModel: ObservableObject {
     /// One that would change a filed return asks first (`.asks`, nothing written; plan Task 14).
     func addTransaction(_ input: ManualTransactionInput, gate: FiledYearGate, done: @escaping (SaveOutcome) -> Void) {
         let edit = input.categoryId.map { FiledYearEditNames.categorised($0, categories: categories) + ", added by hand" } ?? "Added by hand"
-        checkedWrite(edit: edit, scope: .added(input), gate: gate, done: done) { db in
+        checkedWrite(edit: { _ in edit }, scope: .adding(date: input.date, categoryId: input.categoryId), gate: gate, done: done) { db in
             _ = try ManualTransactions.add(db: db, accountId: input.accountId, date: input.date, description: input.description,
                                            amountMinorUnits: input.amountMinorUnits, categoryId: input.categoryId, note: input.note)
         }
@@ -957,7 +957,7 @@ final class BudgetGridViewModel: ObservableObject {
         ManualTransactionActions(
             accounts: accounts,
             delete: { [unowned self] id, gate, done in
-                checkedWrite(edit: "Deleted", scope: FiledYearEditCheck.Scope(transactionIds: [id]), gate: gate, done: done) { db in
+                checkedWrite(edit: { _ in "Deleted" }, scope: FiledYearEditCheck.Scope(transactionIds: [id]), gate: gate, done: done) { db in
                     try ManualTransactions.delete(db: db, id: id)
                 }
             }
@@ -976,9 +976,9 @@ final class BudgetGridViewModel: ObservableObject {
 
     /// A transaction write through the filed-year check (off the main thread; a question shows on
     /// `gate`), then as `manualWrite`. Nothing is reloaded while the question waits.
-    private func checkedWrite(edit: String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate,
+    private func checkedWrite(edit: @escaping (Database) throws -> String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate,
                               done: @escaping (SaveOutcome) -> Void, _ apply: @escaping (Database) throws -> Void) {
-        gate.run(dbQueue, edit: edit, scope: scope, apply) { [weak self] result in
+        gate.run(dbQueue, edit: edit, scope: { _ in scope }, apply) { [weak self] result in
             if let error = result.failure { return done(.failed(ManualFormat.errorMessage(for: error))) }
             done(self?.afterManualWrite() ?? .saved)
         }

@@ -60,6 +60,7 @@ final class CategoriesViewModel: ObservableObject {
                 (try Category.fetchAll(db), try CategoryGroup.fetchAll(db), try Transaction.fetchAll(db), try PayMonthClose.fetchAll(db),
                  try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db), try Account.fetchAll(db), try ExchangeRateSetting.currentOrDefault(db: db))
             }
+            propertyGroupIds = (try? dbQueue.read { db in Set(try Int64.fetchAll(db, sql: "SELECT categoryGroupId FROM propertyCategoryGroup")) }) ?? []
             self.categories = categories
             self.accounts = accounts.sortedForDisplay()
             self.groups = groups
@@ -97,11 +98,18 @@ final class CategoriesViewModel: ObservableObject {
 
     /// The New group sheet's save: the group of `type`, with `categoryIds` moved into it, in
     /// one write (a refused name or a built-in member creates nothing).
-    func createGroup(name: String, type: CategoryType, moving categoryIds: [Int64]) throws -> CategoryGroup {
-        let group = try dbQueue.write { db in try CategoryGroups.create(db: db, name: name, type: type, moving: categoryIds) }
-        errorMessage = nil
-        load()
-        return group
+    /// Through the filed-year check: moving a property's categories out of its group moves rental figures.
+    func createGroup(name: String, type: CategoryType, moving categoryIds: [Int64], gate: FiledYearGate,
+                     done: @escaping (Result<CategoryGroup, Error>) -> Void) {
+        gate.run(dbQueue, edit: "Categories moved to a new group \(name)", scope: { db in try .categories(db: db, ids: categoryIds) }, { db in
+            try CategoryGroups.create(db: db, name: name, type: type, moving: categoryIds)
+        }, done: { [weak self] result in
+            if case .success = result {
+                self?.errorMessage = nil
+                self?.load()
+            }
+            done(result)
+        })
     }
 
     /// The Rename… sheet's save: a blank or taken name keeps the sheet open with the message.
@@ -140,7 +148,7 @@ final class CategoriesViewModel: ObservableObject {
     /// property's category (its name can suggest its tax line) is renamed through the filed-year
     /// check instead: the sheet closes and the screen asks when it would change a filed return.
     func renameCategory(id: Int64, to name: String) -> SaveOutcome {
-        let isPropertyCategory = (try? dbQueue.read { db in try FiledYearEditCheck.Scope.categories(db: db, ids: [id]) != FiledYearEditCheck.Scope() }) ?? true
+        let isPropertyCategory = categories.first { $0.id == id }?.groupId.map(propertyGroupIds.contains) ?? false
         if isPropertyCategory {
             let old = categories.first { $0.id == id }?.name ?? "a category"
             checked("Couldn't rename the category", edit: "Category \(old) renamed \(name)",
@@ -300,7 +308,7 @@ final class CategoriesViewModel: ObservableObject {
     /// (no rule learned), then reload. A refusal writes nothing; an edit that would change a
     /// filed return asks first (`FiledYearEditCheck`, plan Task 14).
     func saveTransactionEdit(id: Int64, changes: TransactionEditChanges, gate: FiledYearGate, done: @escaping (SaveOutcome) -> Void) {
-        let edit = FiledYearEditNames.transactionEdit(changes, transactionId: id, dbQueue: dbQueue, categories: categories)
+        let edit = FiledYearEditNames.transactionEdit(changes, transactionId: id)
         checkedWrite(edit: edit, scope: .transactionEdit(id: id, changes: changes), gate: gate, done: done) { db in
             try TransactionEditing.save(db: db, id: id, changes: changes)
         }
@@ -311,7 +319,7 @@ final class CategoriesViewModel: ObservableObject {
         ManualTransactionActions(
             accounts: accounts,
             delete: { [unowned self] id, gate, done in
-                checkedWrite(edit: "Deleted", scope: FiledYearEditCheck.Scope(transactionIds: [id]), gate: gate, done: done) { db in
+                checkedWrite(edit: { _ in "Deleted" }, scope: FiledYearEditCheck.Scope(transactionIds: [id]), gate: gate, done: done) { db in
                     try ManualTransactions.delete(db: db, id: id)
                 }
             }
@@ -329,9 +337,9 @@ final class CategoriesViewModel: ObservableObject {
 
     /// A transaction write through the filed-year check (off the main thread; a question shows on
     /// `gate`), then as `manualWrite`. Nothing is reloaded while the question waits.
-    private func checkedWrite(edit: String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate,
+    private func checkedWrite(edit: @escaping (Database) throws -> String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate,
                               done: @escaping (SaveOutcome) -> Void, _ apply: @escaping (Database) throws -> Void) {
-        gate.run(dbQueue, edit: edit, scope: scope, apply) { [weak self] result in
+        gate.run(dbQueue, edit: edit, scope: { _ in scope }, apply) { [weak self] result in
             if let error = result.failure { return done(.failed(ManualFormat.errorMessage(for: error))) }
             done(self?.afterManualWrite() ?? .saved)
         }
@@ -356,6 +364,9 @@ final class CategoriesViewModel: ObservableObject {
         let since = Calendar.current.date(byAdding: .day, value: -90, to: AppClock.now) ?? AppClock.now
         return (try? dbQueue.read { db in try CategoryShortlist.recent(db: db, since: since, limit: 5) }) ?? []
     }
+
+    /// The category groups a property has (a rename of their categories goes through the check).
+    private var propertyGroupIds: Set<Int64> = []
 
     /// The screen's structure edits through the filed-year check (plan Task 14); its question shows on the screen.
     let filedYearGate = FiledYearGate()

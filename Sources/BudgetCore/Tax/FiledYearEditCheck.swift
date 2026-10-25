@@ -80,6 +80,23 @@ public enum FiledYearEditCheck {
             Scope(transactionIds: ids, categoryIds: [categoryId])
         }
 
+        /// Edit transaction's Save of `id` (`TransactionEditing.save`): its category, and a manual
+        /// transaction's new date. (A transfer change re-files only transfer legs; links are refused
+        /// by `EvidenceLinkGuard` when they'd move a figure.)
+        public static func transactionEdit(id: Int64, changes: TransactionEditChanges) -> Scope {
+            Scope(transactionIds: [id], dates: changes.manual.map { [$0.date] } ?? [], categoryIds: [changes.categoryId])
+        }
+
+        /// A transaction added by hand (`ManualTransactions.add`) on `date` in `categoryId`.
+        public static func adding(date: Date, categoryId: Int64?) -> Scope {
+            Scope(dates: [date], categoryIds: [categoryId])
+        }
+
+        /// A manual tax item saved (its id when it exists, and the year it's for) or deleted.
+        public static func manualItem(id: Int64?, startYear: Int?) -> Scope {
+            Scope(manualItemIds: id.map { [$0] } ?? [], years: startYear.map { [$0] } ?? [])
+        }
+
         /// A change to categories `ids` (renamed, moved, deleted) or to the categories of groups
         /// `groupIds` (a group deleted; a group they move into): every year when one of them is, or
         /// becomes, a property's category (the rental accounts read those, and a name suggests its
@@ -164,10 +181,22 @@ public enum FiledYearEditCheck {
         /// isn't marked: it is kept by the earlier year's mark.
         public var markYears: [Int]
 
-        public init(edit: String, years: [Year], markYears: [Int]) {
+        /// What answering it needs to save without checking again, while the database is as it was
+        /// when it was asked (`save(…answering:)`).
+        public struct Resume: Equatable, Sendable {
+            let changes: Int
+            let dataVersion: Int
+            let impacts: [FiledYearImpact]
+            let moved: [Int: Set<RentalAccounts.SourceReference>]
+        }
+
+        public var resume: Resume?
+
+        public init(edit: String, years: [Year], markYears: [Int], resume: Resume? = nil) {
             self.edit = edit
             self.years = years
             self.markYears = markYears
+            self.resume = resume
         }
 
         /// Marking the sources moved as not counted keeps every filed figure as filed.
@@ -199,14 +228,35 @@ public enum FiledYearEditCheck {
     /// then, without `resolution`, writes nothing and returns the question; with one, saves as
     /// it says. `edit` names the edit in the question and the notes; `scope` is what it reaches;
     /// `now` dates the notes.
-    public static func save<T>(db: Database, edit: String, scope: Scope, resolution: Resolution? = nil, now: Date = Date(),
-                               _ apply: () throws -> T) throws -> Outcome<T> {
-        try save(db: db, edit: edit, scope: scope, resolution: resolution, now: now, onSnapshot: {}, apply)
+    /// `answering`: the question the resolution answers. While nothing was written to the database
+    /// since it was asked (the connection's change count and `PRAGMA data_version`), its answer is
+    /// saved with what the question found, without taking the figures again; else it is checked again.
+    public static func save<T>(db: Database, edit: String, scope: Scope, resolution: Resolution? = nil, answering: Question? = nil,
+                               now: Date = Date(), _ apply: () throws -> T) throws -> Outcome<T> {
+        try save(db: db, edit: edit, scope: scope, resolution: resolution, answering: answering, now: now, onSnapshot: {}, apply)
     }
 
     /// `save`, calling `onSnapshot` for each set of figures taken (tests count them).
-    static func save<T>(db: Database, edit: String, scope: Scope, resolution: Resolution?, now: Date, onSnapshot: () -> Void,
-                        _ apply: () throws -> T) throws -> Outcome<T> {
+    static func save<T>(db: Database, edit: String, scope: Scope, resolution: Resolution?, answering: Question? = nil, now: Date,
+                        onSnapshot: () -> Void, _ apply: () throws -> T) throws -> Outcome<T> {
+        if let resolution, let resume = answering?.resume, try state(db: db) == (resume.changes, resume.dataVersion) {
+            if resolution == .markNotCounted, answering?.canMarkNotCounted != true {
+                throw Failure.notCountedStillChanges(years: labels(resume.impacts))
+            }
+            var result: T?
+            try db.inSavepoint {
+                result = try apply()
+                switch resolution {
+                case .saveAnyway:
+                    try note(db: db, impacts: resume.impacts, edit: edit, now: now)
+                case .markNotCounted:
+                    // The question's trial marked these from this same state and kept every filed figure.
+                    _ = try mark(db: db, moved: resume.moved, edit: edit, now: now)
+                }
+                return .commit
+            }
+            return .saved(result!)
+        }
         let years = try candidateYears(db: db, scope: scope)
         guard !years.isEmpty else { return .saved(try apply()) }
         let sources = Set(scope.transactionIds.map(RentalAccounts.SourceReference.transaction)
@@ -268,7 +318,10 @@ public enum FiledYearEditCheck {
                     return .rollback
                 }
             }
-            return .asks(question(edit: edit, impacts: impacts, markYears: markYears))
+            var asked = question(edit: edit, impacts: impacts, markYears: markYears)
+            let now = try state(db: db)
+            asked.resume = Question.Resume(changes: now.changes, dataVersion: now.dataVersion, impacts: impacts, moved: moved)
+            return .asks(asked)
         }
     }
 
@@ -307,6 +360,20 @@ public enum FiledYearEditCheck {
     private static func markNotCounted(db: Database, moved: [Int: Set<RentalAccounts.SourceReference>], before: TaxFigures.Snapshot,
                                        years: [Int], edit: String, now: Date,
                                        onSnapshot: () -> Void) throws -> (remaining: [FiledYearImpact], years: [Int]) {
+        let marked = try mark(db: db, moved: moved, edit: edit, now: now)
+        onSnapshot()
+        let remaining = FiledYearSyncCheck.protectedImpacts(before: before, after: try TaxFigures.snapshot(db: db, only: years))
+        return (remaining, marked)
+    }
+
+    /// The database's state for `Question.Resume`: this connection's change count and `PRAGMA data_version`
+    /// (another connection's commits).
+    private static func state(db: Database) throws -> (changes: Int, dataVersion: Int) {
+        (db.totalChangesCount, try Int.fetchOne(db, sql: "PRAGMA data_version") ?? 0)
+    }
+
+    /// The marks themselves: the years a source was marked in.
+    private static func mark(db: Database, moved: [Int: Set<RentalAccounts.SourceReference>], edit: String, now: Date) throws -> [Int] {
         var marked = Set<Int>()
         for (year, sources) in moved.sorted(by: { $0.key < $1.key }) {
             let note = "Not counted: \(edit) on \(day(now)), after the \(UKTaxYear(startYear: year).label) return was filed"
@@ -321,9 +388,7 @@ public enum FiledYearEditCheck {
                 }
             }
         }
-        onSnapshot()
-        let remaining = FiledYearSyncCheck.protectedImpacts(before: before, after: try TaxFigures.snapshot(db: db, only: years))
-        return (remaining, marked.sorted())
+        return marked.sorted()
     }
 
     /// `.saveAnyway`: a line on the notes of each (year, person) whose return moved (the year's

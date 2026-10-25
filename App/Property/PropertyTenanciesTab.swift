@@ -90,7 +90,7 @@ struct PropertyTenanciesTab: View {
         .confirmationDialog(deleting.map { "Delete “\($0.referenceLabel)”?" } ?? "Delete this tenancy?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
                             presenting: deleting) { tenancy in
             Button("Delete tenancy and its receipts", role: .destructive) {
-                viewModel.errorMessage = viewModel.deleteTenancy(tenancy.id!)
+                viewModel.deleteTenancy(tenancy.id!)
             }
         } message: { _ in
             Text("Its rent history, receipts and their credit links go too. Linked documents stay in the library. This can't be undone.")

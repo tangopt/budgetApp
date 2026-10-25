@@ -168,7 +168,9 @@ struct CategoriesView: View {
             }
         }
         .sheet(item: $newGroupDraft) { draft in
-            NewGroupSheet(draft: draft, create: { name, type, ids in try viewModel.createGroup(name: name, type: type, moving: ids) }) { group in
+            NewGroupSheet(draft: draft, create: { name, type, ids, gate, done in
+                viewModel.createGroup(name: name, type: type, moving: ids, gate: gate, done: done)
+            }) { group in
                 reveal(group)
             }
         }

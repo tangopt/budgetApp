@@ -16,8 +16,9 @@ struct NewGroupDraft: Identifiable {
 /// default). A refused name (`CategoryGroups.create`) shows inline and keeps the sheet open.
 struct NewGroupSheet: View {
     let draft: NewGroupDraft
-    /// Creates the group, moving `categoryIds` into it, or throws a readable error.
-    let create: (_ name: String, _ type: CategoryType, _ categoryIds: [Int64]) throws -> CategoryGroup
+    /// Creates the group, moving `categoryIds` into it (through the filed-year check on `gate`),
+    /// then calls back with it or a readable error.
+    let create: CreateGroup
     let onCreated: (CategoryGroup) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -25,8 +26,13 @@ struct NewGroupSheet: View {
     @State private var type: CategoryType
     @State private var movesSelection = false
     @State private var errorMessage: String?
+    /// Saves through the filed-year check (moving a property's categories); its question shows here.
+    @StateObject private var gate = FiledYearGate()
 
-    init(draft: NewGroupDraft, create: @escaping (_ name: String, _ type: CategoryType, _ categoryIds: [Int64]) throws -> CategoryGroup,
+    typealias CreateGroup = (_ name: String, _ type: CategoryType, _ categoryIds: [Int64], _ gate: FiledYearGate,
+                             _ done: @escaping (Result<CategoryGroup, Error>) -> Void) -> Void
+
+    init(draft: NewGroupDraft, create: @escaping CreateGroup,
          onCreated: @escaping (CategoryGroup) -> Void) {
         self.draft = draft
         self.create = create
@@ -65,15 +71,18 @@ struct NewGroupSheet: View {
                 }
             }
         }
+        .filedYearGate(gate)
     }
 
     private func save() {
-        do {
-            let group = try create(name, type, movesSelection ? draft.selectedCategoryIds : [])
-            onCreated(group)
-            dismiss()
-        } catch {
-            errorMessage = error.localizedDescription
+        create(name, type, movesSelection ? draft.selectedCategoryIds : [], gate) { result in
+            switch result {
+            case .success(let group):
+                onCreated(group)
+                dismiss()
+            case .failure(let error):
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

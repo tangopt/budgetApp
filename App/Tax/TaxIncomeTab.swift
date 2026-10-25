@@ -491,6 +491,8 @@ struct EmploymentSheet: View {
     @State private var end: Date
     @State private var notes: String
     @State private var error: String?
+    /// Saves through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
 
     init(viewModel: TaxYearsViewModel, employment: Employment) {
         self.viewModel = viewModel
@@ -506,7 +508,9 @@ struct EmploymentSheet: View {
         _notes = State(initialValue: employment.notes ?? "")
     }
 
-    var body: some View {
+    var body: some View { form.filedYearGate(gate) }
+
+    @ViewBuilder private var form: some View {
         SheetScaffold(title: employment.id == nil ? "Add employment" : "Edit employment", subtitle: employment.ukTaxYear.label, error: error,
                       width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: !name.trimmingCharacters(in: .whitespaces).isEmpty) { save() }) {
@@ -539,8 +543,10 @@ struct EmploymentSheet: View {
         employment.startDate = hasStart ? start : nil
         employment.endDate = hasEnd ? end : nil
         employment.notes = notes
-        error = viewModel.saveEmployment(employment, documents: documents.staging.changes)
-        if error == nil { dismiss() }
+        viewModel.saveEmployment(employment, documents: documents.staging.changes, gate: gate) { message in
+            error = message
+            if message == nil { dismiss() }
+        }
     }
 }
 
@@ -557,6 +563,8 @@ struct EmploymentIncomeSheet: View {
     @State private var date: Date
     @State private var notes: String
     @State private var error: String?
+    /// Saves through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
 
     init(viewModel: TaxYearsViewModel, income: EmploymentIncome) {
         self.viewModel = viewModel
@@ -572,7 +580,9 @@ struct EmploymentIncomeSheet: View {
         _notes = State(initialValue: income.notes ?? "")
     }
 
-    var body: some View {
+    var body: some View { form.filedYearGate(gate) }
+
+    @ViewBuilder private var form: some View {
         SheetScaffold(title: income.id == nil ? "Add pay and tax" : "Edit pay and tax", subtitle: "SA102 boxes 1 and 2", error: error, width: SheetMetrics.formWidth,
                       onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: pence(payText) != nil && pence(taxText) != nil) { save() }) {
@@ -609,8 +619,10 @@ struct EmploymentIncomeSheet: View {
         income.taxCode = taxCode
         income.periodEnd = hasDate ? date : nil
         income.notes = notes
-        error = viewModel.saveIncome(income, documents: documents.staging.changes)
-        if error == nil { dismiss() }
+        viewModel.saveIncome(income, documents: documents.staging.changes, gate: gate) { message in
+            error = message
+            if message == nil { dismiss() }
+        }
     }
 }
 
@@ -622,6 +634,8 @@ struct BenefitSheet: View {
     @State private var amountText: String
     @State private var details: String
     @State private var error: String?
+    /// Saves through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
 
     init(viewModel: TaxYearsViewModel, benefit: BenefitInKind) {
         self.viewModel = viewModel
@@ -631,7 +645,9 @@ struct BenefitSheet: View {
         _details = State(initialValue: benefit.description ?? "")
     }
 
-    var body: some View {
+    var body: some View { form.filedYearGate(gate) }
+
+    @ViewBuilder private var form: some View {
         SheetScaffold(title: benefit.id == nil ? "Add benefit" : "Edit benefit", subtitle: "P11D cash equivalent, SA102 box \(kind.sa102Box)",
                       error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: (pence(amountText) ?? -1) >= 0) { save() }) {
@@ -656,8 +672,10 @@ struct BenefitSheet: View {
         benefit.kind = kind
         benefit.cashEquivalentMinorUnits = amount
         benefit.description = details
-        error = viewModel.saveBenefit(benefit)
-        if error == nil { dismiss() }
+        viewModel.saveBenefit(benefit, gate: gate) { message in
+            error = message
+            if message == nil { dismiss() }
+        }
     }
 }
 
@@ -673,6 +691,8 @@ struct OtherIncomeSheet: View {
     @State private var currency: Currency
     @State private var notes: String
     @State private var error: String?
+    /// Saves through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
 
     init(viewModel: TaxYearsViewModel, income: OtherIncome) {
         self.viewModel = viewModel
@@ -687,7 +707,9 @@ struct OtherIncomeSheet: View {
         _notes = State(initialValue: income.notes ?? "")
     }
 
-    var body: some View {
+    var body: some View { form.filedYearGate(gate) }
+
+    @ViewBuilder private var form: some View {
         SheetScaffold(title: income.id == nil ? "Add other income" : "Edit other income", subtitle: UKTaxYear(startYear: income.startYear).label,
                       error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: (pence(amountText) ?? -1) >= 0 && (taxText.isEmpty || (pence(taxText) ?? -1) >= 0)) { save() }) {
@@ -722,8 +744,10 @@ struct OtherIncomeSheet: View {
         income.taxDeductedMinorUnits = pence(taxText) ?? 0
         income.currency = currency
         income.notes = notes
-        error = viewModel.saveOtherIncome(income, documents: documents.staging.changes)
-        if error == nil { dismiss() }
+        viewModel.saveOtherIncome(income, documents: documents.staging.changes, gate: gate) { message in
+            error = message
+            if message == nil { dismiss() }
+        }
     }
 }
 
@@ -737,6 +761,8 @@ struct PensionSheet: View {
     @State private var paidText: String
     @State private var notes: String
     @State private var error: String?
+    /// Saves through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
 
     init(viewModel: TaxYearsViewModel, contribution: PensionContribution) {
         self.viewModel = viewModel
@@ -748,7 +774,9 @@ struct PensionSheet: View {
         _notes = State(initialValue: contribution.notes ?? "")
     }
 
-    var body: some View {
+    var body: some View { form.filedYearGate(gate) }
+
+    @ViewBuilder private var form: some View {
         SheetScaffold(title: contribution.id == nil ? "Add pension contribution" : "Edit pension contribution",
                       subtitle: UKTaxYear(startYear: contribution.startYear).label, error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: (pence(paidText) ?? -1) >= 0) { save() }) {
@@ -772,8 +800,10 @@ struct PensionSheet: View {
         contribution.provider = provider
         contribution.paidMinorUnits = paid
         contribution.notes = notes
-        error = viewModel.savePension(contribution, documents: documents.staging.changes)
-        if error == nil { dismiss() }
+        viewModel.savePension(contribution, documents: documents.staging.changes, gate: gate) { message in
+            error = message
+            if message == nil { dismiss() }
+        }
     }
 }
 
@@ -792,6 +822,8 @@ struct HMRCPaymentSheet: View {
     @State private var notes: String
     @State private var markPaid: Bool
     @State private var error: String?
+    /// Saves through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
 
     /// `origin`: the tab it was opened from (Income or Tax return), for Add document…'s entry point.
     init(viewModel: TaxYearsViewModel, payment: HMRCPayment, yearStatus: TaxYearStatus, markPaid: Bool = false, origin: AttachOrigin) {
@@ -809,7 +841,9 @@ struct HMRCPaymentSheet: View {
         _markPaid = State(initialValue: markPaid)
     }
 
-    var body: some View {
+    var body: some View { form.filedYearGate(gate) }
+
+    @ViewBuilder private var form: some View {
         SheetScaffold(title: payment.id == nil ? "Record HMRC payment" : "Edit HMRC payment",
                       subtitle: "A payment to HMRC, or a refund from it, with its proof", error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: (pence(amountText) ?? 0) > 0) { save() }) {
@@ -850,7 +884,9 @@ struct HMRCPaymentSheet: View {
         payment.reference = reference
         payment.notes = notes
         let canMark = yearStatus == .filed || yearStatus == .paid || startYear != self.payment.startYear
-        error = viewModel.savePayment(payment, documents: documents.staging.changes, markYear: markPaid && canMark && kind == .balancingPayment ? .paid : nil)
-        if error == nil { dismiss() }
+        viewModel.savePayment(payment, documents: documents.staging.changes, markYear: markPaid && canMark && kind == .balancingPayment ? .paid : nil, gate: gate) { message in
+            error = message
+            if message == nil { dismiss() }
+        }
     }
 }

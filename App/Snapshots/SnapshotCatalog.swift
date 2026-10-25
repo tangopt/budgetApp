@@ -490,6 +490,17 @@ enum SnapshotCatalog {
                     ])
                 ], markYears: [2022])
                 return AnyView(FiledYearEditSheet(question: question, onAnswer: { _ in }))
+            },
+            sheet("filed_year_checking", "A save being checked against the filed returns (plan Task 14)") { _ in
+                AnyView(SheetScaffold(title: "Edit Rule", subtitle: "Transactions whose description matches are filed into the category when imported.",
+                                      width: 480, onCancel: {}, primary: SheetAction("Save") {}) {
+                    SheetForm {
+                        LabeledContent("Pattern") { Text("BUILDER LTD") }
+                        LabeledContent("Category") { Text("Repairs") }
+                    }
+                    Color.clear.frame(height: 48)
+                }
+                .filedYearGate(FiledYearGate.checking()))
             }
         ]
     }

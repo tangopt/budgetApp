@@ -224,7 +224,7 @@ final class AccountsViewModel: ObservableObject {
     /// One that would change a filed return asks first (`.asks`, nothing written; plan Task 14).
     func addTransaction(_ input: ManualTransactionInput, gate: FiledYearGate, done: @escaping (SaveOutcome) -> Void) {
         let edit = input.categoryId.map { FiledYearEditNames.categorised($0, categories: categories) + ", added by hand" } ?? "Added by hand"
-        gate.run(dbQueue, edit: edit, scope: .added(input), { db in
+        gate.run(dbQueue, edit: edit, scope: .adding(date: input.date, categoryId: input.categoryId), { db in
             _ = try ManualTransactions.add(db: db, accountId: input.accountId, date: input.date, description: input.description,
                                            amountMinorUnits: input.amountMinorUnits, categoryId: input.categoryId, note: input.note)
         }, done: { [weak self] result in

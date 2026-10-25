@@ -412,4 +412,150 @@ final class FiledYearEditCheckTests: XCTestCase {
         XCTAssertNil(missing[2022], "2022/23 is filed")
         XCTAssertNotNil(missing[2023], "2023/24 isn't stored filed")
     }
+
+    // MARK: Answering without checking again (fix round 2, T-1b)
+
+    func testAnAnswerWhileNothingChangedSavesWithoutTakingTheFiguresAgain() throws {
+        let before = try figures()
+        var snapshots = 0
+        let asked = try XCTUnwrap(question(try categorise("refund", snapshots: &snapshots)))
+        XCTAssertGreaterThan(snapshots, 0)
+        XCTAssertNotNil(asked.resume)
+        snapshots = 0
+        let saved = try db.write { db in
+            try FiledYearEditCheck.save(db: db, edit: "Edit transaction", scope: .categorising([id("refund")], as: id("repairs")),
+                                        resolution: .markNotCounted, answering: asked, now: Self.now, onSnapshot: { snapshots += 1 }) {
+                try TransactionEditing.update(db: db, id: id("refund"), categoryId: id("repairs"), note: nil)
+            }
+        }
+        XCTAssertTrue(isSaved(saved))
+        XCTAssertEqual(snapshots, 0, "answered from the question")
+        XCTAssertEqual(try category("refund"), id("repairs"))
+        XCTAssertEqual(try figures(), before)
+        XCTAssertEqual(try marks().map(\.transactionId), [id("refund")])
+    }
+
+    func testSaveAnywayFromTheQuestionNotesWithoutTakingTheFiguresAgain() throws {
+        let asked = try XCTUnwrap(question(try categorise("refund")))
+        var snapshots = 0
+        let saved = try db.write { db in
+            try FiledYearEditCheck.save(db: db, edit: "Edit transaction", scope: .categorising([id("refund")], as: id("repairs")),
+                                        resolution: .saveAnyway, answering: asked, now: Self.now, onSnapshot: { snapshots += 1 }) {
+                try TransactionEditing.update(db: db, id: id("refund"), categoryId: id("repairs"), note: nil)
+            }
+        }
+        XCTAssertTrue(isSaved(saved))
+        XCTAssertEqual(snapshots, 0)
+        XCTAssertEqual(FiledYearEditCheck.changesAfterFiling(try notes()).count, 1)
+        XCTAssertEqual(FiledYearEditCheck.changesAfterFiling(try notes(2024)).count, 1)
+    }
+
+    func testAnAnswerAfterAnotherWriteIsCheckedAgain() throws {
+        let asked = try XCTUnwrap(question(try categorise("refund")))
+        // Meanwhile the plumber is taken off Repairs: the question's figures no longer hold.
+        try db.write { db in try TransactionEditing.update(db: db, id: id("plumber"), categoryId: id("groceries"), note: nil) }
+        var snapshots = 0
+        let saved = try db.write { db in
+            try FiledYearEditCheck.save(db: db, edit: "Edit transaction", scope: .categorising([id("refund")], as: id("repairs")),
+                                        resolution: .saveAnyway, answering: asked, now: Self.now, onSnapshot: { snapshots += 1 }) {
+                try TransactionEditing.update(db: db, id: id("refund"), categoryId: id("repairs"), note: nil)
+            }
+        }
+        XCTAssertTrue(isSaved(saved))
+        XCTAssertGreaterThan(snapshots, 0, "checked again")
+        XCTAssertTrue(try notes()?.contains("box 17 Allowable property expenses — → £250.00") == true, "noted from the figures now")
+    }
+
+    // MARK: Each scope helper covers what its write touches (N-6)
+
+    /// `scope` asks exactly as `.everyYear` does for `write` (the same years, or both save).
+    private func assertCovers(_ scope: (Database) throws -> FiledYearEditCheck.Scope, _ write: @escaping (Database) throws -> Void,
+                              asks: Bool, file: StaticString = #filePath, line: UInt = #line) throws {
+        func years(_ scope: FiledYearEditCheck.Scope, _ db: Database) throws -> [Int]? {
+            var result: [Int]?
+            try db.inSavepoint {
+                if case .asks(let question) = try FiledYearEditCheck.save(db: db, edit: "Test", scope: scope, now: Self.now, { try write(db) }) {
+                    result = question.years.map(\.startYear)
+                }
+                return .rollback
+            }
+            return result
+        }
+        try db.write { db in
+            let declared = try years(try scope(db), db)
+            let every = try years(.everyYear, db)
+            XCTAssertEqual(declared, every, "the declared scope misses what .everyYear finds", file: file, line: line)
+            XCTAssertEqual(declared != nil, asks, file: file, line: line)
+        }
+    }
+
+    func testEachScopeHelperCoversWhatItsWriteTouches() throws {
+        // categorising: Set category…, assignments, a rule's filing.
+        try assertCovers({ _ in .categorising([self.id("refund")], as: self.id("repairs")) }, { db in
+            try TransactionEditing.setCategory(db: db, ids: [self.id("refund")], categoryId: self.id("repairs"), remember: true)
+        }, asks: true)
+        try assertCovers({ _ in .categorising([self.id("plumber")], as: self.id("groceries")) }, { db in
+            try TransactionEditing.setCategory(db: db, ids: [self.id("plumber")], categoryId: self.id("groceries"), remember: false)
+        }, asks: true)
+        try assertCovers({ db in .categorising(try Rules.uncategorisedMatchIds(db: db, pattern: "BUILDER", matchType: .contains), as: self.id("repairs")) },
+                         { db in _ = try Rules.add(db: db, pattern: "BUILDER", matchType: .contains, categoryId: self.id("repairs"), applyToUncategorised: true) },
+                         asks: true)
+        // transactionEdit: a manual transaction moved from 2029 into a filed year.
+        let manual = try db.write { db in
+            try ManualTransactions.add(db: db, accountId: try XCTUnwrap(Account.fetchOne(db)?.id), date: Self.date(2029, 6, 1),
+                                       description: "SKIP HIRE", amountMinorUnits: -9_000, categoryId: self.id("repairs"), note: nil)
+        }
+        let moved = TransactionEditChanges(categoryId: id("repairs"), note: nil,
+                                           manual: .init(accountId: manual.accountId, date: Self.date(2022, 10, 1), description: "SKIP HIRE",
+                                                         amountMinorUnits: -9_000))
+        try assertCovers({ _ in .transactionEdit(id: manual.id!, changes: moved) }, { db in
+            try TransactionEditing.save(db: db, id: manual.id!, changes: moved)
+        }, asks: true)
+        try assertCovers({ _ in .transactionEdit(id: self.id("later"), changes: TransactionEditChanges(categoryId: self.id("repairs"), note: "x")) }, { db in
+            try TransactionEditing.save(db: db, id: self.id("later"), changes: TransactionEditChanges(categoryId: self.id("repairs"), note: "x"))
+        }, asks: false)
+        // Deleting a manual transaction in a filed year.
+        let filedManual = try db.write { db in
+            try ManualTransactions.add(db: db, accountId: manual.accountId, date: Self.date(2022, 12, 1), description: "PAINT",
+                                       amountMinorUnits: -4_000, categoryId: self.id("repairs"), note: nil)
+        }
+        try assertCovers({ _ in FiledYearEditCheck.Scope(transactionIds: [filedManual.id!]) }, { db in
+            try ManualTransactions.delete(db: db, id: filedManual.id!)
+        }, asks: true)
+        // adding.
+        try assertCovers({ _ in .adding(date: Self.date(2022, 8, 1), categoryId: self.id("repairs")) }, { db in
+            _ = try ManualTransactions.add(db: db, accountId: manual.accountId, date: Self.date(2022, 8, 1), description: "GUTTER",
+                                           amountMinorUnits: -3_000, categoryId: self.id("repairs"), note: nil)
+        }, asks: true)
+        // manualItem: added, then deleted.
+        let item = TaxManualItem(startYear: 2022, personId: id("A"), propertyId: id("property"), expenseType: .otherExpense, label: "Postage",
+                                 amountMinorUnits: 1_000, currency: .gbp)
+        try assertCovers({ _ in .manualItem(id: nil, startYear: 2022) }, { db in var item = item; try TaxManualItems.save(db: db, &item) }, asks: true)
+        let stored = try db.write { db -> Int64 in var item = item; try TaxManualItems.save(db: db, &item); return item.id! }
+        try assertCovers({ _ in .manualItem(id: stored, startYear: nil) }, { db in _ = try TaxManualItems.delete(db: db, id: stored) }, asks: true)
+        // categories: a property's category moved out; an everyday one renamed.
+        try assertCovers({ db in try .categories(db: db, ids: [self.id("repairs")]) }, { db in
+            try Categories.move(db: db, ids: [self.id("repairs")], toGroupId: nil)
+        }, asks: true)
+        try assertCovers({ db in try .categories(db: db, ids: [self.id("groceries")]) }, { db in
+            try Categories.rename(db: db, id: self.id("groceries"), name: "Food")
+        }, asks: false)
+        try assertCovers({ db in try .categories(db: db, ids: [self.id("repairs")]) }, { db in
+            _ = try CategoryGroups.create(db: db, name: "Elsewhere", type: .expense, moving: [self.id("repairs")])
+        }, asks: true)
+        // from(year:): a split, a status change, other income, a "not claimed" mark.
+        try assertCovers({ _ in .from(year: 2022) }, { db in
+            try TaxSplits.set(db: db, startYear: 2022, personId: self.id("A"), propertyId: self.id("property"), expenseType: nil, shareBasisPoints: 5_000)
+        }, asks: true)
+        try assertCovers({ _ in .from(year: 2022) }, { db in
+            try TaxOverview.setStatus(db: db, startYear: 2022, personId: self.id("A"), status: .preparing)
+        }, asks: true)
+        try assertCovers({ _ in .from(year: 2022) }, { db in
+            var income = OtherIncome(startYear: 2022, personId: self.id("A"), kind: .ukInterest, amountMinorUnits: 50_000, currency: .gbp)
+            try OtherIncomes.save(db: db, &income)
+        }, asks: true)
+        try assertCovers({ _ in .from(year: 2022) }, { db in
+            try TaxNotClaimedSources.set(db: db, startYear: 2022, reference: .transaction(self.id("plumber")), notClaimed: true)
+        }, asks: true)
+    }
 }

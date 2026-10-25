@@ -12,22 +12,33 @@ import struct BudgetCore.Transaction
 @MainActor
 final class FiledYearGate: ObservableObject {
     @Published var pending: FiledYearPending?
-    /// A check or a save is under way (a sheet keeps its Save off meanwhile).
+    /// A check or a save is under way: `.filedYearGate(_:)` shows "Checking filed returns…" and
+    /// turns off what it covers meanwhile.
     @Published private(set) var isRunning = false
 
-    /// `apply` in one write of `dbQueue`, through the check, on a background queue. `scope` is
-    /// worked out in that write, before `apply`. Saved, or refused: `done` (on the main actor) with
-    /// the result. A question: `pending`, and its answer runs it again (then `done`); Cancel
-    /// writes nothing and calls nothing.
-    func run<T>(_ dbQueue: DatabaseQueue, edit: String, scope: @escaping (Database) throws -> FiledYearEditCheck.Scope,
-                resolution: FiledYearEditCheck.Resolution? = nil,
+    /// `apply` in one write of `dbQueue`, through the check, on a background queue. `edit` and
+    /// `scope` are worked out in that write, before `apply`. Saved, or refused: `done` (on the main
+    /// actor) with the result. A question: `pending`; its answer saves with what the question
+    /// found when nothing was written since (else it's checked again), then `done`. Cancel writes
+    /// nothing and calls nothing. While one runs or waits on its question, another is ignored.
+    func run<T>(_ dbQueue: DatabaseQueue, edit: @escaping (Database) throws -> String,
+                scope: @escaping (Database) throws -> FiledYearEditCheck.Scope,
                 _ apply: @escaping (Database) throws -> T, done: @escaping (Result<T, Error>) -> Void) {
+        guard !isRunning, pending == nil else { return }
+        start(dbQueue, edit: edit, scope: scope, resolution: nil, answering: nil, apply, done: done)
+    }
+
+    private func start<T>(_ dbQueue: DatabaseQueue, edit: @escaping (Database) throws -> String,
+                          scope: @escaping (Database) throws -> FiledYearEditCheck.Scope,
+                          resolution: FiledYearEditCheck.Resolution?, answering: FiledYearEditCheck.Question?,
+                          _ apply: @escaping (Database) throws -> T, done: @escaping (Result<T, Error>) -> Void) {
         isRunning = true
         let now = AppClock.now
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result {
                 try dbQueue.write { db in
-                    try FiledYearEditCheck.save(db: db, edit: edit, scope: try scope(db), resolution: resolution, now: now) { try apply(db) }
+                    try FiledYearEditCheck.save(db: db, edit: try edit(db), scope: try scope(db), resolution: resolution,
+                                                answering: answering, now: now) { try apply(db) }
                 }
             }
             DispatchQueue.main.async {
@@ -37,7 +48,7 @@ final class FiledYearGate: ObservableObject {
                     done(.success(value))
                 case .success(.asks(let question)):
                     self.pending = FiledYearPending(question: question) { [weak self] answer in
-                        self?.run(dbQueue, edit: edit, scope: scope, resolution: answer, apply, done: done)
+                        self?.start(dbQueue, edit: edit, scope: scope, resolution: answer, answering: question, apply, done: done)
                     }
                 case .failure(let error):
                     done(.failure(error))
@@ -46,15 +57,31 @@ final class FiledYearGate: ObservableObject {
         }
     }
 
-    /// `run` with the scope known up front.
+    /// `run` with the edit's name known up front.
+    func run<T>(_ dbQueue: DatabaseQueue, edit: String, scope: @escaping (Database) throws -> FiledYearEditCheck.Scope,
+                _ apply: @escaping (Database) throws -> T, done: @escaping (Result<T, Error>) -> Void) {
+        run(dbQueue, edit: { _ in edit }, scope: scope, apply, done: done)
+    }
+
+    /// `run` with the name and the scope known up front.
     func run<T>(_ dbQueue: DatabaseQueue, edit: String, scope: FiledYearEditCheck.Scope,
                 _ apply: @escaping (Database) throws -> T, done: @escaping (Result<T, Error>) -> Void) {
-        run(dbQueue, edit: edit, scope: { _ in scope }, apply, done: done)
+        run(dbQueue, edit: { _ in edit }, scope: { _ in scope }, apply, done: done)
     }
+
+    #if SNAPSHOTS
+    /// The snapshot routes' gate, shown checking.
+    static func checking() -> FiledYearGate {
+        let gate = FiledYearGate()
+        gate.isRunning = true
+        return gate
+    }
+    #endif
 }
 
 extension View {
-    /// Presents `gate`'s question.
+    /// Presents `gate`'s question; while it checks or saves, what it covers is turned off and
+    /// "Checking filed returns…" shows.
     func filedYearGate(_ gate: FiledYearGate) -> some View {
         modifier(FiledYearGateModifier(gate: gate))
     }
@@ -64,7 +91,27 @@ private struct FiledYearGateModifier: ViewModifier {
     @ObservedObject var gate: FiledYearGate
 
     func body(content: Content) -> some View {
-        content.filedYearQuestion($gate.pending)
+        content
+            .disabled(gate.isRunning)
+            .overlay(alignment: .bottom) {
+                if gate.isRunning { FiledYearCheckingBadge().padding(.bottom, SheetMetrics.padding) }
+            }
+            .filedYearQuestion($gate.pending)
+    }
+}
+
+/// "Checking filed returns…" with a spinner, while an edit is checked or saved.
+struct FiledYearCheckingBadge: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Checking filed returns…").font(.callout)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .shadow(radius: 2, y: 1)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -80,29 +127,18 @@ extension Result where Failure == Error {
 /// and what to do once saved or refused (not called on Cancel).
 typealias CheckedSave<Input> = (Input, FiledYearGate, @escaping (SaveOutcome) -> Void) -> Void
 
-extension FiledYearEditCheck.Scope {
-    /// Edit transaction's Save of `id`: its category, and a manual transaction's new date.
-    static func transactionEdit(id: Int64, changes: TransactionEditChanges) -> Self {
-        Self(transactionIds: [id], dates: changes.manual.map { [$0.date] } ?? [], categoryIds: [changes.categoryId])
-    }
-
-    /// Add transaction…: the new row's date and category.
-    static func added(_ input: ManualTransactionInput) -> Self {
-        Self(dates: [input.date], categoryIds: [input.categoryId])
-    }
-}
-
 /// What the filed-year question names an edit by (the notes it leaves say it too).
 enum FiledYearEditNames {
     /// Edit transaction's Save: "Categorised as Repairs" when the category changes to one, else
-    /// "Edited by hand". `transactionId`'s category before is read here.
-    static func transactionEdit(_ changes: TransactionEditChanges, transactionId: Int64, dbQueue: DatabaseQueue,
-                                categories: [Category]) -> String {
-        let before = try? dbQueue.read { db in try Transaction.fetchOne(db, key: transactionId)?.categoryId }
-        if let id = changes.categoryId, id != before ?? nil, let name = categories.first(where: { $0.id == id })?.name {
-            return "Categorised as \(name)"
+    /// "Edited by hand" (read in the check's own write, off the main thread).
+    static func transactionEdit(_ changes: TransactionEditChanges, transactionId: Int64) -> (Database) throws -> String {
+        { db in
+            let before = try Transaction.fetchOne(db, key: transactionId)?.categoryId
+            if let id = changes.categoryId, id != before, let name = try Category.fetchOne(db, key: id)?.name {
+                return "Categorised as \(name)"
+            }
+            return "Edited by hand"
         }
-        return "Edited by hand"
     }
 
     /// "Categorised as Repairs".

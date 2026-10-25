@@ -484,10 +484,15 @@ final class PropertyViewModel: ObservableObject {
         return error
     }
 
-    func deleteTenancy(_ id: Int64) -> String? {
-        let error = write { db in _ = try Tenancies.delete(db: db, id: id) }
-        if error == nil, selectedTenancyId == id { selectedTenancyId = nil }
-        return error
+    /// Through the filed-year check: its rent receipts and recharge statements go with it.
+    func deleteTenancy(_ id: Int64) {
+        checkedWrite("Tenancy of \(propertyName) deleted, with its receipts and recharge statements", { db in
+            _ = try Tenancies.delete(db: db, id: id)
+        }) { [weak self] message in
+            guard let self else { return }
+            self.errorMessage = message
+            if message == nil, self.selectedTenancyId == id { self.selectedTenancyId = nil }
+        }
     }
 
     /// Links rent credits to receipts (`RentReceiptMatching.match`) and says what it did.

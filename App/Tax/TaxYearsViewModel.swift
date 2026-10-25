@@ -160,9 +160,21 @@ final class TaxYearsViewModel: ObservableObject {
         }
     }
 
+    /// Taking a year away from filed or paid goes through the filed-year check (plan Task 14): the
+    /// rental accounts read the status, and the year stops being protected. Marking it filed or
+    /// paid writes straight away.
     func setStatus(_ status: TaxYearStatus) {
         guard let selection else { return }
-        errorMessage = write { db in try TaxOverview.setStatus(db: db, startYear: selection.startYear, personId: selection.personId, status: status) }
+        let current = snapshot.rows.first { $0.year.startYear == selection.startYear && $0.person.id == selection.personId }?.status
+        let write: (Database) throws -> Void = { db in
+            try TaxOverview.setStatus(db: db, startYear: selection.startYear, personId: selection.personId, status: status)
+        }
+        guard current == .filed || current == .paid else {
+            errorMessage = self.write(write)
+            return
+        }
+        let label = UKTaxYear(startYear: selection.startYear).label
+        checked(edit: "\(label) set to \(status.displayName.lowercased())", scope: .from(year: selection.startYear), write)
     }
 
     /// Stores a manual rate (pounds per unit, or units per £1 as HMRC publishes it), through the
@@ -300,12 +312,16 @@ final class TaxYearsViewModel: ObservableObject {
     }
 
     /// Marks a source "deductible, not claimed" in the year on show (or claims it again).
-    func setNotClaimed(_ reference: RentalAccounts.SourceReference, notClaimed: Bool) -> String? {
-        guard let selection else { return nil }
-        return write { db in
+    /// Through the filed-year check (`gate`: the sources sheet's): on a filed year it moves the
+    /// filed line, so it asks (Save anyway or Cancel) and Save anyway notes it.
+    func setNotClaimed(_ reference: RentalAccounts.SourceReference, notClaimed: Bool, gate: FiledYearGate, done: @escaping (String?) -> Void) {
+        guard let selection else { return done(nil) }
+        let label = UKTaxYear(startYear: selection.startYear).label
+        checked(edit: notClaimed ? "Marked not claimed in \(label)" : "Claimed again in \(label)", scope: .from(year: selection.startYear),
+                gate: gate, { db in
             try TaxNotClaimedSources.set(db: db, startYear: selection.startYear, reference: reference, notClaimed: notClaimed,
                                          notes: notClaimed ? "Marked in the app" : nil)
-        }
+        }, done: done)
     }
 
     // MARK: Drill-down
