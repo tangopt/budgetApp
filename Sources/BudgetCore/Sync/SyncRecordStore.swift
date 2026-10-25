@@ -111,9 +111,15 @@ public enum SyncRecordStore {
         return builtInCategoryUUID(role)
     }
 
-    /// A name-based UUID in the canonical lowercase v4 shape (version digit 4, variant 8–b).
+    /// The built-in category of `role`'s UUID (`derivedUUID`), the same on every device.
     static func builtInCategoryUUID(_ role: String) -> String {
-        var hex = Array(SHA256.hash(data: Data("mango.category.builtInRole.\(role)".utf8)).prefix(16).map { String(format: "%02x", $0) }.joined())
+        derivedUUID("mango.category.builtInRole.\(role)")
+    }
+
+    /// A UUID derived from `name` alone, in the canonical lowercase v4 shape (version digit 4, variant 8–b):
+    /// the same on every device, for records each device would otherwise create under its own identity.
+    public static func derivedUUID(_ name: String) -> String {
+        var hex = Array(SHA256.hash(data: Data(name.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined())
         hex[12] = "4"
         hex[16] = Array("89ab")[Int(String(hex[16]), radix: 16)! % 4]
         let s = String(hex)

@@ -18,9 +18,12 @@ public struct SyncRecordRow: Codable, Equatable, FetchableRecord, PersistableRec
     /// The `appUser` UUID of the last writer.
     public var modifiedBy: String?
     public var modifiedAt: Date?
+    /// What made the last local write (`syncWriter.origin`, stamped by the triggers); nil when unknown.
+    public var origin: WriteOriginRaw?
 
     public init(tableName: String, localId: Int64, uuid: String, zone: String,
-                systemFields: Data? = nil, modifiedBy: String? = nil, modifiedAt: Date? = nil, changeTag: String? = nil) {
+                systemFields: Data? = nil, modifiedBy: String? = nil, modifiedAt: Date? = nil, changeTag: String? = nil,
+                origin: WriteOriginRaw? = nil) {
         self.tableName = tableName
         self.localId = localId
         self.uuid = uuid
@@ -29,6 +32,7 @@ public struct SyncRecordRow: Codable, Equatable, FetchableRecord, PersistableRec
         self.changeTag = changeTag
         self.modifiedBy = modifiedBy
         self.modifiedAt = modifiedAt
+        self.origin = origin
     }
 
     public static let databaseTableName = "syncRecord"

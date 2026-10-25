@@ -12,6 +12,7 @@ public enum ImportChangeCapture {
         "importRun", "importChange", "importRunFile", "forecastEntry", "forecastGroup", "grdb_migrations",
         "syncRecord", "syncStaging", "syncConflict", "syncTombstone", "syncState",
         "syncPending", "syncFieldClock", "syncWriter", "syncApplying", "syncBatch", "syncBatchMember",
+        "syncZoneMove", "syncCompanion", "syncAccessRevert",
     ]
 
     private static let triggerPrefix = "importCapture_"

@@ -101,12 +101,19 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
     /// moved between it and a counted account enters or leaves net worth
     /// (`Category.isTiedToAccountOutsideNetWorth`).
     public var includeInNetWorth: Bool
+    /// The person who owns the account; nil when it is joint (sharing spec 2026-10-25 §2). Set once, on
+    /// the Mac, by the ownership sheet; until then every account is joint.
+    public var ownerPersonId: Int64?
+    /// How much of the account the other person sees (`SharingLevel`). Joint accounts are always
+    /// `.everything`.
+    public var sharingLevel: SharingLevel
 
     public init(id: Int64? = nil, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode,
                 alias: String? = nil, sortCode: String? = nil, accountNumber: String? = nil, iban: String? = nil, sortOrder: Int? = nil,
                 statementMismatchMinorUnits: Int? = nil, statementMismatchDate: Date? = nil,
                 statementMismatchClosingMinorUnits: Int? = nil, statementLastCheckedDate: Date? = nil, balanceConfirmedAt: Date? = nil,
-                bankRegion: BankRegion? = nil, bankName: String? = nil, routingNumber: String? = nil, bic: String? = nil, isMain: Bool = false, includeInNetWorth: Bool = true) {
+                bankRegion: BankRegion? = nil, bankName: String? = nil, routingNumber: String? = nil, bic: String? = nil, isMain: Bool = false, includeInNetWorth: Bool = true,
+                ownerPersonId: Int64? = nil, sharingLevel: SharingLevel = .everything) {
         self.id = id
         self.name = name
         self.currency = currency
@@ -128,6 +135,37 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
         self.bic = bic
         self.isMain = isMain
         self.includeInNetWorth = includeInNetWorth
+        self.ownerPersonId = ownerPersonId
+        self.sharingLevel = sharingLevel
+    }
+
+    /// Decodes every column; a database the sharing migration hasn't reached yet (a tool reading a copy
+    /// before migrating it, `SyncRehearsal`) has no `sharingLevel`, which reads as `.everything`.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(Int64.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        currency = try c.decode(Currency.self, forKey: .currency)
+        kind = try c.decode(AccountKind.self, forKey: .kind)
+        trackingMode = try c.decode(AccountTrackingMode.self, forKey: .trackingMode)
+        alias = try c.decodeIfPresent(String.self, forKey: .alias)
+        sortCode = try c.decodeIfPresent(String.self, forKey: .sortCode)
+        accountNumber = try c.decodeIfPresent(String.self, forKey: .accountNumber)
+        iban = try c.decodeIfPresent(String.self, forKey: .iban)
+        bankRegion = try c.decodeIfPresent(BankRegion.self, forKey: .bankRegion)
+        bankName = try c.decodeIfPresent(String.self, forKey: .bankName)
+        routingNumber = try c.decodeIfPresent(String.self, forKey: .routingNumber)
+        bic = try c.decodeIfPresent(String.self, forKey: .bic)
+        sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder)
+        statementMismatchMinorUnits = try c.decodeIfPresent(Int.self, forKey: .statementMismatchMinorUnits)
+        statementMismatchDate = try c.decodeIfPresent(Date.self, forKey: .statementMismatchDate)
+        statementMismatchClosingMinorUnits = try c.decodeIfPresent(Int.self, forKey: .statementMismatchClosingMinorUnits)
+        statementLastCheckedDate = try c.decodeIfPresent(Date.self, forKey: .statementLastCheckedDate)
+        balanceConfirmedAt = try c.decodeIfPresent(Date.self, forKey: .balanceConfirmedAt)
+        isMain = try c.decode(Bool.self, forKey: .isMain)
+        includeInNetWorth = try c.decode(Bool.self, forKey: .includeInNetWorth)
+        ownerPersonId = try c.decodeIfPresent(Int64.self, forKey: .ownerPersonId)
+        sharingLevel = try c.decodeIfPresent(SharingLevel.self, forKey: .sharingLevel) ?? .everything
     }
 
     /// The stored region; else derived from the details set (sort code → UK, IBAN → Europe,

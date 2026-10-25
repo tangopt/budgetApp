@@ -38,11 +38,11 @@ final class SyncReferenceClassificationTests: XCTestCase {
     func testAnUnclassifiedIdColumnFailsByName() throws {
         let manager = try migrated()
         try manager.dbQueue.write { db in
-            try db.execute(sql: "ALTER TABLE account ADD COLUMN ownerPersonId INTEGER")
+            try db.execute(sql: "ALTER TABLE account ADD COLUMN reviewerPersonId INTEGER")
             try db.execute(sql: "ALTER TABLE property ADD COLUMN accountIds TEXT")
         }
         XCTAssertEqual(try manager.dbQueue.read { try unclassifiedIdColumns($0) }, [
-            "column account.ownerPersonId holds ids but isn't classified",
+            "column account.reviewerPersonId holds ids but isn't classified",
             "column property.accountIds holds ids but isn't classified",
         ])
     }
