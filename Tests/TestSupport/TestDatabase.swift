@@ -113,8 +113,14 @@ private final class Templates: @unchecked Sendable {
     private init() {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("MangoTestTemplates", isDirectory: true)
         cache = base.appendingPathComponent(Templates.binaryKey(), isDirectory: true)
+        // Held (shared) for the life of the process: another run's clean-up never removes a folder in use.
+        try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let inUse = open(cache.appendingPathComponent(Templates.inUseLockName).path, O_CREAT | O_RDWR, 0o644)
+        if inUse >= 0 { _ = flock(inUse, LOCK_SH) }
         Templates.removeStale(in: base, keeping: cache)
     }
+
+    private static let inUseLockName = "in-use.lock"
 
     func migrated() throws -> DatabaseQueue {
         lock.lock()
@@ -176,6 +182,10 @@ private final class Templates: @unchecked Sendable {
         guard flock(descriptor, LOCK_EX) == 0 else { throw CocoaError(.fileLocking) }
         defer { flock(descriptor, LOCK_UN) }
         if files.fileExists(atPath: complete.path) { return folder }
+        // Staging folders left by a process that died mid-build (none can be live while this lock is held).
+        for item in (try? files.contentsOfDirectory(atPath: cache.path)) ?? [] where item.hasPrefix("\(name)-staging-") {
+            try? files.removeItem(at: cache.appendingPathComponent(item, isDirectory: true))
+        }
         let staging = cache.appendingPathComponent("\(name)-staging-\(UUID().uuidString)", isDirectory: true)
         try files.createDirectory(at: staging, withIntermediateDirectories: true)
         do {
@@ -201,21 +211,29 @@ private final class Templates: @unchecked Sendable {
                 text = "\(path)|\(status.st_size)|\(status.st_mtimespec.tv_sec).\(status.st_mtimespec.tv_nsec)|\(status.st_ino)"
             }
         }
+        // Today's UTC date too: templates are rebuilt daily, so nothing built from the clock goes stale.
+        let utc = Calendar(identifier: .gregorian).dateComponents(in: TimeZone(identifier: "UTC")!, from: Date())
+        text += "|\(utc.year!)-\(utc.month!)-\(utc.day!)"
         // FNV-1a: stable across processes (Swift's `Hasher` is seeded per process).
         var hash: UInt64 = 0xcbf29ce484222325
         for byte in text.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
         return String(hash, radix: 16)
     }
 
-    /// Template folders of earlier builds, left a day ago or more (never a folder a running test could be using).
+    /// Template folders of earlier builds or days, left a day ago or more. A folder whose in-use lock another
+    /// process holds is skipped: it is removed only while this process holds that lock exclusively.
     private static func removeStale(in base: URL, keeping current: URL) {
         let files = FileManager.default
         guard let items = try? files.contentsOfDirectory(at: base, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
         let dayAgo = Date().addingTimeInterval(-86_400)
         for item in items where item.lastPathComponent != current.lastPathComponent {
-            if let modified = try? item.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified < dayAgo {
-                try? files.removeItem(at: item)
-            }
+            guard let modified = try? item.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                  modified < dayAgo else { continue }
+            let lock = open(item.appendingPathComponent(inUseLockName).path, O_CREAT | O_RDWR, 0o644)
+            guard lock >= 0 else { continue }
+            defer { close(lock) }
+            guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { continue }  // in use
+            try? files.removeItem(at: item)
         }
     }
 }
