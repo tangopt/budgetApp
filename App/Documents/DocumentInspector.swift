@@ -423,9 +423,7 @@ struct DocumentInspector: View {
 
     private func save() {
         guard let details = draft.details else { return }
-        if viewModel.saveDetails(details), let saved = viewModel.selected {
-            draft = DocumentDetailsDraft(saved)
-        }
+        viewModel.saveDetails(details) { saved in draft = DocumentDetailsDraft(saved) }
     }
 
     private func optionalDay(_ isOn: Binding<Bool>, _ day: Binding<Date>, add title: String) -> some View {

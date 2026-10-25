@@ -36,6 +36,7 @@ struct DocumentsView: View {
             detail
                 .frame(minWidth: 400, idealWidth: 420, maxWidth: 460, maxHeight: .infinity)
         }
+        .checkingFiledYears(viewModel.isCheckingFiledYears)
         .onAppear { viewModel.load() }
         .sheet(isPresented: $linkingFromList) {
             if let document = viewModel.selected {

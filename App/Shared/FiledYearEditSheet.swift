@@ -87,6 +87,17 @@ extension View {
     }
 }
 
+extension View {
+    /// While `isChecking` (an edit checked against the filed returns outside a `FiledYearGate`, which refuses rather
+    /// than asks), what it covers is turned off and "Checking filed returns…" shows.
+    func checkingFiledYears(_ isChecking: Bool) -> some View {
+        disabled(isChecking)
+            .overlay(alignment: .bottom) {
+                if isChecking { FiledYearCheckingBadge().padding(.bottom, SheetMetrics.padding) }
+            }
+    }
+}
+
 private struct FiledYearGateModifier: ViewModifier {
     @ObservedObject var gate: FiledYearGate
 

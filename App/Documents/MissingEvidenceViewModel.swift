@@ -219,16 +219,32 @@ final class MissingEvidenceViewModel: ObservableObject {
 
     /// Links a library document to the item's record (Link existing…), filling in its kind
     /// or period, in one write. Returns what happened, for the caller to show.
-    func link(documentId: Int64, to item: MissingEvidence.Item) -> Result<String, Error> {
-        Result { try Self.linkFillingIn(library: library, documentId: documentId, item: item) }
+    /// A link or an unlink is checking the filed returns off the main thread (`EvidenceLinkGuard`):
+    /// "Checking filed returns…" shows and the screen waits for it.
+    @Published private(set) var isCheckingFiledYears = false
+
+    /// `body` off the main thread with `isCheckingFiledYears` on; nil (nothing run) while another runs.
+    private func guarded<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async -> Result<T, Error>? {
+        guard !isCheckingFiledYears else { return nil }
+        isCheckingFiledYears = true
+        defer { isCheckingFiledYears = false }
+        return await Task.detached(priority: .userInitiated) { Result { try body() } }.value
+    }
+
+    /// Links (off the main thread, checked against the filed returns); `done` gets what happened.
+    func link(documentId: Int64, to item: MissingEvidence.Item, done: @escaping (Result<String, Error>) -> Void) {
+        let library = library
+        Task {
+            guard let result = await guarded({ try Self.linkFillingIn(library: library, documentId: documentId, item: item) }) else { return }
+            done(result)
+        }
     }
 
     func unlink(documentId: Int64, from item: MissingEvidence.Item) {
-        do {
-            try library.unlink(documentId, from: item.target.entity)
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
+        let library = library, entity = item.target.entity
+        Task {
+            guard let result = await guarded({ _ = try library.unlink(documentId, from: entity) }) else { return }
+            errorMessage = result.failure?.localizedDescription
         }
     }
 

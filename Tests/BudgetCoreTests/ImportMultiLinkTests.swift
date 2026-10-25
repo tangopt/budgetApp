@@ -370,6 +370,32 @@ final class ImportMultiLinkTests: XCTestCase {
         XCTAssertNil(try library.document(id: repair))
     }
 
+    /// The Documents inspector's Details Save (final review C1): the linked bill dates the 2025/26 payment into the
+    /// filed 2024/25 year, so re-dating it or filing it as a kind that doesn't date payments (Other, a custom kind)
+    /// would move that payment out: refused, nothing written. A note, or a date in the same year, saves.
+    func testEditingTheDetailsOfALinkedBillThatWouldChangeAFiledYearIsRefused() throws {
+        let (bill, _, _, _) = try filedYearLinks()
+        let stored = try XCTUnwrap(try library.document(id: bill))
+        let refusal = EvidenceLinkGuard.Failure.detailsChangeFiledYear(years: ["2024/25"])
+        var redated = EvidenceDocumentDetails(stored)
+        redated.docDate = Self.day(2025, 4, 25)
+        redated.note = "re-dated"
+        XCTAssertThrowsError(try library.updateDetails(bill, redated)) {
+            XCTAssertEqual($0 as? EvidenceLinkGuard.Failure, refusal)
+            XCTAssertEqual(($0 as? LocalizedError)?.errorDescription, "Details not saved: this would change the filed 2024/25 return.")
+        }
+        var other = EvidenceDocumentDetails(stored)
+        other.kind = .other
+        XCTAssertThrowsError(try library.updateDetails(bill, other)) { XCTAssertEqual($0 as? EvidenceLinkGuard.Failure, refusal) }
+        XCTAssertEqual(try library.document(id: bill), stored, "nothing written")
+
+        var noted = EvidenceDocumentDetails(stored)
+        noted.note = "Synthetic note"
+        noted.docDate = Self.day(2025, 3, 31)
+        XCTAssertEqual(try library.updateDetails(bill, noted).note, "Synthetic note")
+        XCTAssertEqual(try library.document(id: bill)?.docDate, Self.day(2025, 3, 31))
+    }
+
     /// Missing evidence's Link on a transaction is guarded like the others.
     func testMissingEvidenceLinkThatWouldChangeAFiledYearIsRefused() throws {
         let legal = try filedYearProperty()

@@ -58,6 +58,7 @@ struct MissingEvidenceView: View {
         // top; the bottom is ours.
         .padding(embedded ? [.bottom] : .all, ScreenMetrics.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .checkingFiledYears(viewModel.isCheckingFiledYears)
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
         .screenToolbar {

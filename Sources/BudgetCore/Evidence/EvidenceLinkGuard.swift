@@ -12,13 +12,18 @@ public enum EvidenceLinkGuard {
     public enum Failure: Error, Equatable, LocalizedError {
         /// The years ("2024/25") whose returns the link change would move.
         case changesFiledYear(years: [String])
+        /// A linked document's details (kind, date, period, persons) would move these years' returns.
+        case detailsChangeFiledYear(years: [String])
 
         public var errorDescription: String? {
             switch self {
-            case .changesFiledYear(let years):
-                let which = years.count == 1 ? "the filed \(years[0]) return" : "the filed \(years.joined(separator: ", ")) returns"
-                return "Links not changed: this would change \(which)."
+            case .changesFiledYear(let years): return "Links not changed: this would change \(Self.returns(years))."
+            case .detailsChangeFiledYear(let years): return "Details not saved: this would change \(Self.returns(years))."
             }
+        }
+
+        private static func returns(_ years: [String]) -> String {
+            years.count == 1 ? "the filed \(years[0]) return" : "the filed \(years.joined(separator: ", ")) returns"
         }
     }
 
@@ -30,8 +35,9 @@ public enum EvidenceLinkGuard {
     }
 
     /// Runs `apply` (link changes, in the caller's write) in a savepoint: kept when no protected
-    /// return figure moves, else rolled back and `Failure.changesFiledYear` thrown.
-    public static func checked<T>(db: Database, _ apply: () throws -> T) throws -> T {
+    /// return figure moves, else rolled back and `refusal` (default `Failure.changesFiledYear`) thrown.
+    public static func checked<T>(db: Database, refusal: ([String]) -> Failure = Failure.changesFiledYear,
+                                  _ apply: () throws -> T) throws -> T {
         let baseline = try FiledYearSyncCheck.baseline(db: db)
         var result: T?
         var impacts: [FiledYearImpact] = []
@@ -40,7 +46,7 @@ public enum EvidenceLinkGuard {
             return impacts.isEmpty ? .commit : .rollback
         }
         guard impacts.isEmpty, let result else {
-            throw Failure.changesFiledYear(years: Set(impacts.map(\.startYear)).sorted().map { UKTaxYear(startYear: $0).label })
+            throw refusal(Set(impacts.map(\.startYear)).sorted().map { UKTaxYear(startYear: $0).label })
         }
         return result
     }

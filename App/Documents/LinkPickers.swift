@@ -59,6 +59,7 @@ struct LinkTransactionSheet: View {
             .frame(height: 380)
             .sheetListFrame()
         }
+        .checkingFiledYears(viewModel.isCheckingFiledYears)
         .task(id: SearchKey(text: query, isReady: viewModel.catalog != nil)) {
             let text = query.trimmingCharacters(in: .whitespaces)
             guard !text.isEmpty, let catalog = viewModel.catalog else { results = []; return }

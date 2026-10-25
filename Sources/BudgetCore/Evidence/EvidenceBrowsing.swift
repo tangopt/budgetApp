@@ -96,26 +96,44 @@ extension EvidenceLibrary {
     /// Saves `details` on the document: the amount sign-free, persons trimmed, a blank note
     /// or name cleared. A period ending before it starts, or an amount without a currency, is
     /// refused.
+    /// On a document linked to transactions, a change of what the rental accounts read from it (its kind, date,
+    /// period or persons: an invoice dates the expense it is linked to, a period apportions it, persons say whose
+    /// tax payment it is) is refused whole, as a link change is, when it would move a filed or paid return
+    /// (`EvidenceLinkGuard.Failure.detailsChangeFiledYear`).
     @discardableResult
     public func updateDetails(_ documentId: Int64, _ details: EvidenceDocumentDetails) throws -> EvidenceDocument {
         if let start = details.periodStart, let end = details.periodEnd, end < start { throw EvidenceDetailsError.periodEndsBeforeStart }
         if details.amountMinorUnits != nil, details.currency == nil { throw EvidenceDetailsError.amountWithoutCurrency }
         return try database.write { db in
-            guard var document = try EvidenceDocument.fetchOne(db, key: documentId) else { throw EvidenceLibraryError.documentNotFound }
-            document.kind = details.kind
-            // A built-in kind chosen clears the custom one; a custom kind is filed as Other.
-            document.customKindId = details.kind == .other ? details.customKindId : nil
-            document.docDate = details.docDate
-            document.periodStart = details.periodStart
-            document.periodEnd = details.periodEnd
-            document.amountMinorUnits = details.amountMinorUnits.map(abs)
-            document.currency = details.amountMinorUnits == nil ? nil : details.currency
-            document.persons = EvidenceDocumentDetails.persons(from: details.persons.joined(separator: ","))
-            document.note = Transaction.normalizedNote(details.note)
-            document.canonicalName = Transaction.normalizedNote(details.canonicalName)
-            try document.update(db)
+            guard let stored = try EvidenceDocument.fetchOne(db, key: documentId) else { throw EvidenceLibraryError.documentNotFound }
+            let document = Self.applying(details, to: stored)
+            let movesFigures = document.kind != stored.kind || document.customKindId != stored.customKindId
+                || document.docDate != stored.docDate || document.periodStart != stored.periodStart
+                || document.periodEnd != stored.periodEnd || document.persons != stored.persons
+            if movesFigures, try EvidenceLinkGuard.hasTransactionLinks(db: db, documentId: documentId) {
+                try EvidenceLinkGuard.checked(db: db, refusal: EvidenceLinkGuard.Failure.detailsChangeFiledYear) { try document.update(db) }
+            } else {
+                try document.update(db)
+            }
             return document
         }
+    }
+
+    /// `document` with `details` (normalised) in place of its own.
+    private static func applying(_ details: EvidenceDocumentDetails, to document: EvidenceDocument) -> EvidenceDocument {
+        var document = document
+        document.kind = details.kind
+        // A built-in kind chosen clears the custom one; a custom kind is filed as Other.
+        document.customKindId = details.kind == .other ? details.customKindId : nil
+        document.docDate = details.docDate
+        document.periodStart = details.periodStart
+        document.periodEnd = details.periodEnd
+        document.amountMinorUnits = details.amountMinorUnits.map(abs)
+        document.currency = details.amountMinorUnits == nil ? nil : details.currency
+        document.persons = EvidenceDocumentDetails.persons(from: details.persons.joined(separator: ","))
+        document.note = Transaction.normalizedNote(details.note)
+        document.canonicalName = Transaction.normalizedNote(details.canonicalName)
+        return document
     }
 
     /// Moves every link `fromDocumentId` has to `toDocumentId` (same records and roles), in

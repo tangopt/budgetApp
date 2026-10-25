@@ -298,56 +298,82 @@ final class DocumentsViewModel: ObservableObject {
 
     // MARK: Editing
 
-    /// Saves the selected document's details; false (with the reason shown) when refused.
-    @discardableResult
-    func saveDetails(_ details: EvidenceDocumentDetails) -> Bool {
-        guard let id = selected?.id else { return false }
-        do {
-            selected = try library.updateDetails(id, details)
-            errorMessage = nil
-            refreshSuggestions()
-            refreshEntries(for: [id])
-            return true
-        } catch {
-            errorMessage = error.localizedDescription
-            return false
+    /// A guarded edit (a linked document's details, a link, an unlink, a delete) is checking the filed
+    /// returns off the main thread: "Checking filed returns…" shows and the screen waits for it.
+    @Published private(set) var isCheckingFiledYears = false
+
+    /// `body` off the main thread with `isCheckingFiledYears` on; nil (nothing run) while another runs.
+    private func guarded<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async -> Result<T, Error>? {
+        guard !isCheckingFiledYears else { return nil }
+        isCheckingFiledYears = true
+        defer { isCheckingFiledYears = false }
+        return await Task.detached(priority: .userInitiated) { Result { try body() } }.value
+    }
+
+    /// Saves the selected document's details, off the main thread (a linked document's are checked against the
+    /// filed returns, `EvidenceLibrary.updateDetails`); `saved` gets the stored document, and a refusal shows.
+    func saveDetails(_ details: EvidenceDocumentDetails, saved: @escaping (EvidenceDocument) -> Void = { _ in }) {
+        guard let id = selected?.id else { return }
+        let library = library
+        Task {
+            guard let result = await guarded({ try library.updateDetails(id, details) }) else { return }
+            switch result {
+            case .success(let document):
+                errorMessage = nil
+                refreshSuggestions()
+                refreshEntries(for: [id])
+                // Another document selected meanwhile: its inspector keeps its own draft.
+                if selectedId == id {
+                    selected = document
+                    saved(document)
+                }
+            case .failure(let error):
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
     func link(transactionId: Int64, role: String?) {
         guard let id = selected?.id else { return }
-        write { try self.library.link(id, to: .transaction(transactionId), role: role) }
+        let library = library
+        write { _ = try library.link(id, to: .transaction(transactionId), role: role) }
     }
 
     func unlink(_ row: LinkRow) {
-        write { try self.library.unlink(row.link.documentId, from: row.link.entity) }
+        let library = library, documentId = row.link.documentId, entity = row.link.entity
+        write { _ = try library.unlink(documentId, from: entity) }
     }
 
     func setRole(_ role: String?, for row: LinkRow) {
-        write { try self.library.setRole(role, documentId: row.link.documentId, entity: row.link.entity) }
+        let library = library, documentId = row.link.documentId, entity = row.link.entity
+        write { _ = try library.setRole(role, documentId: documentId, entity: entity) }
     }
 
-    /// Deletes the document and its copy (and its links).
+    /// Deletes the document and its copy (and its links), off the main thread (its links are checked).
     func remove(_ documentId: Int64) {
-        do {
-            try library.remove(documentId, force: true)
-            if selectedId == documentId { selectedId = nil }
-            refreshEntries(for: [documentId])
-        } catch {
-            errorMessage = error.localizedDescription
+        let library = library
+        Task {
+            guard let result = await guarded({ try library.remove(documentId, force: true) }) else { return }
+            switch result {
+            case .success:
+                errorMessage = nil
+                if selectedId == documentId { selectedId = nil }
+                refreshEntries(for: [documentId])
+            case .failure(let error):
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
-    private func write(_ body: () throws -> Void) {
-        do {
-            try body()
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
+    /// A link change, off the main thread through `guarded`; the links and suggestions are read again after.
+    private func write(_ body: @escaping @Sendable () throws -> Void) {
+        Task {
+            guard let result = await guarded(body) else { return }
+            errorMessage = result.failure?.localizedDescription
+            loadLinks()
+            refreshSuggestions()
+            if let id = selected?.id { refreshEntries(for: [id]) }
         }
-        loadLinks()
-        refreshSuggestions()
-        if let id = selected?.id { refreshEntries(for: [id]) }
     }
 
     // MARK: Kinds

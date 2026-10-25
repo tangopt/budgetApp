@@ -66,6 +66,7 @@ struct LinkEvidenceSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .checkingFiledYears(viewModel.isCheckingFiledYears)
         .task { await load() }
         .task(id: SearchKey(text: query, anyKind: anyKind, generation: generation)) {
             guard let index else { results = []; return }
@@ -143,15 +144,17 @@ struct LinkEvidenceSheet: View {
                 PickerLinkedMark()
             } else {
                 PickerLinkButton(accessibilityTitle: "Link \(summary.displayName)", help: "Link to this item") {
-                    switch viewModel.link(documentId: summary.id, to: item) {
-                    case .success(let note):
-                        infoMessage = note
-                        errorMessage = nil
-                        linkedIds.insert(summary.id)
-                        // Its kind or period may have been filled in: re-read the list.
-                        Task { await load() }
-                    case .failure(let error):
-                        errorMessage = error.localizedDescription
+                    viewModel.link(documentId: summary.id, to: item) { result in
+                        switch result {
+                        case .success(let note):
+                            infoMessage = note
+                            errorMessage = nil
+                            linkedIds.insert(summary.id)
+                            // Its kind or period may have been filled in: re-read the list.
+                            Task { await load() }
+                        case .failure(let error):
+                            errorMessage = error.localizedDescription
+                        }
                     }
                 }
             }
