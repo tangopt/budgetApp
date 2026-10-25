@@ -3,9 +3,10 @@ import Foundation
 import GRDB
 import os
 
-/// Where this device keeps evidence files, and when it downloads them (sync spec §5.7): the Mac always
-/// keeps them (`eager`: every pull downloads what is missing); the iPhone downloads a document when it is
-/// opened (`lazy`: `SyncEngineCore.downloadDocument`).
+/// Where this device keeps the files that travel with records — evidence files and the copies of files kept
+/// for later — and when it downloads them (sync spec §5.7): the Mac always keeps them (`eager`: every pull
+/// downloads what is missing); the iPhone downloads a file when it is opened (`lazy`:
+/// `SyncEngineCore.downloadDocument`).
 public struct SyncDocumentFiles: Sendable {
     public enum Policy: Sendable, Equatable {
         case eager
@@ -14,11 +15,88 @@ public struct SyncDocumentFiles: Sendable {
 
     /// The evidence library's root (`EvidenceLibrary.root`).
     public var root: URL
+    /// The waiting list's root (`ImportWaitingList.root`).
+    public var waitingRoot: URL
     public var policy: Policy
 
-    public init(root: URL, policy: Policy) {
+    /// `waitingRoot`: nil, `Waiting` beside the library's folder (where `ImportSession` keeps files).
+    public init(root: URL, policy: Policy, waitingRoot: URL? = nil) {
         self.root = root
         self.policy = policy
+        self.waitingRoot = waitingRoot ?? root.deletingLastPathComponent().appendingPathComponent("Waiting", isDirectory: true)
+    }
+
+    /// The file-bearing tables, with where each one's files go here.
+    public var tables: [SyncFileTable] { SyncFileTables.standard(libraryRoot: root, waitingRoot: waitingRoot) }
+
+    func table(_ name: String) -> SyncFileTable? { tables.first { $0.table == name } }
+}
+
+/// A synced table whose rows each carry one file (sync spec §9.1): the row's record holds the reference of a
+/// sealed `documentFile` record; the file itself lives under `root`, at a path derived from its hash (a synced
+/// path is never trusted as is). Both tables keep the file's hash in `sha256` and its path in `storedRelativePath`.
+public struct SyncFileTable: Sendable {
+    public let table: String
+    public let root: URL
+
+    init(table: String, root: URL) {
+        self.table = table
+        self.root = root
+    }
+
+    /// The path under `root` that `stored` must be for this hash, if it is (nil: unsafe, never read or written).
+    /// - `document`: the library path (`EvidenceLibrary.storedRelativePath`).
+    /// - `importWaitingFile`: `"<sha256 lowercased>/<name>"`, the name one plain path component (not `.`/`..`,
+    ///   no leading dot, no `/` or NUL, at most 255 UTF-8 bytes; `ImportWaitingList.storedPath`).
+    public func safePath(stored: String, sha256: String) -> String? {
+        switch table {
+        case SyncFileTables.document:
+            return SyncDocumentFile.libraryPath(stored: stored, sha256: sha256)
+        case SyncFileTables.importWaitingFile:
+            let hex = sha256.lowercased()
+            guard let slash = stored.firstIndex(of: "/") else { return nil }
+            let name = String(stored[stored.index(after: slash)...])
+            guard let path = ImportWaitingList.storedPath(sha256: hex, name: name), path == stored else { return nil }
+            return path
+        default:
+            return nil
+        }
+    }
+
+    /// The authenticated context of a file of this table (`DocumentCrypto.fileContext`).
+    func context(uuid: String, sha256: String) -> Data {
+        DocumentCrypto.fileContext(table: table, uuid: uuid, sha256: sha256)
+    }
+
+    /// The message logged when the row's path is unsafe.
+    var unsafePathMessage: String {
+        table == SyncFileTables.document ? SyncDocumentFile.unsafePathMessage : SyncDocumentFile.unsafeWaitingPathMessage
+    }
+}
+
+public enum SyncFileTables {
+    static let document = "document"
+    static let importWaitingFile = "importWaitingFile"
+    /// Every file-bearing table (their file references are kept even on a device that doesn't sync files).
+    public static let names: Set<String> = [document, importWaitingFile]
+
+    /// Evidence documents in the library, files kept for later in the waiting folder.
+    public static func standard(libraryRoot: URL, waitingRoot: URL) -> [SyncFileTable] {
+        [SyncFileTable(table: document, root: libraryRoot), SyncFileTable(table: importWaitingFile, root: waitingRoot)]
+    }
+
+    /// The file-bearing table and local id of the record `uuid` here, if it names such a row.
+    static func row(uuid: String, db: Database) throws -> (table: String, localId: Int64)? {
+        guard let row = try Row.fetchOne(db.cachedStatement(sql: "SELECT tableName, localId FROM syncRecord WHERE uuid = ?"),
+                                         arguments: [uuid]) else { return nil }
+        let table: String = row["tableName"]
+        guard names.contains(table) else { return nil }
+        return (table, row["localId"])
+    }
+
+    /// Whether `url` is a regular file (not a symbolic link, not a folder), as it is, without following a link.
+    static func isRegularFile(_ url: URL) -> Bool {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType) == .typeRegular
     }
 }
 
@@ -192,9 +270,10 @@ public enum SyncZoneKeys {
 
 // MARK: File records
 
-/// The record holding one document's sealed file: its asset is the ciphertext and nothing else of the
-/// file. Written once (a new name per sealing); rotation never touches it. Each device keeps the reference
-/// of every document it knows in `syncState` (`documentFile.<uuid>`), so an edit sends it unchanged.
+/// The record holding one sealed file (a document's, or a waiting file's copy): its asset is the ciphertext
+/// and nothing else of the file. Written once (a new name per sealing); rotation never touches it. Each device
+/// keeps the reference of every file-bearing row it knows in `syncState` (`documentFile.<uuid>`; UUIDs are
+/// unique across tables), so an edit sends it unchanged.
 public enum SyncDocumentFile {
     public static let recordType = "documentFile"
     public static let assetField = "file"
@@ -207,6 +286,7 @@ public enum SyncDocumentFile {
     static let hashMismatchMessage = SyncTranslator.needsAttention + "the downloaded file doesn't match its hash; not saved"
     static let unreadableMessage = SyncTranslator.needsAttention + "the file on iCloud can't be opened; not saved"
     static let unsafePathMessage = SyncTranslator.needsAttention + "the file's library path doesn't match its hash; not saved"
+    static let unsafeWaitingPathMessage = SyncTranslator.needsAttention + "the kept file's name or path can't be used; not saved"
     static let senderMismatchMessage = SyncTranslator.needsAttention + "the library file doesn't match its hash; not uploaded"
 
     static func reference(uuid: String, db: Database) throws -> SyncDocumentFileReference? {
@@ -252,8 +332,8 @@ public enum SyncDocumentFile {
         return expected == stored ? expected : nil
     }
 
-    static func logAttention(uuid: String, message: String, db: Database, now: Date) throws {
-        try SyncMerge.logConflict(table: "document", uuid: uuid, field: conflictField, losing: .string(message), winner: nil, loser: nil,
+    static func logAttention(table: String = SyncFileTables.document, uuid: String, message: String, db: Database, now: Date) throws {
+        try SyncMerge.logConflict(table: table, uuid: uuid, field: conflictField, losing: .string(message), winner: nil, loser: nil,
                                   db: db, now: now)
     }
 
@@ -276,7 +356,7 @@ extension SyncEngineCore {
     // MARK: Public
 
     /// Downloads, opens and checks the document's file, and writes it into the library (an iPhone opening
-    /// a document, sync spec §5.7). Returns where it is. A file whose SHA-256 isn't the record's is never
+    /// a document, sync spec §5.7); for a waiting file's record, its copy into the waiting folder. Returns where it is. A file whose SHA-256 isn't the record's is never
     /// written: it is logged for attention and `hashMismatch` thrown.
     public func downloadDocument(uuid: String) async throws -> URL {
         try await serialized { try await self.download(uuid: uuid) }
@@ -415,7 +495,7 @@ extension SyncEngineCore {
     }
 
     /// Every data key known here that isn't wrapped with the zone's current key, and whose old key is held,
-    /// re-wrapped with it; the document records here are queued to go again. Run after a rotation, after
+    /// re-wrapped with it; the records holding them here are queued to go again. Run after a rotation, after
     /// adopting a newer marker, and when a record arrives wrapped with a retired key (a device that uploaded
     /// before it saw the rotation): whoever sees it re-wraps it. Returns how many were re-wrapped.
     static func rewrapStragglers(zone: String, keys: [String: SymmetricKey], db: Database, now: Date) throws -> Int {
@@ -426,8 +506,8 @@ extension SyncEngineCore {
                   let old = keys[id],
                   let wrapped = try? DocumentCrypto.rewrap(reference.wrappedKey, from: old, to: current) else { continue }
             try SyncDocumentFile.setReference(SyncDocumentFileReference(recordName: reference.recordName, wrappedKey: wrapped), uuid: uuid, db: db, now: now)
-            if let localId = try SyncRecordStore.localId(table: "document", uuid: uuid, db: db) {
-                try SyncMerge.queue(uuid: uuid, table: "document", localId: localId, kind: .update, db: db)
+            if let row = try SyncFileTables.row(uuid: uuid, db: db) {
+                try SyncMerge.queue(uuid: uuid, table: row.table, localId: row.localId, kind: .update, db: db)
             }
             count += 1
         }
@@ -436,46 +516,52 @@ extension SyncEngineCore {
 
     // MARK: Push
 
-    /// The document payloads of a push, with their file reference: the stored one (re-wrapped first if its
-    /// key is retired), or, for a document whose file was never uploaded, its library file sealed now and
-    /// saved as a file record before the document record goes. Returns the payloads to send (a document
-    /// whose file couldn't be uploaded now waits: in `deferred`) and how many files were sealed.
+    /// The file-bearing payloads of a push (`SyncFileTables`: documents, waiting files), with their file
+    /// reference: the stored one (re-wrapped first if its key is retired), or, for a row whose file was never
+    /// uploaded, its file (at the path its hash gives, a regular file) sealed now under its table's context and
+    /// saved as a file record before the row's record goes. Returns the payloads to send (a row whose file
+    /// couldn't be uploaded now waits: in `deferred`) and how many files were sealed.
     /// A device that doesn't sync files (no `SyncDocumentFiles`) still sends the references it holds, so an
-    /// edit never drops a document's file from its record.
+    /// edit never drops a file from its record.
     func attachDocumentFiles(_ payloads: [SyncPayload], key: HouseholdKey, keys: [String: SymmetricKey]) async throws
         -> (payloads: [SyncPayload], deferred: Set<String>, sealed: Int) {
-        guard payloads.contains(where: { $0.recordType == "document" && $0.mergedInto == nil }) else {
+        @Sendable func carriesFile(_ payload: SyncPayload) -> Bool { SyncFileTables.names.contains(payload.recordType) && payload.mergedInto == nil }
+        guard payloads.contains(where: carriesFile) else {
             return (payloads, [], 0)
         }
         let zone = SyncRecordStore.householdZone
         let now = clock()
         var references = try await db.read { db in
             try payloads.reduce(into: [String: SyncDocumentFileReference]()) { result, payload in
-                if payload.recordType == "document", let reference = try SyncDocumentFile.reference(uuid: payload.recordName, db: db) {
+                if carriesFile(payload), let reference = try SyncDocumentFile.reference(uuid: payload.recordName, db: db) {
                     result[payload.recordName] = reference
                 }
             }
         }
-        var toSeal: [(uuid: String, plaintext: Data, sha256: String)] = []
-        var mismatched: [String] = []
-        for payload in payloads where payload.recordType == "document" && payload.mergedInto == nil && references[payload.recordName] == nil {
-            guard let documents, case .string(let sha) = payload.fields["sha256"], case .string(let stored) = payload.fields["storedRelativePath"],
-                  let path = SyncDocumentFile.libraryPath(stored: stored, sha256: sha),
-                  let plaintext = try? Data(contentsOf: documents.root.appendingPathComponent(path)) else {
-                // No library file here: the record goes without one, as it came.
+        var toSeal: [(uuid: String, plaintext: Data, sha256: String, table: SyncFileTable)] = []
+        var mismatched: [(uuid: String, table: String)] = []
+        for payload in payloads where carriesFile(payload) && references[payload.recordName] == nil {
+            guard let table = documents?.table(payload.recordType),
+                  case .string(let sha) = payload.fields["sha256"], case .string(let stored) = payload.fields["storedRelativePath"],
+                  let path = table.safePath(stored: stored, sha256: sha) else {
+                // No file here: the record goes without one, as it came.
                 continue
             }
+            let url = table.root.appendingPathComponent(path)
+            guard SyncFileTables.isRegularFile(url), let plaintext = try? Data(contentsOf: url) else { continue }
             guard DocumentCrypto.sha256(plaintext) == sha.lowercased() else {
-                mismatched.append(payload.recordName)
+                mismatched.append((payload.recordName, table.table))
                 continue
             }
-            toSeal.append((payload.recordName, plaintext, sha.lowercased()))
+            toSeal.append((payload.recordName, plaintext, sha.lowercased(), table))
         }
         if !mismatched.isEmpty {
-            Self.documentLog.error("Sync didn't upload \(mismatched.count) library files that don't match their hash")
+            Self.documentLog.error("Sync didn't upload \(mismatched.count) files that don't match their hash")
             let logged = mismatched
             try await db.write { db in
-                for uuid in logged { try SyncDocumentFile.logAttention(uuid: uuid, message: SyncDocumentFile.senderMismatchMessage, db: db, now: now) }
+                for item in logged {
+                    try SyncDocumentFile.logAttention(table: item.table, uuid: item.uuid, message: SyncDocumentFile.senderMismatchMessage, db: db, now: now)
+                }
             }
         }
         var deferred: Set<String> = []
@@ -486,7 +572,7 @@ extension SyncEngineCore {
             var pending: [String: (uuid: String, reference: SyncDocumentFileReference)] = [:]
             for item in toSeal {
                 let box = try DocumentCrypto.seal(item.plaintext, zoneKey: key.key,
-                                                  authenticating: DocumentCrypto.documentContext(uuid: item.uuid, sha256: item.sha256))
+                                                  authenticating: item.table.context(uuid: item.uuid, sha256: item.sha256))
                 let name = SyncDocumentFile.newRecordName(uuid: item.uuid)
                 wires.append(SyncWireRecord(recordType: SyncDocumentFile.recordType, recordName: name, zone: zone,
                                             assets: [SyncDocumentFile.assetField: box.ciphertext]))
@@ -531,7 +617,7 @@ extension SyncEngineCore {
             }
         }
         let result = payloads.compactMap { payload -> SyncPayload? in
-            guard payload.recordType == "document", payload.mergedInto == nil else { return payload }
+            guard carriesFile(payload) else { return payload }
             if deferred.contains(payload.recordName) { return nil }
             var payload = payload
             payload.documentFile = references[payload.recordName]
@@ -542,8 +628,8 @@ extension SyncEngineCore {
 
     // MARK: Pull
 
-    /// What a pull (or a refused save's merge) brought for document files: the zone key marker adopted, each
-    /// document record's file reference kept (a deleted document's dropped), stragglers re-wrapped.
+    /// What a pull (or a refused save's merge) brought for files: the zone key marker adopted, each file-bearing
+    /// record's file reference kept (a deleted row's dropped), stragglers re-wrapped.
     /// Returns how many zone key records couldn't be read (staged for attention).
     @discardableResult
     static func takeDocumentFiles(zoneKeys: [SyncServerRecord], saves: [SyncPayload], deletions: [String], zone: String,
@@ -573,37 +659,42 @@ extension SyncEngineCore {
                 }
             }
         }
-        for payload in saves where payload.recordType == "document" && payload.mergedInto == nil {
+        for payload in saves where SyncFileTables.names.contains(payload.recordType) && payload.mergedInto == nil {
             if let reference = payload.documentFile {
                 try SyncDocumentFile.setReference(reference, uuid: payload.recordName, db: db, now: now)
             }
         }
         // Only once the row is gone here (a document linked by another record is never deleted, §5.3).
-        for uuid in deletions where try SyncRecordStore.localId(table: "document", uuid: uuid, db: db) == nil {
+        for uuid in deletions where try SyncFileTables.row(uuid: uuid, db: db) == nil {
             try SyncDocumentFile.setReference(nil, uuid: uuid, db: db, now: now)
         }
         _ = try rewrapStragglers(zone: zone, keys: try keyStore.allKeys(zone: zone), db: db, now: now)
         return unreadable
     }
 
-    /// The Mac keeps every file (sync spec §5.7): downloads each document's file missing from the library.
+    /// The Mac keeps every file (sync spec §5.7): downloads each file-bearing row's file missing here (documents
+    /// into the library, waiting files into the waiting folder).
     func downloadMissingDocuments() async throws -> (downloaded: Int, needingAttention: Int) {
         guard let documents, documents.policy == .eager else { return (0, 0) }
+        let tables = documents.tables
         let candidates = try await db.read { db -> [String] in
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT r.uuid, d.sha256, d.storedRelativePath FROM document d
-                JOIN syncRecord r ON r.tableName = 'document' AND r.localId = d.id
-                ORDER BY d.id
-                """)
             var result: [String] = []
-            for row in rows {
-                let uuid: String = row["uuid"]
-                guard let reference = try SyncDocumentFile.reference(uuid: uuid, db: db),
-                      try SyncDocumentFile.failed(uuid: uuid, db: db) != reference else { continue }
-                let path: String = row["storedRelativePath"]
-                if let safe = SyncDocumentFile.libraryPath(stored: path, sha256: row["sha256"]),
-                   FileManager.default.fileExists(atPath: documents.root.appendingPathComponent(safe).path) { continue }
-                result.append(uuid)
+            for table in tables {
+                let name = SyncChangeTracker.quoted(table.table)
+                let rows = try Row.fetchAll(db, sql: """
+                    SELECT r.uuid, t.sha256, t.storedRelativePath FROM \(name) t
+                    JOIN syncRecord r ON r.tableName = ? AND r.localId = t.id
+                    ORDER BY t.id
+                    """, arguments: [table.table])
+                for row in rows {
+                    let uuid: String = row["uuid"]
+                    guard let reference = try SyncDocumentFile.reference(uuid: uuid, db: db),
+                          try SyncDocumentFile.failed(uuid: uuid, db: db) != reference else { continue }
+                    let path: String = row["storedRelativePath"]
+                    if let safe = table.safePath(stored: path, sha256: row["sha256"]),
+                       SyncFileTables.isRegularFile(table.root.appendingPathComponent(safe)) { continue }
+                    result.append(uuid)
+                }
             }
             return result
         }
@@ -624,33 +715,36 @@ extension SyncEngineCore {
         return (downloaded, attention)
     }
 
-    /// Fetches, opens and checks one document's file, and places it in the library. Problems that need a
-    /// person are logged (once per reference) and thrown.
+    /// Fetches, opens and checks one row's file (a document's, or a waiting file's copy), and places it under
+    /// its table's root. Problems that need a person are logged (once per reference) and thrown.
     func download(uuid: String) async throws -> URL {
         guard let documents else { throw SyncDocumentError.notConfigured }
         let zone = SyncRecordStore.householdZone
-        let found = try await db.read { db -> (String, String, SyncDocumentFileReference?)? in
-            guard let id = try SyncRecordStore.localId(table: "document", uuid: uuid, db: db),
-                  let row = try Row.fetchOne(db, sql: "SELECT sha256, storedRelativePath FROM document WHERE id = ?", arguments: [id])
+        let tables = documents.tables
+        let found = try await db.read { db -> (SyncFileTable, String, String, SyncDocumentFileReference?)? in
+            guard let (name, id) = try SyncFileTables.row(uuid: uuid, db: db), let table = tables.first(where: { $0.table == name }),
+                  let row = try Row.fetchOne(db, sql: "SELECT sha256, storedRelativePath FROM \(SyncChangeTracker.quoted(name)) WHERE id = ?",
+                                             arguments: [id])
             else { return nil }
-            return (row["sha256"], row["storedRelativePath"], try SyncDocumentFile.reference(uuid: uuid, db: db))
+            return (table, row["sha256"], row["storedRelativePath"], try SyncDocumentFile.reference(uuid: uuid, db: db))
         }
-        guard let (sha, stored, reference) = found else { throw SyncDocumentError.documentNotFound }
+        guard let (table, sha, stored, reference) = found else { throw SyncDocumentError.documentNotFound }
         guard let reference else { throw SyncDocumentError.noFile }
         func attention(_ error: SyncDocumentError, _ message: String) async throws -> Never {
             let now = clock()
             try await db.write { db in
-                try SyncDocumentFile.logAttention(uuid: uuid, message: message, db: db, now: now)
+                try SyncDocumentFile.logAttention(table: table.table, uuid: uuid, message: message, db: db, now: now)
                 try SyncDocumentFile.setFailed(reference, uuid: uuid, db: db, now: now)
             }
-            Self.documentLog.error("Sync document file not saved: \(String(describing: error), privacy: .public)")
+            Self.documentLog.error("Sync file not saved: \(String(describing: error), privacy: .public)")
             throw error
         }
-        guard let path = SyncDocumentFile.libraryPath(stored: stored, sha256: sha) else {
-            try await attention(.unsafePath, SyncDocumentFile.unsafePathMessage)
+        guard let path = table.safePath(stored: stored, sha256: sha) else {
+            try await attention(.unsafePath, table.unsafePathMessage)
         }
-        let destination = documents.root.appendingPathComponent(path)
-        if let existing = try? Data(contentsOf: destination), DocumentCrypto.sha256(existing) == sha.lowercased() { return destination }
+        let destination = table.root.appendingPathComponent(path)
+        if SyncFileTables.isRegularFile(destination), let existing = try? Data(contentsOf: destination),
+           DocumentCrypto.sha256(existing) == sha.lowercased() { return destination }
 
         guard let record = try await transport.fetch(reference.recordName, zone: zone),
               let ciphertext = record.wire.assets[SyncDocumentFile.assetField],
@@ -662,26 +756,36 @@ extension SyncEngineCore {
             throw SyncDocumentError.zoneKeyUnavailable
         }
         guard let plaintext = try? DocumentCrypto.open(ciphertext, wrappedKey: reference.wrappedKey, zoneKey: zoneKey,
-                                                      authenticating: DocumentCrypto.documentContext(uuid: uuid, sha256: sha)) else {
+                                                      authenticating: table.context(uuid: uuid, sha256: sha)) else {
             try await attention(.unreadable, SyncDocumentFile.unreadableMessage)
         }
-        // Checked before anything is written: a file that isn't the record's never reaches the library.
+        // Checked before anything is written: a file that isn't the record's never reaches the library (or the
+        // waiting folder).
         guard DocumentCrypto.sha256(plaintext) == sha.lowercased() else {
             try await attention(.hashMismatch, SyncDocumentFile.hashMismatchMessage)
         }
         // Placed the way the library places an added file: a timestamped temporary copy (removed as stale if a
         // crash leaves it), moved in; the same content already there counts as placed.
         let now = clock()
-        try FileManager.default.createDirectory(at: documents.root, withIntermediateDirectories: true)
-        EvidenceLibrary.removeStaleTemporaryFiles(in: documents.root, now: now)
-        let temporary = documents.root.appendingPathComponent(
+        let manager = FileManager.default
+        try manager.createDirectory(at: table.root, withIntermediateDirectories: true)
+        EvidenceLibrary.removeStaleTemporaryFiles(in: table.root, now: now)
+        // Something there that isn't a regular file (a symbolic link) is never written through.
+        if (try? manager.attributesOfItem(atPath: destination.path)) != nil, !SyncFileTables.isRegularFile(destination) {
+            try manager.removeItem(at: destination)
+        }
+        let temporary = table.root.appendingPathComponent(
             "\(EvidenceLibrary.temporaryPrefix)\(Int(now.timeIntervalSince1970))-\(UUID().uuidString)")
         do {
             try plaintext.write(to: temporary)
             _ = try EvidenceLibrary.place(temporary, at: destination, sha256: sha.lowercased(), byteCount: Int64(plaintext.count))
         } catch {
-            try? FileManager.default.removeItem(at: temporary)
+            try? manager.removeItem(at: temporary)
             throw error
+        }
+        if table.table == SyncFileTables.importWaitingFile {
+            // Kept again under another name: the copy under the old name goes (as `ImportWaitingList.keep` does).
+            ImportWaitingList.removeOtherFiles(in: destination.deletingLastPathComponent(), keeping: destination.lastPathComponent)
         }
         return destination
     }

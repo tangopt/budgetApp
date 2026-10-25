@@ -91,7 +91,7 @@ public enum SyncRehearsal {
         public var largest: Largest?
         /// Records whose payload went as an encrypted asset (ruling R4).
         public var largePayloads: Int
-        /// Sealed document files (`documentFile` records) and their ciphertext bytes.
+        /// Sealed files (`documentFile` records: documents' and waiting copies') and their ciphertext bytes.
         public var documents: Int
         public var documentBytes: Int
         /// `<recordType>.<field>` for any value outside the encrypted fields (must be empty).
@@ -164,10 +164,20 @@ public enum SyncRehearsal {
             try copy.close()
         }
         var library: URL?
+        // Files kept for later: their copies, from `Waiting` beside the library when it is there (only read and copied).
+        let waiting = work.appendingPathComponent("Waiting", isDirectory: true)
+        var waitingCopied = false
         if let libraryPath {
             let root = work.appendingPathComponent("Library", isDirectory: true)
-            try fileManager.copyItem(at: URL(fileURLWithPath: libraryPath, isDirectory: true), to: root)
+            let source = URL(fileURLWithPath: libraryPath, isDirectory: true)
+            try fileManager.copyItem(at: source, to: root)
             library = root
+            let waitingSource = source.standardizedFileURL.deletingLastPathComponent().appendingPathComponent("Waiting", isDirectory: true)
+            var isFolder: ObjCBool = false
+            if fileManager.fileExists(atPath: waitingSource.path, isDirectory: &isFolder), isFolder.boolValue {
+                try fileManager.copyItem(at: waitingSource, to: waiting)
+                waitingCopied = true
+            }
         }
         let original = try DatabaseQueue(path: originalPath, configuration: readOnly)
         defer { try? original.close() }
@@ -192,7 +202,7 @@ public enum SyncRehearsal {
         // One in-memory key store for both ends, as iCloud Keychain would be (ruling R15); nothing is kept.
         let keys = InMemorySyncKeyStore()
         let sender = SyncEngineCore(db: copy, transport: cloud, device: SyncDevice(id: "rehearsal-sender", name: "Rehearsal"), keyStore: keys,
-                                    documents: library.map { SyncDocumentFiles(root: $0, policy: .lazy) })
+                                    documents: library.map { SyncDocumentFiles(root: $0, policy: .lazy, waitingRoot: waiting) })
         let pushStart = Date()
         let push = try await sender.pushPending()
         let pushSeconds = Date().timeIntervalSince(pushStart)
@@ -225,7 +235,8 @@ public enum SyncRehearsal {
             }
         }
         var plaintext = Set(await cloud.unencryptedFieldNames)
-        plaintext.formUnion(try plaintextFields(in: stored, assetDirectory: work.appendingPathComponent("Assets", isDirectory: true), library: library))
+        plaintext.formUnion(try plaintextFields(in: stored, assetDirectory: work.appendingPathComponent("Assets", isDirectory: true), library: library,
+                                                waiting: waitingCopied ? waiting : nil))
         let sealing = try sealingFindings(in: stored, keys: keys)
 
         // Applied into an empty migrated database through the checked pull.
@@ -234,7 +245,8 @@ public enum SyncRehearsal {
         let receiver = receiverManager.dbQueue
         defer { try? receiver.close() }
         let receiving = SyncEngineCore(db: receiver, transport: cloud, device: SyncDevice(id: "rehearsal-receiver", name: "Rehearsal receiver"), keyStore: keys,
-                                       documents: SyncDocumentFiles(root: work.appendingPathComponent("ReceiverLibrary", isDirectory: true), policy: .lazy))
+                                       documents: SyncDocumentFiles(root: work.appendingPathComponent("ReceiverLibrary", isDirectory: true), policy: .lazy,
+                                                                    waitingRoot: work.appendingPathComponent("ReceiverWaiting", isDirectory: true)))
         var apply = Apply()
         let sampler = FootprintSampler()
         apply.footprintBeforeBytes = FootprintSampler.current()
@@ -363,9 +375,9 @@ public enum SyncRehearsal {
     ///   holding the start of a file of `library` anywhere in it;
     /// - `<type>.recordName`: a record name that isn't opaque (a UUID, a sealed file's `<uuid>.file.<hex>`, or the
     ///   engine's fixed zone-key and lease names).
-    static func plaintextFields(in wires: [SyncWireRecord], assetDirectory: URL, library: URL? = nil) throws -> [String] {
+    static func plaintextFields(in wires: [SyncWireRecord], assetDirectory: URL, library: URL? = nil, waiting: URL? = nil) throws -> [String] {
         defer { try? FileManager.default.removeItem(at: assetDirectory) }
-        let signatures = try library.map(LibrarySignatures.init) ?? LibrarySignatures()
+        let signatures = try LibrarySignatures(roots: [library, waiting].compactMap { $0 })
         var found = Set<String>()
         for wire in wires {
             if !isOpaque(wire.recordName, zone: wire.zone) { found.insert(wire.recordType + ".recordName") }
@@ -459,6 +471,15 @@ public enum SyncRehearsal {
         init() {}
 
         init(root: URL) throws {
+            try self.init(roots: [root])
+        }
+
+        /// The files under each root (the library, the waiting copies).
+        init(roots: [URL]) throws {
+            for root in roots { try add(root) }
+        }
+
+        private mutating func add(_ root: URL) throws {
             let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey])
             while let url = enumerator?.nextObject() as? URL {
                 guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,

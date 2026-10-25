@@ -165,7 +165,7 @@ public struct ImportWaitingList: Sendable {
                 throw error
             }
             // Kept again under another name: the copy under the old name goes.
-            removeOtherFiles(in: root.appendingPathComponent(sha, isDirectory: true), keeping: file.fileName)
+            Self.removeOtherFiles(in: root.appendingPathComponent(sha, isDirectory: true), keeping: file.fileName)
         }
         return result
     }
@@ -200,10 +200,11 @@ public struct ImportWaitingList: Sendable {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType) == .typeRegular
     }
 
-    /// Removes every file of a copy folder but `name` (and other keeps' partial copies).
-    private func removeOtherFiles(in folder: URL, keeping name: String) {
+    /// Removes every file of a copy folder but `name` (and other keeps' partial copies, hidden). Also
+    /// after a sync download places a copy kept again elsewhere under another name.
+    static func removeOtherFiles(in folder: URL, keeping name: String) {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        for other in names where other != name && !other.hasSuffix(".partial") {
+        for other in names where other != name && !other.hasPrefix(".") {
             try? FileManager.default.removeItem(at: folder.appendingPathComponent(other))
         }
     }
@@ -264,10 +265,15 @@ public struct ImportWaitingList: Sendable {
     /// Removes the copy folders of rows deleted: only a folder named by a well-formed hash (rows can
     /// arrive by sync), and never one whose hash has a row again (kept meanwhile).
     func removeCopies(_ rows: [ImportWaitingFile]) {
-        for row in rows where Self.storedPath(sha256: row.sha256, name: "x") != nil {
-            let keptAgain = (try? database.read { db in try ImportWaitingFile.filter(Column("sha256") == row.sha256).fetchCount(db) > 0 }) ?? true
+        removeCopies(sha256s: rows.map(\.sha256))
+    }
+
+    /// `removeCopies` by hash: also for rows a sync deleted here (`SyncEngineCore`).
+    func removeCopies(sha256s: [String]) {
+        for sha in Set(sha256s) where Self.storedPath(sha256: sha, name: "x") != nil {
+            let keptAgain = (try? database.read { db in try ImportWaitingFile.filter(Column("sha256") == sha).fetchCount(db) > 0 }) ?? true
             guard !keptAgain else { continue }
-            try? FileManager.default.removeItem(at: root.appendingPathComponent(row.sha256, isDirectory: true))
+            try? FileManager.default.removeItem(at: root.appendingPathComponent(sha, isDirectory: true))
         }
     }
 

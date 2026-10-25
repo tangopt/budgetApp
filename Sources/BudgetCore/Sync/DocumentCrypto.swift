@@ -43,6 +43,14 @@ public enum DocumentCrypto {
         Data("mango.document.v1|\(uuid)|\(sha256.lowercased())".utf8)
     }
 
+    /// The authenticated context of a file of `table`'s row `uuid`: a document's is `documentContext`
+    /// (unchanged, so files sealed before other tables carried files still open); any other table's names the
+    /// table too, so a file can't pass as another table's row's.
+    public static func fileContext(table: String, uuid: String, sha256: String) -> Data {
+        guard table != "document" else { return documentContext(uuid: uuid, sha256: sha256) }
+        return Data("mango.file.v1|\(table)|\(uuid)|\(sha256.lowercased())".utf8)
+    }
+
     /// Seals `plaintext` under a new random data key, and wraps that key with `zoneKey`.
     public static func seal(_ plaintext: Data, zoneKey: SymmetricKey, authenticating context: Data = Data()) throws
         -> (ciphertext: Data, wrappedKey: Data) {

@@ -300,7 +300,7 @@ public actor SyncEngineCore {
         let reconcile = full ? listed : nil
         let keyRecords = Array(zoneKeys.values)
         let now = clock()
-        return try await db.write { db in
+        let (pulled, discarded) = try await db.write { db -> (SyncPullReport, [String]) in
             var report = SyncPullReport()
             report.alreadyHeld = skipped
             report.received = ordered.count + skipped
@@ -327,6 +327,14 @@ public actor SyncEngineCore {
                 case .waiting(let record):
                     try SyncTranslator.stageWaitingForKey(record, db: db, now: now)
                     report.waitingForKey += 1
+                }
+            }
+            // Files kept for later deleted on another device: their hashes, so the copies here go once the rows have.
+            var waitingDeleted: [String] = []
+            for case (let name, .delete) in ordered {
+                if let id = try SyncRecordStore.localId(table: SyncFileTables.importWaitingFile, uuid: name, db: db),
+                   let sha = try String.fetchOne(db, sql: "SELECT sha256 FROM importWaitingFile WHERE id = ?", arguments: [id]) {
+                    waitingDeleted.append(sha)
                 }
             }
             // Sync spec §5.4: the apply (and the batches it completes or flushes) is kept only while it moves no
@@ -359,8 +367,13 @@ public actor SyncEngineCore {
                 report.reconciled = try SyncTranslator.reconcile(zone: zone, listed: reconcile, db: db, now: now).count
             }
             if let finalToken { try Self.setToken(finalToken, zone: zone, db: db, now: now) }
-            return report
+            return (report, waitingDeleted)
         }
+        // A row deleted remotely takes its local copy with it (never one whose hash has a row here again).
+        if let documents, !discarded.isEmpty {
+            ImportWaitingList(root: documents.waitingRoot, database: db).removeCopies(sha256s: discarded)
+        }
+        return pulled
     }
 
     // MARK: Push

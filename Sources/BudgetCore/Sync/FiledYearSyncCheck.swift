@@ -77,6 +77,14 @@ public enum FiledYearSyncCheck {
     /// Ruling R13: the years filed in the real database, protected whatever their stored status.
     public static let fixedYears = 2020...2024
 
+    /// Tables no tax figure reads, left out of the tables an apply wrote: files kept for later (plan Task 10).
+    static let unprotectedTables: Set<String> = ["importWaitingFile"]
+
+    /// The tables written that the check looks at (nil: can't tell, every recorded statement runs again).
+    static func checkedWritten(_ written: Set<String>?) -> Set<String>? {
+        written.map { $0.subtracting(unprotectedTables) }
+    }
+
     // MARK: The check
 
     /// The protected years' figures as stored now, with what taking them read.
@@ -115,7 +123,7 @@ public enum FiledYearSyncCheck {
         let after: TaxFigures.Snapshot
         // The years are the baseline's own (`fixedYears`): a tax year added or removed since shows in the reads
         // of the years it reaches (each year's return works out the earlier ones it carries from).
-        if let reads = baseline.reads, let changed = try reads.changedYears(db: db, written: written, fixedYears: true) {
+        if let reads = baseline.reads, let changed = try reads.changedYears(db: db, written: checkedWritten(written), fixedYears: true) {
             guard !changed.isEmpty else { return [] }
             // The returns and accounts of the years whose reads didn't change are reused.
             let part = try TaxFigures.snapshot(db: db, only: changed, memo: reads.memo.keeping(excluding: Set(changed)))
