@@ -30,9 +30,22 @@ while (( $# )); do
     shift
 done
 if [[ -n "$OUTPUT" ]]; then
-    mkdir -p "$OUTPUT"
-    OUTPUT="$(cd "$OUTPUT" && pwd -P)"
-    [[ "$OUTPUT" != /Applications ]] || { echo "--output is for a folder other than /Applications." >&2; exit 2; }
+    # Checked before anything is created: the path with symbolic links and .. resolved, its existing
+    # part through `pwd -P` (which also gives the folder names' real case), compared case-blind.
+    [[ "$OUTPUT" == /* ]] || OUTPUT="$PWD/$OUTPUT"
+    OUTPUT="${OUTPUT:A}"
+    existing="$OUTPUT" rest=""
+    while [[ ! -d "$existing" ]]; do rest="/${existing:t}$rest"; existing="${existing:h}"; done
+    resolved="$(cd "$existing" && pwd -P)$rest"
+    resolved="${resolved%/}"
+    for apps in /Applications /System/Volumes/Data/Applications; do
+        if [[ "${resolved:l}" == "${apps:l}" || "${resolved:l}" == "${apps:l}/"* ]]; then
+            echo "--output is for a folder outside /Applications: $resolved" >&2
+            exit 2
+        fi
+    done
+    mkdir -p "$resolved"
+    OUTPUT="$(cd "$resolved" && pwd -P)"
 fi
 
 cd "$(dirname "$0")/.."
@@ -99,6 +112,10 @@ elif [[ -n "$TEAM" ]]; then
     # file it is seconds, for about 7% slower code (TaxFigures.snapshot, measured 2026-10-25).
     ARCH="$(uname -m)"
     # The cache keeps the previous build's app, so its presence proves nothing: check xcodebuild itself.
+    BUILT="$CACHE_DIR/team/Build/Products/Release/Mango.app"
+    # The bundle is reassembled each time (compiling stays incremental): an incremental build doesn't
+    # take out of the kept bundle a resource the project no longer has.
+    rm -rf "$BUILT"
     BUILD_OK=1
     xcodebuild -project Mango.xcodeproj -scheme Mango -configuration Release \
         -destination "platform=macOS,arch=$ARCH" -derivedDataPath "$CACHE_DIR/team" \
@@ -107,7 +124,6 @@ elif [[ -n "$TEAM" ]]; then
         > "$BUILD_DIR/build.log" 2>&1 || BUILD_OK=0
     grep -E "error:|warning:|BUILD" "$BUILD_DIR/build.log" | grep -v appintents || true
     (( BUILD_OK )) || { echo "Build failed." >&2; exit 1; }
-    BUILT="$CACHE_DIR/team/Build/Products/Release/Mango.app"
     [[ -x "$BUILT/Contents/MacOS/Mango" ]] || { echo "Build failed." >&2; exit 1; }
 
     # The archive Xcode's export reads: the app under Products/Applications and an Info.plist naming it.
@@ -133,10 +149,16 @@ elif [[ -n "$TEAM" ]]; then
     plist "Add :ApplicationProperties:Team string $TEAM"
     export_developer_id
 else
+    # As above: the kept cache's app proves nothing, so xcodebuild's own status decides, and the bundle
+    # is reassembled each time.
+    APP="$CACHE_DIR/local/Build/Products/Release/Mango.app"
+    rm -rf "$APP"
+    BUILD_OK=1
     xcodebuild -project Mango.xcodeproj -scheme Mango -configuration Release \
         -destination 'platform=macOS' -derivedDataPath "$CACHE_DIR/local" build \
-        | grep -E "error:|warning:|BUILD" | grep -v appintents || true
-    APP="$CACHE_DIR/local/Build/Products/Release/Mango.app"
+        > "$BUILD_DIR/build.log" 2>&1 || BUILD_OK=0
+    grep -E "error:|warning:|BUILD" "$BUILD_DIR/build.log" | grep -v appintents || true
+    (( BUILD_OK )) || { echo "Build failed." >&2; exit 1; }
     [[ -x "$APP/Contents/MacOS/Mango" ]] || { echo "Build failed." >&2; exit 1; }
 fi
 
