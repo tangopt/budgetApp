@@ -97,7 +97,7 @@ enum SyncDemoMode {
                 log.info("Sync demo: received \(report.pull.received) · saved \(report.push.saved) · refused \(report.push.refused) · files \(report.push.documentsSealed)")
                 if printKey { printDemoKey(dbQueue: dbQueue, keyStore: keyStore) }
             } catch {
-                log.error("Sync demo launch sync didn't finish: \(String(describing: error), privacy: .public)")
+                log.error("Sync demo launch sync didn't finish: \(String(describing: type(of: error)), privacy: .public) \(String(describing: error), privacy: .private)")
                 if printKey { printDemoKey(dbQueue: dbQueue, keyStore: keyStore) }
             }
         }
@@ -141,7 +141,7 @@ enum SyncDemoMode {
                 FileHandle.standardError.write(Data(line.utf8))
                 exit(0)
             } catch {
-                FileHandle.standardError.write(Data("Mango: sync demo reset stopped: \(String(describing: error))\n".utf8))
+                FileHandle.standardError.write(Data("Mango: sync demo reset stopped (\(String(describing: type(of: error))))\n".utf8))
                 exit(1)
             }
         }

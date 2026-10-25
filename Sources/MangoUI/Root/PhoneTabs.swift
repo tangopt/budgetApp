@@ -73,10 +73,13 @@ public struct PhoneTabs: View {
     let lastSync: Date?
     let onRefresh: () async -> Void
     let onSettings: () -> Void
+    /// Demo data ("Try with demo data"): `DemoBanner` over every screen.
+    let isDemo: Bool
 
-    public init(model: PhoneTabsModel, syncStatus: SyncStatus, lastSync: Date? = nil, onRefresh: @escaping () async -> Void,
-                onSettings: @escaping () -> Void) {
+    public init(model: PhoneTabsModel, syncStatus: SyncStatus, lastSync: Date? = nil, isDemo: Bool = false,
+                onRefresh: @escaping () async -> Void, onSettings: @escaping () -> Void) {
         self.model = model
+        self.isDemo = isDemo
         self.syncStatus = syncStatus
         self.lastSync = lastSync
         self.onRefresh = onRefresh
@@ -108,6 +111,8 @@ public struct PhoneTabs: View {
                     .offlineBanner(syncStatus, lastSync: lastSync)
             }
         }
+        // Each screen shows it under its navigation bar (`offlineBannerSlot`, `demoBannerSlot`).
+        .environment(\.showsDemoData, isDemo)
         .task(id: SyncReloadTrigger(syncStatus)) {
             await model.reload(for: PhoneTabsModel.reloadKey(syncStatus))
         }

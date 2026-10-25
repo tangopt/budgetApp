@@ -37,6 +37,7 @@ public struct PropertyView: View {
             .navigationTitle(model.state.page?.single?.property.name ?? "Property")
             .navigationDestination(for: PropertyDestination.self) { destination in
                 PropertyDetailScreen(model: model, destination: destination, onRefresh: onRefresh)
+                    .demoBannerSlot()
             }
         }
         .task(id: SyncReloadTrigger(syncStatus)) {
