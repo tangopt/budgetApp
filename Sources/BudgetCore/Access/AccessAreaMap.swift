@@ -175,9 +175,11 @@ public enum AccessAreaMap {
 
     // MARK: Accounts
 
-    /// Budget & accounts, plus the owner's say for an owner or level change. A new account names its owner
-    /// (who must be the writer) unless it is joint at Everything; a change is judged on the owner before it;
-    /// a joint account's owner or level is nobody's to change here (the ownership sheet has its own rule).
+    /// Budget & accounts, plus the owner's say for a level change. A new account names its owner (who must
+    /// be the writer) unless it is joint at Everything; a level change is judged on the owner before it; a
+    /// joint account's level is nobody's to change, and after set-up nobody changes an owner. The one
+    /// exception is the ownership sheet: while ownership is unconfirmed, the admin (with Household settings)
+    /// sets the owner and level of an account that has no owner yet.
     private static func accountDecision(change: AccessChange, changedFields: Set<String>, row: [String: SyncValue],
                                         db: Database) throws -> AccessDecision {
         var parts: [AccessDecision] = []
@@ -195,7 +197,17 @@ public enum AccessAreaMap {
         case .update(let before):
             if !others.isEmpty { parts.append(.area(.budgetAndAccounts)) }
             if !changedFields.isDisjoint(with: ownerOnlyAccountFields) {
-                parts.append(.ownerOnly(personId: try localId(before["ownerPersonId"], table: "person", db: db)))
+                let owner = try localId(before["ownerPersonId"], table: "person", db: db)
+                if owner == nil, try !SharingSetup.isConfirmed(db: db) {
+                    // The ownership sheet (`SharingSetup`): the admin, once, on accounts with no owner yet.
+                    parts.append(.area(.householdSettings))
+                    parts.append(.ownerOnly(personId: try Int64.fetchOne(db, sql: "SELECT personId FROM appUser WHERE isAdmin = 1 ORDER BY id LIMIT 1")))
+                } else if changedFields.contains("ownerPersonId") {
+                    // After set-up nobody changes an owner (a deliberate later flow, not step 6).
+                    parts.append(.denied)
+                } else {
+                    parts.append(.ownerOnly(personId: owner))
+                }
             }
         case .delete:
             parts.append(.area(.budgetAndAccounts))

@@ -27,14 +27,21 @@ public enum AccountEditing {
     /// first snapshot dated `asOf`; without one the account starts from zero.
     /// `trackingMode` is legacy (stored, ignored by every calculation). `includeInNetWorth`:
     /// Count toward net worth (`Account.includeInNetWorth`).
+    /// `owner`: who adds it. Once ownership is confirmed (`SharingSetup.isConfirmed`) the account is theirs,
+    /// at their default level (`SharingDefaults`: Balance only). nil, or before the ownership sheet: joint at
+    /// Everything (an account added as joint, the tools, and accounts the sheet will assign).
     @discardableResult
     public static func add(db: Database, name: String, currency: Currency, kind: AccountKind, trackingMode: AccountTrackingMode = .imported, openingBalanceEntered: Int?, asOf: Date,
-                           details: AccountDetails = AccountDetails(), includeInNetWorth: Bool = true) throws -> Account {
+                           details: AccountDetails = AccountDetails(), includeInNetWorth: Bool = true, owner: AccessActor? = nil) throws -> Account {
         let trimmed = try validatedName(db: db, name: name, excluding: nil)
         let details = try details.normalized()
         var account = Account(name: trimmed, currency: currency, kind: kind, trackingMode: trackingMode,
                               sortOrder: try AccountOrdering.orderForNewAccount(db: db), includeInNetWorth: includeInNetWorth)
         account.apply(details)
+        if let owner, try SharingSetup.isConfirmed(db: db) {
+            account.ownerPersonId = owner.personId
+            account.sharingLevel = SharingDefaults.level(ownerPersonId: owner.personId, isPropertyLinked: false)
+        }
         try account.insert(db)
         if let openingBalanceEntered {
             try BalanceUpdates.upsertSnapshot(db: db, accountId: account.id!, date: asOf, balanceMinorUnits: NetWorthCalculator.signedSnapshotBalance(enteredMinorUnits: openingBalanceEntered, accountKind: kind), note: nil)

@@ -364,7 +364,8 @@ final class AccessPolicyTests: XCTestCase {
             XCTAssertEqual(level, .ownerOnly(personId: h.memberPersonId))
             XCTAssertTrue(try AccessPolicy.allows(h.member, level, db: db))
             XCTAssertFalse(try AccessPolicy.allows(h.admin, level, db: db))
-            // A joint account's level: nobody.
+            // A joint account's level, once ownership is confirmed: nobody.
+            try db.execute(sql: "INSERT INTO personSharing(personId, ownershipConfirmedAt) VALUES (?, ?)", arguments: [h.adminPersonId, Self.day])
             XCTAssertEqual(try decide("account", change: .update(before: ["ownerPersonId": .null]), fields: ["sharingLevel"],
                                       row: ["ownerPersonId": .null], db), .denied)
             // A name and a level together need both.

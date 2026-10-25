@@ -36,6 +36,12 @@ public enum ActorWrite {
     public static func perform<T>(_ actor: AccessActor, area: AccessArea, origin: WriteOrigin = .edit, db: Database,
                                   _ body: () throws -> T) throws -> T {
         guard try AccessPolicy.can(actor, .edit, area, db: db) else { throw AccessDenied(area: area) }
+        return try stamped(actor, origin: origin, db: db, body)
+    }
+
+    /// `perform` without the area check, for writes whose rule isn't an area: the caller has already
+    /// checked it (an owner setting their own account's level, `SharingLevels`).
+    static func stamped<T>(_ actor: AccessActor, origin: WriteOrigin, db: Database, _ body: () throws -> T) throws -> T {
         let previous = try Row.fetchOne(db, sql: "SELECT appUserUuid, origin FROM syncWriter WHERE id = 1")
         let previousWriter: String? = previous?["appUserUuid"]
         let previousOrigin: String? = previous?["origin"]
