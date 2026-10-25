@@ -372,7 +372,9 @@ public actor SyncEngineCore {
             let closedWaiting = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncBatch WHERE state = 'closed')") ?? true
             let baseline = incoming.isEmpty && !closedWaiting && !retryAll ? FiledYearBaseline.none : try FiledYearSyncCheck.baseline(db: db)
             // Caught up: a closed batch that can't complete any more applies now (`SyncBatch.flushClosed`, inside).
-            let outcome = try FiledYearSyncCheck.apply(incoming, baseline: baseline, db: db, deviceUser: user, now: now, retryAll: retryAll)
+            // Read-only (the phone): re-filing the apply does here stays untracked, since it is never sent.
+            let applyAll = { try FiledYearSyncCheck.apply(incoming, baseline: baseline, db: db, deviceUser: user, now: now, retryAll: retryAll) }
+            let outcome = try self.readOnly ? SyncChangeTracker.readOnlyApply(db: db, applyAll) : applyAll()
             if retryAll { try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [Self.retryStagedKey]) }
             let results = outcome.results
             report.filedYearAlert = outcome.alert

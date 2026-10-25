@@ -583,6 +583,26 @@ final class SyncChangeTrackerTests: XCTestCase {
 
     // MARK: Incoming applies
 
+    /// Re-filing an apply makes is tracked (it must reach the other devices), except on a read-only device, which
+    /// never sends anything: there it would only pile up pending rows (final review M4).
+    func testTrackedWritesInsideAReadOnlyApplyQueueNothing() throws {
+        try manager.dbQueue.write { db in
+            try SyncChangeTracker.applyingIncoming(db: db) {
+                _ = try SyncChangeTracker.trackingWrites(db: db) { try insertAccount(db, "Re-filed here") }
+            }
+        }
+        XCTAssertEqual(try pending().count, 1, "a writable device sends what it re-filed")
+        try manager.dbQueue.write { db in
+            try SyncChangeTracker.readOnlyApply(db: db) {
+                try SyncChangeTracker.applyingIncoming(db: db) {
+                    _ = try SyncChangeTracker.trackingWrites(db: db) { try insertAccount(db, "Re-filed on the phone") }
+                }
+            }
+            XCTAssertFalse(try SyncChangeTracker.inReadOnlyApply(db: db), "the marker goes with the apply")
+        }
+        XCTAssertEqual(try pending().count, 1, "a read-only device queues nothing")
+    }
+
     func testIncomingApplyIsNotTracked() throws {
         try manager.dbQueue.write { db in
             try SyncChangeTracker.applyingIncoming(db: db) {
