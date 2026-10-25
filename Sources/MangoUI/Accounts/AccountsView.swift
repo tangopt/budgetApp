@@ -38,6 +38,7 @@ public struct AccountsView: View {
             .navigationTitle("Accounts")
             .navigationDestination(for: AccountDestination.self) { destination in
                 AccountDetailView(model: model.detailModel(for: destination))
+                    .demoBannerSlot()
             }
         }
         .task(id: SyncReloadTrigger(syncStatus)) {

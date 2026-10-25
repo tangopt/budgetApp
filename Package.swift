@@ -8,7 +8,7 @@ let package = Package(
         .library(name: "BudgetCore", targets: ["BudgetCore"]),
         .library(name: "MangoSync", targets: ["MangoSync"]),
         .library(name: "MangoUI", targets: ["MangoUI"]),
-        // Linked by the iPhone app only for its snapshot harness (`SNAPSHOTS`); see Phone/Snapshots/PhoneSnapshotRunner.swift.
+        // Linked by the iPhone app: "Try with demo data" (Phone/Demo) and its snapshot harness (Phone/Snapshots).
         .library(name: "BudgetDemo", targets: ["BudgetDemo"])
     ],
     dependencies: [

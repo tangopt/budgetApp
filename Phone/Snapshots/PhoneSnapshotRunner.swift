@@ -3,9 +3,8 @@
 // (`SWIFT_ACTIVE_COMPILATION_CONDITIONS` += `SNAPSHOTS`, scripts/render-phone-snapshots.sh), which runs nothing
 // else: no lock (plan Global Constraints: snapshot builds skip it), no sync, no network, never the phone's database.
 //
-// Ruling (BudgetDemo in the app): XcodeGen can't vary a target's dependencies by build setting, so `MangoPhone`
-// links the `BudgetDemo` library in every build, and only this file imports it, under `#if SNAPSHOTS`. A release
-// build carries the unused library and never calls it.
+// BudgetDemo is part of every build of the app: "Try with demo data" (Phone/Demo/PhoneDemoData.swift) builds the
+// demo database on the phone too, into its own folder (Caches/Mango-Demo).
 import SwiftUI
 import UIKit
 import BudgetCore

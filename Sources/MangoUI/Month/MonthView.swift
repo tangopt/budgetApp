@@ -39,6 +39,7 @@ public struct MonthView: View {
             .navigationTitle("Month")
             .navigationDestination(for: MonthRowDestination.self) { destination in
                 MonthTransactionsView(model: model.transactionsModel(for: destination))
+                    .demoBannerSlot()
             }
         }
         .task(id: SyncReloadTrigger(syncStatus)) {

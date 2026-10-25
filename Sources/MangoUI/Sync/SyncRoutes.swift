@@ -27,6 +27,27 @@ public enum SyncRoutes {
         DemoRoute(name: "first-download-waiting", minimumFigures: 0) { _ in
             AnyView(FirstDownloadView(received: 0, waiting: true))
         },
+        // The waiting screen's ways out: Try with demo data, Sync now (sync running), Settings and Lock.
+        DemoRoute(name: "first-download-waiting-actions", minimumFigures: 0) { _ in
+            AnyView(FirstDownloadView(received: 0, waiting: true,
+                                      actions: .init(onSettings: {}, onLock: {}, onSyncNow: {}, onTryDemo: {})))
+        },
+        // "Try with demo data": the tabs over the demo, under the banner (sync off).
+        DemoRoute(name: "demo-tabs", minimumFigures: 14) { context in
+            let today = context.today
+            let tabs = PhoneTabsModel(dbQueue: context.dbQueue, today: { today }, hasProperty: true,
+                                      home: HomeViewModel(dbQueue: context.dbQueue, today: { today },
+                                                          preloaded: HomeViewModel.readNow(context.dbQueue, today: today)))
+            return AnyView(PhoneTabs(model: tabs, syncStatus: .off, isDemo: true, onRefresh: {}, onSettings: {}))
+        },
+        // Settings while demo data is shown: the banner and "Leave demo".
+        DemoRoute(name: "settings-demo", minimumFigures: 0) { context in
+            AnyView(SettingsSheet(appearance: .constant(.system), themeId: .constant(PhoneTheme.classic.id),
+                                  iCloud: .unknown, keyHeld: nil, status: .off,
+                                  version: SettingsCopy.version(marketing: "0.2.0", build: "1"), now: { context.today },
+                                  onLockNow: {}, onSyncNow: nil, demo: .leave({}))
+                .environment(\.showsDemoData, true))
+        },
         DemoRoute(name: "settings", minimumFigures: 0) { context in
             let today = context.today
             return AnyView(SettingsSheet(appearance: .constant(.system), themeId: .constant(PhoneTheme.classic.id),

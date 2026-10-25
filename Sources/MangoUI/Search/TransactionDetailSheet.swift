@@ -52,6 +52,7 @@ public struct TransactionDetailSheet: View {
                         Button("Done") { dismiss() }
                     }
                 }
+                .demoBannerSlot()
         }
         .presentationDetents([.large])
     }

@@ -21,6 +21,9 @@ import MangoUI
 /// - **Triggers:** `.launch` once the database is open, `.foreground` when the scene comes back, a cancel when it goes
 ///   to the background (the sync stops at its next operation), pull to refresh and Settings' "Sync now" await
 ///   `syncNowAndWait`.
+/// - **Demo data** ("Try with demo data", `PhoneDemoData`): sync is off entirely: nothing is attached, no account
+///   check, no key store, no CloudKit; `enterDemo()` stops a running scheduler first. `refusal` refuses demo data
+///   too (`PhoneDemoMode.syncRefusal`), so a demo database is never pulled into or mistaken for the household's.
 /// - **iCloud account:** checked on launch and on each return to the foreground, only in a build signed for the
 ///   container (`PhoneEntitlements`; `CKContainer` traps otherwise).
 @MainActor
@@ -46,6 +49,8 @@ final class PhoneSyncController: ObservableObject {
     private var accountCheck: Task<Void, Never>?
     private var accountGeneration = 0
     private let canUseCloudKit = PhoneEntitlements.hasCloudKitContainer()
+    /// Demo data is shown: nothing here touches CloudKit or the Keychain.
+    private var isDemo = PhoneDemoData.isOn
 
     /// Sync runs here (so "Sync now" means something).
     var isRunning: Bool { scheduler != nil }
@@ -54,10 +59,11 @@ final class PhoneSyncController: ObservableObject {
 
     /// Called once the database is open: checks the iCloud account, then starts sync if this launch may.
     func attach(_ environment: PhoneEnvironment) async {
-        guard dbQueue == nil else { return }
+        guard dbQueue == nil, !environment.isDemo, !isDemo else { return }
         dbQueue = environment.dbQueue
         checkAccount()
-        if let refusal = Self.refusal(databasePath: environment.databasePath, canUseCloudKit: canUseCloudKit) {
+        if let refusal = Self.refusal(databasePath: environment.databasePath, canUseCloudKit: canUseCloudKit,
+                                      demoModeOn: PhoneDemoData.isOn) {
             Self.log.info("Sync is off on this iPhone: \(refusal, privacy: .public)")
             return
         }
@@ -90,9 +96,14 @@ final class PhoneSyncController: ObservableObject {
 
     /// Why this launch can't sync, or nil: `SyncActivation`'s rules, and the database opened must be the one
     /// `BUDGET_DB_PATH` names (a device build ignores the variable and opens its own, which is refused here).
-    nonisolated static func refusal(databasePath: String, canUseCloudKit: Bool,
+    nonisolated static func refusal(databasePath: String, canUseCloudKit: Bool, demoModeOn: Bool,
                                     environment: [String: String] = ProcessInfo.processInfo.environment,
                                     arguments: [String] = CommandLine.arguments) -> String? {
+        // Demo data never syncs, whatever else holds.
+        if let refusal = PhoneDemoMode.syncRefusal(databasePath: databasePath, demoModeOn: demoModeOn,
+                                                   isSyncDemoLaunch: arguments.contains(SyncActivation.demoArgument)) {
+            return refusal
+        }
         #if DEBUG
         let isDebug = true
         #else
@@ -108,12 +119,41 @@ final class PhoneSyncController: ObservableObject {
         return nil
     }
 
+    // MARK: Demo data
+
+    /// Demo data goes on: a running sync stops, and everything sync showed is cleared. Nothing reaches CloudKit or
+    /// the Keychain until `leaveDemo()`.
+    func enterDemo() async {
+        isDemo = true
+        accountCheck?.cancel()
+        accountCheck = nil
+        accountGeneration += 1
+        statusTask?.cancel()
+        statusTask = nil
+        if let scheduler { await scheduler.stop() }
+        scheduler = nil
+        keyStore = nil
+        dbQueue = nil
+        status = .off
+        lastSync = nil
+        isFirstDownload = false
+        downloadedRecords = 0
+        keyHeld = nil
+        account = .unknown
+    }
+
+    /// Demo data was left: the next `attach` (the phone's own database) may sync again.
+    func leaveDemo() {
+        isDemo = false
+    }
+
     // MARK: Scene
 
     /// The scene is active again: after a spell in the background, the account is checked and a sync asked for.
     func sceneBecameActive() {
         guard wentToBackground else { return }
         wentToBackground = false
+        guard !isDemo else { return }
         checkAccount()
         Task { await scheduler?.requestSync(.foreground) }
     }
@@ -140,6 +180,7 @@ final class PhoneSyncController: ObservableObject {
     // MARK: State
 
     private func statusChanged(_ status: SyncStatus) async {
+        guard !isDemo else { return }
         self.status = status
         guard let scheduler, let dbQueue else { return }
         lastSync = await scheduler.lastSync
@@ -158,7 +199,7 @@ final class PhoneSyncController: ObservableObject {
     /// Asks CloudKit for the account, one check at a time: a newer check cancels the older, whose answer is dropped
     /// (the latest wins).
     private func checkAccount() {
-        guard canUseCloudKit else { return }
+        guard canUseCloudKit, !isDemo else { return }
         accountCheck?.cancel()
         accountGeneration += 1
         let generation = accountGeneration

@@ -30,10 +30,14 @@ extension EnvironmentValues {
 
 private struct OfflineBannerSlot: ViewModifier {
     @Environment(\.offlineBannerInfo) private var info
+    @Environment(\.showsDemoData) private var showsDemoData
 
     func body(content: Content) -> some View {
         content.safeAreaInset(edge: .top, spacing: 0) {
-            if let info {
+            if showsDemoData {
+                // Demo data: never synced, so never offline; the demo banner instead.
+                DemoBanner()
+            } else if let info {
                 OfflineBanner(lastSync: info.lastSync, now: info.now)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)

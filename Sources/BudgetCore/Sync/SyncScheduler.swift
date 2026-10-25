@@ -343,7 +343,7 @@ public actor SyncScheduler {
         default:
             let passing = transport?.isPassing ?? false
             let reason = Self.reason(error)
-            Self.log.error("Sync \(passing ? "offline" : "failed", privacy: .public); tried again later (\(reason, privacy: .public))")
+            Self.log.error("Sync \(passing ? "offline" : "failed", privacy: .public); tried again later (\(String(describing: type(of: error)), privacy: .public): \(reason, privacy: .private))")
             failures += 1
             let backoff = min(Self.firstBackoff * pow(2, Double(failures - 1)), Self.maxBackoff)
             let serverWait = transport?.retryAfter
