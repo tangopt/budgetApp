@@ -325,6 +325,7 @@ final class SharingSetupTests: XCTestCase {
             let named = try addAccount(db, "Synthetic savings")
             let clean = try addAccount(db, "Synthetic spare")
             try confirm(h, db)
+            try detachTransferCategories(db)
 
             // A property-category transaction with its tax owner, and a not-claimed mark on another transaction: two transactions.
             try db.execute(sql: "INSERT INTO categoryGroup(name) VALUES ('Synthetic flat costs')")
@@ -373,6 +374,30 @@ final class SharingSetupTests: XCTestCase {
         }
     }
 
+    /// Every account gets a "Transfer: …" category, which blocks Hidden; the other blocker tests detach it.
+    private func detachTransferCategories(_ db: Database) throws {
+        try db.execute(sql: "UPDATE category SET transferAccountId = NULL")
+    }
+
+    func testHiddenBlockedByItsTransferCategory() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            let spare = try addAccount(db, "Synthetic spare")
+            try confirm(h, db)
+            let name = try String.fetchOne(db, sql: "SELECT name FROM category WHERE transferAccountId = ?", arguments: [spare])!
+            XCTAssertEqual(try SharingLevels.blockers(accountId: spare, to: .hidden, db: db), [.transferCategory(name: name)])
+            XCTAssertEqual(try SharingLevels.blockers(accountId: spare, to: .balanceOnly, db: db), [])
+            XCTAssertThrowsError(try SharingLevels.set(.hidden, accountId: spare, actor: h.admin, db: db)) {
+                XCTAssertEqual($0 as? SharingError, .blocked([.transferCategory(name: name)]))
+            }
+            XCTAssertEqual(SharingCopy.blocker(.transferCategory(name: "Transfer: Synthetic spare")),
+                           "Named by the transfer category “Transfer: Synthetic spare”")
+            try detachTransferCategories(db)
+            XCTAssertEqual(try SharingLevels.set(.hidden, accountId: spare, actor: h.admin, db: db).to, .hidden)
+        }
+    }
+
     func testPropertyOrTaxRowsCountEachTransactionOnce() throws {
         let queue = try TestDatabase.migrated()
         try queue.write { db in
@@ -380,6 +405,7 @@ final class SharingSetupTests: XCTestCase {
             let card = try addAccount(db, "Synthetic card")
             let flat = try property(db, "Synthetic flat")
             try confirm(h, db)
+            try detachTransferCategories(db)
             try db.execute(sql: "INSERT INTO categoryGroup(name) VALUES ('Synthetic flat costs')")
             let groupId = db.lastInsertedRowID
             try db.execute(sql: "INSERT INTO propertyCategoryGroup(propertyId, categoryGroupId) VALUES (?, ?)", arguments: [flat, groupId])
@@ -401,6 +427,7 @@ final class SharingSetupTests: XCTestCase {
             let h = try household(db)
             let accountId = try addAccount(db, "Synthetic savings")
             try confirm(h, db)
+            try detachTransferCategories(db)
             // Rules of kinds that never name an account don't block, whatever their JSON.
             var issuer = ImportRule(kind: .issuer, matchKey: "synthetic-issuer", matchLabel: "Synthetic", actionJSON: "not json",
                                     actionLabel: "Synthetic", createdAt: Self.day)

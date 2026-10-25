@@ -17,6 +17,19 @@ public enum SyncZones {
     }
 
     static func isPrivate(_ zone: String) -> Bool { personUuid(ofPrivateZone: zone) != nil }
+
+    /// Where a household record may name an account below Everything that isn't Hidden (`table.column` to
+    /// the levels it may at): the summaries the level allows, its property-money transactions (§10), its
+    /// transfer category, its property link and an evidence requirement's exclusion list. Any other
+    /// reference to it is private content of the account.
+    public static let stubReferences: [String: Set<SharingLevel>] = [
+        "accountBalancePoint.accountId": [.balanceOnly, .categoryTotals],
+        "accountSummaryMonth.accountId": [.categoryTotals],
+        "transaction_.accountId": [.balanceOnly, .categoryTotals],
+        "category.transferAccountId": [.balanceOnly, .categoryTotals],
+        "propertyAccount.accountId": [.balanceOnly, .categoryTotals],
+        "evidenceRequirement.excludedAccountIds": [.balanceOnly, .categoryTotals],
+    ]
 }
 
 /// Where one record goes, and what it leaves behind.
@@ -63,26 +76,41 @@ public enum SyncZoneRouterError: Error, Equatable {
     case ownerHasNoIdentity(accountId: Int64)
     /// Records whose references lead back to themselves.
     case referenceCycle(table: String, localId: Int64)
+    /// The record belongs to two people's private zones at once: it can be placed in neither, and never in
+    /// `household`.
+    case spansPrivateZones(table: String, localId: Int64)
+    /// A record that can only go to the admin's private zone, and no admin (or their person's identity).
+    case noAdmin
 }
 
 /// Decides each record's zone from the database's facts, at push time (sharing spec 2026-10-25 §3, §10;
 /// sync spec §6.1). Pure: it only reads. When unsure it picks the most private answer, or refuses
-/// (throws) when no private zone can be named, so nothing it can't place ever reaches `household`:
+/// (throws) when no private zone can be named, so nothing it can't place ever reaches `household`. P is the
+/// private zone of the account's owner; "below Everything" includes Hidden.
 ///
 /// 1. An **account** at Everything (or joint) is `household`. Below Everything and not Hidden: a `household`
-///    stub without `privateAccountColumns`, which travel in an `accountDetails` companion in the owner's
-///    private zone P. Hidden: P. An unknown level counts as Hidden.
-/// 2. **Records of an account** (`accountRecordTables`): Everything → `household`, else P.
+///    stub without `privateAccountColumns`, which travel in an `accountDetails` companion in P. Hidden: P.
+///    An unknown level counts as Hidden.
+/// 2. **Records of an account** (`accountRecordTables`): Everything → `household`, else P. A shared
+///    account's import batch whose run is private (rule 6) stays shared without `importRunId`.
 /// 3. **Property money** (§10): a transaction of an account below Everything but not Hidden stays in
 ///    `household` when its category is a property category or a property/tax row names it (`pinningTables`).
 ///    It leaves out `importBatchId` (its batch is private).
-/// 4. **Closure**, over every record not already private: a record referencing (foreign key, logical,
-///    polymorphic or JSON reference) a record placed in a private zone goes to that zone (the first such
-///    reference by column name). This also covers the "always shared" tables, so a household record never
-///    points at a private one, whatever the data.
+/// 4. **Closure**, over every record: a record referencing (foreign key, logical, polymorphic or JSON
+///    reference) a record placed in a private zone goes to that zone. A reference to a stub account counts
+///    as private too, except where `SyncZones.stubReferences` allows it (the summaries its level allows, its
+///    property-money transactions, its transfer category, its property link, an evidence exclusion list).
+///    References into two people's private zones are refused (`spansPrivateZones`).
 /// 5. A **document** is P when it has referrers (`documentReferrers`) and every one is placed in the same P,
-///    else `household`. An **import run** follows its batches the same way. Its `documentFile` follows the
-///    document.
+///    else `household` (two people's zones: refused). Its `documentFile` follows the document.
+/// 6. An **import run** that touched an account below Everything (a batch on it, or a change naming it,
+///    its transactions or its batches) is P, summary and all; two owners: refused.
+/// 7. An **import change** goes to P of the account its recorded row names (directly, or through a
+///    transaction or batch), else to the admin's private zone when it names none, or one gone.
+/// 8. An **import run file** follows its run; in a shared run it stays shared only when a batch of the run
+///    came from that file or its document is linked elsewhere, else the admin's private zone.
+/// 9. A learnt **merchant link rule** follows the account it was learnt from (`LinkAction.sourceAccountId`),
+///    and goes to the admin's private zone when that is unknown.
 /// A table without a rule is refused (`unknownTable`); `SyncZoneRouterTests` lists every table's rule.
 ///
 /// Valid only inside the database access it was made in; it memoises per record.
@@ -102,8 +130,14 @@ public final class SyncZoneRouter {
         case accountRecord
         /// Rule 5.
         case document
-        /// Rule 5, by its import batches.
+        /// Rule 6.
         case importRun
+        /// Rule 7.
+        case importChange
+        /// Rule 8.
+        case importRunFile
+        /// Rule 9.
+        case importRule
         /// Shared by rule (summaries, sharing settings, property and tax records, tax and income).
         case shared
         /// Only the closure decides.
@@ -133,6 +167,9 @@ public final class SyncZoneRouter {
             case "account": rules[table.name] = .account
             case "document": rules[table.name] = .document
             case "importRun": rules[table.name] = .importRun
+            case "importChange": rules[table.name] = .importChange
+            case "importRunFile": rules[table.name] = .importRunFile
+            case "importRule": rules[table.name] = .importRule
             case let name where accountRecordTables.contains(name): rules[name] = .accountRecord
             case let name where sharedTables.contains(name): rules[name] = .shared
             default: rules[table.name] = .followsReferences
@@ -156,6 +193,13 @@ public final class SyncZoneRouter {
         case shared
         case stub(String)
         case hidden(String)
+
+        var privateZone: String? {
+            switch self {
+            case .shared: return nil
+            case .stub(let zone), .hidden(let zone): return zone
+            }
+        }
     }
 
     private struct Key: Hashable {
@@ -168,10 +212,12 @@ public final class SyncZoneRouter {
     private let db: Database
     private let accounts: [Int64: AccountFact]
     private let personUuids: [Int64: String]
+    private let adminPersonUuid: String?
     private let propertyCategoryIds: Set<Int64>
     private let pinnedTransactionIds: Set<Int64>
     private var memo: [Key: ZoneAssignment] = [:]
     private var inProgress: Set<Key> = []
+    private var runZones: [Int64: String?] = [:]
 
     /// Loads the facts. Refuses (`ownershipNotConfirmed`) until the admin has confirmed who owns each account.
     public init(db: Database) throws {
@@ -189,6 +235,8 @@ public final class SyncZoneRouter {
             people[row["localId"]] = row["uuid"]
         }
         personUuids = people
+        adminPersonUuid = try Int64.fetchOne(db, sql: "SELECT personId FROM appUser WHERE isAdmin = 1 ORDER BY id LIMIT 1")
+            .flatMap { people[$0] }
         propertyCategoryIds = Set(try Int64.fetchAll(db, sql: """
             SELECT id FROM category WHERE groupId IN (SELECT categoryGroupId FROM propertyCategoryGroup)
             """))
@@ -205,19 +253,21 @@ public final class SyncZoneRouter {
         return assignment
     }
 
-    /// The zone of the record a reference names, or of the row it named when it is gone (its tombstone's);
-    /// nil when it names nothing private.
-    func privateZone(ofReferenced table: String, localId: Int64) throws -> String? {
-        try privateZone(ofReferenced: table, localId: localId, ignoring: [])
-    }
-
-    private func privateZone(ofReferenced table: String, localId: Int64, ignoring: Set<String>) throws -> String? {
-        if let assignment = try assignmentIfPresent(table: table, localId: localId, ignoring: ignoring) {
+    /// The private zone a reference from `table` (`column`) to the record makes its referrer go to (a stub
+    /// account counts, outside `SyncZones.stubReferences`); for a row that is gone, its tombstone's zone when
+    /// private (a household tombstone proves nothing, but names no zone either). Nil: nothing private.
+    private func privateZone(ofReferenced target: String, localId: Int64, from table: String, column: String,
+                             ignoring: Set<String>) throws -> String? {
+        if target == "account", let fact = accounts[localId], fact.level != .everything {
+            if fact.level != .hidden, SyncZones.stubReferences["\(table).\(column)"]?.contains(fact.level) == true { return nil }
+            return try placement(account: localId).privateZone
+        }
+        if let assignment = try assignmentIfPresent(table: target, localId: localId, ignoring: ignoring) {
             return assignment.isPrivate ? assignment.zone : nil
         }
         let gone = try String.fetchOne(db.cachedStatement(sql: """
             SELECT zone FROM syncTombstone WHERE tableName = ? AND localId = ? ORDER BY deletedAt DESC LIMIT 1
-            """), arguments: [table, localId])
+            """), arguments: [target, localId])
         return gone.flatMap { SyncZones.isPrivate($0) ? $0 : nil }
     }
 
@@ -242,7 +292,10 @@ public final class SyncZoneRouter {
         case .accountRecord:
             if case .int(let accountId) = fields["accountId"] ?? .null {
                 switch try placement(account: accountId) {
-                case .shared: break
+                case .shared:
+                    if table == "importBatch", case .int(let run) = fields["importRunId"] ?? .null, try runZone(run) != nil {
+                        base = ZoneAssignment(zone: SyncZones.household, omittedFields: ["importRunId"])
+                    }
                 case .hidden(let zone): base = ZoneAssignment(zone: zone)
                 case .stub(let zone):
                     if table == "transaction_", isPropertyMoney(localId, fields: fields) {
@@ -253,45 +306,142 @@ public final class SyncZoneRouter {
                 }
             }
         case .document:
-            base = try followReferrers(Self.documentReferrers, localId: localId, ignoring: ignoring.union(["document"]))
+            base = try documentZone(localId, table: table, ignoring: ignoring.union(["document"]))
         case .importRun:
-            base = try followReferrers([("importBatch", "importRunId")], localId: localId, ignoring: ignoring.union(["importRun"]))
+            if let zone = try runZone(localId) { base = ZoneAssignment(zone: zone) }
+        case .importChange:
+            base = try changeZone(fields, table: table, localId: localId)
+        case .importRunFile:
+            base = try runFileZone(fields)
+        case .importRule:
+            base = try importRuleZone(fields)
         case .shared, .followsReferences:
             break
         }
 
-        var result = base
-        if !base.isPrivate {
-            let omitted = Set(base.omittedFields)
-            let carried = fields.filter { !omitted.contains($0.key) }
-            for reference in try SyncRowReferences.list(table: table, fields: carried, form: .local) where !ignoring.contains(reference.table) {
-                guard case .local(let id) = reference.key else { continue }
-                if let zone = try privateZone(ofReferenced: reference.table, localId: id, ignoring: ignoring) {
-                    result = ZoneAssignment(zone: zone)
-                    break
-                }
+        // Rule 4, also over a private record, to refuse one that spans two people's zones.
+        var zones: Set<String> = base.isPrivate ? [base.zone] : []
+        let omitted = Set(base.omittedFields)
+        let carried = fields.filter { !omitted.contains($0.key) }
+        for reference in try SyncRowReferences.list(table: table, fields: carried, form: .local) where !ignoring.contains(reference.table) {
+            guard case .local(let id) = reference.key else { continue }
+            if let zone = try privateZone(ofReferenced: reference.table, localId: id, from: table, column: reference.column, ignoring: ignoring) {
+                zones.insert(zone)
             }
         }
+        guard zones.count <= 1 else { throw SyncZoneRouterError.spansPrivateZones(table: table, localId: localId) }
+        let result = base.isPrivate ? base : zones.first.map { ZoneAssignment(zone: $0) } ?? base
         memo[key] = result
         return result
     }
 
-    /// The single private zone every referrer is in, or `household` (no referrers, or any elsewhere).
-    private func followReferrers(_ referrers: [(table: String, column: String)], localId: Int64,
-                                 ignoring: Set<String>) throws -> ZoneAssignment {
+    // MARK: Reverse rules
+
+    /// Rule 5: the single private zone every referrer is in, else `household` when one is shared.
+    private func documentZone(_ localId: Int64, table: String, ignoring: Set<String>) throws -> ZoneAssignment {
         var zones: Set<String> = []
-        for referrer in referrers {
-            let ids = try Int64.fetchAll(db.cachedStatement(sql: """
-                SELECT id FROM \(SyncChangeTracker.quoted(referrer.table)) WHERE \(SyncChangeTracker.quoted(referrer.column)) = ?
-                """), arguments: [localId])
-            for id in ids {
+        for referrer in Self.documentReferrers {
+            for id in try ids(referrer.table, where: referrer.column, is: localId) {
                 guard let assignment = try assignmentIfPresent(table: referrer.table, localId: id, ignoring: ignoring) else { continue }
+                if !assignment.isPrivate { return .household }
                 zones.insert(assignment.zone)
-                if zones.count > 1 { return .household }
             }
         }
-        guard let zone = zones.first, SyncZones.isPrivate(zone) else { return .household }
-        return ZoneAssignment(zone: zone)
+        guard zones.count <= 1 else { throw SyncZoneRouterError.spansPrivateZones(table: table, localId: localId) }
+        return zones.first.map { ZoneAssignment(zone: $0) } ?? .household
+    }
+
+    /// Rule 6: the private zone of the accounts below Everything the run touched, nil when none.
+    private func runZone(_ runId: Int64) throws -> String? {
+        if let known = runZones[runId] { return known }
+        var touched = Set(try Int64.fetchAll(db.cachedStatement(sql: "SELECT accountId FROM importBatch WHERE importRunId = ?"),
+                                             arguments: [runId]))
+        for change in try Row.fetchAll(db.cachedStatement(sql: """
+            SELECT tableName, rowId, beforeJSON, afterJSON FROM importChange WHERE runId = ?
+            """), arguments: [runId]) {
+            touched.formUnion(try accountsNamed(byChange: changeFields(change)))
+        }
+        var zones: Set<String> = []
+        for account in touched where accounts[account] != nil {
+            if let zone = try placement(account: account).privateZone { zones.insert(zone) }
+        }
+        guard zones.count <= 1 else { throw SyncZoneRouterError.spansPrivateZones(table: "importRun", localId: runId) }
+        runZones[runId] = zones.first
+        return zones.first
+    }
+
+    /// Rule 7.
+    private func changeZone(_ fields: [String: SyncValue], table: String, localId: Int64) throws -> ZoneAssignment {
+        let named = try accountsNamed(byChange: fields)
+        guard !named.isEmpty, named.allSatisfy({ accounts[$0] != nil }) else { return ZoneAssignment(zone: try adminZone()) }
+        let zones = Set(try named.compactMap { try placement(account: $0).privateZone })
+        guard zones.count <= 1 else { throw SyncZoneRouterError.spansPrivateZones(table: table, localId: localId) }
+        return zones.first.map { ZoneAssignment(zone: $0) } ?? .household
+    }
+
+    /// Rule 8. A private run makes the file private through the closure (`runId`).
+    private func runFileZone(_ fields: [String: SyncValue]) throws -> ZoneAssignment {
+        guard case .int(let run) = fields["runId"] ?? .null else { return ZoneAssignment(zone: try adminZone()) }
+        if let zone = try runZone(run) { return ZoneAssignment(zone: zone) }
+        if case .string(let name) = fields["fileName"] ?? .null,
+           try Bool.fetchOne(db.cachedStatement(sql: """
+               SELECT EXISTS (SELECT 1 FROM importBatch WHERE importRunId = ? AND sourceFileName = ?)
+               """), arguments: [run, name]) == true {
+            return .household
+        }
+        if case .int(let document) = fields["documentId"] ?? .null {
+            for referrer in Self.documentReferrers where referrer.table != "importRunFile" {
+                if try !ids(referrer.table, where: referrer.column, is: document).isEmpty { return .household }
+            }
+        }
+        return ZoneAssignment(zone: try adminZone())
+    }
+
+    /// Rule 9.
+    private func importRuleZone(_ fields: [String: SyncValue]) throws -> ZoneAssignment {
+        guard fields["kind"] == .string(ImportRuleKind.link.rawValue), case .string(let json) = fields["actionJSON"] ?? .null,
+              let action = ImportLearning.decode(LinkAction.self, json), action.entity == nil else { return .household }
+        guard let source = action.sourceAccountId, accounts[source] != nil else { return ZoneAssignment(zone: try adminZone()) }
+        return try placement(account: source).privateZone.map { ZoneAssignment(zone: $0) } ?? .household
+    }
+
+    /// The accounts a recorded change names: its row (an account, or a transaction's or batch's account) and
+    /// every account, transaction or batch its before and after rows reference.
+    private func accountsNamed(byChange fields: [String: SyncValue]) throws -> Set<Int64> {
+        var named: Set<Int64> = []
+        for reference in try SyncRowReferences.list(table: "importChange", fields: fields, form: .local) {
+            guard case .local(let id) = reference.key else { continue }
+            switch reference.table {
+            case "account": named.insert(id)
+            case "transaction_", "importBatch":
+                if let account = try Int64.fetchOne(db.cachedStatement(sql: """
+                    SELECT accountId FROM \(SyncChangeTracker.quoted(reference.table)) WHERE id = ?
+                    """), arguments: [id]) {
+                    named.insert(account)
+                }
+            default: break
+            }
+        }
+        return named
+    }
+
+    private func changeFields(_ row: Row) -> [String: SyncValue] {
+        var fields: [String: SyncValue] = [:]
+        for column in ["tableName", "rowId", "beforeJSON", "afterJSON"] {
+            fields[column] = SyncValue(row[column] as DatabaseValue, declaredType: "")
+        }
+        return fields
+    }
+
+    private func adminZone() throws -> String {
+        guard let uuid = adminPersonUuid else { throw SyncZoneRouterError.noAdmin }
+        return SyncZones.privateZone(personUuid: uuid)
+    }
+
+    private func ids(_ table: String, where column: String, is value: Int64) throws -> [Int64] {
+        try Int64.fetchAll(db.cachedStatement(sql: """
+            SELECT id FROM \(SyncChangeTracker.quoted(table)) WHERE \(SyncChangeTracker.quoted(column)) = ?
+            """), arguments: [value])
     }
 
     private func placement(account id: Int64) throws -> Placement {

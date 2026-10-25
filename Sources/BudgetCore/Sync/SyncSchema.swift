@@ -394,6 +394,7 @@ extension SyncSchema {
             SyncJSONRule("accountId", .row("account")),
             SyncJSONRule("entity", .evidenceEntity),
             SyncJSONRule("customKindId", .row("customDocumentKind")),
+            SyncJSONRule("sourceAccountId", .row("account")),
         ]), plainNumbers: ["occurrence"]),
         SyncJSONReference(table: "scenarioApplication", column: "journal", content: .rules([
             SyncJSONRule("operations[].differenceId", .row("forecastEntry")),

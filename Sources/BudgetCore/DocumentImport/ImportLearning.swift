@@ -27,7 +27,8 @@ public enum ImportLearning {
     /// (`IssuerKey.isBankLetterhead`: every letter the bank sends would match) — the correction
     /// still fixes this document. A merchant is drafted only when it names one (`isMerchantPattern`).
     public static func drafts(for item: ImportItem, resolution: ImportResolution, issuer: IssuerKey?,
-                              transactionDescriptions: [Int64: String] = [:]) -> [ImportRuleDraft] {
+                              transactionDescriptions: [Int64: String] = [:],
+                              transactionAccounts: [Int64: Int64] = [:]) -> [ImportRuleDraft] {
         guard let issuer, !IssuerKey.isBankLetterhead(issuer) else { return [] }
         let key = ImportRuleKind.matchKey(issuer: issuer)
         func draft(_ kind: ImportRuleKind, _ action: some Encodable, _ label: String, key: String = key) -> [ImportRuleDraft] {
@@ -38,7 +39,7 @@ public enum ImportLearning {
             guard let description = transactionDescriptions[id] else { return [] }
             let merchant = MerchantKey.make(description)
             guard isMerchantPattern(merchant, description: description) else { return [] }
-            return draft(.link, LinkAction(descriptionKey: merchant), "Paid by “\(merchant)”",
+            return draft(.link, LinkAction(descriptionKey: merchant, sourceAccountId: transactionAccounts[id]), "Paid by “\(merchant)”",
                          key: ImportRuleKind.linkKey(issuer: issuer, family: .transaction))
         }
         let linked = item.links.filter { $0.entity.type == .transaction && $0.confidence == .certain }

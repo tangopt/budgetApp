@@ -123,7 +123,8 @@ final class SyncReferenceClassificationTests: XCTestCase {
             case .documentKind: return [json(DocumentKindAction(kind: .utilityInvoice)), json(DocumentKindAction(kind: .other, customKindId: 7))]
             case .issuer: return [json(IssuerAction(name: "Synthetic issuer"))]
             case .link: return [json(LinkAction(entity: EvidenceEntity(type: .rentReceipt, id: 22), role: "r", descriptionKey: "k")),
-                                json(LinkAction(descriptionKey: "merchant"))]
+                                json(LinkAction(descriptionKey: "merchant")),
+                                json(LinkAction(descriptionKey: "merchant", sourceAccountId: 7))]
             case .figurePosition: return [json(FigurePositionAction(field: ImportFigureField.allCases[0], label: "TOTAL", occurrence: 2))]
             }
         }

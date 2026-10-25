@@ -62,6 +62,8 @@ public enum SharingCopy {
                 : "\(count) property or tax records point at its transactions"
         case .referencedBy(let table, let count):
             return "Named by \(count) \(tableDescription(table, count: count))"
+        case .transferCategory(let name):
+            return "Named by the transfer category “\(name)”"
         }
     }
 

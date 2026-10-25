@@ -59,6 +59,11 @@ enum SharingMigration {
             CREATE UNIQUE INDEX IF NOT EXISTS accountSummaryMonth_uncategorised
             ON accountSummaryMonth(accountId, payMonth) WHERE categoryId IS NULL
             """)
+        // The zone router's lookups (`SyncZoneRouter`): a run's batches, changes and files, a document's files.
+        try db.execute(sql: "CREATE INDEX IF NOT EXISTS importBatch_on_importRunId ON importBatch(importRunId)")
+        try db.execute(sql: "CREATE INDEX IF NOT EXISTS importChange_on_runId ON importChange(runId)")
+        try db.execute(sql: "CREATE INDEX IF NOT EXISTS importRunFile_on_runId ON importRunFile(runId)")
+        try db.execute(sql: "CREATE INDEX IF NOT EXISTS importRunFile_on_documentId ON importRunFile(documentId)")
 
         // Local only. The write origin the triggers copy from `syncWriter` into `syncRecord`.
         if !(try db.columns(in: "syncRecord").map(\.name).contains("origin")) {

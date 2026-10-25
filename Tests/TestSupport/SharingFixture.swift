@@ -6,7 +6,7 @@ import BudgetCore
 /// *Joint* (no owner), *Private* (A, Balance only), *Totals* (A, Category totals) and *Lisbon* (A, Everything,
 /// linked to the property). Ownership is confirmed through `SharingSetup.save`. Synthetic names only.
 ///
-/// Rows: one import run holding Private's batch, another holding every other account's batch; a transaction
+/// Rows: one import run holding Private's and Totals' batches, another holding the Everything accounts' batches; a transaction
 /// in each account; on Private a plain one, a property-category one paid by a rent receipt, and a plain one
 /// pinned by a tax owner; a transfer from Shared to Private; one document linked to Private's plain
 /// transaction only, another linked to it and to Shared's.
@@ -67,7 +67,7 @@ public struct SharingFixture {
         let privateAccount = try account("Synthetic private")
         let totals = try account("Synthetic totals")
         let lisbon = try account("Synthetic flat account")
-        try db.execute(sql: "UPDATE account SET sortCode = '000000', accountNumber = '00000000' WHERE id = ?", arguments: [privateAccount])
+        try db.execute(sql: "UPDATE account SET sortCode = '401234', accountNumber = '81234567' WHERE id = ?", arguments: [privateAccount])
 
         try db.execute(sql: "INSERT INTO property(name, country) VALUES ('Synthetic flat', 'PT')")
         let propertyId = db.lastInsertedRowID
@@ -107,8 +107,8 @@ public struct SharingFixture {
             return db.lastInsertedRowID
         }
         let privateBatch = try batch(privateAccount, privateRun)
-        var batches = [privateAccount: privateBatch]
-        for account in [shared, joint, totals, lisbon] { batches[account] = try batch(account, sharedRun) }
+        var batches = [privateAccount: privateBatch, totals: try batch(totals, privateRun)]
+        for account in [shared, joint, lisbon] { batches[account] = try batch(account, sharedRun) }
         var fingerprint = 0
         func transaction(_ account: Int64, _ amount: Int, category: Int64?) throws -> Int64 {
             fingerprint += 1

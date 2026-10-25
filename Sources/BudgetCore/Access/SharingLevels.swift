@@ -68,6 +68,9 @@ public enum SharingLevels {
         case propertyOrTaxRows(count: Int)
         /// Rows of `table` (`importRule`, `evidenceRequirement`) naming the account.
         case referencedBy(table: String, count: Int)
+        /// A transfer category ("Transfer: …") naming the account: shared transactions use it, and hiding
+        /// the account would take them out of the household.
+        case transferCategory(name: String)
     }
 
     /// Property and tax tables whose rows point at a transaction and travel shared (sharing spec §10).
@@ -134,6 +137,8 @@ public enum SharingLevels {
             }
         }.count
         if requirements > 0 { blockers.append(.referencedBy(table: EvidenceRequirement.databaseTableName, count: requirements)) }
+        blockers += try String.fetchAll(db, sql: "SELECT name FROM category WHERE transferAccountId = ? ORDER BY name, id",
+                                        arguments: [accountId]).map { .transferCategory(name: $0) }
         return blockers
     }
 
