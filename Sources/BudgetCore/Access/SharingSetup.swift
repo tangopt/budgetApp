@@ -39,30 +39,40 @@ public enum SharingSetup {
         }
     }
 
-    /// Whether the ownership sheet has been saved.
+    /// Whether the ownership sheet has been saved: the admin's `personSharing` row (the first admin app
+    /// user's person) has `ownershipConfirmedAt`. Anyone else's row counts for nothing.
     public static func isConfirmed(db: Database) throws -> Bool {
-        try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM personSharing WHERE ownershipConfirmedAt IS NOT NULL)") ?? false
+        try Bool.fetchOne(db, sql: """
+            SELECT EXISTS (SELECT 1 FROM personSharing
+                           WHERE ownershipConfirmedAt IS NOT NULL
+                             AND personId = (SELECT personId FROM appUser WHERE isAdmin = 1 ORDER BY id LIMIT 1))
+            """) ?? false
     }
 
-    /// Every account in the usual order, owned by the admin at its default level (`SharingDefaults`).
+    /// Every account without an owner yet, in the usual order, owned by the admin at its default level
+    /// (`SharingDefaults`). An account that already has an owner keeps it and isn't on the sheet.
     public static func proposal(admin: AccessActor, db: Database) throws -> [Row] {
         guard admin.isAdmin else { throw SharingError.notAdmin }
-        return try AccountOrdering.sorted(try Account.fetchAll(db)).map { account in
+        return try AccountOrdering.sorted(try Account.filter(Column("ownerPersonId") == nil).fetchAll(db)).map { account in
             let linked = try SharingDefaults.isPropertyLinked(accountId: account.id!, db: db)
             return Row(id: account.id!, displayName: account.displayName, bankName: account.bankName, isPropertyLinked: linked,
                        owner: .person(admin.personId), level: SharingDefaults.level(ownerPersonId: admin.personId, isPropertyLinked: linked))
         }
     }
 
-    /// Saves the sheet as the admin, in the caller's transaction: every account's owner and level, a
+    /// Saves the sheet as the admin, in the caller's transaction and in one savepoint (a failure part-way
+    /// leaves nothing behind, even when the caller catches it): every unowned account's owner and level, a
     /// `personSharing` row for every person (Everything; existing rows kept), `ownershipConfirmedAt = now`
     /// on the admin's row, and the default permissions of every member. Refused (nothing written) unless
-    /// `admin` is the admin, ownership is unconfirmed, `rows` name every account exactly once, each owner is
-    /// the admin or Joint, every joint row is at Everything and no Hidden row has blockers.
+    /// `admin` is the admin, ownership is unconfirmed, no row names an account that already has an owner
+    /// (`accountAlreadyOwned`, as the area map's set-up rule), `rows` name every unowned account exactly once,
+    /// each owner is the admin or Joint, every joint row is at Everything and no Hidden row has blockers.
     public static func save(_ rows: [Row], admin: AccessActor, db: Database, now: Date) throws {
         guard admin.isAdmin else { throw SharingError.notAdmin }
         guard try !isConfirmed(db: db) else { throw SharingError.alreadyConfirmed }
-        let accountIds = try Int64.fetchAll(db, sql: "SELECT id FROM account ORDER BY id")
+        let owned = Set(try Int64.fetchAll(db, sql: "SELECT id FROM account WHERE ownerPersonId IS NOT NULL"))
+        guard rows.allSatisfy({ !owned.contains($0.id) }) else { throw SharingError.accountAlreadyOwned }
+        let accountIds = try Int64.fetchAll(db, sql: "SELECT id FROM account WHERE ownerPersonId IS NULL ORDER BY id")
         guard rows.map(\.id).sorted() == accountIds else { throw SharingError.rowsDoNotMatchAccounts }
         for row in rows {
             switch row.owner {
@@ -75,9 +85,16 @@ public enum SharingSetup {
             }
         }
 
+        try db.inSavepoint {
+            try write(rows, admin: admin, db: db, now: now)
+            return .commit
+        }
+    }
+
+    private static func write(_ rows: [Row], admin: AccessActor, db: Database, now: Date) throws {
         try ActorWrite.perform(admin, area: .householdSettings, db: db) {
             for row in rows {
-                try db.execute(sql: "UPDATE account SET ownerPersonId = ?, sharingLevel = ? WHERE id = ?",
+                try db.execute(sql: "UPDATE account SET ownerPersonId = ?, sharingLevel = ? WHERE id = ? AND ownerPersonId IS NULL",
                                arguments: [row.owner.personId, row.level.rawValue, row.id])
             }
             try db.execute(sql: """

@@ -11,6 +11,8 @@ public enum SharingError: Error, Equatable {
     case ownershipNotConfirmed
     /// The set-up rows don't name every account exactly once (one was added or removed meanwhile).
     case rowsDoNotMatchAccounts
+    /// The ownership sheet sets owners only on accounts that have none yet.
+    case accountAlreadyOwned
     /// The ownership sheet offers the admin or Joint only.
     case ownerMustBeAdminOrJoint
     /// Only the account's (or person's) owner changes its level.
@@ -109,23 +111,18 @@ public enum SharingLevels {
             WHERE propertyAccount.accountId = ? ORDER BY property.name, property.id
             """, arguments: [accountId]).map { .propertyLink(propertyName: $0) }
 
-        var propertyOrTax = try Int.fetchOne(db, sql: """
+        // Each transaction once, however many of these point at it.
+        let pointing = propertyAndTaxTransactionTables.map { "SELECT transactionId FROM \($0)" }.joined(separator: " UNION ")
+        let propertyOrTax = try Int.fetchOne(db, sql: """
             SELECT COUNT(*) FROM transaction_
-            JOIN category ON category.id = transaction_.categoryId
-            JOIN propertyCategoryGroup ON propertyCategoryGroup.categoryGroupId = category.groupId
             WHERE transaction_.accountId = ?
+              AND (transaction_.categoryId IN (SELECT category.id FROM category
+                                               JOIN propertyCategoryGroup ON propertyCategoryGroup.categoryGroupId = category.groupId)
+                   OR transaction_.id IN (\(pointing)))
             """, arguments: [accountId]) ?? 0
-        for table in propertyAndTaxTransactionTables {
-            propertyOrTax += try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM \(table) WHERE transactionId IN (SELECT id FROM transaction_ WHERE accountId = ?)
-                """, arguments: [accountId]) ?? 0
-        }
         if propertyOrTax > 0 { blockers.append(.propertyOrTaxRows(count: propertyOrTax)) }
 
-        let rules = try ImportRule.fetchAll(db).filter { rule in
-            guard let action = try? JSONDecoder().decode(AccountNamingAction.self, from: Data(rule.actionJSON.utf8)) else { return false }
-            return action.accountId == accountId || action.entity == .account(accountId)
-        }.count
+        let rules = try ImportRule.fetchAll(db).filter { rulePossiblyNames($0, accountId: accountId) }.count
         if rules > 0 { blockers.append(.referencedBy(table: ImportRule.databaseTableName, count: rules)) }
 
         let requirements = try EvidenceRequirement.fetchAll(db).filter { requirement in
@@ -154,9 +151,18 @@ public enum SharingLevels {
         }
     }
 
-    /// The parts of an import rule's action that can name an account (`StatementAccountAction`, `LinkAction`).
-    private struct AccountNamingAction: Decodable {
-        var accountId: Int64?
-        var entity: EvidenceEntity?
+    /// Whether an import rule names the account. Only statement-account and link rules can; one of those
+    /// whose action can't be read might, so it counts (Hidden fails closed).
+    private static func rulePossiblyNames(_ rule: ImportRule, accountId: Int64) -> Bool {
+        switch rule.kind {
+        case .statementAccount:
+            guard let action = ImportLearning.decode(StatementAccountAction.self, rule.actionJSON) else { return true }
+            return action.accountId == accountId
+        case .link:
+            guard let action = ImportLearning.decode(LinkAction.self, rule.actionJSON) else { return true }
+            return action.entity == .account(accountId)
+        case .documentKind, .issuer, .figurePosition:
+            return false
+        }
     }
 }

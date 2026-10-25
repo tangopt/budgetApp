@@ -150,6 +150,73 @@ final class SharingSetupTests: XCTestCase {
         }
     }
 
+    func testOnlyTheAdminsRowConfirmsOwnership() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            let accountId = try addAccount(db, "Synthetic current")
+            try db.execute(sql: "INSERT INTO personSharing(personId, ownershipConfirmedAt) VALUES (?, ?)", arguments: [h.memberPersonId, Self.day])
+            XCTAssertFalse(try SharingSetup.isConfirmed(db: db), "a member's row doesn't confirm ownership")
+            // The set-up gate stays open: new accounts aren't owned yet, the admin may still save, and the map's set-up rule applies.
+            let early = try addAccount(db, "Synthetic early", owner: h.member)
+            XCTAssertNil(try account(db, early).ownerPersonId)
+            let setup = try AccessAreaMap.area(table: "account", origin: .edit, change: .update(before: ["ownerPersonId": .null]),
+                                               changedFields: ["ownerPersonId"], row: ["ownerPersonId": .int(h.adminPersonId)], db: db)
+            XCTAssertTrue(try AccessPolicy.allows(h.admin, setup, db: db))
+            try SharingSetup.save(try SharingSetup.proposal(admin: h.admin, db: db), admin: h.admin, db: db, now: Self.day)
+            XCTAssertTrue(try SharingSetup.isConfirmed(db: db))
+            XCTAssertEqual(try account(db, accountId).ownerPersonId, h.adminPersonId)
+        }
+    }
+
+    func testSaveNeverOverwritesAnExistingOwner() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            let unowned = try addAccount(db, "Synthetic current")
+            var owned = Account(name: "Synthetic member card", currency: .gbp, kind: .cash, trackingMode: .imported)
+            owned.ownerPersonId = h.memberPersonId
+            owned.sharingLevel = .categoryTotals
+            try owned.insert(db)
+
+            // The proposal lists only accounts without an owner.
+            let rows = try SharingSetup.proposal(admin: h.admin, db: db)
+            XCTAssertEqual(rows.map(\.id), [unowned])
+            // A row for an owned account is refused, and nothing is written.
+            var withOwned = rows
+            withOwned.append(SharingSetup.Row(id: owned.id!, displayName: "Synthetic member card", bankName: nil, isPropertyLinked: false,
+                                              owner: .person(h.adminPersonId), level: .balanceOnly))
+            XCTAssertThrowsError(try SharingSetup.save(withOwned, admin: h.admin, db: db, now: Self.day)) {
+                XCTAssertEqual($0 as? SharingError, .accountAlreadyOwned)
+            }
+            XCTAssertFalse(try SharingSetup.isConfirmed(db: db))
+            try SharingSetup.save(rows, admin: h.admin, db: db, now: Self.day)
+            XCTAssertEqual(try account(db, owned.id!).ownerPersonId, h.memberPersonId)
+            XCTAssertEqual(try account(db, owned.id!).sharingLevel, .categoryTotals)
+            XCTAssertEqual(try account(db, unowned).ownerPersonId, h.adminPersonId)
+        }
+    }
+
+    func testAFailedSaveLeavesNoPartialSetup() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            let accountId = try addAccount(db, "Synthetic current")
+            // Fails after the accounts and personSharing rows are written.
+            try db.execute(sql: "CREATE TEMP TRIGGER synthetic_boom BEFORE INSERT ON memberPermission BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END")
+            let rows = try SharingSetup.proposal(admin: h.admin, db: db)
+            XCTAssertThrowsError(try SharingSetup.save(rows, admin: h.admin, db: db, now: Self.day))
+            // The caller caught the error and its transaction goes on: nothing of the set-up is left.
+            XCTAssertNil(try account(db, accountId).ownerPersonId)
+            XCTAssertEqual(try account(db, accountId).sharingLevel, .everything)
+            XCTAssertEqual(try PersonSharing.fetchCount(db), 0)
+            XCTAssertFalse(try SharingSetup.isConfirmed(db: db))
+            try db.execute(sql: "DROP TRIGGER synthetic_boom")
+            try SharingSetup.save(rows, admin: h.admin, db: db, now: Self.day)
+            XCTAssertTrue(try SharingSetup.isConfirmed(db: db))
+        }
+    }
+
     func testJointMustBeEverything() throws {
         let queue = try TestDatabase.migrated()
         try queue.write { db in
@@ -259,7 +326,7 @@ final class SharingSetupTests: XCTestCase {
             let clean = try addAccount(db, "Synthetic spare")
             try confirm(h, db)
 
-            // A property-category transaction, its tax owner, and a not-claimed mark on another transaction.
+            // A property-category transaction with its tax owner, and a not-claimed mark on another transaction: two transactions.
             try db.execute(sql: "INSERT INTO categoryGroup(name) VALUES ('Synthetic flat costs')")
             let groupId = db.lastInsertedRowID
             try db.execute(sql: "INSERT INTO propertyCategoryGroup(propertyId, categoryGroupId) VALUES (1, ?)", arguments: [groupId])
@@ -280,7 +347,7 @@ final class SharingSetupTests: XCTestCase {
             try requirement.insert(db)
 
             XCTAssertEqual(try SharingLevels.blockers(accountId: linked, to: .hidden, db: db), [.propertyLink(propertyName: "Synthetic flat")])
-            XCTAssertEqual(try SharingLevels.blockers(accountId: withPropertyMoney, to: .hidden, db: db), [.propertyOrTaxRows(count: 3)])
+            XCTAssertEqual(try SharingLevels.blockers(accountId: withPropertyMoney, to: .hidden, db: db), [.propertyOrTaxRows(count: 2)])
             XCTAssertEqual(try SharingLevels.blockers(accountId: named, to: .hidden, db: db),
                            [.referencedBy(table: "importRule", count: 1), .referencedBy(table: "evidenceRequirement", count: 1)])
             XCTAssertEqual(try SharingLevels.blockers(accountId: clean, to: .hidden, db: db), [])
@@ -292,7 +359,7 @@ final class SharingSetupTests: XCTestCase {
                 XCTAssertEqual($0 as? SharingError, .blocked([.propertyLink(propertyName: "Synthetic flat")]))
             }
             XCTAssertThrowsError(try SharingLevels.set(.hidden, accountId: withPropertyMoney, actor: h.admin, db: db)) {
-                XCTAssertEqual($0 as? SharingError, .blocked([.propertyOrTaxRows(count: 3)]))
+                XCTAssertEqual($0 as? SharingError, .blocked([.propertyOrTaxRows(count: 2)]))
             }
             XCTAssertEqual(try account(db, linked).sharingLevel, .everything)
             XCTAssertEqual(try SharingLevels.set(.hidden, accountId: clean, actor: h.admin, db: db).isLowering, true)
@@ -303,6 +370,52 @@ final class SharingSetupTests: XCTestCase {
             XCTAssertEqual(SharingCopy.blocker(.propertyOrTaxRows(count: 1)), "1 property or tax record points at its transactions")
             XCTAssertEqual(SharingCopy.blocker(.referencedBy(table: "importRule", count: 1)), "Named by 1 import rule")
             XCTAssertEqual(SharingCopy.blocker(.referencedBy(table: "evidenceRequirement", count: 2)), "Named by 2 evidence requirements")
+        }
+    }
+
+    func testPropertyOrTaxRowsCountEachTransactionOnce() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            let card = try addAccount(db, "Synthetic card")
+            let flat = try property(db, "Synthetic flat")
+            try confirm(h, db)
+            try db.execute(sql: "INSERT INTO categoryGroup(name) VALUES ('Synthetic flat costs')")
+            let groupId = db.lastInsertedRowID
+            try db.execute(sql: "INSERT INTO propertyCategoryGroup(propertyId, categoryGroupId) VALUES (?, ?)", arguments: [flat, groupId])
+            try db.execute(sql: "INSERT INTO category(name, type, groupId) VALUES ('Synthetic flat repairs', 'expense', ?)", arguments: [groupId])
+            let propertyCategory = db.lastInsertedRowID
+            // One property-category transaction that two tax tables also point at.
+            let repair = try ManualTransactions.add(db: db, accountId: card, date: Self.day, description: "Synthetic repair",
+                                                    amountMinorUnits: -12_000, categoryId: propertyCategory, note: nil)
+            try db.execute(sql: "INSERT INTO taxTransactionOwner(transactionId, personId) VALUES (?, ?)", arguments: [repair.id!, h.adminPersonId])
+            try db.execute(sql: "INSERT INTO taxNotClaimed(startYear, transactionId) VALUES (2026, ?)", arguments: [repair.id!])
+            try db.execute(sql: "INSERT INTO taxNotClaimed(startYear, transactionId) VALUES (2027, ?)", arguments: [repair.id!])
+            XCTAssertEqual(try SharingLevels.blockers(accountId: card, to: .hidden, db: db), [.propertyOrTaxRows(count: 1)])
+        }
+    }
+
+    func testUnreadableAccountRuleBlocksHidden() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            let accountId = try addAccount(db, "Synthetic savings")
+            try confirm(h, db)
+            // Rules of kinds that never name an account don't block, whatever their JSON.
+            var issuer = ImportRule(kind: .issuer, matchKey: "synthetic-issuer", matchLabel: "Synthetic", actionJSON: "not json",
+                                    actionLabel: "Synthetic", createdAt: Self.day)
+            try issuer.insert(db)
+            XCTAssertEqual(try SharingLevels.blockers(accountId: accountId, to: .hidden, db: db), [])
+            // An account-naming rule that can't be read might name it: fail closed.
+            var unreadable = ImportRule(kind: .statementAccount, matchKey: "synthetic-signature", matchLabel: "Synthetic CSV",
+                                        actionJSON: "{\"accountId\": \"oops\"}", actionLabel: "Account: ?", createdAt: Self.day)
+            try unreadable.insert(db)
+            XCTAssertEqual(try SharingLevels.blockers(accountId: accountId, to: .hidden, db: db), [.referencedBy(table: "importRule", count: 1)])
+            // A link rule naming the account blocks too.
+            try unreadable.delete(db)
+            try ImportRuleStore.learn(db: db, kind: .link, key: "synthetic-link", matchLabel: "Synthetic", action: LinkAction(entity: .account(accountId)),
+                                      actionLabel: "Link", now: Self.day)
+            XCTAssertEqual(try SharingLevels.blockers(accountId: accountId, to: .hidden, db: db), [.referencedBy(table: "importRule", count: 1)])
         }
     }
 
