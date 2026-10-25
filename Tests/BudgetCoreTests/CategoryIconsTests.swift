@@ -7,12 +7,11 @@ import UIKit
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 final class CategoryIconsTests: XCTestCase {
     private func makeDB() throws -> DatabaseManager {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
-        return m
+        return try TestDatabase.migratedManager()
     }
 
     private func insert(_ m: DatabaseManager, _ name: String = "Groceries") throws -> Int64 {

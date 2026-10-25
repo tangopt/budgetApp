@@ -3,6 +3,7 @@ import GRDB
 import CryptoKit
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 /// The re-import rehearsal (`ImportRehearsal`) over the demo database and its evidence library:
 /// runs end to end on a temporary copy, leaves the source database and library byte-identical,
@@ -34,16 +35,35 @@ final class ImportRehearsalTests: XCTestCase {
         return result
     }
 
+    /// Planning is about 90 ms a document, so the full demo library (157 documents) takes 14 s to re-import. The
+    /// assertions are about the rehearsal's bookkeeping (counts add up, statements excluded, filed figures
+    /// unchanged, source untouched, every section in the report), none of which needs 157 documents: this
+    /// keeps every statement and at most `perKind` documents of each other kind (the oldest by id), removed the way
+    /// the Documents screen removes them, so every kind of the demo is still re-imported.
+    private func trimLibrary(_ dbQueue: DatabaseQueue, evidence: URL, perKind: Int) throws {
+        let library = EvidenceLibrary(root: evidence, database: dbQueue)
+        let surplus: [Int64] = try dbQueue.read { db in
+            var seen: [String: Int] = [:]
+            var ids: [Int64] = []
+            for document in try EvidenceDocument.order(Column("id")).fetchAll(db) {
+                guard let id = document.id, document.kind != .bankStatement else { continue }
+                let key = document.kind.rawValue + "/" + String(document.customKindId ?? 0)
+                seen[key, default: 0] += 1
+                if seen[key]! > perKind { ids.append(id) }
+            }
+            return ids
+        }
+        for id in surplus { try library.remove(id, force: true, guardingFiledYears: false) }
+    }
+
     func testRehearsalOverTheDemoDatabaseAndLibrary() async throws {
         let databaseURL = folder.appendingPathComponent("demo.sqlite")
         let evidence = folder.appendingPathComponent("Evidence", isDirectory: true)
         let documentCount: Int
         let statementCount: Int
         do {
-            let manager = try DatabaseManager(path: databaseURL.path)
-            try manager.migrate()
-            try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
-            try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
+            let manager = try TestDatabase.demoManager(path: databaseURL.path, evidenceRoot: evidence)
+            try trimLibrary(manager.dbQueue, evidence: evidence, perKind: 3)
             (documentCount, statementCount) = try await manager.dbQueue.read { db in
                 (try EvidenceDocument.fetchCount(db),
                  try EvidenceDocument.filter(Column("kind") == DocumentKind.bankStatement.rawValue).fetchCount(db))

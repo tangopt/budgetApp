@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The Kinds sheet (spec 2026-10-24 §2): custom kinds listed with their document counts, renames
 /// and merges staged in a draft (nothing written) and checked as Save will check them, then
@@ -11,8 +12,7 @@ final class CustomKindsDraftTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
     }
 
     private func create(_ name: String, _ area: DocumentArea) throws -> Int64 {

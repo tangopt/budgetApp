@@ -3,6 +3,7 @@ import GRDB
 import CryptoKit
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 /// The dry-run tool's core (`ImportDryRun`) over the demo database and its import samples:
 /// the report's sections and Needs-you lines, and neither the database nor the files written.
@@ -26,11 +27,8 @@ final class ImportDryRunTests: XCTestCase {
         let databaseURL = folder.appendingPathComponent("demo.sqlite")
         let samples: [URL]
         do {
-            let manager = try DatabaseManager(path: databaseURL.path)
-            try manager.migrate()
             let evidence = folder.appendingPathComponent("Evidence", isDirectory: true)
-            try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
-            try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
+            let manager = try TestDatabase.demoManager(path: databaseURL.path, evidenceRoot: evidence)
             samples = try DemoImportSamples.write(into: folder.appendingPathComponent("ImportSamples", isDirectory: true), dbQueue: manager.dbQueue)
             try manager.dbQueue.close()
         }

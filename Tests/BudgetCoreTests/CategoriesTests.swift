@@ -3,12 +3,11 @@ import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
+import TestSupport
 
 final class CategoriesTests: XCTestCase {
     private func makeDB() throws -> DatabaseManager {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
-        return m
+        return try TestDatabase.migratedManager()
     }
 
     func testCreatesATrimmedAssignableCategoryOfTheGivenTypeAndGroup() throws {
@@ -61,9 +60,7 @@ final class CategoriesTests: XCTestCase {
 
 final class CategoriesEditingTests: XCTestCase {
     private func makeDB() throws -> DatabaseManager {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
-        return m
+        return try TestDatabase.migratedManager()
     }
 
     private func addTransactions(_ m: DatabaseManager, categoryId: Int64, count: Int, status: TransactionStatus = .confirmed) throws {

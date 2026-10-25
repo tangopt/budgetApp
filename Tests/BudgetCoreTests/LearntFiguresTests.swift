@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// "Remember for this issuer": a corrected figure, ticked, teaches where it sits on the issuer's
 /// layout (a label and which occurrence of it, never the value); the next document of the
@@ -19,8 +20,7 @@ final class LearntFiguresTests: XCTestCase {
     private var utilitiesId: Int64!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             try CategorySeeder.seedDefaults(db)
             var account = Account(name: "Bank A", currency: .eur, kind: .cash, trackingMode: .imported)

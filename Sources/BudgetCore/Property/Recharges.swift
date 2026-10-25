@@ -762,20 +762,30 @@ public enum Recharges {
 
     /// The property's recharges received on credits dated in `interval` (`[start, end)`), by date.
     public static func received(db: Database, propertyId: Int64, in interval: DateInterval? = nil) throws -> [Received] {
+        // One statement: each payment with its credit and statement (rows split by table), the
+        // credit's date window in SQL. Dates compare as stored text, which assumes GRDB's canonical
+        // "yyyy-MM-dd HH:mm:ss.SSS" (UTC) for `transaction_.date` (a date-only "2025-04-06" would
+        // sort before 6 April 00:00); the rental accounts' transaction window relies on the same.
+        let payment = RechargePayment.databaseTableName, transaction = Transaction.databaseTableName
+        let statement = RechargeStatement.databaseTableName
+        let adapters = splittingRowAdapters(columnCounts: try [payment, transaction, statement].map { try db.columns(in: $0).count })
+        let adapter = ScopeAdapter(["payment": adapters[0], "transaction": adapters[1], "statement": adapters[2]])
+        var arguments: StatementArguments = [propertyId]
+        var window = ""
+        if let interval {
+            window = " AND \(transaction).date >= ? AND \(transaction).date < ?"
+            arguments += [interval.start, interval.end]
+        }
         let rows = try Row.fetchAll(db, sql: """
-            SELECT rechargePayment.id AS paymentId FROM rechargePayment
-            JOIN rechargeStatement ON rechargeStatement.id = rechargePayment.statementId
-            JOIN tenancy ON tenancy.id = rechargeStatement.tenancyId
-            WHERE tenancy.propertyId = ? AND rechargePayment.isDismissed = 0
-            """, arguments: [propertyId])
-        var result: [Received] = []
-        for row in rows {
-            let id: Int64 = row["paymentId"]
-            guard let payment = try RechargePayment.fetchOne(db, key: id),
-                  let transaction = try Transaction.fetchOne(db, key: payment.transactionId),
-                  let statement = try RechargeStatement.fetchOne(db, key: payment.statementId) else { continue }
-            if let interval, !(transaction.date >= interval.start && transaction.date < interval.end) { continue }
-            result.append(Received(payment: payment, transaction: transaction, statement: statement))
+            SELECT \(payment).*, \(transaction).*, \(statement).* FROM \(payment)
+            JOIN \(statement) ON \(statement).id = \(payment).statementId
+            JOIN tenancy ON tenancy.id = \(statement).tenancyId
+            JOIN \(transaction) ON \(transaction).id = \(payment).transactionId
+            WHERE tenancy.propertyId = ? AND \(payment).isDismissed = 0\(window)
+            """, arguments: arguments, adapter: adapter)
+        let result = try rows.map { row in
+            Received(payment: try RechargePayment(row: row.scopes["payment"]!), transaction: try Transaction(row: row.scopes["transaction"]!),
+                     statement: try RechargeStatement(row: row.scopes["statement"]!))
         }
         return result.sorted { ($0.transaction.date, $0.payment.id!) < ($1.transaction.date, $1.payment.id!) }
     }

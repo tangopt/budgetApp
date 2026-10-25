@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 /// BBVA Portugal "EXTRATO GLOBAL" statements in the document importer (`BBVAStatementReader`):
 /// recognised, resolved to the current, mortgage and fund accounts, staged with rules only, the
@@ -18,8 +19,7 @@ final class BBVAStatementReaderTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
     }
 
     /// BBVA (opening €2,500.00 on 31 Jan 2026), and unless left out the BBVA mortgage and

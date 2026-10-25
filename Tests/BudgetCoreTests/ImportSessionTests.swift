@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 /// The import centre's decisions (`ImportSession`): reading into a review, answering, rule fits,
 /// Confirm import and its undo, as the Mac's Imports screen drives them (and the iPad will).
@@ -37,12 +38,11 @@ final class ImportSessionTests: XCTestCase {
     }
 
     private func store(_ name: String, demo: Bool) throws -> Store {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let evidence = folder.appendingPathComponent(name, isDirectory: true).appendingPathComponent("Evidence", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         if demo {
-            try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
+            try TestDatabase.fillDemo(manager.dbQueue, evidenceRoot: evidence)
         } else {
             try manager.dbQueue.write { db in try CategorySeeder.seedDefaults(db) }
         }

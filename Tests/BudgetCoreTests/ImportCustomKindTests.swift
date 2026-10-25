@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Custom kinds in the import review (spec 2026-10-24 §2): "New kind…" adds a pending kind to
 /// the plan, usable at once by any item of the review; Confirm inserts it first and files the
@@ -15,8 +16,7 @@ final class ImportCustomKindTests: XCTestCase {
     private var applier: ImportApplier!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try write { db in try CategorySeeder.seedDefaults(db) }
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("ImportCustomKindTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -555,8 +555,7 @@ final class ImportCustomKindSessionTests: XCTestCase {
     private nonisolated static func write<T>(_ db: DatabaseQueue, _ body: (Database) throws -> T) throws -> T { try db.write(body) }
 
     func testConfirmAfterKindsWereMergedOrDeletedReadsTheirItemsAgain() async throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let db = manager.dbQueue
         let (boiler, heating, alarm) = try Self.write(db) { db -> (Int64, Int64, Int64) in
             try CategorySeeder.seedDefaults(db)

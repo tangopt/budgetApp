@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import CryptoKit
 @testable import BudgetCore
+import TestSupport
 
 /// A device keeping files for later and syncing them (plan Task 10): its own database, evidence library and
 /// waiting folder in a temporary folder (never the real Application Support), syncing through `cloud`.
@@ -17,8 +18,7 @@ final class WaitingSyncTestDevice {
     var list: ImportWaitingList { ImportWaitingList(root: waitingRoot, database: queue) }
 
     init(_ user: String, cloud: FakeCloud, keys: any SyncKeyStore, policy: SyncDocumentFiles.Policy = .eager) throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         base = FileManager.default.temporaryDirectory.appendingPathComponent("WaitingFileSyncTests-\(UUID().uuidString)", isDirectory: true)
         evidence = base.appendingPathComponent("Evidence", isDirectory: true)
         waitingRoot = base.appendingPathComponent("Waiting", isDirectory: true)

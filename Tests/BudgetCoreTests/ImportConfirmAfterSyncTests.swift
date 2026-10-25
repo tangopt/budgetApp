@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Confirm import on a database as the app opens it since build step 3: a file on disk, opened by
 /// `DatabaseManager` (recursive triggers on) and migrated through `createSync` and
@@ -21,8 +22,7 @@ final class ImportConfirmAfterSyncTests: XCTestCase {
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("ImportConfirmAfterSyncTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let path = folder.appendingPathComponent("budget.sqlite").path
-        manager = try DatabaseManager(path: path)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager(path: path)
         try seed()
         let library = EvidenceLibrary(root: folder.appendingPathComponent("Evidence", isDirectory: true), database: db)
         session = ImportSession(dbQueue: db, databasePath: path, library: library,

@@ -3,6 +3,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 /// Spec 2026-10-15 budget-totals-and-unassigned: the Totals block (§1) and assigning
 /// unassigned planned items (§2).
@@ -260,9 +261,7 @@ final class BudgetTotalsTests: XCTestCase {
     }
 
     private func manager() throws -> DatabaseManager {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
-        return manager
+        return try TestDatabase.migratedManager()
     }
 
     /// Two unassigned series (Salary, Gym) and the database's ids.

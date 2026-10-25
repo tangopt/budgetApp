@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// A transaction's documents for the budget (spec 2026-10-24): linked documents and a recorded
 /// utility invoice's document, in date order, and the counts the paperclips show.
@@ -11,8 +12,7 @@ final class TransactionDocumentsTests: XCTestCase {
     private var batchId: Int64 = 0
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var account = Account(name: "Current", currency: .gbp, kind: .cash, trackingMode: .imported)
             try account.insert(db)

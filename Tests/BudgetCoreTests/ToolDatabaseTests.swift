@@ -57,24 +57,64 @@ final class ToolDatabaseTests: XCTestCase {
         try tool.close()
     }
 
-    /// Every one-off tool target (each `Sources/<Tool>/` but the libraries) opens databases only through `ToolDatabase`.
+    /// Every one-off tool target opens databases only through `ToolDatabase`: each `Tools/Sources/<Tool>/` (the tools'
+    /// own package, out of the default build) and each root `Sources/<Target>/` but the libraries (MakeDemoDatabase, BudgetDemo).
     func testToolsNeverOpenABareDatabaseQueueOnAFile() throws {
-        let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("Sources", isDirectory: true)
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let tools = root.appendingPathComponent("Tools/Sources", isDirectory: true)
+        let sources = root.appendingPathComponent("Sources", isDirectory: true)
         let libraries: Set<String> = ["BudgetCore", "MangoSync", "MangoUI"]
         let fileManager = FileManager.default
         var offenders: [String] = []
         var checked = 0
-        for target in try fileManager.contentsOfDirectory(atPath: sources.path).sorted() where !libraries.contains(target) {
-            let folder = sources.appendingPathComponent(target, isDirectory: true)
-            guard let files = fileManager.enumerator(atPath: folder.path) else { continue }
-            for case let file as String in files where file.hasSuffix(".swift") {
-                checked += 1
-                let text = try String(contentsOf: folder.appendingPathComponent(file), encoding: .utf8)
-                if text.contains("DatabaseQueue(path:") { offenders.append("\(target)/\(file)") }
+        var checkedTools = 0
+        for (folderRoot, skipped) in [(tools, Set<String>()), (sources, libraries)] {
+            for target in try fileManager.contentsOfDirectory(atPath: folderRoot.path).sorted() where !skipped.contains(target) {
+                let folder = folderRoot.appendingPathComponent(target, isDirectory: true)
+                guard let files = fileManager.enumerator(atPath: folder.path) else { continue }
+                for case let file as String in files where file.hasSuffix(".swift") {
+                    checked += 1
+                    if folderRoot == tools { checkedTools += 1 }
+                    let text = try String(contentsOf: folder.appendingPathComponent(file), encoding: .utf8)
+                    if text.contains("DatabaseQueue(path:") { offenders.append("\(target)/\(file)") }
+                }
             }
         }
-        XCTAssertGreaterThan(checked, 10)
+        XCTAssertGreaterThan(checkedTools, 10, "the tools package's sources weren't found")
+        XCTAssertGreaterThan(checked, checkedTools)
         XCTAssertEqual(offenders, [])
+    }
+
+    /// The tools package resolves its own dependencies (Tools/Package.resolved; the root's file is ignored when the
+    /// root is a dependency), and the tools write the real database: every package both files pin must be pinned at
+    /// the same revision and version, so a GRDB bump in the root can't leave the tools on the old one. After a bump,
+    /// run `swift package --package-path Tools update`.
+    func testToolsPinTheSamePackagesAsTheRoot() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        struct Resolved: Decodable {
+            struct Pin: Decodable {
+                struct State: Decodable { let revision: String?; let version: String?; let branch: String? }
+                let identity: String
+                let state: State
+            }
+            let pins: [Pin]
+        }
+        func pins(_ path: String) throws -> [String: Resolved.Pin.State] {
+            let data = try Data(contentsOf: root.appendingPathComponent(path))
+            return Dictionary(try JSONDecoder().decode(Resolved.self, from: data).pins.map { ($0.identity, $0.state) },
+                              uniquingKeysWith: { first, _ in first })
+        }
+        let app = try pins("Package.resolved")
+        let tools = try pins("Tools/Package.resolved")
+        let shared = Set(app.keys).intersection(tools.keys)
+        XCTAssertTrue(shared.contains("grdb.swift"), "GRDB isn't pinned in both Package.resolved files")
+        for identity in shared.sorted() {
+            let (a, t) = (app[identity]!, tools[identity]!)
+            XCTAssertEqual(a.revision, t.revision, "\(identity): Tools/Package.resolved pins another revision than Package.resolved")
+            XCTAssertEqual(a.version, t.version, "\(identity): Tools/Package.resolved pins another version than Package.resolved")
+            XCTAssertEqual(a.branch, t.branch, "\(identity): Tools/Package.resolved pins another branch than Package.resolved")
+        }
     }
 }

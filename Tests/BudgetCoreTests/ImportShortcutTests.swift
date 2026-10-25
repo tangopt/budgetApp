@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Plan "Import documents 4" Task 1: every import button is a shortcut that only pre-sets the
 /// expected type or target (`ImportShortcut`), and intents are per file. Synthetic data only.
@@ -16,8 +17,7 @@ final class ImportShortcutTests: XCTestCase {
     private var accountId: Int64!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var property = Property(name: "Property A", country: "PT")
             try Properties.save(db: db, &property)

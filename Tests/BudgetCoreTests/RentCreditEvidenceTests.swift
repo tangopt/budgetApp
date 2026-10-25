@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Rent credits and their evidence (`RentCreditEvidence`): the date pass of the rent matching,
 /// receipt PDFs linked to the credits that paid them, and bank advices of transfers received
@@ -19,8 +20,7 @@ final class RentCreditEvidenceTests: XCTestCase {
     private var created: [URL] = []
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         root = FileManager.default.temporaryDirectory.appendingPathComponent("RentCreditEvidenceTests-\(UUID().uuidString)/Evidence", isDirectory: true)
         library = EvidenceLibrary(root: root, database: manager.dbQueue)
         try db.write { db in

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Statement checks over the whole review (`StatementChecks.recheck`), for UK and BBVA
 /// statements: closing balances chained per account in date order, import anyway with a
@@ -20,8 +21,7 @@ final class StatementChecksTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         accountId = try db.write { db -> Int64 in
             try CategorySeeder.seedDefaults(db)
             var account = Account(name: "Bank One", currency: .gbp, kind: .cash, trackingMode: .imported)

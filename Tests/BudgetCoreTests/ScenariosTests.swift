@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 /// Scenario operations (spec 2026-10-08-scenario-lab-design.md, "Operations"): create /
 /// duplicate / rename / delete, scenario-aware editing and its change markers, refresh, and
@@ -30,8 +31,7 @@ final class ScenariosTests: XCTestCase {
     /// salary (25th, confirmed), gym (disabled entry), groceries (in a disabled group), car
     /// (from 15 Nov 2026) and phone (from 10 Nov 2026).
     private func fixture() throws -> Fixture {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var f = Fixture(manager: manager)
         try manager.dbQueue.write { db in
             for (name, type) in [("Rent", CategoryType.expense), ("Salary", .income), ("Gym", .expense), ("Groceries", .expense), ("Car", .expense), ("Phone", .expense)] {
@@ -499,8 +499,7 @@ final class ScenariosTests: XCTestCase {
     }
 
     func testScenarioAddCreatesAMissingPlannedGroup() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             var gym = Category(name: "Gym", type: .expense)
             try gym.insert(db)

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// BBVA's debit advices ("Pagamentos – Serviços/Compras", "Débito Direto"): recognised before
 /// utility invoices, read from their (glyph-decoded) text, filed as bank debit advices and linked
@@ -37,8 +38,7 @@ final class BBVADebitAdviceTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var account = Account(name: "Bank A", currency: .eur, kind: .cash, trackingMode: .imported)
             try account.insert(db)
@@ -394,8 +394,7 @@ final class BBVADebitAdviceBatchTests: XCTestCase {
     private var accountId: Int64!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         accountId = try db.write { db -> Int64 in
             try CategorySeeder.seedDefaults(db)
             var account = Account(name: "BBVA", currency: .eur, kind: .cash, trackingMode: .imported)

@@ -3,6 +3,7 @@ import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
+import TestSupport
 
 /// Spec 2026-10-14 §1: balances from transactions, the built-in adjustment categories and
 /// Update balance creating adjustment transactions.
@@ -11,9 +12,7 @@ final class BalancesAndAdjustmentsTests: XCTestCase {
         MonthRange.calendar.date(from: DateComponents(year: y, month: m, day: d))!
     }
     private func makeDB() throws -> DatabaseManager {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
-        return m
+        return try TestDatabase.migratedManager()
     }
     private func txn(_ id: Int64, account: Int64, _ date: Date, _ amount: Int, category: Int64? = nil, isManual: Bool = false) -> Transaction {
         Transaction(id: id, importBatchId: 1, accountId: account, date: date, rawDescription: "T\(id)", amountMinorUnits: amount, categoryId: category,

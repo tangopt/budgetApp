@@ -1,6 +1,7 @@
 import GRDB
 import XCTest
 @testable import BudgetCore
+import TestSupport
 
 final class IssuerKeyTests: XCTestCase {
     func testNIFAfterLabelIsTheKeyUnlessItIsOurs() {
@@ -102,8 +103,7 @@ final class IssuerKeyTests: XCTestCase {
     }
 
     func testKnownPartiesAreEveryPersonNIF() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let db = manager.dbQueue
         try db.write { d in
             var a = Person(name: "A Demo", ptNif: "503 504 564"); try a.insert(d)
@@ -155,8 +155,7 @@ final class IssuerKeyTests: XCTestCase {
     }
 
     func testARecipientNameFirstLineIsNotAKey() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let parties = try manager.dbQueue.write { d -> Set<String> in
             var person = Person(name: "Ana Demo"); try person.insert(d)
             return try IssuerKey.knownParties(db: d)

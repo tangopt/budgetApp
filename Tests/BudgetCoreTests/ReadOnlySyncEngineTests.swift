@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The phone's engine is read-only (plan step 4 Task 12 fix round 1, review M1): it pulls, and never writes to the
 /// server: no zone creation, no saves, no deletes, no key marker, no lease. Synthetic data over `FakeCloud`.
@@ -8,8 +9,7 @@ final class ReadOnlySyncEngineTests: XCTestCase {
     private let zone = SyncRecordStore.householdZone
 
     private func database(_ user: String) async throws -> DatabaseQueue {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try await manager.dbQueue.write { db in try SyncChangeTracker.setWriter(user, db: db) }
         return manager.dbQueue
     }

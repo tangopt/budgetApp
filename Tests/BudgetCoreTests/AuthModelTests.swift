@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class AuthModelTests: XCTestCase {
     private func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
@@ -93,8 +94,7 @@ final class AuthModelTests: XCTestCase {
     }
 
     func testPersonDeleteRestrictedWhileAppUserExists() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             try db.execute(sql: "INSERT INTO person (id, name) VALUES (1, 'Sample Person')")
             var user = AppUser(personId: 1, displayName: "Sample", isAdmin: true, createdAt: Date())
@@ -110,8 +110,7 @@ final class AuthModelTests: XCTestCase {
     }
 
     func testAttributionColumnsRoundTripAndSetNullOnUserDelete() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             try db.execute(sql: "INSERT INTO person (id, name) VALUES (1, 'Sample Person')")
             var user = AppUser(personId: 1, displayName: "Sample", createdAt: Date())

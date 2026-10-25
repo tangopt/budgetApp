@@ -1,11 +1,11 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class ImportCoordinatorTests: XCTestCase {
     func makeSeededManager() throws -> (DatabaseManager, Account, ImportProfile) {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in try CategorySeeder.seedDefaults(db) }
         var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
         try manager.dbQueue.write { db in try account.insert(db) }

@@ -1,11 +1,11 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class AccountTests: XCTestCase {
     func testInsertAndFetchAccount() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
         try manager.dbQueue.write { db in try account.insert(db) }
         let fetched = try manager.dbQueue.read { db in
@@ -16,8 +16,7 @@ final class AccountTests: XCTestCase {
     }
 
     func testManualInvestmentAccount() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var account = Account(name: "Lloyds Investment ISA", currency: .gbp, kind: .investment, trackingMode: .manual)
         try manager.dbQueue.write { db in try account.insert(db) }
         XCTAssertNotNil(account.id)

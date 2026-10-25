@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The tax archive import (`ImportTaxArchive`): payroll forms become employment records only
 /// where a year has none, records from a filed return are kept and the form linked to them,
@@ -16,8 +17,7 @@ final class TaxArchiveImportTests: XCTestCase {
     private var personB: Person!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var a = Person(name: "Person A", shortName: "A", ukNino: "QQ123456C")
             try People.save(db: db, &a)

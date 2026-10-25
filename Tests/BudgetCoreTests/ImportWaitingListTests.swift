@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The waiting list (spec 2026-10-24 §1): files kept for later in Mango's own copy, listed across
 /// restarts, re-read when the recognisers change, marked imported by a run and back when it is
@@ -14,8 +15,7 @@ final class ImportWaitingListTests: XCTestCase {
     private static let now = Date(timeIntervalSince1970: 1_800_000_000)
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("ImportWaitingListTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     }

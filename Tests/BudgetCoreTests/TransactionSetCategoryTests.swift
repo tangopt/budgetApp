@@ -3,11 +3,11 @@ import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
+import TestSupport
 
 final class TransactionSetCategoryTests: XCTestCase {
     private func makeDB() throws -> (DatabaseManager, [Int64], Int64, Int64) {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
+        let m = try TestDatabase.migratedManager()
         let result = try m.dbQueue.write { db -> ([Int64], Int64, Int64) in
             var account = Account(name: "Lloyds", currency: .gbp, kind: .cash, trackingMode: .imported)
             try account.insert(db)
@@ -116,8 +116,7 @@ final class TransactionSetCategoryTests: XCTestCase {
 
 final class TransactionEditBuiltInTests: XCTestCase {
     func testEditRefusesABuiltInTargetWithItsOwnMessage() throws {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
+        let m = try TestDatabase.migratedManager()
         let (id, builtInId) = try m.dbQueue.write { db -> (Int64, Int64) in
             var account = Account(name: "Lloyds", currency: .gbp, kind: .cash, trackingMode: .imported)
             try account.insert(db)

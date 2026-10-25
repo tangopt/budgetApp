@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class AppUserStoreTests: XCTestCase {
     private var manager: DatabaseManager!
@@ -9,8 +10,7 @@ final class AppUserStoreTests: XCTestCase {
     private let fast = 1_000
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
     }
 
     private func person(_ db: Database, _ name: String) throws -> Int64 {
@@ -256,8 +256,7 @@ final class AppUserStoreTests: XCTestCase {
         }
         // An admin who has no credential doesn't count.
         try manager.dbQueue.write { db in
-            let other = try DatabaseManager(path: nil)
-            try other.migrate()
+            let other = try TestDatabase.migratedManager()
             try other.dbQueue.write { db2 in
                 var ghost = AppUser(personId: try person(db2, "Kit"), displayName: "Kit", isAdmin: true, createdAt: now)
                 try ghost.insert(db2)

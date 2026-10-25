@@ -1,11 +1,11 @@
 // Tests/BudgetCoreTests/ImportProfileStoreTests.swift
 import XCTest
 @testable import BudgetCore
+import TestSupport
 
 final class ImportProfileStoreTests: XCTestCase {
     func testSaveThenFindReturnsProfile() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
         try manager.dbQueue.write { db in try account.insert(db) }
         let store = ImportProfileStore(dbQueue: manager.dbQueue)
@@ -19,8 +19,7 @@ final class ImportProfileStoreTests: XCTestCase {
     }
 
     func testSaveThenFindRoundTripsTheCreditColumnIndex() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
         try manager.dbQueue.write { db in try account.insert(db) }
         let store = ImportProfileStore(dbQueue: manager.dbQueue)
@@ -37,8 +36,7 @@ final class ImportProfileStoreTests: XCTestCase {
     }
 
     func testSaveThenFindRoundTripsTheBalanceColumnIndex() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .manual)
         try manager.dbQueue.write { db in try account.insert(db) }
         let store = ImportProfileStore(dbQueue: manager.dbQueue)
@@ -55,8 +53,7 @@ final class ImportProfileStoreTests: XCTestCase {
     }
 
     func testProfileWithoutBalanceColumnRoundTripsAsNil() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .manual)
         try manager.dbQueue.write { db in try account.insert(db) }
         let store = ImportProfileStore(dbQueue: manager.dbQueue)
@@ -65,16 +62,14 @@ final class ImportProfileStoreTests: XCTestCase {
     }
 
     func testFindReturnsNilWhenNoProfileExists() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let store = ImportProfileStore(dbQueue: manager.dbQueue)
         let found = try store.find(accountId: 999, format: .csv)
         XCTAssertNil(found)
     }
 
     func testSaveUpserts() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
         try manager.dbQueue.write { db in try account.insert(db) }
         let store = ImportProfileStore(dbQueue: manager.dbQueue)
@@ -99,8 +94,7 @@ final class ImportProfileStoreTests: XCTestCase {
     }
 
     func testSaveThenFindRoundTripsFeeAndStatusColumns() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var account = Account(name: "Revolut", currency: .gbp, kind: .cash, trackingMode: .imported)
         try manager.dbQueue.write { db in try account.insert(db) }
         let store = ImportProfileStore(dbQueue: manager.dbQueue)
@@ -113,8 +107,7 @@ final class ImportProfileStoreTests: XCTestCase {
     }
 
     func testExistingProfilesHaveNoFeeOrStatusColumn() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
         try manager.dbQueue.write { db in try account.insert(db) }
         let store = ImportProfileStore(dbQueue: manager.dbQueue)

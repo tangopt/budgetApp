@@ -5,6 +5,7 @@ import struct BudgetCore.Category
 import struct BudgetCore.Transaction
 import BudgetDemo
 @testable import MangoUI
+import TestSupport
 
 /// Search on the phone (iPhone spec §3.4; plan step 4, Task 11): what the field and the tokens turn into
 /// (`SearchQuery`), and what the tab shows (`SearchViewModel`): `TransactionSearch`'s rows, grouped by day, each
@@ -12,9 +13,7 @@ import BudgetDemo
 @MainActor
 final class SearchTests: XCTestCase {
     private func emptyDatabase() throws -> DatabaseQueue {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
-        return manager.dbQueue
+        return try TestDatabase.migrated()
     }
 
     private static var cachedDemo: DatabaseQueue?
@@ -26,7 +25,7 @@ final class SearchTests: XCTestCase {
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("SearchTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
-        try DemoDatabase.build(dbQueue: queue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(queue, evidenceRoot: evidence)
         Self.cachedDemo = queue
         return queue
     }

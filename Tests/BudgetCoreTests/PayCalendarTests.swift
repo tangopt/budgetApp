@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 final class PayCalendarTests: XCTestCase {
     private let cal: Calendar = {
@@ -84,8 +85,7 @@ final class PayCalendarTests: XCTestCase {
     }
 
     func testCloseReopenAndLoad() throws {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
+        let m = try TestDatabase.migratedManager()
         try m.dbQueue.write { db in
             var acct = Account(name: "A", currency: .gbp, kind: .cash, trackingMode: .manual); try acct.insert(db)
             var batch = ImportBatch(accountId: acct.id!, sourceFileName: "f", importedAt: d(2026, 9, 1)); try batch.insert(db)

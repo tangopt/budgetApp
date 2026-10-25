@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class HistoryCategorizerTests: XCTestCase {
     func entries(_ pairs: [(String, Int64)]) -> [HistoryEntry] {
@@ -35,8 +36,7 @@ final class HistoryCategorizerTests: XCTestCase {
     }
 
     func testLoadReturnsOnlyConfirmedCategorisedTransactionsWithKeys() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in try CategorySeeder.seedDefaults(db) }
         try manager.dbQueue.write { db in
             var account = Account(name: "A", currency: .gbp, kind: .cash, trackingMode: .imported)

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Spec 2026-10-15 §5 (CSV sort code / account number columns) and §4 (reset mapping).
 final class StatementAccountCheckTests: XCTestCase {
@@ -68,8 +69,7 @@ final class StatementAccountCheckTests: XCTestCase {
     }
 
     func testProfileStoreDeleteRemovesOnlyThatFormat() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var a = account()
         try manager.dbQueue.write { db in try a.insert(db) }
         let store = ImportProfileStore(dbQueue: manager.dbQueue)
@@ -163,8 +163,7 @@ final class StatementAccountCheckTests: XCTestCase {
     }
 
     func testFinishWithNothingToSaveStillFillsAndReportsIt() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var a = account()
         try manager.dbQueue.write { db in try a.insert(db) }
         let coordinator = ImportCoordinator(dbQueue: manager.dbQueue, categorizationService: CategorizationService(categorizer: FakeCategorizer()))
@@ -201,8 +200,7 @@ final class StatementAccountCheckTests: XCTestCase {
     // MARK: - Commit fill
 
     func testCommitFillsOnlyEmptyFieldsAndSetsUKRegion() async throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var a = account(sortCode: nil, accountNumber: "87654321")
         a.alias = "Lloyds"
         a.bankName = "Lloyds Bank"
@@ -227,8 +225,7 @@ final class StatementAccountCheckTests: XCTestCase {
     }
 
     func testFillKeepsAStoredRegion() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var a = account()
         a.bankRegion = .other
         try manager.dbQueue.write { db in try a.insert(db) }

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// A tenancy's addendum ("Aditamento" / "Adenda" ao contrato de arrendamento): its own kind,
 /// told from the contract by its text, dated by its signature (else its effective date), with
@@ -215,8 +216,7 @@ final class TenancyAddendumTests: XCTestCase {
     }
 
     func testTenancyContractsRuleAsksForTheContractOnly() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             var property = Property(name: "Property A", country: "PT")
             try Properties.save(db: db, &property)
@@ -241,8 +241,7 @@ final class TenancyAddendumImportTests: XCTestCase {
     private func id(_ key: String) -> Int64 { ids[key]! }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var property = Property(name: "Property A", country: "PT")
             try Properties.save(db: db, &property)

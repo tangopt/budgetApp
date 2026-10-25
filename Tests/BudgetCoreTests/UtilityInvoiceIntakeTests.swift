@@ -5,6 +5,7 @@ import CoreText
 import ImageIO
 import UniformTypeIdentifiers
 @testable import BudgetCore
+import TestSupport
 
 /// Utility invoice intake (plan phase 5 Task 2): reading invoices with per-provider rules
 /// (stored as data), OCR for image-only files, matching the bank debit, recording the invoice
@@ -32,8 +33,7 @@ final class UtilityInvoiceIntakeTests: XCTestCase {
         periodLabels: ["LITROS ("], amountLabels: ["VALOR TOTAL"], refundLabels: ["VALOR A RECEBER"])
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         libraryRoot = FileManager.default.temporaryDirectory.appendingPathComponent("IntakeTests-\(UUID().uuidString)", isDirectory: true)
         try db.write { db in
             var property = Property(name: "Property A", country: "PT")

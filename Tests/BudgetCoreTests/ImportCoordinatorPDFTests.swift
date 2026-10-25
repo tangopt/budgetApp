@@ -2,11 +2,11 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class ImportCoordinatorPDFTests: XCTestCase {
     func testStagePDFImportCategorizesAndDedups() async throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try await manager.dbQueue.write { db in try CategorySeeder.seedDefaults(db) }
         var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
         try await manager.dbQueue.write { db in try account.insert(db) }

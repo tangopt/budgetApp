@@ -3,6 +3,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 final class ForecastPlanSeederTests: XCTestCase {
     private static let utc: Calendar = { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "UTC")!; return c }()
@@ -11,8 +12,7 @@ final class ForecastPlanSeederTests: XCTestCase {
     /// The real category names, with the real types (UK Taxes and Accountant start as
     /// transfers), plus the auto entries the real database has.
     private func fixture() throws -> DatabaseManager {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             let transfers: Set<String> = ["Transfer: Lloyds Joint", "UK Taxes", "Accountant"]
             for name in ForecastPlanSeeder.requiredCategoryNames {

@@ -3,6 +3,7 @@ import XCTest
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
 import GRDB
+import TestSupport
 
 /// Budgets convert non-GBP accounts at the stored rate (`CurrencyConversion`): a €100 expense
 /// at 0.85 counts as £85 in every budget figure, while balances and net worth keep converting
@@ -99,8 +100,7 @@ final class CurrencyConversionTests: XCTestCase {
     }
 
     func testReadsTheAccountsAndStoredRateFromTheDatabase() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let queue = manager.dbQueue
         try queue.write { db in
             for var account in accounts { try account.insert(db) }

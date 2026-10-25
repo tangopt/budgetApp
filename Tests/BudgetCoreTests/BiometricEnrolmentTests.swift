@@ -1,5 +1,6 @@
 import XCTest
 @testable import BudgetCore
+import TestSupport
 
 /// Stands in for the lock screen's inline Touch ID prompt.
 @MainActor
@@ -96,8 +97,7 @@ final class BiometricEnrolmentTests: XCTestCase {
         // Two databases whose app users share ids: enrolling user 1 of A on this Mac doesn't enrol user 1 of B
         // (a new database, or another household's), and another Mac's defaults have no enrolment at all.
         func database() throws -> (DatabaseManager, String, Int64) {
-            let manager = try DatabaseManager(path: nil)
-            try manager.migrate()
+            let manager = try TestDatabase.migratedManager()
             return try manager.dbQueue.write { db in
                 var person = Person(name: "Sam Example")
                 try person.insert(db)
@@ -145,8 +145,7 @@ final class BiometricEnrolmentTests: XCTestCase {
     }
 
     func testDatabaseIdIsStableAndLocal() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let first = try manager.dbQueue.write { try LocalSetting.databaseId($0) }
         let again = try manager.dbQueue.write { try LocalSetting.databaseId($0) }
         XCTAssertEqual(first, again)

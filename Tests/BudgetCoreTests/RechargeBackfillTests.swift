@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The recharges history backfill (plan phase 5 Task 4): plan, providers from presets,
 /// invoice intake with outcomes, statements rebuilt from the tenant's transfers, and what
@@ -23,8 +24,7 @@ final class RechargeBackfillTests: XCTestCase {
         trackerTotals: nil, filedTaxYears: [2024])
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         root = FileManager.default.temporaryDirectory.appendingPathComponent("Backfill-\(UUID().uuidString)", isDirectory: true)
         try db.write { db in
             var a = Person(name: "Person A")

@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import os
 @testable import BudgetCore
+import TestSupport
 
 /// A `sleep` the test drives: every call is recorded and waits until the test fires its duration, or its task is
 /// cancelled (then it throws `CancellationError`, as `Task.sleep` does).
@@ -180,8 +181,7 @@ final class SyncSchedulerTests: XCTestCase {
     }
 
     private func device(_ user: String, keys: (any SyncKeyStore)? = nil, batchSize: Int = 200) async throws -> Device {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try await manager.dbQueue.write { db in try SyncChangeTracker.setWriter(user, db: db) }
         let transport = ScriptedTransport(cloud)
         let engine = SyncEngineCore(db: manager.dbQueue, transport: transport, device: SyncDevice(id: "device-\(user)", name: user),
@@ -752,8 +752,7 @@ final class SyncSchedulerTests: XCTestCase {
 
         // A record sealed under a key this household's devices never held.
         let otherCloud = FakeCloud()
-        let other = try DatabaseManager(path: nil)
-        try other.migrate()
+        let other = try TestDatabase.migratedManager()
         try await other.dbQueue.write { db in try SyncChangeTracker.setWriter("user-c", db: db) }
         try addAccount(other.dbQueue, "Synthetic Elsewhere")
         _ = try await SyncEngineCore(db: other.dbQueue, transport: otherCloud, device: SyncDevice(id: "device-c", name: "c"),

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Plan "Import documents 1" Task 13: a confirmed plan applied as one undoable run (one write,
 /// change capture, files filed, effects and links, follow-on matching, the confirm-time filed
@@ -23,8 +24,7 @@ final class ImportApplierTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try seed(db)
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("ImportApplierTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -770,8 +770,7 @@ final class ImportApplierTests: XCTestCase {
 
     private func fileDatabase() throws -> (manager: DatabaseManager, path: String) {
         let path = folder.appendingPathComponent("budget.sqlite").path
-        let manager = try DatabaseManager(path: path)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager(path: path)
         try seed(manager.dbQueue)
         return (manager, path)
     }

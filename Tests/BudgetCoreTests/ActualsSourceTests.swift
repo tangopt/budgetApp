@@ -2,17 +2,17 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 /// The seam the Dashboard, Budget grid and Forecast read their actuals through: the local
 /// source gives exactly the set they read before, so the figures are identical.
 final class ActualsSourceTests: XCTestCase {
     func testLocalSourceMatchesTodaysLoad() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("ActualsEvidence-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
-        try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(manager.dbQueue, evidenceRoot: evidence)
 
         let source: any ActualsSource = .local
         let today = Date()

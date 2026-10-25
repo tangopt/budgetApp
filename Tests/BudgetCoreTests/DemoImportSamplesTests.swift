@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 /// The demo's import samples (`DemoImportSamples`, the Imports snapshot routes' files): read by
 /// the real pipeline over the demo database, they fill Ready (eight: a BBVA statement and a new
@@ -21,11 +22,10 @@ final class DemoImportSamplesTests: XCTestCase {
     }
 
     func testDemoSamplesProduceEachSection() async throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let evidence = folder.appendingPathComponent("Evidence", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
-        try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(manager.dbQueue, evidenceRoot: evidence)
         let samples = try DemoImportSamples.write(into: folder.appendingPathComponent("ImportSamples", isDirectory: true),
                                                   dbQueue: manager.dbQueue)
         XCTAssertEqual(samples.count, 15)

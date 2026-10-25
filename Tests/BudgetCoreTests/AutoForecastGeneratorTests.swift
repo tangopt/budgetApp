@@ -2,6 +2,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class AutoForecastGeneratorTests: XCTestCase {
     func date(_ y: Int, _ m: Int, _ d: Int) -> Date {
@@ -19,8 +20,7 @@ final class AutoForecastGeneratorTests: XCTestCase {
     // are unaffected since static-member/initializer calls disambiguate via overload
     // resolution regardless.
     func seededManagerWithRentHistory() throws -> (DatabaseManager, Int64, Account, [PayPeriod]) {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in try CategorySeeder.seedDefaults(db) }
         let rent = try manager.dbQueue.read { db in try Category.filter(Column("name") == "Rent").fetchOne(db)! }
         var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
@@ -147,8 +147,7 @@ final class AutoForecastGeneratorTests: XCTestCase {
     }
 
     func makeManager() throws -> (DatabaseManager, Int64) {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in try CategorySeeder.seedDefaults(db) }
         var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
         try manager.dbQueue.write { db in try account.insert(db) }

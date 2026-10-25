@@ -1,11 +1,11 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class CategoryShortlistTests: XCTestCase {
     func testRecentOrdersByUseCountWithinWindowAndHonoursLimit() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in try CategorySeeder.seedDefaults(db) }
         let now = Date()
         let day: TimeInterval = 86_400

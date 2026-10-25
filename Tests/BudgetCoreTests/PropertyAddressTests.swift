@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// A property's address and map location: stored, normalised, synced, and the rule for when the
 /// location is looked up again. Invented addresses only.
@@ -9,8 +10,7 @@ final class PropertyAddressTests: XCTestCase {
     private var db: DatabaseQueue { manager.dbQueue }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
     }
 
     private func save(_ property: Property) throws -> Property {

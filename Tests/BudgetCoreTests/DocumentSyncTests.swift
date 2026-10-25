@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import CryptoKit
 @testable import BudgetCore
+import TestSupport
 
 /// A device whose engine syncs evidence files (plan Task 7): its own database and its own evidence library
 /// in a temporary folder (never the real Evidence folder), syncing through `transport`.
@@ -15,8 +16,7 @@ final class DocumentSyncTestDevice {
     var queue: DatabaseQueue { manager.dbQueue }
 
     init(_ user: String, transport: any SyncTransport, keys: any SyncKeyStore, policy: SyncDocumentFiles.Policy? = .eager) throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("DocumentSyncTests-\(UUID().uuidString)", isDirectory: true)
         root = base.appendingPathComponent("Evidence", isDirectory: true)
         inbox = base.appendingPathComponent("Inbox", isDirectory: true)

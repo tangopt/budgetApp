@@ -3,6 +3,7 @@ import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
+import TestSupport
 
 /// Spec §3: an imported row matching a manual entry (same account, amount and sign, ±3 days)
 /// replaces it on Finish import.
@@ -20,8 +21,7 @@ final class ManualReplacementImportTests: XCTestCase {
     }
 
     func makeFixture() throws -> Fixture {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
+        let m = try TestDatabase.migratedManager()
         let (joint, isa, savings) = try m.dbQueue.write { db -> (Int64, Int64, Int64) in
             var joint = Account(name: "Lloyds Club Joint", currency: .gbp, kind: .cash, trackingMode: .imported)
             var isa = Account(name: "Lloyds Investment ISA", currency: .gbp, kind: .investment, trackingMode: .imported)

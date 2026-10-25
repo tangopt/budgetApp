@@ -202,33 +202,58 @@ public enum RentalAccounts {
     static func compute(db: Database, taxYear: UKTaxYear, personId: Int64, propertyId: Int64, memo: TaxComputationMemo?) throws -> Result {
         let key = TaxComputationMemo.AccountsKey(startYear: taxYear.startYear, personId: personId, propertyId: propertyId)
         if let known = memo?.knownAccounts(key) { return known }
-        let result = try compute(db: db, taxYear: taxYear, personId: personId, propertyId: propertyId)
+        let result = try compute(db: db, taxYear: taxYear, personId: personId, propertyId: propertyId, reads: memo?.reads)
         memo?.keep(result, for: key)
         return result
     }
 
     public static func compute(db: Database, taxYear: UKTaxYear, personId: Int64, propertyId: Int64) throws -> Result {
-        guard let property = try Property.fetchOne(db, key: propertyId) else { throw TaxError.propertyNotFound }
-        guard let person = try Person.fetchOne(db, key: personId) else { throw TaxError.personNotFound }
+        try compute(db: db, taxYear: taxYear, personId: personId, propertyId: propertyId, reads: nil)
+    }
+
+    /// `compute`, with what several years' accounts read again and again taken from `reads`
+    /// when given (`TaxReadCache`: the same rows as reading them here).
+    static func compute(db: Database, taxYear: UKTaxYear, personId: Int64, propertyId: Int64, reads: TaxReadCache?) throws -> Result {
+        guard let property = try reads?.property(db: db, id: propertyId) ?? Property.fetchOne(db, key: propertyId) else {
+            throw TaxError.propertyNotFound
+        }
+        guard let person = try reads?.person(db: db, id: personId) ?? Person.fetchOne(db, key: personId) else { throw TaxError.personNotFound }
         var warnings: [String] = []
+        func documents(_ type: EvidenceEntityType, _ ids: [Int64]) throws -> [Int64: [EvidenceDocument]] {
+            try reads?.linkedDocuments(db: db, type: type, ids: ids) ?? linkedDocuments(db: db, type: type, ids: ids)
+        }
+        func documentIds(_ type: EvidenceEntityType, _ ids: [Int64]) throws -> [Int64: [Int64]] {
+            try documents(type, ids).mapValues { $0.compactMap(\.id) }
+        }
+        func typeShare(_ type: TaxExpenseType) throws -> TaxShare {
+            try reads?.share(db: db, startYear: taxYear.startYear, personId: personId, propertyId: propertyId, expenseType: type)
+                ?? TaxSplits.share(db: db, startYear: taxYear.startYear, personId: personId, propertyId: propertyId, expenseType: type)
+        }
+        func effectiveRule(_ type: TaxExpenseType, _ startYear: Int) throws -> TaxAttributionRule {
+            try reads?.rule(db: db, expenseType: type, startYear: startYear)
+                ?? TaxAttributionRules.effective(db: db, expenseType: type, startYear: startYear)
+        }
 
         // Rates: every non-GBP currency's, keyed by currency (a GBP property can have EUR sources).
         var rates: [Currency: HMRCRate] = [:]
         for currency in Currency.allCases where currency != .gbp {
-            rates[currency] = try HMRCRates.rate(db: db, startYear: taxYear.startYear, currencyCode: currency.rawValue)
+            if let reads {
+                rates[currency] = try reads.rate(db: db, startYear: taxYear.startYear, currency: currency)
+            } else {
+                rates[currency] = try HMRCRates.rate(db: db, startYear: taxYear.startYear, currencyCode: currency.rawValue)
+            }
         }
         let rate = property.currency == .gbp ? nil : rates[property.currency]
         let context = Context(db: db, taxYear: taxYear, person: person, property: property, rates: rates)
-        let owners = try Properties.owners(db: db, propertyId: propertyId).map(\.personId)
+        let owners = try (reads?.owners(db: db, propertyId: propertyId) ?? Properties.owners(db: db, propertyId: propertyId)).map(\.personId)
         let people = try Person.filter(keys: owners).fetchAll(db)
         let otherNames = people.filter { $0.id != personId }.map(\.name)
-        if try TaxSplits.share(db: db, startYear: taxYear.startYear, personId: personId, propertyId: propertyId, expenseType: .rentalIncome)
-            == TaxShare(shareBasisPoints: 0, origin: .ownership) {
+        if try typeShare(.rentalIncome) == TaxShare(shareBasisPoints: 0, origin: .ownership) {
             warnings.append("\(person.name) owns no share of \(property.name) in \(taxYear.label) (ownership weighted by days owned): set a split if they should have one.")
         }
 
         // Categories and their types.
-        let entries = try TaxExpenseTypeMap.entries(db: db, propertyId: propertyId)
+        let entries = try reads?.typeEntries(db: db, propertyId: propertyId) ?? TaxExpenseTypeMap.entries(db: db, propertyId: propertyId)
         let typeByCategory = Dictionary(uniqueKeysWithValues: entries.map { ($0.category.id!, $0.expenseType) })
         let categoryType = Dictionary(uniqueKeysWithValues: entries.map { ($0.category.id!, $0.category.type) })
         // Names the guess can't settle: refunds of unknown kind, loan instalments (capital and interest).
@@ -256,13 +281,14 @@ public enum RentalAccounts {
         let transactions = categoryIds.isEmpty ? [] : try Transaction
             .filter(categoryIds.contains(Column("categoryId")) && Column("date") >= windowStart && Column("date") < windowEnd)
             .order(Column("date"), Column("id")).fetchAll(db)
-        let currencies = Dictionary(uniqueKeysWithValues: try Account.fetchAll(db).compactMap { a in a.id.map { ($0, a.currency) } })
-        let documents = try linkedDocuments(db: db, type: .transaction, ids: transactions.compactMap(\.id))
+        let currencies = try reads?.currencies(db: db)
+            ?? Dictionary(uniqueKeysWithValues: try Account.fetchAll(db).compactMap { a in a.id.map { ($0, a.currency) } })
+        let transactionDocuments = try documents(.transaction, transactions.compactMap(\.id))
         // Insurers' receipts (cover periods, policy years) and per-person assignments.
-        let policyReceipts = try TaxPolicyReceipts.receipts(db: db, propertyId: propertyId)
+        let policyReceipts = try reads?.policyReceipts(db: db, propertyId: propertyId) ?? TaxPolicyReceipts.receipts(db: db, propertyId: propertyId)
         let receiptsByTransaction = TaxPolicyReceipts.byTransaction(policyReceipts)
-        let receiptDocs = try linkedDocumentIds(db: db, type: .taxPolicyReceipt, ids: policyReceipts.compactMap(\.id))
-        let assignedOwners = try TaxTransactionOwners.all(db: db)
+        let receiptDocs = try documentIds(.taxPolicyReceipt, policyReceipts.compactMap(\.id))
+        let assignedOwners = try reads?.transactionOwners(db: db) ?? TaxTransactionOwners.all(db: db)
         // Sources left off this year's return ("deductible, not claimed"): listed apart.
         let notClaimedMarks = try TaxNotClaimedSources.marks(db: db, startYear: taxYear.startYear)
         var notClaimedByType: [TaxExpenseType: [Source]] = [:]
@@ -282,14 +308,14 @@ public enum RentalAccounts {
         func notClaimedNote(_ reference: SourceReference) -> String {
             "; deductible, not claimed in \(taxYear.label)" + (notClaimedMarks[reference]?.notes.map { " (\($0))" } ?? "")
         }
-        let ownerNames = Dictionary(uniqueKeysWithValues: try Person.fetchAll(db).compactMap { p in p.id.map { ($0, p.name) } })
+        let ownerNames = Dictionary(uniqueKeysWithValues: try (reads?.everyone(db: db) ?? Person.fetchAll(db)).compactMap { p in p.id.map { ($0, p.name) } })
 
         var sourcesByType: [TaxExpenseType: [Source]] = [:]
         var rules: [TaxExpenseType: TaxAttributionRule] = [:]
         var shares: [TaxExpenseType: TaxShare] = [:]
         for type in TaxExpenseType.allCases {
-            rules[type] = try TaxAttributionRules.effective(db: db, expenseType: type, startYear: taxYear.startYear)
-            shares[type] = try TaxSplits.share(db: db, startYear: taxYear.startYear, personId: personId, propertyId: propertyId, expenseType: type)
+            rules[type] = try effectiveRule(type, taxYear.startYear)
+            shares[type] = try typeShare(type)
         }
 
         // A year whose window is moved (as filed): name the months it shares with a neighbouring
@@ -298,7 +324,7 @@ public enum RentalAccounts {
             let window = Self.window(taxYear, shift: rules[type]!.effectiveWindowShift)
             var shared: [String] = []
             for neighbour in [taxYear.startYear - 1, taxYear.startYear + 1] {
-                let rule = try TaxAttributionRules.effective(db: db, expenseType: type, startYear: neighbour)
+                let rule = try effectiveRule(type, neighbour)
                 let other = Self.window(UKTaxYear(startYear: neighbour), shift: rule.effectiveWindowShift)
                 let start = max(window.start, other.start), end = min(window.end, other.end)
                 if start < end {
@@ -311,7 +337,7 @@ public enum RentalAccounts {
 
         // Utilities and the recharges received for them (phase 5): the mode decides each
         // utility category's line. Recharges count in the window the Utilities rule uses.
-        let utilityCategoryIds = try RechargeNetting.utilityCategoryIds(db: db, propertyId: propertyId)
+        let utilityCategoryIds = RechargeNetting.utilityCategoryIds(entries)
         let rechargeWindow = rules[.utilities]!.rule == .byDebitMonth ? taxYear.monthsInterval : taxYear.interval
         let rechargesReceived = try Recharges.received(db: db, propertyId: propertyId, in: rechargeWindow)
         let storedNetting = try RechargeNetting.mode(db: db, startYear: taxYear.startYear)
@@ -329,7 +355,7 @@ public enum RentalAccounts {
         }
         let nettingMode = storedNetting ?? (isFiled || rechargesReceived.isEmpty ? nil : .netOfRecharges)
         // Statement-linked recharge parts of credits: not rent when the rent comes from credits.
-        let rechargedByCredit = nettingMode == nil ? [:] : try RentReceiptMatching.rechargedByCredit(db: db)
+        let rechargedByCredit = nettingMode == nil ? [:] : try reads?.rechargedByCredit(db: db) ?? RentReceiptMatching.rechargedByCredit(db: db)
         var utilityNotDeductibleSources = 0
         var utilityNetting = UtilityNetting(mode: nettingMode, isAutomatic: storedNetting == nil)
         var utilitySources = 0
@@ -340,7 +366,7 @@ public enum RentalAccounts {
         if incomeRule.rule == .byRentPeriod {
             let window = taxYear.monthsInterval
             let receipts = try RentReceipts.receipts(db: db, propertyId: propertyId, overlapping: window)
-            let receiptDocs = try linkedDocumentIds(db: db, type: .rentReceipt, ids: receipts.compactMap(\.id))
+            let receiptDocs = try documentIds(.rentReceipt, receipts.compactMap(\.id))
             let share = shares[.rentalIncome]!.shareBasisPoints
             for receipt in receipts {
                 let attributed = PropertyFinance.apportioned(receipt.amountMinorUnits, start: receipt.periodStart, lastDay: receipt.periodEnd, to: window)
@@ -374,7 +400,7 @@ public enum RentalAccounts {
                 monthStart = next
             }
             // Rent credits in the months without a receipt: rent the receipts don't show.
-            let unmatched = try RentReceiptMatching.unmatchedCredits(db: db, propertyId: propertyId)
+            let unmatched = try (reads?.unmatchedCredits(db: db, propertyId: propertyId) ?? RentReceiptMatching.unmatchedCredits(db: db, propertyId: propertyId))
                 .filter { within($0.date, window) }
             if !unmatched.isEmpty {
                 warnings.append("\(unmatched.count) rent credit\(unmatched.count == 1 ? "" : "s") in \(taxYear.label) match no rent receipt: rent by rent period may be incomplete.")
@@ -392,7 +418,7 @@ public enum RentalAccounts {
         for year in withholdingYears {
             let calendarYear = Self.calendarYearInterval(year)
             let withheld = try RentReceipts.receipts(db: db, propertyId: propertyId, overlapping: calendarYear).filter { $0.withholdingMinorUnits > 0 }
-            let withheldDocs = try linkedDocumentIds(db: db, type: .rentReceipt, ids: withheld.compactMap(\.id))
+            let withheldDocs = try documentIds(.rentReceipt, withheld.compactMap(\.id))
             for receipt in withheld {
                 let inYear = PropertyFinance.apportioned(receipt.withholdingMinorUnits, start: receipt.periodStart, lastDay: receipt.periodEnd, to: calendarYear)
                 guard inYear != 0 else { continue }
@@ -436,7 +462,7 @@ public enum RentalAccounts {
                 rechargePart = min(part, natural)
                 natural -= rechargePart
             }
-            let docs = documents[transaction.id!] ?? []
+            let docs = transactionDocuments[transaction.id!] ?? []
             // A payment (not a refund) says that calendar year's tax is recorded.
             if type == .foreignTax, rule.rule == .apportionCalendarYear, natural > 0 {
                 foreignTaxYears.insert(context.liabilityYear(item: Item(transaction), documents: docs).0)
@@ -535,7 +561,7 @@ public enum RentalAccounts {
 
         // Insurers' receipts paid outside the bank history: sources of their own.
         let unlinkedReceipts = policyReceipts.filter { $0.transactionId == nil }
-        let unlinkedDocs = try linkedDocuments(db: db, type: .taxPolicyReceipt, ids: unlinkedReceipts.compactMap(\.id))
+        let unlinkedDocs = try documents(.taxPolicyReceipt, unlinkedReceipts.compactMap(\.id))
         for receipt in unlinkedReceipts {
             let type = receipt.expenseType
             let docs = unlinkedDocs[receipt.id!] ?? []
@@ -564,7 +590,7 @@ public enum RentalAccounts {
             .filter(Column("startYear") == taxYear.startYear && Column("propertyId") == propertyId
                     && (Column("personId") == personId || Column("isWholeProperty") == true))
             .order(Column("date") == nil, Column("date"), Column("id")).fetchAll(db)
-        let itemDocs = try linkedDocumentIds(db: db, type: .taxManualItem, ids: items.compactMap(\.id))
+        let itemDocs = try documentIds(.taxManualItem, items.compactMap(\.id))
         for item in items {
             let share = item.isWholeProperty ? shares[item.expenseType]!.shareBasisPoints : PropertyOwner.wholeShare
             let reference = SourceReference.manualItem(item.id!)
@@ -620,7 +646,9 @@ public enum RentalAccounts {
                     reference: .transaction(recharge.transaction.id!), date: recharge.transaction.date,
                     description: "Utilities recharged to the tenant, \(month(recharge.statement.month)) statement",
                     currency: currency, amountMinorUnits: -amount, attributedMinorUnits: -applied, shareBasisPoints: share,
-                    explanation: explanation, documentIds: try statementDocumentIds(db: db, statementId: recharge.statement.id!),
+                    explanation: explanation,
+                    documentIds: try reads?.statementDocumentIds(db: db, statementId: recharge.statement.id!)
+                        ?? statementDocumentIds(db: db, statementId: recharge.statement.id!),
                     transactionId: recharge.transaction.id))
             }
             utilityNetting.excess = utilityNetting.rechargesReceived - utilityNetting.rechargesApplied
@@ -1079,13 +1107,19 @@ public enum RentalAccounts {
     static func day(_ date: Date) -> String { MissingEvidence.day(date) }
 
     static func month(_ date: Date) -> String {
+        monthFormatter.string(from: date)
+    }
+
+    /// "Jan 2025" (one formatter: making one per call was a sixth of working out the accounts;
+    /// `DateFormatter` formats safely from several threads).
+    private static let monthFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = MonthRange.calendar
         formatter.timeZone = MonthRange.calendar.timeZone
         formatter.locale = Locale(identifier: "en_GB")
         formatter.dateFormat = "MMM yyyy"
-        return formatter.string(from: date)
-    }
+        return formatter
+    }()
 
     static func monthsLabel(_ window: DateInterval) -> String {
         "\(month(window.start)) – \(month(window.end.addingTimeInterval(-1)))"

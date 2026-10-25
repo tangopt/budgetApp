@@ -1,12 +1,11 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class BankDetailsTests: XCTestCase {
     private func makeDB() throws -> DatabaseManager {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
-        return m
+        return try TestDatabase.migratedManager()
     }
 
     private func account(_ currency: Currency = .gbp, region: BankRegion? = nil, sortCode: String? = nil, accountNumber: String? = nil,

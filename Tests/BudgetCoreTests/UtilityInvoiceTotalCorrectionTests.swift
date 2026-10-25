@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The old municipal-water records that hold only the invoice's first summary line (the water
 /// charge) instead of its total (`UtilityInvoiceTotalCorrection`), and the account-total rule
@@ -115,8 +116,7 @@ final class UtilityInvoiceTotalCorrectionTests: XCTestCase {
         """
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var property = Property(name: "Property A", country: "PT")
             try Properties.save(db: db, &property)

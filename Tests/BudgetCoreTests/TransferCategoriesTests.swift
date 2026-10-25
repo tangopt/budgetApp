@@ -3,6 +3,7 @@ import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
+import TestSupport
 
 /// Transfer categories per account (spec 2026-10-14 §4), on the user's own chart of accounts.
 final class TransferCategoriesTests: XCTestCase {
@@ -58,8 +59,7 @@ final class TransferCategoriesTests: XCTestCase {
     /// The user's accounts and a few non-account categories; no transfer category tied yet
     /// unless `ensure`.
     func makeFixture(ensure: Bool = true) throws -> Fixture {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
+        let m = try TestDatabase.migratedManager()
         let f: Fixture = try m.dbQueue.write { db in
             var ids: [Int64] = []
             var batches: [Int64: Int64] = [:]

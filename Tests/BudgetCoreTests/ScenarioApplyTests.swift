@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 /// Apply to budget, with undo (spec 2026-10-08-scenario-lab-design.md, "Apply to budget,
 /// with undo").
@@ -34,8 +35,7 @@ final class ScenarioApplyTests: XCTestCase {
     /// before the boundary; its 15 Nov moved into October, its 15 Dec at -15); a holiday
     /// reserve added (-200 from 1 Dec).
     private func fixture() throws -> Fixture {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var f = Fixture(manager: manager)
         try manager.dbQueue.write { db in
             for (name, type) in [("Rent", CategoryType.expense), ("Gym", .expense), ("Car", .expense), ("Phone", .expense), ("Streaming", .expense)] {
@@ -338,8 +338,7 @@ final class ScenarioApplyTests: XCTestCase {
 
     func testApplyCreatesMissingGroupsAndUndoRemovesThem() throws {
         // A budget with neither "Planned" nor "Reserved": the scenario's items sit in their own group.
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let (scenarioId, ids) = try manager.dbQueue.write { db -> (Int64, [Int64]) in
             var phone = Category(name: "Phone", type: .expense)
             try phone.insert(db)

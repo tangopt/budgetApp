@@ -12,17 +12,19 @@ final class FrequencyExpanderTests: XCTestCase {
         ForecastEntry(groupId: 1, categoryId: 1, amountMinorUnits: amount, frequency: frequency, interval: interval, startDate: startDate, endDate: endDate, isEnabled: true, status: .auto, note: nil)
     }
 
-    func testOnceOccursExactlyOnStartDateIfWithinPeriod() {
-        let entry = makeEntry(frequency: .once, interval: 1, startDate: date(2026, 8, 15))
+    func testOnceOccursOnlyOnItsStartDate() {
         let period = PayPeriod(startDate: date(2026, 7, 26), endDate: date(2026, 8, 25), type: .projected)
-        XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [date(2026, 8, 15)])
-        XCTAssertEqual(FrequencyExpander.amount(for: entry, in: period), 1000)
-    }
-
-    func testOnceOutsidePeriodProducesNoOccurrences() {
-        let entry = makeEntry(frequency: .once, interval: 1, startDate: date(2026, 9, 15))
-        let period = PayPeriod(startDate: date(2026, 7, 26), endDate: date(2026, 8, 25), type: .projected)
-        XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [])
+        let cases: [(name: String, start: Date, expected: [Date], amount: Int?)] = [
+            ("within the period occurs exactly on the start date", date(2026, 8, 15), [date(2026, 8, 15)], 1000),
+            ("outside the period produces no occurrences", date(2026, 9, 15), [], nil),
+        ]
+        for c in cases {
+            let entry = makeEntry(frequency: .once, interval: 1, startDate: c.start)
+            XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), c.expected, c.name)
+            if let amount = c.amount {
+                XCTAssertEqual(FrequencyExpander.amount(for: entry, in: period), amount, c.name)
+            }
+        }
     }
 
     func testMonthlyOccursOnceInAMatchingPeriod() {
@@ -93,32 +95,24 @@ final class FrequencyExpanderTests: XCTestCase {
         return cal.date(from: DateComponents(year: y, month: m, day: d))!
     }
 
-    func testMonthlyAnchorDayRestoresMonthEnd() {
-        var entry = makeEntry(frequency: .monthly, interval: 1, startDate: utc(2027, 2, 28))
-        entry.anchorDay = 31
-        let period = PayPeriod(startDate: utc(2027, 2, 1), endDate: utc(2027, 5, 31), type: .projected)
-        XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [utc(2027, 2, 28), utc(2027, 3, 31), utc(2027, 4, 30), utc(2027, 5, 31)])
-    }
-
-    func testAnnualAnchorDayOn29February() {
-        var entry = makeEntry(frequency: .annually, interval: 1, startDate: utc(2027, 2, 28))
-        entry.anchorDay = 29
-        let period = PayPeriod(startDate: utc(2027, 1, 1), endDate: utc(2029, 12, 31), type: .projected)
-        XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [utc(2027, 2, 28), utc(2028, 2, 29), utc(2029, 2, 28)])
-    }
-
-    func testNoAnchorDayUsesTheStartDay() {
-        let entry = makeEntry(frequency: .monthly, interval: 1, startDate: utc(2027, 1, 31))
-        let period = PayPeriod(startDate: utc(2027, 1, 1), endDate: utc(2027, 4, 30), type: .projected)
-        XCTAssertEqual(FrequencyExpander.occurrences(for: entry, in: period), [utc(2027, 1, 31), utc(2027, 2, 28), utc(2027, 3, 31), utc(2027, 4, 30)])
-    }
-
-    func testAnchorBeforeStartDayNeverYieldsADateBeforeStart() {
-        var entry = makeEntry(frequency: .monthly, interval: 1, startDate: utc(2026, 10, 15))
-        entry.anchorDay = 1
-        let period = PayPeriod(startDate: utc(2026, 9, 1), endDate: utc(2026, 12, 31), type: .projected)
-        let dates = FrequencyExpander.occurrences(for: entry, in: period)
-        XCTAssertTrue(dates.allSatisfy { $0 >= entry.startDate })
-        XCTAssertEqual(dates, [utc(2026, 11, 1), utc(2026, 12, 1)])
+    func testAnchorDay() {
+        let cases: [(name: String, frequency: ForecastFrequency, start: Date, anchor: Int?, from: Date, to: Date, expected: [Date])] = [
+            ("monthly anchor day restores month end", .monthly, utc(2027, 2, 28), 31, utc(2027, 2, 1), utc(2027, 5, 31),
+             [utc(2027, 2, 28), utc(2027, 3, 31), utc(2027, 4, 30), utc(2027, 5, 31)]),
+            ("annual anchor day on 29 February", .annually, utc(2027, 2, 28), 29, utc(2027, 1, 1), utc(2029, 12, 31),
+             [utc(2027, 2, 28), utc(2028, 2, 29), utc(2029, 2, 28)]),
+            ("no anchor day uses the start day", .monthly, utc(2027, 1, 31), nil, utc(2027, 1, 1), utc(2027, 4, 30),
+             [utc(2027, 1, 31), utc(2027, 2, 28), utc(2027, 3, 31), utc(2027, 4, 30)]),
+            ("an anchor before the start day never yields a date before the start", .monthly, utc(2026, 10, 15), 1, utc(2026, 9, 1), utc(2026, 12, 31),
+             [utc(2026, 11, 1), utc(2026, 12, 1)]),
+        ]
+        for c in cases {
+            var entry = makeEntry(frequency: c.frequency, interval: 1, startDate: c.start)
+            entry.anchorDay = c.anchor
+            let period = PayPeriod(startDate: c.from, endDate: c.to, type: .projected)
+            let dates = FrequencyExpander.occurrences(for: entry, in: period)
+            XCTAssertEqual(dates, c.expected, c.name)
+            XCTAssertTrue(dates.allSatisfy { $0 >= entry.startDate }, c.name)
+        }
     }
 }

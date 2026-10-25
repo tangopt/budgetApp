@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The batch-level duplicate pass: same file (hash) and same document in a different file
 /// (ATCUD, invoice number, receipt number, payment reference, issuer + date + amount), against
@@ -13,8 +14,7 @@ final class ImportDuplicatesTests: XCTestCase {
     private var batchId: Int64!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var property = Property(name: "Property A", country: "PT")
             try Properties.save(db: db, &property)

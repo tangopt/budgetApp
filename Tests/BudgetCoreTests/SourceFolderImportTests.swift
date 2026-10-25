@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Plan "Import documents 4" Task 3: a source folder's new and changed files go into the
 /// importer's review carrying their folder metadata; on Confirm import the scan records get the
@@ -22,8 +23,7 @@ final class SourceFolderImportTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try seed()
         base = FileManager.default.temporaryDirectory.appendingPathComponent("SourceFolderImportTests-\(UUID().uuidString)", isDirectory: true)
         folderURL = base.appendingPathComponent("Papers", isDirectory: true)

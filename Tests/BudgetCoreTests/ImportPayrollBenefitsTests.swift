@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// A P11D's benefit rows corrected in the review, the stored-NI-number check and the tax code fact.
 final class ImportPayrollBenefitsTests: XCTestCase {
@@ -9,8 +10,7 @@ final class ImportPayrollBenefitsTests: XCTestCase {
     private var personId: Int64!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var person = Person(name: "Person A", ukNino: "QQ 12 34 56 C")
             try People.save(db: db, &person)

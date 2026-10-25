@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The Self Assessment computation (plan phase 4 Task 3) on synthetic cases shaped like the
 /// two returns the app must reproduce: a high earner whose personal allowance is fully
@@ -303,8 +304,7 @@ final class SelfAssessmentTests: XCTestCase {
     // MARK: From the records
 
     func testComputeFromTheRecordsBringsForwardFinanceCosts() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let result = try manager.dbQueue.write { db -> SelfAssessment.Result in
             var person = Person(name: "Person A", shortName: "A")
             try People.save(db: db, &person)
@@ -425,8 +425,7 @@ final class SelfAssessmentTests: XCTestCase {
 
     /// Boxes stored as filed are read for a filed year only; an open year is worked out by the rules.
     func testBoxesAsFiledAreReadForFiledYearsOnly() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let (personId, propertyId) = try manager.dbQueue.write { db -> (Int64, Int64) in
             var person = Person(name: "Person A")
             try People.save(db: db, &person)
@@ -478,8 +477,7 @@ final class SelfAssessmentTests: XCTestCase {
     /// the finance costs brought into 2025/26, with a step saying where they come from; with no
     /// boxes as filed nothing changes and no step is added.
     func testCarryForwardFollowsTheFiledReturn() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let personId = try manager.dbQueue.write { db -> Int64 in
             var person = Person(name: "Person A")
             try People.save(db: db, &person)

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The readers for utility invoices, payroll forms (P60/P45/P11D) and other evidence documents:
 /// they propose review items and never write. Synthetic data only.
@@ -30,8 +31,7 @@ final class DocumentImportReadersTests: XCTestCase {
     ]
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var property = Property(name: "Property A", country: "PT")
             try Properties.save(db: db, &property)

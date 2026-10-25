@@ -2,15 +2,14 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 /// Ruling R1: every column that holds ids, and every id inside the known JSON shapes, is classified in
 /// `SyncSchema`, so it travels as a UUID. These fail, naming the column or the path, when something new
 /// holds an id nobody classified.
 final class SyncReferenceClassificationTests: XCTestCase {
     private func migrated() throws -> DatabaseManager {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
-        return manager
+        return try TestDatabase.migratedManager()
     }
 
     // MARK: Columns
@@ -294,7 +293,7 @@ final class SyncReferenceClassificationTests: XCTestCase {
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("SyncJSON-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
-        try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(manager.dbQueue, evidenceRoot: evidence)
         let classified = Set(SyncSchema.jsonReferences.map { "\($0.table).\($0.column)" }).union(SyncSchema.jsonColumnsWithoutReferences)
         try manager.dbQueue.read { db in
             for table in SyncSchema.tables {

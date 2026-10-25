@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 /// Scenario model (spec 2026-10-08-scenario-lab-design.md, "Model"): migration, legacy
 /// conversion, and the budget filter (scenario entries never count toward the budget).
@@ -27,8 +28,7 @@ final class ScenarioModelTests: XCTestCase {
     }
 
     func testRecordsRoundTripAndDeletingAScenarioCascades() throws {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
+        let m = try TestDatabase.migratedManager()
         try m.dbQueue.write { db in
             var rent = Category(name: "Rent", type: .expense)
             try rent.insert(db)
@@ -153,8 +153,7 @@ final class ScenarioModelTests: XCTestCase {
     }
 
     func testBudgetRequestsSplitBudgetAndScenarioEntries() throws {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
+        let m = try TestDatabase.migratedManager()
         try m.dbQueue.write { db in
             var rent = Category(name: "Rent", type: .expense)
             try rent.insert(db)
@@ -175,8 +174,7 @@ final class ScenarioModelTests: XCTestCase {
 
     /// Detection adds a plan for a category whose only entries are in a scenario.
     func testDetectionTreatsAScenarioOnlyCategoryAsUnplanned() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let periods = [
             PayPeriod(startDate: date(2026, 4, 26), endDate: date(2026, 5, 25), type: .actual),
             PayPeriod(startDate: date(2026, 5, 26), endDate: date(2026, 6, 25), type: .actual),

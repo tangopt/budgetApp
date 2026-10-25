@@ -156,45 +156,24 @@ final class CSVStatementParserTests: XCTestCase {
         XCTAssertTrue(result.unparsedLines.isEmpty)
     }
 
-    // A debit/credit column's own value is conventionally unsigned (the column itself
-    // already says which direction the money moved) — a debit value should become
-    // negative even if the statement itself wrote it as a positive number, which is the
-    // normal case this feature exists for.
-    func testDebitColumnValueBecomesNegativeRegardlessOfItsOwnSign() {
-        let csv = "Date,Description,Debit,Credit\n01/07/2026,TESCO,12.00,"
-        let profile = ImportProfile(
-            accountId: 1, format: .csv, csvDelimiter: ",",
-            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
-            csvCreditAmountColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
-        )
-        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
-        XCTAssertEqual(result.transactions.first?.amountMinorUnits, -1200)
-    }
-
-    func testDebitCreditSplitTreatsBothColumnsBlankAsUnparsable() {
-        let csv = "Date,Description,Debit,Credit\n01/07/2026,MYSTERY ROW,,"
-        let profile = ImportProfile(
-            accountId: 1, format: .csv, csvDelimiter: ",",
-            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
-            csvCreditAmountColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
-        )
-        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
-        XCTAssertTrue(result.transactions.isEmpty)
-        XCTAssertEqual(result.unparsedLines.count, 1)
-    }
-
-    // Genuinely ambiguous data (both columns somehow populated) must never be guessed
-    // at — the row is rejected for manual entry instead of silently picking one value.
-    func testDebitCreditSplitTreatsBothColumnsPresentAsUnparsable() {
-        let csv = "Date,Description,Debit,Credit\n01/07/2026,WEIRD ROW,12.00,8.00"
-        let profile = ImportProfile(
-            accountId: 1, format: .csv, csvDelimiter: ",",
-            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
-            csvCreditAmountColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
-        )
-        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
-        XCTAssertTrue(result.transactions.isEmpty)
-        XCTAssertEqual(result.unparsedLines.count, 1)
+    // Blank in both columns has no amount at all; both populated is genuinely ambiguous and must never be guessed
+    // at: either way the row is rejected for manual entry instead of silently picking one value.
+    func testDebitCreditSplitRowsThatCannotBeReadAreUnparsable() {
+        let cases: [(name: String, row: String)] = [
+            ("both columns blank", "01/07/2026,MYSTERY ROW,,"),
+            ("both columns present", "01/07/2026,WEIRD ROW,12.00,8.00"),
+        ]
+        for c in cases {
+            let csv = "Date,Description,Debit,Credit\n" + c.row
+            let profile = ImportProfile(
+                accountId: 1, format: .csv, csvDelimiter: ",",
+                csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
+                csvCreditAmountColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
+            )
+            let result = CSVStatementParser.parse(csvText: csv, profile: profile)
+            XCTAssertTrue(result.transactions.isEmpty, c.name)
+            XCTAssertEqual(result.unparsedLines.count, 1, c.name)
+        }
     }
 
     // Existing single-amount-column profiles (the vast majority today) have
@@ -212,25 +191,20 @@ final class CSVStatementParserTests: XCTestCase {
     }
 
     func testParsesBalanceColumnWhenMapped() {
-        let csv = "Date,Description,Amount,Balance\n01/07/2026,SAINSBURYS,-45.64,\"1,954.36\"\n02/07/2026,SALARY,2800.00,4754.36"
-        let profile = ImportProfile(
-            accountId: 1, format: .csv, csvDelimiter: ",",
-            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
-            csvBalanceColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
-        )
-        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
-        XCTAssertEqual(result.transactions.map(\.balanceAfterMinorUnits), [195436, 475436])
-    }
-
-    func testParsesNegativeBalance() {
-        let csv = "Date,Description,Amount,Balance\n01/07/2026,OVERDRAFT FEE,-5.00,-120.50"
-        let profile = ImportProfile(
-            accountId: 1, format: .csv, csvDelimiter: ",",
-            csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
-            csvBalanceColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
-        )
-        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
-        XCTAssertEqual(result.transactions.first?.balanceAfterMinorUnits, -12050)
+        let cases: [(name: String, csv: String, expected: [Int])] = [
+            ("quoted thousands separator", "Date,Description,Amount,Balance\n01/07/2026,SAINSBURYS,-45.64,\"1,954.36\"\n02/07/2026,SALARY,2800.00,4754.36", [195436, 475436]),
+            ("negative balance", "Date,Description,Amount,Balance\n01/07/2026,OVERDRAFT FEE,-5.00,-120.50", [-12050]),
+        ]
+        for c in cases {
+            let profile = ImportProfile(
+                accountId: 1, format: .csv, csvDelimiter: ",",
+                csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2,
+                csvBalanceColumnIndex: 3, csvDateFormat: "dd/MM/yyyy"
+            )
+            let result = CSVStatementParser.parse(csvText: c.csv, profile: profile)
+            let balances: [Int?] = result.transactions.map { $0.balanceAfterMinorUnits.map { Int($0) } }
+            XCTAssertEqual(balances, c.expected.map { Optional($0) }, c.name)
+        }
     }
 
     // A blank or missing balance cell must never cost the transaction itself.
@@ -264,20 +238,17 @@ final class CSVStatementParserTests: XCTestCase {
         XCTAssertNil(Money.parseMinorUnits("1.005"))
     }
 
-    func testNegateAmountsFlipsSingleColumn() {
-        let csv = "Date,Description,Amount\n01/07/2026,SHOP,45.64\n02/07/2026,PAY,-2800.00"
-        var profile = ImportProfile(accountId: 1, format: .csv, csvDelimiter: ",", csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2, csvDateFormat: "dd/MM/yyyy")
-        profile.csvNegateAmounts = true
-        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
-        XCTAssertEqual(result.transactions.map(\.amountMinorUnits), [-4564, 280000])
-    }
-
-    func testNegateAmountsLeavesSplitColumnsUnchanged() {
-        let csv = "Date,Description,Out,In\n01/07/2026,SHOP,45.64,\n02/07/2026,PAY,,2800.00"
-        var profile = ImportProfile(accountId: 1, format: .csv, csvDelimiter: ",", csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2, csvCreditAmountColumnIndex: 3, csvDateFormat: "dd/MM/yyyy")
-        profile.csvNegateAmounts = true
-        let result = CSVStatementParser.parse(csvText: csv, profile: profile)
-        XCTAssertEqual(result.transactions.map(\.amountMinorUnits), [-4564, 280000])
+    func testNegateAmounts() {
+        let cases: [(name: String, csv: String, creditColumn: Int?)] = [
+            ("flips a single column", "Date,Description,Amount\n01/07/2026,SHOP,45.64\n02/07/2026,PAY,-2800.00", nil),
+            ("leaves split columns unchanged", "Date,Description,Out,In\n01/07/2026,SHOP,45.64,\n02/07/2026,PAY,,2800.00", 3),
+        ]
+        for c in cases {
+            var profile = ImportProfile(accountId: 1, format: .csv, csvDelimiter: ",", csvDateColumnIndex: 0, csvDescriptionColumnIndex: 1, csvAmountColumnIndex: 2, csvCreditAmountColumnIndex: c.creditColumn, csvDateFormat: "dd/MM/yyyy")
+            profile.csvNegateAmounts = true
+            let result = CSVStatementParser.parse(csvText: c.csv, profile: profile)
+            XCTAssertEqual(result.transactions.map(\.amountMinorUnits), [-4564, 280000], c.name)
+        }
     }
 
     // MARK: - Date-time, fee and status columns

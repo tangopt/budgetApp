@@ -2,12 +2,11 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class PlannedItemsTests: XCTestCase {
     private func manager() throws -> DatabaseManager {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
-        return manager
+        return try TestDatabase.migratedManager()
     }
     private func utc(_ y: Int, _ m: Int, _ d: Int) -> Date {
         var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "UTC")!

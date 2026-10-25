@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Plan "Import documents 1b": in the review, a document is linked to one or several existing
 /// transactions the user searched for (all of them its payments), links are removed ("Unlink"),
@@ -21,8 +22,7 @@ final class ImportReviewLinkingTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var person = Person(name: "Person A", shortName: "A")
             try People.save(db: db, &person)

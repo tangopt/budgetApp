@@ -3,6 +3,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 final class SpreadsheetPlanGapFillTests: XCTestCase {
     private static let utc: Calendar = { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "UTC")!; return c }()
@@ -11,8 +12,7 @@ final class SpreadsheetPlanGapFillTests: XCTestCase {
 
     /// Every category the gap fill maps to, with the situation the brief describes.
     private func fixture(omit: String? = nil) throws -> DatabaseManager {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             for name in SpreadsheetPlanGapFill.requiredCategoryNames where name != omit {
                 if name == SpreadsheetPlanGapFill.reserveName {

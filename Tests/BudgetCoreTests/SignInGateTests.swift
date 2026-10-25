@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 @MainActor
 final class SignInGateTests: XCTestCase {
@@ -10,8 +11,7 @@ final class SignInGateTests: XCTestCase {
     private var recoveryKey = ""
 
     override func setUp() async throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         let created = try await manager.dbQueue.write { [password] db in
             var person = Person(name: "Sam Example")
             try person.insert(db)

@@ -62,6 +62,11 @@ public enum TaxFigures {
         // Each year's return works out the earlier years' again (brought-forward figures) and
         // its rental accounts: worked out once here.
         let memo = memo ?? TaxComputationMemo()
+        // What the years read again and again, read once in this call (never kept after it).
+        let reads = TaxReadCache()
+        let outerReads = memo.reads
+        memo.reads = reads
+        defer { memo.reads = outerReads }
         let people = try Person.order(Column("id")).fetchAll(db)
         let properties = try Property.order(Column("id")).fetchAll(db)
         let stored = try TaxYear.fetchAll(db)
@@ -78,7 +83,7 @@ public enum TaxFigures {
                 }
                 for property in properties {
                     guard let propertyId = property.id else { continue }
-                    let owners = try Properties.owners(db: db, propertyId: propertyId)
+                    let owners = try reads.owners(db: db, propertyId: propertyId)
                     guard owners.contains(where: { $0.personId == personId }) else { continue }
                     let result = try RentalAccounts.compute(db: db, taxYear: UKTaxYear(startYear: year), personId: personId, propertyId: propertyId,
                                                             memo: memo)

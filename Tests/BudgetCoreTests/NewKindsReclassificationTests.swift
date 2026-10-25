@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The one-off pass that files the repair bills and stamp-duty notes filed as `other` under their
 /// own kinds, and narrows the Repairs rule. Synthetic database only (invented names and amounts).
@@ -12,8 +13,7 @@ final class NewKindsReclassificationTests: XCTestCase {
     static let stampDutyText = "Autoridade Tributária e Aduaneira\nDOCUMENTO DE COBRANÇA\nImposto do Selo\nVerba 2 Arrendamento\nValor a pagar 95,00 €"
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
     }
 
     private static func day(_ string: String) -> Date {

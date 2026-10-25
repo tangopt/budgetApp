@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Rebuilding a tenancy's recharges from the tracker plan: corrections, a duplicate deleted,
 /// an invoice kept off the statements, statements rewritten or added (manual, rounding and
@@ -18,8 +19,7 @@ final class RechargeTrackerRebuildTests: XCTestCase {
     private func id(_ key: String) -> Int64 { ids[key]! }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var a = Person(name: "Person A")
             try People.save(db: db, &a)

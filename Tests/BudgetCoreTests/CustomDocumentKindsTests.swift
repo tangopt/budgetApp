@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Creating, renaming and merging custom kinds (spec 2026-10-24 §2): names unique against
 /// built-ins and other custom kinds, and a Save that carries documents' canonical names,
@@ -11,8 +12,7 @@ final class CustomDocumentKindsTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
     }
 
     private func create(_ name: String, _ area: DocumentArea) throws -> Int64 {
@@ -423,6 +423,10 @@ final class CustomDocumentKindMergeSyncTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
     override func setUp() async throws {
+        try makeDevices()
+    }
+
+    private func makeDevices() throws {
         cloud = FakeCloud()
         let keys = InMemorySyncKeyStore()
         a = try SyncEngineTestDevice("user-a", name: "Mac", cloud: cloud, keys: keys)
@@ -475,27 +479,28 @@ final class CustomDocumentKindMergeSyncTests: XCTestCase {
 
     /// Both devices: the documents, the learnt rule and the evidence rule under `target`; the merged kind no longer offered.
     private func assertConverged(_ shared: Shared, documentB: String, target: (SyncEngineTestDevice) throws -> DocumentKindRef, name: String,
-                                 conflicts expected: [String: Set<String>] = [:], file: StaticString = #filePath, line: UInt = #line) throws {
+                                 conflicts expected: [String: Set<String>] = [:], context: String = "", file: StaticString = #filePath, line: UInt = #line) throws {
         for device in [a!, b!] {
+            let who = "\(device.user) \(context)"
             let ref = try target(device)
             for (uuid, date) in [(shared.documentA, "20250301"), (documentB, "20250402")] {
                 let stored = try document(device, uuid)
-                XCTAssertEqual(stored.kindRef, ref, "\(device.user) \(uuid)", file: file, line: line)
-                XCTAssertEqual(stored.canonicalName, "\(date) - Property - \(name) - Caldeiras Lda", device.user, file: file, line: line)
+                XCTAssertEqual(stored.kindRef, ref, "\(who) \(uuid)", file: file, line: line)
+                XCTAssertEqual(stored.canonicalName, "\(date) - Property - \(name) - Caldeiras Lda", who, file: file, line: line)
             }
             let ruleId = try XCTUnwrap(try device.localId("importRule", shared.rule))
             let rule = try XCTUnwrap(try device.read { try ImportRule.fetchOne($0, key: ruleId) })
-            XCTAssertEqual(ImportLearning.decode(DocumentKindAction.self, rule.actionJSON)?.kindRef, ref, device.user, file: file, line: line)
-            XCTAssertEqual(rule.actionLabel, "Kind: \(name)", device.user, file: file, line: line)
+            XCTAssertEqual(ImportLearning.decode(DocumentKindAction.self, rule.actionJSON)?.kindRef, ref, who, file: file, line: line)
+            XCTAssertEqual(rule.actionLabel, "Kind: \(name)", who, file: file, line: line)
             let requirementId = try XCTUnwrap(try device.localId("evidenceRequirement", shared.requirement))
             let requirement = try XCTUnwrap(try device.read { try EvidenceRequirement.fetchOne($0, key: requirementId) })
-            XCTAssertEqual(requirement.kindRefs, [ref], device.user, file: file, line: line)
+            XCTAssertEqual(requirement.kindRefs, [ref], who, file: file, line: line)
             let names = try device.read { try DocumentKindCatalog.load(db: $0).customKinds.map(\.name) }
-            XCTAssertFalse(names.contains("Boiler service"), "\(device.user) \(names)", file: file, line: line)
-            XCTAssertEqual(try device.count("syncStaging"), 0, device.user, file: file, line: line)
+            XCTAssertFalse(names.contains("Boiler service"), "\(who) \(names)", file: file, line: line)
+            XCTAssertEqual(try device.count("syncStaging"), 0, who, file: file, line: line)
             let conflicts = try device.read { try String.fetchAll($0, sql: "SELECT tableName || '.' || field FROM syncConflict") }
-            XCTAssertEqual(Set(conflicts), expected[device.user] ?? [], device.user, file: file, line: line)
-            XCTAssertEqual(try device.read { try SyncChangeTracker.pending(db: $0) }.count, 0, "\(device.user) has nothing left to send", file: file, line: line)
+            XCTAssertEqual(Set(conflicts), expected[device.user] ?? [], who, file: file, line: line)
+            XCTAssertEqual(try device.read { try SyncChangeTracker.pending(db: $0) }.count, 0, "\(who) has nothing left to send", file: file, line: line)
         }
     }
 
@@ -509,46 +514,43 @@ final class CustomDocumentKindMergeSyncTests: XCTestCase {
         { device in .custom(try XCTUnwrap(try device.localId("customDocumentKind", shared.heating))) }
     }
 
-    func testMergeIntoACustomKindReachesADocumentFiledElsewhereAfterIt() async throws {
-        let shared = try await shared()
-        let documentB = try fileOnB(shared)
-        try merge(into: { .custom($0) }, shared)
-        try await a.engine.syncNow()   // the merge reaches the cloud first
-        try await b.engine.syncNow()   // B re-files its own document, and sends it
-        try await a.engine.syncNow()
-        try assertConverged(shared, documentB: documentB, target: heating(shared), name: "Heating")
-    }
-
-    func testMergeIntoACustomKindReachesADocumentFiledElsewhereBeforeIt() async throws {
-        let shared = try await shared()
-        let documentB = try fileOnB(shared)
-        try await b.engine.syncNow()   // B's document reaches the cloud first
-        try merge(into: { .custom($0) }, shared)
-        try await a.engine.syncNow()   // A pulls it under the redirect, then sends the merge
-        try await b.engine.syncNow()
-        try await a.engine.syncNow()
-        try assertConverged(shared, documentB: documentB, target: heating(shared), name: "Heating")
-    }
-
-    func testMergeIntoABuiltInKindReachesADocumentFiledElsewhereAfterIt() async throws {
-        let shared = try await shared()
-        let documentB = try fileOnB(shared)
-        try merge(into: { _ in .builtIn(.repairInvoice) }, shared)
-        try await a.engine.syncNow()
-        try await b.engine.syncNow()
-        try await a.engine.syncNow()
-        try assertConverged(shared, documentB: documentB, target: { _ in .builtIn(.repairInvoice) }, name: "Repair bill")
-    }
-
-    func testMergeIntoABuiltInKindReachesADocumentFiledElsewhereBeforeIt() async throws {
-        let shared = try await shared()
-        let documentB = try fileOnB(shared)
-        try await b.engine.syncNow()
-        try merge(into: { _ in .builtIn(.repairInvoice) }, shared)
-        try await a.engine.syncNow()
-        try await b.engine.syncNow()
-        try await a.engine.syncNow()
-        try assertConverged(shared, documentB: documentB, target: { _ in .builtIn(.repairInvoice) }, name: "Repair bill")
+    /// Merging into a custom kind and into a built-in kind, each with B's document reaching the cloud after the merge
+    /// and before it. Every case starts on fresh devices; a case that throws is recorded and the next one still runs.
+    func testMergeReachesADocumentFiledElsewhere() async throws {
+        enum Order { case after, before }
+        let cases: [(name: String, builtIn: Bool, order: Order)] = [
+            ("custom kind, document filed after the merge", false, .after),
+            ("custom kind, document filed before the merge", false, .before),
+            ("built-in kind, document filed after the merge", true, .after),
+            ("built-in kind, document filed before the merge", true, .before),
+        ]
+        for testCase in cases {
+            do {
+                try makeDevices()
+                let shared = try await shared()
+                let documentB = try fileOnB(shared)
+                let target: (Int64) -> DocumentKindRef = testCase.builtIn ? { _ in .builtIn(.repairInvoice) } : { .custom($0) }
+                switch testCase.order {
+                case .after:
+                    try merge(into: target, shared)
+                    try await a.engine.syncNow()   // the merge reaches the cloud first
+                    try await b.engine.syncNow()   // B re-files its own document, and sends it
+                    try await a.engine.syncNow()
+                case .before:
+                    try await b.engine.syncNow()   // B's document reaches the cloud first
+                    try merge(into: target, shared)
+                    try await a.engine.syncNow()   // A pulls it under the redirect, then sends the merge
+                    try await b.engine.syncNow()
+                    try await a.engine.syncNow()
+                }
+                try assertConverged(shared, documentB: documentB,
+                                    target: testCase.builtIn ? { _ in .builtIn(.repairInvoice) } : heating(shared),
+                                    name: testCase.builtIn ? "Repair bill" : "Heating", context: testCase.name)
+            } catch {
+                // One case throwing doesn't hide the others: record it under its name and go on.
+                XCTFail("\(testCase.name): \(error)")
+            }
+        }
     }
 
     // MARK: Redirects refused or gone on the server (fix round 2)
