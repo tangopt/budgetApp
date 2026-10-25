@@ -795,12 +795,17 @@ public enum SelfAssessment {
     }
 
     static func day(_ date: Date) -> String {
+        dayFormatter.string(from: date)
+    }
+
+    /// "6 April 2025" (one formatter, configured once and only formatting: safe from several threads).
+    private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_GB")
         formatter.timeZone = TimeZone(identifier: "UTC")
         formatter.dateFormat = "d MMMM yyyy"
-        return formatter.string(from: date)
-    }
+        return formatter
+    }()
 
     // MARK: From the records
 

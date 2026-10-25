@@ -92,7 +92,8 @@ final class TaxFiguresSnapshotTests: XCTestCase {
         }
     }
 
-    /// Nothing read is kept after the call: a change between two snapshots shows in the second.
+    /// Nothing read is kept after the call, even on a memo used again: after the ownership changes,
+    /// a snapshot on the same memo of a year it hasn't worked out yet reads the new owners.
     func testASnapshotAfterAnEditReadsTheEdit() throws {
         let manager = try TestDatabase.migratedManager()
         let (personId, propertyId) = try manager.dbQueue.write { db -> (Int64, Int64) in
@@ -101,18 +102,25 @@ final class TaxFiguresSnapshotTests: XCTestCase {
             var property = Property(name: "Property A", country: "PT")
             try Properties.save(db: db, &property)
             _ = try Properties.setOwners(db: db, propertyId: property.id!, [PropertyOwner(propertyId: property.id!, personId: person.id!, shareBasisPoints: 10_000)])
-            var rent = TaxManualItem(startYear: 2023, personId: person.id!, propertyId: property.id!, expenseType: .rentalIncome, label: "Rent",
-                                     amountMinorUnits: pounds(5_000), currency: .gbp, isWholeProperty: true)
-            try TaxManualItems.save(db: db, &rent)
+            for year in [2022, 2023] {
+                var rent = TaxManualItem(startYear: year, personId: person.id!, propertyId: property.id!, expenseType: .rentalIncome, label: "Rent",
+                                         amountMinorUnits: pounds(5_000), currency: .gbp, isWholeProperty: true)
+                try TaxManualItems.save(db: db, &rent)
+            }
             return (person.id!, property.id!)
         }
         let memo = TaxComputationMemo()
         let field = "Property A · total income in GBP"
+        func income(_ snapshot: TaxFigures.Snapshot, _ year: Int) -> TaxFigures.Value? {
+            snapshot.values[TaxFigures.Key(startYear: year, person: "Person A", field: field)]
+        }
         try manager.dbQueue.writeWithoutTransaction { db in
-            let before = try TaxFigures.snapshot(db: db, only: [2023])
-            XCTAssertEqual(before.values[TaxFigures.Key(startYear: 2023, person: "Person A", field: field)], .amount(pounds(5_000)))
+            // Reads the ownership rows (2022/23's accounts and return) with this memo.
+            let before = try TaxFigures.snapshot(db: db, only: [2022], memo: memo)
+            XCTAssertEqual(income(before, 2022), .amount(pounds(5_000)))
+            XCTAssertNil(memo.reads, "the call's reads end with it")
             try db.inSavepoint {
-                // Half the property from 2023/24: the share, from the (no longer cached) ownership rows.
+                // Half the property: 2023/24's accounts, new to the memo, must see it.
                 var other = Person(name: "Person B")
                 try People.save(db: db, &other)
                 _ = try Properties.setOwners(db: db, propertyId: propertyId, [
@@ -120,10 +128,10 @@ final class TaxFiguresSnapshotTests: XCTestCase {
                     PropertyOwner(propertyId: propertyId, personId: other.id!, shareBasisPoints: 5_000)
                 ])
                 let after = try TaxFigures.snapshot(db: db, only: [2023], memo: memo)
-                XCTAssertEqual(after.values[TaxFigures.Key(startYear: 2023, person: "Person A", field: field)], .amount(pounds(2_500)))
+                XCTAssertEqual(income(after, 2023), .amount(pounds(2_500)))
                 return .rollback
             }
-            XCTAssertNil(memo.reads, "the call's reads end with it")
+            XCTAssertNil(memo.reads)
         }
     }
 
@@ -220,5 +228,133 @@ final class TaxFiguresSnapshotTests: XCTestCase {
             }
         }
         try check([2024: 0, 2025: 5_000], "by debit month")
+    }
+}
+
+/// The reads `TaxReadCache` batches (a year's splits and rules, the ownership rows, the documents
+/// linked to records) still show a change on a filed year to the filed-year guard's replay of
+/// what the figures read (`FiledYearGuard.recordedSnapshot`, `YearReads.changedYears`) and to
+/// the edit check (`FiledYearEditCheck`). Synthetic data: Person A filed 2022/23; Property A
+/// (wholly A's, GBP) has rent and a repair that year.
+final class TaxFiguresGuardReplayTests: XCTestCase {
+    private var manager: DatabaseManager!
+    private var db: DatabaseQueue { manager.dbQueue }
+    private var ids: [String: Int64] = [:]
+
+    private static func date(_ y: Int, _ m: Int, _ d: Int) -> Date {
+        MonthRange.calendar.date(from: DateComponents(year: y, month: m, day: d))!
+    }
+
+    private func id(_ key: String) -> Int64 { ids[key]! }
+
+    override func setUpWithError() throws {
+        manager = try TestDatabase.migratedManager()
+        ids = try db.write { db in
+            var ids: [String: Int64] = [:]
+            var person = Person(name: "Person A")
+            try People.save(db: db, &person)
+            ids["A"] = person.id!
+            var year = TaxYear(startYear: 2022, personId: person.id!, status: .filed)
+            try year.insert(db)
+            var property = Property(name: "Property A", country: "PT", currency: .gbp)
+            try Properties.save(db: db, &property)
+            ids["property"] = property.id!
+            _ = try Properties.setOwners(db: db, propertyId: property.id!, [
+                PropertyOwner(propertyId: property.id!, personId: person.id!, shareBasisPoints: 10_000)
+            ])
+            var account = Account(name: "Bank A", currency: .gbp, kind: .cash, trackingMode: .imported)
+            try account.insert(db)
+            var batch = ImportBatch(accountId: account.id!, sourceFileName: "bank.csv", importedAt: Self.date(2025, 1, 1))
+            try batch.insert(db)
+            ids["batch"] = batch.id!
+            ids["account"] = account.id!
+            try Properties.setAccount(db: db, propertyId: property.id!, accountId: account.id!, role: .current)
+            var group = CategoryGroup(name: "Property A")
+            try group.insert(db)
+            try Properties.addCategoryGroup(db: db, propertyId: property.id!, categoryGroupId: group.id!)
+            for (key, name, type) in [("rent", "Rental income", CategoryType.income), ("repairs", "Repairs", .expense)] {
+                var category = Category(name: name, type: type, groupId: group.id)
+                try category.insert(db)
+                ids[key] = category.id!
+            }
+            try TaxExpenseTypeMap.seed(db: db, propertyId: property.id!)
+            for (key, day, description, amount, category) in [("rentRow", Self.date(2022, 6, 1), "TENANT RENT", 500_000, ids["rent"]!),
+                                                               ("plumber", Self.date(2022, 7, 1), "PLUMBER", -10_000, ids["repairs"]!)] {
+                var t = Transaction(importBatchId: batch.id!, accountId: account.id!, date: day, rawDescription: description,
+                                    amountMinorUnits: amount, categoryId: category, status: .confirmed, categorizedBy: .manual,
+                                    fingerprint: "fp-\(key)")
+                try t.insert(db)
+                ids[key] = t.id!
+            }
+            // An invoice dated in 2023/24, not yet linked: linked to the repair, it moves it out of 2022/23.
+            var invoice = EvidenceDocument(sha256: "synthetic-invoice", storedRelativePath: "", originalFileName: "invoice.pdf", byteCount: 1,
+                                           kind: .utilityInvoice, docDate: Self.date(2023, 5, 1), addedAt: Self.date(2025, 1, 1))
+            try invoice.insert(db)
+            ids["invoice"] = invoice.id!
+            return ids
+        }
+    }
+
+    private func repairType(_ db: Database) throws -> TaxExpenseType {
+        try XCTUnwrap(TaxExpenseTypeMap.entries(db: db, propertyId: id("property")).first { $0.category.id == id("repairs") }).expenseType
+    }
+
+    private var changes: [(String, (Database) throws -> Void)] {
+        [
+            ("split", { db in
+                try TaxSplits.set(db: db, startYear: 2022, personId: self.id("A"), propertyId: self.id("property"), expenseType: nil,
+                                  shareBasisPoints: 5_000)
+            }),
+            ("attribution rule", { db in
+                _ = try TaxAttributionRules.set(db: db, expenseType: try self.repairType(db), startYear: 2022, rule: .previousCalendarYear)
+            }),
+            ("owner", { db in
+                var other = Person(name: "Person B")
+                try People.save(db: db, &other)
+                _ = try Properties.setOwners(db: db, propertyId: self.id("property"), [
+                    PropertyOwner(propertyId: self.id("property"), personId: self.id("A"), shareBasisPoints: 5_000),
+                    PropertyOwner(propertyId: self.id("property"), personId: other.id!, shareBasisPoints: 5_000)
+                ])
+            }),
+            ("document link", { db in
+                try EvidenceLinks.link(db: db, documentId: self.id("invoice"), to: .transaction(self.id("plumber")))
+            })
+        ]
+    }
+
+    func testTheGuardReplayFindsEachBatchedReadChangingInAFiledYear() throws {
+        for (label, change) in changes {
+            try db.writeWithoutTransaction { db in
+                let (before, recorded) = try FiledYearGuard.recordedSnapshot(db: db, years: try TaxFigures.years(db: db))
+                let reads = try XCTUnwrap(recorded, label)
+                try db.inSavepoint {
+                    // A change the figures don't read: nothing to take again.
+                    var groceries = Category(name: "Groceries", type: .expense)
+                    try groceries.insert(db)
+                    XCTAssertEqual(try reads.changedYears(db: db, written: nil), [], label)
+                    let written = try TaxFiguresReads.writtenTables(db: db) { try change(db) }
+                    XCTAssertEqual(try reads.changedYears(db: db, written: written), [2022], label)
+                    XCTAssertEqual(try reads.changedYears(db: db, written: nil), [2022], label)
+                    // And it does move 2022/23's figures.
+                    let after = try TaxFigures.snapshot(db: db, only: [2022])
+                    XCTAssertNotEqual(after.values.filter { $0.key.startYear == 2022 }, before.values.filter { $0.key.startYear == 2022 }, label)
+                    return .rollback
+                }
+            }
+        }
+    }
+
+    func testTheEditCheckAsksForEachBatchedReadChangingInAFiledYear() throws {
+        for (label, change) in changes {
+            let outcome = try db.write { db in
+                try FiledYearEditCheck.save(db: db, edit: label, scope: .everyYear, now: Self.date(2026, 10, 25)) { try change(db) }
+            }
+            guard case .asks(let question) = outcome else {
+                XCTFail("\(label): saved without asking")
+                continue
+            }
+            // The filed 2022/23 return's boxes move (later years follow through brought-forward figures).
+            XCTAssertTrue(question.years.contains { $0.startYear == 2022 && !$0.lines.isEmpty }, "\(label): \(question.years.map(\.startYear))")
+        }
     }
 }

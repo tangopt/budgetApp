@@ -763,7 +763,9 @@ public enum Recharges {
     /// The property's recharges received on credits dated in `interval` (`[start, end)`), by date.
     public static func received(db: Database, propertyId: Int64, in interval: DateInterval? = nil) throws -> [Received] {
         // One statement: each payment with its credit and statement (rows split by table), the
-        // credit's date window in SQL (dates compare as stored, as every date filter here does).
+        // credit's date window in SQL. Dates compare as stored text, which assumes GRDB's canonical
+        // "yyyy-MM-dd HH:mm:ss.SSS" (UTC) for `transaction_.date` (a date-only "2025-04-06" would
+        // sort before 6 April 00:00); the rental accounts' transaction window relies on the same.
         let payment = RechargePayment.databaseTableName, transaction = Transaction.databaseTableName
         let statement = RechargeStatement.databaseTableName
         let adapters = splittingRowAdapters(columnCounts: try [payment, transaction, statement].map { try db.columns(in: $0).count })
