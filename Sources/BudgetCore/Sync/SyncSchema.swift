@@ -489,6 +489,7 @@ extension SyncSchema {
         SyncUniqueKey("category", ["name"], .suffix("name")),
         SyncUniqueKey("accountBalancePoint", ["accountId", "payMonth"], .identity),
         SyncUniqueKey("accountSummaryMonth", ["accountId", "payMonth", "categoryId"], .identity),
+        SyncUniqueKey("accountSummaryMonth", ["accountId", "payMonth"], .identity),  // the uncategorised row (partial index)
         SyncUniqueKey("customDocumentKind", ["name"], .identity),              // one kind per name (ignoring case) on every device
         SyncUniqueKey("document", ["sha256"], .identity),                      // the same file
         SyncUniqueKey("importProfile", ["accountId", "format"], .identity),    // the account's profile for a format

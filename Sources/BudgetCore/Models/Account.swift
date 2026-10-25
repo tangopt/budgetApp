@@ -139,8 +139,10 @@ public struct Account: Codable, Equatable, Identifiable, FetchableRecord, Mutabl
         self.sharingLevel = sharingLevel
     }
 
-    /// Decodes every column; a database the sharing migration hasn't reached yet (a tool reading a copy
-    /// before migrating it, `SyncRehearsal`) has no `sharingLevel`, which reads as `.everything`.
+    /// Decodes a full account row (`SELECT *`), every column; `SharingStorageTests` round-trips each field.
+    /// The `.everything` fallback for a missing `sharingLevel` exists only for databases the sharing
+    /// migration hasn't reached yet (a tool reading a copy before migrating it, `SyncRehearsal`); on a
+    /// migrated database the column is NOT NULL and always read. Never fetch accounts with a partial column list.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(Int64.self, forKey: .id)

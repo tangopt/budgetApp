@@ -54,6 +54,11 @@ enum SharingMigration {
             t.column("transactionCount", .integer).notNull()
             t.uniqueKey(["accountId", "payMonth", "categoryId"])
         }
+        // SQLite's UNIQUE treats NULLs as distinct: one uncategorised row per account and month needs its own index.
+        try db.execute(sql: """
+            CREATE UNIQUE INDEX IF NOT EXISTS accountSummaryMonth_uncategorised
+            ON accountSummaryMonth(accountId, payMonth) WHERE categoryId IS NULL
+            """)
 
         // Local only. The write origin the triggers copy from `syncWriter` into `syncRecord`.
         if !(try db.columns(in: "syncRecord").map(\.name).contains("origin")) {

@@ -186,7 +186,7 @@ public enum SyncChangeTracker {
     ///   migrated part of the way still takes writes.
     /// - Triggers a newer `version` installed are left as they are (logged): an older build must not
     ///   take tracking away from columns it doesn't know.
-    /// Also clears a stale incoming-apply marker and sweeps identities whose row is gone (a delete no
+    /// Also clears a stale incoming-apply marker and write origin, and sweeps identities whose row is gone (a delete no
     /// trigger saw) into tombstones. `DatabaseManager.migrate` runs it on every open.
     public static func refreshSyncTriggers(db: Database, schema: [SyncTableSchema] = SyncSchema.tables,
                                            version: Int = SyncSchema.version) throws {
@@ -217,6 +217,10 @@ public enum SyncChangeTracker {
             }
         }
         try db.execute(sql: "DELETE FROM syncApplying")
+        // A write origin left by a run that never finished (a crash mid-import) must not stamp later writes.
+        if try db.columns(in: "syncWriter").contains(where: { $0.name == "origin" }) {
+            try db.execute(sql: "UPDATE syncWriter SET origin = NULL WHERE origin IS NOT NULL")
+        }
         for table in present { try sweepOrphans(table, db: db) }
     }
 

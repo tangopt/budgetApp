@@ -126,6 +126,71 @@ final class SharingStorageTests: XCTestCase {
         }
     }
 
+    func testOneUncategorisedSummaryPerAccountAndMonth() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            var account = Account(name: "Synthetic", currency: .gbp, kind: .cash, trackingMode: .imported)
+            try account.insert(db)
+            var first = AccountSummaryMonth(accountId: account.id!, payMonth: "2026-09", categoryId: nil, amountMinorUnits: -100, transactionCount: 1)
+            try first.insert(db)
+            var second = AccountSummaryMonth(accountId: account.id!, payMonth: "2026-09", categoryId: nil, amountMinorUnits: -200, transactionCount: 2)
+            XCTAssertThrowsError(try second.insert(db))
+            // Another month, and categorised rows beside it, are fine.
+            var otherMonth = AccountSummaryMonth(accountId: account.id!, payMonth: "2026-10", categoryId: nil, amountMinorUnits: -300, transactionCount: 1)
+            try otherMonth.insert(db)
+            let categoryId = try XCTUnwrap(try Int64.fetchOne(db, sql: "SELECT id FROM category ORDER BY id LIMIT 1"))
+            var categorised = AccountSummaryMonth(accountId: account.id!, payMonth: "2026-09", categoryId: categoryId, amountMinorUnits: -50, transactionCount: 1)
+            try categorised.insert(db)
+            XCTAssertEqual(try AccountSummaryMonth.fetchCount(db), 3)
+        }
+    }
+
+    /// Every column set to a non-default value survives fetch → save → fetch, so the hand-written decoder
+    /// (`Account.init(from:)`) can't skip one unnoticed.
+    func testAccountRoundTripsEveryField() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO person(name) VALUES ('Synthetic person')")
+            let personId = db.lastInsertedRowID
+            let day = { (n: Double) in Date(timeIntervalSince1970: 1_790_000_000 + n * 86_400) }
+            var account = Account(name: "Synthetic", currency: .eur, kind: .credit, trackingMode: .manual,
+                                  alias: "Syn", sortCode: "112233", accountNumber: "12345678", iban: "GB00TEST0000000000",
+                                  sortOrder: 7, statementMismatchMinorUnits: -12, statementMismatchDate: day(1),
+                                  statementMismatchClosingMinorUnits: 3_456, statementLastCheckedDate: day(2), balanceConfirmedAt: day(3),
+                                  bankRegion: .us, bankName: "Synthetic Bank", routingNumber: "123456789", bic: "SYNTGB2L",
+                                  isMain: true, includeInNetWorth: false, ownerPersonId: personId, sharingLevel: .categoryTotals)
+            try account.insert(db)
+            let row = try XCTUnwrap(try Row.fetchOne(db, sql: "SELECT * FROM account WHERE id = ?", arguments: [account.id]))
+            for column in row.columnNames {
+                XCTAssertFalse(row[column] as DatabaseValue == .null, "account.\(column) is not set by this test")
+            }
+            var fetched = try XCTUnwrap(try Account.fetchOne(db, key: account.id))
+            XCTAssertEqual(fetched, account)
+            try fetched.save(db)
+            XCTAssertEqual(try Account.fetchOne(db, key: account.id), account)
+            XCTAssertEqual(try Row.fetchOne(db, sql: "SELECT * FROM account WHERE id = ?", arguments: [account.id]), row)
+        }
+    }
+
+    func testOpeningTheDatabaseClearsAStaleWriteOrigin() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SharingOrigin-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appendingPathComponent("db.sqlite").path
+        let manager = try TestDatabase.migratedManager(path: path)
+        // A run that set an origin and never finished (the app quit mid-import).
+        try manager.dbQueue.write { db in try SyncChangeTracker.setWriter("u1", origin: "import", db: db) }
+        try manager.dbQueue.close()
+
+        let reopened = try DatabaseManager(path: path)
+        try reopened.migrate()
+        try reopened.dbQueue.read { db in
+            let writer = try XCTUnwrap(try Row.fetchOne(db, sql: "SELECT appUserUuid, origin FROM syncWriter WHERE id = 1"))
+            XCTAssertEqual(writer["origin"] as String?, nil)
+            XCTAssertEqual(writer["appUserUuid"] as String?, "u1")
+        }
+    }
+
     func testDerivedUUIDIsStableAndV4Shaped() throws {
         let pattern = try NSRegularExpression(pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
         for name in ["x", "mango.accountBalancePoint.1.2026-09", ""] {
