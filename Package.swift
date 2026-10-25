@@ -30,34 +30,8 @@ let package = Package(
         .testTarget(name: "BudgetCoreTests", dependencies: ["BudgetCore", "BudgetDemo", "TestSupport"]),
         .testTarget(name: "MangoSyncTests", dependencies: ["MangoSync", "BudgetCore"]),
         .testTarget(name: "MangoUITests", dependencies: ["MangoUI", "BudgetCore", "BudgetDemo", "TestSupport"]),
-        .executableTarget(name: "MigrateHistory", dependencies: ["BudgetCore"]),
-        .executableTarget(name: "MigrateAccountBalances", dependencies: ["BudgetCore"]),
-        .executableTarget(name: "ConvertBalances", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "SeedCategoryGroups", dependencies: ["BudgetCore"]),
-        .executableTarget(name: "SeedForecastPlan", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "FillSpreadsheetPlanGaps", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "CorrectSpreadsheetBalances", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "RedateSpreadsheetBalances", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "ImportBBVAHistory", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "ImportBBVAFundAndMortgage", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "ImportExistingEvidence", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "SetUpLisbonProperty", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "TaxRegression", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "SelfAssessmentRegression", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "BackfillRecharges", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "ApplyTaxData", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "RebuildRechargesFromTracker", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "LinkRentReceiptPDFs", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "LinkRentCredits", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "MortgageRateValidation", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "ImportBBVAEarlierStatements", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "MakeDemoDatabase", dependencies: ["BudgetCore", "BudgetDemo"]),
-        .executableTarget(name: "ImportDryRun", dependencies: ["BudgetCore"]),
-        .executableTarget(name: "ImportRehearsal", dependencies: ["BudgetCore"]),
-        .executableTarget(name: "SyncRehearsal", dependencies: ["BudgetCore"]),
-        .executableTarget(name: "CorrectSimarInvoiceTotals", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "ReclassifyMortgageReceipts", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "ReclassifyNewKinds", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .executableTarget(name: "ImportTaxArchive", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")])
+        // Builds the synthetic demo database; scripts/render-snapshots.sh builds and runs it.
+        // The one-off maintenance tools live in their own package: Tools/Package.swift (`swift run --package-path Tools <Tool>`).
+        .executableTarget(name: "MakeDemoDatabase", dependencies: ["BudgetCore", "BudgetDemo"])
     ]
 )

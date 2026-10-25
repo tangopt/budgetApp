@@ -57,24 +57,32 @@ final class ToolDatabaseTests: XCTestCase {
         try tool.close()
     }
 
-    /// Every one-off tool target (each `Sources/<Tool>/` but the libraries) opens databases only through `ToolDatabase`.
+    /// Every one-off tool target opens databases only through `ToolDatabase`: each `Tools/Sources/<Tool>/` (the tools'
+    /// own package, out of the default build) and each root `Sources/<Target>/` but the libraries (MakeDemoDatabase, BudgetDemo).
     func testToolsNeverOpenABareDatabaseQueueOnAFile() throws {
-        let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("Sources", isDirectory: true)
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let tools = root.appendingPathComponent("Tools/Sources", isDirectory: true)
+        let sources = root.appendingPathComponent("Sources", isDirectory: true)
         let libraries: Set<String> = ["BudgetCore", "MangoSync", "MangoUI"]
         let fileManager = FileManager.default
         var offenders: [String] = []
         var checked = 0
-        for target in try fileManager.contentsOfDirectory(atPath: sources.path).sorted() where !libraries.contains(target) {
-            let folder = sources.appendingPathComponent(target, isDirectory: true)
-            guard let files = fileManager.enumerator(atPath: folder.path) else { continue }
-            for case let file as String in files where file.hasSuffix(".swift") {
-                checked += 1
-                let text = try String(contentsOf: folder.appendingPathComponent(file), encoding: .utf8)
-                if text.contains("DatabaseQueue(path:") { offenders.append("\(target)/\(file)") }
+        var checkedTools = 0
+        for (folderRoot, skipped) in [(tools, Set<String>()), (sources, libraries)] {
+            for target in try fileManager.contentsOfDirectory(atPath: folderRoot.path).sorted() where !skipped.contains(target) {
+                let folder = folderRoot.appendingPathComponent(target, isDirectory: true)
+                guard let files = fileManager.enumerator(atPath: folder.path) else { continue }
+                for case let file as String in files where file.hasSuffix(".swift") {
+                    checked += 1
+                    if folderRoot == tools { checkedTools += 1 }
+                    let text = try String(contentsOf: folder.appendingPathComponent(file), encoding: .utf8)
+                    if text.contains("DatabaseQueue(path:") { offenders.append("\(target)/\(file)") }
+                }
             }
         }
-        XCTAssertGreaterThan(checked, 10)
+        XCTAssertGreaterThan(checkedTools, 10, "the tools package's sources weren't found")
+        XCTAssertGreaterThan(checked, checkedTools)
         XCTAssertEqual(offenders, [])
     }
 }
