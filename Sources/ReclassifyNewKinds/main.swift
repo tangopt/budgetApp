@@ -8,21 +8,27 @@
 // tax years are never touched. Library files are stored by content hash and never renamed, so the
 // library folder isn't touched. Prints every change.
 //
-// Usage: swift run ReclassifyNewKinds --db <path> [--repairs-kinds repairInvoice,other] [--allow-app-data] [--apply]
+// Usage: swift run ReclassifyNewKinds --db <path> [--repairs-kinds repairInvoice,other] [--allow-app-data] [--apply] [--force-running]
+//   Before running: launch the updated Mango once (it migrates the database: the tool reads columns
+//   those migrations add), then quit it before --apply.
 //   Without --apply: a dry run; the database is opened read-only and nothing is written.
 //   --apply           writes the plan just printed, in one transaction, after a backup next to the
 //                     database (`<db>.pre-new-kinds-backup-YYYYMMDD-HHMMSS`); refused while Mango
 //                     runs, and refused (nothing written) if the database changed since the plan.
 //   --allow-app-data  lets the tool open the app's own database (the user's go); without it a
 //                     database inside the app's data folder is refused — pass a copy.
+//   --force-running   lets --apply go ahead while Mango is running (else refused: quit it first).
 
+import AppKit
 import Foundation
 import BudgetCore
 import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: ReclassifyNewKinds --db <path> [--repairs-kinds repairInvoice,other] [--allow-app-data] [--apply]
+        Usage: ReclassifyNewKinds --db <path> [--repairs-kinds repairInvoice,other] [--allow-app-data] [--apply] [--force-running]
+
+        Launch the updated Mango once (migrations) before running; quit it before --apply.
 
         """.data(using: .utf8)!)
     exit(2)
@@ -33,7 +39,7 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 
-var apply = false, allowAppData = false
+var apply = false, allowAppData = false, forceRunning = false
 var databasePath: String?
 var repairsRuleKinds: [DocumentKind]?
 var seen: Set<String> = []
@@ -44,6 +50,7 @@ while let argument = remaining.popFirst() {
     switch argument {
     case "--apply": apply = true
     case "--allow-app-data": allowAppData = true
+    case "--force-running": forceRunning = true
     case "--db", "--database":
         if databasePath != nil { usage() }
         databasePath = remaining.popFirst() ?? { usage() }()
@@ -56,6 +63,7 @@ while let argument = remaining.popFirst() {
     }
 }
 guard let databasePath else { usage() }
+if forceRunning && !apply { fail("--force-running is for --apply.") }
 
 /// `~` expanded and the path standardised, so the guards see what is opened.
 func normalized(_ path: String) -> String {
@@ -70,8 +78,12 @@ if TaxRegression.isAppData(sourcePath) && !allowAppData {
 }
 
 /// The Mac app running (not the iPhone simulator's Mango): it holds the database open and would
-/// overwrite or miss the change.
+/// overwrite or miss the change. By bundle id (either, as the other tools check); a copy started
+/// some other way is still caught by its executable path.
 func macAppIsRunning() -> Bool {
+    if AppIdentity.macBundleIdentifiers.contains(where: { !NSRunningApplication.runningApplications(withBundleIdentifier: $0).isEmpty }) {
+        return true
+    }
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
     process.arguments = ["-f", #"/Mango\.app/Contents/MacOS/Mango$"#]
@@ -81,7 +93,7 @@ func macAppIsRunning() -> Bool {
     process.waitUntilExit()
     return process.terminationStatus == 0
 }
-if apply && macAppIsRunning() { fail("Mango is running: quit it before --apply.") }
+if apply && !forceRunning && macAppIsRunning() { fail("Mango is running: quit it before --apply (or pass --force-running).") }
 
 func describe(_ plan: NewKindsReclassification.Plan) -> String {
     var lines: [String] = []
@@ -101,9 +113,8 @@ func describe(_ plan: NewKindsReclassification.Plan) -> String {
 do {
     var configuration = Configuration()
     configuration.readonly = !apply
-    // The sync change-tracking triggers rely on it (as `DatabaseManager` sets it).
-    configuration.prepareDatabase { db in try db.execute(sql: "PRAGMA recursive_triggers = ON") }
-    let queue = try DatabaseQueue(path: sourcePath, configuration: configuration)
+    // The app's connection settings (the sync triggers' recursive_triggers), as every tool opens it.
+    let queue = try ToolDatabase.open(path: sourcePath, configuration: configuration)
     print("New kinds (Repair bill, Stamp duty)\(apply ? "" : " (dry run: nothing written)")\nDatabase: \(sourcePath)\n")
     let plan = try queue.read { db in try NewKindsReclassification.plan(db: db, repairsRuleKinds: repairsRuleKinds) }
     print(describe(plan))
