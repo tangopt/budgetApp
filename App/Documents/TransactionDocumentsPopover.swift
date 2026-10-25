@@ -11,17 +11,21 @@ import GRDB
 struct TransactionDocumentsList: View {
     let documents: [TransactionDocument]
     let library: EvidenceLibrary?
+    /// The documents whose file is on this Mac, read once when the list loaded (off the main thread).
+    let onDevice: Set<Int64>
     @State private var selected: Int64?
     @State private var quickLook: URL?
+    @FocusState private var listFocused: Bool
 
-    init(documents: [TransactionDocument], library: EvidenceLibrary?, selected: Int64? = nil) {
+    init(documents: [TransactionDocument], library: EvidenceLibrary?, onDevice: Set<Int64>, selected: Int64? = nil) {
         self.documents = documents
         self.library = library
+        self.onDevice = onDevice
         _selected = State(initialValue: selected ?? documents.first?.id)
     }
 
     private func url(_ document: TransactionDocument) -> URL? {
-        guard let library, library.isOnThisDevice(storedRelativePath: document.storedRelativePath) else { return nil }
+        guard let library, onDevice.contains(document.id) else { return nil }
         return library.fileURL(storedRelativePath: document.storedRelativePath)
     }
 
@@ -36,8 +40,15 @@ struct TransactionDocumentsList: View {
                 .font(.headline).figureText()
             List(documents, selection: $selected) { document in
                 row(document).tag(document.id)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction(named: "Quick Look") { selected = document.id; openQuickLook() }
             }
             .frame(height: min(CGFloat(documents.count) * 46 + 8, 190))
+            .focused($listFocused)
+            .onAppear { listFocused = true }
+            .onChange(of: documents) { _, new in
+                if !new.contains(where: { $0.id == selected }) { selected = new.first?.id }
+            }
             .onKeyPress(.space) {
                 openQuickLook()
                 return .handled
@@ -88,7 +99,7 @@ struct TransactionDocumentsList: View {
     @ViewBuilder
     private func preview(_ document: TransactionDocument) -> some View {
         if let url = url(document) {
-            DocumentThumbnail(url: url, height: 220)
+            DocumentThumbnail(url: url, height: 220, onQuickLook: openQuickLook)
                 .frame(maxWidth: .infinity)
         } else {
             Text("Not on this Mac yet")
@@ -104,11 +115,12 @@ struct TransactionDocumentsPopover: View {
     @State private var documents: [TransactionDocument]?
     @State private var failure: String?
     @State private var library: EvidenceLibrary?
+    @State private var onDevice: Set<Int64> = []
 
     var body: some View {
         Group {
             if let documents {
-                TransactionDocumentsList(documents: documents, library: library)
+                TransactionDocumentsList(documents: documents, library: library, onDevice: onDevice)
             } else if let failure {
                 Text(failure).foregroundStyle(.secondary).padding(12).frame(width: 300)
             } else {
@@ -120,12 +132,16 @@ struct TransactionDocumentsPopover: View {
             let dbQueue = environment.dbQueue
             library = environment.evidenceLibrary
             let id = transactionId
+            let library = environment.evidenceLibrary
             do {
-                documents = try await Task.detached(priority: .userInitiated) {
-                    try dbQueue.read { db in
+                let (loaded, present) = try await Task.detached(priority: .userInitiated) { () -> ([TransactionDocument], Set<Int64>) in
+                    let documents = try dbQueue.read { db in
                         try TransactionDocuments.documents(db: db, transactionId: id, catalog: DocumentKindCatalog.load(db: db))
                     }
+                    return (documents, Set(documents.filter { library.isOnThisDevice(storedRelativePath: $0.storedRelativePath) }.map(\.id)))
                 }.value
+                onDevice = present
+                documents = loaded
             } catch {
                 failure = "Couldn't read the documents: \(error.localizedDescription)"
             }

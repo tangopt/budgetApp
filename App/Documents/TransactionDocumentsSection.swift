@@ -23,6 +23,8 @@ final class TransactionDocumentsModel: ObservableObject {
     /// Link document…'s data: every document, and the ones that would propose this transaction.
     @Published private(set) var pickerIndex: EvidenceDocumentSearch.Index?
     @Published private(set) var pickerSuggestions: [EvidenceMatcher.DocumentSuggestion] = []
+    /// The documents whose library file is on this Mac, checked off the main thread after each change to what's shown.
+    @Published private(set) var onDevice: Set<Int64> = []
     private var loaded = false
 
     init(transactionId: Int64?, library: EvidenceLibrary?, dbQueue: DatabaseQueue?) {
@@ -56,8 +58,20 @@ final class TransactionDocumentsModel: ObservableObject {
             staging = EvidenceLinkStaging(saved: documents.compactMap(\.id))
             for document in documents { if let id = document.id { documentsById[id] = document } }
             loaded = true
+            refreshOnDevice()
         } catch {
             errorMessage = "Couldn't read the documents: \(error.localizedDescription)"
+        }
+    }
+
+    private func refreshOnDevice() {
+        guard let library else { return }
+        let files = documentsById.compactMap { id, document in (id, document.storedRelativePath) }
+        Task {
+            let present = await Task.detached(priority: .userInitiated) {
+                Set(files.filter { library.isOnThisDevice(storedRelativePath: $0.1) }.map(\.0))
+            }.value
+            onDevice = present
         }
     }
 
@@ -102,6 +116,7 @@ final class TransactionDocumentsModel: ObservableObject {
         }
         staging.stageLink(documentId)
         errorMessage = nil
+        refreshOnDevice()
     }
 
     /// Unlink, or Undo of a staged change (Save writes it).
@@ -128,18 +143,23 @@ struct TransactionDocumentsSection: View {
     @State private var selectedId: Int64?
     @State private var quickLook: URL?
 
+    /// The saved documents, in the list's order.
+    private var saved: [EvidenceDocument] { model.shown.filter { model.staging.isSaved($0.id ?? -1) } }
+
     /// The selected saved document (one staged to link isn't previewed until Save), else the first.
     private var previewed: EvidenceDocument? {
-        let saved = model.shown.filter { model.staging.isSaved($0.id ?? -1) }
-        return saved.first { $0.id == selectedId } ?? saved.first
+        saved.first { $0.id == selectedId } ?? saved.first
     }
 
-    /// Every saved document's library file, for Quick Look's arrows.
-    private var savedURLs: [URL] {
-        guard let library = model.library else { return [] }
-        return model.shown.filter { model.staging.isSaved($0.id ?? -1) }
-            .map { library.fileURL(for: $0) }
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
+    /// Every saved document's library file that is on this Mac, for Quick Look's arrows.
+    private func savedURLs(_ library: EvidenceLibrary) -> [URL] {
+        saved.filter { model.onDevice.contains($0.id ?? -1) }.map { library.fileURL(for: $0) }
+    }
+
+    /// Quick Look on the selected document (nothing when its file isn't here), the others a step away.
+    private func openQuickLook(_ library: EvidenceLibrary) {
+        guard let previewed, model.onDevice.contains(previewed.id ?? -1) else { return }
+        quickLook = library.fileURL(for: previewed)
     }
 
     var body: some View {
@@ -148,16 +168,24 @@ struct TransactionDocumentsSection: View {
                 row(document)
             }
             if let previewed, let library = model.library {
-                DocumentThumbnail(url: library.fileURL(for: previewed), height: 140)
-                    .frame(maxWidth: .infinity)
-                    .focusable()
-                    .focusEffectDisabled()
-                    .onKeyPress(.space) {
-                        quickLook = library.fileURL(for: previewed)
-                        return .handled
+                let here = model.onDevice.contains(previewed.id ?? -1)
+                Group {
+                    if here {
+                        DocumentThumbnail(url: library.fileURL(for: previewed), height: 140, onQuickLook: { openQuickLook(library) })
+                    } else {
+                        Text("Not on this Mac yet").foregroundStyle(.secondary).frame(minHeight: 60)
                     }
-                Button("Quick Look") { quickLook = library.fileURL(for: previewed) }
+                }
+                .frame(maxWidth: .infinity)
+                .focusable()
+                .onKeyPress(.space) {
+                    guard here else { return .ignored }
+                    openQuickLook(library)
+                    return .handled
+                }
+                Button("Quick Look") { openQuickLook(library) }
                     .controlSize(.small)
+                    .disabled(!here)
                     .help("Preview the documents (Space)")
             }
             HStack(spacing: 8) {
@@ -178,7 +206,7 @@ struct TransactionDocumentsSection: View {
         .contentShape(Rectangle())
         .importDropTarget(model.attachShortcut(from: .transaction)) { model.sentToImports = true }
         .onAppear { model.load() }
-        .quickLookPreview($quickLook, in: savedURLs)
+        .quickLookPreview($quickLook, in: model.library.map(savedURLs) ?? [])
         .sheet(isPresented: $picking) {
             LinkDocumentSheet(model: model, transactionName: transactionName)
         }
@@ -219,5 +247,7 @@ struct TransactionDocumentsSection: View {
         .background(previewed?.id == document.id ? theme.accent.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
         .contentShape(Rectangle())
         .onTapGesture { if !linking { selectedId = document.id } }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(named: "Preview") { if !linking { selectedId = document.id } }
     }
 }

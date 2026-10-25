@@ -14,6 +14,8 @@ import AppKit
 struct DocumentThumbnail: View {
     let url: URL
     var height: CGFloat = 220
+    /// When given, a click asks for this (the caller's Quick Look over several documents) instead of previewing this file alone.
+    var onQuickLook: (() -> Void)? = nil
 
     private enum Content {
         case page(NSImage, pageCount: Int)
@@ -37,7 +39,7 @@ struct DocumentThumbnail: View {
             Group {
                 switch content {
                 case let .page(image, _), let .image(image):
-                    Button { quickLook = url } label: {
+                    Button { if let onQuickLook { onQuickLook() } else { quickLook = url } } label: {
                         Image(nsImage: image)
                             .resizable()
                             .scaledToFit()
@@ -49,7 +51,7 @@ struct DocumentThumbnail: View {
                     .help("Quick Look")
                     .accessibilityLabel("Preview: Quick Look")
                 case let .icon(icon):
-                    Button { quickLook = url } label: {
+                    Button { if let onQuickLook { onQuickLook() } else { quickLook = url } } label: {
                         Image(nsImage: icon).resizable().scaledToFit().frame(width: 64, height: 64)
                     }
                     .buttonStyle(.plain)

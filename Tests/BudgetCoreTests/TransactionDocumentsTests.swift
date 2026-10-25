@@ -137,4 +137,33 @@ final class TransactionDocumentsTests: XCTestCase {
         try link(custom, t)
         XCTAssertEqual(try documents(t).first?.kindLabel, "Boiler service")
     }
+
+    func testAllCountsCoversLinkedAndRecordedDocuments() throws {
+        let first = try transaction("One"), second = try transaction("Two"), none = try transaction("None")
+        let a = try document("a1a1", date: nil), b = try document("b2b2", date: nil), c = try document("c3c3", kind: .utilityInvoice, date: nil)
+        try link(a, first); try link(b, first); try link(a, second)
+        try db.write { db in
+            var property = Property(name: "Flat", country: "PT"); try property.insert(db)
+            var provider = UtilityProvider(propertyId: property.id!, name: "Demo Power", kind: .electricity); try provider.insert(db)
+            var invoice = UtilityInvoice(providerId: provider.id!, issueDate: Self.date(2026, 2, 1), amountMinorUnits: 100, documentId: c, transactionId: second)
+            try invoice.insert(db)
+        }
+        let counts = try db.read { try TransactionDocuments.allCounts(db: $0) }
+        XCTAssertEqual(counts, [first: 2, second: 2])
+        XCTAssertNil(counts[none])
+    }
+
+    func testARecordedInvoicesDocumentAlsoLinkedElsewhereCountsTheOther() throws {
+        let debit = try transaction("Debit"), other = try transaction("Other")
+        let doc = try document("d4d4", kind: .utilityInvoice, date: nil)
+        try db.write { db in
+            var property = Property(name: "Flat", country: "PT"); try property.insert(db)
+            var provider = UtilityProvider(propertyId: property.id!, name: "Demo Power", kind: .electricity); try provider.insert(db)
+            var invoice = UtilityInvoice(providerId: provider.id!, issueDate: Self.date(2026, 2, 1), amountMinorUnits: 100, documentId: doc, transactionId: debit)
+            try invoice.insert(db)
+        }
+        try link(doc, other)
+        XCTAssertEqual(try documents(debit).first?.otherTransactionCount, 1)
+        XCTAssertEqual(try documents(other).first?.otherTransactionCount, 1)
+    }
 }

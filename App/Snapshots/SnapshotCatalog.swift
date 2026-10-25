@@ -400,7 +400,9 @@ enum SnapshotCatalog {
                 let documents = try await context.dbQueue.read { db in
                     try TransactionDocuments.documents(db: db, transactionId: id, catalog: DocumentKindCatalog.load(db: db))
                 }
-                return AnyView(SnapshotSheetCanvas(sheet: TransactionDocumentsList(documents: documents, library: context.library)))
+                return AnyView(SnapshotSheetCanvas(sheet: TransactionDocumentsList(documents: documents, library: context.library,
+                    onDevice: Set(documents.filter { context.library.isOnThisDevice(storedRelativePath: $0.storedRelativePath) }.map(\.id)),
+                    selected: documents.last?.id)))
             }
         ]
     }
