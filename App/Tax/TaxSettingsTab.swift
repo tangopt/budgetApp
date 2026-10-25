@@ -53,13 +53,18 @@ struct TaxSettingsTab: View {
             HStack(spacing: 6) {
                 if viewModel.isFetchingRate { ProgressView().controlSize(.small) }
                 Button("Fetch from HMRC") { viewModel.fetchRate(replace: false) }
-                    .help("HMRC's average for the year to 31 March; keeps a rate entered by hand or from a filed return")
+                    .disabled(viewModel.selectedYearIsFiled)
+                    .help(viewModel.selectedYearIsFiled
+                          ? "\(page.row.year.label) is filed: HMRC's rate isn't fetched for it, so its figures stay as filed"
+                          : "HMRC's average for the year to 31 March; keeps a rate entered by hand or from a filed return")
                 Button("Enter by hand…") { editingRate = true }
             }
             .controlSize(.small)
         } content: {
             if page.rates.isEmpty {
-                Text("No rate for \(page.row.year.label) yet: fetch HMRC's average, or enter it by hand.")
+                Text(viewModel.selectedYearIsFiled
+                     ? "No rate for \(page.row.year.label): it's filed, so HMRC's average isn't fetched for it. Enter the rate the return used by hand."
+                     : "No rate for \(page.row.year.label) yet: fetch HMRC's average, or enter it by hand.")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -135,7 +140,7 @@ struct TaxSettingsTab: View {
                                     editingSplit = SplitDraft(expenseType: split.expenseType, shareBasisPoints: split.shareBasisPoints)
                                 },
                                 DataTableAction("Remove the split for \(name)", systemImage: "xmark.circle", inline: true) {
-                                    viewModel.errorMessage = viewModel.setSplit(expenseType: split.expenseType, shareBasisPoints: nil)
+                                    viewModel.setSplit(expenseType: split.expenseType, shareBasisPoints: nil)
                                 }
                             ]
                         }
@@ -273,6 +278,8 @@ struct TaxRateSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
     @State private var error: String?
+    /// Saves through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
 
     private var value: Double? { Double(text.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespaces)) }
 
@@ -281,8 +288,10 @@ struct TaxRateSheet: View {
                       error: error, width: SheetMetrics.compactWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: (value ?? 0) > 0) {
                           guard let value else { return }
-                          error = viewModel.setRate(currencyCode: "EUR", unitsPerPound: value)
-                          if error == nil { dismiss() }
+                          viewModel.setRate(currencyCode: "EUR", unitsPerPound: value, gate: gate) { message in
+                              error = message
+                              if message == nil { dismiss() }
+                          }
                       }) {
             SheetForm {
                 LabeledContent("EUR per £1") {
@@ -297,6 +306,7 @@ struct TaxRateSheet: View {
             }
         }
         .onAppear { if let current { text = String(format: "%.4f", current.unitsPerPound ?? 1 / current.gbpPerUnit) } }
+        .filedYearGate(gate)
     }
 }
 
@@ -309,6 +319,8 @@ struct TaxSplitSheet: View {
     @State private var expenseType: TaxExpenseType?
     @State private var percent = ""
     @State private var error: String?
+    /// Saves through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
 
     /// The split already stored for the chosen type, when adding (Save then replaces it).
     private var existing: TaxYearSplit? {
@@ -326,8 +338,10 @@ struct TaxSplitSheet: View {
         SheetScaffold(title: "Split · \(page.row.year.label)", subtitle: page.row.person.name, error: error, width: SheetMetrics.compactWidth,
                       onCancel: { dismiss() },
                       primary: SheetAction(existing == nil ? "Save" : "Replace", isEnabled: basisPoints != nil) {
-                          error = viewModel.setSplit(expenseType: expenseType, shareBasisPoints: basisPoints)
-                          if error == nil { dismiss() }
+                          viewModel.setSplit(expenseType: expenseType, shareBasisPoints: basisPoints, gate: gate) { message in
+                              error = message
+                              if message == nil { dismiss() }
+                          }
                       }) {
             SheetForm {
                 LabeledContent("Applies to") {
@@ -358,6 +372,7 @@ struct TaxSplitSheet: View {
             expenseType = draft.expenseType
             percent = draft.shareBasisPoints.map { String(format: "%g", Double($0) / 100) } ?? ""
         }
+        .filedYearGate(gate)
     }
 }
 
@@ -371,18 +386,25 @@ struct TaxRuleSheet: View {
     @State private var thisYearOnly = false
     @State private var coverMonths = 12
     @State private var error: String?
+    /// Saves through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
 
     var body: some View {
         SheetScaffold(title: row.expenseType.displayName, subtitle: "Its attribution rule: how its payments count towards a tax year.",
                       error: error, width: SheetMetrics.compactWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save") {
-                          error = viewModel.setRule(row.expenseType, rule: rule, thisYearOnly: thisYearOnly,
-                                                    coverMonths: rule == .apportionByCover ? coverMonths : nil)
-                          if error == nil { dismiss() }
+                          viewModel.setRule(row.expenseType, rule: rule, thisYearOnly: thisYearOnly,
+                                            coverMonths: rule == .apportionByCover ? coverMonths : nil, gate: gate) { message in
+                              error = message
+                              if message == nil { dismiss() }
+                          }
                       },
                       destructive: row.scope == .builtIn ? nil : SheetAction(row.scope == .thisYear ? "Remove override" : "Back to default") {
-                          error = viewModel.setRule(row.expenseType, rule: nil, thisYearOnly: row.scope == .thisYear, coverMonths: nil)
-                          if error == nil { dismiss() }
+                          viewModel.setRule(row.expenseType, rule: nil, thisYearOnly: row.scope == .thisYear, coverMonths: nil,
+                                            gate: gate) { message in
+                              error = message
+                              if message == nil { dismiss() }
+                          }
                       }) {
             SheetForm {
                 LabeledContent("Rule") {
@@ -410,5 +432,6 @@ struct TaxRuleSheet: View {
             thisYearOnly = row.scope == .thisYear
             coverMonths = row.defaultCoverMonths ?? TaxAttributionRules.defaultCoverMonths
         }
+        .filedYearGate(gate)
     }
 }

@@ -125,32 +125,35 @@ final class RulesViewModel: ObservableObject {
         try await dbQueue.read { db in try Rules.preview(db: db, pattern: pattern, matchType: matchType) }
     }
 
-    /// Saves the rule sheet: adds a rule, or edits `ruleId`'s. `.failed` holds the error to show.
-    /// Filing the uncategorised matches is one batch: when it would change a filed return, it
-    /// asks once (`.asks`, nothing written; plan Task 14) and is saved again with the answer.
+    /// Saves the rule sheet: adds a rule, or edits `ruleId`'s; `done` gets the error to show, or
+    /// nil once saved. Filing the uncategorised matches is one batch through the filed-year check
+    /// (plan Task 14): when it would change a filed return, `gate` asks once.
     func save(ruleId: Int64?, pattern: String, matchType: RuleMatchType, categoryId: Int64, applyToUncategorised: Bool,
-              resolution: FiledYearEditCheck.Resolution? = nil) -> CheckedSaveOutcome {
-        do {
-            let name = categories.first { $0.id == categoryId }?.name ?? "its category"
-            let edit = "Rule “\(pattern.trimmingCharacters(in: .whitespacesAndNewlines))” filed into \(name)"
-            let outcome = try dbQueue.checkedWrite(edit: edit, resolution: resolution) { db in
-                if let ruleId {
-                    try Rules.update(db: db, id: ruleId, pattern: pattern, matchType: matchType, categoryId: categoryId,
+              gate: FiledYearGate, done: @escaping (String?) -> Void) {
+        let name = categories.first { $0.id == categoryId }?.name ?? "its category"
+        let edit = "Rule “\(pattern.trimmingCharacters(in: .whitespacesAndNewlines))” filed into \(name)"
+        gate.run(dbQueue, edit: edit, scope: { db in
+            applyToUncategorised
+                ? .categorising(try Rules.uncategorisedMatchIds(db: db, pattern: pattern, matchType: matchType), as: categoryId)
+                : FiledYearEditCheck.Scope()
+        }, { db in
+            if let ruleId {
+                _ = try Rules.update(db: db, id: ruleId, pattern: pattern, matchType: matchType, categoryId: categoryId,
                                      applyToUncategorised: applyToUncategorised)
-                } else {
-                    try Rules.add(db: db, pattern: pattern, matchType: matchType, categoryId: categoryId,
+            } else {
+                _ = try Rules.add(db: db, pattern: pattern, matchType: matchType, categoryId: categoryId,
                                   applyToUncategorised: applyToUncategorised)
-                }
             }
-            if case .asks(let question) = outcome { return .asks(question) }
-        } catch let error as RuleSaveError {
-            return .done(.failed(error.message))
-        } catch {
-            return .done(.failed("Couldn't save the rule: \(error.localizedDescription)"))
-        }
-        try? load()
-        if applyToUncategorised { onTransactionsCategorised?() }
-        return .done(.saved)
+        }, done: { [weak self] result in
+            switch result.failure {
+            case let error as RuleSaveError: return done(error.message)
+            case let error?: return done("Couldn't save the rule: \(error.localizedDescription)")
+            case nil: break
+            }
+            try? self?.load()
+            if applyToUncategorised { self?.onTransactionsCategorised?() }
+            done(nil)
+        })
     }
 
     /// The picker's "New category…": creates the category and adds it to the list.

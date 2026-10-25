@@ -66,7 +66,7 @@ struct UncategorizedView: View {
         }
         .padding()
         .screenSearchable(text: $searchText, prompt: "Search descriptions")
-        .filedYearQuestion($viewModel.filedYearQuestion)
+        .filedYearGate(viewModel.filedYearGate)
     }
 
     /// Every transaction the given selection covers, in display order.

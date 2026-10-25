@@ -120,8 +120,11 @@ final class CategoriesViewModel: ObservableObject {
         categories.filter { $0.groupId == id && !$0.isReserved }
     }
 
+    /// Through the filed-year check: a property's group's categories leave the rental accounts.
     func deleteGroup(id: Int64) {
-        write("Couldn't delete the group") { db in try CategoryGroups.delete(db: db, id: id) }
+        let name = groups.first { $0.id == id }?.name ?? "a group"
+        checked("Couldn't delete the group", edit: "Group \(name) deleted",
+                scope: { db in try .categories(db: db, groupIds: [id]) }) { db in try CategoryGroups.delete(db: db, id: id) }
     }
 
     // MARK: Categories
@@ -133,8 +136,17 @@ final class CategoriesViewModel: ObservableObject {
         return category
     }
 
-    /// The Rename… sheet's save: a blank or taken name keeps the sheet open with the message.
+    /// The Rename… sheet's save: a blank or taken name keeps the sheet open with the message. A
+    /// property's category (its name can suggest its tax line) is renamed through the filed-year
+    /// check instead: the sheet closes and the screen asks when it would change a filed return.
     func renameCategory(id: Int64, to name: String) -> SaveOutcome {
+        let isPropertyCategory = (try? dbQueue.read { db in try FiledYearEditCheck.Scope.categories(db: db, ids: [id]) != FiledYearEditCheck.Scope() }) ?? true
+        if isPropertyCategory {
+            let old = categories.first { $0.id == id }?.name ?? "a category"
+            checked("Couldn't rename the category", edit: "Category \(old) renamed \(name)",
+                    scope: { db in try .categories(db: db, ids: [id]) }) { db in try Categories.rename(db: db, id: id, name: name) }
+            return .saved
+        }
         do {
             try dbQueue.write { db in try Categories.rename(db: db, id: id, name: name) }
         } catch {
@@ -144,31 +156,43 @@ final class CategoriesViewModel: ObservableObject {
         return .saved
     }
 
+    /// Through the filed-year check: into or out of a property's group moves rental figures.
     func move(ids: [Int64], toGroupId groupId: Int64?) {
         let ids = ids.filter { id in categories.contains { $0.id == id && !$0.isReserved && !$0.isBuiltIn } }
         guard !ids.isEmpty else { return }
-        write("Couldn't move the categories") { db in try Categories.move(db: db, ids: ids, toGroupId: groupId) }
+        let target = groupId.flatMap { id in groups.first { $0.id == id }?.name } ?? "Ungrouped"
+        checked("Couldn't move the categories", edit: "Categories moved to \(target)",
+                scope: { db in try .categories(db: db, ids: ids, groupIds: groupId.map { [$0] } ?? []) }) { db in
+            try Categories.move(db: db, ids: ids, toGroupId: groupId)
+        }
     }
 
     /// Deletes each category in turn under `Categories.delete`'s rules; the refusals ("Rent
-    /// has 73 transactions …") are listed in the banner, one per line.
+    /// has 73 transactions …") are listed in the banner, one per line. One write through the
+    /// filed-year check (a property's category's transactions leave the rental accounts).
     func deleteCategories(ids: [Int64]) {
-        errorMessage = nil
-        var refusals: [String] = []
-        for id in ids {
-            do {
-                try dbQueue.write { db in try Categories.delete(db: db, id: id) }
-            } catch let error as CategoryEditError {
-                refusals.append(error.localizedDescription)
-            } catch {
-                refusals.append("Couldn't delete the category: \(error.localizedDescription)")
+        let names = ids.compactMap { id in categories.first { $0.id == id }?.name }
+        checked("Couldn't delete the category", edit: "Categor\(names.count == 1 ? "y" : "ies") \(names.joined(separator: ", ")) deleted",
+                scope: { db in try .categories(db: db, ids: ids) }, { db -> [String] in
+            var refusals: [String] = []
+            for id in ids {
+                try db.inSavepoint {
+                    do {
+                        try Categories.delete(db: db, id: id)
+                        return .commit
+                    } catch let error as CategoryEditError {
+                        refusals.append(error.localizedDescription)
+                        return .rollback
+                    }
+                }
             }
-        }
-        load()
-        if !refusals.isEmpty {
-            errorMessage = ([errorMessage].compactMap { $0 } + refusals).joined(separator: "\n")
-        }
+            return refusals
+        }, done: { [weak self] refusals in
+            guard let self, !refusals.isEmpty else { return }
+            self.errorMessage = ([self.errorMessage].compactMap { $0 } + refusals).joined(separator: "\n")
+        })
     }
+
 
     /// "Covered by a reserve": the auto-forecast leaves this category alone (and its
     /// existing auto entries are removed when turning this on).
@@ -275,9 +299,9 @@ final class CategoriesViewModel: ObservableObject {
     /// fields) and the pending transfer change, in one write via `TransactionEditing.save`
     /// (no rule learned), then reload. A refusal writes nothing; an edit that would change a
     /// filed return asks first (`FiledYearEditCheck`, plan Task 14).
-    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges, resolution: FiledYearEditCheck.Resolution? = nil) -> CheckedSaveOutcome {
+    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges, gate: FiledYearGate, done: @escaping (SaveOutcome) -> Void) {
         let edit = FiledYearEditNames.transactionEdit(changes, transactionId: id, dbQueue: dbQueue, categories: categories)
-        return FiledYearCheckedSave.save(edit: edit, resolution: resolution, through: manualWrite) { db in
+        checkedWrite(edit: edit, scope: .transactionEdit(id: id, changes: changes), gate: gate, done: done) { db in
             try TransactionEditing.save(db: db, id: id, changes: changes)
         }
     }
@@ -286,8 +310,8 @@ final class CategoriesViewModel: ObservableObject {
     var manualActions: ManualTransactionActions {
         ManualTransactionActions(
             accounts: accounts,
-            delete: { [unowned self] id, resolution in
-                FiledYearCheckedSave.save(edit: "Deleted", resolution: resolution, through: manualWrite) { db in
+            delete: { [unowned self] id, gate, done in
+                checkedWrite(edit: "Deleted", scope: FiledYearEditCheck.Scope(transactionIds: [id]), gate: gate, done: done) { db in
                     try ManualTransactions.delete(db: db, id: id)
                 }
             }
@@ -300,6 +324,20 @@ final class CategoriesViewModel: ObservableObject {
         } catch {
             return .failed(ManualFormat.errorMessage(for: error))
         }
+        return afterManualWrite()
+    }
+
+    /// A transaction write through the filed-year check (off the main thread; a question shows on
+    /// `gate`), then as `manualWrite`. Nothing is reloaded while the question waits.
+    private func checkedWrite(edit: String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate,
+                              done: @escaping (SaveOutcome) -> Void, _ apply: @escaping (Database) throws -> Void) {
+        gate.run(dbQueue, edit: edit, scope: scope, apply) { [weak self] result in
+            if let error = result.failure { return done(.failed(ManualFormat.errorMessage(for: error))) }
+            done(self?.afterManualWrite() ?? .saved)
+        }
+    }
+
+    private func afterManualWrite() -> SaveOutcome {
         errorMessage = nil
         load()
         onTransactionEdited?()
@@ -317,6 +355,28 @@ final class CategoriesViewModel: ObservableObject {
     func recentCategoryIds() -> [Int64] {
         let since = Calendar.current.date(byAdding: .day, value: -90, to: AppClock.now) ?? AppClock.now
         return (try? dbQueue.read { db in try CategoryShortlist.recent(db: db, since: since, limit: 5) }) ?? []
+    }
+
+    /// The screen's structure edits through the filed-year check (plan Task 14); its question shows on the screen.
+    let filedYearGate = FiledYearGate()
+
+    /// `change` through the filed-year check, off the main thread; then reloads (and `done`), or sets
+    /// `errorMessage` ("<prefix>: …"). Cancel writes and changes nothing.
+    private func checked<T>(_ prefix: String, edit: String, scope: @escaping (Database) throws -> FiledYearEditCheck.Scope,
+                            _ change: @escaping (Database) throws -> T, done: ((T) -> Void)? = nil) {
+        errorMessage = nil
+        filedYearGate.run(dbQueue, edit: edit, scope: scope, change) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let value):
+                self.load()
+                done?(value)
+            case .failure(let error as LocalizedError) where error.errorDescription != nil:
+                self.errorMessage = error.errorDescription
+            case .failure(let error):
+                self.errorMessage = "\(prefix): \(error.localizedDescription)"
+            }
+        }
     }
 
     /// Writes, then reloads; on failure sets `errorMessage` ("<prefix>: …") and returns false.

@@ -15,8 +15,8 @@ final class UncategorizedViewModel: ObservableObject {
     @Published var categoryGroups: [CategoryGroup] = []
     @Published var recentCategoryIds: [Int64] = []
     @Published var errorMessage: String?
-    /// A category assignment waiting on the filed-year question (plan Task 14).
-    @Published var filedYearQuestion: FiledYearPending?
+    /// Category assignments through the filed-year check (plan Task 14); its question shows on the screen.
+    let filedYearGate = FiledYearGate()
     /// Each account's currency (rows show their own) and the stored rate (a group mixing
     /// currencies totals in GBP).
     @Published private(set) var conversion = CurrencyConversion.none
@@ -120,7 +120,8 @@ final class UncategorizedViewModel: ObservableObject {
 
     /// Assigns a category to each transaction, marks them confirmed, and learns a key rule
     /// (`RuleLearner.learn`) for those whose `remember` is true. All rows of one action go
-    /// in a single database write.
+    /// in a single database write, through the filed-year check off the main thread (true: the
+    /// write was started; the rows leave the list once it's done).
     ///
     /// The write happens against locally-built copies first; `self.transactions` is only
     /// touched once that write has actually succeeded. Mutating the in-memory list before
@@ -140,44 +141,34 @@ final class UncategorizedViewModel: ObservableObject {
             updated.categorizedBy = .manual
             return (updated, remember(target))
         }
-        return write(updates, categoryId: categoryId, ids: ids, resolution: nil)
+        write(updates, categoryId: categoryId, ids: ids)
+        return true
     }
 
-    /// `assignCategory`'s write, through the filed-year check (plan Task 14): when it would change a
-    /// filed return, nothing is written, `filedYearQuestion` asks (one question for all the rows)
-    /// and the answer writes it again.
-    private func write(_ updates: [(row: Transaction, learn: Bool)], categoryId: Int64, ids: Set<Int64>,
-                       resolution: FiledYearEditCheck.Resolution?) -> Bool {
-        errorMessage = nil
-        do {
-            let edit = FiledYearEditNames.categorised(categoryId, categories: categories)
-            let outcome = try dbQueue.checkedWrite(edit: edit, resolution: resolution) { db in
-                for update in updates {
-                    try update.row.update(db)
-                    if update.learn {
-                        try RuleLearner.learn(description: update.row.rawDescription, categoryId: categoryId, db: db)
-                    }
+    /// `assignCategory`'s write, through the filed-year check off the main thread (plan Task 14):
+    /// when it would change a filed return, nothing is written and `filedYearGate` asks (one
+    /// question for all the rows); the rows leave the list once written.
+    private func write(_ updates: [(row: Transaction, learn: Bool)], categoryId: Int64, ids: Set<Int64>) {
+        let edit = FiledYearEditNames.categorised(categoryId, categories: categories)
+        filedYearGate.run(dbQueue, edit: edit, scope: .categorising(Array(ids), as: categoryId), { db in
+            for update in updates {
+                try update.row.update(db)
+                if update.learn {
+                    try RuleLearner.learn(description: update.row.rawDescription, categoryId: categoryId, db: db)
                 }
             }
-            if case .asks(let question) = outcome {
-                // After the picker's popover has closed (a sheet presented while it closes can fail to appear).
-                DispatchQueue.main.async {
-                    self.filedYearQuestion = FiledYearPending(question: question) { [weak self] answer in
-                        _ = self?.write(updates, categoryId: categoryId, ids: ids, resolution: answer)
-                    }
-                }
-                return false
+        }, done: { [weak self] result in
+            guard let self else { return }
+            if let error = result.failure {
+                self.errorMessage = "Couldn't assign this category: \(error.localizedDescription)"
+                return
             }
-        } catch {
-            errorMessage = "Couldn't assign this category: \(error.localizedDescription)"
-            return false
-        }
-        transactions.removeAll { $0.id.map(ids.contains) ?? false }
-        for id in ids { rememberChoices[id] = nil }
-        // The assignment just counted towards Recent; a failed refresh keeps the old list.
-        if let recent = try? dbQueue.read({ db in try CategoryShortlist.recent(db: db, since: Self.recentSince(), limit: 5) }) {
-            recentCategoryIds = recent
-        }
-        return true
+            self.transactions.removeAll { $0.id.map(ids.contains) ?? false }
+            for id in ids { self.rememberChoices[id] = nil }
+            // The assignment just counted towards Recent; a failed refresh keeps the old list.
+            if let recent = try? self.dbQueue.read({ db in try CategoryShortlist.recent(db: db, since: Self.recentSince(), limit: 5) }) {
+                self.recentCategoryIds = recent
+            }
+        })
     }
 }

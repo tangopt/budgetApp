@@ -134,8 +134,8 @@ private struct RuleSheet: View {
     @State private var previewKey: PreviewKey?
     @State private var previewError: String?
     @State private var error: String?
-    /// Save waiting on the filed-year question (filing the matches would change a filed return).
-    @State private var filedYearQuestion: FiledYearPending?
+    /// Saves through the filed-year check (filing the matches may change a filed return); its question shows here.
+    @StateObject private var gate = FiledYearGate()
 
     init(draft: RuleDraft, viewModel: RulesViewModel, dismiss: @escaping () -> Void) {
         self.draft = draft
@@ -167,7 +167,7 @@ private struct RuleSheet: View {
             error: error,
             width: 480,
             onCancel: dismiss,
-            primary: SheetAction(draft.ruleId == nil ? "Add Rule" : "Save", isEnabled: canSave, action: save)
+            primary: SheetAction(draft.ruleId == nil ? "Add Rule" : "Save", isEnabled: canSave && !gate.isRunning, action: save)
         ) {
             SheetForm {
                 LabeledContent("Pattern") {
@@ -197,7 +197,7 @@ private struct RuleSheet: View {
             }
             previewSection
         }
-        .filedYearQuestion($filedYearQuestion)
+        .filedYearGate(gate)
         .task(id: PreviewKey(pattern: pattern, matchType: matchType)) {
             // A short pause so typing doesn't run a search per keystroke.
             try? await Task.sleep(for: .milliseconds(150))
@@ -270,21 +270,12 @@ private struct RuleSheet: View {
         applyNow && previewKey == PreviewKey(pattern: pattern, matchType: matchType) && preview.uncategorisedCount > 0
     }
 
-    private func save() { save(resolution: nil) }
-
-    private func save(resolution: FiledYearEditCheck.Resolution?) {
+    private func save() {
         guard canSave, let categoryId else { return }
-        let applies = appliesNow
-        switch viewModel.save(ruleId: draft.ruleId, pattern: pattern, matchType: matchType, categoryId: categoryId,
-                              applyToUncategorised: applies, resolution: resolution) {
-        case .done(.failed(let message)):
+        viewModel.save(ruleId: draft.ruleId, pattern: pattern, matchType: matchType, categoryId: categoryId,
+                       applyToUncategorised: appliesNow, gate: gate) { message in
             error = message
-        case .done:
-            error = nil
-            dismiss()
-        case .asks(let question):
-            error = nil
-            filedYearQuestion = FiledYearPending(question: question) { answer in save(resolution: answer) }
+            if message == nil { dismiss() }
         }
     }
 }

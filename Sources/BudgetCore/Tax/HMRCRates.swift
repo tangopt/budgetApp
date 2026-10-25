@@ -149,7 +149,8 @@ extension HMRCRates {
     /// anyone owns a property, or has a tax year or employment record) to the last ended one,
     /// the codes of the non-GBP currencies its people's properties and sources use (each
     /// property's currency and its accounts', the year's manual items and other income),
-    /// without a stored rate. Start year → codes; years with nothing missing are left out.
+    /// without a stored rate. Start year → codes; years with nothing missing are left out, and so
+    /// are years anyone filed or paid (their figures stay as filed: a rate is entered by hand).
     public static func missing(db: Database, today: Date) throws -> [Int: Set<String>] {
         let rows = try TaxOverview.rows(db: db, now: today).filter { $0.year.end <= today }
         let currencies = Dictionary(uniqueKeysWithValues: try Account.fetchAll(db).compactMap { a in a.id.map { ($0, a.currency) } })
@@ -173,7 +174,9 @@ extension HMRCRates {
             wanted[startYear] = set
         }
         var missing: [Int: Set<String>] = [:]
-        for (startYear, set) in wanted {
+        // A filed or paid year's figures stay as filed (plan Task 14): its rate is never fetched.
+        let filed = try FiledYearGuard.filedYears(db: db)
+        for (startYear, set) in wanted where !filed.contains(startYear) {
             let codes = Set(try set.filter { $0 != .gbp }.map { $0.rawValue.uppercased() }
                 .filter { try rate(db: db, startYear: startYear, currencyCode: $0) == nil })
             if !codes.isEmpty { missing[startYear] = codes }

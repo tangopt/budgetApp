@@ -58,9 +58,9 @@ struct CategoryTransactionsPanel: View {
                 createCategory: viewModel.createCategory,
                 transfer: viewModel.transferActions,
                 manual: viewModel.manualActions,
-                onSave: { changes, resolution in
-                    guard let id = transaction.id else { return .done(.failed("This transaction hasn't been saved yet.")) }
-                    return viewModel.saveTransactionEdit(id: id, changes: changes, resolution: resolution)
+                onSave: { changes, gate, done in
+                    guard let id = transaction.id else { return done(.failed("This transaction hasn't been saved yet.")) }
+                    viewModel.saveTransactionEdit(id: id, changes: changes, gate: gate, done: done)
                 }
             )
         }

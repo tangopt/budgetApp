@@ -22,7 +22,7 @@ struct ManualTransactionActions {
     /// The accounts a manual transaction can be in, in the order the app lists them.
     let accounts: [Account]
     /// Deletes it; a deletion that would change a filed return asks first (`.asks`, plan Task 14).
-    let delete: (_ id: Int64, _ resolution: FiledYearEditCheck.Resolution?) -> CheckedSaveOutcome
+    let delete: CheckedSave<Int64>
 }
 
 /// The editable fields shared by Add transaction… and Edit transaction (manual): account,

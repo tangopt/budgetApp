@@ -175,6 +175,7 @@ struct CategoriesView: View {
         .newCategorySheet(draft: $newCategoryDraft, groups: viewModel.groups, create: viewModel.createCategory) { category in
             if let id = category.id { selection = [.category(id)] }
         }
+        .filedYearGate(viewModel.filedYearGate)
         .sheet(item: $renaming) { target in
             switch target {
             case .category(let category):

@@ -5,21 +5,90 @@ import GRDB
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
 
-/// A save checked against the filed years (`FiledYearEditCheck`): done, as `SaveOutcome` says, or
-/// waiting on the question (nothing written yet).
-enum CheckedSaveOutcome: Equatable {
-    case done(SaveOutcome)
-    case asks(FiledYearEditCheck.Question)
+/// Runs edits through the filed-year check (`FiledYearEditCheck`, plan Task 14) off the main
+/// thread, and holds the question one of them asks until it's answered (`.filedYearGate(_:)`
+/// presents it). A screen's view model has one for its own actions; a sheet that saves has its
+/// own, so the question shows on top of it.
+@MainActor
+final class FiledYearGate: ObservableObject {
+    @Published var pending: FiledYearPending?
+    /// A check or a save is under way (a sheet keeps its Save off meanwhile).
+    @Published private(set) var isRunning = false
+
+    /// `apply` in one write of `dbQueue`, through the check, on a background queue. `scope` is
+    /// worked out in that write, before `apply`. Saved, or refused: `done` (on the main actor) with
+    /// the result. A question: `pending`, and its answer runs it again (then `done`); Cancel
+    /// writes nothing and calls nothing.
+    func run<T>(_ dbQueue: DatabaseQueue, edit: String, scope: @escaping (Database) throws -> FiledYearEditCheck.Scope,
+                resolution: FiledYearEditCheck.Resolution? = nil,
+                _ apply: @escaping (Database) throws -> T, done: @escaping (Result<T, Error>) -> Void) {
+        isRunning = true
+        let now = AppClock.now
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result {
+                try dbQueue.write { db in
+                    try FiledYearEditCheck.save(db: db, edit: edit, scope: try scope(db), resolution: resolution, now: now) { try apply(db) }
+                }
+            }
+            DispatchQueue.main.async {
+                self.isRunning = false
+                switch result {
+                case .success(.saved(let value)):
+                    done(.success(value))
+                case .success(.asks(let question)):
+                    self.pending = FiledYearPending(question: question) { [weak self] answer in
+                        self?.run(dbQueue, edit: edit, scope: scope, resolution: answer, apply, done: done)
+                    }
+                case .failure(let error):
+                    done(.failure(error))
+                }
+            }
+        }
+    }
+
+    /// `run` with the scope known up front.
+    func run<T>(_ dbQueue: DatabaseQueue, edit: String, scope: FiledYearEditCheck.Scope,
+                _ apply: @escaping (Database) throws -> T, done: @escaping (Result<T, Error>) -> Void) {
+        run(dbQueue, edit: edit, scope: { _ in scope }, apply, done: done)
+    }
 }
 
-extension DatabaseQueue {
-    /// `apply` in one write, through the filed-year check: saved, or (without `resolution`) the
-    /// question with nothing written.
-    func checkedWrite<T>(edit: String, resolution: FiledYearEditCheck.Resolution?,
-                         _ apply: (Database) throws -> T) throws -> FiledYearEditCheck.Outcome<T> {
-        try write { db in
-            try FiledYearEditCheck.save(db: db, edit: edit, resolution: resolution, now: AppClock.now) { try apply(db) }
-        }
+extension View {
+    /// Presents `gate`'s question.
+    func filedYearGate(_ gate: FiledYearGate) -> some View {
+        modifier(FiledYearGateModifier(gate: gate))
+    }
+}
+
+private struct FiledYearGateModifier: ViewModifier {
+    @ObservedObject var gate: FiledYearGate
+
+    func body(content: Content) -> some View {
+        content.filedYearQuestion($gate.pending)
+    }
+}
+
+extension Result where Failure == Error {
+    /// The error, nil when it succeeded.
+    var failure: Error? {
+        if case .failure(let error) = self { return error }
+        return nil
+    }
+}
+
+/// A save through a sheet's gate: the input, the sheet's gate (its question shows on the sheet),
+/// and what to do once saved or refused (not called on Cancel).
+typealias CheckedSave<Input> = (Input, FiledYearGate, @escaping (SaveOutcome) -> Void) -> Void
+
+extension FiledYearEditCheck.Scope {
+    /// Edit transaction's Save of `id`: its category, and a manual transaction's new date.
+    static func transactionEdit(id: Int64, changes: TransactionEditChanges) -> Self {
+        Self(transactionIds: [id], dates: changes.manual.map { [$0.date] } ?? [], categoryIds: [changes.categoryId])
+    }
+
+    /// Add transaction…: the new row's date and category.
+    static func added(_ input: ManualTransactionInput) -> Self {
+        Self(dates: [input.date], categoryIds: [input.categoryId])
     }
 }
 
@@ -72,7 +141,7 @@ struct FiledYearEditSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: SheetMetrics.spacing) {
-            Text(question.years.count == 1 ? "A filed return would change" : "Filed returns would change")
+            Text(question.heading)
                 .font(.title3.weight(.semibold))
             ScrollView {
                 VStack(alignment: .leading, spacing: SheetMetrics.spacing) {
@@ -135,23 +204,5 @@ struct FiledYearEditSheet: View {
             }
             .font(.callout)
         }
-    }
-}
-
-/// A screen's transaction write (its `manualWrite`: refusals as messages, then the reload) with the
-/// edit checked against the filed years first.
-enum FiledYearCheckedSave {
-    static func save(edit: String, resolution: FiledYearEditCheck.Resolution?,
-                     through write: ((Database) throws -> Void) -> SaveOutcome,
-                     _ apply: @escaping (Database) throws -> Void) -> CheckedSaveOutcome {
-        var question: FiledYearEditCheck.Question?
-        let outcome = write { db in
-            question = nil
-            if case .asks(let asked) = try FiledYearEditCheck.save(db: db, edit: edit, resolution: resolution, now: AppClock.now, { try apply(db) }) {
-                question = asked
-            }
-        }
-        if case .failed = outcome { return .done(outcome) }
-        return question.map(CheckedSaveOutcome.asks) ?? .done(outcome)
     }
 }

@@ -113,6 +113,14 @@ public enum Rules {
         return rule
     }
 
+    /// The uncategorised transactions saving the rule with "file the uncategorised" would file
+    /// (what `FiledYearEditCheck` checks).
+    public static func uncategorisedMatchIds(db: Database, pattern: String, matchType: RuleMatchType) throws -> [Int64] {
+        let rule = Rule(matchPattern: normalized(pattern), matchType: matchType, categoryId: 0, priority: 0)
+        let matches = RuleMatcher.predicate(for: rule)
+        return try fileableUncategorised(db: db).filter { matches($0.rawDescription) }.compactMap(\.id)
+    }
+
     // MARK: - Private
 
     private static func normalized(_ pattern: String) -> String {

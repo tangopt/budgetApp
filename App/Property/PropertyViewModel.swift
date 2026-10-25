@@ -363,24 +363,47 @@ final class PropertyViewModel: ObservableObject {
         }
     }
 
-    func saveProperty(_ property: Property) -> Result<Int64, Error> {
-        Result {
-            try dbQueue.write { db in
-                var property = property
-                try Properties.save(db: db, &property)
-                return property.id!
-            }
-        }
+    // MARK: Through the filed-year check (plan Task 14)
+
+    /// The screen's edits of what the rental accounts read; its question shows on the Property screen.
+    let filedYearGate = FiledYearGate()
+
+    /// `body` through the filed-year check, off the main thread (`gate`: a sheet's; nil: the
+    /// screen's). `done` gets the result; Cancel calls nothing. The observation shows what changed.
+    func checked<T>(_ edit: String, scope: FiledYearEditCheck.Scope = .everyYear, gate: FiledYearGate? = nil,
+                    _ body: @escaping (Database) throws -> T, done: @escaping (Result<T, Error>) -> Void) {
+        (gate ?? filedYearGate).run(dbQueue, edit: edit, scope: scope, body, done: done)
     }
 
-    func deleteProperty() -> String? {
-        guard let propertyId else { return nil }
-        let error = write { db in _ = try Properties.delete(db: db, id: propertyId) }
-        if error == nil {
-            self.propertyId = nil
-            onPropertiesChanged?(nil)
+    /// `checked`, its error's text to `done` (default: the screen's banner).
+    func checkedWrite(_ edit: String, gate: FiledYearGate? = nil, _ body: @escaping (Database) throws -> Void,
+                      done: ((String?) -> Void)? = nil) {
+        let done = done ?? { [weak self] message in self?.errorMessage = message }
+        checked(edit, gate: gate, body) { result in done(result.failure.map(PropertyMessages.text(for:))) }
+    }
+
+    /// The property's name for the question ("Property A").
+    private var propertyName: String { property?.name ?? "the property" }
+
+    func saveProperty(_ property: Property, gate: FiledYearGate, done: @escaping (Result<Int64, Error>) -> Void) {
+        // A new property has no owners or categories yet: it moves nothing.
+        checked("\(property.name) edited", scope: property.id == nil ? FiledYearEditCheck.Scope() : .everyYear, gate: gate, { db in
+            var property = property
+            try Properties.save(db: db, &property)
+            return property.id!
+        }, done: done)
+    }
+
+    func deleteProperty() {
+        guard let propertyId else { return }
+        checkedWrite("\(propertyName) deleted", { db in _ = try Properties.delete(db: db, id: propertyId) }) { [weak self] message in
+            guard let self else { return }
+            self.errorMessage = message
+            if message == nil {
+                self.propertyId = nil
+                self.onPropertiesChanged?(nil)
+            }
         }
-        return error
     }
 
     func savePerson(_ person: Person) -> Result<Person, Error> {
@@ -393,19 +416,25 @@ final class PropertyViewModel: ObservableObject {
         }
     }
 
-    func setOwners(_ owners: [PropertyOwner]) -> String? {
-        guard let propertyId else { return nil }
-        return write { db in _ = try Properties.setOwners(db: db, propertyId: propertyId, owners) }
+    func setOwners(_ owners: [PropertyOwner], gate: FiledYearGate, done: @escaping (String?) -> Void) {
+        guard let propertyId else { return done(nil) }
+        checkedWrite("Owners of \(propertyName) changed", gate: gate, { db in
+            _ = try Properties.setOwners(db: db, propertyId: propertyId, owners)
+        }, done: done)
     }
 
-    func setAccount(_ accountId: Int64, role: PropertyAccountRole) -> String? {
-        guard let propertyId else { return nil }
-        return write { db in _ = try Properties.setAccount(db: db, propertyId: propertyId, accountId: accountId, role: role) }
+    func setAccount(_ accountId: Int64, role: PropertyAccountRole, gate: FiledYearGate? = nil, done: ((String?) -> Void)? = nil) {
+        guard let propertyId else { return (done ?? { _ in })(nil) }
+        checkedWrite("Account of \(propertyName) set as \(role.rawValue)", gate: gate, { db in
+            _ = try Properties.setAccount(db: db, propertyId: propertyId, accountId: accountId, role: role)
+        }, done: done)
     }
 
     func removeAccount(_ accountId: Int64) {
         guard let propertyId else { return }
-        errorMessage = write { db in _ = try Properties.removeAccount(db: db, propertyId: propertyId, accountId: accountId) }
+        checkedWrite("Account removed from \(propertyName)") { db in
+            _ = try Properties.removeAccount(db: db, propertyId: propertyId, accountId: accountId)
+        }
     }
 
     /// The stored values of an index (the Mortgage terms sheet's preview of the rate).
@@ -430,12 +459,16 @@ final class PropertyViewModel: ObservableObject {
 
     func addGroup(_ groupId: Int64) {
         guard let propertyId else { return }
-        errorMessage = write { db in try Properties.addCategoryGroup(db: db, propertyId: propertyId, categoryGroupId: groupId) }
+        checkedWrite("Category group added to \(propertyName)") { db in
+            try Properties.addCategoryGroup(db: db, propertyId: propertyId, categoryGroupId: groupId)
+        }
     }
 
     func removeGroup(_ groupId: Int64) {
         guard let propertyId else { return }
-        errorMessage = write { db in _ = try Properties.removeCategoryGroup(db: db, propertyId: propertyId, categoryGroupId: groupId) }
+        checkedWrite("Category group removed from \(propertyName)") { db in
+            _ = try Properties.removeCategoryGroup(db: db, propertyId: propertyId, categoryGroupId: groupId)
+        }
     }
 
     /// Saves the tenancy and its rent history together.
@@ -460,19 +493,22 @@ final class PropertyViewModel: ObservableObject {
     /// Links rent credits to receipts (`RentReceiptMatching.match`) and says what it did.
     func matchCredits() {
         guard let propertyId else { return }
-        do {
-            let result = try dbQueue.write { db in try RentReceiptMatching.match(db: db, propertyId: propertyId) }
-            errorMessage = nil
-            infoMessage = "Linked \(result.created.count) credit\(result.created.count == 1 ? "" : "s"). "
-                + "\(result.unmatchedReceipts.count) receipt\(result.unmatchedReceipts.count == 1 ? "" : "s") and "
-                + "\(result.unmatchedCredits.count) credit\(result.unmatchedCredits.count == 1 ? "" : "s") remain unmatched."
-        } catch {
-            errorMessage = PropertyMessages.text(for: error)
+        checked("Rent credits matched to receipts", { db in try RentReceiptMatching.match(db: db, propertyId: propertyId) }) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+            case .success(let result):
+                self.errorMessage = nil
+                self.infoMessage = "Linked \(result.created.count) credit\(result.created.count == 1 ? "" : "s"). "
+                    + "\(result.unmatchedReceipts.count) receipt\(result.unmatchedReceipts.count == 1 ? "" : "s") and "
+                    + "\(result.unmatchedCredits.count) credit\(result.unmatchedCredits.count == 1 ? "" : "s") remain unmatched."
+            case .failure(let error):
+                self.errorMessage = PropertyMessages.text(for: error)
+            }
         }
     }
 
     func unlinkPayment(_ payment: RentReceiptPayment) {
-        errorMessage = write { db in
+        checkedWrite("Rent credit unlinked from its receipt") { db in
             _ = try RentReceiptMatching.unlink(db: db, receiptId: payment.rentReceiptId, transactionId: payment.transactionId)
         }
     }

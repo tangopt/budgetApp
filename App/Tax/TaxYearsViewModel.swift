@@ -73,8 +73,7 @@ final class TaxYearsViewModel: ObservableObject {
     @Published private(set) var isFetchingRate = false
     @Published var errorMessage: String?
     @Published var infoMessage: String?
-    /// A manual item's deletion waiting on the filed-year question (plan Task 14).
-    @Published var filedYearQuestion: FiledYearPending?
+
 
     private var observationTask: Task<Void, Never>?
     private var isActive = false
@@ -166,19 +165,30 @@ final class TaxYearsViewModel: ObservableObject {
         errorMessage = write { db in try TaxOverview.setStatus(db: db, startYear: selection.startYear, personId: selection.personId, status: status) }
     }
 
-    /// Stores a manual rate (pounds per unit, or units per £1 as HMRC publishes it).
-    func setRate(currencyCode: String, unitsPerPound: Double) -> String? {
-        guard let selection else { return nil }
-        guard unitsPerPound > 0 else { return "Enter a rate above zero." }
-        return write { db in
+    /// Stores a manual rate (pounds per unit, or units per £1 as HMRC publishes it), through the
+    /// filed-year check (`gate` asks when it would change a filed return).
+    func setRate(currencyCode: String, unitsPerPound: Double, gate: FiledYearGate, done: @escaping (String?) -> Void) {
+        guard let selection else { return done(nil) }
+        guard unitsPerPound > 0 else { return done("Enter a rate above zero.") }
+        let label = UKTaxYear(startYear: selection.startYear).label
+        checked(edit: "\(currencyCode) rate for \(label) entered by hand", scope: .from(year: selection.startYear), gate: gate, { db in
             try HMRCRates.set(db: db, startYear: selection.startYear, currencyCode: currencyCode, gbpPerUnit: 1 / unitsPerPound,
                               unitsPerPound: unitsPerPound, source: .manual, notes: "Entered by hand")
-        }
+        }, done: done)
     }
 
     func removeRate(currencyCode: String) {
         guard let selection else { return }
-        errorMessage = write { db in _ = try HMRCRates.remove(db: db, startYear: selection.startYear, currencyCode: currencyCode) }
+        let label = UKTaxYear(startYear: selection.startYear).label
+        checked(edit: "\(currencyCode) rate for \(label) removed", scope: .from(year: selection.startYear)) { db in
+            _ = try HMRCRates.remove(db: db, startYear: selection.startYear, currencyCode: currencyCode)
+        }
+    }
+
+    /// Whether the year on show is filed or paid (by anyone): HMRC's rate isn't fetched for it.
+    var selectedYearIsFiled: Bool {
+        guard let selection else { return false }
+        return snapshot.rows.contains { $0.year.startYear == selection.startYear && ($0.status == .filed || $0.status == .paid) }
     }
 
     /// Fetches HMRC's published average for the year; a manual or filed-return rate stays
@@ -186,6 +196,11 @@ final class TaxYearsViewModel: ObservableObject {
     func fetchRate(replace: Bool) {
         guard let selection, !SnapshotMode.isActive else { return }
         let year = UKTaxYear(startYear: selection.startYear)
+        // A filed or paid year's figures stay as filed (plan Task 14): its rate is entered by hand.
+        guard !selectedYearIsFiled else {
+            infoMessage = "\(year.label) is filed, so HMRC's rate isn't fetched for it: its figures stay as filed. Enter a rate by hand to change it."
+            return
+        }
         isFetchingRate = true
         Task {
             let rates = await rateFetcher.fetchAverageRates(for: year)
@@ -209,73 +224,78 @@ final class TaxYearsViewModel: ObservableObject {
         }
     }
 
-    func setSplit(expenseType: TaxExpenseType?, shareBasisPoints: Int?) -> String? {
-        guard let selection, let propertyId = page?.property?.id else { return nil }
-        return write { db in
+    /// Sets (or with nil removes) a split, through the filed-year check (`gate`: the sheet's; nil: the screen's).
+    func setSplit(expenseType: TaxExpenseType?, shareBasisPoints: Int?, gate: FiledYearGate? = nil,
+                  done: ((String?) -> Void)? = nil) {
+        guard let selection, let propertyId = page?.property?.id else { return (done ?? { _ in })(nil) }
+        let name = expenseType?.displayName ?? "every type"
+        let edit = shareBasisPoints.map { "Split for \(name) set to \(PropertyFormat.percent($0))" } ?? "Split for \(name) removed"
+        checked(edit: edit, scope: .from(year: selection.startYear), gate: gate, { db in
             try TaxSplits.set(db: db, startYear: selection.startYear, personId: selection.personId, propertyId: propertyId,
                               expenseType: expenseType, shareBasisPoints: shareBasisPoints)
-        }
+        }, done: done)
     }
 
     /// Sets a type's rule for every year or this year; `nil` removes the stored one at that
     /// scope. Saving for every year also drops this year's override, so the year follows it.
-    func setRule(_ type: TaxExpenseType, rule: TaxAttributionRuleKind?, thisYearOnly: Bool, coverMonths: Int?) -> String? {
-        guard let selection else { return nil }
+    /// Through the filed-year check (`gate`: the sheet's): a rule of every year reaches every year.
+    func setRule(_ type: TaxExpenseType, rule: TaxAttributionRuleKind?, thisYearOnly: Bool, coverMonths: Int?,
+                 gate: FiledYearGate, done: @escaping (String?) -> Void) {
+        guard let selection else { return done(nil) }
         let year = thisYearOnly ? selection.startYear : nil
-        return write { db in
+        let scope: FiledYearEditCheck.Scope = thisYearOnly ? .from(year: selection.startYear) : .everyYear
+        let edit = "Rule for \(type.displayName) " + (rule.map { "set to \($0.displayName)" } ?? "removed")
+            + (thisYearOnly ? " for \(UKTaxYear(startYear: selection.startYear).label)" : " for every year")
+        checked(edit: edit, scope: scope, gate: gate, { db in
             if let rule {
                 try TaxAttributionRules.set(db: db, expenseType: type, startYear: year, rule: rule, defaultCoverMonths: coverMonths)
                 if !thisYearOnly { _ = try TaxAttributionRules.remove(db: db, expenseType: type, startYear: selection.startYear) }
             } else {
                 _ = try TaxAttributionRules.remove(db: db, expenseType: type, startYear: year)
             }
-        }
+        }, done: done)
     }
 
     func setCategoryType(categoryId: Int64, _ type: TaxExpenseType?) {
-        errorMessage = write { db in try TaxExpenseTypeMap.set(db: db, categoryId: categoryId, expenseType: type) }
+        let name = page?.categoryTypes.first { $0.category.id == categoryId }?.category.name ?? "a category"
+        checked(edit: "Tax line of \(name) set to \(type?.displayName ?? "its suggestion")", scope: .everyYear) { db in
+            try TaxExpenseTypeMap.set(db: db, categoryId: categoryId, expenseType: type)
+        }
     }
 
     func confirmSuggestedTypes() {
         guard let propertyId = page?.property?.id else { return }
-        errorMessage = write { db in _ = try TaxExpenseTypeMap.seed(db: db, propertyId: propertyId) }
+        checked(edit: "Suggested tax lines confirmed", scope: .everyYear) { db in _ = try TaxExpenseTypeMap.seed(db: db, propertyId: propertyId) }
     }
 
-    /// Saves a manual item; one that would change a filed return asks first (`.asks`, nothing
-    /// written; plan Task 14) and is saved again with the answer.
-    func saveManualItem(_ item: TaxManualItem, documents: EvidenceLinkChanges,
-                        resolution: FiledYearEditCheck.Resolution? = nil) -> CheckedSaveOutcome {
+    /// Saves a manual item through the filed-year check (`gate`: the sheet's).
+    func saveManualItem(_ item: TaxManualItem, documents: EvidenceLinkChanges, gate: FiledYearGate, done: @escaping (String?) -> Void) {
         let edit = (item.id == nil ? "Manual item “\(item.label)” added" : "Manual item “\(item.label)” edited")
-        return checked(edit: edit, resolution: resolution) { db in
+        let scope = FiledYearEditCheck.Scope(manualItemIds: item.id.map { [$0] } ?? [], years: [item.startYear])
+        checked(edit: edit, scope: scope, gate: gate, { db in
             var item = item
             try TaxManualItems.save(db: db, &item, documents: documents)
+        }, done: done)
+    }
+
+    /// Deletes a manual item through the filed-year check (the screen's gate asks).
+    func deleteManualItem(_ id: Int64, label: String = "") {
+        checked(edit: "Manual item “\(label)” deleted", scope: FiledYearEditCheck.Scope(manualItemIds: [id])) { db in
+            _ = try TaxManualItems.delete(db: db, id: id)
         }
     }
 
-    /// Deletes a manual item; one whose deletion would change a filed return asks first
-    /// (`filedYearQuestion`).
-    func deleteManualItem(_ id: Int64, label: String = "", resolution: FiledYearEditCheck.Resolution? = nil) {
-        switch checked(edit: "Manual item “\(label)” deleted", resolution: resolution, { db in _ = try TaxManualItems.delete(db: db, id: id) }) {
-        case .done(.failed(let message)): errorMessage = message
-        case .done: errorMessage = nil
-        case .asks(let question):
-            // After the confirmation dialog has closed.
-            DispatchQueue.main.async {
-                self.filedYearQuestion = FiledYearPending(question: question) { [weak self] answer in
-                    self?.deleteManualItem(id, label: label, resolution: answer)
-                }
-            }
-        }
-    }
+    /// The screen's edits through the filed-year check (plan Task 14); its question shows on the Tax screen.
+    let filedYearGate = FiledYearGate()
 
-    /// A write through the filed-year check; the error's text when it fails.
-    private func checked(edit: String, resolution: FiledYearEditCheck.Resolution?,
-                         _ body: (Database) throws -> Void) -> CheckedSaveOutcome {
-        do {
-            if case .asks(let question) = try dbQueue.checkedWrite(edit: edit, resolution: resolution, body) { return .asks(question) }
-            return .done(.saved)
-        } catch {
-            return .done(.failed(TaxMessages.text(for: error)))
+    /// A write through the filed-year check, off the main thread: `done` gets the error's text, or
+    /// nil once saved (default: the screen's banner); Cancel calls nothing. The screen's
+    /// observation shows what was written.
+    func checked(edit: String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate? = nil,
+                 _ body: @escaping (Database) throws -> Void, done: ((String?) -> Void)? = nil) {
+        let done = done ?? { [weak self] message in self?.errorMessage = message }
+        (gate ?? filedYearGate).run(dbQueue, edit: edit, scope: scope, body) { result in
+            done(result.failure.map(TaxMessages.text(for:)))
         }
     }
 

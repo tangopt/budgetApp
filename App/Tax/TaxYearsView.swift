@@ -32,6 +32,7 @@ struct TaxYearsView: View {
         }
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
+        .filedYearGate(viewModel.filedYearGate)
     }
 
     private var emptyState: some View {

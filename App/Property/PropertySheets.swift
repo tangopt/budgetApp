@@ -36,8 +36,12 @@ struct PropertyFormSheet: View {
     @State var draft: PropertyDraft
     @Environment(\.dismiss) private var dismiss
     @State private var error: String?
+    /// Saves through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
 
-    var body: some View {
+    var body: some View { form.filedYearGate(gate) }
+
+    @ViewBuilder private var form: some View {
         SheetScaffold(title: draft.existing == nil ? "New property" : "Edit property", error: error, width: SheetMetrics.compactWidth,
                       onCancel: { dismiss() },
                       primary: SheetAction(draft.existing == nil ? "Add property" : "Save",
@@ -85,12 +89,14 @@ struct PropertyFormSheet: View {
         property.purchasePriceMinorUnits = price
         property.purchaseDate = draft.hasPurchaseDate ? (draft.purchaseDate ?? PropertyDays.utcToday(AppClock.now)) : nil
         property.notes = draft.notes
-        switch viewModel.saveProperty(property) {
-        case .success(let id):
-            viewModel.onPropertiesChanged?(id)
-            dismiss()
-        case .failure(let failure):
-            error = PropertyMessages.text(for: failure)
+        viewModel.saveProperty(property, gate: gate) { result in
+            switch result {
+            case .success(let id):
+                viewModel.onPropertiesChanged?(id)
+                dismiss()
+            case .failure(let failure):
+                error = PropertyMessages.text(for: failure)
+            }
         }
     }
 }
@@ -113,6 +119,8 @@ struct OwnersSheet: View {
 
     @State private var rows: [Row] = []
     @State private var error: String?
+    /// Saves through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
     @State private var addingPerson = false
 
     init(viewModel: PropertyViewModel) {
@@ -128,7 +136,9 @@ struct OwnersSheet: View {
     }
     #endif
 
-    var body: some View {
+    var body: some View { form.filedYearGate(gate) }
+
+    @ViewBuilder private var form: some View {
         SheetScaffold(title: "Owners", subtitle: "On any day someone owns the property, the shares must add up to 100%.",
                       error: error, width: SheetMetrics.listWidth, onCancel: { dismiss() }, primary: SheetAction("Save", action: save)) {
             VStack(alignment: .leading, spacing: 8) {
@@ -247,7 +257,9 @@ struct OwnersSheet: View {
             let basisPoints = NSDecimalNumber(decimal: share * 100).rounding(accordingToBehavior: nil).intValue
             owners.append(PropertyOwner(propertyId: propertyId, personId: personId, shareBasisPoints: basisPoints, fromDate: row.from, toDate: row.to))
         }
-        if let failure = viewModel.setOwners(owners) { error = failure } else { dismiss() }
+        viewModel.setOwners(owners, gate: gate) { failure in
+            if let failure { error = failure } else { dismiss() }
+        }
     }
 }
 
@@ -305,8 +317,12 @@ struct LinkAccountSheet: View {
     @State private var accountId: Int64?
     @State private var role = PropertyAccountRole.current
     @State private var error: String?
+    /// Saves through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
 
-    var body: some View {
+    var body: some View { form.filedYearGate(gate) }
+
+    @ViewBuilder private var form: some View {
         let linked = Set(viewModel.snapshot.propertyAccounts.map(\.accountId))
         let available = viewModel.snapshot.accounts.filter { !linked.contains($0.id ?? -1) }
         SheetScaffold(title: "Link account", subtitle: viewModel.snapshot.property?.name, error: error, width: SheetMetrics.compactWidth,
@@ -336,7 +352,9 @@ struct LinkAccountSheet: View {
 
     private func save() {
         guard let accountId else { return }
-        if let failure = viewModel.setAccount(accountId, role: role) { error = failure } else { dismiss() }
+        viewModel.setAccount(accountId, role: role, gate: gate) { failure in
+            if let failure { error = failure } else { dismiss() }
+        }
     }
 }
 

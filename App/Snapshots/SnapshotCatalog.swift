@@ -468,7 +468,7 @@ enum SnapshotCatalog {
                 return AnyView(EditTransactionSheet(
                     transaction: transaction, categories: model.categories, groups: model.groups, recentIds: model.recentCategoryIds,
                     createCategory: model.createCategory, transfer: model.transferActions, manual: model.manualActions,
-                    onSave: { _, _ in .done(.saved) }))
+                    onSave: { _, _, done in done(.saved) }))
             },
             sheet("new_kind", "New kind… (a name that's already a kind's)") { context in
                 _ = try context.demoCustomKinds()
@@ -776,9 +776,20 @@ enum SnapshotCatalog {
                     throw SnapshotMissing("Person A and Person B")
                 }
                 let purchase = model.property?.purchaseDate
-                let error = model.setOwners([PropertyOwner(propertyId: propertyId, personId: a, shareBasisPoints: 6_000, fromDate: purchase),
-                                             PropertyOwner(propertyId: propertyId, personId: b, shareBasisPoints: 3_000, fromDate: purchase)])
-                    ?? "The shares don't add up to 100%."
+                // Tried and rolled back: the write's own refusal.
+                let owners = [PropertyOwner(propertyId: propertyId, personId: a, shareBasisPoints: 6_000, fromDate: purchase),
+                              PropertyOwner(propertyId: propertyId, personId: b, shareBasisPoints: 3_000, fromDate: purchase)]
+                var error = "The shares don't add up to 100%."
+                do {
+                    try await context.dbQueue.write { db in
+                        try db.inSavepoint {
+                            _ = try Properties.setOwners(db: db, propertyId: propertyId, owners)
+                            return .rollback
+                        }
+                    }
+                } catch let refusal {
+                    error = PropertyMessages.text(for: refusal)
+                }
                 return AnyView(OwnersSheet(viewModel: model, rows: [OwnersSheet.Row(personId: a, shareText: "60", from: purchase),
                                                                     OwnersSheet.Row(personId: b, shareText: "30", from: purchase)],
                                            error: error))
@@ -987,7 +998,7 @@ enum SnapshotCatalog {
                 return AnyView(EditTransactionSheet(
                     transaction: transaction, categories: model.categories, groups: model.groups, recentIds: model.recentCategoryIds,
                     createCategory: model.createCategory, transfer: model.transferActions, manual: model.manualActions,
-                    onSave: { _, _ in .done(.saved) }))
+                    onSave: { _, _, done in done(.saved) }))
             }
         ]
     }

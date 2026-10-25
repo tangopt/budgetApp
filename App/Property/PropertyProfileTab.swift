@@ -43,7 +43,7 @@ struct PropertyProfileTab: View {
         .sheet(isPresented: $linkingAccount) { LinkAccountSheet(viewModel: viewModel) }
         .sheet(isPresented: $editingMortgageTerms) { MortgageTermsSheet(viewModel: viewModel) }
         .confirmationDialog(snapshot.property.map { "Delete “\($0.name)”?" } ?? "Delete the property?", isPresented: $confirmingDelete) {
-            Button("Delete property", role: .destructive) { viewModel.errorMessage = viewModel.deleteProperty() }
+            Button("Delete property", role: .destructive) { viewModel.deleteProperty() }
         } message: {
             Text("Its owners, account and group links, tenancies, rents, receipts and their credit links go. Transactions and documents stay. This can't be undone.")
         }
@@ -149,7 +149,7 @@ struct PropertyProfileTab: View {
                     // No accessibility value: the picker stays its own element, so VoiceOver reaches it.
                     DataTableColumn("Role") { link, _ in
                         Picker("Role", selection: Binding(get: { link.role },
-                                                          set: { viewModel.errorMessage = viewModel.setAccount(link.accountId, role: $0) })) {
+                                                          set: { viewModel.setAccount(link.accountId, role: $0) })) {
                             ForEach(PropertyAccountRole.allCases, id: \.self) { Text(PropertyFormat.role($0)).tag($0) }
                         }
                         .labelsHidden()

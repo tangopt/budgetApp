@@ -1,7 +1,6 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
-@testable import BudgetDemo
 
 /// Plan Task 14: an edit that would move a figure on a filed or paid return asks first
 /// (`FiledYearEditCheck`). Synthetic data: Person A filed 2022/23; Property A (wholly A's, GBP) has
@@ -88,7 +87,8 @@ final class FiledYearEditCheckTests: XCTestCase {
     private func categorise(_ key: String, as category: String = "repairs", resolution: FiledYearEditCheck.Resolution? = nil,
                             snapshots: UnsafeMutablePointer<Int>? = nil) throws -> FiledYearEditCheck.Outcome<Void> {
         try db.write { db in
-            try FiledYearEditCheck.save(db: db, edit: "Edit transaction", resolution: resolution, now: Self.now,
+            try FiledYearEditCheck.save(db: db, edit: "Edit transaction", scope: .categorising([id(key)], as: id(category)),
+                                        resolution: resolution, now: Self.now,
                                         onSnapshot: { snapshots?.pointee += 1 }) {
                 try TransactionEditing.update(db: db, id: id(key), categoryId: id(category), note: nil)
             }
@@ -123,6 +123,7 @@ final class FiledYearEditCheckTests: XCTestCase {
         // their status, ruling R13).
         XCTAssertEqual(asked.years.map(\.startYear), [2022, 2023, 2024])
         XCTAssertEqual(asked.yearsLabel, "2022/23, 2023/24 and 2024/25")
+        XCTAssertEqual(asked.heading, "Filed returns would change")
         XCTAssertEqual(asked.years[1].lines.map(\.text), ["SA calculation: property loss carried forward £100.00 → £350.00"])
         // Only 2022/23 is marked: the later years carry its figures.
         XCTAssertEqual(asked.markYears, [2022])
@@ -172,6 +173,12 @@ final class FiledYearEditCheckTests: XCTestCase {
         // The year's row carries it (the return shows it as differing from the filed one).
         let row = try db.read { db in try TaxOverview.rows(db: db, now: Self.now) }.first { $0.year.startYear == 2022 }
         XCTAssertEqual(row?.changedAfterFiling, [change])
+        // Every year whose return moved is noted, its row created: 2023/24 and 2024/25 carry the loss.
+        for year in [2023, 2024] {
+            let lines = FiledYearEditCheck.changesAfterFiling(try notes(year))
+            XCTAssertEqual(lines.count, 1, "\(year)")
+            XCTAssertTrue(lines.first?.contains("SA calculation: property loss carried forward £100.00 → £350.00") == true, "\(lines)")
+        }
     }
 
     func testTakingACostOffAFiledLineCantBeMarkedNotCounted() throws {
@@ -211,7 +218,9 @@ final class FiledYearEditCheckTests: XCTestCase {
         let before = try figures()
         func addRule(_ resolution: FiledYearEditCheck.Resolution?) throws -> FiledYearEditCheck.Outcome<Rule> {
             try db.write { db in
-                try FiledYearEditCheck.save(db: db, edit: "Rule BUILDER LTD → Repairs", resolution: resolution, now: Self.now) {
+                let ids = try Rules.uncategorisedMatchIds(db: db, pattern: "BUILDER LTD", matchType: .contains)
+                return try FiledYearEditCheck.save(db: db, edit: "Rule BUILDER LTD → Repairs", scope: .categorising(ids, as: id("repairs")),
+                                                   resolution: resolution, now: Self.now) {
                     try Rules.add(db: db, pattern: "BUILDER LTD", matchType: .contains, categoryId: id("repairs"), applyToUncategorised: true)
                 }
             }
@@ -220,7 +229,7 @@ final class FiledYearEditCheckTests: XCTestCase {
         // One question: 2022/23 filed, 2023/24 in the years filed whatever their status (ruling R13),
         // 2024/25 carrying their losses forward.
         XCTAssertEqual(asked.years.map(\.startYear), [2022, 2023, 2024])
-        XCTAssertEqual(asked.markTitle, "Mark as not counted for 2022/23 and 2023/24 and save")
+        XCTAssertEqual(asked.markTitle, "Mark as not counted for 2022/23, 2023/24 and save")
         XCTAssertTrue(asked.canMarkNotCounted)
         XCTAssertEqual(try db.read { db in try Rule.fetchCount(db) }, 0, "cancel: not even the rule is kept")
         XCTAssertNil(try category("builder22"))
@@ -235,7 +244,7 @@ final class FiledYearEditCheckTests: XCTestCase {
     func testAManualTaxItemInAFiledYearAsks() throws {
         let item = { (resolution: FiledYearEditCheck.Resolution?) throws -> FiledYearEditCheck.Outcome<Void> in
             try self.db.write { db in
-                try FiledYearEditCheck.save(db: db, edit: "Manual item Postage", resolution: resolution, now: Self.now) {
+                try FiledYearEditCheck.save(db: db, edit: "Manual item Postage", scope: .from(year: 2022), resolution: resolution, now: Self.now) {
                     var item = TaxManualItem(startYear: 2022, personId: self.id("A"), propertyId: self.id("property"), expenseType: .otherExpense,
                                              label: "Postage", amountMinorUnits: 1_000, currency: .gbp, isWholeProperty: false)
                     try TaxManualItems.save(db: db, &item)
@@ -252,33 +261,155 @@ final class FiledYearEditCheckTests: XCTestCase {
         XCTAssertEqual(try marks().map(\.startYear), [2022])
     }
 
-    // MARK: What tax figures read
+    // MARK: Several people, paid years, which sources are marked
 
-    /// `unreadTables` are never read by `TaxFigures.snapshot` (on the demo database, every statement
-    /// it runs).
-    func testTheTablesTreatedAsUnreadAreNotReadByTheTaxFigures() throws {
-        let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("FiledEditDemo-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: evidence) }
-        let demo = try DatabaseManager(path: nil)
-        try demo.migrate()
-        try DemoDatabase.build(dbQueue: demo.dbQueue, evidenceRoot: evidence)
-        try demo.dbQueue.write { db in
-            var sqls = Set<String>()
-            db.trace(options: .statement) { event in
-                if case .statement(let statement) = event { sqls.insert(statement.sql) }
+    /// Person B owns half; A's 2022/23 is filed, B's paid.
+    private func addPersonB() throws {
+        try db.write { db in
+            var b = Person(name: "Person B", shortName: "B")
+            try People.save(db: db, &b)
+            ids["B"] = b.id!
+            _ = try Properties.setOwners(db: db, propertyId: id("property"), [
+                PropertyOwner(propertyId: id("property"), personId: id("A"), shareBasisPoints: 5_000),
+                PropertyOwner(propertyId: id("property"), personId: b.id!, shareBasisPoints: 5_000)
+            ])
+            var year = TaxYear(startYear: 2022, personId: b.id!, status: .paid)
+            try year.insert(db)
+        }
+    }
+
+    func testSeveralPeopleAreNamedOnTheirLines() throws {
+        try addPersonB()
+        let asked = try XCTUnwrap(question(try categorise("refund")))
+        let year = try XCTUnwrap(asked.years.first)
+        XCTAssertEqual(year.people, ["Person A", "Person B"])
+        XCTAssertFalse(year.isPaid, "A's is only filed")
+        XCTAssertEqual(year.title, "This changes the filed 2022/23 returns of Person A and Person B:")
+        XCTAssertTrue(year.lines.contains { $0.text == "Person A · SA106 Land and property abroad box 17 Allowable property expenses £50.00 → £175.00" },
+                      "\(year.lines.map(\.text))")
+        XCTAssertTrue(year.lines.contains { $0.person == "Person B" })
+        XCTAssertEqual(asked.markYears, [2022])
+        // Saved anyway: both people's years are noted.
+        XCTAssertTrue(isSaved(try categorise("refund", resolution: .saveAnyway)))
+        for person in ["A", "B"] {
+            let notes = try db.read { db in
+                try TaxYear.filter(Column("startYear") == 2022 && Column("personId") == id(person)).fetchOne(db)?.notes
             }
-            defer { db.trace(options: []) }
-            let snapshot = try TaxFigures.snapshot(db: db)
-            XCTAssertFalse(snapshot.values.isEmpty)
-            XCTAssertGreaterThan(sqls.count, 10)
-            for sql in sqls {
-                guard let statement = try? db.makeStatement(sql: sql) else { continue }
-                let region = statement.databaseRegion
-                for table in FiledYearEditCheck.unreadTables {
-                    XCTAssertFalse(region.isModified(byEventsOfKind: .insert(tableName: table)), "\(sql) reads \(table)")
+            XCTAssertEqual(FiledYearEditCheck.changesAfterFiling(notes).count, 1, person)
+        }
+    }
+
+    func testAPaidYearSaysPaid() throws {
+        try db.write { db in try db.execute(sql: "UPDATE taxYear SET status = ? WHERE startYear = 2022", arguments: [TaxYearStatus.paid.rawValue]) }
+        let asked = try XCTUnwrap(question(try categorise("refund")))
+        XCTAssertEqual(asked.years.first?.title, "This changes your paid 2022/23 return:")
+        XCTAssertTrue(asked.years.first?.isPaid == true)
+        // 2023/24 and 2024/25 are filed (ruling R13), not paid.
+        XCTAssertEqual(asked.years.dropFirst().map(\.title), ["This changes your filed 2023/24 return:", "This changes your filed 2024/25 return:"])
+        XCTAssertEqual(asked.heading, "Filed and paid returns would change")
+    }
+
+    func testOnlyTheSourcesThatMovedAFigureAreMarked() throws {
+        let insurance = try db.write { db -> Int64 in
+            let group = try XCTUnwrap(Category.fetchOne(db, key: id("repairs"))?.groupId)
+            var category = Category(name: "Garden", type: .expense, groupId: group)
+            try category.insert(db)
+            try TaxExpenseTypeMap.set(db: db, categoryId: category.id!, expenseType: .otherExpense)
+            return category.id!
+        }
+        let before = try figures()
+        // One batch: the refund newly counted, the plumber moved to another deductible line (same total).
+        func batch(_ resolution: FiledYearEditCheck.Resolution?) throws -> FiledYearEditCheck.Outcome<Void> {
+            try db.write { db in
+                try FiledYearEditCheck.save(db: db, edit: "Batch", scope: FiledYearEditCheck.Scope(transactionIds: [id("refund"), id("plumber")],
+                                                                                                  categoryIds: [id("repairs"), insurance]),
+                                            resolution: resolution, now: Self.now) {
+                    try TransactionEditing.update(db: db, id: id("refund"), categoryId: id("repairs"), note: nil)
+                    try TransactionEditing.update(db: db, id: id("plumber"), categoryId: insurance, note: nil)
                 }
             }
         }
+        let asked = try XCTUnwrap(question(try batch(nil)))
+        XCTAssertEqual(asked.markYears, [2022])
+        XCTAssertTrue(isSaved(try batch(.markNotCounted)))
+        XCTAssertEqual(try marks().map(\.transactionId), [id("refund")], "the plumber's cost stays claimed")
+        XCTAssertEqual(try figures().values.filter { $0.key.field.hasPrefix("SA ") }, before.values.filter { $0.key.field.hasPrefix("SA ") })
+    }
+
+    // MARK: Observed databases
+
+    /// With a GRDB observation of the transactions active (as the Property and Tax screens have), an
+    /// open-year edit still takes no figures and a filed-year edit still asks.
+    func testAnActiveObservationKeepsTheOpenYearShortcut() throws {
+        var changes = 0
+        let cancellable = ValueObservation.tracking { db in try Transaction.fetchCount(db) + (try TaxManualItem.fetchCount(db)) }
+            .start(in: db, scheduling: .immediate, onError: { XCTFail("\($0)") }, onChange: { _ in changes += 1 })
+        defer { cancellable.cancel() }
+        var snapshots = 0
+        XCTAssertTrue(isSaved(try categorise("later", snapshots: &snapshots)))
+        XCTAssertEqual(snapshots, 0)
+        XCTAssertNotNil(question(try categorise("refund")))
+        XCTAssertGreaterThan(changes, 0)
+    }
+
+    // MARK: Structure and settings
+
+    func testMovingAPropertyCategoryOutOfItsGroupAsksWithoutMarking() throws {
+        let before = try figures()
+        func move(_ resolution: FiledYearEditCheck.Resolution?) throws -> FiledYearEditCheck.Outcome<Void> {
+            try db.write { db in
+                try FiledYearEditCheck.save(db: db, edit: "Categories moved to Ungrouped", scope: try .categories(db: db, ids: [id("repairs")]),
+                                            resolution: resolution, now: Self.now) {
+                    try Categories.move(db: db, ids: [id("repairs")], toGroupId: nil)
+                }
+            }
+        }
+        let asked = try XCTUnwrap(question(try move(nil)))
+        XCTAssertEqual(asked.years.first?.startYear, 2022)
+        XCTAssertFalse(asked.canMarkNotCounted, "a structure change has no source to mark")
+        XCTAssertEqual(try figures(), before)
+        XCTAssertTrue(isSaved(try move(.saveAnyway)))
+        XCTAssertNotEqual(try figures(), before)
+    }
+
+    func testAnEverydayCategoryChangeTakesNoFigures() throws {
+        var snapshots = 0
+        let outcome = try db.write { db in
+            try FiledYearEditCheck.save(db: db, edit: "Category renamed", scope: try .categories(db: db, ids: [id("groceries")]),
+                                        resolution: nil, now: Self.now, onSnapshot: { snapshots += 1 }) {
+                try Categories.rename(db: db, id: id("groceries"), name: "Food")
+            }
+        }
+        XCTAssertTrue(isSaved(outcome))
+        XCTAssertEqual(snapshots, 0)
+    }
+
+    func testASplitInAFiledYearAsksAndOneInAnOpenYearTakesNoFigures() throws {
+        func split(_ year: Int, snapshots: inout Int) throws -> FiledYearEditCheck.Outcome<Void> {
+            var count = 0
+            defer { snapshots = count }
+            return try db.write { db in
+                try FiledYearEditCheck.save(db: db, edit: "Split", scope: .from(year: year), resolution: nil, now: Self.now,
+                                            onSnapshot: { count += 1 }) {
+                    try TaxSplits.set(db: db, startYear: year, personId: id("A"), propertyId: id("property"), expenseType: nil,
+                                      shareBasisPoints: 5_000)
+                }
+            }
+        }
+        var snapshots = 0
+        XCTAssertNotNil(question(try split(2022, snapshots: &snapshots)))
+        XCTAssertTrue(isSaved(try split(2026, snapshots: &snapshots)))
+        XCTAssertEqual(snapshots, 0)
+    }
+
+    func testHMRCRatesAreNotFetchedForAFiledYear() throws {
+        try db.write { db in
+            var account = try XCTUnwrap(Account.fetchOne(db))
+            account.currency = .eur
+            try account.update(db)
+        }
+        let missing = try db.read { db in try HMRCRates.missing(db: db, today: Self.now) }
+        XCTAssertNil(missing[2022], "2022/23 is filed")
+        XCTAssertNotNil(missing[2023], "2023/24 isn't stored filed")
     }
 }

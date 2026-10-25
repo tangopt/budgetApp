@@ -934,9 +934,9 @@ final class BudgetGridViewModel: ObservableObject {
     /// `TransactionEditing.save` (no rule learned); then the grid reloads and
     /// `onTransactionEdited` runs. A refusal writes nothing; an edit that would change a filed
     /// return asks first (`FiledYearEditCheck`, plan Task 14).
-    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges, resolution: FiledYearEditCheck.Resolution? = nil) -> CheckedSaveOutcome {
+    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges, gate: FiledYearGate, done: @escaping (SaveOutcome) -> Void) {
         let edit = FiledYearEditNames.transactionEdit(changes, transactionId: id, dbQueue: dbQueue, categories: categories)
-        return FiledYearCheckedSave.save(edit: edit, resolution: resolution, through: manualWrite) { db in
+        checkedWrite(edit: edit, scope: .transactionEdit(id: id, changes: changes), gate: gate, done: done) { db in
             try TransactionEditing.save(db: db, id: id, changes: changes)
         }
     }
@@ -944,9 +944,9 @@ final class BudgetGridViewModel: ObservableObject {
     /// Add transaction… (spec 2026-10-14 §2, `ManualTransactions.add`): the grid reloads and
     /// `onTransactionEdited` runs.
     /// One that would change a filed return asks first (`.asks`, nothing written; plan Task 14).
-    func addTransaction(_ input: ManualTransactionInput, resolution: FiledYearEditCheck.Resolution?) -> CheckedSaveOutcome {
+    func addTransaction(_ input: ManualTransactionInput, gate: FiledYearGate, done: @escaping (SaveOutcome) -> Void) {
         let edit = input.categoryId.map { FiledYearEditNames.categorised($0, categories: categories) + ", added by hand" } ?? "Added by hand"
-        return FiledYearCheckedSave.save(edit: edit, resolution: resolution, through: manualWrite) { db in
+        checkedWrite(edit: edit, scope: .added(input), gate: gate, done: done) { db in
             _ = try ManualTransactions.add(db: db, accountId: input.accountId, date: input.date, description: input.description,
                                            amountMinorUnits: input.amountMinorUnits, categoryId: input.categoryId, note: input.note)
         }
@@ -956,8 +956,8 @@ final class BudgetGridViewModel: ObservableObject {
     var manualActions: ManualTransactionActions {
         ManualTransactionActions(
             accounts: accounts,
-            delete: { [unowned self] id, resolution in
-                FiledYearCheckedSave.save(edit: "Deleted", resolution: resolution, through: manualWrite) { db in
+            delete: { [unowned self] id, gate, done in
+                checkedWrite(edit: "Deleted", scope: FiledYearEditCheck.Scope(transactionIds: [id]), gate: gate, done: done) { db in
                     try ManualTransactions.delete(db: db, id: id)
                 }
             }
@@ -971,6 +971,20 @@ final class BudgetGridViewModel: ObservableObject {
         } catch {
             return .failed(ManualFormat.errorMessage(for: error))
         }
+        return afterManualWrite()
+    }
+
+    /// A transaction write through the filed-year check (off the main thread; a question shows on
+    /// `gate`), then as `manualWrite`. Nothing is reloaded while the question waits.
+    private func checkedWrite(edit: String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate,
+                              done: @escaping (SaveOutcome) -> Void, _ apply: @escaping (Database) throws -> Void) {
+        gate.run(dbQueue, edit: edit, scope: scope, apply) { [weak self] result in
+            if let error = result.failure { return done(.failed(ManualFormat.errorMessage(for: error))) }
+            done(self?.afterManualWrite() ?? .saved)
+        }
+    }
+
+    private func afterManualWrite() -> SaveOutcome {
         let reloaded = reload()
         onTransactionEdited?()
         return reloaded ? .saved : .savedButReloadFailed

@@ -44,6 +44,7 @@ struct PropertyView: View {
         }
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
+        .filedYearGate(viewModel.filedYearGate)
         .screenToolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { editingProperty = PropertyDraft(nil) } label: {
