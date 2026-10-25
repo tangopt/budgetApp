@@ -287,7 +287,7 @@ enum SnapshotCatalog {
                 let center = context.environment.importCenter
                 var plan = try await samplesPlan(context)
                 guard let letter = plan.items.first(where: { $0.file.fileName == "Letter.pdf" }) else { throw SnapshotMissing("The sample letter") }
-                plan = try await center.snapshotResolve(plan, itemId: letter.id, .createKind(name: "Boiler service", area: .property))
+                plan = try await center.snapshotResolve(plan, itemId: letter.id, .createKind(name: "Chimney inspection", area: .property))
                 let made = plan
                 return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
                     center.showSnapshotPlan(made, selecting: letter.id)
