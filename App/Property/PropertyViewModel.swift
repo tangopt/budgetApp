@@ -403,6 +403,18 @@ final class PropertyViewModel: ObservableObject {
         }, done: done)
     }
 
+    /// Edit address's Save. Street, postcode, city and the map location move no tax figure, so the save is checked
+    /// (and can ask) only when it changes the country.
+    func saveAddress(_ address: PropertyAddress, of property: Property, clearingLocation: Bool, gate: FiledYearGate,
+                     done: @escaping (Result<Int64, Error>) -> Void) {
+        guard let id = property.id else { return }
+        let changesCountry = Properties.addressChangesCountry(address, of: property)
+        checked("\(property.name) address edited", scope: changesCountry ? .everyYear : FiledYearEditCheck.Scope(), gate: gate, { db in
+            try Properties.saveAddress(db: db, propertyId: id, address, clearingLocation: clearingLocation, includingCountry: changesCountry)
+            return id
+        }, done: done)
+    }
+
     func deleteProperty() {
         guard let propertyId else { return }
         checkedWrite("\(propertyName) deleted", { db in _ = try Properties.delete(db: db, id: propertyId) }) { [weak self] message in
