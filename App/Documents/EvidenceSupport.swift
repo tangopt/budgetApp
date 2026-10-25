@@ -18,7 +18,7 @@ final class TransactionDocumentCounts: ObservableObject {
     func start(dbQueue: DatabaseQueue) {
         task?.cancel()
         let values = ValueObservation
-            .tracking { db in try EvidenceLinks.linkCounts(db: db, .transaction) }
+            .tracking { db in try TransactionDocuments.allCounts(db: db) }
             .removeDuplicates()
             .values(in: dbQueue)
         task = Task { [weak self] in
@@ -47,7 +47,7 @@ struct DocumentCountBadge: View {
     var body: some View {
         let badge = HStack(spacing: 1) {
             Image(systemName: "paperclip")
-            if count > 1 { Text("\(count)").monospacedDigit() }
+            if count > 1 { Text("\(count)").monospacedDigit().figureText() }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -63,13 +63,26 @@ struct DocumentCountBadge: View {
     }
 }
 
-/// The paperclip for one transaction, read from `TransactionDocumentCounts`.
+/// The paperclip for one transaction, read from `TransactionDocumentCounts`. Click it for the
+/// transaction's documents (`TransactionDocumentsPopover`): a thumbnail and Quick Look.
 struct TransactionDocumentBadge: View {
     let transactionId: Int64?
     @ObservedObject private var counts = TransactionDocumentCounts.shared
+    @State private var showing = false
 
     var body: some View {
-        DocumentCountBadge(count: counts.count(transactionId), keepsPlace: false)
+        let count = counts.count(transactionId)
+        if let transactionId, count > 0 {
+            Button { showing = true } label: {
+                DocumentCountBadge(count: count, keepsPlace: false)
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showing, arrowEdge: .bottom) {
+                TransactionDocumentsPopover(transactionId: transactionId)
+            }
+        } else {
+            DocumentCountBadge(count: count, keepsPlace: false)
+        }
     }
 }
 

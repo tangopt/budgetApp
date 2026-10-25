@@ -33,7 +33,7 @@ enum SnapshotCatalog {
     /// (it imports too). `settings-sign-in` and the check add synthetic app users to the demo copy.
     static var routes: [SnapshotRoute] {
         screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + AuthSnapshots.routes + [AuthSnapshots.lockedContentRoute] + AuthSnapshots.lockedToolbarRoutes + importRoutes
-            + kindRoutes + waitingRoutes + [AuthSnapshots.attributionRoute, AuthSnapshots.launchLoadsOnceRoute]
+            + kindRoutes + waitingRoutes + transactionDocumentsRoutes + [AuthSnapshots.attributionRoute, AuthSnapshots.launchLoadsOnceRoute]
     }
 
     // MARK: Imports, from the demo's samples
@@ -357,6 +357,50 @@ enum SnapshotCatalog {
                 await center.session.reloadWaiting()
                 await center.reloadRuns()
                 return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in })))
+            }
+        ]
+    }
+
+    // MARK: A transaction's documents
+
+    /// The paperclip's popover over a debit with three invented documents (adds them to the demo copy, after the imports):
+    /// a repair invoice also on another transaction, a transfer proof, and a receipt whose file isn't on this Mac.
+    static var transactionDocumentsRoutes: [SnapshotRoute] {
+        [
+            SnapshotRoute(name: "budget-transaction-documents", title: "Budget: a transaction's documents (paperclip popover)", settleFactor: 1.2) { context in
+                let id = try context.transactionId(description: "BOILER REPAIR LDA")
+                let other = try await context.dbQueue.read { db in
+                    try Int64.fetchOne(db, sql: "SELECT id FROM transaction_ WHERE id != ? ORDER BY id LIMIT 1", arguments: [id])
+                }
+                guard let other, let path = context.environment.databasePath else { throw SnapshotMissing("A second transaction") }
+                let folder = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("TransactionDocuments", isDirectory: true)
+                try? FileManager.default.removeItem(at: folder)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                func day(_ month: Int, _ d: Int) -> Date {
+                    var calendar = Calendar(identifier: .gregorian)
+                    calendar.timeZone = TimeZone(identifier: "UTC")!
+                    return calendar.date(from: DateComponents(year: 2025, month: month, day: d))!
+                }
+                @MainActor func add(_ name: String, _ kind: DocumentKind, _ date: Date, _ amount: Int, canonical: String, role: String?, alsoOn: Int64? = nil,
+                         onThisMac: Bool = true) throws {
+                    let url = folder.appendingPathComponent(name)
+                    try textPDF([canonical, "Synthetic demo document - not a real record."], to: url)
+                    let metadata = EvidenceMetadata(kind: kind, docDate: date, amountMinorUnits: amount, currency: .eur, canonicalName: canonical)
+                    let document = try context.library.add(url, metadata: metadata).document
+                    guard let documentId = document.id else { throw SnapshotMissing("A document id") }
+                    _ = try context.library.link(documentId, to: .transaction(id), role: role)
+                    if let alsoOn { _ = try context.library.link(documentId, to: .transaction(alsoOn)) }
+                    if !onThisMac { try FileManager.default.removeItem(at: context.library.fileURL(for: document)) }
+                }
+                try add("repair-invoice.pdf", .repairInvoice, day(3, 2), 28_000, canonical: "20250302 - Property - Repair bill - Boiler Repair Lda - 280.00",
+                        role: "Invoice", alsoOn: other)
+                try add("transfer-proof.pdf", .bankTransferProof, day(3, 4), 28_000, canonical: "20250304 - Bank - Transfer proof - Boiler Repair Lda", role: "Payment proof")
+                try add("receipt-elsewhere.pdf", .other, day(3, 9), 28_000, canonical: "20250309 - Other - Receipt - Boiler Repair Lda - signed by the engineer on site",
+                        role: nil, onThisMac: false)
+                let documents = try await context.dbQueue.read { db in
+                    try TransactionDocuments.documents(db: db, transactionId: id, catalog: DocumentKindCatalog.load(db: db))
+                }
+                return AnyView(SnapshotSheetCanvas(sheet: TransactionDocumentsList(documents: documents, library: context.library)))
             }
         ]
     }

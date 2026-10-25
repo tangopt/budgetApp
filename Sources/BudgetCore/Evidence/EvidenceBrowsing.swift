@@ -477,6 +477,9 @@ public struct EvidenceLinkStaging: Equatable, Sendable {
         (saved.contains(documentId) && !pendingUnlinks.contains(documentId)) || pendingLinks.contains(documentId)
     }
 
+    /// Saved links (those being unlinked included), as opposed to staged ones.
+    public func isSaved(_ documentId: Int64) -> Bool { saved.contains(documentId) }
+
     public func willUnlink(_ documentId: Int64) -> Bool { pendingUnlinks.contains(documentId) }
     public func willLink(_ documentId: Int64) -> Bool { pendingLinks.contains(documentId) }
 

@@ -124,11 +124,41 @@ struct TransactionDocumentsSection: View {
     @Environment(\.theme) private var theme
     @Environment(\.documentKinds) private var kinds
     @State private var picking = false
+    /// The saved document whose first page shows below the list.
+    @State private var selectedId: Int64?
+    @State private var quickLook: URL?
+
+    /// The selected saved document (one staged to link isn't previewed until Save), else the first.
+    private var previewed: EvidenceDocument? {
+        let saved = model.shown.filter { model.staging.isSaved($0.id ?? -1) }
+        return saved.first { $0.id == selectedId } ?? saved.first
+    }
+
+    /// Every saved document's library file, for Quick Look's arrows.
+    private var savedURLs: [URL] {
+        guard let library = model.library else { return [] }
+        return model.shown.filter { model.staging.isSaved($0.id ?? -1) }
+            .map { library.fileURL(for: $0) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(model.shown) { document in
                 row(document)
+            }
+            if let previewed, let library = model.library {
+                DocumentThumbnail(url: library.fileURL(for: previewed), height: 140)
+                    .frame(maxWidth: .infinity)
+                    .focusable()
+                    .focusEffectDisabled()
+                    .onKeyPress(.space) {
+                        quickLook = library.fileURL(for: previewed)
+                        return .handled
+                    }
+                Button("Quick Look") { quickLook = library.fileURL(for: previewed) }
+                    .controlSize(.small)
+                    .help("Preview the documents (Space)")
             }
             HStack(spacing: 8) {
                 Button("Link document…") { picking = true }
@@ -148,6 +178,7 @@ struct TransactionDocumentsSection: View {
         .contentShape(Rectangle())
         .importDropTarget(model.attachShortcut(from: .transaction)) { model.sentToImports = true }
         .onAppear { model.load() }
+        .quickLookPreview($quickLook, in: savedURLs)
         .sheet(isPresented: $picking) {
             LinkDocumentSheet(model: model, transactionName: transactionName)
         }
@@ -184,5 +215,9 @@ struct TransactionDocumentsSection: View {
                 .accessibilityLabel(unlinking || linking ? "Undo for \(document.displayName)" : "Unlink \(document.displayName)")
         }
         .controlSize(.small)
+        .padding(.vertical, 1)
+        .background(previewed?.id == document.id ? theme.accent.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+        .contentShape(Rectangle())
+        .onTapGesture { if !linking { selectedId = document.id } }
     }
 }
