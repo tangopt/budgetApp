@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The property set-up from a plan (phase 2, Task 5). Synthetic names and values only.
 final class PropertySetUpTests: XCTestCase {
@@ -12,8 +13,7 @@ final class PropertySetUpTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             for (name, kind) in [("Bank A", AccountKind.cash), ("Loan A", .credit), ("Deposit A", .credit)] {
                 var account = Account(name: name, currency: .eur, kind: kind, trackingMode: .imported)

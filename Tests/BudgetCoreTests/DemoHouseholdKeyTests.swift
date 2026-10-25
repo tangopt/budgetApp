@@ -2,6 +2,7 @@ import XCTest
 import CryptoKit
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The simulator's demo key hand-over (plan step 4 Task 12): `MANGO_DEMO_HOUSEHOLD_KEY` is 64 hex characters, or
 /// nothing is stored. Synthetic keys only.
@@ -23,8 +24,7 @@ final class DemoHouseholdKeyTests: XCTestCase {
 
     /// The phone's sync device id: made once, kept in `localSetting` (never synced), the same on every read.
     func testPhoneDeviceIdIsMadeOnceAndKept() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let first = try manager.dbQueue.write { db in try LocalSetting.phoneDeviceId(db) }
         let second = try manager.dbQueue.write { db in try LocalSetting.phoneDeviceId(db) }
         XCTAssertEqual(first, second)

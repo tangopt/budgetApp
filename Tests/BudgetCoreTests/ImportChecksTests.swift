@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// "Check it" ticked off in place and taken back: a figure or recognition to check becomes the
 /// user's ("Checked by you", certain) without retyping; the undo puts back exactly what was
@@ -14,8 +15,7 @@ final class ImportChecksTests: XCTestCase {
     private var pipelines: [ImportPipeline] = []
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             try CategorySeeder.seedDefaults(db)
             var person = Person(name: "Person A", shortName: "A")

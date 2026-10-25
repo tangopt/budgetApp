@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Tax years, splits, attribution rules, the category → expense type map, manual items and
 /// HMRC rates (plan phase 3 Task 1). Synthetic people and amounts.
@@ -17,8 +18,7 @@ final class TaxSettingsTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var a = Person(name: "Person A", shortName: "A")
             try People.save(db: db, &a)

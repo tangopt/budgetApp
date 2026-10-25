@@ -4,6 +4,7 @@ import GRDB
 import struct BudgetCore.Category
 import BudgetDemo
 @testable import MangoUI
+import TestSupport
 
 /// Accounts' view models and the words its rows use (iPhone spec §3.6; plan step 4, Task 9). Figures come from
 /// `AccountsOverview`, `DashboardCalculator`, `AccountHistory` and `TransactionSearch`; these tests pin that the
@@ -15,9 +16,7 @@ final class AccountsTests: XCTestCase {
     }
 
     private func emptyDatabase() throws -> DatabaseQueue {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
-        return manager.dbQueue
+        return try TestDatabase.migrated()
     }
 
     private static var cachedDemo: DatabaseQueue?
@@ -35,7 +34,7 @@ final class AccountsTests: XCTestCase {
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("AccountsTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
-        try DemoDatabase.build(dbQueue: queue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(queue, evidenceRoot: evidence)
     }
 
     /// The Mac's Accounts screen's read (`App/Accounts/AccountsViewModel.load`).

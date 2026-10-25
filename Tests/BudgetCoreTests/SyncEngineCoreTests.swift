@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// One simulated device for the engine: its own in-memory database, signed in as `user`, syncing through
 /// a shared `FakeCloud`.
@@ -14,8 +15,13 @@ final class SyncEngineTestDevice {
     var queue: DatabaseQueue { manager.dbQueue }
 
     init(_ user: String, name: String, cloud: FakeCloud, keys: any SyncKeyStore, batchSize: Int = 200, path: String? = nil) throws {
-        manager = try DatabaseManager(path: path)
-        try manager.migrate()
+        // A file already there is reopened, as the app opens it; anything else starts as a copy of the migrated template.
+        if let path, FileManager.default.fileExists(atPath: path) {
+            manager = try DatabaseManager(path: path)
+            try manager.migrate()
+        } else {
+            manager = try TestDatabase.migratedManager(path: path)
+        }
         self.user = user
         device = SyncDevice(id: "device-\(user)", name: name)
         try manager.dbQueue.write { db in try SyncChangeTracker.setWriter(user, db: db) }

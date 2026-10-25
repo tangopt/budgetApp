@@ -3,6 +3,7 @@ import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
+import TestSupport
 
 /// Spec 2026-10-15: the one-off correction of the spreadsheet balances.
 final class SpreadsheetBalanceCorrectionTests: XCTestCase {
@@ -22,9 +23,7 @@ final class SpreadsheetBalanceCorrectionTests: XCTestCase {
     }
 
     private func makeDB() throws -> DatabaseManager {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
-        return m
+        return try TestDatabase.migratedManager()
     }
 
     private func account(_ db: Database, _ name: String, currency: Currency = .gbp, kind: AccountKind = .cash) throws -> Int64 {

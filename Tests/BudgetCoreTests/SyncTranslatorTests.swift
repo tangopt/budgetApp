@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 /// One simulated device: its own in-memory database, signed in as `user`.
 final class SyncTestDevice {
@@ -10,8 +11,13 @@ final class SyncTestDevice {
     var queue: DatabaseQueue { manager.dbQueue }
 
     init(_ user: String, path: String? = nil) throws {
-        manager = try DatabaseManager(path: path)
-        try manager.migrate()
+        // A file already there is reopened, as the app opens it; anything else starts as a copy of the migrated template.
+        if let path, FileManager.default.fileExists(atPath: path) {
+            manager = try DatabaseManager(path: path)
+            try manager.migrate()
+        } else {
+            manager = try TestDatabase.migratedManager(path: path)
+        }
         self.user = user
         try queue.write { db in try SyncChangeTracker.setWriter(user, db: db) }
     }
@@ -132,8 +138,7 @@ final class SyncTranslatorTests: XCTestCase {
     // MARK: Values
 
     func testSyncValueRoundTripsDatabaseValuesExactly() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let cases: [(DatabaseValue, String)] = [
             (.null, "TEXT"), ((Int64.min).databaseValue, "INTEGER"), ((Int64.max).databaseValue, "INTEGER"),
             ((-0.0 as Double).databaseValue, "DOUBLE"), (0.1.databaseValue, "DOUBLE"), ((1.0 / 3).databaseValue, "REAL"),

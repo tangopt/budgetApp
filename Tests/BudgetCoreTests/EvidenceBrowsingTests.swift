@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 /// The Documents screen's helpers (spec 2026-10-16 §2–§3): editing details, copying links,
 /// searching and filtering the library, and documents proposed for a transaction.
@@ -11,8 +12,7 @@ final class EvidenceBrowsingTests: XCTestCase {
     private var library: EvidenceLibrary!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         base = FileManager.default.temporaryDirectory.appendingPathComponent("EvidenceBrowsingTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: base.appendingPathComponent("Inbox"), withIntermediateDirectories: true)
         library = EvidenceLibrary(root: base.appendingPathComponent("Evidence"), database: manager.dbQueue)

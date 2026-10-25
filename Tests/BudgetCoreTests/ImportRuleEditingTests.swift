@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The Rules page's "Import rules" tab: every learnt import rule as a row (kind, when, then,
 /// use, on), edited (its action only), disabled or deleted outside an import run; a rule whose
@@ -14,8 +15,7 @@ final class ImportRuleEditingTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_790_000_000)
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var account = Account(name: "Everyday Current", currency: .gbp, kind: .cash, trackingMode: .imported)
             try account.insert(db)

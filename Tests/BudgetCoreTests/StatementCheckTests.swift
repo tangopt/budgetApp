@@ -3,6 +3,7 @@ import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
+import TestSupport
 
 /// Spec 2026-10-14 §2: a statement's closing balance is compared with the account's computed
 /// balance (saved transactions + the staged rows that will be saved); a mismatch is flagged,
@@ -14,8 +15,7 @@ final class StatementCheckTests: XCTestCase {
 
     /// An account opened with £10.00 on 1 Jan and a saved -£1.00 on 5 Jan.
     private func makeFixture(kind: AccountKind = .cash) throws -> (DatabaseManager, Account, ImportCoordinator) {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let account = try manager.dbQueue.write { db -> Account in
             let account = try AccountEditing.add(db: db, name: "Current", currency: .gbp, kind: kind, openingBalanceEntered: 1_000, asOf: day(2026, 1, 1))
             try addSaved(db, account.id!, day(2026, 1, 5), -100)
@@ -85,8 +85,7 @@ final class StatementCheckTests: XCTestCase {
     }
 
     func testAnEmptyAccountComputesZero() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             var account = Account(name: "New", currency: .gbp, kind: .cash, trackingMode: .imported)
             try account.insert(db)

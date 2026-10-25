@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Creating, renaming and merging custom kinds (spec 2026-10-24 §2): names unique against
 /// built-ins and other custom kinds, and a Save that carries documents' canonical names,
@@ -11,8 +12,7 @@ final class CustomDocumentKindsTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
     }
 
     private func create(_ name: String, _ area: DocumentArea) throws -> Int64 {

@@ -1,12 +1,12 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The Self Assessment regression (plan phase 4 Task 5) on synthetic forms and figures.
 final class SelfAssessmentRegressionTests: XCTestCase {
     func testImportsTheFormsComputesAndCompares() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("SARegression-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let library = EvidenceLibrary(root: root, database: manager.dbQueue)

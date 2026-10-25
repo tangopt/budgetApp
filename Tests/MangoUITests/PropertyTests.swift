@@ -3,6 +3,7 @@ import GRDB
 @testable import BudgetCore
 import BudgetDemo
 @testable import MangoUI
+import TestSupport
 
 /// Property's view model and words (iPhone spec §3.7; plan step 4, Task 10). Every figure is `PropertyGlance`'s, which
 /// reads the Mac's property calculators; these tests pin the states, the wording and the route's check.
@@ -13,9 +14,7 @@ final class PropertyTests: XCTestCase {
     }
 
     private func emptyDatabase() throws -> DatabaseQueue {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
-        return manager.dbQueue
+        return try TestDatabase.migrated()
     }
 
     private func demoDatabase() throws -> DatabaseQueue {
@@ -23,7 +22,7 @@ final class PropertyTests: XCTestCase {
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("PropertyTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
-        try DemoDatabase.build(dbQueue: queue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(queue, evidenceRoot: evidence)
         return queue
     }
 
@@ -104,7 +103,7 @@ final class PropertyTests: XCTestCase {
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("PropertyTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
-        try DemoDatabase.build(dbQueue: queue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(queue, evidenceRoot: evidence)
         await model.reload(for: nil)  // a sync running: keeps what is shown
         XCTAssertEqual(model.state, .empty)
         await model.reload(for: Self.day(2026, 10, 15))

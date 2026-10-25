@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// A stand-in for HMRC's file: synthetic rates per year (nil: offline or not published).
 final class StubHMRCRateFetcher: HMRCRateFetching, @unchecked Sendable {
@@ -32,8 +33,7 @@ final class HMRCAutoFetchTests: XCTestCase {
     private func id(_ key: String) -> Int64 { ids[key]! }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var a = Person(name: "Person A", shortName: "A")
             try People.save(db: db, &a)
@@ -139,8 +139,7 @@ final class HMRCAutoFetchTests: XCTestCase {
 
         // Someone with only an employment, all in GBP, needs nothing; EUR other income or a
         // EUR manual item needs that year's EUR rate.
-        let other = try DatabaseManager(path: nil)
-        try other.migrate()
+        let other = try TestDatabase.migratedManager()
         var personId: Int64 = 0
         try other.dbQueue.write { db in
             var c = Person(name: "Person C")

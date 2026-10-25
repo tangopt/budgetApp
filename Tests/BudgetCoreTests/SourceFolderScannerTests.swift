@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Source folders and scans (spec 2026-10-16 §3), on synthetic files in temporary folders.
 final class SourceFolderScannerTests: XCTestCase {
@@ -11,8 +12,7 @@ final class SourceFolderScannerTests: XCTestCase {
     private var scanner: SourceFolderScanner!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         base = FileManager.default.temporaryDirectory.appendingPathComponent("SourceFolderScannerTests-\(UUID().uuidString)", isDirectory: true)
         folderURL = base.appendingPathComponent("Lisboa", isDirectory: true)
         try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)

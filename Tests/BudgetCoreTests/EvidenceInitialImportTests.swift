@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 /// The initial evidence import (plan 2026-10-16 Task 6), on synthetic folders and data.
 final class EvidenceInitialImportTests: XCTestCase {
@@ -25,8 +26,7 @@ final class EvidenceInitialImportTests: XCTestCase {
     private static let condominioText = "Recibo nº 0042 Condomínio Edifício Exemplo Recebemos de v/ exa o pagamento dos seguintes valores: quota"
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         base = FileManager.default.temporaryDirectory.appendingPathComponent("EvidenceInitialImportTests-\(UUID().uuidString)", isDirectory: true)
         folderA = base.appendingPathComponent("Lisboa", isDirectory: true)
         folderB = base.appendingPathComponent("Tax", isDirectory: true)

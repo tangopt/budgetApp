@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// A correction that drafts a rule (a kind, an issuer's name, a link, where a figure sits) checked
 /// against the other documents of the same review and applied to the ones the user ticks, as the
@@ -18,8 +19,7 @@ final class ImportRuleFitsTests: XCTestCase {
     private var batchId: Int64!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             try CategorySeeder.seedDefaults(db)
             var account = Account(name: "Bank A", currency: .eur, kind: .cash, trackingMode: .imported)

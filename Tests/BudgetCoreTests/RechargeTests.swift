@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Tenant utility recharges (plan phase 5 Task 1): providers, invoices, monthly statements,
 /// the rent + recharge split of tenant credits, and the netting of recharges against utilities
@@ -18,8 +19,7 @@ final class RechargeTests: XCTestCase {
     private func id(_ key: String) -> Int64 { ids[key]! }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var a = Person(name: "Person A")
             try People.save(db: db, &a)

@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 /// Earlier BBVA statements imported before the existing history (`BBVAStatementParser`,
 /// `BBVAEarlierHistoryImport`): synthetic statements for November and December 2022 that meet
@@ -92,8 +93,7 @@ final class BBVAEarlierHistoryImportTests: XCTestCase {
     /// The database as the 2023+ import leaves it: BBVA opening on 2023-01-01, the fund, loan and
     /// deposit opening on 2022-12-31, one 2023 row; a property with two filed 2022/23 manual items.
     private func makeDB() throws -> DatabaseManager {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             let bbva = try AccountEditing.add(db: db, name: "BBVA", currency: .eur, kind: .cash, openingBalanceEntered: 304_200, asOf: day(2023, 1, 1))
             let fund = try AccountEditing.add(db: db, name: "BBVA retirement fund", currency: .eur, kind: .investment, openingBalanceEntered: 108_900, asOf: day(2022, 12, 31))

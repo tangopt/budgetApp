@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 final class HomeSummaryTests: XCTestCase {
     private var manager: DatabaseManager!
@@ -100,8 +101,7 @@ final class HomeSummaryTests: XCTestCase {
         XCTAssertEqual(try summary(today: day15).0.freshness.status, .upToDate)
 
         // No data: nothing to be stale.
-        let empty = try DatabaseManager(path: nil)
-        try empty.migrate()
+        let empty = try TestDatabase.migratedManager()
         let none = try empty.dbQueue.read { db in
             try HomeSummary.make(try PhoneDemoFixture.input(db, today: day15), db: db)
         }
@@ -121,8 +121,7 @@ final class HomeSummaryTests: XCTestCase {
                           interval: 1, startDate: d(2026, 1, 20), endDate: nil, isEnabled: true, status: .manual, note: nil)
         }
         let input = DashboardFixture.input(today: today, entries: entries)
-        let empty = try DatabaseManager(path: nil)
-        try empty.migrate()
+        let empty = try TestDatabase.migratedManager()
         let home = try empty.dbQueue.read { db in try HomeSummary.make(input, db: db) }
         let bills = home.upcoming.filter { $0.source == .bill && $0.date == d(2026, 3, 20) }
         XCTAssertEqual(bills.count, 2)

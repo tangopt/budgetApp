@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 /// Confirming a BBVA "EXTRATO GLOBAL" statement (`ImportEffects.perform(.bbvaStatement)`): the
 /// current account's new rows, each instalment's loan leg and interest row, each subscription's
@@ -24,8 +25,7 @@ final class BBVAStatementApplyTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("BBVAStatementApplyTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         library = EvidenceLibrary(root: folder.appendingPathComponent("Library", isDirectory: true), database: dbQueue)

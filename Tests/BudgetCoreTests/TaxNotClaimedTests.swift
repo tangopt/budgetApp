@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// "Deductible, not claimed" (`TaxNotClaimed`): a source left off a year's return is out of
 /// that year's line and totals, listed apart with its figures; the plan's year set-up (splits,
@@ -18,8 +19,7 @@ final class TaxNotClaimedTests: XCTestCase {
     private func id(_ key: String) -> Int64 { ids[key]! }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var a = Person(name: "Person A", shortName: "A")
             try People.save(db: db, &a)

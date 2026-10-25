@@ -3,6 +3,7 @@ import GRDB
 import CryptoKit
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 /// The re-import rehearsal (`ImportRehearsal`) over the demo database and its evidence library:
 /// runs end to end on a temporary copy, leaves the source database and library byte-identical,
@@ -40,10 +41,7 @@ final class ImportRehearsalTests: XCTestCase {
         let documentCount: Int
         let statementCount: Int
         do {
-            let manager = try DatabaseManager(path: databaseURL.path)
-            try manager.migrate()
-            try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
-            try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
+            let manager = try TestDatabase.demoManager(path: databaseURL.path, evidenceRoot: evidence)
             (documentCount, statementCount) = try await manager.dbQueue.read { db in
                 (try EvidenceDocument.fetchCount(db),
                  try EvidenceDocument.filter(Column("kind") == DocumentKind.bankStatement.rawValue).fetchCount(db))

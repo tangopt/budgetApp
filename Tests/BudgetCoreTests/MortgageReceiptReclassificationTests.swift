@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The one-off pass that files the mortgage receipts filed as notices under their own kind, and
 /// lets the rules that accept a notice accept a receipt too. Synthetic database only.
@@ -9,8 +10,7 @@ final class MortgageReceiptReclassificationTests: XCTestCase {
     private var db: DatabaseQueue { manager.dbQueue }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
     }
 
     private func day(_ string: String) -> Date { MortgageReceiptTests.day(string) }

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Insurers' receipts (cover periods, policy years, receipts paid outside the bank history)
 /// and payments assigned to one person. Synthetic EUR property owned 50/50 by Person A and
@@ -17,8 +18,7 @@ final class TaxPolicyReceiptTests: XCTestCase {
     private func id(_ key: String) -> Int64 { ids[key]! }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var a = Person(name: "Person A", shortName: "A")
             try People.save(db: db, &a)

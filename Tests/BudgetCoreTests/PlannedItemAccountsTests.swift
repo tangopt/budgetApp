@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 /// Spec 2026-10-15 §2–§4: planned items' accounts, the plan per account set, net worth per account set.
 final class PlannedItemAccountsTests: XCTestCase {
@@ -184,8 +185,7 @@ final class PlannedItemAccountsTests: XCTestCase {
     }
 
     func testScenarioDifferencesDescribeAnAccountChange() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             var account = Account(name: "Joint", currency: .gbp, kind: .cash, trackingMode: .imported)
             try account.insert(db)
@@ -273,8 +273,7 @@ final class PlannedItemAccountsTests: XCTestCase {
     // MARK: Editing
 
     private func editingFixture() throws -> (DatabaseManager, entryId: Int64, accountId: Int64) {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let ids = try manager.dbQueue.write { db -> (Int64, Int64) in
             var rent = Category(name: "Rent", type: .expense)
             try rent.insert(db)

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// A debit settling several items (a condomínio payment of a year's quotas and an extra
 /// charge), each attributed by its own months; and one filed year's moved window (a workbook
@@ -18,8 +19,7 @@ final class TaxReceiptItemsTests: XCTestCase {
     private func id(_ key: String) -> Int64 { ids[key]! }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try setUpData()
     }
 

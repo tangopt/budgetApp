@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// A small chart of own accounts for transfer tests: Classic and International (GBP), Euro
 /// (EUR at 0.87), a bank batch per account and Classic's spreadsheet history.
@@ -17,8 +18,7 @@ struct TransferFixture {
     }
 
     init() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         var ids: [Int64] = []
         try manager.dbQueue.write { db in
             for (name, currency) in [("Lloyds Classic", Currency.gbp), ("Lloyds International", .gbp), ("Euro", .eur)] {

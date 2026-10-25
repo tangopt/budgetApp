@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Custom document kinds (spec 2026-10-24 §2): a synced table of user kinds, a document's
 /// `customKindId`, evidence rules that accept them, and the catalog code reads names from.
@@ -9,8 +10,7 @@ final class CustomDocumentKindTests: XCTestCase {
     private var db: DatabaseQueue { manager.dbQueue }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
     }
 
     private func insertKind(_ name: String, _ area: DocumentArea, _ db: Database) throws -> Int64 {

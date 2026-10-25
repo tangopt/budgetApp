@@ -1,10 +1,11 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class ImportRuleStoreTests: XCTestCase {
     private func manager() throws -> DatabaseManager {
-        let m = try DatabaseManager(path: nil); try m.migrate(); return m
+        try TestDatabase.migratedManager()
     }
 
     private let t0 = Date(timeIntervalSince1970: 1_700_000_000)

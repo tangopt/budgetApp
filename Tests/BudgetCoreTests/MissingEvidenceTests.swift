@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The missing-evidence checklist (spec 2026-10-16 §7): requirements as data, waivers,
 /// satisfaction by linked documents, progress by source, Markdown export, default rules.
@@ -19,8 +20,7 @@ final class MissingEvidenceTests: XCTestCase {
     private var groceries: Int64 = 0
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var account = Account(name: "BBVA", currency: .eur, kind: .cash, trackingMode: .imported)
             try account.insert(db)

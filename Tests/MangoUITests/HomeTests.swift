@@ -3,6 +3,7 @@ import GRDB
 @testable import BudgetCore
 import BudgetDemo
 @testable import MangoUI
+import TestSupport
 
 /// Home's view model and the rules its cards draw by (iPhone spec §3.2; plan step 4, Task 7). Figures come from
 /// `HomeSummary`; these tests pin what Home does with them.
@@ -13,9 +14,7 @@ final class HomeTests: XCTestCase {
     }
 
     private func emptyDatabase() throws -> DatabaseQueue {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
-        return manager.dbQueue
+        return try TestDatabase.migrated()
     }
 
     private func demoDatabase() throws -> DatabaseQueue {
@@ -23,7 +22,7 @@ final class HomeTests: XCTestCase {
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("HomeTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
-        try DemoDatabase.build(dbQueue: queue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(queue, evidenceRoot: evidence)
         return queue
     }
 
@@ -100,7 +99,7 @@ final class HomeTests: XCTestCase {
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("HomeTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
-        try DemoDatabase.build(dbQueue: queue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(queue, evidenceRoot: evidence)
 
         await model.reload(for: nil)  // syncing: keeps what is shown
         XCTAssertEqual(model.state, .empty)
@@ -118,7 +117,7 @@ final class HomeTests: XCTestCase {
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("HomeTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
-        try DemoDatabase.build(dbQueue: queue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(queue, evidenceRoot: evidence)
         await model.reload(for: synced)
         XCTAssertEqual(model.state, .empty)
     }

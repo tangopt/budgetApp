@@ -4,6 +4,7 @@ import GRDB
 import struct BudgetCore.Category
 import BudgetDemo
 @testable import MangoUI
+import TestSupport
 
 /// Month's view models and the words its rows use (iPhone spec §3.3; plan step 4, Task 8). Figures come from
 /// `PayMonthReview` and `TransactionSearch`; these tests pin what Month does with them.
@@ -14,9 +15,7 @@ final class MonthTests: XCTestCase {
     }
 
     private func emptyDatabase() throws -> DatabaseQueue {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
-        return manager.dbQueue
+        return try TestDatabase.migrated()
     }
 
     private static var cachedDemo: DatabaseQueue?
@@ -28,7 +27,7 @@ final class MonthTests: XCTestCase {
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("MonthTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
-        try DemoDatabase.build(dbQueue: queue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(queue, evidenceRoot: evidence)
         Self.cachedDemo = queue
         return queue
     }
@@ -153,7 +152,7 @@ final class MonthTests: XCTestCase {
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("MonthTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
-        try DemoDatabase.build(dbQueue: queue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(queue, evidenceRoot: evidence)
 
         await model.reload(for: nil)  // a sync running: keeps what is shown
         guard case let .loaded(stillEmpty) = model.state else { return XCTFail("not loaded") }

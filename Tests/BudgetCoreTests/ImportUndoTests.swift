@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class ImportUndoTests: XCTestCase {
     private var manager: DatabaseManager!
@@ -10,8 +11,7 @@ final class ImportUndoTests: XCTestCase {
     private var batchId: Int64!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         base = FileManager.default.temporaryDirectory.appendingPathComponent("ImportUndoTests-\(UUID().uuidString)", isDirectory: true)
         library = EvidenceLibrary(root: base.appendingPathComponent("Evidence", isDirectory: true), database: manager.dbQueue)
         try manager.dbQueue.write { db in

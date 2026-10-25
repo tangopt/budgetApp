@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The property area's records (spec 2026-10-16 §1, §2): people, properties with owners by
 /// date range, linked accounts and category groups, tenancies with rent history, rent receipts.
@@ -10,8 +11,7 @@ final class PropertyModelTests: XCTestCase {
     private var db: DatabaseQueue { manager.dbQueue }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
     }
 
     private static func date(_ y: Int, _ m: Int, _ d: Int, hour: Int = 0) -> Date {

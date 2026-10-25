@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Corrections made in the review become learnt rules on Confirm import (inside the run, undone
 /// with it): a document's kind, its issuer's name and where its documents link. The next import
@@ -17,8 +18,7 @@ final class ImportLearningTests: XCTestCase {
     private var propertyId: Int64!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             try CategorySeeder.seedDefaults(db)
             var account = Account(name: "Bank A", currency: .eur, kind: .cash, trackingMode: .imported)

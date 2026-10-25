@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import CryptoKit
 @testable import BudgetCore
+import TestSupport
 
 /// The evidence library (spec 2026-10-16 §3): documents copied into a content-addressed store,
 /// linked to transactions and other records, with remembered source folders.
@@ -12,8 +13,7 @@ final class EvidenceLibraryTests: XCTestCase {
     private var library: EvidenceLibrary!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("EvidenceLibraryTests-\(UUID().uuidString)", isDirectory: true)
         root = base.appendingPathComponent("Evidence", isDirectory: true)
         inbox = base.appendingPathComponent("Inbox", isDirectory: true)

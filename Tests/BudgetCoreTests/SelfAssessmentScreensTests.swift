@@ -1,14 +1,14 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// What the Self Assessment tabs read (plan phase 4 Task 4). Synthetic people and amounts.
 final class SelfAssessmentScreensTests: XCTestCase {
     private func pounds(_ value: Int) -> Int { value * 100 }
 
     func testYearPageCarriesIncomeComputationAndFiling() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             var person = Person(name: "Person A", shortName: "A")
             try People.save(db: db, &person)

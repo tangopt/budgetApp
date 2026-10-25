@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Step 1 Task 4: an import run records who confirmed it, a learnt import rule who taught it and
 /// who last re-taught it. Synthetic users only.
@@ -14,8 +15,7 @@ final class ImportAttributionTests: XCTestCase {
     private var userB: Int64!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("ImportAttributionTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         library = EvidenceLibrary(root: folder.appendingPathComponent("Library", isDirectory: true), database: db)

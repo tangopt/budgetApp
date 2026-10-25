@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// UK bank CSV/PDF statements in the document importer: the account and saved profile are
 /// resolved by the reader, rows are staged with rules-only categorisation, and each statement
@@ -13,8 +14,7 @@ final class UKStatementReaderTests: XCTestCase {
     private let csvRecognition = ImportRecognition(kind: .bankStatementCSV, confidence: .certain, reason: "CSV file")
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try dbQueue.write { db in
             try CategorySeeder.seedDefaults(db)
             var account = Account(name: "Bank One", currency: .gbp, kind: .cash, trackingMode: .imported)

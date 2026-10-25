@@ -1,11 +1,11 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class RuleTests: XCTestCase {
     func testInsertAndFetchRule() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in try CategorySeeder.seedDefaults(db) }
         let groceries = try manager.dbQueue.read { db in
             try Category.filter(Column("name") == "Groceries").fetchOne(db)!

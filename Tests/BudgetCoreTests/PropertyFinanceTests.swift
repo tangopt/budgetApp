@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The property's money summary, obligations calendar, checks and evidence rules (spec
 /// 2026-10-16 §1, §7). One synthetic property with a current account, a mortgage, a deposit
@@ -15,8 +16,7 @@ final class PropertyFinanceTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var rate = ExchangeRateSetting(eurToGbpRate: 0.85, updatedAt: Self.date(2025, 1, 1))
             try rate.insert(db)

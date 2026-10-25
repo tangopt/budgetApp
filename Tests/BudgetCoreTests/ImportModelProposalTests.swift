@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The on-device model in the import pipeline: documents nothing recognises are asked about (at
 /// most 2 at once, timed out as no answer), its guess is `.model` facts and a "Check what the
@@ -16,8 +17,7 @@ final class ImportModelProposalTests: XCTestCase {
     private var pipelines: [ImportPipeline] = []
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             try CategorySeeder.seedDefaults(db)
             var person = Person(name: "Person A", shortName: "A")

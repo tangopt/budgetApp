@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// A UK statement whose account or layout is unknown, settled inside the review: the account
 /// chosen there is remembered for files like it (a learnt rule, written only at Confirm import,
@@ -18,8 +19,7 @@ final class StatementAccountLearningTests: XCTestCase {
     private var newBankId: Int64!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         (everydayId, newBankId) = try db.write { db -> (Int64, Int64) in
             try CategorySeeder.seedDefaults(db)
             var everyday = Account(name: "Everyday Current", currency: .gbp, kind: .cash, trackingMode: .imported)

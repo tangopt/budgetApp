@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 /// Count toward net worth (`Account.includeInNetWorth`): an account left out — a mortgage on a
 /// property the app doesn't track — keeps its balance, but no net-worth figure counts it, and
@@ -56,8 +57,7 @@ final class NetWorthExclusionTests: XCTestCase {
     // MARK: Storage
 
     func testNewAccountsCountTowardNetWorthAndTheSettingIsSaved() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             let cash = try AccountEditing.add(db: db, name: "Cash", currency: .gbp, kind: .cash, openingBalanceEntered: nil, asOf: utc(2026, 1, 1))
             XCTAssertTrue(try Account.fetchOne(db, key: cash.id!)!.includeInNetWorth)
@@ -85,8 +85,7 @@ final class NetWorthExclusionTests: XCTestCase {
     }
 
     func testTheCategoryMarkIsNeverStored() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             var category = Category(name: "Transfer: Loan", type: .transfer)
             category.isTiedToAccountOutsideNetWorth = true

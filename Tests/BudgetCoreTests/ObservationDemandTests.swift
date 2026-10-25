@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The Missing evidence screen's observation must outlive the screen's disappear while a sheet
 /// (Rules…) is open, and must reflect rule add / edit / delete as they happen.
@@ -23,8 +24,7 @@ final class ObservationDemandTests: XCTestCase {
 
     /// The same observation the view model runs: rules in, add / edit / delete seen at once.
     func testRulesObservationFollowsAddEditDelete() async throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let queue = manager.dbQueue
         var seen: [[String]] = []
         let values = ValueObservation.tracking { db in try EvidenceRequirements.all(db: db).map(\.name) }

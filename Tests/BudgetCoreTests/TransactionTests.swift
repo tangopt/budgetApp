@@ -1,11 +1,11 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class TransactionTests: XCTestCase {
     func testInsertBatchAndTransaction() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
         try manager.dbQueue.write { db in try account.insert(db) }
 
@@ -33,8 +33,7 @@ final class TransactionTests: XCTestCase {
     }
 
     func testFingerprintMustBeUniquePerAccount() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var account = Account(name: "Lloyds Classic", currency: .gbp, kind: .cash, trackingMode: .imported)
         try manager.dbQueue.write { db in try account.insert(db) }
         var batch = ImportBatch(accountId: account.id!, sourceFileName: "a.csv", importedAt: Date())

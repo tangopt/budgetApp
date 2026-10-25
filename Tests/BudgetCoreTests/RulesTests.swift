@@ -3,6 +3,7 @@ import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
+import TestSupport
 
 final class RulesTests: XCTestCase {
     private struct Fixture {
@@ -17,8 +18,7 @@ final class RulesTests: XCTestCase {
     /// NANDOS LONDON (uncategorised), NANDOS LEEDS (confirmed, Groceries), SQ *NANDOS CARD
     /// (pending review, suggested Groceries), TESCO STORES 2041 (uncategorised).
     private func makeFixture() throws -> Fixture {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         return try manager.dbQueue.write { db -> Fixture in
             var account = Account(name: "Lloyds", currency: .gbp, kind: .cash, trackingMode: .imported)
             try account.insert(db)

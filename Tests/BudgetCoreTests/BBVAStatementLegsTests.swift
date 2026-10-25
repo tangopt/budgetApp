@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 /// The BBVA statement legs shared by the earlier-history import and the in-app statement reader
 /// (`BBVAStatementLegs`): synthetic movements, receipts and fund movements only.
@@ -86,8 +87,7 @@ final class BBVAStatementLegsTests: XCTestCase {
     // MARK: Writes
 
     private func makeDB() throws -> (DatabaseManager, bbva: Int64, loan: Int64, fund: Int64, interest: Int64) {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let ids = try manager.dbQueue.write { db -> (Int64, Int64, Int64, Int64) in
             let bbva = try AccountEditing.add(db: db, name: "Sample bank", currency: .eur, kind: .cash, openingBalanceEntered: 500_000, asOf: day(2022, 10, 31))
             let loan = try AccountEditing.add(db: db, name: "Sample loan", currency: .eur, kind: .credit, openingBalanceEntered: 920_000, asOf: day(2022, 10, 31))

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class ImportRunTests: XCTestCase {
     func testMigrationCreatesRunTablesAndBatchColumn() throws {
@@ -14,7 +15,7 @@ final class ImportRunTests: XCTestCase {
     }
 
     func testRunFileAndChangeRoundTrip() throws {
-        let m = try DatabaseManager(path: nil); try m.migrate()
+        let m = try TestDatabase.migratedManager()
         try m.dbQueue.write { db in
             var run = ImportRun(confirmedAt: Date(), entryPoint: "Import…", summary: "1 document filed")
             try run.insert(db)

@@ -3,6 +3,7 @@ import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
+import TestSupport
 
 /// Spec 2026-10-14 §3: converting recorded balances into an opening balance plus adjustments,
 /// and the Accounts screen's computed history.
@@ -13,9 +14,7 @@ final class BalanceConversionTests: XCTestCase {
         MonthRange.calendar.date(from: DateComponents(year: y, month: m, day: d))!
     }
     private func makeDB() throws -> DatabaseManager {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
-        return m
+        return try TestDatabase.migratedManager()
     }
     @discardableResult
     private func addAccount(_ db: Database, _ name: String, kind: AccountKind = .cash) throws -> Int64 {

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Employments, pay and tax, P11D benefits, other income, pensions and HMRC payments, and the
 /// P60 / P45 / P11D reader and import (plan phase 4 Task 1). Synthetic people, employers and amounts.
@@ -15,8 +16,7 @@ final class PersonalIncomeTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var a = Person(name: "Person A", shortName: "A", ukNino: "QQ 12 34 56 C")
             try People.save(db: db, &a)

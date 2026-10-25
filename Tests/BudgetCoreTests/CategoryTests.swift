@@ -1,11 +1,11 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class CategoryTests: XCTestCase {
     func testInsertAndFetchCategory() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         var category = Category(name: "Rent", type: .expense)
         try manager.dbQueue.write { db in
             try category.insert(db)
@@ -17,8 +17,7 @@ final class CategoryTests: XCTestCase {
     }
 
     func testSeedDefaultsCreatesKnownCategories() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             try CategorySeeder.seedDefaults(db)
         }
@@ -38,8 +37,7 @@ final class CategoryTests: XCTestCase {
     }
 
     func testSeedDefaultsNeverBringsBackARenamedDefault() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             try CategorySeeder.seedDefaults(db)
             try db.execute(sql: "UPDATE category SET name = 'Transfer: Joint' WHERE name = 'Transfer: Lloyds Joint'")

@@ -3,11 +3,11 @@ import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
+import TestSupport
 
 final class TransactionEditingTests: XCTestCase {
     private func makeDB() throws -> (DatabaseManager, Int64) {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
+        let m = try TestDatabase.migratedManager()
         let id = try m.dbQueue.write { db -> Int64 in
             var account = Account(name: "Lloyds", currency: .gbp, kind: .cash, trackingMode: .imported)
             try account.insert(db)

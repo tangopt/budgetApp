@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Transaction
+import TestSupport
 
 /// 2026-10-15 follow-up: the corrected spreadsheet balances move from the 1st of M+1 to the last
 /// day of M, and the spreadsheet accounts get a 31 Dec 2019 opening.
@@ -14,9 +15,7 @@ final class SpreadsheetBalanceRedateTests: XCTestCase {
         MonthRange.calendar.date(from: DateComponents(year: y, month: m, day: d))!
     }
     private func makeDB() throws -> DatabaseManager {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
-        return m
+        return try TestDatabase.migratedManager()
     }
     private func account(_ db: Database, _ name: String, currency: Currency = .gbp) throws -> Int64 {
         var account = Account(name: name, currency: currency, kind: .cash, trackingMode: .manual)

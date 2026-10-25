@@ -1,10 +1,11 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class ImportChangeCaptureTests: XCTestCase {
     private func manager() throws -> DatabaseManager {
-        let m = try DatabaseManager(path: nil); try m.migrate(); return m
+        try TestDatabase.migratedManager()
     }
 
     func testCapturesInsertUpdateDeleteWithBeforeAndAfter() throws {

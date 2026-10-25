@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 /// The mortgage rate from the loan's rules (synthetic figures only): the fixing each convention
 /// picks, the index rounded and the spread added, overrides and fixed rates, the instalment the
@@ -174,8 +175,7 @@ final class MortgageRateTests: XCTestCase {
     }
 
     func testTheFetchStoresMonthsOnceADayAndNeverOverAManualValue() async throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let db = manager.dbQueue
         // A value the user entered for August.
         try await db.write { db in
@@ -234,8 +234,7 @@ final class MortgageRateTests: XCTestCase {
         terms.finalInstalmentDate = Self.date(2040, 1, 31)
         XCTAssertEqual(terms.effectiveFinalInstalmentDate, Self.date(2040, 1, 31))
 
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             var property = Property(name: "Flat", country: "PT", currency: .eur)
             try Properties.save(db: db, &property)
@@ -291,12 +290,11 @@ final class MortgageRateTests: XCTestCase {
     // MARK: On the demo database
 
     func testTheDemoLoanFollowsItsRules() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("MortgageRateDemo-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
-        try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(manager.dbQueue, evidenceRoot: evidence)
         let today = DemoDatabase.date(2026, 10, 15)
         try manager.dbQueue.write { db in
             let propertyId = try Property.filter(Column("name") == DemoDatabase.propertyName).fetchOne(db)!.id!

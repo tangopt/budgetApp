@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class PlannedOccurrencesTests: XCTestCase {
     func utc(_ y: Int, _ m: Int, _ d: Int) -> Date {
@@ -94,8 +95,7 @@ final class PlannedOccurrencesTests: XCTestCase {
     }
 
     func testExceptionsCascadeWithEntryAndAreUnique() throws {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
+        let m = try TestDatabase.migratedManager()
         try m.dbQueue.write { db in
             var cat = Category(name: "Rent", type: .expense); try cat.insert(db)
             var g = ForecastGroup(name: "G", note: nil, isEnabled: true, isSystemManaged: false); try g.insert(db)
@@ -124,8 +124,7 @@ final class PlannedOccurrencesTests: XCTestCase {
     }
 
     func testDeletingReserveNullsRefiledExceptionCategory() throws {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
+        let m = try TestDatabase.migratedManager()
         try m.dbQueue.write { db in
             var cat = Category(name: "Rent", type: .expense); try cat.insert(db)
             let reserve = try ReservedCategories.create(db: db, name: "Fun")

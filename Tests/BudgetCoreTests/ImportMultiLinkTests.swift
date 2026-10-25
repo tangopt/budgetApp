@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// One document on several transactions in the import review (spec 2026-10-24 §4c): two debits of
 /// one merchant that add up to the document are proposed as its instalments — always asked
@@ -17,8 +18,7 @@ final class ImportMultiLinkTests: XCTestCase {
     private var batch: Int64 = 0
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             try CategorySeeder.seedDefaults(db)
             var euros = Account(name: "Bank EUR", currency: .eur, kind: .cash, trackingMode: .imported)

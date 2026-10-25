@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import CryptoKit
 @testable import BudgetCore
+import TestSupport
 
 /// Ruling R15 through the engine: what reaches the server is sealed (`sealed` + `keyId`, the zone key marker, the
 /// sealed lease), devices sharing a key store (iCloud Keychain) sync both ways, a device without the key waits and
@@ -153,8 +154,7 @@ final class FieldSealingSyncTests: XCTestCase {
         let bKeys = InMemorySyncKeyStore()
         let winner = a.engine
         let race = ZoneKeyRaceTransport(cloud: cloud) { _ = try await winner.syncNow() }
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try await manager.dbQueue.write { db in try SyncChangeTracker.setWriter("user-b", db: db) }
         let b = SyncEngineCore(db: manager.dbQueue, transport: race, device: SyncDevice(id: "device-user-b", name: "iPad"), keyStore: bKeys)
         try await manager.dbQueue.write { db in

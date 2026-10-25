@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 /// The loan's history before its first record, estimated from its terms (synthetic Euribor
 /// series only): the rules instalment by instalment, the revisions resetting the instalment,
@@ -128,8 +129,7 @@ final class MortgageHistoryTests: XCTestCase {
     }
 
     func testTheAmountBorrowedIsSavedAndChecked() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             var property = Property(name: "Flat", country: "PT", currency: .eur)
             try Properties.save(db: db, &property)
@@ -149,12 +149,11 @@ final class MortgageHistoryTests: XCTestCase {
     }
 
     func testTheDemoLoanIsEstimatedFromItsStart() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let evidence = FileManager.default.temporaryDirectory.appendingPathComponent("MortgageHistoryDemo-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: evidence) }
-        try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(manager.dbQueue, evidenceRoot: evidence)
         try manager.dbQueue.read { db in
             let propertyId = try Property.filter(Column("name") == DemoDatabase.propertyName).fetchOne(db)!.id!
             let terms = try MortgageTerms.terms(db: db, propertyId: propertyId)

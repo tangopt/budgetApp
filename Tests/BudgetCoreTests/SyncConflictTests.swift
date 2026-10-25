@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Task 3 review fixes: conflicts by per-field base, unique keys that keep different records apart,
 /// deleted parents by foreign-key action, and redirects instead of deletes when two records merge.
@@ -456,8 +457,7 @@ final class SyncConflictTests: XCTestCase {
         let payload = try XCTUnwrap(try a.push().compactMap { change -> SyncPayload? in if case .save(let p) = change { return p }; return nil }.first)
         let path = folder.appendingPathComponent("db.sqlite").path
         do {
-            let manager = try DatabaseManager(path: path)
-            try manager.migrate()
+            let manager = try TestDatabase.migratedManager(path: path)
             try manager.dbQueue.write { db in
                 // As an older build would have left it: a record type it didn't know.
                 var row = SyncStagingRow(tableName: "account", uuid: payload.recordName, payloadJSON: try SyncTranslator.json(payload),

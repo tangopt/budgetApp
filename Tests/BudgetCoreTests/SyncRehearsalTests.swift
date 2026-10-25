@@ -3,6 +3,7 @@ import GRDB
 import CryptoKit
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 /// The migration rehearsal (plan Task 8), on the synthetic demo database only: copied, migrated and backfilled,
 /// every existing table compared with the original, the whole outgoing payload set generated offline (an
@@ -28,9 +29,7 @@ final class SyncRehearsalTests: XCTestCase {
         let library = folder.appendingPathComponent("Evidence", isDirectory: true)
         try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
         let builtPath = folder.appendingPathComponent("built.sqlite").path
-        let built = try DatabaseManager(path: builtPath)
-        try built.migrate()
-        try DemoDatabase.build(dbQueue: built.dbQueue, evidenceRoot: library)
+        let built = try TestDatabase.demoManager(path: builtPath, evidenceRoot: library)
         try built.dbQueue.close()
 
         let manager = try DatabaseManager(path: path)

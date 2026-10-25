@@ -3,6 +3,7 @@ import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
 import struct BudgetCore.Transaction
+import TestSupport
 
 /// Edit transaction's Save (`TransactionEditing.save`): the fields, then at most one transfer
 /// change, in one write — a refusal anywhere leaves everything as it was.
@@ -20,8 +21,7 @@ final class TransactionEditingSaveTests: XCTestCase {
     let july1 = Date(timeIntervalSince1970: 1_782_864_000) // 2026-07-01 00:00 UTC
 
     func makeFixture() throws -> Fixture {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
+        let m = try TestDatabase.migratedManager()
         return try m.dbQueue.write { db in
             var joint = Account(name: "Lloyds Club Joint", currency: .gbp, kind: .cash, trackingMode: .imported, alias: "Joint")
             var isa = Account(name: "Lloyds Investment ISA", currency: .gbp, kind: .investment, trackingMode: .imported)

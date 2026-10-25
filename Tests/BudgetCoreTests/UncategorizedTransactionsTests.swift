@@ -1,11 +1,11 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class UncategorizedTransactionsTests: XCTestCase {
     func testFetchReturnsOnlyUncategorizedOrPendingReview() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             try CategorySeeder.seedDefaults(db)
             let rent = try Category.filter(Column("name") == "Rent").fetchOne(db)!
@@ -24,8 +24,7 @@ final class UncategorizedTransactionsTests: XCTestCase {
     }
 
     func testFetchOrdersByDateDescending() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             var account = Account(name: "Test", currency: .gbp, kind: .cash, trackingMode: .manual)
             try account.insert(db)
@@ -41,8 +40,7 @@ final class UncategorizedTransactionsTests: XCTestCase {
     }
 
     func testCountMatchesFetch() throws {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         XCTAssertEqual(try manager.dbQueue.read { db in try UncategorizedTransactions.count(db: db) }, 0)
         try manager.dbQueue.write { db in
             try CategorySeeder.seedDefaults(db)

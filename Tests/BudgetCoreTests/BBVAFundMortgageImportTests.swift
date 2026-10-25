@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 final class BBVAFundMortgageImportTests: XCTestCase {
     private typealias Import = BBVAFundMortgageImport
@@ -13,8 +14,7 @@ final class BBVAFundMortgageImportTests: XCTestCase {
     /// A BBVA account as the history import leaves it: the batch, the Lisbon group's "Mortgage"
     /// category with its learned rule, four instalments, two fund subscriptions and a fee.
     private func makeDB() throws -> DatabaseManager {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in
             let bbva = try AccountEditing.add(db: db, name: "BBVA", currency: .eur, kind: .cash, openingBalanceEntered: 2_000_000, asOf: day(2022, 12, 31))
             var batch = ImportBatch(accountId: bbva.id!, sourceFileName: Import.bbvaBatchName, importedAt: day(2026, 10, 1))

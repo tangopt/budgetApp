@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Recurring costs read per payee series within a category, and the "Not expected any more"
 /// decision on an overdue one (2026-10-24 fix). Synthetic payees and amounts only.
@@ -14,8 +15,7 @@ final class PropertyRecurringSeriesTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var property = Property(name: "Property R", country: "PT", purchasePriceMinorUnits: 10_000_000)
             try Properties.save(db: db, &property)

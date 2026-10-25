@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Plan Task 14: an edit that would move a figure on a filed or paid return asks first
 /// (`FiledYearEditCheck`). Synthetic data: Person A filed 2022/23; Property A (wholly A's, GBP) has
@@ -20,8 +21,7 @@ final class FiledYearEditCheckTests: XCTestCase {
     private func id(_ key: String) -> Int64 { ids[key]! }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         ids = try db.write { db in
             var ids: [String: Int64] = [:]
             var person = Person(name: "Person A", shortName: "A")

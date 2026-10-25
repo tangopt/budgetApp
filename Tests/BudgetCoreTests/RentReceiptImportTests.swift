@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The Portal das Finanças rent-receipts export (spec 2026-10-16 §6.1): parsing, importing
 /// into tenancies and receipts, and matching receipts to the bank credits that paid them.
@@ -11,8 +12,7 @@ final class RentReceiptImportTests: XCTestCase {
     private var propertyId: Int64!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         propertyId = try db.write { db in
             var property = Property(name: "Property A", country: "PT")
             try Properties.save(db: db, &property)

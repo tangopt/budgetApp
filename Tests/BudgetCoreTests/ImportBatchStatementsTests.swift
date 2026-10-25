@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Several UK statements of one account in one import: staged per account in date order, the
 /// rows an earlier statement of the batch holds are already imported for the later ones, and
@@ -15,8 +16,7 @@ final class ImportBatchStatementsTests: XCTestCase {
     private var accountId: Int64!
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         accountId = try db.write { db -> Int64 in
             try CategorySeeder.seedDefaults(db)
             var account = Account(name: "Bank One", currency: .gbp, kind: .cash, trackingMode: .imported)

@@ -1,12 +1,11 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class AccountOrderingTests: XCTestCase {
     private func makeDB() throws -> DatabaseManager {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
-        return m
+        return try TestDatabase.migratedManager()
     }
 
     private func acct(_ id: Int64, _ name: String, order: Int? = nil, kind: AccountKind = .cash) -> Account {

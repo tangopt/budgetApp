@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Plan "Import documents 1" Task 11: the filed-year guard (an item that would change a filed or
 /// paid return is held in Needs you with its impact explained) and `ImportEffects.perform`.
@@ -18,8 +19,7 @@ final class FiledYearGuardTests: XCTestCase {
     }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var person = Person(name: "Person A", shortName: "A")
             try People.save(db: db, &person)

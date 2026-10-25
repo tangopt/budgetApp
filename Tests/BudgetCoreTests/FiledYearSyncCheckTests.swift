@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Plan step 3 Task 6 (sync spec §5.4, Review Focus 5): after applying a pull, the filed and paid years'
 /// figures are taken again; an incoming change that would move one is held, not written. Two devices over a
@@ -411,8 +412,7 @@ final class FiledYearSyncCheckTests: XCTestCase {
 
     func testTheProtectedYearsAreTheFixedRangeAndWhateverIsFiled() throws {
         // Ruling R13: 2020/21–2024/25 always, plus any year stored filed or paid.
-        let fresh = try DatabaseManager(path: nil)
-        try fresh.migrate()
+        let fresh = try TestDatabase.migratedManager()
         let baseline = try fresh.dbQueue.write { db in try FiledYearSyncCheck.baseline(db: db) }
         XCTAssertEqual(baseline.years, [2020, 2021, 2022, 2023, 2024])
         try b.write { db in

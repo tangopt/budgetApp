@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// The one-off tax data plan: categorising debits, the expense type map, receipts, payment
 /// owners, filed-return rates and manual items — idempotent, refusing contradictions with
@@ -17,8 +18,7 @@ final class TaxDataPlanTests: XCTestCase {
     private func id(_ key: String) -> Int64 { ids[key]! }
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         try db.write { db in
             var a = Person(name: "Person A", shortName: "A")
             try People.save(db: db, &a)

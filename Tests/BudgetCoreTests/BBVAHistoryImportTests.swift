@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 final class BBVAHistoryImportTests: XCTestCase {
     private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
@@ -40,8 +41,7 @@ final class BBVAHistoryImportTests: XCTestCase {
     /// Existing accounts like the real database's: Current (unordered) and Revolut (GBP) with
     /// tied transfer categories in "Own accounts", and Revolut's leg of the 12 Jan transfer.
     private func makeDB() throws -> DatabaseManager {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
+        let m = try TestDatabase.migratedManager()
         try m.dbQueue.write { db in
             let own = try CategoryGroups.create(db: db, name: "Own accounts", type: .transfer)
             for name in ["Transfer: Current", "Transfer: Revolut"] {

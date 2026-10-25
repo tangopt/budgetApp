@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 import struct BudgetCore.Category
+import TestSupport
 
 final class PlannedItemEditingTests: XCTestCase {
     private func utc(_ y: Int, _ m: Int, _ d: Int) -> Date {
@@ -25,8 +26,7 @@ final class PlannedItemEditingTests: XCTestCase {
 
     /// Rent, monthly on the 15th from `start`, −£1,000, status `status`, in a "Planned" group.
     private func fixture(start: Date? = nil, status: ForecastEntryStatus = .auto, frequency: ForecastFrequency = .monthly) throws -> Fixture {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         return try manager.dbQueue.write { db in
             var rent = Category(name: "Rent", type: .expense)
             var groceries = Category(name: "Groceries", type: .expense)

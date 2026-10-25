@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 /// Linking the portal's rent-receipt PDFs to imported receipts (`RentReceiptPDFs`): reading,
 /// matching, validating and adding them to the library. Synthetic receipts, names and NIFs only.
@@ -18,8 +19,7 @@ final class RentReceiptPDFsTests: XCTestCase {
     static let badNIF = "123456780"
 
     override func setUpWithError() throws {
-        manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        manager = try TestDatabase.migratedManager()
         root = FileManager.default.temporaryDirectory.appendingPathComponent("RentReceiptPDFsTests-\(UUID().uuidString)/Evidence", isDirectory: true)
         library = EvidenceLibrary(root: root, database: manager.dbQueue)
         tenancyId = try db.write { db in

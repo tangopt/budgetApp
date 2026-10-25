@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 /// The demo's import-kind samples through `ImportSession` on the demo database, as the Imports
 /// screen drives them: the three documents of one debit import without a duplicate alert, the
@@ -29,11 +30,10 @@ final class DemoImportKindsScenarioTests: XCTestCase {
     }
 
     private func demo() throws -> (db: DatabaseQueue, library: EvidenceLibrary, samples: [URL]) {
-        let manager = try DatabaseManager(path: nil)
-        try manager.migrate()
+        let manager = try TestDatabase.migratedManager()
         let evidence = folder.appendingPathComponent("Evidence", isDirectory: true)
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
-        try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
+        try TestDatabase.fillDemo(manager.dbQueue, evidenceRoot: evidence)
         let samples = try DemoImportSamples.write(into: folder.appendingPathComponent("Samples", isDirectory: true), dbQueue: manager.dbQueue)
         sessions.append(ImportSession(dbQueue: manager.dbQueue, databasePath: nil, library: EvidenceLibrary(root: evidence, database: manager.dbQueue),
                                       categorizationService: CategorizationService(categorizer: FakeCategorizer()), modelReader: nil,

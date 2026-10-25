@@ -24,9 +24,12 @@ let package = Package(
         .target(name: "MangoSync", dependencies: ["BudgetCore"]),
         // The iPhone's views, design-system pieces and view models (SwiftUI), shared with the iPad later (step 4, Task 4).
         .target(name: "MangoUI", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),
-        .testTarget(name: "BudgetCoreTests", dependencies: ["BudgetCore", "BudgetDemo"]),
+        // Tests' shared databases: copies of one migrated and one demo database per process (`TestDatabase`).
+        .target(name: "TestSupport", dependencies: ["BudgetCore", "BudgetDemo", .product(name: "GRDB", package: "GRDB.swift")],
+                path: "Tests/TestSupport"),
+        .testTarget(name: "BudgetCoreTests", dependencies: ["BudgetCore", "BudgetDemo", "TestSupport"]),
         .testTarget(name: "MangoSyncTests", dependencies: ["MangoSync", "BudgetCore"]),
-        .testTarget(name: "MangoUITests", dependencies: ["MangoUI", "BudgetCore", "BudgetDemo"]),
+        .testTarget(name: "MangoUITests", dependencies: ["MangoUI", "BudgetCore", "BudgetDemo", "TestSupport"]),
         .executableTarget(name: "MigrateHistory", dependencies: ["BudgetCore"]),
         .executableTarget(name: "MigrateAccountBalances", dependencies: ["BudgetCore"]),
         .executableTarget(name: "ConvertBalances", dependencies: ["BudgetCore", .product(name: "GRDB", package: "GRDB.swift")]),

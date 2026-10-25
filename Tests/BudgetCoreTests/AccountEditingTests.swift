@@ -1,15 +1,14 @@
 import XCTest
 import GRDB
 @testable import BudgetCore
+import TestSupport
 
 final class AccountEditingTests: XCTestCase {
     private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
         MonthRange.calendar.date(from: DateComponents(year: y, month: m, day: d))!
     }
     private func makeDB() throws -> DatabaseManager {
-        let m = try DatabaseManager(path: nil)
-        try m.migrate()
-        return m
+        return try TestDatabase.migratedManager()
     }
     private func snapshots(_ db: Database, _ id: Int64) throws -> [BalanceSnapshot] {
         try BalanceSnapshot.filter(Column("accountId") == id).order(Column("date")).fetchAll(db)
