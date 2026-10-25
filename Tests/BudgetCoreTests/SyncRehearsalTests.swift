@@ -120,6 +120,13 @@ final class SyncRehearsalTests: XCTestCase {
 
     func testWithoutALibraryDocumentsGoWithoutFiles() async throws {
         let (database, _) = try preSyncDemo()
+        // The assertions are about documents going without files, not about volume: only the first transactions
+        // stay (the rehearsal's cost grows with every row it backfills, encrypts and applies), every document stays.
+        let pre = try DatabaseManager(path: database)
+        try await pre.dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM transaction_ WHERE id NOT IN (SELECT id FROM transaction_ ORDER BY id LIMIT 200)")
+        }
+        try pre.dbQueue.close()
         let report = try await SyncRehearsal.run(databasePath: database, libraryPath: nil, keep: true)
         defer { try? FileManager.default.removeItem(at: report.workFolder) }
         XCTAssertTrue(FileManager.default.fileExists(atPath: report.workFolder.appendingPathComponent("copy.sqlite").path), "--keep keeps the migrated copy")
