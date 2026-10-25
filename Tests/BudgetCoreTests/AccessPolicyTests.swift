@@ -88,6 +88,22 @@ final class AccessPolicyTests: XCTestCase {
         }
     }
 
+    func testAdminIsNeverLockedOut() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            for area in [AccessArea.budgetAndAccounts, .householdSettings] {
+                var row = MemberPermission(appUserId: h.admin.appUserId, area: area.storageKey, level: .none)
+                try row.insert(db)
+                XCTAssertTrue(try AccessPolicy.can(h.admin, .edit, area, db: db), area.storageKey)
+                XCTAssertEqual(try AccessPolicy.level(h.admin, area, db: db), .edit)
+            }
+            try db.execute(sql: "DELETE FROM memberPermission")
+            try MemberPermissions.ensureDefaults(appUserId: h.admin.appUserId, db: db)
+            XCTAssertEqual(try MemberPermission.fetchCount(db), 0, "no rows for the admin")
+        }
+    }
+
     func testOnlyTheOwnerSetsALevel() throws {
         let queue = try TestDatabase.migrated()
         try queue.write { db in
@@ -107,6 +123,11 @@ final class AccessPolicyTests: XCTestCase {
 
     // MARK: Area map
 
+    private func decide(_ table: String, origin: WriteOrigin? = .edit, change: AccessChange = .insert, fields: Set<String>,
+                        row: [String: SyncValue] = [:], _ db: Database) throws -> AccessDecision {
+        try AccessAreaMap.area(table: table, origin: origin, change: change, changedFields: fields, row: row, db: db)
+    }
+
     func testEverySyncedTableHasAnArea() throws {
         let queue = try TestDatabase.migrated()
         try queue.write { db in
@@ -114,30 +135,67 @@ final class AccessPolicyTests: XCTestCase {
             let adminTax = AccessArea.tax(personUuid: try personUuid(h.adminPersonId, db))
             for table in SyncSchema.tables.map(\.name) {
                 let fields = Set(SyncSchema.table(table)!.syncedColumns)
-                let area = try AccessAreaMap.area(table: table, origin: .edit, changedFields: fields, row: [:], db: db)
-                XCTAssertTrue(area != nil || AccessAreaMap.isOwnerOnly(table: table, fields: fields), "\(table) has no area")
+                let decision = try decide(table, fields: fields, db)
+                XCTAssertTrue(decision != .denied || AccessAreaMap.isOwnerOnly(table: table, fields: fields), "\(table) has no area")
                 // A tax row that names no person is the admin's tax.
-                if case .tax? = area { XCTAssertEqual(area, adminTax, table) }
+                if case .area(.tax) = decision { XCTAssertEqual(decision, .area(adminTax), table) }
             }
-            XCTAssertEqual(try AccessAreaMap.area(table: "rechargeNettingRule", origin: nil, changedFields: ["mode"], row: [:], db: db),
-                           .householdSettings)
-            XCTAssertEqual(try AccessAreaMap.area(table: "rechargeLine", origin: nil, changedFields: ["note"], row: [:], db: db), .property)
-            XCTAssertEqual(try AccessAreaMap.area(table: "evidenceWaiver", origin: nil, changedFields: ["note"], row: [:], db: db), .property)
-            XCTAssertNil(try AccessAreaMap.area(table: "notASyncedTable", origin: nil, changedFields: [], row: [:], db: db))
+            XCTAssertEqual(try decide("rechargeNettingRule", origin: nil, fields: ["mode"], db), .area(.householdSettings))
+            XCTAssertEqual(try decide("rechargeLine", origin: nil, fields: ["note"], db), .area(.property))
+            XCTAssertEqual(try decide("evidenceWaiver", origin: nil, fields: ["note"], db), .area(.property))
             XCTAssertTrue(AccessAreaMap.isOwnerOnly(table: "accountSummaryMonth", fields: ["amountMinorUnits"]))
             XCTAssertTrue(AccessAreaMap.isOwnerOnly(table: "account", fields: ["sharingLevel"]))
+            XCTAssertTrue(AccessAreaMap.isOwnerOnly(table: "personSharing", fields: ["taxIncomeLevel"]))
             XCTAssertFalse(AccessAreaMap.isOwnerOnly(table: "account", fields: ["name"]))
         }
     }
 
-    func testAreaFollowsOriginFirst() throws {
+    func testUnknownTableIsDeniedWhateverTheOrigin() throws {
         let queue = try TestDatabase.migrated()
         try queue.write { db in
-            _ = try household(db)
-            XCTAssertEqual(try AccessAreaMap.area(table: "transaction_", origin: .import, changedFields: ["amountMinorUnits"], row: [:], db: db), .import)
-            XCTAssertEqual(try AccessAreaMap.area(table: "rechargePayment", origin: .propertyMatching, changedFields: ["transactionId"], row: [:], db: db), .property)
-            XCTAssertEqual(try AccessAreaMap.area(table: "documentLink", origin: .documentLink, changedFields: ["entityId"], row: [:], db: db), .documents)
-            XCTAssertEqual(try AccessAreaMap.area(table: "transaction_", origin: .system, changedFields: ["amountMinorUnits"], row: [:], db: db), .budgetAndAccounts)
+            let h = try household(db)
+            for origin in [WriteOrigin.edit, .import, .propertyMatching, .documentLink, .system] {
+                XCTAssertEqual(try decide("notASyncedTable", origin: origin, fields: ["x"], db), .denied, origin.rawValue)
+            }
+            XCTAssertFalse(try AccessPolicy.allows(h.admin, .denied, db: db))
+        }
+    }
+
+    func testOriginCountsOnlyForTheTablesItWrites() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            let memberTax = AccessArea.tax(personUuid: try personUuid(h.memberPersonId, db))
+            let cases: [(String, Set<String>, [String: SyncValue], AccessDecision)] = [
+                ("memberPermission", ["level"], [:], .area(.householdSettings)),
+                ("appUser", ["isAdmin"], [:], .area(.householdSettings)),
+                ("person", ["name"], [:], .area(.householdSettings)),
+                ("category", ["name"], [:], .area(.rulesAndCategories)),
+                ("taxYear", ["notes"], ["personId": .int(h.memberPersonId)], .area(memberTax)),
+            ]
+            for origin in [WriteOrigin.import, .propertyMatching, .documentLink] {
+                for (table, fields, row, expected) in cases {
+                    let decision = try decide(table, origin: origin, fields: fields, row: row, db)
+                    XCTAssertEqual(decision, expected, "\(table) under \(origin)")
+                    XCTAssertFalse(try AccessPolicy.allows(h.member, decision, db: db), "\(table) under \(origin)")
+                }
+            }
+            // The tables an import writes count as Import.
+            for table in ["transaction_", "importBatch", "transferLink", "balanceSnapshot", "importRun"] {
+                let decision = try decide(table, origin: .import, fields: ["amountMinorUnits"], db)
+                XCTAssertEqual(decision, .area(.import), table)
+                XCTAssertTrue(try AccessPolicy.allows(h.member, decision, db: db), table)
+            }
+            // An import's statement check on an account, but nothing else of it.
+            XCTAssertEqual(try decide("account", origin: .import, change: .update(before: [:]), fields: ["statementLastCheckedDate"], db),
+                           .area(.import))
+            XCTAssertEqual(try decide("account", origin: .import, change: .update(before: [:]), fields: ["name"], db),
+                           .area(.budgetAndAccounts))
+            // Matching and document links on their own tables.
+            XCTAssertEqual(try decide("rechargePayment", origin: .propertyMatching, fields: ["transactionId"], db), .area(.property))
+            XCTAssertEqual(try decide("documentLink", origin: .documentLink, fields: ["entityId"], db), .area(.documents))
+            XCTAssertEqual(try decide("transaction_", origin: .system, change: .update(before: [:]), fields: ["amountMinorUnits"], db),
+                           .area(.budgetAndAccounts))
         }
     }
 
@@ -150,17 +208,63 @@ final class AccessPolicyTests: XCTestCase {
                            arguments: [h.memberPersonId])
             let employmentId = db.lastInsertedRowID
             let employmentUuid = try SyncRecordStore.uuid(for: "employment", localId: employmentId, db: db)
-            XCTAssertEqual(try AccessAreaMap.area(table: "taxYear", origin: .edit, changedFields: ["notes"],
-                                                  row: ["personId": .string(memberUuid)], db: db), .tax(personUuid: memberUuid))
-            XCTAssertEqual(try AccessAreaMap.area(table: "taxYear", origin: .edit, changedFields: ["notes"],
-                                                  row: ["personId": .int(h.memberPersonId)], db: db), .tax(personUuid: memberUuid))
-            XCTAssertEqual(try AccessAreaMap.area(table: "employmentIncome", origin: .edit, changedFields: ["notes"],
-                                                  row: ["employmentId": .string(employmentUuid)], db: db), .tax(personUuid: memberUuid))
+            XCTAssertEqual(try decide("taxYear", fields: ["notes"], row: ["personId": .string(memberUuid)], db), .area(.tax(personUuid: memberUuid)))
+            XCTAssertEqual(try decide("taxYear", fields: ["notes"], row: ["personId": .int(h.memberPersonId)], db), .area(.tax(personUuid: memberUuid)))
+            XCTAssertEqual(try decide("employmentIncome", fields: ["notes"], row: ["employmentId": .string(employmentUuid)], db),
+                           .area(.tax(personUuid: memberUuid)))
+        }
+    }
+
+    func testRepointingATaxRowNeedsBothPeople() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            let memberTax = AccessArea.tax(personUuid: try personUuid(h.memberPersonId, db))
+            let adminTax = AccessArea.tax(personUuid: try personUuid(h.adminPersonId, db))
+            // The member may edit their own tax.
+            var own = MemberPermission(appUserId: h.member.appUserId, area: memberTax.storageKey, level: .edit)
+            try own.insert(db)
+            let notes = try decide("taxYear", change: .update(before: ["personId": .int(h.memberPersonId)]), fields: ["notes"],
+                                   row: ["personId": .int(h.memberPersonId)], db)
+            XCTAssertEqual(notes, .area(memberTax))
+            XCTAssertTrue(try AccessPolicy.allows(h.member, notes, db: db))
+            // Taking the admin's row (or giving theirs to the admin) needs both.
+            for (before, after) in [(h.adminPersonId, h.memberPersonId), (h.memberPersonId, h.adminPersonId)] {
+                let decision = try decide("taxYear", change: .update(before: ["personId": .int(before)]), fields: ["personId"],
+                                          row: ["personId": .int(after)], db)
+                XCTAssertEqual(Set(decision.areas), [memberTax, adminTax])
+                XCTAssertFalse(try AccessPolicy.allows(h.member, decision, db: db))
+                XCTAssertTrue(try AccessPolicy.allows(h.admin, decision, db: db))
+            }
+        }
+    }
+
+    func testATransactionSplitBetweenOwnersNeedsEveryOwner() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            let fixture = try propertyCategoryTransaction(db, owner: h.adminPersonId)
+            for person in [h.adminPersonId, h.memberPersonId] {
+                try db.execute(sql: "INSERT INTO propertyOwner(propertyId, personId, shareBasisPoints) VALUES (?, ?, 5000)",
+                               arguments: [fixture.propertyId, person])
+            }
+            let memberTax = AccessArea.tax(personUuid: try personUuid(h.memberPersonId, db))
+            let adminTax = AccessArea.tax(personUuid: try personUuid(h.adminPersonId, db))
+            let decision = try decide("taxNotClaimed", fields: ["notes"], row: ["transactionId": .int(fixture.transactionId)], db)
+            XCTAssertEqual(Set(decision.areas), [memberTax, adminTax])
+            let receipt = try decide("taxPolicyReceipt", fields: ["notes"], row: ["propertyId": .int(fixture.propertyId)], db)
+            XCTAssertEqual(Set(receipt.areas), [memberTax, adminTax])
+            // Once the transaction has one owner, it is theirs alone.
+            try db.execute(sql: "INSERT INTO taxTransactionOwner(transactionId, personId) VALUES (?, ?)",
+                           arguments: [fixture.transactionId, h.memberPersonId])
+            XCTAssertEqual(try decide("taxNotClaimed", fields: ["notes"], row: ["transactionId": .int(fixture.transactionId)], db),
+                           .area(memberTax))
         }
     }
 
     /// A property category's transaction, in an account below Everything that no property links to.
-    private func propertyCategoryTransaction(_ db: Database, owner: Int64) throws -> (transactionId: Int64, accountId: Int64, propertyCategory: Int64, otherCategory: Int64) {
+    private func propertyCategoryTransaction(_ db: Database, owner: Int64)
+        throws -> (transactionId: Int64, accountId: Int64, propertyId: Int64, propertyCategory: Int64, otherCategory: Int64) {
         try db.execute(sql: "INSERT INTO property(name, country) VALUES ('Synthetic flat', 'PT')")
         let propertyId = db.lastInsertedRowID
         try db.execute(sql: "INSERT INTO categoryGroup(name) VALUES ('Synthetic flat costs')")
@@ -177,7 +281,7 @@ final class AccessPolicyTests: XCTestCase {
                             amountMinorUnits: -12_000, categoryId: propertyCategory, status: .pendingReview, categorizedBy: .none,
                             fingerprint: "fp-synthetic", note: nil, isManual: false)
         try t.insert(db)
-        return (t.id!, accountId, propertyCategory, otherCategory)
+        return (t.id!, accountId, propertyId, propertyCategory, otherCategory)
     }
 
     func testPropertyNoteOnPropertyCategoryTransactionIsProperty() throws {
@@ -189,18 +293,34 @@ final class AccessPolicyTests: XCTestCase {
             let categoryUuid = try SyncRecordStore.uuid(for: "category", localId: fixture.propertyCategory, db: db)
             let otherUuid = try SyncRecordStore.uuid(for: "category", localId: fixture.otherCategory, db: db)
             // As a payload carries it: references are UUIDs.
-            let payloadRow: [String: SyncValue] = ["accountId": .string(accountUuid), "categoryId": .string(categoryUuid), "note": .string("Plumber")]
-            XCTAssertEqual(try AccessAreaMap.area(table: "transaction_", origin: .edit, changedFields: ["note"], row: payloadRow, db: db), .property)
+            let property: [String: SyncValue] = ["accountId": .string(accountUuid), "categoryId": .string(categoryUuid), "note": .string("Plumber")]
+            let noted = try decide("transaction_", change: .update(before: property), fields: ["note"], row: property, db)
+            XCTAssertEqual(noted, .area(.property))
+            XCTAssertTrue(try AccessPolicy.allows(h.member, noted, db: db))
             // As local ids.
-            let localRow: [String: SyncValue] = ["accountId": .int(fixture.accountId), "categoryId": .int(fixture.propertyCategory)]
-            XCTAssertEqual(try AccessAreaMap.area(table: "transaction_", origin: nil, changedFields: ["categoryId", "categorizedBy", "status"],
-                                                  row: localRow, db: db), .property)
-            // Moved out of the property category: the category before the change counts.
+            let local: [String: SyncValue] = ["accountId": .int(fixture.accountId), "categoryId": .int(fixture.propertyCategory)]
+            XCTAssertEqual(try decide("transaction_", origin: nil, change: .update(before: local), fields: ["categoryId", "categorizedBy", "status"],
+                                      row: local, db), .area(.property))
+            // Moved out of the property category: allowed, the transaction was property money.
             let movedOut: [String: SyncValue] = ["accountId": .string(accountUuid), "categoryId": .string(otherUuid)]
-            XCTAssertEqual(try AccessAreaMap.area(table: "transaction_", origin: .edit, changedFields: ["categoryId"], row: movedOut,
-                                                  before: payloadRow, db: db), .property)
-            XCTAssertEqual(try AccessAreaMap.area(table: "transaction_", origin: .edit, changedFields: ["categoryId"], row: movedOut, db: db),
-                           .budgetAndAccounts)
+            let out = try decide("transaction_", change: .update(before: property), fields: ["categoryId"], row: movedOut, db)
+            XCTAssertEqual(out, .area(.property))
+            XCTAssertTrue(try AccessPolicy.allows(h.member, out, db: db))
+        }
+    }
+
+    func testMovingATransactionIntoAPropertyCategoryIsBudgetAndAccounts() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            let fixture = try propertyCategoryTransaction(db, owner: h.adminPersonId)
+            let groceries: [String: SyncValue] = ["accountId": .int(fixture.accountId), "categoryId": .int(fixture.otherCategory)]
+            let property: [String: SyncValue] = ["accountId": .int(fixture.accountId), "categoryId": .int(fixture.propertyCategory)]
+            let moveIn = try decide("transaction_", change: .update(before: groceries), fields: ["categoryId"], row: property, db)
+            XCTAssertEqual(moveIn, .area(.budgetAndAccounts))
+            XCTAssertFalse(try AccessPolicy.allows(h.member, moveIn, db: db))
+            // An insert grants nothing from its category either.
+            XCTAssertEqual(try decide("transaction_", change: .insert, fields: ["categoryId", "note"], row: property, db), .area(.budgetAndAccounts))
         }
     }
 
@@ -213,10 +333,10 @@ final class AccessPolicyTests: XCTestCase {
             let linked = try insertAccount(db, owner: h.adminPersonId, level: .everything)
             try db.execute(sql: "INSERT INTO propertyAccount(propertyId, accountId, role) VALUES (?, ?, 'rent')", arguments: [propertyId, linked])
             let row: [String: SyncValue] = ["accountId": .int(linked), "categoryId": .null]
-            XCTAssertEqual(try AccessAreaMap.area(table: "transaction_", origin: .edit, changedFields: ["note"], row: row, db: db), .property)
+            XCTAssertEqual(try decide("transaction_", change: .update(before: row), fields: ["note"], row: row, db), .area(.property))
             // The same account below Everything isn't.
             try db.execute(sql: "UPDATE account SET sharingLevel = 'balanceOnly' WHERE id = ?", arguments: [linked])
-            XCTAssertEqual(try AccessAreaMap.area(table: "transaction_", origin: .edit, changedFields: ["note"], row: row, db: db), .budgetAndAccounts)
+            XCTAssertEqual(try decide("transaction_", change: .update(before: row), fields: ["note"], row: row, db), .area(.budgetAndAccounts))
         }
     }
 
@@ -226,10 +346,50 @@ final class AccessPolicyTests: XCTestCase {
             let h = try household(db)
             let fixture = try propertyCategoryTransaction(db, owner: h.adminPersonId)
             let row: [String: SyncValue] = ["accountId": .int(fixture.accountId), "categoryId": .int(fixture.propertyCategory)]
-            XCTAssertEqual(try AccessAreaMap.area(table: "transaction_", origin: .edit, changedFields: ["amountMinorUnits"], row: row, db: db),
-                           .budgetAndAccounts)
-            XCTAssertEqual(try AccessAreaMap.area(table: "transaction_", origin: .edit, changedFields: ["note", "amountMinorUnits"], row: row, db: db),
-                           .budgetAndAccounts)
+            XCTAssertEqual(try decide("transaction_", change: .update(before: row), fields: ["amountMinorUnits"], row: row, db),
+                           .area(.budgetAndAccounts))
+            XCTAssertEqual(try decide("transaction_", change: .update(before: row), fields: ["note", "amountMinorUnits"], row: row, db),
+                           .area(.budgetAndAccounts))
+        }
+    }
+
+    func testLevelsAndSummariesAreTheOwnersAlone() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            let memberOwned = try insertAccount(db, owner: h.memberPersonId, level: .balanceOnly)
+            let joint = try insertAccount(db, owner: nil)
+            let level = try decide("account", change: .update(before: ["ownerPersonId": .int(h.memberPersonId)]), fields: ["sharingLevel"],
+                                   row: ["ownerPersonId": .int(h.memberPersonId), "sharingLevel": .string("hidden")], db)
+            XCTAssertEqual(level, .ownerOnly(personId: h.memberPersonId))
+            XCTAssertTrue(try AccessPolicy.allows(h.member, level, db: db))
+            XCTAssertFalse(try AccessPolicy.allows(h.admin, level, db: db))
+            // A joint account's level: nobody.
+            XCTAssertEqual(try decide("account", change: .update(before: ["ownerPersonId": .null]), fields: ["sharingLevel"],
+                                      row: ["ownerPersonId": .null], db), .denied)
+            // A name and a level together need both.
+            let mixed = try decide("account", change: .update(before: ["ownerPersonId": .int(h.memberPersonId)]), fields: ["name", "sharingLevel"],
+                                   row: ["ownerPersonId": .int(h.memberPersonId)], db)
+            XCTAssertFalse(try AccessPolicy.allows(h.member, mixed, db: db), "the member can't rename without Budget & accounts")
+            XCTAssertFalse(try AccessPolicy.allows(h.admin, mixed, db: db), "the admin can't set the member's level")
+            // Summaries of the member's account.
+            let summary = try decide("accountSummaryMonth", origin: .import, fields: ["amountMinorUnits"], row: ["accountId": .int(memberOwned)], db)
+            XCTAssertEqual(summary, .ownerOnly(personId: h.memberPersonId))
+            XCTAssertEqual(try decide("accountBalancePoint", fields: ["balanceMinorUnits"], row: ["accountId": .int(joint)], db), .denied)
+        }
+    }
+
+    func testTaxIncomeLevelIsSetOnlyByItsPerson() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let h = try household(db)
+            for (person, owner, other) in [(h.memberPersonId, h.member, h.admin), (h.adminPersonId, h.admin, h.member)] {
+                let decision = try decide("personSharing", change: .update(before: ["personId": .int(person)]), fields: ["taxIncomeLevel"],
+                                          row: ["personId": .int(person), "taxIncomeLevel": .string("hidden")], db)
+                XCTAssertEqual(decision, .ownerOnly(personId: person))
+                XCTAssertTrue(try AccessPolicy.allows(owner, decision, db: db))
+                XCTAssertFalse(try AccessPolicy.allows(other, decision, db: db))
+            }
         }
     }
 

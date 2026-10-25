@@ -103,10 +103,11 @@ public enum MemberPermissions {
         }
     }
 
-    /// Writes the user's default rows: one per fixed area and one `.tax` row per person. A row that
-    /// already exists is kept as it is.
+    /// Writes a member's default rows: one per fixed area and one `.tax` row per person. A row that
+    /// already exists is kept as it is. The admin gets none (they edit everywhere whatever is stored).
     public static func ensureDefaults(appUserId: Int64, db: Database) throws {
         guard let user = try AppUser.fetchOne(db, key: appUserId) else { throw AccessActorError.noSuchUser(appUserId) }
+        guard !user.isAdmin else { return }
         var areas = AccessArea.fixedAreas
         for personId in try Int64.fetchAll(db, sql: "SELECT id FROM person ORDER BY id") {
             areas.append(.tax(personUuid: try SyncRecordStore.uuid(for: "person", localId: personId, db: db)))
@@ -115,7 +116,7 @@ public enum MemberPermissions {
             try db.execute(sql: """
                 INSERT INTO memberPermission(appUserId, area, level) VALUES (?, ?, ?)
                 ON CONFLICT(appUserId, area) DO NOTHING
-                """, arguments: [appUserId, area.storageKey, defaultLevel(area, isAdmin: user.isAdmin).rawValue])
+                """, arguments: [appUserId, area.storageKey, defaultLevel(area, isAdmin: false).rawValue])
         }
     }
 }
@@ -144,8 +145,7 @@ public struct AccessActor: Equatable, Sendable {
     public static func load(appUserId: Int64, db: Database) throws -> AccessActor {
         guard let user = try AppUser.fetchOne(db, key: appUserId) else { throw AccessActorError.noSuchUser(appUserId) }
         return AccessActor(appUserId: appUserId,
-                           appUserUuid: try SyncRecordStore.existingUUID(table: "appUser", localId: appUserId, db: db)
-                               ?? SyncRecordStore.uuid(for: "appUser", localId: appUserId, db: db),
+                           appUserUuid: try SyncRecordStore.uuid(for: "appUser", localId: appUserId, db: db),
                            personId: user.personId, isAdmin: user.isAdmin)
     }
 
@@ -158,9 +158,12 @@ public struct AccessActor: Equatable, Sendable {
     }
 }
 
-/// Layer 2 checks (sync spec §6.3): an actor's stored level for an area, else the default.
+/// Layer 2 checks (sync spec §6.3): the admin edits everywhere; a member has their stored level for an
+/// area, else the default.
 public enum AccessPolicy {
     public static func level(_ actor: AccessActor, _ area: AccessArea, db: Database) throws -> PermissionLevel {
+        // The admin edits everywhere (spec §2); stored rows are members' only.
+        if actor.isAdmin { return .edit }
         if let stored = try MemberPermission
             .filter(Column("appUserId") == actor.appUserId && Column("area") == area.storageKey)
             .fetchOne(db) {
@@ -174,6 +177,16 @@ public enum AccessPolicy {
         switch action {
         case .view: return level >= .view
         case .edit: return level >= .edit
+        }
+    }
+
+    /// Whether `actor` meets what a change needs (`AccessAreaMap.area`).
+    public static func allows(_ actor: AccessActor, _ decision: AccessDecision, db: Database) throws -> Bool {
+        switch decision {
+        case .area(let area): return try can(actor, .edit, area, db: db)
+        case .ownerOnly(let personId): return personId != nil && personId == actor.personId
+        case .allOf(let parts): return try parts.allSatisfy { try allows(actor, $0, db: db) }
+        case .denied: return false
         }
     }
 

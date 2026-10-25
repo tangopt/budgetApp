@@ -47,7 +47,8 @@ public enum ActorWrite {
         do {
             result = try body()
         } catch {
-            try? SyncChangeTracker.setWriter(previousWriter, origin: previousOrigin, db: db)
+            // A failed restore would leave this actor and origin on later writes: that error wins.
+            try SyncChangeTracker.setWriter(previousWriter, origin: previousOrigin, db: db)
             throw error
         }
         try SyncChangeTracker.setWriter(previousWriter, origin: previousOrigin, db: db)
