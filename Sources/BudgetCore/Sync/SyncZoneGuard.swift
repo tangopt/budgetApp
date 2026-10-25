@@ -7,10 +7,11 @@ import GRDB
 /// It is a second line of defence, independent of `SyncZoneRouter`: it never asks the router. It loads, from
 /// the database, the accounts below Everything, the UUIDs of their records (transactions other than §10
 /// property money, import batches and profiles, balance snapshots, forecast entries, and the import runs
-/// that wrote batches on them) and their identifying strings (account number, IBAN, sort code), and refuses
-/// any household payload that is one of those records or whose fields contain one of those UUIDs, a stub
-/// account's UUID outside `SyncZones.stubReferences`, a Hidden account's UUID, or one of those strings.
-/// Load it once per push (`init`), then `check` every save.
+/// that wrote batches on them) and their identifying details (`SyncPrivateDetails`), and refuses any household
+/// payload that is one of those records or a kept (waiting) file, or whose fields contain one of those UUIDs,
+/// a stub account's UUID outside `SyncZones.stubReferences`, a Hidden account's UUID, or one of those details.
+/// Load it once per push (`init`), then `review` (or `check`) every save. A refused payload stops the push for
+/// its zone (`Review.haltedZones`).
 public struct SyncZoneGuard {
     /// What was wrong with one payload. It names the record, zones, record types and fields only, never a
     /// value.
@@ -41,8 +42,10 @@ public struct SyncZoneGuard {
     private let stubAccounts: [String: StubAccount]
     /// UUID of every private record (Hidden accounts included) to its owner's zone ("private" when it has none).
     private let privateRecords: [String: String]
-    /// Account numbers, IBANs and sort codes of accounts below Everything, as stored and without separators.
-    private let identifying: [String]
+    /// Owner's zone of each account below Everything, by local id.
+    private let accountZones: [Int64: String]
+    /// The accounts' identifying details and where they may be quoted.
+    private let details: SyncPrivateDetails
     /// Every person's private zone.
     private let privateZones: Set<String>
 
@@ -55,34 +58,26 @@ public struct SyncZoneGuard {
         let people = try Row.fetchAll(db, sql: "SELECT localId, uuid FROM syncRecord WHERE tableName = 'person'")
         let personUuid = Dictionary(people.map { ($0["localId"] as Int64, $0["uuid"] as String) }, uniquingKeysWith: { a, _ in a })
         privateZones = Set(personUuid.values.map(SyncZones.privateZone(personUuid:)))
+        details = try SyncPrivateDetails(db: db)
 
         var stubs: [String: StubAccount] = [:]
         var records: [String: String] = [:]
         var zoneOfAccount: [Int64: String] = [:]
         var hidden: Set<Int64> = []
-        var privateStrings: Set<String> = []
-        var sharedStrings: Set<String> = []
-        let detailColumns = ["sortCode", "accountNumber", "iban"]
         for row in try Row.fetchAll(db, sql: """
-            SELECT a.id, a.ownerPersonId, a.sharingLevel, a.sortCode, a.accountNumber, a.iban, s.uuid
+            SELECT a.id, a.ownerPersonId, a.sharingLevel, s.uuid
             FROM account a LEFT JOIN syncRecord s ON s.tableName = 'account' AND s.localId = a.id
             """) {
             let id: Int64 = row["id"]
             let level = (row["sharingLevel"] as String?).flatMap(SharingLevel.init(rawValue:)) ?? .hidden
-            let strings = detailColumns.compactMap { row[$0] as String? }.flatMap(Self.variants)
-            guard level != .everything else {
-                sharedStrings.formUnion(strings)
-                continue
-            }
-            privateStrings.formUnion(strings)
+            guard level != .everything else { continue }
             let zone = (row["ownerPersonId"] as Int64?).flatMap { personUuid[$0] }.map(SyncZones.privateZone(personUuid:))
             zoneOfAccount[id] = zone ?? "private"
             if level == .hidden { hidden.insert(id) }
             guard let uuid: String = row["uuid"] else { continue }
             if level == .hidden { records[uuid] = zone ?? "private" } else { stubs[uuid] = StubAccount(level: level, zone: zone) }
         }
-        // A detail an Everything account shares (a branch's sort code) identifies nothing private.
-        identifying = privateStrings.subtracting(sharedStrings).sorted()
+        accountZones = zoneOfAccount
 
         if !zoneOfAccount.isEmpty {
             let accountList = zoneOfAccount.keys.map(String.init).joined(separator: ",")
@@ -121,6 +116,30 @@ public struct SyncZoneGuard {
         privateRecords = records
     }
 
+    /// What a push does with a chunk: send it, or stop sending to the zones named (Task 5 logs each violation
+    /// as a "needs attention" entry, `attentionText`, and sends nothing more to those zones this push).
+    public struct Review: Equatable {
+        public var violations: [Violation]
+        public var isClear: Bool { violations.isEmpty }
+        /// The zones whose upload stops: the zone each refused payload was going to.
+        public var haltedZones: Set<String> { Set(violations.map(\.actual)) }
+    }
+
+    /// Every violation in `payloads` (none: the chunk may be sent).
+    public func review(_ payloads: [SyncPayload]) -> Review {
+        Review(violations: payloads.compactMap { payload in
+            do {
+                try check(payload)
+                return nil
+            } catch let violation as Violation {
+                return violation
+            } catch {
+                return Violation(recordType: payload.recordType, recordName: payload.recordName, expected: "none",
+                                 actual: payload.zone, reason: "could not be checked")
+            }
+        })
+    }
+
     /// `SyncZoneGuard(db:).check(payloads)`.
     public static func check(_ payloads: [SyncPayload], db: Database) throws {
         try SyncZoneGuard(db: db).check(payloads)
@@ -140,6 +159,17 @@ public struct SyncZoneGuard {
     }
 
     private func check(_ payload: SyncPayload) throws {
+        try checkPlacement(payload)
+        guard payload.zone == SyncZones.household,
+              let (account, field) = details.quote(in: payload.recordType, fields: payload.fields, isShared: { [stubAccounts, privateRecords] value in
+                  guard case .string(let uuid) = value else { return false }
+                  return stubAccounts[uuid] == nil && privateRecords[uuid] == nil
+              }) else { return }
+        throw Violation(recordType: payload.recordType, recordName: payload.recordName, expected: accountZones[account] ?? "private",
+                        actual: payload.zone, reason: "\(field) contains an account's private details")
+    }
+
+    private func checkPlacement(_ payload: SyncPayload) throws {
         func violation(_ expected: String, _ reason: String) -> Violation {
             Violation(recordType: payload.recordType, recordName: payload.recordName, expected: expected, actual: payload.zone, reason: reason)
         }
@@ -161,6 +191,7 @@ public struct SyncZoneGuard {
         }
 
         if let zone = privateRecords[payload.recordName] { throw violation(zone, "a private record") }
+        if payload.recordType == "importWaitingFile" { throw violation("private", "a kept file, which is never shared") }
         if payload.recordType == "account", let stub = stubAccounts[payload.recordName],
            let carried = SyncZoneRouter.privateAccountColumns.first(where: { payload.fields[$0] != nil }) {
             throw violation(stub.zone ?? "private", "carries \(carried), which stays private")
@@ -185,17 +216,130 @@ public struct SyncZoneGuard {
                     throw violation(stub.zone ?? "private", "\(field) names an account below Everything")
                 }
             }
-            let upper = text.uppercased()
-            if identifying.contains(where: { upper.contains($0) }) {
-                throw violation("private", "\(field) contains an account's private details")
+        }
+    }
+}
+
+/// The identifying details of accounts below Everything (account number, IBAN, sort code) and how a record
+/// quotes them. Both the router (which keeps such a record private) and the guard (which refuses it in
+/// household) use it, so they agree. Details an Everything account also has (a branch's sort code) identify
+/// nothing private and are left out.
+///
+/// - **Structured:** a whole string value, or a whole string inside JSON, equal to a detail once spaces, dashes
+///   and dots are removed (sort codes are only ever matched this way).
+/// - **Free text:** digit runs joined by spaces, dashes or dots are read as groups, and every run of
+///   consecutive groups is compared, as one token, with the 8-or-more-digit details (account numbers, an
+///   IBAN's digits after its country and check digits, such as a 20-digit BBVA number); a compact IBAN is
+///   matched anywhere in the compacted text. A transaction of an Everything account (and an import change
+///   recording one) may quote anything in its description and note: that is the shared account's own text.
+/// Numbers (not strings) are never matched.
+struct SyncPrivateDetails {
+    private var structured: [String: Int64] = [:]
+    private var digitTokens: [String: Int64] = [:]
+    private var ibans: [String: Int64] = [:]
+
+    private static let digitRuns = try! NSRegularExpression(pattern: "[0-9]+(?:[ .\\-][0-9]+)*")
+    private static let freeTextExemptions: Set<String> = ["rawDescription", "note"]
+
+    init(db: Database) throws {
+        var shared: Set<String> = []
+        for row in try Row.fetchAll(db, sql: "SELECT id, sharingLevel, sortCode, accountNumber, iban FROM account ORDER BY id") {
+            let id: Int64 = row["id"]
+            let level = (row["sharingLevel"] as String?).flatMap(SharingLevel.init(rawValue:)) ?? .hidden
+            let sortCode = Self.compact(row["sortCode"] as String? ?? "")
+            let number = Self.compact(row["accountNumber"] as String? ?? "")
+            let iban = Self.compact(row["iban"] as String? ?? "")
+            let bban = iban.count > 12 ? String(iban.dropFirst(4)) : ""
+            let values = [sortCode, number, iban, bban].filter { $0.count >= 6 }
+            guard level != .everything else {
+                shared.formUnion(values)
+                continue
             }
+            for value in values { structured[value] = structured[value] ?? id }
+            for value in [number, bban] where value.count >= 8 && value.allSatisfy(\.isNumber) {
+                digitTokens[value] = digitTokens[value] ?? id
+            }
+            if iban.count >= 15 { ibans[iban] = ibans[iban] ?? id }
+        }
+        for value in shared {
+            structured[value] = nil
+            digitTokens[value] = nil
+            ibans[value] = nil
         }
     }
 
-    /// A detail as stored and without spaces or dashes, upper-cased; short ones (under 6 characters) left out.
-    private static func variants(_ value: String) -> [String] {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        let compact = String(trimmed.filter { $0.isLetter || $0.isNumber })
-        return Array(Set([trimmed, compact].filter { $0.count >= 6 }))
+    var isEmpty: Bool { structured.isEmpty }
+
+    /// The account whose detail the record quotes, and the field quoting it; nil when none. `isShared` tells
+    /// whether an `accountId` value (a local id or a UUID, as the fields hold them) is an Everything account.
+    func quote(in table: String, fields: [String: SyncValue], isShared: (SyncValue) -> Bool) -> (account: Int64, field: String)? {
+        guard !isEmpty else { return nil }
+        let ownText = table == "transaction_" && isShared(fields["accountId"] ?? .null)
+        let recordsSharedTransaction = table == "importChange" && fields["tableName"] == .string("transaction_")
+        for (field, value) in fields.sorted(by: { $0.key < $1.key }) {
+            guard case .string(let text) = value else { continue }
+            if let root = SyncJSONNode.parse(text), Self.isContainer(root) {
+                let exempt = recordsSharedTransaction && isShared(Self.member("accountId", of: root, text: text))
+                for (path, leaf) in root.stringPaths() {
+                    if let account = structured[Self.compact(leaf)] { return (account, field) }
+                    if exempt, Self.freeTextExemptions.contains(path) { continue }
+                    if let account = freeText(leaf) { return (account, field) }
+                }
+            } else {
+                if let account = structured[Self.compact(text)] { return (account, field) }
+                if ownText, Self.freeTextExemptions.contains(field) { continue }
+                if let account = freeText(text) { return (account, field) }
+            }
+        }
+        return nil
+    }
+
+    /// `quote(…)`'s account only.
+    func account(quotedIn table: String, fields: [String: SyncValue], isShared: (SyncValue) -> Bool) -> Int64? {
+        quote(in: table, fields: fields, isShared: isShared)?.account
+    }
+
+    private func freeText(_ text: String) -> Int64? {
+        if !ibans.isEmpty {
+            let compacted = Self.compact(text)
+            if let match = ibans.first(where: { compacted.contains($0.key) }) { return match.value }
+        }
+        guard !digitTokens.isEmpty else { return nil }
+        for match in Self.digitRuns.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let range = Range(match.range, in: text) else { continue }
+            let groups = text[range].split(whereSeparator: { !$0.isNumber }).map(String.init)
+            for start in groups.indices {
+                var token = ""
+                for group in groups[start...] {
+                    token += group
+                    if token.count > 34 { break }
+                    if let account = digitTokens[token] { return account }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Letters and digits only, upper-cased.
+    static func compact(_ value: String) -> String {
+        String(value.uppercased().filter { $0.isLetter || $0.isNumber })
+    }
+
+    private static func isContainer(_ node: SyncJSONNode) -> Bool {
+        switch node.kind {
+        case .object, .array: return true
+        default: return false
+        }
+    }
+
+    /// A top-level member of a JSON object as a value: a number as `.int`, a string as `.string`.
+    private static func member(_ name: String, of root: SyncJSONNode, text: String) -> SyncValue {
+        guard case .object(let members) = root.kind, let node = members.first(where: { $0.key == name })?.value else { return .null }
+        switch node.kind {
+        case .string(let value): return .string(value)
+        case .number:
+            return Int64(String(decoding: Array(text.utf8)[node.range], as: UTF8.self)).map(SyncValue.int) ?? .null
+        default: return .null
+        }
     }
 }

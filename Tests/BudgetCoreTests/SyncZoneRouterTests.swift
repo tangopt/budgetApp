@@ -16,7 +16,7 @@ final class SyncZoneRouterTests: XCTestCase {
         "account": .account,
         "categoryGroup": .followsReferences, "category": .followsReferences,
         "accountBalancePoint": .shared, "accountSummaryMonth": .shared,
-        "importRun": .importRun, "importWaitingFile": .followsReferences, "importBatch": .accountRecord,
+        "importRun": .importRun, "importWaitingFile": .importWaitingFile, "importBatch": .accountRecord,
         "importChange": .importChange, "customDocumentKind": .followsReferences, "document": .document,
         "importRunFile": .importRunFile, "importProfile": .accountRecord, "importRule": .importRule,
         "transaction_": .accountRecord, "transferLink": .followsReferences, "rule": .followsReferences,
@@ -198,12 +198,19 @@ final class SyncZoneRouterTests: XCTestCase {
             let f = try SharingFixture.build(db)
             var router = try SyncZoneRouter(db: db)
             XCTAssertEqual(try router.assignment(table: "document", localId: f.privateOnlyDocument), ZoneAssignment(zone: f.privateZone))
-            XCTAssertEqual(try router.assignment(table: "document", localId: f.sharedDocument), .household, "a household referrer keeps it shared")
-            let links = try Row.fetchAll(db, sql: "SELECT id, documentId, entityId FROM documentLink ORDER BY id")
+            // The most private referrer wins: linked to a private and a shared transaction, it is private, and so
+            // are both its links.
+            XCTAssertEqual(try router.assignment(table: "document", localId: f.sharedDocument), ZoneAssignment(zone: f.privateZone))
+            let links = try Int64.fetchAll(db, sql: "SELECT id FROM documentLink ORDER BY id")
             for link in links {
-                let expected = link["entityId"] == f.privateTransaction ? ZoneAssignment(zone: f.privateZone) : .household
-                XCTAssertEqual(try router.assignment(table: "documentLink", localId: link["id"]), expected)
+                XCTAssertEqual(try router.assignment(table: "documentLink", localId: link), ZoneAssignment(zone: f.privateZone))
             }
+            // A document linked to shared records only is shared.
+            let shop = try addDocument(db, "4")
+            try db.execute(sql: "INSERT INTO documentLink(documentId, entityType, entityId, createdAt) VALUES (?, 'transaction', ?, ?)",
+                           arguments: [shop, f.sharedTransaction, Date()])
+            router = try SyncZoneRouter(db: db)
+            XCTAssertEqual(try router.assignment(table: "document", localId: shop), .household)
 
             // An unlinked document is shared; one linked only to a shared record too.
             try db.execute(sql: """
@@ -459,12 +466,143 @@ final class SyncZoneRouterTests: XCTestCase {
             try db.execute(sql: "INSERT INTO importRunFile(runId, fileName, sha256, outcome, detail) VALUES (?, 'Unknown.pdf', 'h', 'skipped', 'x')",
                            arguments: [f.sharedRun])
             let loose = db.lastInsertedRowID
+            // N-2: a file named like a shared batch's file proves nothing.
             try db.execute(sql: "INSERT INTO importRunFile(runId, fileName, sha256, outcome, detail) VALUES (?, 'synthetic.csv', 'h2', 'imported', 'x')",
                            arguments: [f.sharedRun])
-            let matched = db.lastInsertedRowID
+            let sameName = db.lastInsertedRowID
+            // A file whose document is placed: shared when every referrer is.
+            let receipt = try addDocument(db, "c")
+            try db.execute(sql: "INSERT INTO documentLink(documentId, entityType, entityId, createdAt) VALUES (?, 'transaction', ?, ?)",
+                           arguments: [receipt, f.sharedTransaction, Date()])
+            try db.execute(sql: "INSERT INTO importRunFile(runId, fileName, sha256, documentId, outcome, detail) VALUES (?, 'r.pdf', 'h3', ?, 'imported', 'x')",
+                           arguments: [f.sharedRun, receipt])
+            let placed = db.lastInsertedRowID
+            // A document only shared runs' files name: not placed.
+            let unplaced = try addDocument(db, "d")
+            try db.execute(sql: "INSERT INTO importRunFile(runId, fileName, sha256, documentId, outcome, detail) VALUES (?, 'u.pdf', 'h4', ?, 'imported', 'x')",
+                           arguments: [f.sharedRun, unplaced])
+            let unplacedFile = db.lastInsertedRowID
             let router = try SyncZoneRouter(db: db)
-            XCTAssertEqual(try router.assignment(table: "importRunFile", localId: loose), ZoneAssignment(zone: f.privateZone))
-            XCTAssertEqual(try router.assignment(table: "importRunFile", localId: matched), .household, "a batch of the run came from it")
+            let privateOnly = ZoneAssignment(zone: f.privateZone)
+            XCTAssertEqual(try router.assignment(table: "importRunFile", localId: loose), privateOnly)
+            XCTAssertEqual(try router.assignment(table: "importRunFile", localId: sameName), privateOnly)
+            XCTAssertEqual(try router.assignment(table: "importRunFile", localId: placed), .household)
+            XCTAssertEqual(try router.assignment(table: "document", localId: receipt), .household)
+            XCTAssertEqual(try router.assignment(table: "importRunFile", localId: unplacedFile), privateOnly)
+            XCTAssertEqual(try router.assignment(table: "document", localId: unplaced), privateOnly)
+        }
+    }
+
+    /// N-1 (review probe R1): a letter linked to the private account and filed by an import in a shared run is
+    /// private, and so is the run's file of it.
+    func testALetterAboutAPrivateAccountFiledInASharedRunIsPrivate() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let f = try SharingFixture.build(db)
+            let letter = try addProbeLetter(db, f)
+            let router = try SyncZoneRouter(db: db)
+            let privateOnly = ZoneAssignment(zone: f.privateZone)
+            XCTAssertEqual(try router.assignment(table: "document", localId: letter.document), privateOnly)
+            XCTAssertEqual(try router.assignment(table: "importRunFile", localId: letter.file), privateOnly)
+            XCTAssertEqual(try router.assignment(table: "importRun", localId: f.sharedRun), .household)
+            var household = try payload("document", letter.document, db)
+            household.zone = SyncZones.household
+            XCTAssertNoThrow(try SyncZoneGuard(db: db).check([household]), "the guard can't see a document's referrers: routing must")
+        }
+    }
+
+    /// N-2 (probe R2): a private statement re-imported (all duplicates) in a shared run, under a shared file's name.
+    func testAStatementReimportedInASharedRunStaysPrivate() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let f = try SharingFixture.build(db)
+            let statement = try addProbeReimport(db, f)
+            let router = try SyncZoneRouter(db: db)
+            let privateOnly = ZoneAssignment(zone: f.privateZone)
+            XCTAssertEqual(try router.assignment(table: "importRunFile", localId: statement.sharedRunFile), privateOnly)
+            XCTAssertEqual(try router.assignment(table: "document", localId: statement.document), privateOnly)
+        }
+    }
+
+    /// O-1 (probe R3): a kept file is never shared: the keeper's private zone, else the admin's.
+    func testWaitingFilesAreTheKeepersPrivateFiles() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let f = try SharingFixture.build(db)
+            let unknown = try addProbeWaitingFile(db, "5")
+            // Kept on the member's device.
+            let memberUser = try Int64.fetchOne(db, sql: "SELECT id FROM appUser WHERE personId = ?", arguments: [f.personB])!
+            let memberUuid = try SyncRecordStore.uuid(for: "appUser", localId: memberUser, db: db)
+            let memberZone = SyncZones.privateZone(personUuid: try SyncRecordStore.uuid(for: "person", localId: f.personB, db: db))
+            let kept = try addProbeWaitingFile(db, "4")
+            _ = try SyncRecordStore.uuid(for: "importWaitingFile", localId: kept, db: db)
+            try db.execute(sql: "UPDATE syncRecord SET modifiedBy = ? WHERE tableName = 'importWaitingFile' AND localId = ?",
+                           arguments: [memberUuid, kept])
+            let router = try SyncZoneRouter(db: db)
+            XCTAssertEqual(try router.assignment(table: "importWaitingFile", localId: unknown), ZoneAssignment(zone: f.privateZone))
+            XCTAssertEqual(try router.assignment(table: "importWaitingFile", localId: kept), ZoneAssignment(zone: memberZone))
+            var household = try payload("importWaitingFile", unknown, db)
+            household.zone = SyncZones.household
+            XCTAssertThrowsError(try SyncZoneGuard(db: db).check([household])) {
+                XCTAssertEqual(($0 as? SyncZoneGuard.Violation)?.reason, "a kept file, which is never shared")
+            }
+        }
+    }
+
+    /// N-3: the router keeps private what the guard would refuse, and both let the shared account's own
+    /// statement text and plain numbers through (probes R4, R5).
+    func testRouterAndGuardAgreeOnQuotedDetails() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            let f = try SharingFixture.build(db)
+            let probes = try addProbeQuotes(db, f)
+            let router = try SyncZoneRouter(db: db)
+            let guardian = try SyncZoneGuard(db: db)
+            for (table, id) in [("transaction_", f.sharedTransaction), ("importChange", probes.amountChange), ("importChange", probes.descriptionChange)] {
+                XCTAssertEqual(try router.assignment(table: table, localId: id), .household, "\(table) \(id)")
+                var sent = try payload(table, id, db)
+                sent.zone = SyncZones.household
+                XCTAssertTrue(guardian.review([sent]).isClear, "\(table) \(id)")
+            }
+            for id in [probes.spacedRule, probes.bbvaRule, probes.sortCodeRule] {
+                XCTAssertEqual(try router.assignment(table: "importRule", localId: id), ZoneAssignment(zone: f.privateZone), "rule \(id)")
+                var sent = try payload("importRule", id, db)
+                sent.zone = SyncZones.household
+                let review = guardian.review([sent])
+                XCTAssertEqual(review.violations.map(\.reason), ["matchKey contains an account's private details"])
+                XCTAssertEqual(review.haltedZones, [SyncZones.household])
+            }
+            // A sort code in free text identifies nothing (too short to tell from other numbers).
+            XCTAssertEqual(try router.assignment(table: "importRule", localId: probes.sortCodeInText), .household)
+        }
+    }
+
+    /// The router's whole output, routed payloads and all, passes the guard with no refusal: the demo, and the
+    /// fixture with every review probe added.
+    func testTheGuardRefusesNothingTheRouterSends() throws {
+        for demo in [false, true] {
+            let queue = demo ? try TestDatabase.demo() : try TestDatabase.migrated()
+            try queue.write { db in
+                if demo {
+                    try prepareDemo(db)
+                } else {
+                    let f = try SharingFixture.build(db)
+                    _ = try addProbeLetter(db, f)
+                    _ = try addProbeReimport(db, f)
+                    _ = try addProbeWaitingFile(db, "5")
+                    _ = try addProbeQuotes(db, f)
+                }
+                try SyncRecordStore.backfill(db: db)
+                let router = try SyncZoneRouter(db: db)
+                var payloads: [SyncPayload] = []
+                for table in SyncSchema.tables {
+                    for id in try ids(table, db) {
+                        payloads += try routedPayloads(table.name, id, try router.assignment(table: table.name, localId: id), db)
+                    }
+                }
+                let review = try SyncZoneGuard(db: db).review(payloads)
+                XCTAssertEqual(review.violations, [], "demo: \(demo)")
+            }
         }
     }
 
@@ -622,32 +760,96 @@ final class SyncZoneRouterTests: XCTestCase {
         let queue = try TestDatabase.migrated()
         try queue.write { db in
             let f = try SharingFixture.build(db)
+            try db.execute(sql: "UPDATE account SET iban = 'ES76 0049 1234 5612 3456 7890' WHERE id = ?", arguments: [f.privateAccount])
             let guardian = try SyncZoneGuard(db: db)
-            var note = try payload("transaction_", f.sharedTransaction, db)
-            XCTAssertNoThrow(try guardian.check([note]))
-            for text in ["Paid from 81234567", "sort code 401234", "acct 81 23 45 67"] {
-                note.fields["note"] = .string(text)
-                if text == "acct 81 23 45 67" {
-                    XCTAssertNoThrow(try guardian.check([note]), "only stored forms and their compact form are known")
-                    continue
-                }
-                XCTAssertThrowsError(try guardian.check([note]), text) {
-                    XCTAssertEqual(($0 as? SyncZoneGuard.Violation)?.reason, "note contains an account's private details")
+            var rule = try payload("rule", try addRule(db, "synthetic"), db)
+            XCTAssertNoThrow(try guardian.check([rule]))
+            let refused = ["Paid from 81234567", "acct 8123 4567", "acct 81.23.45.67", "bbva:00491234561234567890",
+                           "0049-1234-56-1234567890", "ES7600491234561234567890", "40-12-34"]
+            let accepted = ["sort code 401234 in text", "2026-10-05 12:34", "ref 812345678", "81234567890"]
+            for text in refused {
+                rule.fields["matchPattern"] = .string(text)
+                XCTAssertThrowsError(try guardian.check([rule]), text) {
+                    XCTAssertEqual(($0 as? SyncZoneGuard.Violation)?.reason, "matchPattern contains an account's private details")
                 }
             }
-            // A statement-account rule naming the account number in its key.
-            var rule = note
-            rule.recordType = "importRule"
-            rule.fields = ["kind": .string("statementAccount"), "matchKey": .string("bbva:81234567")]
-            XCTAssertThrowsError(try guardian.check([rule]))
+            for text in accepted {
+                rule.fields["matchPattern"] = .string(text)
+                XCTAssertNoThrow(try guardian.check([rule]), text)
+            }
+            // The shared account's own statement text may quote the number; another account's may not.
+            var shared = try payload("transaction_", f.sharedTransaction, db)
+            shared.fields["rawDescription"] = .string("TRANSFER TO 81234567")
+            XCTAssertNoThrow(try guardian.check([shared]))
             // A sort code an Everything account shares identifies nothing.
             try db.execute(sql: "UPDATE account SET sortCode = '401234' WHERE id = ?", arguments: [f.shared])
-            note.fields["note"] = .string("sort code 401234")
-            XCTAssertNoThrow(try SyncZoneGuard(db: db).check([note]))
+            rule.fields["matchPattern"] = .string("40-12-34")
+            XCTAssertNoThrow(try SyncZoneGuard(db: db).check([rule]))
             // Not before ownership is confirmed.
             try db.execute(sql: "UPDATE personSharing SET ownershipConfirmedAt = NULL")
             XCTAssertThrowsError(try SyncZoneGuard(db: db)) { XCTAssertEqual($0 as? SyncZoneRouterError, .ownershipNotConfirmed) }
         }
+    }
+
+    // MARK: Review probes (fix round 2)
+
+    private func addRule(_ db: Database, _ pattern: String) throws -> Int64 {
+        try db.execute(sql: "INSERT INTO rule(matchPattern, matchType, categoryId, priority) VALUES (?, 'contains', (SELECT MIN(id) FROM category), 0)", arguments: [pattern])
+        return db.lastInsertedRowID
+    }
+
+    /// R1: a letter linked to the private account, filed by an import in the shared run.
+    private func addProbeLetter(_ db: Database, _ f: SharingFixture) throws -> (document: Int64, file: Int64) {
+        let document = try addDocument(db, "7")
+        try db.execute(sql: "INSERT INTO documentLink(documentId, entityType, entityId, createdAt) VALUES (?, 'account', ?, ?)",
+                       arguments: [document, f.privateAccount, Date()])
+        try db.execute(sql: """
+            INSERT INTO importRunFile(runId, fileName, sha256, documentId, outcome, detail)
+            VALUES (?, 'Private account letter.pdf', 'h7', ?, 'imported', 'Letter about Synthetic private')
+            """, arguments: [f.sharedRun, document])
+        return (document, db.lastInsertedRowID)
+    }
+
+    /// R2: a private statement imported in the private run, then again (all duplicates) in the shared run.
+    private func addProbeReimport(_ db: Database, _ f: SharingFixture) throws -> (document: Int64, sharedRunFile: Int64) {
+        let document = try addDocument(db, "6")
+        try db.execute(sql: "INSERT INTO importRunFile(runId, fileName, sha256, documentId, outcome, detail) VALUES (?, 'synthetic.csv', 'h6', ?, 'imported', 'first')",
+                       arguments: [f.privateRun, document])
+        try db.execute(sql: "INSERT INTO importRunFile(runId, fileName, sha256, documentId, outcome, detail) VALUES (?, 'synthetic.csv', 'h6', ?, 'duplicate', 'again')",
+                       arguments: [f.sharedRun, document])
+        return (document, db.lastInsertedRowID)
+    }
+
+    /// R3: a private statement kept for later.
+    private func addProbeWaitingFile(_ db: Database, _ digit: String) throws -> Int64 {
+        try db.execute(sql: """
+            INSERT INTO importWaitingFile(sha256, originalFileName, byteCount, storedRelativePath, reason, recognisedAs, keptAt)
+            VALUES (?, 'Synthetic statement.pdf', 1, ?, 'Import discarded', 'Bank statement', ?)
+            """, arguments: [String(repeating: digit, count: 64), "w/\(digit).pdf", Date()])
+        return db.lastInsertedRowID
+    }
+
+    /// R4, R5: quoted details. A shared transaction quoting the private number in its own description, a change of
+    /// it recording that text and an amount equal to the sort code's digits; rules quoting the number with
+    /// separators, the 20-digit BBVA number and the bare sort code, and one with a sort code in free text.
+    private func addProbeQuotes(_ db: Database, _ f: SharingFixture) throws
+        -> (amountChange: Int64, descriptionChange: Int64, spacedRule: Int64, bbvaRule: Int64, sortCodeRule: Int64, sortCodeInText: Int64) {
+        try db.execute(sql: "UPDATE account SET iban = 'ES76 0049 1234 5612 3456 7890' WHERE id = ?", arguments: [f.privateAccount])
+        try db.execute(sql: "UPDATE transaction_ SET rawDescription = 'TRANSFER TO 81234567' WHERE id = ?", arguments: [f.sharedTransaction])
+        func change(_ seq: Int, _ after: String) throws -> Int64 {
+            try db.execute(sql: "INSERT INTO importChange(runId, seq, tableName, rowId, operation, afterJSON) VALUES (?, ?, 'transaction_', ?, 'update', ?)",
+                           arguments: [f.sharedRun, seq, f.sharedTransaction, after])
+            return db.lastInsertedRowID
+        }
+        let amount = try change(91, "{\"id\":\(f.sharedTransaction),\"accountId\":\(f.shared),\"amountMinorUnits\":401234}")
+        let description = try change(92, "{\"id\":\(f.sharedTransaction),\"accountId\":\(f.shared),\"rawDescription\":\"TRANSFER TO 81234567\"}")
+        func rule(_ key: String, _ label: String) throws -> Int64 {
+            try db.execute(sql: "INSERT INTO importRule(kind, matchKey, matchLabel, actionJSON, actionLabel, createdAt) VALUES ('issuer', ?, ?, '{}', 'x', ?)",
+                           arguments: [key, label, Date()])
+            return db.lastInsertedRowID
+        }
+        return (amount, description, try rule("acct 8123 4567", "Synthetic"), try rule("bbva:00491234561234567890", "Synthetic"),
+                try rule("40-12-34", "Synthetic"), try rule("synthetic-issuer", "Ref 40-12-34"))
     }
 
     // MARK: Helpers
@@ -689,7 +891,8 @@ final class SyncZoneRouterTests: XCTestCase {
         var sent = try payload(table, id, db)
         sent.zone = assignment.zone
         for field in assignment.omittedFields { sent.fields[field] = nil }
-        if assignment.omittedFields.contains("importBatchId") { sent.importRunUuid = nil }
+        // Task 5 strips the batch tag where the private batch or run is left out (N-5).
+        if assignment.omittedFields.contains("importBatchId") || assignment.omittedFields.contains("importRunId") { sent.importRunUuid = nil }
         guard let companion = assignment.companion else { return [sent] }
         let full = try payload(table, id, db)
         let details = SyncPayload(recordType: companion.recordType, recordName: sent.recordName, zone: companion.zone,

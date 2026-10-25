@@ -101,16 +101,21 @@ public enum SyncZoneRouterError: Error, Equatable {
 ///    as private too, except where `SyncZones.stubReferences` allows it (the summaries its level allows, its
 ///    property-money transactions, its transfer category, its property link, an evidence exclusion list).
 ///    References into two people's private zones are refused (`spansPrivateZones`).
-/// 5. A **document** is P when it has referrers (`documentReferrers`) and every one is placed in the same P,
-///    else `household` (two people's zones: refused). Its `documentFile` follows the document.
+/// 5. A **document** takes the most private zone among its referrers (`documentReferrers`; a run file by its
+///    run), `household` when none is private, the admin's private zone when only shared runs' files name it
+///    (two people's zones: refused). Its `documentFile` follows the document.
 /// 6. An **import run** that touched an account below Everything (a batch on it, or a change naming it,
 ///    its transactions or its batches) is P, summary and all; two owners: refused.
 /// 7. An **import change** goes to P of the account its recorded row names (directly, or through a
 ///    transaction or batch), else to the admin's private zone when it names none, or one gone.
-/// 8. An **import run file** follows its run; in a shared run it stays shared only when a batch of the run
-///    came from that file or its document is linked elsewhere, else the admin's private zone.
+/// 8. An **import run file** follows its run; in a shared run it goes where its document goes (rule 5), and
+///    to the admin's private zone without one.
 /// 9. A learnt **merchant link rule** follows the account it was learnt from (`LinkAction.sourceAccountId`),
 ///    and goes to the admin's private zone when that is unknown.
+/// 10. A **waiting file** (kept for later) is never shared: the private zone of whoever kept it (the last
+///    writer), else the admin's.
+/// 11. A record that would still be `household` but quotes an account's private details
+///    (`SyncPrivateDetails`, as the guard checks) goes to that account's owner's private zone.
 /// A table without a rule is refused (`unknownTable`); `SyncZoneRouterTests` lists every table's rule.
 ///
 /// Valid only inside the database access it was made in; it memoises per record.
@@ -138,6 +143,8 @@ public final class SyncZoneRouter {
         case importRunFile
         /// Rule 9.
         case importRule
+        /// Rule 10.
+        case importWaitingFile
         /// Shared by rule (summaries, sharing settings, property and tax records, tax and income).
         case shared
         /// Only the closure decides.
@@ -170,6 +177,7 @@ public final class SyncZoneRouter {
             case "importChange": rules[table.name] = .importChange
             case "importRunFile": rules[table.name] = .importRunFile
             case "importRule": rules[table.name] = .importRule
+            case "importWaitingFile": rules[table.name] = .importWaitingFile
             case let name where accountRecordTables.contains(name): rules[name] = .accountRecord
             case let name where sharedTables.contains(name): rules[name] = .shared
             default: rules[table.name] = .followsReferences
@@ -215,6 +223,7 @@ public final class SyncZoneRouter {
     private let adminPersonUuid: String?
     private let propertyCategoryIds: Set<Int64>
     private let pinnedTransactionIds: Set<Int64>
+    private let details: SyncPrivateDetails
     private var memo: [Key: ZoneAssignment] = [:]
     private var inProgress: Set<Key> = []
     private var runZones: [Int64: String?] = [:]
@@ -240,6 +249,7 @@ public final class SyncZoneRouter {
         propertyCategoryIds = Set(try Int64.fetchAll(db, sql: """
             SELECT id FROM category WHERE groupId IN (SELECT categoryGroupId FROM propertyCategoryGroup)
             """))
+        details = try SyncPrivateDetails(db: db)
         pinnedTransactionIds = Set(try Int64.fetchAll(db, sql: Self.pinningTables
             .map { "SELECT transactionId FROM \(SyncChangeTracker.quoted($0)) WHERE transactionId IS NOT NULL" }
             .joined(separator: " UNION ")))
@@ -306,13 +316,15 @@ public final class SyncZoneRouter {
                 }
             }
         case .document:
-            base = try documentZone(localId, table: table, ignoring: ignoring.union(["document"]))
+            base = try documentPlacement(localId, ignoring: ignoring)
         case .importRun:
             if let zone = try runZone(localId) { base = ZoneAssignment(zone: zone) }
         case .importChange:
             base = try changeZone(fields, table: table, localId: localId)
         case .importRunFile:
-            base = try runFileZone(fields)
+            base = try runFileZone(fields, ignoring: ignoring)
+        case .importWaitingFile:
+            base = try waitingFileZone(localId)
         case .importRule:
             base = try importRuleZone(fields)
         case .shared, .followsReferences:
@@ -330,25 +342,46 @@ public final class SyncZoneRouter {
             }
         }
         guard zones.count <= 1 else { throw SyncZoneRouterError.spansPrivateZones(table: table, localId: localId) }
-        let result = base.isPrivate ? base : zones.first.map { ZoneAssignment(zone: $0) } ?? base
+        var result = base.isPrivate ? base : zones.first.map { ZoneAssignment(zone: $0) } ?? base
+        // What `SyncZoneGuard` would refuse in household (an account's private details quoted), routing keeps private.
+        let accounts = accounts
+        if !result.isPrivate, let account = details.account(quotedIn: table, fields: carried, isShared: { value in
+            if case .int(let id) = value { return accounts[id]?.level == .everything }
+            return false
+        }), let zone = try placement(account: account).privateZone {
+            result = ZoneAssignment(zone: zone)
+        }
         memo[key] = result
         return result
     }
 
     // MARK: Reverse rules
 
-    /// Rule 5: the single private zone every referrer is in, else `household` when one is shared.
-    private func documentZone(_ localId: Int64, table: String, ignoring: Set<String>) throws -> ZoneAssignment {
+    /// Rule 5: the most private zone among the document's referrers. An import run file counts by its run:
+    /// private when the run is; a file of a shared run places nothing by itself, so a document known only
+    /// from shared runs' files can't be told apart and goes to the admin's private zone. No referrer at all:
+    /// `household`. Two people's zones: refused.
+    private func documentPlacement(_ document: Int64, ignoring: Set<String>) throws -> ZoneAssignment {
+        let inner = ignoring.union(["document"])
         var zones: Set<String> = []
+        var placedShared = false
+        var sharedRunFiles = false
         for referrer in Self.documentReferrers {
-            for id in try ids(referrer.table, where: referrer.column, is: localId) {
-                guard let assignment = try assignmentIfPresent(table: referrer.table, localId: id, ignoring: ignoring) else { continue }
-                if !assignment.isPrivate { return .household }
-                zones.insert(assignment.zone)
+            for id in try ids(referrer.table, where: referrer.column, is: document) {
+                if referrer.table == "importRunFile" {
+                    guard let run = try Int64.fetchOne(db.cachedStatement(sql: "SELECT runId FROM importRunFile WHERE id = ?"),
+                                                       arguments: [id]) else { continue }
+                    if let zone = try runZone(run) { zones.insert(zone) } else { sharedRunFiles = true }
+                    continue
+                }
+                guard let assignment = try assignmentIfPresent(table: referrer.table, localId: id, ignoring: inner) else { continue }
+                if assignment.isPrivate { zones.insert(assignment.zone) } else { placedShared = true }
             }
         }
-        guard zones.count <= 1 else { throw SyncZoneRouterError.spansPrivateZones(table: table, localId: localId) }
-        return zones.first.map { ZoneAssignment(zone: $0) } ?? .household
+        guard zones.count <= 1 else { throw SyncZoneRouterError.spansPrivateZones(table: "document", localId: document) }
+        if let zone = zones.first { return ZoneAssignment(zone: zone) }
+        if sharedRunFiles, !placedShared { return ZoneAssignment(zone: try adminZone()) }
+        return .household
     }
 
     /// Rule 6: the private zone of the accounts below Everything the run touched, nil when none.
@@ -379,22 +412,25 @@ public final class SyncZoneRouter {
         return zones.first.map { ZoneAssignment(zone: $0) } ?? .household
     }
 
-    /// Rule 8. A private run makes the file private through the closure (`runId`).
-    private func runFileZone(_ fields: [String: SyncValue]) throws -> ZoneAssignment {
+    /// Rule 8: a file of a private run is private; a file of a shared run goes where its document goes
+    /// (rule 5), and to the admin's private zone without one.
+    private func runFileZone(_ fields: [String: SyncValue], ignoring: Set<String>) throws -> ZoneAssignment {
         guard case .int(let run) = fields["runId"] ?? .null else { return ZoneAssignment(zone: try adminZone()) }
         if let zone = try runZone(run) { return ZoneAssignment(zone: zone) }
-        if case .string(let name) = fields["fileName"] ?? .null,
-           try Bool.fetchOne(db.cachedStatement(sql: """
-               SELECT EXISTS (SELECT 1 FROM importBatch WHERE importRunId = ? AND sourceFileName = ?)
-               """), arguments: [run, name]) == true {
-            return .household
-        }
-        if case .int(let document) = fields["documentId"] ?? .null {
-            for referrer in Self.documentReferrers where referrer.table != "importRunFile" {
-                if try !ids(referrer.table, where: referrer.column, is: document).isEmpty { return .household }
-            }
-        }
+        if case .int(let document) = fields["documentId"] ?? .null { return try documentPlacement(document, ignoring: ignoring) }
         return ZoneAssignment(zone: try adminZone())
+    }
+
+    /// Rule 10: the private zone of the person whose device kept the file (its last writer), else the admin's.
+    private func waitingFileZone(_ localId: Int64) throws -> ZoneAssignment {
+        let keeper = try String.fetchOne(db.cachedStatement(sql: """
+            SELECT person.uuid FROM syncRecord kept
+            JOIN syncRecord user ON user.tableName = 'appUser' AND user.uuid = kept.modifiedBy
+            JOIN appUser ON appUser.id = user.localId
+            JOIN syncRecord person ON person.tableName = 'person' AND person.localId = appUser.personId
+            WHERE kept.tableName = 'importWaitingFile' AND kept.localId = ?
+            """), arguments: [localId])
+        return ZoneAssignment(zone: try keeper.map(SyncZones.privateZone(personUuid:)) ?? adminZone())
     }
 
     /// Rule 9.
