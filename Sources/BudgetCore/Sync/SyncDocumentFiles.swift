@@ -46,17 +46,17 @@ public struct SyncFileTable: Sendable {
 
     /// The path under `root` that `stored` must be for this hash, if it is (nil: unsafe, never read or written).
     /// - `document`: the library path (`EvidenceLibrary.storedRelativePath`).
-    /// - `importWaitingFile`: `"<sha256 lowercased>/<name>"`, the name one plain path component (not `.`/`..`,
-    ///   no leading dot, no `/` or NUL, at most 255 UTF-8 bytes; `ImportWaitingList.storedPath`).
+    /// - `importWaitingFile`: `"<sha256>/<name>"`, the hash already 64 lowercase hex digits (never lowercased
+    ///   here: a row in capitals is unsafe), the name one plain path component (not `.`/`..`, no leading dot, no
+    ///   `/` or NUL, at most 255 UTF-8 bytes; `ImportWaitingList.storedPath`).
     public func safePath(stored: String, sha256: String) -> String? {
         switch table {
         case SyncFileTables.document:
             return SyncDocumentFile.libraryPath(stored: stored, sha256: sha256)
         case SyncFileTables.importWaitingFile:
-            let hex = sha256.lowercased()
             guard let slash = stored.firstIndex(of: "/") else { return nil }
             let name = String(stored[stored.index(after: slash)...])
-            guard let path = ImportWaitingList.storedPath(sha256: hex, name: name), path == stored else { return nil }
+            guard let path = ImportWaitingList.storedPath(sha256: sha256, name: name), path == stored else { return nil }
             return path
         default:
             return nil
@@ -743,6 +743,12 @@ extension SyncEngineCore {
             try await attention(.unsafePath, table.unsafePathMessage)
         }
         let destination = table.root.appendingPathComponent(path)
+        if table.table == SyncFileTables.importWaitingFile,
+           !ImportWaitingList.isOwnFolder(destination.deletingLastPathComponent(), root: table.root) {
+            // The hash folder is a symbolic link (or not a folder, or leads outside the waiting folder): nothing is
+            // written through it, nothing removed from it.
+            try await attention(.unsafePath, table.unsafePathMessage)
+        }
         if SyncFileTables.isRegularFile(destination), let existing = try? Data(contentsOf: destination),
            DocumentCrypto.sha256(existing) == sha.lowercased() { return destination }
 

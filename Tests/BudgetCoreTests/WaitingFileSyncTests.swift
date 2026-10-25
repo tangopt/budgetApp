@@ -256,6 +256,43 @@ final class WaitingFileSyncTests: XCTestCase {
         XCTAssertEqual(b.waitingFiles(), [])
     }
 
+    func testAnUppercaseHashNeedsAttentionAndWritesNothing() async throws {
+        let (row, uuid) = try a.keep("upper.txt", Self.bytes("upper"))
+        try await a.engine.syncNow()
+        // Another writer sends the hash in capitals (the folder still the lowercase one): never taken as a folder name.
+        try await tamper(uuid) { $0.fields["sha256"] = .string(row.sha256.uppercased()) }
+
+        let pulled = try await b.engine.syncNow()
+        XCTAssertEqual(pulled.pull.documentsDownloaded, 0)
+        XCTAssertEqual(pulled.pull.documentsNeedingAttention, 1)
+        XCTAssertEqual(b.waitingFiles(), [], "nothing written")
+        XCTAssertTrue(try b.conflicts(uuid: uuid).contains { $0.field == SyncDocumentFile.conflictField && $0.losingValueJSON.contains("needs attention") })
+    }
+
+    func testALinkedHashFolderNeedsAttentionAndNothingOutsideIsWrittenOrRemoved() async throws {
+        let plaintext = Self.bytes("linked")
+        let sha = DocumentCrypto.sha256(plaintext)
+        // On B, the hash folder is a symbolic link to a folder outside the waiting root, holding a file of its own.
+        let outside = b.base.appendingPathComponent("Outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("Synthetic bystander".utf8).write(to: outside.appendingPathComponent("bystander.txt"))
+        try FileManager.default.createDirectory(at: b.waitingRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: b.waitingRoot.appendingPathComponent(sha), withDestinationURL: outside)
+
+        let (_, uuid) = try a.keep("linked.txt", plaintext)
+        try await a.engine.syncNow()
+        let pulled = try await b.engine.syncNow()
+
+        XCTAssertEqual(pulled.pull.documentsDownloaded, 0)
+        XCTAssertEqual(pulled.pull.documentsNeedingAttention, 1)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), ["bystander.txt"], "nothing written or removed outside")
+        XCTAssertEqual(try Data(contentsOf: outside.appendingPathComponent("bystander.txt")), Data("Synthetic bystander".utf8))
+        XCTAssertTrue(try b.conflicts(uuid: uuid).contains { $0.field == SyncDocumentFile.conflictField && $0.losingValueJSON.contains("needs attention") })
+        // Keeping the same content on B refuses to clean through the link too.
+        ImportWaitingList.removeOtherFiles(in: b.waitingRoot.appendingPathComponent(sha), keeping: "linked.txt")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), ["bystander.txt"])
+    }
+
     func testAFileWhoseBytesDontMatchItsHashIsNeverWritten() async throws {
         let (row, uuid) = try a.keep("genuine.txt", Self.bytes("genuine"))
         try await a.engine.syncNow()

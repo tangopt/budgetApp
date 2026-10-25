@@ -179,6 +179,7 @@ public struct ImportWaitingList: Sendable {
         let manager = FileManager.default
         let destination = root.appendingPathComponent(path)
         let folder = destination.deletingLastPathComponent()
+        guard Self.isOwnFolder(folder, root: root) else { throw KeepFailure.linkedFolder }
         if Self.isRegularFile(destination), (try? EvidenceLibrary.sha256(of: destination)) == sha { return .alreadyThere }
         let created = !manager.fileExists(atPath: folder.path)
         try manager.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -203,18 +204,31 @@ public struct ImportWaitingList: Sendable {
     /// Removes every file of a copy folder but `name` (and other keeps' partial copies, hidden). Also
     /// after a sync download places a copy kept again elsewhere under another name.
     static func removeOtherFiles(in folder: URL, keeping name: String) {
+        // Never through a symbolic link (or anything but a real folder): its target's files aren't Mango's.
+        guard (try? FileManager.default.attributesOfItem(atPath: folder.path)[.type] as? FileAttributeType) == .typeDirectory else { return }
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
         for other in names where other != name && !other.hasPrefix(".") {
             try? FileManager.default.removeItem(at: folder.appendingPathComponent(other))
         }
     }
 
-    private enum KeepFailure: Error { case changed }
+    private enum KeepFailure: Error { case changed, linkedFolder }
 
     private static func copyFailure(_ file: SetAsideFile, _ error: Error) -> String {
         if case KeepFailure.changed = error { return "It changed since it was read: import it again" }
+        if case KeepFailure.linkedFolder = error { return "Mango's folder for it is a link to somewhere else: not copied" }
         if !FileManager.default.fileExists(atPath: file.url.path) { return "It is no longer where it was read: it was moved or deleted" }
         return "Couldn't copy it: \(error.localizedDescription)"
+    }
+
+    /// Whether `folder` (a hash folder under `root`) is Mango's own: absent (to be created), or a real folder,
+    /// not a symbolic link, that resolves inside `root`.
+    static func isOwnFolder(_ folder: URL, root: URL) -> Bool {
+        let manager = FileManager.default
+        if let type = (try? manager.attributesOfItem(atPath: folder.path))?[.type] as? FileAttributeType, type != .typeDirectory { return false }
+        let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath().path
+        let resolved = folder.standardizedFileURL.resolvingSymlinksInPath().path
+        return resolved.hasPrefix(resolvedRoot + "/")
     }
 
     /// `"<sha256>/<name>"`, or nil when the name isn't one plain path component.
