@@ -61,6 +61,29 @@ enum SnapshotCatalog {
         return (plan, source.id, fits)
     }
 
+    /// The samples read into a review once per run and handed to every route that starts from them
+    /// (the review plan is a value; each route only resolves it further). Reading the samples takes
+    /// seconds, and ten routes begin with the same read. The cache is dropped whenever a route
+    /// changes what the read depends on (`forgetSamplesPlans`: the history route imports the
+    /// samples, the folder route registers a source folder). Keyed by the model stand-in:
+    /// none, available or unavailable.
+    private static var samplesPlans: [String: ImportPlan] = [:]
+
+    static func forgetSamplesPlans() { samplesPlans = [:] }
+
+    static func samplesPlan(_ context: SnapshotContext, modelReader: (any DocumentModelReading)? = nil,
+                            modelKey: String = "none") async throws -> ImportPlan {
+        if let cached = samplesPlans[modelKey] {
+            // The same item ids come back, so the screen the last route left behind (its selection,
+            // the groups it opened) must not see them as already shown: start from a clean review.
+            context.environment.importCenter.discard()
+            return cached
+        }
+        let plan = try await context.environment.importCenter.snapshotPlan(try importSamples(context), modelReader: modelReader)
+        samplesPlans[modelKey] = plan
+        return plan
+    }
+
     /// A one-page PDF of plain text lines (A4).
     static func textPDF(_ lines: [String], to url: URL) throws {
         var box = CGRect(x: 0, y: 0, width: 595, height: 842)
@@ -97,7 +120,7 @@ enum SnapshotCatalog {
             // The UK CSV no profile reads, its account chosen (Everyday Current): its columns to map.
             SnapshotRoute(name: "imports-review_mapping", title: "Imports: the samples, a CSV's columns to map", settleFactor: 1.5) { context in
                 let center = context.environment.importCenter
-                var plan = try await center.snapshotPlan(try importSamples(context))
+                var plan = try await samplesPlan(context)
                 guard let csv = plan.items.first(where: { $0.recognition.kind == .bankStatementCSV }),
                       let accountId = context.accountId("Everyday Current") else { throw SnapshotMissing("The sample CSV") }
                 plan = try await center.snapshotResolve(plan, itemId: csv.id, .chooseAccount(.current, accountId))
@@ -108,13 +131,13 @@ enum SnapshotCatalog {
             // The letter nothing recognises, read by the on-device model's stand-in: its kind and
             // figures to check ("Use these", or each corrected).
             samplesReview("review_model", "Imports: the samples, a letter read by the on-device model",
-                         modelReader: SnapshotModelReader()) { plan in
+                         modelReader: SnapshotModelReader(), modelKey: "model") { plan in
                 plan.items.first { $0.file.fileName == "Letter.pdf" }?.id
             },
             // The letter's kind and issuer ticked off in place ("Checked", Undo), its date still to check.
             SnapshotRoute(name: "imports-review_model_checked", title: "Imports: the samples, the model's kind and issuer checked", settleFactor: 1.5) { context in
                 let center = context.environment.importCenter
-                var plan = try await center.snapshotPlan(try importSamples(context), modelReader: SnapshotModelReader())
+                var plan = try await samplesPlan(context, modelReader: SnapshotModelReader(), modelKey: "model")
                 guard let letter = plan.items.first(where: { $0.file.fileName == "Letter.pdf" }) else { throw SnapshotMissing("The sample letter") }
                 plan = try await center.snapshotResolve(plan, itemId: letter.id, .markChecked(.recognition))
                 plan = try await center.snapshotResolve(plan, itemId: letter.id, .markChecked(.figure(.issuer)))
@@ -126,7 +149,7 @@ enum SnapshotCatalog {
             // The letter's checks all ticked at once ("All checks marked", one undo for them all).
             SnapshotRoute(name: "imports-review_model_all_checked", title: "Imports: the samples, every check of the letter marked at once", settleFactor: 1.5) { context in
                 let center = context.environment.importCenter
-                var plan = try await center.snapshotPlan(try importSamples(context), modelReader: SnapshotModelReader())
+                var plan = try await samplesPlan(context, modelReader: SnapshotModelReader(), modelKey: "model")
                 guard let letter = plan.items.first(where: { $0.file.fileName == "Letter.pdf" }) else { throw SnapshotMissing("The sample letter") }
                 plan = try await center.snapshotResolve(plan, itemId: letter.id, .markAllChecked)
                 let checked = plan
@@ -136,7 +159,7 @@ enum SnapshotCatalog {
             },
             // The same letter with the model unavailable: why, and the kind to choose.
             samplesReview("review_model_off", "Imports: the samples, the on-device model unavailable",
-                         modelReader: SnapshotModelReader(isAvailable: false)) { plan in
+                         modelReader: SnapshotModelReader(isAvailable: false), modelKey: "model-off") { plan in
                 plan.items.first { $0.file.fileName == "Letter.pdf" }?.id
             },
             // Dashboard ▸ Import CSV… with Everyday Current picked, given the sample CSV: the
@@ -253,6 +276,7 @@ enum SnapshotCatalog {
                 let center = context.environment.importCenter
                 center.discard()
                 let plan = try await center.snapshotPlan(folder: try demoSourceFolder(context))
+                forgetSamplesPlans()  // a source folder is registered in the demo copy now
                 guard let item = plan.items(in: .needsYou).first ?? plan.items.first else { throw SnapshotMissing("The folder's items") }
                 return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
                     center.showSnapshotPlan(plan, selecting: item.id)
@@ -261,7 +285,7 @@ enum SnapshotCatalog {
             // "New kind…": the letter nothing recognises filed as a kind made in this review (saved at Confirm import).
             SnapshotRoute(name: "imports-review_new_kind", title: "Imports: the samples, a letter filed as a new kind", settleFactor: 1.5) { context in
                 let center = context.environment.importCenter
-                var plan = try await center.snapshotPlan(try importSamples(context))
+                var plan = try await samplesPlan(context)
                 guard let letter = plan.items.first(where: { $0.file.fileName == "Letter.pdf" }) else { throw SnapshotMissing("The sample letter") }
                 plan = try await center.snapshotResolve(plan, itemId: letter.id, .createKind(name: "Boiler service", area: .property))
                 let made = plan
@@ -273,6 +297,7 @@ enum SnapshotCatalog {
                 let center = context.environment.importCenter
                 center.discard()
                 let plan = try await center.snapshotLeavingOutNeedsYou(try await center.snapshotPlan(try importSamples(context)))
+                forgetSamplesPlans()  // the samples are imported now: a new read finds them in the library
                 try await center.snapshotApply(plan, entryPoint: "Demo samples")
                 return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in })))
             },
@@ -284,6 +309,7 @@ enum SnapshotCatalog {
                 await center.reloadRuns()
                 if !center.runs.contains(where: { $0.entryPoint == "Demo samples" && $0.undoneAt == nil }) {
                     let plan = try await center.snapshotLeavingOutNeedsYou(try await center.snapshotPlan(try importSamples(context)))
+                    forgetSamplesPlans()
                     try await center.snapshotApply(plan, entryPoint: "Demo samples")
                     center.discard()
                 }
@@ -524,10 +550,10 @@ enum SnapshotCatalog {
 
     /// The samples read into a review, `select` choosing the document the preview shows.
     static func samplesReview(_ tab: String, _ title: String, modelReader: (any DocumentModelReading)? = nil,
-                             select: @escaping (ImportPlan) -> UUID?) -> SnapshotRoute {
+                             modelKey: String = "none", select: @escaping (ImportPlan) -> UUID?) -> SnapshotRoute {
         SnapshotRoute(name: "imports-\(tab)", title: title, settleFactor: 1.5) { context in
             let center = context.environment.importCenter
-            let plan = try await center.snapshotPlan(try importSamples(context), modelReader: modelReader)
+            let plan = try await samplesPlan(context, modelReader: modelReader, modelKey: modelKey)
             guard let selected = select(plan) else { throw SnapshotMissing("The sample for \(tab)") }
             return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
                 center.showSnapshotPlan(plan, selecting: selected)
