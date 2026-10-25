@@ -22,12 +22,23 @@
 # demo's 15 Oct 2026); --size the window (default 1440x900).
 # --perf tenancies times the Tenancies tab's receipt panel instead (`PanelTiming`), on a demo
 # with "Tenancy L" (62 receipts, each with its PDF and credit): <outDir>/perf-report.txt.
+#
+# Fix rounds (the full run takes ~20 minutes):
+#   --quick              one look only (light-classic) instead of 2 appearances x 3 themes. Same wrap
+#                        probe, ~1/6 of the captures. (An explicit --looks wins.)
+#   --routes a,b,c       only the routes whose name contains one of these (same matching as --only).
+#   --changed [base-ref] only the routes the files changed since base-ref (default: the merge-base with
+#                        main; committed, staged, unstaged and untracked files count) can affect. A change in
+#                        App/DesignSystem, App/Shared, Sources/ (BudgetCore, BudgetDemo, ...), the app shell,
+#                        the snapshot harness or the project files, or in a file this script can't place,
+#                        renders ALL routes. The chosen routes and why are printed first.
+# An --only / --routes / --changed run adds to the folder's PNGs; run without them for the full set.
 # Builds into $SNAPSHOT_SCRATCH (default $TMPDIR/budget-snapshots): dd-ui.noindex (the app)
 # and spm (the demo-database tool).
 set -euo pipefail
 
 if [[ $# -lt 1 || "$1" == -* ]]; then
-    echo "usage: $0 <outDir> [--only a,b] [--themes ids] [--appearances light,dark] [--looks light-classic,dark-midnight] [--scale n] [--as-of YYYY-MM-DD] [--size WxH]" >&2
+    echo "usage: $0 <outDir> [--quick] [--routes a,b] [--changed [base-ref]] [--only a,b] [--themes ids] [--appearances light,dark] [--looks light-classic,dark-midnight] [--scale n] [--as-of YYYY-MM-DD] [--size WxH]" >&2
     exit 2
 fi
 
@@ -59,6 +70,96 @@ mkdir -p "$OUT"
 echo "Mango UI snapshots (scripts/render-snapshots.sh)." > "$MARKER"
 
 cd "$(dirname "$0")/.."
+
+# Script-level options (the rest goes to the app as it is): --quick, --routes, --changed [base-ref].
+SELECT_ONLY=0; QUICK=0; ROUTES=""; CHANGED=0; CHANGED_BASE=""
+ARGS=()
+while (( $# )); do
+    case "$1" in
+        --quick) QUICK=1; shift ;;
+        --routes)
+            [[ $# -ge 2 ]] || { echo "--routes needs a comma-separated list" >&2; exit 2; }
+            ROUTES="$2"; shift 2 ;;
+        --changed)
+            CHANGED=1; shift
+            if (( $# )) && [[ "$1" != --* ]]; then CHANGED_BASE="$1"; shift; fi ;;
+        --select-only) SELECT_ONLY=1; shift ;;   # print which routes would be rendered, build nothing
+        *) ARGS+=("$1"); shift ;;
+    esac
+done
+if [[ -n "$ROUTES" ]] && (( CHANGED )); then echo "--routes and --changed can't be combined" >&2; exit 2; fi
+if [[ -n "$ROUTES" || $CHANGED -eq 1 ]] && (( ${ARGS[(Ie)--only]} )); then echo "--only can't be combined with --routes or --changed" >&2; exit 2; fi
+
+# The route-name fragments a changed file can affect: ALL, NONE, or a comma list (--only matching).
+routes_for_file() {
+    case "$1" in
+        App/DesignSystem/*|App/Shared/*|App/Snapshots/*|App/Assets.xcassets/*|Sources/*|Config/*) echo ALL ;;
+        App/ContentView.swift|App/BudgetApp.swift|App/AppEnvironment.swift|App/LaunchView.swift|App/Info.plist|App/Mango.entitlements) echo ALL ;;
+        project.yml|Package.swift|Package.resolved|scripts/render-snapshots.sh) echo ALL ;;
+        App/Dashboard/*) echo "dashboard" ;;
+        App/Search/*) echo "search" ;;
+        App/Budget/*) echo "budget,sheet-,search" ;;
+        App/Forecast/*) echo "forecast,auth-locked_over_scenario_lab" ;;
+        App/Accounts/*) echo "accounts,sheet-,imports-review_remap" ;;
+        App/Categories/*) echo "categories,sheet-" ;;
+        App/Uncategorized/*) echo "uncategorized,sheet-" ;;
+        App/Documents/*) echo "documents,missing_evidence,sheet-,imports-" ;;
+        App/DocumentImport/*) echo "imports-,sheet-" ;;
+        App/Import/*) echo "imports-,sheet-" ;;
+        App/Rules/*) echo "rules,auth-locked_over_rules_search,sheet-" ;;
+        App/Property/*) echo "property,tax_years,sheet-,imports-" ;;
+        App/Tax/*) echo "tax_years,property,sheet-,imports-" ;;
+        App/Settings/*|App/Sync/*) echo "settings,sheet-,imports-" ;;
+        App/Auth/*) echo "auth-,settings,rules,forecast" ;;
+        Tests/*|docs/*|Phone/*|.superpowers/*|*.md) echo NONE ;;
+        scripts/*) echo NONE ;;
+        *) echo ALL ;;
+    esac
+}
+
+ONLY_FROM_SELECTION=""
+if [[ -n "$ROUTES" ]]; then
+    ONLY_FROM_SELECTION="$ROUTES"
+    echo "Routes: $ROUTES (--routes: names containing any of these)"
+elif (( CHANGED )); then
+    if [[ -z "$CHANGED_BASE" ]]; then
+        CHANGED_BASE="$(git merge-base HEAD main 2>/dev/null || true)"
+    fi
+    changed_files=()
+    if [[ -n "$CHANGED_BASE" ]] && git rev-parse --verify -q "$CHANGED_BASE^{commit}" >/dev/null; then
+        changed_files=("${(@f)$( { git diff --name-only "$CHANGED_BASE"; git ls-files -o --exclude-standard; } | sort -u)}")
+        changed_files=("${(@)changed_files:#}")
+        echo "Routes: --changed since ${CHANGED_BASE[1,10]} (${#changed_files} changed files)"
+        want=()
+        all_reason=""
+        for f in "${changed_files[@]}"; do
+            r="$(routes_for_file "$f")"
+            if [[ "$r" == ALL ]]; then all_reason="$f"; break; fi
+            [[ "$r" == NONE ]] && continue
+            want+=("${(@s:,:)r}")
+            echo "  $f -> $r"
+        done
+        if [[ -n "$all_reason" ]]; then
+            echo "  $all_reason affects every screen (or can't be placed): rendering ALL routes"
+        elif (( ${#want} == 0 )); then
+            echo "  No changed file can affect a route: nothing to render."
+            exit 0
+        else
+            ONLY_FROM_SELECTION="${(j:,:)${(@u)want}}"
+            echo "  Rendering routes containing: $ONLY_FROM_SELECTION"
+        fi
+    else
+        echo "Routes: --changed couldn't find the base (${CHANGED_BASE:-merge-base with main}): rendering ALL routes"
+    fi
+fi
+if (( SELECT_ONLY )); then exit 0; fi
+set -- "${ARGS[@]}"
+[[ -n "$ONLY_FROM_SELECTION" ]] && set -- "$@" --only "$ONLY_FROM_SELECTION"
+if (( QUICK )) && (( ! ${@[(Ie)--looks]} )); then
+    set -- "$@" --looks light-classic
+    echo "Quick: one look (light-classic)."
+fi
+
 SCRATCH="${SNAPSHOT_SCRATCH:-${TMPDIR:-/tmp}/budget-snapshots}"
 mkdir -p "$SCRATCH"
 DERIVED="$SCRATCH/dd-ui.noindex"
