@@ -1,5 +1,7 @@
 // Copy to Config/Signing.local.xcconfig (ignored by git) and put in your own team ID
 // (developer.apple.com ▸ Account ▸ Membership details ▸ Team ID).
+// Both targets include it: the Mac's through Config/Signing.xcconfig, the iPhone's through
+// Config/SigningPhone.xcconfig, which then sets its own entitlements and turns the hardened runtime off.
 DEVELOPMENT_TEAM = YOURTEAMID
 CODE_SIGN_STYLE = Automatic
 CODE_SIGN_ENTITLEMENTS = App/Mango.entitlements

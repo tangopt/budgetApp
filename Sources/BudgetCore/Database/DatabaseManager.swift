@@ -5,9 +5,8 @@ public final class DatabaseManager {
     public let dbQueue: DatabaseQueue
 
     public init(path: String?) throws {
-        var configuration = Configuration()
-        // A row that `REPLACE` removes fires delete triggers (sync tombstones) only with this on.
-        configuration.prepareDatabase { db in try db.execute(sql: "PRAGMA recursive_triggers = ON") }
+        // The tools' settings too (`ToolDatabase`): `recursive_triggers` on, so `REPLACE` leaves sync tombstones.
+        let configuration = ToolDatabase.configuration()
         if let path {
             dbQueue = try DatabaseQueue(path: path, configuration: configuration)
         } else {
@@ -134,10 +133,13 @@ public final class DatabaseManager {
         // it as the one migration it lacks.
         registerTaxFiledBoxMigration(&migrator)
         registerTaxPolicyReceiptItemsMigration(&migrator)
+        // Like the filed boxes: before the app-user and sync ones (2026-10-24).
+        registerPropertyCheckDecisionMigration(&migrator)
         registerImportRunMigration(&migrator)
         registerImportRuleMigration(&migrator)
         registerAppUserMigration(&migrator)
         registerSyncMigration(&migrator)
+        registerPropertyAddressMigration(&migrator)
         registerCustomDocumentKindMigration(&migrator)
         registerCustomDocumentKindMergedIntoMigration(&migrator)
         registerSyncRedirectStampMigration(&migrator)

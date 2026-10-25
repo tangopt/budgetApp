@@ -4,9 +4,10 @@ import BudgetCore
 
 /// Budget ▸ Settings… (⌘,): Appearance (System / Light / Dark) and Theme (the swatch grid) —
 /// both apply immediately, app-wide, and are remembered (`appAppearance`, `appTheme`) — and
-/// Evidence (the source folders scanned for documents) and Sign-in (auth spec §6).
+/// Evidence (the source folders scanned for documents), Sign-in (auth spec §6) and Sync (off for the
+/// real database in this build).
 struct SettingsView: View {
-    enum Pane: Hashable { case appearance, theme, evidence, signIn }
+    enum Pane: Hashable { case appearance, theme, evidence, signIn, sync }
     @State private var pane: Pane
     private let signInModel: SignInSettingsModel?
 
@@ -29,6 +30,9 @@ struct SettingsView: View {
             }
             Tab("Sign-in", systemImage: "person.badge.key", value: Pane.signIn) {
                 SignInSettings(model: signInModel)
+            }
+            Tab("Sync", systemImage: "arrow.triangle.2.circlepath.icloud", value: Pane.sync) {
+                SyncSettings()
             }
         }
         .scenePadding()

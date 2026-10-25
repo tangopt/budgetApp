@@ -48,7 +48,7 @@ public enum SyncChangeTrackerError: Error, Equatable {
 /// - A delete retires the identity, so a row that later reuses the local id is a new record.
 /// - A synced table's local id can't change: the `_key` trigger refuses it (delete and insert instead).
 /// - `REPLACE` that removes a row with another rowid: SQLite fires delete triggers for it only with
-///   `recursive_triggers` on, which `DatabaseManager` sets on its connections. For other connections,
+///   `recursive_triggers` on, which `DatabaseManager` and the tools (`ToolDatabase`) set. For other connections,
 ///   `refreshSyncTriggers` sweeps identities whose row is gone into tombstones on every open.
 /// - The writer (`modifiedBy`) is `syncWriter`'s user, which the app sets while someone is signed in.
 ///   A tool run while it is set is stamped with that user; otherwise tools leave it NULL.

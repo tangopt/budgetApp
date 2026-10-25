@@ -51,23 +51,7 @@ final class DashboardViewModel: ObservableObject {
     func load() {
         do {
             let today = todayProvider()
-            let loaded = try dbQueue.read { db -> DashboardInput in
-                DashboardInput(
-                    today: today,
-                    accounts: try Account.fetchAll(db),
-                    snapshots: try BalanceSnapshot.fetchAll(db),
-                    transactions: try LocalActualsSource().transactions(db),
-                    categories: try Category.fetchAll(db),
-                    categoryGroups: try CategoryGroup.fetchAll(db),
-                    forecastEntries: try ForecastEntry.budget(db),
-                    forecastGroups: try ForecastGroup.fetchAll(db),
-                    exceptions: try PlannedOccurrenceException.fetchAll(db),
-                    importBatches: try ImportBatch.fetchAll(db),
-                    rate: try ExchangeRateSetting.currentOrDefault(db: db),
-                    manualCloses: try PayMonthClose.fetchAll(db),
-                    transferLinks: try TransferLink.fetchAll(db)
-                )
-            }
+            let loaded = try dbQueue.read { db in try DashboardInput.load(db: db, today: today) }
             let netWorth = DashboardCalculator.netWorthSeries(loaded)
             let thisYear = MonthRange.components(of: today).year
             let firstYear = netWorth.actual.first?.year ?? thisYear

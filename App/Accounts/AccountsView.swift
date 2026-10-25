@@ -21,7 +21,7 @@ struct AccountsView: View {
     @State private var pendingReset: ImportFormat?
     @State private var resetError: String?
     /// The account list's width, dragged on its divider and remembered between launches.
-    @AppStorage("accounts.listWidth") private var listWidth: Double = 340
+    @AppStorage("accounts.listWidth") private var listWidth: Double = 560
     /// `listWidth` when a divider drag began; nil when not dragging.
     @State private var dragStartWidth: Double?
     /// The list-and-detail row's width, which bounds the list's.
@@ -110,9 +110,9 @@ struct AccountsView: View {
 
     // MARK: Resizable list
 
-    private static let listMinWidth: Double = 260
-    private static let listMaxWidth: Double = 640
-    private static let detailMinWidth: Double = 320
+    private static let listMinWidth: Double = 380
+    private static let listMaxWidth: Double = 760
+    private static let detailMinWidth: Double = 300
     /// The divider's hit area (the gap between the list and the detail).
     private static let dividerWidth: Double = 16
 
@@ -130,8 +130,8 @@ struct AccountsView: View {
     /// accent line while dragged.
     private var listDivider: some View {
         Rectangle()
-            .fill(dragStartWidth == nil ? Color.clear : theme.accent.opacity(0.6))
-            .frame(width: 2)
+            .fill(dragStartWidth == nil ? Color.secondary.opacity(0.25) : theme.accent.opacity(0.6))
+            .frame(width: dragStartWidth == nil ? 1 : 2)
             .frame(width: Self.dividerWidth)
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
@@ -355,6 +355,26 @@ private struct AccountsListView: View {
     let onMove: (AccountGroup, IndexSet, Int) -> Void
 
     var body: some View {
+        VStack(spacing: 0) {
+            columnHeader
+            list
+        }
+    }
+
+    /// The column titles, lined up with `AccountListRow`'s columns.
+    private var columnHeader: some View {
+        HStack(spacing: 8) {
+            Text("Account").figureText()
+            Spacer(minLength: 8)
+            Text("Last import").figureText().frame(width: AccountListRow.dateColumnWidth, alignment: .leading)
+            Text("Balance").figureText().frame(width: AccountListRow.balanceColumnWidth, alignment: .trailing)
+        }
+        .frame(maxWidth: .infinity)
+        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+        .padding(.leading, 16).padding(.trailing, 16).padding(.vertical, 4)
+    }
+
+    private var list: some View {
         List(selection: $selection) {
             ForEach(groups) { group in
                 Section {
@@ -402,15 +422,19 @@ private struct AccountListRow: View {
     let row: AccountRow
     let importedThrough: Date?
 
-    private var importedCaption: String {
-        importedThrough.map { "Imported up to \(AccountsFormat.shortDay($0))" } ?? "Not imported yet"
+    static let dateColumnWidth: Double = 92
+    static let balanceColumnWidth: Double = 132
+
+    /// The Last import column: the day of the latest imported transaction, or a dash.
+    private var importedText: String {
+        importedThrough.map { AccountsFormat.shortDay($0) } ?? "—"
     }
 
     /// Every row is two lines, whatever it shows — the name (with its flags and pills) over
     /// the caption on the left, the native balance over its GBP equivalent on the right — so
     /// all rows are the same height.
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(row.account.displayName).lineLimit(1)
@@ -419,13 +443,18 @@ private struct AccountListRow: View {
                 // The nickname's account name truncates; the import date never does.
                 HStack(spacing: 0) {
                     if row.account.displayName != row.account.name {
-                        Text("\(row.account.name) · ").lineLimit(1)
+                        Text(row.account.name).lineLimit(1)
+                    } else {
+                        Text(" ")
                     }
-                    Text(importedCaption).figureText()
                 }
                 .font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
+            Text(importedText).figureText()
+                .foregroundStyle(row.isStale ? Color.orange : Color.secondary)
+                .frame(width: Self.dateColumnWidth, alignment: .leading)
+                .help(importedThrough == nil ? "Nothing imported for this account" : "Latest imported transaction")
             VStack(alignment: .trailing, spacing: 1) {
                 AccountsFormat.balanceText(row.nativeBalanceMinorUnits, kind: row.account.kind, currency: row.account.currency,
                                            muted: !row.account.includeInNetWorth)
@@ -439,7 +468,7 @@ private struct AccountListRow: View {
                     Text(" ").font(.caption).accessibilityHidden(true)
                 }
             }
-            .fixedSize()
+            .frame(width: Self.balanceColumnWidth, alignment: .trailing)
         }
         .font(.body.monospacedDigit())
         .padding(.vertical, 2)

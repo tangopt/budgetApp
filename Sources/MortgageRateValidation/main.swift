@@ -76,7 +76,7 @@ guard let observations = fetched, !observations.isEmpty else {
 do {
     var configuration = Configuration()
     configuration.readonly = true
-    let source = try DatabaseQueue(path: paths[0], configuration: configuration)
+    let source = try ToolDatabase.open(path: paths[0], configuration: configuration)
     let manager = try DatabaseManager(path: nil)
     try source.backup(to: manager.dbQueue)
     try manager.migrate()

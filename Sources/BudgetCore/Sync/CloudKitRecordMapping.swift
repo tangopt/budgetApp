@@ -3,7 +3,7 @@ import Foundation
 
 /// The pure half of the CloudKit transport (plan Task 8, ruling R11): `SyncWireRecord` ↔ `CKRecord`, the
 /// archived system fields and change tokens, and `CKError` → the `SyncTransport` outcomes. Nothing here talks
-/// to iCloud; the operations live in the App target (`CloudKitTransport`). Kept in BudgetCore so the future
+/// to iCloud; the operations live in the `MangoSync` target (`CloudKitTransport`). Kept in BudgetCore so the future
 /// iPhone and iPad apps share it and so it is tested offline on both platforms.
 ///
 /// Sync spec §4.2: the record type, name and zone are the only plaintext. The engine hands over records already

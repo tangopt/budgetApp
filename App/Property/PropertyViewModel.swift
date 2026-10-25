@@ -96,6 +96,9 @@ final class PropertyViewModel: ObservableObject {
         case rechargeMonth(Date, tenancyId: Int64)
         /// A rent receipt (Tenancies): its details, the credits that paid it, its PDF.
         case receipt(id: Int64, tenancyId: Int64)
+        /// A figure of the Money tab (or a cost category): the transactions behind it. `id` is its
+        /// row's id in the tab, `title` what the panel is called.
+        case figure(id: String, title: String, drillDown: PropertyDrillDown)
     }
 
     /// Bumped when the side panel changed recharges (its statement sheet closed), so the
@@ -375,6 +378,12 @@ final class PropertyViewModel: ObservableObject {
         (gate ?? filedYearGate).run(dbQueue, edit: edit, scope: scope, body, done: done)
     }
 
+    /// Stores (or clears) the map location of property `propertyId`: the id is passed in, so a lookup that
+    /// finishes after the user moved to another property still lands on the one it was for.
+    func setLocation(propertyId: Int64, _ coordinate: PropertyCoordinate?, source: PropertyLocationSource) -> String? {
+        write { db in try Properties.setLocation(db: db, propertyId: propertyId, coordinate, source: source) }
+    }
+
     /// `checked`, its error's text to `done` (default: the screen's banner).
     func checkedWrite(_ edit: String, gate: FiledYearGate? = nil, _ body: @escaping (Database) throws -> Void,
                       done: ((String?) -> Void)? = nil) {
@@ -518,6 +527,21 @@ final class PropertyViewModel: ObservableObject {
         }
     }
 
+    /// "Not expected any more" on an overdue recurring cost: its series stops being expected
+    /// (synced, undone with `expectAgain`).
+    func stopExpecting(_ pattern: PropertyRecurringPattern) {
+        guard let propertyId else { return }
+        errorMessage = write { db in try PropertyCheckDecisions.stopExpecting(db: db, propertyId: propertyId, pattern: pattern) }
+        if errorMessage == nil { infoMessage = "\(pattern.title) is no longer expected. Undo it under Not expected any more." }
+    }
+
+    /// Undoes "Not expected any more": the series is expected again.
+    func expectAgain(_ item: PropertyCheckReport.NotExpectedRecurringCost) {
+        guard let propertyId else { return }
+        errorMessage = write { db in try PropertyCheckDecisions.expectAgain(db: db, propertyId: propertyId, series: item.series) }
+        if errorMessage == nil { infoMessage = "\(item.pattern.title) is expected again." }
+    }
+
     func seedEvidenceRules() {
         guard let propertyId else { return }
         do {
@@ -598,6 +622,12 @@ final class PropertyViewModel: ObservableObject {
         return nil
     }
 
+    /// The Money row whose transactions are open, for the table's highlight.
+    var openFigureId: String? {
+        if case let .figure(id, _, _) = sidePanel { return id }
+        return nil
+    }
+
     private func closeMonthPanel() {
         if case .month = sidePanel { sidePanel = nil }
     }
@@ -608,6 +638,7 @@ final class PropertyViewModel: ObservableObject {
         case .month: if ![.overview, .money].contains(tab) { sidePanel = nil }
         case .rechargeStatement, .rechargeMonth: if tab != .recharges { sidePanel = nil }
         case .receipt: if tab != .tenancies { sidePanel = nil }
+        case .figure: if tab != .money { sidePanel = nil }
         case nil: break
         }
     }
@@ -695,6 +726,7 @@ enum PropertyMessages {
         case .duplicateReceiptNumber: return "That receipt number is already used for this tenancy."
         case .invalidWithholding: return "The withholding can't be more than the rent."
         case let .invalidEmail(text): return "“\(text)” isn't an email address."
+        case .invalidLocation: return "That map location isn't valid."
         }
     }
 

@@ -687,7 +687,16 @@ enum SnapshotCatalog {
                 let rows = plan.items.first { $0.parentId == demo.statementId }?.id
                 context.environment.importCenter.showSnapshotPlan(plan, selecting: rows)
             },
-            SnapshotRoute(name: "settings-main", title: "Settings window") { _ in AnyView(SnapshotStandaloneCanvas(content: SettingsView())) }
+            SnapshotRoute(name: "settings-main", title: "Settings window") { _ in AnyView(SnapshotStandaloneCanvas(content: SettingsView())) },
+            // Settings ▸ Sync: off for the real database (no switch), and the DEBUG demo's live pane.
+            SnapshotRoute(name: "settings-sync", title: "Settings ▸ Sync, off") { _ in
+                AnyView(SnapshotStandaloneCanvas(content: SettingsView(pane: .sync)))
+            },
+            SnapshotRoute(name: "settings-sync_demo", title: "Settings ▸ Sync, the demo syncing") { _ in
+                AnyView(SnapshotStandaloneCanvas(content: SyncSettingsPane(status: .syncing(.pulling), isRunning: true, report: nil,
+                                                                           onSyncNow: {})
+                    .scenePadding().frame(width: 640)))
+            }
         ]
     }
 
@@ -705,6 +714,14 @@ enum SnapshotCatalog {
             screen("property", "money_month", "Property: Money, August's transactions open", .property, settle: 1.5) { models, _ in
                 models.property.tab = .money
                 models.property.sidePanel = .month(august)
+            },
+            screen("property", "money_figure", "Property: Money, the Costs figure open", .property, settle: 1.5) { models, _ in
+                models.property.tab = .money
+                models.property.sidePanel = .figure(id: "costs", title: "Costs", drillDown: .costs(categoryId: nil))
+            },
+            screen("property", "money_figure_rent", "Property: Money, Rent received open", .property, settle: 1.5) { models, _ in
+                models.property.tab = .money
+                models.property.sidePanel = .figure(id: "received", title: "Rent received", drillDown: .rentCredits)
             },
             screen("property", "overview_loan_5y", "Property: Overview, the loan five years each side", .property, settle: 1.3) { models, _ in
                 models.property.tab = .overview
@@ -777,6 +794,11 @@ enum SnapshotCatalog {
                 let model = await context.propertyModel()
                 return AnyView(PropertyFormSheet(viewModel: model, draft: PropertyDraft(model.property)))
             },
+            sheet("property_address", "Edit address") { context in
+                let model = await context.propertyModel()
+                guard let property = model.property else { throw SnapshotMissing("the demo property") }
+                return AnyView(PropertyAddressSheet(viewModel: model, property: property) { _ in })
+            },
             sheet("owners", "Owners") { context in AnyView(OwnersSheet(viewModel: await context.propertyModel())) },
             sheet("owners_error", "Owners (shares not adding up: Save's error)") { context in
                 // Save's real message: the shares as entered are refused (the write rolls back).
@@ -827,10 +849,6 @@ enum SnapshotCatalog {
                 guard let tenancy = model.snapshot.tenancies.last else { throw SnapshotMissing("a tenancy") }
                 return AnyView(PropertyDocumentsSheet(viewModel: model, entity: EvidenceEntity(type: .tenancy, id: tenancy.id!),
                                                       title: "Documents · \(tenancy.referenceLabel)"))
-            },
-            sheet("money_drill_down", "Money: costs drill-down") { context in
-                let model = await context.propertyModel()
-                return AnyView(PropertyDrillDownSheet(title: "Costs", rows: model.transactions(.costs(categoryId: nil)), openTransaction: { _ in }))
             },
             sheet("recharge_statement_paid", "Recharge statement (paid)") { context in
                 try await context.statementSheet(status: .paid)

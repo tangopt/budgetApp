@@ -29,6 +29,9 @@ public struct SyncPushReport: Equatable, Sendable {
     /// Why nothing was sent (ruling R15): the household key isn't held here yet, or its marker couldn't be read or
     /// published now. Everything stays pending; nil when the push ran.
     public var keyWait: SyncKeyError?
+    /// With `keyWait == .unavailable`: the passing transport error that kept the key marker from being fetched or
+    /// published (offline, busy, a retry-after), so the scheduler shows it as offline, not as waiting for the key.
+    public var keyWaitCause: SyncTransportError?
 
     public init() {}
 }
@@ -112,12 +115,23 @@ public actor SyncEngineCore {
     let documents: SyncDocumentFiles?
     /// Where the zone keys are (iCloud Keychain in the apps; ruling R15).
     let keyStore: any SyncKeyStore
+    /// Pulls only, never writes to the server (the read-only iPhone, plan step 4 Task 12): no zone is created (a
+    /// missing one is "nothing to download yet"), nothing is pushed, no key marker is published, no lease is taken.
+    public nonisolated let readOnly: Bool
+
+    /// A read-only engine was asked to write.
+    public enum ReadOnlyError: Error, Equatable {
+        case readOnly
+    }
     /// The last entry point started: the next one waits for it.
     private var tail: Task<Void, Never>?
+    /// The passing transport error behind the last `SyncKeyError.unavailable` (set by the key fetch and publish).
+    var keyTransportError: SyncTransportError?
 
     public init(db: any DatabaseWriter, transport: any SyncTransport, device: SyncDevice, keyStore: any SyncKeyStore, batchSize: Int = 200,
-                clock: @escaping @Sendable () -> Date = { Date() }, documents: SyncDocumentFiles? = nil) {
+                clock: @escaping @Sendable () -> Date = { Date() }, documents: SyncDocumentFiles? = nil, readOnly: Bool = false) {
         self.db = db
+        self.readOnly = readOnly
         self.documents = documents
         self.transport = transport
         self.device = device
@@ -157,6 +171,7 @@ public actor SyncEngineCore {
     /// `ImportLeaseError.heldBy` ("Importing on <device>") while another device holds it, and
     /// `SyncKeyError.waitingForHouseholdKey` while this device doesn't hold the household key yet.
     public func acquireImportLease() async throws {
+        guard !readOnly else { throw ReadOnlyError.readOnly }
         try await serialized {
             try await self.prepare()
             let key = try await self.householdKey(zone: SyncRecordStore.householdZone, create: true)
@@ -171,6 +186,7 @@ public actor SyncEngineCore {
     /// Gives the lease up without importing (the user cancelled). A batch's lease is released by the push
     /// that uploads the batch's close.
     public func releaseImportLease() async throws {
+        guard !readOnly else { throw ReadOnlyError.readOnly }
         try await serialized {
             guard let held = try await self.db.read({ db in try SyncImportGate.heldLease(db: db) }) else { return }
             let key = try await self.householdKey(zone: SyncRecordStore.householdZone, create: false)
@@ -186,15 +202,21 @@ public actor SyncEngineCore {
     }
 
     /// Runs `body` after every entry point called before it has finished (actor methods are reentrant at
-    /// each `await`, so without this two syncs would interleave: double sends, a token going back).
+    /// each `await`, so without this two syncs would interleave: double sends, a token going back). Cancelling the
+    /// caller cancels the run (plan step 4 Task 1): it stops at its next operation, and the transport sees it.
     func serialized<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) async throws -> T {
         let previous = tail
         let task = Task<T, Error> {
             await previous?.value
+            try Task.checkCancellation()
             return try await body()
         }
         tail = Task { _ = try? await task.value }
-        return try await task.value
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     // MARK: Pull
@@ -244,6 +266,8 @@ public actor SyncEngineCore {
         // Every key held here for the zone (ruling R15): what one of them sealed opens; the rest waits for its key.
         let keys = try keyStore.allKeys(zone: zone)
         while true {
+            // Cancelled: stops before the next page; nothing fetched so far is applied, the token stays.
+            try Task.checkCancellation()
             let page: SyncChanges
             do {
                 page = try await transport.changes(since: token, zone: zone)
@@ -258,6 +282,8 @@ public actor SyncEngineCore {
                 zoneKeys = [:]
                 continue
             } catch SyncTransportError.zoneNotFound {
+                // Read-only: the household hasn't been shared up yet; nothing to download, nothing made here.
+                if readOnly { return SyncPullReport() }
                 try await recoverMissingZone(zone)
                 return SyncPullReport()
             }
@@ -300,6 +326,7 @@ public actor SyncEngineCore {
         let reconcile = full ? listed : nil
         let keyRecords = Array(zoneKeys.values)
         let now = clock()
+        try Task.checkCancellation()
         let (pulled, discarded) = try await db.write { db -> (SyncPullReport, [String]) in
             var report = SyncPullReport()
             report.alreadyHeld = skipped
@@ -379,6 +406,8 @@ public actor SyncEngineCore {
     // MARK: Push
 
     func pushAll() async throws -> SyncPushReport {
+        // Read-only: nothing is ever sent (nor a key made or a lease renewed).
+        if readOnly { return SyncPushReport() }
         try await prepare()
         var report = SyncPushReport()
         let busy = try await db.read { db in
@@ -388,11 +417,13 @@ public actor SyncEngineCore {
         // Every record goes sealed under the zone's current key (ruling R15): without it here, nothing is sent and
         // no key is made while another device's marker names one (it waits for iCloud Keychain).
         var key: HouseholdKey
+        keyTransportError = nil
         do {
             key = try await householdKey(zone: SyncRecordStore.householdZone, create: true)
         } catch let wait as SyncKeyError {
             Self.log.error("Sync push waits for the household key (\(String(describing: wait), privacy: .public))")
             report.keyWait = wait
+            report.keyWaitCause = wait == .unavailable ? keyTransportError : nil
             return report
         }
         try await renewLeaseIfDue(key)
@@ -413,6 +444,8 @@ public actor SyncEngineCore {
             }
             report.heldBack = heldBack
             for start in stride(from: 0, to: saves.count, by: chunkSize) {
+                // Cancelled: stops before the next operation; what wasn't acknowledged stays pending.
+                try Task.checkCancellation()
                 let chunk = Array(saves[start..<min(start + chunkSize, saves.count)])
                 for change in chunk { tries[change.uuid, default: 0] += 1 }
                 // A long upload keeps a used lease alive (it expires 30 minutes after it was last renewed).
@@ -427,6 +460,7 @@ public actor SyncEngineCore {
                 try Self.sendableDeletes(db: db).filter { triesAfterSaves[$0.uuid, default: 0] < Self.triesPerPush }
             }
             for start in stride(from: 0, to: deletes.count, by: chunkSize) {
+                try Task.checkCancellation()
                 let chunk = Array(deletes[start..<min(start + chunkSize, deletes.count)])
                 for change in chunk { tries[change.uuid, default: 0] += 1 }
                 let zones = try await db.read { db in try Self.zones(of: chunk, db: db) }
@@ -445,10 +479,12 @@ public actor SyncEngineCore {
                 for zone in Self.zones { try await recoverMissingZone(zone) }
                 tries = [:]
                 // The marker went with the zone: published again (the same key) before anything is sent.
+                keyTransportError = nil
                 do {
                     key = try await householdKey(zone: SyncRecordStore.householdZone, create: true)
                 } catch let wait as SyncKeyError {
                     report.keyWait = wait
+                    report.keyWaitCause = wait == .unavailable ? keyTransportError : nil
                     return report
                 }
                 continue
@@ -704,7 +740,8 @@ public actor SyncEngineCore {
         let (on, ready) = try await db.read { db in
             (try SyncImportGate.isSyncOn(db: db), try Self.zones.filter { try Self.zoneReady($0, db: db) })
         }
-        let missing = Self.zones.filter { !ready.contains($0) }
+        // Read-only: zones are the Mac's to make; none is marked ready here.
+        let missing = readOnly ? [] : Self.zones.filter { !ready.contains($0) }
         for zone in missing { try await transport.createZone(zone) }
         guard !on || !missing.isEmpty else { return }
         try await db.write { db in
@@ -809,6 +846,12 @@ public actor SyncEngineCore {
 
     static func zoneReady(_ zone: String, db: Database) throws -> Bool {
         try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [zoneKey(zone)]) != nil
+    }
+
+    /// Whether this database has pulled the household zone at least once (it holds a change token). The phone's
+    /// first download is the time before it does.
+    public static func hasChangeToken(db: Database) throws -> Bool {
+        try token(zone: SyncRecordStore.householdZone, db: db) != nil
     }
 
     static func token(zone: String, db: Database) throws -> Data? {

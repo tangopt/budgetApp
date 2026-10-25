@@ -77,7 +77,7 @@ public enum DemoImportSamples {
     public static func write(into folder: URL, databasePath: String) throws -> [URL] {
         var configuration = Configuration()
         configuration.readonly = true
-        let dbQueue = try DatabaseQueue(path: databasePath, configuration: configuration)
+        let dbQueue = try ToolDatabase.open(path: databasePath, configuration: configuration)
         defer { try? dbQueue.close() }
         return try write(into: folder, dbQueue: dbQueue)
     }

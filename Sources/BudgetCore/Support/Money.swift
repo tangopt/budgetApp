@@ -13,35 +13,31 @@ public enum Currency: String, Codable, CaseIterable, Sendable {
 }
 
 public enum Money {
-    /// Formats an integer minor-unit amount (e.g. pence) as a currency string.
+    /// Formats an integer minor-unit amount (e.g. pence) as a currency string: "£1,234,567.89", "-€0.05".
+    /// Grouped in threes with "," by hand, never by the device's locale, so the Mac and the phone show the same
+    /// strings.
     public static func format(_ minorUnits: Int, currency: Currency) -> String {
-        let negative = minorUnits < 0
-        let absValue = abs(minorUnits)
-        let whole = absValue / 100
-        let fraction = absValue % 100
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.groupingSeparator = ","
-        let wholeString = formatter.string(from: NSNumber(value: whole)) ?? "\(whole)"
-        let body = "\(currency.symbol)\(wholeString).\(String(format: "%02d", fraction))"
-        return negative ? "-\(body)" : body
+        let magnitude = minorUnits.magnitude
+        let body = "\(currency.symbol)\(grouped(magnitude / 100)).\(String(format: "%02d", Int(magnitude % 100)))"
+        return minorUnits < 0 ? "-\(body)" : body
     }
 
     /// Formats minor units for a text field: thousands separators, always two decimals,
     /// "-" prefix when negative, no currency symbol ("44,007.51"). Round-trips with
     /// `parseMinorUnits`.
     public static func formatInput(_ minorUnits: Int) -> String {
-        let absValue = minorUnits.magnitude
-        let whole = absValue / 100
-        let fraction = absValue % 100
-        // Grouped by hand so the output never depends on the user's locale.
-        var wholeString = ""
+        let magnitude = minorUnits.magnitude
+        return "\(minorUnits < 0 ? "-" : "")\(grouped(magnitude / 100)).\(String(format: "%02d", Int(magnitude % 100)))"
+    }
+
+    /// Whole units grouped in threes with "," ("1,234,567"), independent of the locale.
+    private static func grouped(_ whole: UInt) -> String {
+        var result = ""
         for (index, digit) in String(whole).reversed().enumerated() {
-            if index > 0, index % 3 == 0 { wholeString.append(",") }
-            wholeString.append(digit)
+            if index > 0, index % 3 == 0 { result.append(",") }
+            result.append(digit)
         }
-        wholeString = String(wholeString.reversed())
-        return "\(minorUnits < 0 ? "-" : "")\(wholeString).\(String(format: "%02d", fraction))"
+        return String(result.reversed())
     }
 
     private static let plainDecimalPattern = try! NSRegularExpression(pattern: #"^[+-]?(\d+(\.\d*)?|\.\d+)$"#)

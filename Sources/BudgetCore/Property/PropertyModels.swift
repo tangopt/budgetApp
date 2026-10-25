@@ -63,9 +63,20 @@ public struct Property: Codable, Equatable, Identifiable, FetchableRecord, Mutab
     public var purchasePriceMinorUnits: Int?
     public var purchaseDate: Date?
     public var notes: String?
+    /// The street lines of the address (street, number, floor, door), one per line. With `postcode`,
+    /// `city` and `country` it is the full address (see `PropertyAddress`).
+    public var address: String?
+    public var postcode: String?
+    public var city: String?
+    /// Where the property is on the map, both or neither; `locationSource` says how it was placed.
+    public var latitude: Double?
+    public var longitude: Double?
+    public var locationSource: PropertyLocationSource?
 
     public init(id: Int64? = nil, name: String, country: String, currency: Currency = .eur, matrixArticle: String? = nil,
-                purchasePriceMinorUnits: Int? = nil, purchaseDate: Date? = nil, notes: String? = nil) {
+                purchasePriceMinorUnits: Int? = nil, purchaseDate: Date? = nil, notes: String? = nil,
+                address: String? = nil, postcode: String? = nil, city: String? = nil,
+                latitude: Double? = nil, longitude: Double? = nil, locationSource: PropertyLocationSource? = nil) {
         self.id = id
         self.name = name
         self.country = country
@@ -74,6 +85,12 @@ public struct Property: Codable, Equatable, Identifiable, FetchableRecord, Mutab
         self.purchasePriceMinorUnits = purchasePriceMinorUnits
         self.purchaseDate = purchaseDate
         self.notes = notes
+        self.address = address
+        self.postcode = postcode
+        self.city = city
+        self.latitude = latitude
+        self.longitude = longitude
+        self.locationSource = locationSource
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -81,6 +98,32 @@ public struct Property: Codable, Equatable, Identifiable, FetchableRecord, Mutab
     }
 
     public static let databaseTableName = "property"
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, country, currency, matrixArticle, purchasePriceMinorUnits, purchaseDate, notes
+        case address, postcode, city, latitude, longitude, locationSource
+    }
+
+    /// The address and location columns are written only when they hold a value, so code saving a property
+    /// still works on a database migrated only up to an earlier migration (rehearsals, migration tests).
+    /// `Properties.save` and `Properties.setLocation` write them explicitly, so clearing one stores NULL.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(country, forKey: .country)
+        try container.encode(currency, forKey: .currency)
+        try container.encode(matrixArticle, forKey: .matrixArticle)
+        try container.encode(purchasePriceMinorUnits, forKey: .purchasePriceMinorUnits)
+        try container.encode(purchaseDate, forKey: .purchaseDate)
+        try container.encode(notes, forKey: .notes)
+        if let address { try container.encode(address, forKey: .address) }
+        if let postcode { try container.encode(postcode, forKey: .postcode) }
+        if let city { try container.encode(city, forKey: .city) }
+        if let latitude { try container.encode(latitude, forKey: .latitude) }
+        if let longitude { try container.encode(longitude, forKey: .longitude) }
+        if let locationSource { try container.encode(locationSource, forKey: .locationSource) }
+    }
 }
 
 /// One person's share of a property over a date range. At any date, the shares of a

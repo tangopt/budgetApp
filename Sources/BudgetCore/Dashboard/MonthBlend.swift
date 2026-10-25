@@ -1,6 +1,6 @@
 import Foundation
 
-public enum MonthClass: Equatable {
+public enum MonthClass: Equatable, Sendable {
     /// Real transactions only (a closed pay month).
     case actual
     /// An open pay month that has started: per category, the larger of what has happened

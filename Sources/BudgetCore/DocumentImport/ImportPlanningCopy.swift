@@ -49,7 +49,7 @@ final class ImportPlanningCopy: @unchecked Sendable {
         let path = Self.processFolder.appendingPathComponent("plan-\(UUID().uuidString).sqlite").path
         self.path = path
         do {
-            let queue = try DatabaseQueue(path: path)
+            let queue = try ToolDatabase.open(path: path)
             try source.backup(to: queue)
             dbQueue = queue
         } catch {

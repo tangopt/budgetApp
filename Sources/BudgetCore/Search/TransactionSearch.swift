@@ -136,8 +136,9 @@ public enum TransactionSearch {
 
     // MARK: Search
 
-    /// `Input` prepared once per load: each transaction's row and its folded search text, so
-    /// typing only filters.
+    /// `Input` prepared once per load: each transaction's row and its folded search text, newest
+    /// first (ties: the later id first, `sorted(_:by: .date, ascending: false)`'s order), so typing
+    /// only filters and never sorts.
     public struct Index: Sendable {
         fileprivate struct Entry: Sendable {
             let row: Row
@@ -148,13 +149,16 @@ public enum TransactionSearch {
 
         fileprivate let entries: [Entry]
 
+        /// Every row, newest first.
+        public var allRows: [Row] { entries.map(\.row) }
+
         public init(_ input: Input) {
             let categoryById = Dictionary(input.categories.compactMap { c in c.id.map { ($0, c) } }, uniquingKeysWith: { a, _ in a })
             let accountById = Dictionary(input.accounts.compactMap { a in a.id.map { ($0, a) } }, uniquingKeysWith: { a, _ in a })
             let active = input.links.filter { !$0.isDismissed }
             let linked = Set(active.flatMap { [$0.outTransactionId, $0.inTransactionId] })
             let outByIn = Dictionary(active.map { ($0.inTransactionId, $0.outTransactionId) }, uniquingKeysWith: { first, _ in first })
-            entries = input.transactions.map { transaction in
+            let unsorted: [Entry] = input.transactions.map { transaction in
                 let category = transaction.categoryId.flatMap { categoryById[$0] }
                 let account = accountById[transaction.accountId]
                 let row = Row(transaction: transaction, category: category, categoryName: category?.name ?? "",
@@ -164,6 +168,9 @@ public enum TransactionSearch {
                 let haystack = [transaction.rawDescription, transaction.note ?? "", category?.name ?? ""]
                     .map(TransactionSearch.fold).joined(separator: "\u{1}")
                 return Entry(row: row, haystack: haystack)
+            }
+            entries = unsorted.sorted { lhs, rhs in
+                lhs.row.date != rhs.row.date ? lhs.row.date > rhs.row.date : lhs.row.id > rhs.row.id
             }
         }
     }
@@ -218,7 +225,8 @@ public enum TransactionSearch {
             }
             return row
         }
-        return sorted(rows, by: .date, ascending: false)
+        // Already newest first: the Index is kept in that order.
+        return rows
     }
 
     /// A word read as an amount, in absolute minor units: "12.99", "£12.99", "-12.99",

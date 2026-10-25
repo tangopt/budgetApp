@@ -9,11 +9,15 @@
 // The master is an unmasked square, so each size is drawn into the 824pt rounded tile of the macOS
 // icon grid with a soft drop shadow. Below `simplifiedBelowPixels` a simplified drawing is rasterised
 // instead: the shadow, shading and highlight groups and the leaf veins are removed from the SVG first.
-// Run from the repo root:  swift scripts/generate-app-icon.swift
+// With --ios it writes the iPhone's set instead, to Phone/Assets.xcassets/AppIcon.appiconset: the master
+// full-bleed and opaque (iOS draws its own rounded mask and rejects an icon with alpha), at every iPhone
+// size plus the 1024 px App Store (marketing) icon.
+// Run from the repo root:  swift scripts/generate-app-icon.swift [--ios]
 import AppKit
 import CoreGraphics
 
-let outputDir = URL(fileURLWithPath: "App/Assets.xcassets/AppIcon.appiconset", isDirectory: true)
+let ios = CommandLine.arguments.contains("--ios")
+let outputDir = URL(fileURLWithPath: ios ? "Phone/Assets.xcassets/AppIcon.appiconset" : "App/Assets.xcassets/AppIcon.appiconset", isDirectory: true)
 let masterURL = URL(fileURLWithPath: "docs/design/mango-icon.svg")
 let simplifiedBelowPixels = 32
 /// Element ids dropped from the master in the simplified drawing.
@@ -53,6 +57,20 @@ func loadArtwork(simplified: Bool) throws -> CGImage {
 let fullArtwork = try loadArtwork(simplified: false)
 let simplifiedArtwork = try loadArtwork(simplified: true)
 
+/// The iPhone's icon: the master full-bleed on its background colour, without alpha.
+func renderOpaquePNG(pixels: Int, to url: URL) throws {
+    let ctx = CGContext(data: nil, width: pixels, height: pixels, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+    ctx.interpolationQuality = .high
+    ctx.setShouldAntialias(true)
+    let canvas = CGRect(x: 0, y: 0, width: pixels, height: pixels)
+    ctx.setFillColor(color(0x0A2440))
+    ctx.fill(canvas)
+    ctx.draw(pixels < simplifiedBelowPixels ? simplifiedArtwork : fullArtwork, in: canvas)
+    let rep = NSBitmapImageRep(cgImage: ctx.makeImage()!)
+    try rep.representation(using: .png, properties: [:])!.write(to: url)
+}
+
 func renderPNG(pixels: Int, to url: URL) throws {
     let ctx = CGContext(data: nil, width: pixels, height: pixels, bitsPerComponent: 8, bytesPerRow: 0,
                         space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
@@ -85,11 +103,24 @@ func renderPNG(pixels: Int, to url: URL) throws {
 try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
 var images: [[String: String]] = []
-for points in [16, 32, 128, 256, 512] {
-    for scale in [1, 2] {
-        let filename = "icon_\(points)x\(points)\(scale == 2 ? "@2x" : "").png"
-        try renderPNG(pixels: points * scale, to: outputDir.appendingPathComponent(filename))
-        images.append(["idiom": "mac", "size": "\(points)x\(points)", "scale": "\(scale)x", "filename": filename])
+if ios {
+    // Notification, Settings, Spotlight and Home screen icons at @2x and @3x, then the App Store's.
+    for points in [20, 29, 40, 60] {
+        for scale in [2, 3] {
+            let filename = "icon_\(points)x\(points)@\(scale)x.png"
+            try renderOpaquePNG(pixels: points * scale, to: outputDir.appendingPathComponent(filename))
+            images.append(["idiom": "iphone", "size": "\(points)x\(points)", "scale": "\(scale)x", "filename": filename])
+        }
+    }
+    try renderOpaquePNG(pixels: 1024, to: outputDir.appendingPathComponent("icon_1024x1024.png"))
+    images.append(["idiom": "ios-marketing", "size": "1024x1024", "scale": "1x", "filename": "icon_1024x1024.png"])
+} else {
+    for points in [16, 32, 128, 256, 512] {
+        for scale in [1, 2] {
+            let filename = "icon_\(points)x\(points)\(scale == 2 ? "@2x" : "").png"
+            try renderPNG(pixels: points * scale, to: outputDir.appendingPathComponent(filename))
+            images.append(["idiom": "mac", "size": "\(points)x\(points)", "scale": "\(scale)x", "filename": filename])
+        }
     }
 }
 

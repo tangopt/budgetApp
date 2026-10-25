@@ -394,6 +394,7 @@ extension SyncEngineCore {
         do {
             server = try await transport.fetch(name, zone: zone)
         } catch let error as SyncTransportError where error.isPassing {
+            keyTransportError = error
             throw SyncKeyError.unavailable
         }
         let now = clock()
@@ -441,6 +442,7 @@ extension SyncEngineCore {
         do {
             results = try await transport.save([wire], ifUnchanged: systemFields.map { [wire.recordName: $0] } ?? [:], atomic: false)
         } catch let error as SyncTransportError where error.isPassing {
+            keyTransportError = error
             throw SyncKeyError.unavailable
         }
         let now = clock()

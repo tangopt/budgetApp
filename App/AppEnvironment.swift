@@ -22,6 +22,13 @@ final class AppEnvironment: ObservableObject {
     /// Set once, right after launch, only if the fetched rate actually differs from the
     /// last saved one at 2 decimal places. `AccountsView` displays and dismisses it.
     @Published var exchangeRateBanner: String?
+    /// What Settings ▸ Sync shows. `.off` unless a DEBUG `--sync-demo` launch on the demo database runs the
+    /// scheduler (`SyncDemoMode`): the real database never syncs in this build (`SyncActivation`).
+    @Published var syncStatus: SyncStatus = .off
+    /// The last sync's report in that demo (Settings ▸ Sync's counts); nil until one has finished.
+    @Published var syncLastReport: SyncReport?
+    /// The demo's scheduler; nil whenever sync is off.
+    var syncScheduler: SyncScheduler?
     /// HMRC's average rates the ended tax years lack, fetched in the background (after
     /// launch, and whenever the Tax years screen appears).
     let hmrcRateAutoFetch: HMRCRateAutoFetch
@@ -151,6 +158,21 @@ final class AppEnvironment: ObservableObject {
             if let user = try AppUserStore.signInCandidates(db).first { return user }
             guard let person = try Person.order(Column("id")).fetchOne(db), let personId = person.id else { return nil }
             return AppUser(personId: personId, displayName: person.name, isAdmin: true, createdAt: AppClock.now)
+        }
+    }
+
+    /// Sync runs in this window's database (only a DEBUG `--sync-demo` launch on the demo database).
+    var isSyncRunning: Bool { syncScheduler != nil }
+
+    /// Settings ▸ Sync's "Sync now": pulls then pushes through the scheduler and keeps the report. Nothing when
+    /// sync is off.
+    func syncNow() async {
+        guard let scheduler = syncScheduler else { return }
+        do {
+            syncLastReport = try await scheduler.syncNowAndWait()
+        } catch {
+            Logger(subsystem: "com.personal.budget", category: "Sync")
+                .error("Sync now didn't finish (\(String(describing: type(of: error)), privacy: .public))")
         }
     }
 

@@ -81,6 +81,18 @@ func registerAppUserMigration(_ migrator: inout DatabaseMigrator) {
 /// `localCredential`).
 public enum LocalSetting {
     static let databaseIdKey = "databaseId"
+    static let phoneDeviceIdKey = "phone.deviceId"
+
+    /// The iPhone's id as a sync device (`SyncDevice.id`): a random id made the first time it's asked for, kept with
+    /// this database (plan step 4 Task 12).
+    public static func phoneDeviceId(_ db: Database) throws -> String {
+        if let id = try String.fetchOne(db, sql: "SELECT value FROM localSetting WHERE key = ?", arguments: [phoneDeviceIdKey]) {
+            return id
+        }
+        let id = UUID().uuidString
+        try db.execute(sql: "INSERT INTO localSetting (key, value) VALUES (?, ?)", arguments: [phoneDeviceIdKey, id])
+        return id
+    }
 
     /// A random id made the first time it's asked for. Touch ID enrolment on this Mac is keyed by it as well as
     /// by the app user id, so another database whose users share ids can't be unlocked by this enrolment.

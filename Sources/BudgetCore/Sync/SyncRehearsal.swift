@@ -154,10 +154,10 @@ public enum SyncRehearsal {
         var readOnly = Configuration()
         readOnly.readonly = true
         do {
-            let source = try DatabaseQueue(path: databasePath, configuration: readOnly)
-            let original = try DatabaseQueue(path: originalPath)
+            let source = try ToolDatabase.open(path: databasePath, configuration: readOnly)
+            let original = try ToolDatabase.open(path: originalPath)
             try source.backup(to: original)
-            let copy = try DatabaseQueue(path: copyPath)
+            let copy = try ToolDatabase.open(path: copyPath)
             try original.backup(to: copy)
             try source.close()
             try original.close()
@@ -179,7 +179,7 @@ public enum SyncRehearsal {
                 waitingCopied = true
             }
         }
-        let original = try DatabaseQueue(path: originalPath, configuration: readOnly)
+        let original = try ToolDatabase.open(path: originalPath, configuration: readOnly)
         defer { try? original.close() }
 
         // Migrate and backfill the copy.

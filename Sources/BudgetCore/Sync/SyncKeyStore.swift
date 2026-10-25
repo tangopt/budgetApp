@@ -3,7 +3,7 @@ import Foundation
 import os
 
 /// Where a zone's keys live (ruling R15, sync spec §9.1): never in CloudKit. The Mac and iOS apps keep them in
-/// iCloud Keychain (`KeychainSyncKeyStore`, App target), so every device of the household's Apple Account
+/// iCloud Keychain (`KeychainSyncKeyStore`, `MangoSync` target), so every device of the household's Apple Account
 /// receives them end to end; tests use `InMemorySyncKeyStore`. Keys are kept by id (`DocumentCrypto.zoneKeyId`),
 /// so a record or data key sealed under a retired key still opens. Which key is current is the zone's `zoneKey`
 /// marker record's business; `key(zone:)` is only the newest one stored here (used to publish a marker again

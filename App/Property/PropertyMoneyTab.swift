@@ -13,14 +13,8 @@ struct PropertyMoneyTab: View {
     @ObservedObject var viewModel: PropertyViewModel
     let openTransaction: (Transaction) -> Void
 
-    private struct DrillDown: Identifiable {
-        let id = UUID()
-        let title: String
-        let rows: [EvidenceTransactionInfo]
-    }
-
-    @State private var drillDown: DrillDown?
     @State private var showsMonthlyTable = false
+    @FocusState private var isFocused: Bool
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -31,8 +25,12 @@ struct PropertyMoneyTab: View {
                 }
                 // Side by side only where costs by category gets the width its bars and figures need.
                 SplitRow(ratio: 0.57, stackBelow: 1000) {
-                    Panel("Figures", subtitle: "A chevron lists a figure's transactions", fillsHeight: true) {
-                        DataTable(columns: figureColumns(summary.currency), sections: figureSections(summary), zebra: false)
+                    Panel("Figures", subtitle: "Select a figure to list its transactions", fillsHeight: true) {
+                        DataTable(columns: figureColumns(summary.currency), sections: figureSections(summary), zebra: false,
+                                  onSelect: { figure in
+                                      if let kind = figure.drillDown { select(id: figure.id, figure.title, kind) }
+                                  },
+                                  selectedId: viewModel.openFigureId)
                     }
                     VStack(spacing: ScreenMetrics.spacing) {
                         costsPanel(summary)
@@ -47,13 +45,39 @@ struct PropertyMoneyTab: View {
                 InlineBanner(.info, "Pick a range that ends after it starts.")
             }
         }
-        .sheet(item: $drillDown) { item in
-            PropertyDrillDownSheet(title: item.title, rows: item.rows, openTransaction: openTransaction)
-        }
+        // Up and Down move the selection through the figures, then the cost categories.
+        .focusable()
+        .focused($isFocused)
+        .focusEffectDisabled()
+        .onKeyPress(.upArrow) { moveSelection(-1) }
+        .onKeyPress(.downArrow) { moveSelection(1) }
     }
 
-    private func open(_ title: String, _ kind: PropertyDrillDown) {
-        drillDown = DrillDown(title: title, rows: viewModel.transactions(kind))
+    private static let categoryPrefix = "category."
+
+    /// Opens a figure's transactions in the side panel, or closes the panel when it's the open one.
+    private func select(id: String, _ title: String, _ kind: PropertyDrillDown) {
+        isFocused = true
+        viewModel.toggleSidePanel(.figure(id: id, title: title, drillDown: kind))
+    }
+
+    /// The rows that open, in the order they are drawn: the figures, then the cost categories.
+    private func openableRows(_ summary: PropertySummary) -> [(id: String, title: String, kind: PropertyDrillDown)] {
+        let figures = figureSections(summary).flatMap { section in section.rows + (section.total.map { [$0] } ?? []) }
+            .compactMap { figure in figure.drillDown.map { (id: figure.id, title: figure.title, kind: $0) } }
+        let categories = summary.costsByCategory.map {
+            (id: Self.categoryPrefix + String($0.categoryId), title: $0.name, kind: PropertyDrillDown.costs(categoryId: $0.categoryId))
+        }
+        return figures + categories
+    }
+
+    private func moveSelection(_ steps: Int) -> KeyPress.Result {
+        guard let summary = viewModel.snapshot.summary else { return .ignored }
+        let rows = openableRows(summary)
+        guard let id = PropertyMoneySelection.step(ids: rows.map(\.id), from: viewModel.openFigureId, by: steps),
+              let row = rows.first(where: { $0.id == id }) else { return .ignored }
+        viewModel.sidePanel = .figure(id: row.id, title: row.title, drillDown: row.kind)
+        return .handled
     }
 
     private func rateNote(_ summary: PropertySummary) -> String? {
@@ -103,10 +127,6 @@ struct PropertyMoneyTab: View {
         if currency != .gbp {
             columns.append(.money("GBP", role: { $0.role }, currency: { _ in .gbp }) { $0.amount.gbp })
         }
-        columns.append(.actions { figure in
-            guard let kind = figure.drillDown else { return [] }
-            return [DataTableAction("Transactions: \(figure.title)", systemImage: "chevron.right", inline: true) { open(figure.title, kind) }]
-        })
         return columns
     }
 
@@ -172,11 +192,12 @@ struct PropertyMoneyTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 // Every row is a cost: magnitudes, neutral (spec §1.4).
-                BreakdownBars(items: categories.map { BreakdownItem($0.name, minorUnits: $0.amount.native, id: String($0.categoryId)) },
+                BreakdownBars(items: categories.map { BreakdownItem($0.name, minorUnits: $0.amount.native, id: Self.categoryPrefix + String($0.categoryId)) },
                               currency: summary.currency, maxItems: max(categories.count, 1), keepsNonPositive: true,
+                              selectedId: viewModel.openFigureId,
                               selectTitle: { "Transactions: \($0.label)" }) { item in
-                    if let category = categories.first(where: { String($0.categoryId) == item.id }) {
-                        open(category.name, .costs(categoryId: category.categoryId))
+                    if let category = categories.first(where: { Self.categoryPrefix + String($0.categoryId) == item.id }) {
+                        select(id: item.id, category.name, .costs(categoryId: category.categoryId))
                     }
                 }
             }

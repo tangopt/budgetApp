@@ -101,8 +101,8 @@ do {
         try fileManager.createDirectory(at: scratch, withIntermediateDirectories: true)
         temporary = scratch
         workingDB = scratch.appendingPathComponent("copy.sqlite").path
-        let source = try DatabaseQueue(path: dbPath, configuration: { var c = Configuration(); c.readonly = true; return c }())
-        let copy = try DatabaseQueue(path: workingDB)
+        let source = try ToolDatabase.open(path: dbPath, configuration: { var c = Configuration(); c.readonly = true; return c }())
+        let copy = try ToolDatabase.open(path: workingDB)
         try source.backup(to: copy)
         workingLibrary = scratch.appendingPathComponent("Evidence", isDirectory: true)
     }
