@@ -14,6 +14,8 @@ struct ImportReviewView: View {
     @ObservedObject var center: ImportCenterModel
     let pickFiles: () -> Void
     @State private var confirmingDiscard = false
+    /// The files the sheet offers to set aside before the review is discarded.
+    @State private var settingAside: [SetAsideFile]?
 
     static let listMinimumWidth: CGFloat = 520
     static let previewWidth: CGFloat = 360
@@ -55,10 +57,20 @@ struct ImportReviewView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .confirmationDialog("Discard this import?", isPresented: $confirmingDiscard) {
+            let candidates = center.setAsideCandidates()
+            if !candidates.isEmpty {
+                Button("Set files aside…") { settingAside = candidates }
+            }
             Button("Discard", role: .destructive) { center.discard() }
             Button("Keep reviewing", role: .cancel) {}
         } message: {
             Text("Nothing from these files has been saved.")
+        }
+        .sheet(isPresented: Binding(get: { settingAside != nil }, set: { if !$0 { settingAside = nil } })) {
+            SetAsideSheet(files: settingAside ?? [], actions: .of(center), done: {
+                settingAside = nil
+                center.discard()
+            })
         }
     }
 

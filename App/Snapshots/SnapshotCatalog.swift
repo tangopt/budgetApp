@@ -2,6 +2,7 @@
 #if SNAPSHOTS
 import SwiftUI
 import CoreText
+import CryptoKit
 import BudgetCore
 import GRDB
 import struct BudgetCore.Transaction
@@ -32,7 +33,7 @@ enum SnapshotCatalog {
     /// (it imports too). `settings-sign-in` and the check add synthetic app users to the demo copy.
     static var routes: [SnapshotRoute] {
         screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + AuthSnapshots.routes + [AuthSnapshots.lockedContentRoute] + AuthSnapshots.lockedToolbarRoutes + importRoutes
-            + kindRoutes + [AuthSnapshots.attributionRoute, AuthSnapshots.launchLoadsOnceRoute]
+            + kindRoutes + waitingRoutes + [AuthSnapshots.attributionRoute, AuthSnapshots.launchLoadsOnceRoute]
     }
 
     // MARK: Imports, from the demo's samples
@@ -306,6 +307,56 @@ enum SnapshotCatalog {
                     throw SnapshotMissing("Everyday Current")
                 }
                 return AnyView(CSVMappingWizardView(account: account, csvText: item.file.text ?? "", existingProfile: saved) { _ in })
+            }
+        ]
+    }
+
+    // MARK: Set aside and the waiting list
+
+    /// Invented files an import left out (written beside the demo copy; nothing personal): the sheet's rows and the
+    /// waiting list's. The first has a long name, to check it truncates in the middle.
+    private static func setAsideDemoFiles(_ context: SnapshotContext) throws -> [SetAsideFile] {
+        guard let path = context.environment.databasePath else { throw SnapshotMissing("The demo copy") }
+        let folder = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("SetAsideDemo", isDirectory: true)
+        try? FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let specs: [(String, [String], String, String)] = [
+            ("Example Seguros home insurance renewal notice and schedule of cover 2025-2026 final version.pdf",
+             ["Example Seguros, S.A. NIF 503504564", "Apolice 0001 - aviso de renovacao", "Synthetic demo document - not a real record."],
+             "Not recognised", "Unknown"),
+            ("Scan 0042.pdf", ["Synthetic demo scan 0042", "Synthetic demo document - not a real record."], ImportSetAside.leftOutReason, "Other"),
+            ("Invoice 12 copy.pdf", ["Example Energia, S.A. NIF 500000000", "Fatura 12", "Synthetic demo document - not a real record."],
+             "Possibly a duplicate of Invoice 12.pdf", "Utility invoice"),
+            ("Boiler service note.pdf", ["Boiler service - Flat 3", "Synthetic demo document - not a real record."], ImportSetAside.leftOutReason, "Other")
+        ]
+        return try specs.map { name, lines, reason, kind in
+            let url = folder.appendingPathComponent(name)
+            try textPDF(lines, to: url)
+            let data = try Data(contentsOf: url)
+            let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            return SetAsideFile(url: url, fileName: name, sha256: sha, byteCount: Int64(data.count), text: nil, textStatus: .unknown,
+                                reason: reason, recognisedAs: kind)
+        }
+    }
+
+    /// "Files not imported" over the Imports screen's window, and "Waiting for later" above the history with the
+    /// files kept for later (the real keep, then the real re-read: a file the recognisers now know shows its suggestion).
+    static var waitingRoutes: [SnapshotRoute] {
+        [
+            SnapshotRoute(name: "imports-set_aside", title: "Imports: Files not imported, the sheet", settleFactor: 1) { context in
+                let files = try setAsideDemoFiles(context)
+                let sheet = SetAsideSheet(files: files, actions: .of(context.environment.importCenter), done: {})
+                return AnyView(SnapshotSheetCanvas(sheet: sheet))
+            },
+            SnapshotRoute(name: "imports-waiting", title: "Imports: Waiting for later above the history", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                center.discard()
+                let files = try setAsideDemoFiles(context)
+                let kept = try await center.keepForLater(files)
+                if !kept.failed.isEmpty || kept.kept.count != files.count { throw SnapshotMissing("Every demo file kept (\(kept))") }
+                await center.session.reloadWaiting()
+                await center.reloadRuns()
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in })))
             }
         ]
     }

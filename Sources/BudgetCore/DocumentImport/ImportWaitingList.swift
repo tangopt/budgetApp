@@ -226,9 +226,25 @@ public struct ImportWaitingList: Sendable {
     static func isOwnFolder(_ folder: URL, root: URL) -> Bool {
         let manager = FileManager.default
         if let type = (try? manager.attributesOfItem(atPath: folder.path))?[.type] as? FileAttributeType, type != .typeDirectory { return false }
-        let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath().path
-        let resolved = folder.standardizedFileURL.resolvingSymlinksInPath().path
+        let resolvedRoot = resolvedPath(root)
+        let resolved = resolvedPath(folder)
         return resolved.hasPrefix(resolvedRoot + "/")
+    }
+
+    /// The path with its symbolic links resolved, also when its last components don't exist yet:
+    /// the deepest existing ancestor is resolved and the rest appended. (`resolvingSymlinksInPath`
+    /// leaves a missing path as it is — `/private/tmp/x` for `/tmp/x` — so a folder not made yet
+    /// would never sit under an existing root beneath `/tmp` or `/var`.)
+    private static func resolvedPath(_ url: URL) -> String {
+        var existing = url.standardizedFileURL
+        var rest: [String] = []
+        while !FileManager.default.fileExists(atPath: existing.path), existing.path != "/" {
+            rest.insert(existing.lastPathComponent, at: 0)
+            existing.deleteLastPathComponent()
+        }
+        var resolved = existing.resolvingSymlinksInPath()
+        for component in rest { resolved.appendPathComponent(component) }
+        return resolved.path
     }
 
     /// `"<sha256>/<name>"`, or nil when the name isn't one plain path component.

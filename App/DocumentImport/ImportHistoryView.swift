@@ -9,6 +9,9 @@ import BudgetCore
 struct ImportHistoryView: View {
     @ObservedObject var center: ImportCenterModel
     let pickFiles: () -> Void
+    /// The finished run whose unimported files the sheet was shown for (once per run).
+    @State private var setAsideShownFor: Int64?
+    @State private var setAsideFiles: [SetAsideFile]?
 
     static let tableMinimumWidth: CGFloat = 400
     static let detailWidth: CGFloat = 340
@@ -30,7 +33,7 @@ struct ImportHistoryView: View {
             default:
                 EmptyView()
             }
-            if center.runs.isEmpty, center.phase == .idle {
+            if center.runs.isEmpty, center.waiting.isEmpty, center.phase == .idle {
                 EmptyState(systemImage: "tray.and.arrow.down", title: "Import documents",
                            message: "Drop files or folders anywhere in the window, or choose File ▸ Import… (⇧⌘I). Each file is recognised and placed for you to review; nothing is saved until you confirm the import.") {
                     Button("Import…", action: pickFiles).buttonStyle(.borderedProminent)
@@ -42,6 +45,9 @@ struct ImportHistoryView: View {
                         .font(.callout).foregroundStyle(.secondary).lineLimit(1)
                     Spacer(minLength: 8)
                     Button("Import…", action: pickFiles).buttonStyle(.borderedProminent)
+                }
+                if !center.waiting.isEmpty {
+                    ImportWaitingPanel(center: center)
                 }
                 HStack(alignment: .top, spacing: ScreenMetrics.spacing) {
                     ScrollView {
@@ -64,6 +70,23 @@ struct ImportHistoryView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear(perform: offerSetAside)
+        .onChange(of: finishedRunId) { offerSetAside() }
+        .sheet(isPresented: Binding(get: { setAsideFiles != nil }, set: { if !$0 { setAsideFiles = nil } })) {
+            SetAsideSheet(files: setAsideFiles ?? [], actions: .of(center), done: { setAsideFiles = nil })
+        }
+    }
+
+    private var finishedRunId: Int64? {
+        if case .finished(let summary) = center.phase { return summary.runId }
+        return nil
+    }
+
+    /// A finished run that left files unimported opens the sheet, once.
+    private func offerSetAside() {
+        guard case .finished(let summary) = center.phase, !summary.setAside.isEmpty, setAsideShownFor != summary.runId else { return }
+        setAsideShownFor = summary.runId
+        setAsideFiles = summary.setAside
     }
 }
 

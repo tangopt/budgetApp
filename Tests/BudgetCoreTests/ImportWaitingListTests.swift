@@ -109,6 +109,20 @@ final class ImportWaitingListTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(file.sha256).path))
     }
 
+    /// A root spelled through `/private` (`/private/var/…` for `/var/…`, or `/private/tmp`): a second keep, its folder
+    /// not made yet, still finds the folder under the root.
+    func testKeepUnderARootSpelledThroughPrivateKeepsEveryFile() throws {
+        let spelled = URL(fileURLWithPath: "/private" + folder.path).appendingPathComponent("Waiting", isDirectory: true)
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: spelled.deletingLastPathComponent().path), "No /private spelling here")
+        let list = ImportWaitingList(root: spelled, database: db)
+        let result = try list.keep([try dropped("one.txt", "First bytes"), try dropped("two.txt", "Second bytes")], now: Self.now)
+        XCTAssertEqual(result.failed, [])
+        XCTAssertEqual(result.kept.count, 2)
+        let again = try list.keep([try dropped("three.txt", "Third bytes")], now: Self.now)
+        XCTAssertEqual(again.failed, [])
+        XCTAssertEqual(again.kept.count, 1)
+    }
+
     func testKeepingTheSameFileTwiceIsAlreadyWaiting() throws {
         let file = try dropped("twice.txt", "The same bytes")
         _ = try list.keep([file], now: Self.now)

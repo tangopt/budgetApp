@@ -321,6 +321,8 @@ struct ContentView: View {
         }
         .environment(\.documentImport, documentImport)
         .environment(\.documentKinds, documentKindsModel.catalog)
+        // A kind created, renamed or merged: the waiting files are read again against the new names.
+        .onChange(of: documentKindsModel.catalog.customKinds) { environment.importCenter.refreshWaiting() }
         .background(WindowReader { windowHolder.window = $0 })
         .onAppear {
             // An Edit transaction save (Budget grid, Categories panel) can add or clear an uncategorised one.
