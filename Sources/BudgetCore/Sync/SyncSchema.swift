@@ -272,7 +272,7 @@ public enum SyncSchema {
         "syncPending", "syncFieldClock", "syncWriter", "syncApplying", "syncBatch", "syncBatchMember",
         "localCredential", "localSetting",
         "sourceFolder", "sourceFile",
-        "syncZoneMove", "syncCompanion", "syncAccessRevert",
+        "syncZoneMove", "syncCompanion", "syncAccessRevert", "syncPresence", "syncZoneCleanup",
         "grdb_migrations", "sqlite_sequence",
     ]
 

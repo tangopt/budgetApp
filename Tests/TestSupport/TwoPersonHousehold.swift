@@ -11,7 +11,10 @@ public final class TwoPersonHousehold {
     public typealias Device = (db: DatabaseQueue, engine: SyncEngineCore)
 
     public let cloud: FakeCloud
+    /// The admin's devices' transport: every household save they make is judged, as it is made, by the Mac's router.
     public let audit: ZoneAuditingTransport
+    /// The member's device's transport, judged by her device's own router.
+    public let memberAudit: ZoneAuditingTransport
     public let adminKeys: InMemorySyncKeyStore
     public let memberKeys: InMemorySyncKeyStore
     public let adminMac: Device
@@ -22,10 +25,11 @@ public final class TwoPersonHousehold {
     public let personBUuid: String
     public let memberZone: String
 
-    private init(cloud: FakeCloud, audit: ZoneAuditingTransport, adminKeys: InMemorySyncKeyStore, memberKeys: InMemorySyncKeyStore,
+    private init(cloud: FakeCloud, audit: ZoneAuditingTransport, memberAudit: ZoneAuditingTransport, adminKeys: InMemorySyncKeyStore, memberKeys: InMemorySyncKeyStore,
                  adminMac: Device, adminPhone: Device, memberDevice: Device, fixture: SharingFixture, personBUuid: String) {
         self.cloud = cloud
         self.audit = audit
+        self.memberAudit = memberAudit
         self.adminKeys = adminKeys
         self.memberKeys = memberKeys
         self.adminMac = adminMac
@@ -48,6 +52,7 @@ public final class TwoPersonHousehold {
         try adminKeys.store(householdKey, zone: SyncZones.household)
         try memberKeys.store(householdKey, zone: SyncZones.household)
         let audit = ZoneAuditingTransport(wrapping: cloud, keyStore: adminKeys)
+        let memberAudit = ZoneAuditingTransport(wrapping: cloud, keyStore: memberKeys)
 
         let mac = try TestDatabase.migrated()
         let (fixture, adminUser, memberUser, personB) = try mac.write { db -> (SharingFixture, String, String, String) in
@@ -72,9 +77,11 @@ public final class TwoPersonHousehold {
                                        documents: macDocuments, viewer: admin)
         let phoneEngine = SyncEngineCore(db: phone, transport: audit, device: SyncDevice(id: "admin-phone", name: "iPhone"), keyStore: adminKeys,
                                          documents: phoneDocuments, readOnly: true, viewer: admin)
-        let memberEngine = SyncEngineCore(db: member, transport: audit, device: SyncDevice(id: "member-device", name: "iPad"), keyStore: memberKeys,
+        let memberEngine = SyncEngineCore(db: member, transport: memberAudit, device: SyncDevice(id: "member-device", name: "iPad"), keyStore: memberKeys,
                                           viewer: SyncViewer(personUuid: personB))
-        return TwoPersonHousehold(cloud: cloud, audit: audit, adminKeys: adminKeys, memberKeys: memberKeys,
+        audit.judge(with: router(mac))
+        memberAudit.judge(with: router(member))
+        return TwoPersonHousehold(cloud: cloud, audit: audit, memberAudit: memberAudit, adminKeys: adminKeys, memberKeys: memberKeys,
                                   adminMac: (mac, macEngine), adminPhone: (phone, phoneEngine), memberDevice: (member, memberEngine),
                                   fixture: fixture, personBUuid: personB)
     }
@@ -88,9 +95,13 @@ public final class TwoPersonHousehold {
 
     /// Where the admin's Mac places each record now (by UUID; nil for one it doesn't hold), for
     /// `audit.householdViolations`.
-    public func adminRouter() -> (String) -> ZoneAssignment? {
-        let mac = adminMac.db
-        return { uuid in
+    public func adminRouter() -> @Sendable (String) -> ZoneAssignment? {
+        Self.router(adminMac.db)
+    }
+
+    /// Where `device` places each record now (by UUID; nil for one it doesn't hold or can't place).
+    static func router(_ mac: DatabaseQueue) -> @Sendable (String) -> ZoneAssignment? {
+        { uuid in
             try? mac.read { db -> ZoneAssignment? in
                 guard let row = try Row.fetchOne(db, sql: "SELECT tableName, localId FROM syncRecord WHERE uuid = ?", arguments: [uuid]) else {
                     return nil

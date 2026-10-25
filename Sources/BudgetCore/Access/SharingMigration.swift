@@ -88,6 +88,31 @@ enum SharingMigration {
             t.column("pending", .integer).notNull().defaults(to: 1)
             t.primaryKey(["uuid", "zone"])
         }
+        // A move's destination, the file record it leaves behind in the zone it left (deleted once the server
+        // confirms), and how many pushes have tried to finish it.
+        let moveColumns = Set(try db.columns(in: "syncZoneMove").map(\.name))
+        if !moveColumns.contains("toZone") {
+            try db.alter(table: "syncZoneMove") { t in t.add(column: "toZone", .text) }
+        }
+        if !moveColumns.contains("oldFile") {
+            try db.alter(table: "syncZoneMove") { t in t.add(column: "oldFile", .text) }
+        }
+        if !moveColumns.contains("attempts") {
+            try db.alter(table: "syncZoneMove") { t in t.add(column: "attempts", .integer).notNull().defaults(to: 0) }
+        }
+        // The zones a record is on the server in (its copy, or a marker over it): where its delete goes.
+        try db.create(table: "syncPresence", options: .ifNotExists) { t in
+            t.column("uuid", .text).notNull()
+            t.column("zone", .text).notNull()
+            t.primaryKey(["uuid", "zone"])
+        }
+        // Records on the server to delete (a file sealed for a save that never went, a companion no longer needed),
+        // retried every push until the server takes the delete.
+        try db.create(table: "syncZoneCleanup", options: .ifNotExists) { t in
+            t.column("zone", .text).notNull()
+            t.column("recordName", .text).notNull()
+            t.primaryKey(["zone", "recordName"])
+        }
         // Server stamps of companion records (an `accountDetails` record beside a household account stub).
         try db.create(table: "syncCompanion", options: .ifNotExists) { t in
             t.column("recordType", .text).notNull()

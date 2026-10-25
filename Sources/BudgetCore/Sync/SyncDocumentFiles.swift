@@ -30,15 +30,6 @@ public struct SyncDocumentFiles: Sendable {
     public var tables: [SyncFileTable] { SyncFileTables.standard(libraryRoot: root, waitingRoot: waitingRoot) }
 
     func table(_ name: String) -> SyncFileTable? { tables.first { $0.table == name } }
-
-    /// Whether this device holds the file of `payload`'s row (at the path its hash gives, a regular file), so it can
-    /// seal it again (a record moving to another zone, step 6).
-    func canSeal(_ payload: SyncPayload) -> Bool {
-        guard let table = table(payload.recordType),
-              case .string(let sha) = payload.fields["sha256"], case .string(let stored) = payload.fields["storedRelativePath"],
-              let path = table.safePath(stored: stored, sha256: sha) else { return false }
-        return SyncFileTables.isRegularFile(table.root.appendingPathComponent(path))
-    }
 }
 
 /// A synced table whose rows each carry one file (sync spec §9.1): the row's record holds the reference of a
@@ -527,116 +518,122 @@ extension SyncEngineCore {
 
     // MARK: Push
 
-    /// The file-bearing payloads of a push (`SyncFileTables`: documents, waiting files), with their file
-    /// reference: the stored one (re-wrapped first if its key is retired), or, for a row whose file was never
-    /// uploaded, its file (at the path its hash gives, a regular file) sealed now under its table's context and
-    /// saved as a file record before the row's record goes. Returns the payloads to send (a row whose file
-    /// couldn't be uploaded now waits: in `deferred`) and how many files were sealed.
-    /// A device that doesn't sync files (no `SyncDocumentFiles`) still sends the references it holds, so an
-    /// edit never drops a file from its record.
-    /// `zone`: the zone of every payload; files are sealed with its key and saved there (step 6).
-    func attachDocumentFiles(_ payloads: [SyncPayload], key: HouseholdKey, keys: [String: SymmetricKey], zone: String = SyncRecordStore.householdZone) async throws
-        -> (payloads: [SyncPayload], deferred: Set<String>, sealed: Int) {
+    /// A zone's file-bearing payloads with their file references, before anything is uploaded or stored.
+    struct SealedFiles {
+        /// The payloads, each file-bearing one carrying its reference (none when there is no file to give it).
+        var payloads: [SyncPayload]
+        /// File records to save first, by the row they belong to, with the reference each gives its row.
+        var files: [(uuid: String, wire: SyncWireRecord, reference: SyncDocumentFileReference)] = []
+        /// References to keep here once their rows' records are saved (new sealings and re-wrapped keys).
+        var references: [String: SyncDocumentFileReference] = [:]
+        /// Rows whose file at the hash's path doesn't match the hash (needs attention, never uploaded).
+        var mismatched: [(uuid: String, table: String)] = []
+        /// Rows that had to be sealed again (a move) and whose file isn't on this device: they go without one.
+        var unsealable: [String] = []
+    }
+
+    /// The file-bearing payloads of `zone` (`SyncFileTables`: documents, waiting files) with their file reference:
+    /// the stored one (re-wrapped if its key is retired), or, for a row whose file was never uploaded (or that must be
+    /// sealed again, `reseal`: a record moving to another zone), its file (at the path its hash gives, a regular file)
+    /// sealed now under its table's context and the zone's key. Nothing is uploaded or stored here: the caller checks
+    /// the payloads, uploads `files` (`uploadFileRecords`) and keeps `references` once the records are saved.
+    /// A device that doesn't sync files (no `SyncDocumentFiles`) still sends the references it holds, so an edit
+    /// never drops a file from its record.
+    func sealDocumentFiles(_ payloads: [SyncPayload], key: HouseholdKey, keys: [String: SymmetricKey], zone: String,
+                           reseal: Set<String> = []) async throws -> SealedFiles {
         @Sendable func carriesFile(_ payload: SyncPayload) -> Bool {
             SyncFileTables.names.contains(payload.recordType) && payload.mergedInto == nil && payload.movedTo == nil
         }
-        guard payloads.contains(where: carriesFile) else {
-            return (payloads, [], 0)
-        }
-        let now = clock()
-        var references = try await db.read { db in
+        var result = SealedFiles(payloads: payloads)
+        guard payloads.contains(where: carriesFile) else { return result }
+        let stored = try await db.read { db in
             try payloads.reduce(into: [String: SyncDocumentFileReference]()) { result, payload in
-                if carriesFile(payload), let reference = try SyncDocumentFile.reference(uuid: payload.recordName, db: db) {
+                if carriesFile(payload), !reseal.contains(payload.recordName),
+                   let reference = try SyncDocumentFile.reference(uuid: payload.recordName, db: db) {
                     result[payload.recordName] = reference
                 }
             }
         }
-        var toSeal: [(uuid: String, plaintext: Data, sha256: String, table: SyncFileTable)] = []
-        var mismatched: [(uuid: String, table: String)] = []
+        var references = stored
         for payload in payloads where carriesFile(payload) && references[payload.recordName] == nil {
             guard let table = documents?.table(payload.recordType),
-                  case .string(let sha) = payload.fields["sha256"], case .string(let stored) = payload.fields["storedRelativePath"],
-                  let path = table.safePath(stored: stored, sha256: sha) else {
+                  case .string(let sha) = payload.fields["sha256"], case .string(let path) = payload.fields["storedRelativePath"],
+                  let safe = table.safePath(stored: path, sha256: sha) else {
                 // No file here: the record goes without one, as it came.
+                if reseal.contains(payload.recordName) { result.unsealable.append(payload.recordName) }
                 continue
             }
-            let url = table.root.appendingPathComponent(path)
-            guard SyncFileTables.isRegularFile(url), let plaintext = try? Data(contentsOf: url) else { continue }
+            let url = table.root.appendingPathComponent(safe)
+            guard SyncFileTables.isRegularFile(url), let plaintext = try? Data(contentsOf: url) else {
+                if reseal.contains(payload.recordName) { result.unsealable.append(payload.recordName) }
+                continue
+            }
             guard DocumentCrypto.sha256(plaintext) == sha.lowercased() else {
-                mismatched.append((payload.recordName, table.table))
+                result.mismatched.append((payload.recordName, table.table))
+                if reseal.contains(payload.recordName) { result.unsealable.append(payload.recordName) }
                 continue
             }
-            toSeal.append((payload.recordName, plaintext, sha.lowercased(), table))
+            // Sealed under the zone's current key (the push confirmed it with the server's marker).
+            let box = try DocumentCrypto.seal(plaintext, zoneKey: key.key,
+                                              authenticating: table.context(uuid: payload.recordName, sha256: sha.lowercased()))
+            let name = SyncDocumentFile.newRecordName(uuid: payload.recordName)
+            let reference = SyncDocumentFileReference(recordName: name, wrappedKey: box.wrappedKey)
+            result.files.append((payload.recordName,
+                                 SyncWireRecord(recordType: SyncDocumentFile.recordType, recordName: name, zone: zone,
+                                                assets: [SyncDocumentFile.assetField: box.ciphertext]),
+                                 reference))
+            references[payload.recordName] = reference
+            result.references[payload.recordName] = reference
         }
-        if !mismatched.isEmpty {
-            Self.documentLog.error("Sync didn't upload \(mismatched.count) files that don't match their hash")
-            let logged = mismatched
-            try await db.write { db in
-                for item in logged {
-                    try SyncDocumentFile.logAttention(table: item.table, uuid: item.uuid, message: SyncDocumentFile.senderMismatchMessage, db: db, now: now)
-                }
-            }
+        // A data key still wrapped with a retired zone key goes re-wrapped with the current one.
+        for (uuid, reference) in stored {
+            guard let id = try? DocumentCrypto.zoneKeyId(ofWrapped: reference.wrappedKey), id != key.id,
+                  let old = keys[id], let wrapped = try? DocumentCrypto.rewrap(reference.wrappedKey, from: old, to: key.key)
+            else { continue }
+            let rewrapped = SyncDocumentFileReference(recordName: reference.recordName, wrappedKey: wrapped)
+            references[uuid] = rewrapped
+            result.references[uuid] = rewrapped
         }
-        var deferred: Set<String> = []
-        var sealed = 0
-        // Files are sealed under the zone's current key (the push confirmed it with the server's marker).
-        if !toSeal.isEmpty {
-            var wires: [SyncWireRecord] = []
-            var pending: [String: (uuid: String, reference: SyncDocumentFileReference)] = [:]
-            for item in toSeal {
-                let box = try DocumentCrypto.seal(item.plaintext, zoneKey: key.key,
-                                                  authenticating: item.table.context(uuid: item.uuid, sha256: item.sha256))
-                let name = SyncDocumentFile.newRecordName(uuid: item.uuid)
-                wires.append(SyncWireRecord(recordType: SyncDocumentFile.recordType, recordName: name, zone: zone,
-                                            assets: [SyncDocumentFile.assetField: box.ciphertext]))
-                pending[name] = (item.uuid, SyncDocumentFileReference(recordName: name, wrappedKey: box.wrappedKey))
-            }
-            let limits = await transport.operationLimits()
-            var saved: [String: SyncDocumentFileReference] = [:]
-            for operation in Self.operations(wires, limits: limits) {
-                let results: [SaveResult]
-                do {
-                    results = try await transport.save(operation, ifUnchanged: [:], atomic: false)
-                } catch let error as SyncTransportError where error.isPassing {
-                    results = []
-                }
-                for result in results {
-                    if case .saved = result.outcome, let item = pending[result.recordName] { saved[item.uuid] = item.reference }
-                }
-            }
-            for item in toSeal where saved[item.uuid] == nil { deferred.insert(item.uuid) }
-            sealed = saved.count
-            let taken = saved
-            try await db.write { db in
-                for (uuid, reference) in taken { try SyncDocumentFile.setReference(reference, uuid: uuid, db: db, now: now) }
-            }
-            references.merge(saved) { _, new in new }
-        }
-        do {
-            // A data key still wrapped with a retired zone key goes re-wrapped with the current one.
-            var rewrapped: [String: SyncDocumentFileReference] = [:]
-            for (uuid, reference) in references {
-                guard let id = try? DocumentCrypto.zoneKeyId(ofWrapped: reference.wrappedKey), id != key.id,
-                      let old = keys[id], let wrapped = try? DocumentCrypto.rewrap(reference.wrappedKey, from: old, to: key.key)
-                else { continue }
-                rewrapped[uuid] = SyncDocumentFileReference(recordName: reference.recordName, wrappedKey: wrapped)
-            }
-            if !rewrapped.isEmpty {
-                let updated = rewrapped
-                try await db.write { db in
-                    for (uuid, reference) in updated { try SyncDocumentFile.setReference(reference, uuid: uuid, db: db, now: now) }
-                }
-                references.merge(rewrapped) { _, new in new }
-            }
-        }
-        let result = payloads.compactMap { payload -> SyncPayload? in
+        result.payloads = payloads.map { payload in
             guard carriesFile(payload) else { return payload }
-            if deferred.contains(payload.recordName) { return nil }
             var payload = payload
             payload.documentFile = references[payload.recordName]
             return payload
         }
-        return (result, deferred, sealed)
+        return result
+    }
+
+    /// Saves file records (create only); returns the rows whose file record the server took. A passing failure
+    /// takes none of that operation.
+    func uploadFileRecords(_ files: [(uuid: String, wire: SyncWireRecord, reference: SyncDocumentFileReference)]) async throws -> Set<String> {
+        guard !files.isEmpty else { return [] }
+        let byName = Dictionary(files.map { ($0.wire.recordName, $0.uuid) }, uniquingKeysWith: { a, _ in a })
+        let limits = await transport.operationLimits()
+        var saved: Set<String> = []
+        for operation in Self.operations(files.map(\.wire), limits: limits) {
+            let results: [SaveResult]
+            do {
+                results = try await transport.save(operation, ifUnchanged: [:], atomic: false)
+            } catch let error as SyncTransportError where error.isPassing {
+                results = []
+            }
+            for result in results {
+                if case .saved = result.outcome, let uuid = byName[result.recordName] { saved.insert(uuid) }
+            }
+        }
+        return saved
+    }
+
+    /// Logs the rows whose file doesn't match its hash (needs attention; never uploaded).
+    func logMismatchedFiles(_ mismatched: [(uuid: String, table: String)]) async throws {
+        guard !mismatched.isEmpty else { return }
+        Self.documentLog.error("Sync didn't upload \(mismatched.count) files that don't match their hash")
+        let now = clock()
+        try await db.write { db in
+            for item in mismatched {
+                try SyncDocumentFile.logAttention(table: item.table, uuid: item.uuid, message: SyncDocumentFile.senderMismatchMessage, db: db, now: now)
+            }
+        }
     }
 
     // MARK: Pull

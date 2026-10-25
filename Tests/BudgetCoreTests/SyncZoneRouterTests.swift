@@ -346,7 +346,7 @@ final class SyncZoneRouterTests: XCTestCase {
 
             // The companion: in the owner's zone, with the private columns only.
             let accountUuid = full.recordName
-            var details = SyncPayload(recordType: "accountDetails", recordName: accountUuid, zone: f.privateZone,
+            var details = SyncPayload(recordType: "accountDetails", recordName: SyncZoneRouter.companionRecordName(accountUuid: accountUuid), zone: f.privateZone,
                                       fields: ["sortCode": full.fields["sortCode"]!])
             XCTAssertNoThrow(try SyncZoneGuard.check([details], db: db))
             details.zone = SyncZones.household
@@ -355,7 +355,8 @@ final class SyncZoneRouterTests: XCTestCase {
             details.fields["name"] = .string("x")
             XCTAssertThrowsError(try SyncZoneGuard.check([details], db: db))
             let sharedUuid = try SyncRecordStore.uuid(for: "account", localId: f.shared, db: db)
-            XCTAssertThrowsError(try SyncZoneGuard.check([SyncPayload(recordType: "accountDetails", recordName: sharedUuid, zone: f.privateZone, fields: [:])],
+            XCTAssertThrowsError(try SyncZoneGuard.check([SyncPayload(recordType: "accountDetails", recordName: SyncZoneRouter.companionRecordName(accountUuid: sharedUuid),
+                                                                     zone: f.privateZone, fields: [:])],
                                                          db: db), "an Everything account has no details record")
         }
     }
@@ -898,7 +899,8 @@ final class SyncZoneRouterTests: XCTestCase {
         if assignment.omittedFields.contains("importBatchId") || assignment.omittedFields.contains("importRunId") { sent.importRunUuid = nil }
         guard let companion = assignment.companion else { return [sent] }
         let full = try payload(table, id, db)
-        let details = SyncPayload(recordType: companion.recordType, recordName: sent.recordName, zone: companion.zone,
+        let details = SyncPayload(recordType: companion.recordType, recordName: SyncZoneRouter.companionRecordName(accountUuid: sent.recordName),
+                                  zone: companion.zone,
                                   fields: full.fields.filter { companion.fields.contains($0.key) })
         return [sent, details]
     }

@@ -151,6 +151,8 @@ private final class Templates: @unchecked Sendable {
         let folder = try built("migrated") { staging in
             let manager = try DatabaseManager(path: staging.appendingPathComponent("db.sqlite").path)
             try manager.migrate()
+            // Synthetic data only: marked as the demo's, so sync treats it as one (an unmarked database is real data).
+            try manager.dbQueue.write { db in try DemoMarker.mark(db) }
             try manager.dbQueue.close()
         }
         let queue = try load(folder)

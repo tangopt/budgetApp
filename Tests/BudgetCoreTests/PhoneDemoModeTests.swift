@@ -80,7 +80,8 @@ final class PhoneDemoModeTests: XCTestCase {
         // A builder that makes something other than the demo: refused, nothing left behind.
         let folder = try PhoneDemoMode.folder(in: caches, realDatabasePath: realPath)
         XCTAssertThrowsError(try PhoneDemoMode.prepare(folder: folder) { path, _ in
-            _ = try TestDatabase.migratedManager(path: path)
+            // Test databases carry the demo marker: this one is made without it.
+            try TestDatabase.migratedManager(path: path).dbQueue.write { db in try db.execute(sql: "PRAGMA application_id = 0") }
         }) { error in
             XCTAssertEqual(error as? PhoneDemoMode.Failure, .notDemoDatabase)
         }
@@ -102,7 +103,8 @@ final class PhoneDemoModeTests: XCTestCase {
         XCTAssertNil(PhoneDemoMode.syncRefusal(databasePath: elsewhere, demoModeOn: false, isSyncDemoLaunch: true))
         // Demo mode on: nothing syncs, whatever the database.
         let real = root.appendingPathComponent("real.sqlite").path
-        _ = try TestDatabase.migratedManager(path: real)
+        // Test databases carry the demo marker: this one stands for real data.
+        try TestDatabase.migratedManager(path: real).dbQueue.write { db in try db.execute(sql: "PRAGMA application_id = 0") }
         XCTAssertNotNil(PhoneDemoMode.syncRefusal(databasePath: real, demoModeOn: true, isSyncDemoLaunch: false))
         XCTAssertNil(PhoneDemoMode.syncRefusal(databasePath: real, demoModeOn: false, isSyncDemoLaunch: false))
     }

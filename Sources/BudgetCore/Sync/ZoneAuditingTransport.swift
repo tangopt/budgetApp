@@ -16,6 +16,11 @@ public final class ZoneAuditingTransport: SyncTransport, Sendable {
         case deleted(String)
     }
 
+    /// Where records belong at the moment they are saved (`judge(with:)`), and what was wrong with every household
+    /// save so judged: append-only, so a household copy that is later overwritten or deleted still counts.
+    private let judge = OSAllocatedUnfairLock<(@Sendable (String) -> ZoneAssignment?)?>(initialState: nil)
+    private let findings = OSAllocatedUnfairLock(initialState: [String]())
+
     /// `keyStore`: holds the household key (to open what went there).
     public init(wrapping inner: any SyncTransport, keyStore: any SyncKeyStore) {
         self.inner = inner
@@ -24,6 +29,12 @@ public final class ZoneAuditingTransport: SyncTransport, Sendable {
 
     /// Every record a save carried, by zone, in the order they were sent (refused ones too).
     public var savesByZone: [String: [SyncWireRecord]] { saves.withLock { $0 } }
+
+    /// From now on, every household save is judged as it is made against `placement` (record UUID to where it belongs
+    /// now; nil: unknown, not judged); what is wrong is kept for `householdViolations`.
+    public func judge(with placement: @escaping @Sendable (String) -> ZoneAssignment?) {
+        judge.withLock { $0 = placement }
+    }
 
     /// Every record name a delete named, by zone, in order.
     public var deletesByZone: [String: [String]] {
@@ -39,6 +50,10 @@ public final class ZoneAuditingTransport: SyncTransport, Sendable {
     /// (record UUID to its placement now; nil: unknown, not judged) places privately, unless it is a marker (the
     /// record left), nor carry a field the placement leaves out, nor name a private run; a document file still
     /// there must not be a private record's.
+    ///
+    /// Also every finding made as a household save happened (`judge(with:)`): a save of a record placed privately at
+    /// that moment (not a marker), carrying a field its placement leaves out or naming a private run, or a document
+    /// file of a private record.
     public func householdViolations(router: (String) -> ZoneAssignment?) -> [String] {
         let history = events.withLock { $0[SyncZones.household] ?? [] }
         var standing: [String: SyncWireRecord] = [:]
@@ -94,7 +109,41 @@ public final class ZoneAuditingTransport: SyncTransport, Sendable {
                 findings.append("\(payload.recordType) \(name): tagged with a private run")
             }
         }
-        return findings
+        var all = self.findings.withLock { $0 }
+        for finding in findings where !all.contains(finding) { all.append(finding) }
+        return all
+    }
+
+    /// What is wrong with one household save, judged by where its record belongs now.
+    private func judged(_ wire: SyncWireRecord, placement: (String) -> ZoneAssignment?) -> [String] {
+        switch wire.recordType {
+        case TransportLeaseStore.recordType, SyncZoneKeys.recordType:
+            return []
+        case SyncDocumentFile.recordType:
+            let owner = wire.recordName.components(separatedBy: ".file.").first ?? wire.recordName
+            if let placed = placement(owner), placed.isPrivate { return ["documentFile \(wire.recordName): saved to household as the file of a private record"] }
+            return []
+        default:
+            break
+        }
+        let keys = (try? keyStore.allKeys(zone: SyncZones.household)) ?? [:]
+        guard let payload = try? SyncLargePayload.payload(from: wire, keys: keys) else {
+            return ["\(wire.recordType) \(wire.recordName): saved to household, doesn't open with the household key"]
+        }
+        guard payload.movedTo == nil, payload.mergedInto == nil else { return [] }
+        if payload.recordType == SyncZoneRouter.companionRecordType {
+            return ["\(payload.recordType) \(payload.recordName): a companion saved to household"]
+        }
+        guard let placed = placement(payload.recordName) else { return [] }
+        var problems: [String] = []
+        if placed.isPrivate { problems.append("\(payload.recordType) \(payload.recordName): saved to household while placed privately") }
+        for field in placed.omittedFields where payload.fields[field] != nil {
+            problems.append("\(payload.recordType) \(payload.recordName): saved to household carrying \(field), which it leaves out")
+        }
+        if let run = payload.importRunUuid, let runPlacement = placement(run), runPlacement.isPrivate {
+            problems.append("\(payload.recordType) \(payload.recordName): saved to household tagged with a private run")
+        }
+        return problems
     }
 
     // MARK: SyncTransport
@@ -109,6 +158,10 @@ public final class ZoneAuditingTransport: SyncTransport, Sendable {
         }
         events.withLock { events in
             for record in records { events[record.zone, default: []].append(.saved(record)) }
+        }
+        if let placement = judge.withLock({ $0 }) {
+            let found = records.filter { $0.zone == SyncZones.household }.flatMap { judged($0, placement: placement) }
+            if !found.isEmpty { findings.withLock { $0 += found } }
         }
         return try await inner.save(records, ifUnchanged: ifUnchanged, atomic: atomic)
     }

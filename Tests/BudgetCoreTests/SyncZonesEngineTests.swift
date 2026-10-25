@@ -46,7 +46,10 @@ final class SyncZonesEngineTests: XCTestCase {
         // The stub went to the household, its details in a companion in A's zone.
         let account = try h.uuid("account", f.privateAccount)
         XCTAssertTrue(household.contains(account))
-        XCTAssertTrue((h.audit.savesByZone[f.privateZone] ?? []).contains { $0.recordName == account && $0.recordType == SyncZoneRouter.companionRecordType })
+        // I-1: the companion has a name of its own, derived from the account's.
+        let companion = SyncZoneRouter.companionRecordName(accountUuid: account)
+        XCTAssertNotEqual(companion, account)
+        XCTAssertTrue((h.audit.savesByZone[f.privateZone] ?? []).contains { $0.recordName == companion && $0.recordType == SyncZoneRouter.companionRecordType })
 
         // Each zone sealed under its own key; the member never holds A's.
         let keyIds = { (zone: String) in
@@ -262,11 +265,24 @@ final class SyncZonesEngineTests: XCTestCase {
         let f = h.fixture
         try await h.syncAll()
         let leaking = try h.uuid("transaction_", f.privateTransaction)
-        // A stale zone here, and a router that gets it wrong.
+        let clean = try h.uuid("transaction_", f.sharedTransaction)
+        // A stale zone here, and a router that gets it wrong; a clean edit in the same chunk (M-4).
         try write(h.adminMac) { db in
-            try db.execute(sql: "UPDATE transaction_ SET note = 'Synthetic edit' WHERE id = ?", arguments: [f.privateTransaction])
+            try db.execute(sql: "UPDATE transaction_ SET note = 'Synthetic edit' WHERE id IN (?, ?)", arguments: [f.privateTransaction, f.sharedTransaction])
             try db.execute(sql: "UPDATE syncRecord SET zone = ? WHERE uuid = ?", arguments: [SyncZones.household, leaking])
         }
+        let localState = { [self] in
+            try self.read(h.adminMac) { db in
+                try String.fetchAll(db, sql: """
+                    SELECT 'r:' || uuid || zone || COALESCE(hex(systemFields), '') FROM syncRecord
+                    UNION ALL SELECT 'm:' || uuid || zone || pending FROM syncZoneMove
+                    UNION ALL SELECT 'p:' || uuid || zone FROM syncPresence
+                    UNION ALL SELECT 's:' || key || hex(value) FROM syncState WHERE key LIKE 'documentFile.%'
+                    ORDER BY 1
+                    """)
+            }
+        }
+        let stateBefore = try localState()
         let privateTransaction = f.privateTransaction
         await h.adminMac.engine.setAssignmentOverride { table, id in
             table == "transaction_" && id == privateTransaction ? .household : nil
@@ -283,7 +299,10 @@ final class SyncZonesEngineTests: XCTestCase {
         }
         let after = await h.cloud.storedRecords()
         XCTAssertEqual(after, stored, "FakeCloud holds nothing new")
-        XCTAssertEqual(h.audit.savesByZone.values.map(\.count).reduce(0, +), saves, "nothing was even sent")
+        XCTAssertEqual(h.audit.savesByZone.values.map(\.count).reduce(0, +), saves, "nothing of the chunk was sent, the clean record included")
+        XCTAssertEqual(try localState(), stateBefore, "M-1: a halt leaves this device's sync state as it was")
+        let cleanPending = try read(h.adminMac) { db in try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncPending WHERE uuid = ?)", arguments: [clean])! }
+        XCTAssertTrue(cleanPending, "the clean record waits too")
         let logged = try read(h.adminMac) { db in
             try String.fetchAll(db, sql: "SELECT losingValueJSON FROM syncConflict WHERE uuid = ?", arguments: [leaking])
         }
@@ -467,8 +486,12 @@ final class SyncZonesEngineTests: XCTestCase {
         let privateTransaction = try h.uuid("transaction_", f.privateTransaction)
         let account = try h.uuid("account", f.privateAccount)
         try write(h.adminMac) { db in
-            let guardian = try SyncZoneGuard(db: db)
+            var guardian = try SyncZoneGuard(db: db)
             let marker = SyncZoneMoves.marker(uuid: privateTransaction, tableName: "transaction_", zone: SyncZones.household, movedTo: f.privateZone)
+            // M-7: never for a record that was never in the household.
+            XCTAssertEqual(guardian.review([marker]).violations.map(\.reason), ["a move marker for a record that was never in the household"])
+            try SyncPresence.add(uuid: privateTransaction, zone: SyncZones.household, db: db)
+            guardian = try SyncZoneGuard(db: db)
             XCTAssertTrue(guardian.review([marker]).isClear, "a marker over a private record's old household copy")
             var carrying = marker
             carrying.fields["note"] = .string("Synthetic")
@@ -513,5 +536,206 @@ final class SyncZonesEngineTests: XCTestCase {
             }
         }
         XCTAssertEqual(try count(h.adminPhone, "SELECT COUNT(*) FROM syncStaging"), 0)
+    }
+
+    // MARK: Fix round 1
+
+    /// A document with a real file in the household's library, linked to Shared's transaction (so in the household).
+    private func householdWithDocument(_ folder: URL) throws -> (h: TwoPersonHousehold, document: Int64) {
+        let macLibrary = folder.appendingPathComponent("mac/Library", isDirectory: true)
+        let bytes = Data("Synthetic receipt \(UUID().uuidString)".utf8)
+        let sha = DocumentCrypto.sha256(bytes)
+        let path = EvidenceLibrary.storedRelativePath(sha256: sha, fileExtension: "pdf")
+        try FileManager.default.createDirectory(at: macLibrary.appendingPathComponent(path).deletingLastPathComponent(), withIntermediateDirectories: true)
+        try bytes.write(to: macLibrary.appendingPathComponent(path))
+        let h = try TwoPersonHousehold.make(macDocuments: SyncDocumentFiles(root: macLibrary, policy: .eager))
+        let f = h.fixture
+        let document = try write(h.adminMac) { db -> Int64 in
+            try db.execute(sql: "INSERT INTO document(sha256, storedRelativePath, originalFileName, byteCount, addedAt) VALUES (?, ?, 'r.pdf', ?, ?)",
+                           arguments: [sha, path, bytes.count, Date(timeIntervalSince1970: 1_790_000_000)])
+            let id = db.lastInsertedRowID
+            try db.execute(sql: "INSERT INTO documentLink(documentId, entityType, entityId, createdAt) VALUES (?, 'transaction', ?, ?)",
+                           arguments: [id, f.sharedTransaction, Date(timeIntervalSince1970: 1_790_000_000)])
+            return id
+        }
+        return (h, document)
+    }
+
+    private func files(_ h: TwoPersonHousehold, of uuid: String, in zone: String) async -> [String] {
+        await h.cloud.storedRecords().filter { $0.zone == zone && $0.recordType == SyncDocumentFile.recordType && $0.recordName.hasPrefix(uuid) }
+            .map(\.recordName)
+    }
+
+    /// C-1 (probe): the move's first saves of the document fail; later pushes finish it. The household's file record
+    /// goes, and no file sealed for a failed attempt stays in A's zone.
+    func testAMovedDocumentsHouseholdFileGoesEvenAfterFailedSaves() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("zones-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let (h, document) = try householdWithDocument(folder)
+        let f = h.fixture
+        try await h.syncAll()
+        let uuid = try h.uuid("document", document)
+        let first = await files(h, of: uuid, in: SyncZones.household)
+        XCTAssertEqual(first.count, 1)
+
+        try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
+        try h.requeueEverythingOnTheMac()
+        await h.cloud.failSaves(of: [uuid], times: 4)
+        _ = try await h.adminMac.engine.pushPending()
+        let stillThere = await files(h, of: uuid, in: SyncZones.household)
+        XCTAssertEqual(stillThere, first, "the document's new copy isn't saved: nothing of the old one goes yet")
+        _ = try await h.adminMac.engine.pushPending()
+        _ = try await h.adminMac.engine.pushPending()
+
+        let left = try await stored(h, uuid, in: SyncZones.household)
+        XCTAssertEqual(left?.movedTo, f.privateZone)
+        let householdFiles = await files(h, of: uuid, in: SyncZones.household)
+        XCTAssertEqual(householdFiles, [], "the household file record of a now-private document goes")
+        let privateFiles = await files(h, of: uuid, in: f.privateZone)
+        let moved = try await stored(h, uuid, in: f.privateZone)
+        XCTAssertEqual(privateFiles, [moved?.documentFile?.recordName].compactMap { $0 }, "one file in A's zone: the one its record names")
+        let unfinished = try read(h.adminMac) { db in try SyncZoneMoves.unfinished(db: db) }
+        XCTAssertEqual(unfinished, [])
+        assertNoHouseholdLeak(h)
+    }
+
+    /// C-1: a guard halt in the middle of a move changes nothing here; the move happens whole on the next push.
+    func testAMoveHaltedByTheGuardLeavesTheOldFileUntilItFinishes() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("zones-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let (h, document) = try householdWithDocument(folder)
+        let f = h.fixture
+        try await h.syncAll()
+        let uuid = try h.uuid("document", document)
+        let reference = try read(h.adminMac) { db in try SyncDocumentFile.reference(uuid: uuid, db: db) }
+        try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
+        try h.requeueEverythingOnTheMac()
+        // A router bug sends Private's transaction to the household: the guard stops the push.
+        let privateTransaction = f.privateTransaction
+        await h.adminMac.engine.setAssignmentOverride { table, id in table == "transaction_" && id == privateTransaction ? .household : nil }
+        do {
+            _ = try await h.adminMac.engine.pushPending()
+            XCTFail("the push must stop")
+        } catch is SyncZoneGuard.Violation {}
+        let kept = try read(h.adminMac) { db in try SyncDocumentFile.reference(uuid: uuid, db: db) }
+        XCTAssertEqual(kept, reference, "the document still names its household file")
+        let zone = try read(h.adminMac) { db in try String.fetchOne(db, sql: "SELECT zone FROM syncRecord WHERE uuid = ?", arguments: [uuid]) }
+        XCTAssertEqual(zone, SyncZones.household)
+
+        await h.adminMac.engine.setAssignmentOverride(nil)
+        _ = try await h.adminMac.engine.pushPending()
+        let householdFiles = await files(h, of: uuid, in: SyncZones.household)
+        XCTAssertEqual(householdFiles, [])
+        let privateFiles = await files(h, of: uuid, in: f.privateZone)
+        XCTAssertEqual(privateFiles.count, 1)
+        assertNoHouseholdLeak(h)
+    }
+
+    /// I-3 (probe): the move's marker doesn't go (the connection drops); the member edits her household copy. The
+    /// Mac refuses that copy (logged for attention), keeps the record in A's zone, and the marker goes over it.
+    func testAHouseholdEditOfAMovedRecordIsRefusedAndTheMarkerGoesAgain() async throws {
+        let h = try TwoPersonHousehold.make()
+        let f = h.fixture
+        try await h.syncAll()
+        let moved = try h.uuid("transaction_", f.transferOut)
+        try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
+        try h.requeueEverythingOnTheMac()
+        // The record saves (A's zone, then the household) go; the markers don't.
+        await h.cloud.failSaveOperations(after: 2)
+        do { _ = try await h.adminMac.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
+        await h.cloud.restoreConnection()
+        let interrupted = try await stored(h, moved, in: SyncZones.household)
+        XCTAssertNil(interrupted?.movedTo, "precondition: the household copy is still the record")
+
+        try write(h.memberDevice) { db in
+            let id = try XCTUnwrap(try SyncRecordStore.localId(table: "transaction_", uuid: moved, db: db))
+            try db.execute(sql: "UPDATE transaction_ SET note = 'Synthetic member edit' WHERE id = ?", arguments: [id])
+        }
+        _ = try await h.memberDevice.engine.pushPending()
+        _ = try await h.adminMac.engine.syncNow()
+        _ = try await h.adminMac.engine.syncNow()
+
+        let final = try await stored(h, moved, in: SyncZones.household)
+        XCTAssertEqual(final?.movedTo, f.privateZone, "the household copy is a marker again")
+        XCTAssertEqual(final?.fields, [:])
+        let zone = try read(h.adminMac) { db in try String.fetchOne(db, sql: "SELECT zone FROM syncRecord WHERE uuid = ?", arguments: [moved]) }
+        XCTAssertEqual(zone, f.privateZone, "the Mac keeps it in A's zone")
+        let note = try read(h.adminMac) { db in try String.fetchOne(db, sql: "SELECT note FROM transaction_ WHERE id = ?", arguments: [f.transferOut]) }
+        XCTAssertNil(note, "the household copy wasn't taken")
+        let logged = try read(h.adminMac) { db in
+            try String.fetchAll(db, sql: "SELECT losingValueJSON FROM syncConflict WHERE uuid = ?", arguments: [moved])
+        }
+        XCTAssertTrue(logged.contains { $0.contains("private here") }, "logged for attention")
+        let unfinished = try read(h.adminMac) { db in try SyncZoneMoves.unfinished(db: db).filter { $0.uuid == moved } }
+        XCTAssertEqual(unfinished, [])
+        assertNoHouseholdLeak(h)
+    }
+
+    /// I-4 (probe): a record made and deleted between two pushes was never on the server: no delete goes anywhere.
+    func testANeverPushedRecordsDeleteIsNeverSent() async throws {
+        let h = try TwoPersonHousehold.make()
+        let f = h.fixture
+        try await h.syncAll()
+        let uuid = try write(h.adminMac) { db -> String in
+            let batch = try Int64.fetchOne(db, sql: "SELECT importBatchId FROM transaction_ WHERE id = ?", arguments: [f.privateTransaction])!
+            try db.execute(sql: """
+                INSERT INTO transaction_(importBatchId, accountId, date, rawDescription, amountMinorUnits, status, categorizedBy, fingerprint)
+                VALUES (?, ?, ?, 'Synthetic private', 100, 'confirmed', 'manual', 'fp-never-sent')
+                """, arguments: [batch, f.privateAccount, Date(timeIntervalSince1970: 1_790_100_000)])
+            let id = db.lastInsertedRowID
+            let uuid = try SyncRecordStore.uuid(for: "transaction_", localId: id, db: db)
+            try db.execute(sql: "DELETE FROM transaction_ WHERE id = ?", arguments: [id])
+            return uuid
+        }
+        _ = try await h.adminMac.engine.pushPending()
+        for (zone, names) in h.audit.deletesByZone { XCTAssertFalse(names.contains(uuid), "no delete in \(zone)") }
+        let pending = try read(h.adminMac) { db in try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncPending WHERE uuid = ?)", arguments: [uuid])! }
+        XCTAssertFalse(pending, "taken here as done")
+        assertNoHouseholdLeak(h)
+    }
+
+    /// I-2: before the ownership sheet, a database that isn't the demo's (real data) is never pushed.
+    func testRealDataIsNeverPushedBeforeOwnershipIsConfirmed() async throws {
+        let cloud = FakeCloud()
+        let queue = try TestDatabase.migrated()
+        try write((queue, SyncEngineCore(db: queue, transport: cloud, device: SyncDevice(id: "x", name: "x"), keyStore: InMemorySyncKeyStore()))) { db in
+            try db.execute(sql: "PRAGMA application_id = 0")
+            var account = Account(name: "Synthetic real", currency: .gbp, kind: .cash, trackingMode: .imported)
+            try account.insert(db)
+        }
+        let engine = SyncEngineCore(db: queue, transport: cloud, device: SyncDevice(id: "mac", name: "Mac"), keyStore: InMemorySyncKeyStore())
+        do {
+            _ = try await engine.pushPending()
+            XCTFail("refused")
+        } catch let error as SyncZoneRouterError {
+            XCTAssertEqual(error, .ownershipNotConfirmed)
+        }
+        let stored = await cloud.storedRecords()
+        XCTAssertEqual(stored.filter { $0.recordType == "account" }, [], "nothing of it uploaded")
+        // The demo's database keeps the household path.
+        try write((queue, engine)) { db in try DemoMarker.mark(db) }
+        let report = try await engine.pushPending()
+        XCTAssertGreaterThan(report.saved, 0)
+    }
+
+    /// M-2: the audit keeps every household write: a private record saved there and later covered by a marker
+    /// still fails it.
+    func testTheAuditKeepsATransientHouseholdLeak() async throws {
+        let h = try TwoPersonHousehold.make()
+        let f = h.fixture
+        try await h.syncAll()
+        let uuid = try h.uuid("transaction_", f.privateTransaction)
+        let key = try XCTUnwrap(h.adminKeys.key(zone: SyncZones.household))
+        let leaked = try read(h.adminMac) { db in
+            var payload = try XCTUnwrap(try SyncTranslator.outgoing(PendingChange(table: "transaction_", localId: f.privateTransaction, uuid: uuid, kind: .update), db: db))
+            payload.zone = SyncZones.household
+            return payload
+        }
+        _ = try await h.audit.save([try SyncLargePayload.wire(for: leaked, key: key).0], ifUnchanged: [:], atomic: false)
+        let marker = SyncZoneMoves.marker(uuid: uuid, tableName: "transaction_", zone: SyncZones.household, movedTo: f.privateZone)
+        let server = try await h.cloud.fetch(uuid, zone: SyncZones.household)
+        _ = try await h.audit.save([try SyncLargePayload.wire(for: marker, key: key).0],
+                                   ifUnchanged: [uuid: try XCTUnwrap(server).stamp.systemFields], atomic: false)
+        XCTAssertTrue(h.audit.householdViolations(router: h.adminRouter()).contains { $0.contains(uuid) && $0.contains("placed privately") })
     }
 }

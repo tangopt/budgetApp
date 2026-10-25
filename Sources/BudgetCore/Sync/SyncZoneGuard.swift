@@ -48,6 +48,10 @@ public struct SyncZoneGuard {
     private let details: SyncPrivateDetails
     /// Every person's private zone.
     private let privateZones: Set<String>
+    /// Companion record name of each stub account, to the account's UUID.
+    private let companions: [String: String]
+    /// Records that were saved to the household (`syncPresence`): the only ones a household marker may name.
+    private let inHousehold: Set<String>
 
     private static let uuidPattern = try! NSRegularExpression(
         pattern: "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", options: [.caseInsensitive])
@@ -114,6 +118,8 @@ public struct SyncZoneGuard {
         }
         stubAccounts = stubs
         privateRecords = records
+        companions = Dictionary(stubs.keys.map { (SyncZoneRouter.companionRecordName(accountUuid: $0), $0) }, uniquingKeysWith: { a, _ in a })
+        inHousehold = Set(try String.fetchAll(db, sql: "SELECT uuid FROM syncPresence WHERE zone = ?", arguments: [SyncZones.household]))
     }
 
     /// What a push does with a chunk: send it, or stop sending to the zones named (Task 5 logs each violation
@@ -155,8 +161,8 @@ public struct SyncZoneGuard {
     /// - a move marker carrying anything but where the record went (`movedTo`, another zone of this household);
     /// - a payload carrying (a value or a clock of) a field its `omittedFields` leaves out, or leaving out a
     ///   column that doesn't sync.
-    /// A household move marker is the one household payload that may name a private record: the record's old copy
-    /// is already there, and the marker replaces it with nothing.
+    /// A household move marker is the one household payload that may name a private record, and only one that was
+    /// saved to the household before (`syncPresence`): its old copy is already there, and the marker replaces it.
     public func check(_ payloads: [SyncPayload]) throws {
         for payload in payloads {
             try check(payload)
@@ -180,7 +186,7 @@ public struct SyncZoneGuard {
         }
 
         if payload.recordType == SyncZoneRouter.companionRecordType {
-            guard let stub = stubAccounts[payload.recordName], let zone = stub.zone else {
+            guard let account = companions[payload.recordName], let stub = stubAccounts[account], let zone = stub.zone else {
                 throw violation("none", "account details of an account that has none")
             }
             guard payload.zone == zone else { throw violation(zone, "account details outside the owner's zone") }
@@ -202,6 +208,10 @@ public struct SyncZoneGuard {
             }
             guard target != payload.zone, target == SyncZones.household || privateZones.contains(target) else {
                 throw violation("none", "a move marker to a zone that isn't another of this household")
+            }
+            // In the household, only over a copy the household already has: a marker never names a record first.
+            if payload.zone == SyncZones.household, !inHousehold.contains(payload.recordName) {
+                throw violation("none", "a move marker for a record that was never in the household")
             }
             return
         }

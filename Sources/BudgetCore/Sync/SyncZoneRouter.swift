@@ -127,6 +127,12 @@ public final class SyncZoneRouter {
 
     public static let companionRecordType = "accountDetails"
 
+    /// The record name of an account's companion: derived from the account's UUID, so it never shares a name with
+    /// the account's own record (a Hidden account's lives in the same private zone).
+    public static func companionRecordName(accountUuid: String) -> String {
+        SyncRecordStore.derivedUUID("mango.accountDetails." + accountUuid)
+    }
+
     /// What decides a table's zone before the closure (rule 4) is applied.
     enum Rule: Equatable, Sendable {
         /// Rule 1.

@@ -418,7 +418,7 @@ public actor SyncEngineCore {
                     }
                     incoming.append(.delete(recordName: deletion.recordName, recordType: deletion.recordType))
                 case .companionDeleted:
-                    if try SyncCompanions.stamp(uuid: name, db: db)?.zone == zone { try SyncCompanions.remove(uuid: name, db: db) }
+                    if try SyncCompanions.stamp(name: name, db: db)?.zone == zone { try SyncCompanions.remove(name: name, db: db) }
                 case .unreadable(let type):
                     try SyncTranslator.stageUnreadable(recordType: type, recordName: name, db: db, now: now)
                     report.unreadable += 1
@@ -444,8 +444,42 @@ public actor SyncEngineCore {
             let baseline = incoming.isEmpty && !closedWaiting && !retryAll ? FiledYearBaseline.none : try FiledYearSyncCheck.baseline(db: db)
             // Caught up: a closed batch that can't complete any more applies now (`SyncBatch.flushClosed`, inside).
             // Read-only (the phone): re-filing the apply does here stays untracked, since it is never sent.
-            let applyAll = { try FiledYearSyncCheck.apply(incoming, baseline: baseline, db: db, deviceUser: user, now: now, retryAll: retryAll) }
-            let outcome = try self.readOnly ? SyncChangeTracker.readOnlyApply(db: db, applyAll) : applyAll()
+            // Step 6: what this device places in a private zone of its own never comes in from the household (an
+            // edit made there to a copy the record has left): such a save is applied, found by the placement after the
+            // apply, rolled back and refused, logged for attention, and the marker goes over it again.
+            let checksZones = (try? Self.placesRecords(db: db)) ?? false
+            var refused: [String: SyncPayload] = [:]
+            var outcome = FiledYearSyncCheck.Outcome()
+            while true {
+                let taking = incoming.filter { refused[$0.recordName] == nil }
+                let applyAll = { try FiledYearSyncCheck.apply(taking, baseline: baseline, db: db, deviceUser: user, now: now, retryAll: retryAll) }
+                var misplaced: [SyncPayload] = []
+                try db.inSavepoint {
+                    outcome = try self.readOnly ? SyncChangeTracker.readOnlyApply(db: db, applyAll) : applyAll()
+                    guard checksZones, zone == SyncZones.household else { return .commit }
+                    misplaced = try Self.misplaced(taking, results: outcome.results, followed: followed, db: db)
+                    return misplaced.isEmpty ? .commit : .rollback
+                }
+                if misplaced.isEmpty { break }
+                for payload in misplaced {
+                    refused[payload.recordName] = payload
+                    try SyncMerge.logConflict(table: payload.recordType, uuid: payload.recordName, field: "*",
+                                              losing: .string(Self.privateInHouseholdMessage), winner: nil, loser: payload.modifiedBy, db: db, now: now)
+                    if let stamp = stamps[payload.recordName] {
+                        try SyncZoneMoves.markerAgain(uuid: payload.recordName, tableName: payload.recordType, zone: zone,
+                                                      systemFields: stamp.systemFields, db: db)
+                    }
+                }
+            }
+            incoming.removeAll { refused[$0.recordName] != nil }
+            // Where the server has each record now: its copy (or a marker) in this zone, or nothing after a deletion.
+            for change in incoming {
+                switch change {
+                case .save(let payload): try SyncPresence.add(uuid: payload.recordName, zone: zone, db: db)
+                case .delete(let name, _): try SyncPresence.remove(uuid: name, zone: zone, db: db)
+                }
+            }
+            for name in refused.keys { try SyncPresence.add(uuid: name, zone: zone, db: db) }
             if retryAll { try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [Self.retryStagedKey]) }
             let results = outcome.results
             report.filedYearAlert = outcome.alert
@@ -462,7 +496,7 @@ public actor SyncEngineCore {
                                                               systemFields: stamp.systemFields, db: db)
                         }
                     } else if companions.contains(name) {
-                        try SyncCompanions.store(uuid: name, zone: zone, stamp: stamp, db: db)
+                        try SyncCompanions.store(name: name, zone: zone, stamp: stamp, db: db)
                     } else {
                         // Only a record whose version is now merged here takes the server's stamp: one still staged
                         // must not, or a later save would overwrite a version this device never merged.
@@ -487,6 +521,26 @@ public actor SyncEngineCore {
         return pulled
     }
 
+    static let privateInHouseholdMessage = SyncTranslator.needsAttention + "arrived in the household but is private here; not taken"
+
+    /// The saves of `changes` that this device places in a private zone of its own (by the router, after the apply),
+    /// though they came from the household. Markers, redirects, companions and records still staged are left alone.
+    static func misplaced(_ changes: [SyncIncomingChange], results: [String: IncomingResult], followed: Set<String>,
+                          db: Database) throws -> [SyncPayload] {
+        let candidates: [SyncPayload] = changes.compactMap { change in
+            guard case .save(let payload) = change, payload.movedTo == nil, payload.mergedInto == nil,
+                  SyncSchema.table(payload.recordType) != nil else { return nil }
+            if case .staged? = results[payload.recordName] { return nil }
+            return payload
+        }
+        guard !candidates.isEmpty, let router = try? SyncZoneRouter(db: db) else { return [] }
+        return try candidates.filter { payload in
+            guard let id = try SyncRecordStore.localId(table: payload.recordType, uuid: payload.recordName, db: db),
+                  let placed = try? router.assignment(table: payload.recordType, localId: id) else { return false }
+            return placed.isPrivate && followed.contains(placed.zone)
+        }
+    }
+
     // MARK: Push
 
     func pushAll() async throws -> SyncPushReport {
@@ -495,11 +549,13 @@ public actor SyncEngineCore {
         try await prepare()
         var report = SyncPushReport()
         let busy = try await db.read { db in
-            try !SyncChangeTracker.pending(db: db).isEmpty || SyncImportGate.heldLease(db: db) != nil || !SyncZoneMoves.pending(db: db).isEmpty
+            try !SyncChangeTracker.pending(db: db).isEmpty || SyncImportGate.heldLease(db: db) != nil
+                || !SyncZoneMoves.unfinished(db: db).isEmpty || !SyncCleanup.all(db: db).isEmpty
         }
         guard busy else { return report }
         // Step 6: once the ownership sheet is saved every record is placed in its zone (`SyncZoneRouter`) and every
-        // save checked by the guard, loaded once for the push; before it, everything is household, as before.
+        // save checked by the guard, loaded once for the push. Before it only a demo database pushes (everything to
+        // the household, as before step 6); real data is refused.
         let guardian = try await db.read { db -> SyncZoneGuard? in try Self.placesRecords(db: db) ? try SyncZoneGuard(db: db) : nil }
         // Every record goes sealed under its zone's current key (ruling R15): without it here, nothing is sent and
         // no key is made while another device's marker names one (it waits for iCloud Keychain).
@@ -518,6 +574,7 @@ public actor SyncEngineCore {
         var tries: [String: Int] = [:]
         var pulled = false
         var recovered = false
+        var movesTried = false
         do {
             while true {
                 var needsPull = false
@@ -543,8 +600,11 @@ public actor SyncEngineCore {
                     needsPull = needsPull || flags.needsPull
                     missingZones.formUnion(flags.missingZones)
                 }
-                // Move markers over the old copies of records that moved (step 6), once their new copies are saved.
-                missingZones.formUnion(try await pushMarkers(limits: limits, guardian: guardian, tries: &tries))
+                // Moves (step 6): markers over the old copies and the old file records' deletes, once the new copies
+                // are saved; then what is left to delete on the server.
+                missingZones.formUnion(try await finishMoves(limits: limits, guardian: guardian, tries: &tries, counted: !movesTried))
+                movesTried = true
+                try await cleanUp()
                 // Deletes, after the saves, except a batch's while its run's record isn't on the server yet.
                 let triesAfterSaves = tries
                 let deletes = try await db.read { db in
@@ -554,13 +614,21 @@ public actor SyncEngineCore {
                     try Task.checkCancellation()
                     let chunk = Array(deletes[start..<min(start + chunkSize, deletes.count)])
                     for change in chunk { tries[change.uuid, default: 0] += 1 }
-                    let zones = try await db.read { db in try Self.zones(of: chunk, db: db, companions: true) }
+                    let zoneSet = Set(zoneList)
+                    let zones = try await db.read { db in
+                        guardian == nil ? try Self.zones(of: chunk, db: db) : try Self.presentZones(of: chunk, db: db).filter { zoneSet.contains($0.key) }
+                    }
                     for (zone, names) in zones.sorted(by: { $0.key < $1.key }) {
                         try await transport.delete(names, zone: zone)
                     }
                     try await db.write { db in
                         try SyncChangeTracker.acknowledge(chunk, db: db)
-                        for change in chunk { try SyncCompanions.remove(uuid: change.uuid, db: db) }
+                        for (zone, names) in zones {
+                            for name in names { try SyncPresence.remove(uuid: name, zone: zone, db: db) }
+                        }
+                        for change in chunk {
+                            try SyncCompanions.remove(name: SyncZoneRouter.companionRecordName(accountUuid: change.uuid), db: db)
+                        }
                         _ = try SyncBatch.closeUploaded(db: db)
                     }
                     report.deleted += chunk.count
@@ -590,7 +658,7 @@ public actor SyncEngineCore {
                     return try SyncChangeTracker.pending(db: db).contains {
                         $0.kind != .delete && !staged.contains($0.uuid) && triesLeft[$0.uuid, default: 0] < Self.triesPerPush
                     } || Self.sendableDeletes(db: db).contains { triesLeft[$0.uuid, default: 0] < Self.triesPerPush }
-                        || SyncZoneMoves.pending(db: db).contains {
+                        || SyncZoneMoves.unfinished(db: db).contains {
                             zoneSet.contains($0.zone) && triesLeft[Self.markerTryKey($0.uuid, $0.zone), default: 0] < Self.triesPerPush
                         }
                 }
@@ -615,11 +683,13 @@ public actor SyncEngineCore {
         return key
     }
 
-    /// Whether records are placed in zones (step 6): once the admin has confirmed who owns each account. Before
-    /// that every account is at Everything (no level can change before it) and everything goes to `household`, as
-    /// before step 6; an account below Everything without that confirmation stops the push.
+    /// Whether records are placed in zones (step 6): once the admin has confirmed who owns each account. Before that
+    /// only a demo database (`DemoMarker`) pushes, everything to `household` as before step 6 (every account is at
+    /// Everything then; one that isn't stops it). Real data is never uploaded before every account has its owner and
+    /// level (sharing spec §1, §10): `ownershipNotConfirmed`.
     static func placesRecords(db: Database) throws -> Bool {
         if try SharingSetup.isConfirmed(db: db) { return true }
+        guard try DemoMarker.isDemo(db) else { throw SyncZoneRouterError.ownershipNotConfirmed }
         if try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM account WHERE sharingLevel <> ?)",
                              arguments: [SharingLevel.everything.rawValue]) == true {
             throw SyncZoneRouterError.ownershipNotConfirmed
@@ -629,12 +699,33 @@ public actor SyncEngineCore {
 
     static func markerTryKey(_ uuid: String, _ zone: String) -> String { "marker:\(zone):\(uuid)" }
 
+    /// Deleted records by the zones the server has them in (`SyncPresence`: their copy, or a marker over one), with a
+    /// deleted account's companion in its zone. A record the server never had is in none: nothing is sent for it.
+    static func presentZones(of changes: [PendingChange], db: Database) throws -> [String: [String]] {
+        var result: [String: [String]] = [:]
+        for change in changes {
+            for zone in try SyncPresence.zones(uuid: change.uuid, db: db) { result[zone, default: []].append(change.uuid) }
+            let companion = SyncZoneRouter.companionRecordName(accountUuid: change.uuid)
+            if let stamp = try SyncCompanions.stamp(name: companion, db: db), stamp.systemFields != nil {
+                result[stamp.zone, default: []].append(companion)
+            }
+        }
+        return result
+    }
+
     /// What one save of a push is.
     private enum SendKind {
-        /// A record; `movedFrom` when it is leaving that zone (its copy there is stamped `oldStamp`).
-        case record(PendingChange, movedFrom: String?, oldStamp: Data?, reference: SyncDocumentFileReference?)
+        /// A record; `move` when it is leaving another zone.
+        case record(PendingChange, move: Move?)
         /// The `accountDetails` companion of an account stub.
-        case companion(uuid: String)
+        case companion
+    }
+
+    /// A record leaving `from`, where its copy is at `oldStamp` and its file record is `oldFile`.
+    private struct Move {
+        var from: String
+        var oldStamp: Data?
+        var oldFile: String?
     }
 
     private struct ZonedName: Hashable {
@@ -642,27 +733,30 @@ public actor SyncEngineCore {
         var name: String
     }
 
-    /// One built record of a chunk.
+    /// One built record of a chunk: what it is and what to write once it is saved. Building writes nothing of step 6.
     private struct Built {
         var change: PendingChange
         var outgoing: SyncTranslator.Outgoing?
-        var movedFrom: String?
-        var oldStamp: Data?
+        var move: Move?
         var systemFields: Data?
         var companionFields: Data?
-        /// A file record left in the zone the record leaves (deleted once the record's new copy holds a new one).
-        var oldFile: SyncDocumentFileReference?
+        /// A companion this account no longer has (Hidden, or Everything): deleted once the account is saved.
+        var obsoleteCompanion: (zone: String, name: String)?
+        /// A resent record's log line, written once the chunk passes the guard (placement on).
+        var resentReconciled = false
     }
 
-    /// Sends one chunk of saves and takes in the results.
+    /// Sends one chunk of saves and takes in the results. Nothing of step 6 is written before the guard has passed
+    /// the exact payloads that go (file references included) and the server has taken them: a halt leaves this
+    /// device's state as it was.
     private func pushSaves(_ chunk: [PendingChange], limits: SyncOperationLimits, guardian: SyncZoneGuard?,
                            report: inout SyncPushReport) async throws -> (needsPull: Bool, missingZones: Set<String>) {
         let buildTime = clock()
         let zoneSet = zoneList
         let override = assignmentOverride
-        let documents = documents
+        let placing = guardian != nil
         let built = try await db.write { db -> [Built] in
-            let placement = try guardian == nil ? nil : Self.placement(SyncZoneRouter(db: db), override: override, db: db)
+            let placement = try placing ? Self.placement(SyncZoneRouter(db: db), override: override, db: db) : nil
             return try chunk.map { change in
                 guard let outgoing = try SyncTranslator.outgoing(change, db: db, placement: placement) else {
                     return Built(change: change, outgoing: nil)
@@ -672,47 +766,42 @@ public actor SyncEngineCore {
                 if resent != 0 {
                     item.outgoing?.payload.resent = true
                     if resent == SyncTranslator.resentAfterServerDelete {
-                        // No deletion came with the pull that followed (a full fetch lists none): the edit brings
-                        // the record back, visibly, as ruling R12 does.
-                        try SyncMerge.logConflict(table: change.table, uuid: change.uuid, field: "*", losing: .string(SyncTranslator.reconciledEdit),
-                                                  winner: nil, loser: nil, db: db, now: buildTime)
-                        try db.execute(sql: "UPDATE syncPending SET resent = ? WHERE uuid = ?", arguments: [SyncTranslator.resentReconciled, change.uuid])
+                        if placing {
+                            item.resentReconciled = true
+                        } else {
+                            // No deletion came with the pull that followed (a full fetch lists none): the edit brings
+                            // the record back, visibly, as ruling R12 does.
+                            try Self.logResentEdit(change, db: db, now: buildTime)
+                        }
                     }
                 }
                 let payload = outgoing.payload
-                guard placement != nil, payload.mergedInto == nil,
+                guard placing, payload.mergedInto == nil,
                       let record = try SyncRecordRow.fetchOne(db, sql: "SELECT * FROM syncRecord WHERE uuid = ?", arguments: [change.uuid]) else {
                     item.systemFields = try Self.systemFields(uuid: payload.recordName, db: db)
                     return item
                 }
-                if record.zone != payload.zone {
-                    if record.systemFields != nil || record.changeTag != nil {
-                        // A move: the new copy first, the marker over the old one once it is saved.
-                        item.movedFrom = record.zone
-                        item.oldStamp = record.systemFields
-                        if SyncFileTables.names.contains(change.table), let reference = try SyncDocumentFile.reference(uuid: change.uuid, db: db),
-                           documents?.canSeal(payload) == true {
-                            // Its file is sealed again under the new zone's key; the old file record goes after.
-                            item.oldFile = reference
-                            try SyncDocumentFile.setReference(nil, uuid: change.uuid, db: db, now: buildTime)
-                        }
-                    } else {
-                        // Never on the server: placed, not moved.
-                        try db.execute(sql: "UPDATE syncRecord SET zone = ? WHERE uuid = ?", arguments: [payload.zone, change.uuid])
-                    }
+                if record.zone != payload.zone, try Self.isOnTheServer(record, db: db) {
+                    // A move: the new copy first, the marker and the old file's delete once it is saved.
+                    let file = SyncFileTables.names.contains(change.table) ? try SyncDocumentFile.reference(uuid: change.uuid, db: db) : nil
+                    item.move = Move(from: record.zone, oldStamp: record.systemFields, oldFile: file?.recordName)
                 }
                 item.systemFields = try Self.saveStamp(uuid: change.uuid, zone: payload.zone, record: record, db: db)
                 if let companion = outgoing.companion {
-                    item.companionFields = try Self.companionStamp(uuid: change.uuid, zone: companion.zone, record: record, db: db)
+                    item.companionFields = try SyncCompanions.stamp(name: companion.recordName, db: db).flatMap { $0.zone == companion.zone ? $0.systemFields : nil }
+                } else if change.table == "account" {
+                    let name = SyncZoneRouter.companionRecordName(accountUuid: change.uuid)
+                    if let stale = try SyncCompanions.stamp(name: name, db: db) { item.obsoleteCompanion = (stale.zone, name) }
                 }
                 return item
             }
         }
-        // Only the zones this device syncs: a record placed elsewhere (another person's zone) waits.
+        // Only the zones this device syncs: a record placed elsewhere (another person's) waits.
         var nothingToSend: [PendingChange] = []
         var payloads: [SyncPayload] = []
         var kinds: [ZonedName: SendKind] = [:]
         var systemFields: [ZonedName: Data] = [:]
+        var items: [String: Built] = [:]
         for item in built {
             guard let outgoing = item.outgoing else {
                 nothingToSend.append(item.change)
@@ -723,39 +812,66 @@ public actor SyncEngineCore {
                 report.heldBack += 1
                 continue
             }
+            items[item.change.uuid] = item
             let name = ZonedName(zone: outgoing.payload.zone, name: outgoing.payload.recordName)
             payloads.append(outgoing.payload)
-            kinds[name] = .record(item.change, movedFrom: item.movedFrom, oldStamp: item.oldStamp, reference: item.oldFile)
+            kinds[name] = .record(item.change, move: item.move)
             if let fields = item.systemFields { systemFields[name] = fields }
             if let companion = outgoing.companion, zoneSet.contains(companion.zone) {
                 let companionName = ZonedName(zone: companion.zone, name: companion.recordName)
                 payloads.append(companion)
-                kinds[companionName] = .companion(uuid: companion.recordName)
+                kinds[companionName] = .companion
                 if let fields = item.companionFields { systemFields[companionName] = fields }
             }
         }
-        // The last check (sharing spec §5, anti-goal 1): nothing of this chunk goes when any of it would leak.
-        try await review(payloads, guardian: guardian)
-        // Evidence files go first, sealed (sync spec §9.1) in their record's zone; a document whose file can't go now waits.
-        var attached: [ZonedName: SyncPayload] = [:]
-        var wires: [String: [SyncWireRecord]] = [:]
+        // Evidence files sealed (sync spec §9.1) in their record's zone, under its key; a moving record's file is
+        // sealed again. Nothing is uploaded yet.
+        var sealed: [String: SealedFiles] = [:]
+        var final: [SyncPayload] = []
         for zone in Self.sendingOrder(Set(payloads.map(\.zone))) {
             let key = try await sealingKey(zone: zone)
-            let files = try await attachDocumentFiles(payloads.filter { $0.zone == zone }, key: key, keys: try keyStore.allKeys(zone: zone), zone: zone)
-            report.documentsSealed += files.sealed
-            for payload in files.payloads { attached[ZonedName(zone: zone, name: payload.recordName)] = payload }
-            for payload in payloads where payload.zone == zone {
-                let name = ZonedName(zone: zone, name: payload.recordName)
-                guard let ready = attached[name] else {
-                    // Its file couldn't be uploaded now (no zone key or file save): it waits, still pending.
-                    report.documentsDeferred += 1
-                    kinds[name] = nil
-                    continue
-                }
-                let (wire, packed) = try SyncLargePayload.wire(for: ready, key: key.key)
-                if packed { report.asAssets += 1 }
-                wires[zone, default: []].append(wire)
+            let inZone = payloads.filter { $0.zone == zone }
+            let reseal = Set(inZone.filter { items[$0.recordName]?.move != nil && kinds[ZonedName(zone: zone, name: $0.recordName)] != nil }
+                .map(\.recordName))
+            let files = try await sealDocumentFiles(inZone, key: key, keys: try keyStore.allKeys(zone: zone), zone: zone, reseal: reseal)
+            sealed[zone] = files
+            final += files.payloads
+        }
+        // The last check (sharing spec §5, anti-goal 1), on exactly what goes: nothing of this chunk goes, and nothing
+        // here changes, when any of it would leak.
+        try await review(final, guardian: guardian)
+        try await logMismatchedFiles(sealed.values.flatMap(\.mismatched))
+        let resentLogs = built.filter(\.resentReconciled).map(\.change)
+        if !resentLogs.isEmpty {
+            try await db.write { db in for change in resentLogs { try Self.logResentEdit(change, db: db, now: buildTime) } }
+        }
+        // The files' records go first; a record whose file couldn't be uploaded now waits, still pending.
+        var uploaded: [String: Set<String>] = [:]
+        for (zone, files) in sealed {
+            let saved = try await uploadFileRecords(files.files)
+            uploaded[zone] = saved
+            report.documentsSealed += saved.count
+            if !placing {
+                // As before step 6: a sealed file's reference is kept as soon as its record is on the server.
+                let keep = files.references.filter { files.files.map(\.uuid).contains($0.key) ? saved.contains($0.key) : true }
+                let now = clock()
+                try await db.write { db in for (uuid, reference) in keep { try SyncDocumentFile.setReference(reference, uuid: uuid, db: db, now: now) } }
             }
+        }
+        var wires: [String: [SyncWireRecord]] = [:]
+        var sent: [ZonedName: SyncPayload] = [:]
+        for payload in final {
+            let name = ZonedName(zone: payload.zone, name: payload.recordName)
+            let needsFile = sealed[payload.zone]?.files.contains { $0.uuid == payload.recordName } ?? false
+            if needsFile, uploaded[payload.zone]?.contains(payload.recordName) != true {
+                report.documentsDeferred += 1
+                kinds[name] = nil
+                continue
+            }
+            let (wire, packed) = try SyncLargePayload.wire(for: payload, key: try await sealingKey(zone: payload.zone).key)
+            if packed { report.asAssets += 1 }
+            wires[payload.zone, default: []].append(wire)
+            sent[name] = payload
         }
         var results: [ZonedName: SaveResult] = [:]
         for zone in Self.sendingOrder(Set(wires.keys)) {
@@ -770,55 +886,58 @@ public actor SyncEngineCore {
                 servers[name] = (try? SyncLargePayload.payload(from: server.wire, keys: try keyStore.allKeys(zone: name.zone)), server)
             }
         }
-        // Old file records of moved documents, once their new copy holds a new one.
-        var oldFiles: [String: [String]] = [:]
-        for (name, result) in results {
-            guard case .saved = result.outcome, case .record(_, let from?, _, let reference?)? = kinds[name],
-                  let sent = attached[name]?.documentFile, sent.recordName != reference.recordName else { continue }
-            oldFiles[from, default: []].append(reference.recordName)
-        }
-        for (zone, names) in oldFiles.sorted(by: { $0.key < $1.key }) {
-            do {
-                try await transport.delete(names, zone: zone)
-            } catch let error as SyncTransportError where error.isPassing {
-                Self.log.error("Sync couldn't delete a moved document's old file record now")
-            }
-        }
         let now = clock()
         let saveResults = results
         let sentKinds = kinds
         let unsent = nothingToSend
         let serverRecords = servers
+        let sealedFiles = sealed
+        let uploadedFiles = uploaded
+        let builtItems = items
         let outcome = try await db.write { db -> (SyncPushReport, Bool, Set<String>) in
             var delta = SyncPushReport()
             var needsPull = false
             var missingZones: Set<String> = []
             var acknowledged = unsent
+            var savedRecords: Set<String> = []
             let user = try Self.deviceUser(db: db)
             // Server versions to merge (refused saves), applied together through the filed-year check below.
             var merges: [SyncPayload] = []
             var mergeStamps: [String: SyncServerStamp] = [:]
             for (name, result) in saveResults.sorted(by: { ($0.key.zone, $0.key.name) < ($1.key.zone, $1.key.name) }) {
                 guard let kind = sentKinds[name] else { continue }
-                if case .companion(let uuid) = kind {
-                    try Self.takeCompanionResult(result, uuid: uuid, zone: name.zone, server: serverRecords[name]?.1, db: db)
+                guard case .record(let change, let move) = kind else {
+                    try Self.takeCompanionResult(result, name: name.name, zone: name.zone, server: serverRecords[name]?.1, db: db)
                     if case .zoneNotFound = result.outcome { missingZones.insert(name.zone) }
                     continue
                 }
-                guard case .record(let change, let movedFrom, let oldStamp, _) = kind else { continue }
                 switch result.outcome {
                 case .saved(let stamp):
                     acknowledged.append(change)
+                    savedRecords.insert(name.name)
                     try Self.storeStamp(stamp, uuid: name.name, db: db)
-                    // Saved over the marker (or the companion) a move left here: that's gone.
-                    try SyncZoneMoves.arrived(uuid: name.name, zone: name.zone, db: db)
-                    if let movedFrom {
+                    try SyncPresence.add(uuid: name.name, zone: name.zone, db: db)
+                    if placing {
+                        // Where it lives now; back over a marker it left here, that marker is gone.
                         try db.execute(sql: "UPDATE syncRecord SET zone = ? WHERE uuid = ?", arguments: [name.zone, name.name])
-                        try SyncZoneMoves.record(uuid: name.name, tableName: change.table, from: movedFrom, systemFields: oldStamp, db: db)
-                    }
-                    if change.table == "account", try SyncCompanions.stamp(uuid: name.name, db: db)?.zone == name.zone {
-                        // The account itself is here now (Hidden): its companion's place is taken.
-                        try SyncCompanions.remove(uuid: name.name, db: db)
+                        try SyncZoneMoves.arrived(uuid: name.name, zone: name.zone, db: db)
+                        if let move {
+                            try SyncZoneMoves.record(uuid: name.name, tableName: change.table, from: move.from, to: name.zone,
+                                                     systemFields: move.oldStamp, oldFile: move.oldFile, db: db)
+                        }
+                        if let files = sealedFiles[name.zone] {
+                            if let reference = files.references[name.name] {
+                                try SyncDocumentFile.setReference(reference, uuid: name.name, db: db, now: now)
+                            } else if files.unsealable.contains(name.name) {
+                                // Moved without its file (not on this device): the old zone's file record still goes.
+                                try SyncDocumentFile.setReference(nil, uuid: name.name, db: db, now: now)
+                                try SyncDocumentFile.logAttention(table: change.table, uuid: name.name, message: Self.fileNotMovedMessage, db: db, now: now)
+                            }
+                        }
+                        if let stale = builtItems[name.name]?.obsoleteCompanion {
+                            try SyncCleanup.add(zone: stale.zone, recordName: stale.name, db: db)
+                            try SyncCompanions.remove(name: stale.name, db: db)
+                        }
                     }
                     // `resent` stays on an edit made meanwhile (still pending at a newer revision): change feeds carry
                     // only a record's latest version, so a device that deleted it may never see the save that
@@ -836,14 +955,13 @@ public actor SyncEngineCore {
                         delta.merged += 1
                         continue
                     }
-                    if let payload, payload.movedTo != nil || payload.recordType != change.table || movedFrom != nil {
-                        // The place is held by a marker, a companion, or the record's own older copy there (it moved
-                        // back): its version is taken and the record goes again over it.
+                    if let payload, payload.movedTo != nil || move != nil {
+                        // The place is held by a marker, or by the record's own older copy there (it moved back): its
+                        // version is taken and the record goes again over it.
                         try SyncZoneMoves.takeServerStamp(uuid: name.name, tableName: change.table, zone: name.zone,
                                                           systemFields: server.stamp.systemFields, db: db)
-                        if payload.movedTo == nil, payload.recordType == change.table {
-                            merges.append(payload)
-                        }
+                        try SyncPresence.add(uuid: name.name, zone: name.zone, db: db)
+                        if payload.movedTo == nil { merges.append(payload) }
                         delta.merged += 1
                         continue
                     }
@@ -868,7 +986,7 @@ public actor SyncEngineCore {
                         needsPull = true
                         continue
                     }
-                    if movedFrom != nil {
+                    if move != nil {
                         // The marker this device knew there is gone: the record is created there afresh.
                         try SyncZoneMoves.arrived(uuid: name.name, zone: name.zone, db: db)
                         continue
@@ -887,6 +1005,14 @@ public actor SyncEngineCore {
                 case .failed(let reason):
                     Self.log.error("Sync save of a \(change.table, privacy: .public) record failed (\(reason, privacy: .public)); sent again later")
                     delta.refused += 1
+                }
+            }
+            if placing {
+                // A file sealed for a record that didn't go: deleted on the server (a later push seals again).
+                for (zone, files) in sealedFiles {
+                    for file in files.files where uploadedFiles[zone]?.contains(file.uuid) == true && !savedRecords.contains(file.uuid) {
+                        try SyncCleanup.add(zone: zone, recordName: file.wire.recordName, db: db)
+                    }
                 }
             }
             if !merges.isEmpty {
@@ -932,8 +1058,23 @@ public actor SyncEngineCore {
         return (outcome.1, outcome.2)
     }
 
+    static let fileNotMovedMessage = SyncTranslator.needsAttention + "moved to another zone without its file (not on this device)"
+
+    /// Ruling R12's line for an edit that brought back a record deleted on iCloud.
+    private static func logResentEdit(_ change: PendingChange, db: Database, now: Date) throws {
+        try SyncMerge.logConflict(table: change.table, uuid: change.uuid, field: "*", losing: .string(SyncTranslator.reconciledEdit),
+                                  winner: nil, loser: nil, db: db, now: now)
+        try db.execute(sql: "UPDATE syncPending SET resent = ? WHERE uuid = ?", arguments: [SyncTranslator.resentReconciled, change.uuid])
+    }
+
+    /// Whether the record's copy in its zone is on the server (an acknowledged save or a pull put it there).
+    static func isOnTheServer(_ record: SyncRecordRow, db: Database) throws -> Bool {
+        if record.systemFields != nil || record.changeTag != nil { return true }
+        return try SyncPresence.isIn(uuid: record.uuid, zone: record.zone, db: db)
+    }
+
     /// The guard's review of what is about to be sent (step 6): a violation stops the push before anything of it
-    /// is saved, logged for attention (fields named, never values), and thrown.
+    /// is saved or changed here, logged for attention (fields named, never values), and thrown.
     private func review(_ payloads: [SyncPayload], guardian: SyncZoneGuard?) async throws {
         guard let guardian else { return }
         let review = guardian.review(payloads)
@@ -972,122 +1113,160 @@ public actor SyncEngineCore {
         })
     }
 
-    /// The version a save of the record into `zone` names: its own there; a marker (or companion) this device
-    /// knows there; else none (create).
+    /// The version a save of the record into `zone` names: its own there; a marker this device knows there; else
+    /// none (create).
     static func saveStamp(uuid: String, zone: String, record: SyncRecordRow, db: Database) throws -> Data? {
         if record.zone == zone { return record.systemFields }
-        if let marker = try SyncZoneMoves.markerStamp(uuid: uuid, zone: zone, db: db) { return marker }
-        if let companion = try SyncCompanions.stamp(uuid: uuid, db: db), companion.zone == zone { return companion.systemFields }
-        return nil
+        return try SyncZoneMoves.markerStamp(uuid: uuid, zone: zone, db: db)
     }
 
-    /// The version a companion save into `zone` names: its own; else the marker or the account's own old copy there
-    /// (an account leaving Hidden: its companion takes that place).
-    static func companionStamp(uuid: String, zone: String, record: SyncRecordRow, db: Database) throws -> Data? {
-        if let companion = try SyncCompanions.stamp(uuid: uuid, db: db), companion.zone == zone, let fields = companion.systemFields { return fields }
-        if let marker = try SyncZoneMoves.markerStamp(uuid: uuid, zone: zone, db: db) { return marker }
-        if record.zone == zone { return record.systemFields }
-        return nil
-    }
-
-    /// A companion's save result: its stamp kept; refused or failed, the account goes again (with it).
-    static func takeCompanionResult(_ result: SaveResult, uuid: String, zone: String, server: SyncServerRecord?, db: Database) throws {
+    /// A companion's save result: its stamp kept; refused or failed, its account goes again (with it).
+    static func takeCompanionResult(_ result: SaveResult, name: String, zone: String, server: SyncServerRecord?, db: Database) throws {
         switch result.outcome {
         case .saved(let stamp):
-            try SyncCompanions.store(uuid: uuid, zone: zone, stamp: stamp, db: db)
-            // It took the place of what was there (a marker, the account's old copy): nothing else goes there.
-            try SyncZoneMoves.arrived(uuid: uuid, zone: zone, db: db)
+            try SyncCompanions.store(name: name, zone: zone, stamp: stamp, db: db)
         case .changed:
-            try SyncCompanions.store(uuid: uuid, zone: zone, stamp: server?.stamp, db: db)
-            try requeueAccount(uuid, db: db)
+            try SyncCompanions.store(name: name, zone: zone, stamp: server?.stamp, db: db)
+            try requeueAccount(ofCompanion: name, db: db)
         case .deleted:
-            try SyncCompanions.store(uuid: uuid, zone: zone, stamp: nil, db: db)
-            try SyncZoneMoves.arrived(uuid: uuid, zone: zone, db: db)
-            try requeueAccount(uuid, db: db)
+            try SyncCompanions.store(name: name, zone: zone, stamp: nil, db: db)
+            try requeueAccount(ofCompanion: name, db: db)
         case .zoneNotFound, .tooLarge, .batchRequestFailed, .failed:
-            try requeueAccount(uuid, db: db)
+            try requeueAccount(ofCompanion: name, db: db)
         }
     }
 
-    private static func requeueAccount(_ uuid: String, db: Database) throws {
-        guard let id = try SyncRecordStore.localId(table: "account", uuid: uuid, db: db) else { return }
+    private static func requeueAccount(ofCompanion name: String, db: Database) throws {
+        guard let (id, uuid) = try SyncCompanions.account(named: name, db: db) else { return }
         try SyncMerge.queue(uuid: uuid, table: "account", localId: id, kind: .update, db: db)
     }
 
-    /// Saves the markers of records that moved (`SyncZoneMoves.pending`) over their old copies, sealed with the old
-    /// zone's key and checked by the guard; a record deleted since has its old copy deleted instead. Returns the
+    /// Finishes the moves this device started (`SyncZoneMoves.unfinished`): a marker over each old copy (sealed with
+    /// the old zone's key, checked by the guard), then the old file record's delete; a record deleted since has its
+    /// old copy deleted instead. Each step is cleared only once the server has taken it; a move still unfinished
+    /// after this is counted (`counted`, once per push), and logged for attention after a few pushes. Returns the
     /// zones found missing.
-    private func pushMarkers(limits: SyncOperationLimits, guardian: SyncZoneGuard?, tries: inout [String: Int]) async throws -> Set<String> {
+    private func finishMoves(limits: SyncOperationLimits, guardian: SyncZoneGuard?, tries: inout [String: Int],
+                             counted: Bool) async throws -> Set<String> {
         let zoneSet = zoneList
         let triesNow = tries
-        let (markers, gone, done) = try await db.read { db -> ([(SyncPayload, Data?)], [(String, String)], [(String, String)]) in
-            var markers: [(SyncPayload, Data?)] = []
-            var gone: [(String, String)] = []
-            var done: [(String, String)] = []
-            for move in try SyncZoneMoves.pending(db: db) where zoneSet.contains(move.zone)
-                && triesNow[Self.markerTryKey(move.uuid, move.zone), default: 0] < Self.triesPerPush {
+        let (moves, markers, goneHere) = try await db.read { db -> ([SyncZoneMoves.Unfinished], [String: (SyncPayload, Data?)], Set<String>) in
+            let moves = try SyncZoneMoves.unfinished(db: db).filter {
+                zoneSet.contains($0.zone) && triesNow[Self.markerTryKey($0.uuid, $0.zone), default: 0] < Self.triesPerPush
+            }
+            var markers: [String: (SyncPayload, Data?)] = [:]
+            var gone: Set<String> = []
+            for move in moves where move.markerPending {
                 guard let current = try String.fetchOne(db, sql: "SELECT zone FROM syncRecord WHERE uuid = ?", arguments: [move.uuid]) else {
-                    gone.append((move.uuid, move.zone))
+                    gone.insert(Self.markerTryKey(move.uuid, move.zone))
                     continue
                 }
-                let companionThere = try SyncCompanions.stamp(uuid: move.uuid, db: db)?.zone == move.zone
-                if current == move.zone || companionThere {
-                    // Back there (or its companion took the place): nothing to mark.
-                    done.append((move.uuid, move.zone))
-                    continue
-                }
-                markers.append((SyncZoneMoves.marker(uuid: move.uuid, tableName: move.tableName, zone: move.zone, movedTo: current),
-                                try SyncZoneMoves.markerStamp(uuid: move.uuid, zone: move.zone, db: db)))
+                guard current != move.zone else { continue }
+                markers[Self.markerTryKey(move.uuid, move.zone)] = (SyncZoneMoves.marker(uuid: move.uuid, tableName: move.tableName, zone: move.zone,
+                                                                                          movedTo: current),
+                                                                     try SyncZoneMoves.markerStamp(uuid: move.uuid, zone: move.zone, db: db))
             }
-            return (markers, gone, done)
+            return (moves, markers, gone)
         }
-        for (uuid, zone) in markers.map({ ($0.0.recordName, $0.0.zone) }) + gone {
-            tries[Self.markerTryKey(uuid, zone), default: 0] += 1
-        }
-        if !done.isEmpty || !gone.isEmpty {
-            for (zone, names) in Dictionary(grouping: gone, by: \.1).sorted(by: { $0.key < $1.key }) {
-                try await transport.delete(names.map(\.0), zone: zone)
-            }
-            try await db.write { db in
-                for (uuid, zone) in done + gone { try SyncZoneMoves.arrived(uuid: uuid, zone: zone, db: db) }
-            }
-        }
-        guard !markers.isEmpty else { return [] }
-        try await review(markers.map(\.0), guardian: guardian)
+        guard !moves.isEmpty else { return [] }
+        for move in moves { tries[Self.markerTryKey(move.uuid, move.zone), default: 0] += 1 }
+        try await review(markers.values.map(\.0), guardian: guardian)
         var missing: Set<String> = []
         var results: [ZonedName: SaveResult] = [:]
-        for zone in Self.sendingOrder(Set(markers.map(\.0.zone))) {
+        for zone in Self.sendingOrder(Set(markers.values.map(\.0.zone))) {
             let key = try await sealingKey(zone: zone)
-            let inZone = markers.filter { $0.0.zone == zone }
+            let inZone = markers.values.filter { $0.0.zone == zone }
             let wires = try inZone.map { try SyncLargePayload.wire(for: $0.0, key: key.key).0 }
             let fields = inZone.reduce(into: [String: Data]()) { result, item in if let stamp = item.1 { result[item.0.recordName] = stamp } }
             for operation in Self.operations(wires, limits: limits) {
-                for result in try await save(operation, ifUnchanged: fields) { results[ZonedName(zone: zone, name: result.recordName)] = result }
+                for result in try await save(operation, ifUnchanged: fields) {
+                    results[ZonedName(zone: zone, name: result.recordName)] = result
+                    if case .zoneNotFound = result.outcome { missing.insert(zone) }
+                }
             }
         }
-        let tables = Dictionary(markers.map { (ZonedName(zone: $0.0.zone, name: $0.0.recordName), $0.0.recordType) }, uniquingKeysWith: { a, _ in a })
-        let taken = results
-        for (name, result) in taken {
-            if case .zoneNotFound = result.outcome { missing.insert(name.zone) }
+        // What each move still holds after its marker: a record gone here has its old copy deleted; the old file
+        // record goes once no marker is pending there.
+        var markerDone: Set<ZonedName> = []
+        var deletes: [String: [String]] = [:]
+        for move in moves {
+            let name = ZonedName(zone: move.zone, name: move.uuid)
+            let gone = goneHere.contains(Self.markerTryKey(move.uuid, move.zone))
+            if gone { deletes[move.zone, default: []].append(move.uuid) }
+            let markerOK: Bool
+            if case .saved? = results[name]?.outcome { markerOK = true } else if case .deleted? = results[name]?.outcome { markerOK = true } else {
+                // No marker to save: none was pending, the record is gone here (its old copy is deleted), or it is back
+                // in that zone.
+                markerOK = !move.markerPending || gone || markers[Self.markerTryKey(move.uuid, move.zone)] == nil
+            }
+            if markerOK { markerDone.insert(name) }
+            if markerOK, let file = move.oldFile { deletes[move.zone, default: []].append(file) }
         }
+        var deleted: Set<ZonedName> = []
+        for (zone, names) in deletes.sorted(by: { $0.key < $1.key }) {
+            do {
+                try await transport.delete(names, zone: zone)
+                for name in names { deleted.insert(ZonedName(zone: zone, name: name)) }
+            } catch let error as SyncTransportError where error.isPassing {
+                Self.log.error("Sync couldn't finish a move's deletes now; tried again later")
+            }
+        }
+        let taken = results
+        let now = clock()
+        let goneKeys = goneHere
+        let removed = deleted
+        let markerKeys = Set(markers.keys)
+        let tables = Dictionary(moves.map { (ZonedName(zone: $0.zone, name: $0.uuid), $0.tableName) }, uniquingKeysWith: { a, _ in a })
         try await db.write { db in
-            for (name, result) in taken {
-                switch result.outcome {
-                case .saved(let stamp):
-                    try SyncZoneMoves.acknowledge(uuid: name.name, zone: name.zone, stamp: stamp, db: db)
-                case .changed(let server):
+            for move in moves {
+                let name = ZonedName(zone: move.zone, name: move.uuid)
+                switch taken[name]?.outcome {
+                case .saved(let stamp)?:
+                    try SyncZoneMoves.acknowledge(uuid: move.uuid, zone: move.zone, stamp: stamp, db: db)
+                case .changed(let server)?:
                     // Edited there meanwhile (or another marker): the marker goes again over that version.
-                    try SyncZoneMoves.takeServerStamp(uuid: name.name, tableName: tables[name] ?? server.wire.recordType, zone: name.zone,
-                                                      systemFields: server.stamp.systemFields, db: db)
-                case .deleted:
+                    try SyncZoneMoves.markerAgain(uuid: move.uuid, tableName: tables[name] ?? server.wire.recordType, zone: move.zone,
+                                                  systemFields: server.stamp.systemFields, db: db)
+                case .deleted?:
                     // The old copy is gone: nothing readable stays there.
-                    try SyncZoneMoves.acknowledge(uuid: name.name, zone: name.zone, stamp: nil, db: db)
-                case .zoneNotFound, .tooLarge, .batchRequestFailed, .failed:
+                    try SyncZoneMoves.acknowledge(uuid: move.uuid, zone: move.zone, stamp: nil, db: db)
+                    try SyncPresence.remove(uuid: move.uuid, zone: move.zone, db: db)
+                default:
                     break
+                }
+                if removed.contains(name) {
+                    // The record was deleted here before its marker went: its old copy is deleted instead.
+                    try SyncZoneMoves.acknowledge(uuid: move.uuid, zone: move.zone, stamp: nil, db: db)
+                    try SyncPresence.remove(uuid: move.uuid, zone: move.zone, db: db)
+                } else if move.markerPending, !goneKeys.contains(Self.markerTryKey(move.uuid, move.zone)),
+                          !markerKeys.contains(Self.markerTryKey(move.uuid, move.zone)) {
+                    // Back in that zone: no marker to save there.
+                    try SyncZoneMoves.acknowledge(uuid: move.uuid, zone: move.zone, stamp: nil, db: db)
+                }
+                if let file = move.oldFile, removed.contains(ZonedName(zone: move.zone, name: file)) {
+                    try SyncZoneMoves.fileDeleted(uuid: move.uuid, zone: move.zone, db: db)
+                }
+                if counted, try SyncZoneMoves.unfinished(db: db).contains(where: { $0.uuid == move.uuid && $0.zone == move.zone }) {
+                    try SyncZoneMoves.tried(uuid: move.uuid, zone: move.zone, tableName: move.tableName, db: db, now: now)
                 }
             }
         }
         return missing
+    }
+
+    /// Deletes what `SyncCleanup` lists on the server (only in the zones this device syncs); a row goes once the
+    /// server has taken its delete.
+    private func cleanUp() async throws {
+        let zoneSet = Set(zoneList)
+        let pending = try await db.read { db in try SyncCleanup.all(db: db) }.filter { zoneSet.contains($0.key) }
+        for (zone, names) in pending.sorted(by: { $0.key < $1.key }) {
+            do {
+                try await transport.delete(names, zone: zone)
+            } catch let error as SyncTransportError where error.isPassing {
+                continue
+            }
+            try await db.write { db in try SyncCleanup.done(zone: zone, recordNames: names, db: db) }
+        }
     }
 
     /// One non-atomic save operation; split in half while the server says it is too large.
@@ -1130,17 +1309,13 @@ public actor SyncEngineCore {
         return try SyncChangeTracker.pending(db: db).filter { $0.kind == .delete && !held.contains($0.uuid) }
     }
 
-    /// Deleted records by zone (from their tombstones: the zone each was last placed in; household when there is
-    /// none). With `companions`, a deleted account's companion too, in its zone.
-    static func zones(of changes: [PendingChange], db: Database, companions: Bool = false) throws -> [String: [String]] {
+    /// Deleted records by zone (from their tombstones; household when there is none): before step 6's placement.
+    static func zones(of changes: [PendingChange], db: Database) throws -> [String: [String]] {
         var result: [String: [String]] = [:]
         for change in changes {
             let zone = try String.fetchOne(db, sql: "SELECT zone FROM syncTombstone WHERE uuid = ?", arguments: [change.uuid])
                 ?? SyncRecordStore.householdZone
             result[zone, default: []].append(change.uuid)
-            if companions, let companion = try SyncCompanions.stamp(uuid: change.uuid, db: db), companion.zone != zone {
-                result[companion.zone, default: []].append(change.uuid)
-            }
         }
         return result
     }
@@ -1185,6 +1360,8 @@ public actor SyncEngineCore {
             }
             // Its markers and companions went with it.
             try db.execute(sql: "DELETE FROM syncZoneMove WHERE zone = ?", arguments: [zone])
+            try db.execute(sql: "DELETE FROM syncPresence WHERE zone = ?", arguments: [zone])
+            try db.execute(sql: "DELETE FROM syncZoneCleanup WHERE zone = ?", arguments: [zone])
             try db.execute(sql: "UPDATE syncCompanion SET systemFields = NULL, changeTag = NULL WHERE zone = ?", arguments: [zone])
             if var keys = try SyncZoneKeys.local(zone: zone, db: db) {
                 keys.systemFields = nil
@@ -1289,7 +1466,7 @@ public actor SyncEngineCore {
     static func heldTags(_ records: [SyncServerRecord], db: Database) throws -> [String: String] {
         var result = try changeTags(records.filter { $0.wire.recordType != SyncZoneRouter.companionRecordType }.map(\.wire.recordName), db: db)
         for record in records where record.wire.recordType == SyncZoneRouter.companionRecordType {
-            if let tag = try SyncCompanions.stamp(uuid: record.wire.recordName, db: db)?.changeTag { result[record.wire.recordName] = tag }
+            if let tag = try SyncCompanions.stamp(name: record.wire.recordName, db: db)?.changeTag { result[record.wire.recordName] = tag }
         }
         return result
     }

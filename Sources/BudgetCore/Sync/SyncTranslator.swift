@@ -116,7 +116,8 @@ public enum SyncTranslator {
         var companion: SyncPayload?
         if let details = assignment.companion {
             let carried = Set(details.fields)
-            companion = SyncPayload(recordType: details.recordType, recordName: record.uuid, zone: details.zone,
+            companion = SyncPayload(recordType: details.recordType, recordName: SyncZoneRouter.companionRecordName(accountUuid: record.uuid),
+                                    zone: details.zone,
                                     fields: fields.filter { carried.contains($0.key) },
                                     clocks: payload.clocks.filter { carried.contains($0.key) || $0.key == SyncMerge.insertClock },
                                     modifiedBy: record.modifiedBy, modifiedAt: record.modifiedAt)
@@ -363,7 +364,7 @@ public enum SyncTranslator {
     private static func applySave(_ payload: SyncPayload, db: Database, deviceUser: String?, now: Date,
                                   fromStaging: Bool = false, revivals: [String: Int64] = [:]) throws -> IncomingResult {
         if payload.recordType == SyncZoneRouter.companionRecordType {
-            return try applyCompanion(payload, db: db, deviceUser: deviceUser, now: now)
+            return try applyCompanion(payload, db: db, deviceUser: deviceUser, now: now, fromStaging: fromStaging)
         }
         if payload.movedTo != nil, payload.mergedInto == nil {
             return try applyMarker(payload, db: db, deviceUser: deviceUser, now: now)
@@ -652,31 +653,20 @@ public enum SyncTranslator {
         }
     }
 
-    /// The staging key of an account's companion (it can't share the account's own UUID there).
-    static func companionStagingKey(_ accountUuid: String) -> String { SyncZoneRouter.companionRecordType + ":" + accountUuid }
-
-    /// An `accountDetails` companion (step 6): the private columns of the account with that UUID, merged field by
-    /// field with their clocks. It waits (staged) until the account is here, and is taken only from the private
-    /// zone of the account's owner.
-    private static func applyCompanion(_ payload: SyncPayload, db: Database, deviceUser: String?, now: Date) throws -> IncomingResult {
-        let key = companionStagingKey(payload.recordName)
+    /// An `accountDetails` companion (step 6, named `SyncZoneRouter.companionRecordName`): the private columns of
+    /// its account, merged field by field with their clocks. It waits (staged) until the account is here, and is
+    /// taken only from the private zone of the account's owner.
+    private static func applyCompanion(_ payload: SyncPayload, db: Database, deviceUser: String?, now: Date,
+                                       fromStaging: Bool) throws -> IncomingResult {
         let schema = SyncSchema.table("account")!
-        guard let accountId = try SyncRecordStore.localId(table: schema.name, uuid: payload.recordName, db: db) else {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            let reason = waitingFor + schema.name
-            try db.execute(sql: """
-                INSERT INTO syncStaging(tableName, uuid, payloadJSON, reason, importRunUuid, receivedAt, firstSeenAt, attempts)
-                    VALUES (?, ?, ?, ?, NULL, ?, ?, 0)
-                ON CONFLICT(uuid) DO UPDATE SET payloadJSON = excluded.payloadJSON, reason = excluded.reason, receivedAt = excluded.receivedAt
-                """, arguments: [payload.recordType, key, String(decoding: try encoder.encode(payload), as: UTF8.self), reason, now, now])
-            return .staged(reason)
+        guard let (accountId, accountUuid) = try SyncCompanions.account(named: payload.recordName, db: db) else {
+            return try stage(payload, reason: waitingFor + schema.name, db: db, now: now, fromStaging: fromStaging)
         }
-        try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [key])
+        try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [payload.recordName])
         let owner = try Int64.fetchOne(db, sql: "SELECT ownerPersonId FROM account WHERE id = ?", arguments: [accountId])
             .flatMap { try SyncRecordStore.existingUUID(table: "person", localId: $0, db: db) }
         guard let owner, payload.zone == SyncZones.privateZone(personUuid: owner) else {
-            try SyncMerge.logConflict(table: schema.name, uuid: payload.recordName, field: "*",
+            try SyncMerge.logConflict(table: schema.name, uuid: accountUuid, field: "*",
                                       losing: .string(needsAttention + "account details from outside the owner's private zone; not taken"),
                                       winner: nil, loser: payload.modifiedBy, db: db, now: now)
             return .discarded("account details outside the owner's zone")
@@ -689,15 +679,15 @@ public enum SyncTranslator {
         try db.execute(sql: "SAVEPOINT syncApplyCompanion")
         do {
             let outcome = try SyncMerge.mergeFields(payload, into: accountId, values: values, held: [:], schema: schema, db: db,
-                                                    deviceUser: deviceUser, uuid: payload.recordName, adopted: false, now: now)
+                                                    deviceUser: deviceUser, uuid: accountUuid, adopted: false, now: now)
             // The server's clocks of these fields are their base now (the account's other fields keep theirs).
             for column in values.keys {
                 if let clock = payload.clock(column) {
                     try SyncMerge.setClock(clock, field: SyncMerge.basePrefix + column, table: schema.name, localId: accountId, db: db)
                 }
             }
-            if outcome.localWon, try !SyncMerge.isPending(uuid: payload.recordName, db: db) {
-                try SyncMerge.queue(uuid: payload.recordName, table: schema.name, localId: accountId, kind: .update, db: db)
+            if outcome.localWon, try !SyncMerge.isPending(uuid: accountUuid, db: db) {
+                try SyncMerge.queue(uuid: accountUuid, table: schema.name, localId: accountId, kind: .update, db: db)
             }
             try db.execute(sql: "RELEASE syncApplyCompanion")
             return outcome.conflicts.isEmpty ? .applied : .conflicted(outcome.conflicts)
@@ -895,12 +885,7 @@ public enum SyncTranslator {
                 VALUES (?, ?, '{}', ?, NULL, ?, ?, 0)
             ON CONFLICT(uuid) DO UPDATE SET tableName = excluded.tableName, payloadJSON = excluded.payloadJSON,
                 reason = excluded.reason, importRunUuid = NULL, receivedAt = excluded.receivedAt
-            """, arguments: [recordType, stagingKey(recordType: recordType, recordName: recordName), needsAttention + "unreadable payload", now, now])
-    }
-
-    /// The staging key of a record: its name, except a companion's, which names its account (`companionStagingKey`).
-    static func stagingKey(recordType: String, recordName: String) -> String {
-        recordType == SyncZoneRouter.companionRecordType ? companionStagingKey(recordName) : recordName
+            """, arguments: [recordType, recordName, needsAttention + "unreadable payload", now, now])
     }
 
     // MARK: Waiting for the household key (ruling R15)
@@ -946,8 +931,7 @@ public enum SyncTranslator {
                 VALUES (?, ?, ?, ?, NULL, ?, ?, 0)
             ON CONFLICT(uuid) DO UPDATE SET tableName = excluded.tableName, payloadJSON = excluded.payloadJSON,
                 reason = excluded.reason, importRunUuid = NULL, receivedAt = excluded.receivedAt, attempts = 0
-            """, arguments: [record.wire.recordType, stagingKey(recordType: record.wire.recordType, recordName: record.wire.recordName), json,
-                             waitingForHouseholdKey, now, now])
+            """, arguments: [record.wire.recordType, record.wire.recordName, json, waitingForHouseholdKey, now, now])
     }
 
     /// The records waiting for a key that `keys` now opens, in the order they arrived, with their stamps; their
