@@ -6,7 +6,7 @@
 // check no value is outside the encrypted fields, and time applying it into an empty database
 // through the checked pull. Prints the summary and writes a markdown report.
 //
-// Usage: swift run SyncRehearsal --db <copy of the database> [--library <evidence folder>]
+// Usage: swift run --package-path Tools SyncRehearsal --db <copy of the database> [--library <evidence folder>]
 //                                [--out <report folder>] [--keep]
 //   --db       a copy of the database: the app's own database is refused. It is opened read-only
 //              and copied again into a temporary folder; only those copies are written.
@@ -20,7 +20,7 @@ import Foundation
 import BudgetCore
 
 func usage() -> Never {
-    FileHandle.standardError.write(Data("Usage: SyncRehearsal --db <copy of the database> [--library <evidence folder>] [--out <report folder>] [--keep]\n".utf8))
+    FileHandle.standardError.write(Data("Usage: swift run --package-path Tools SyncRehearsal --db <copy of the database> [--library <evidence folder>] [--out <report folder>] [--keep]\n".utf8))
     exit(2)
 }
 

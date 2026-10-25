@@ -6,7 +6,7 @@
 // many items each section of the review holds, and each Needs-you item's title with its first
 // reason. Nothing is applied.
 //
-// Usage: swift run ImportDryRun --db <path> [--allow-app-data] <files or folders…>
+// Usage: swift run --package-path Tools ImportDryRun --db <path> [--allow-app-data] <files or folders…>
 //   The database is opened read-only and copied to a temporary folder; only the copy is used
 //   (migrated, planned against) and it is deleted afterwards. The evidence library is an empty
 //   temporary folder. The files are only read.
@@ -18,7 +18,7 @@ import BudgetCore
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: ImportDryRun --db <path> [--allow-app-data] <files or folders…>
+        Usage: swift run --package-path Tools ImportDryRun --db <path> [--allow-app-data] <files or folders…>
 
         """.data(using: .utf8)!)
     exit(2)

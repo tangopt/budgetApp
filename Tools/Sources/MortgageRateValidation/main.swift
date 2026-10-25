@@ -9,7 +9,7 @@
 // the bank reset to with the computed annuity. Prints the table and a summary per fixing
 // convention; the loan's own figures come only from the database and the arguments.
 //
-// Usage: swift run MortgageRateValidation <db-path> --spread <percent> --total <instalments>
+// Usage: swift run --package-path Tools MortgageRateValidation <db-path> --spread <percent> --total <instalments>
 //          --first <YYYY-MM-DD> [--balloon <amount>] [--index euribor3m] [--ecb-csv <file>]
 //          [--revisions 8] [--bank-next-rate <percent>] [--bank-next <amount>]
 
@@ -19,7 +19,7 @@ import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: MortgageRateValidation <db-path> --spread <percent> --total <instalments> --first <YYYY-MM-DD>
+        Usage: swift run --package-path Tools MortgageRateValidation <db-path> --spread <percent> --total <instalments> --first <YYYY-MM-DD>
                [--balloon <amount>] [--index euribor3m] [--ecb-csv <file>] [--revisions 8]
                [--bank-next-rate <percent>] [--bank-next <amount>]
 

@@ -16,7 +16,7 @@
 //
 // The plan is a personal data file kept outside the repository.
 //
-// Usage: swift run ApplyTaxData <db> --plan <plan.json> [--report <out.txt>] [--dry-run] [--allow-app-data]
+// Usage: swift run --package-path Tools ApplyTaxData <db> --plan <plan.json> [--report <out.txt>] [--dry-run] [--allow-app-data]
 //   --dry-run         runs on a temporary copy of the database (the source opened read-only), then deletes it
 //                     (also on failure): <db> is only read.
 //   --allow-app-data  lets a real run write the app's own database (the user's go); without it every path
@@ -29,7 +29,7 @@ import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: ApplyTaxData <db> --plan <plan.json> [--report <out.txt>] [--dry-run] [--allow-app-data]
+        Usage: swift run --package-path Tools ApplyTaxData <db> --plan <plan.json> [--report <out.txt>] [--dry-run] [--allow-app-data]
 
         """.data(using: .utf8)!)
     exit(2)

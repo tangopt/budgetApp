@@ -10,7 +10,7 @@
 //   python3 -I scripts/spreadsheet-balance-values.py "<copy of>/Budget copy.numbers" > values.json
 // and its "column2019"); Lloyds Classic's is derived from its January 2020 column.
 //
-// Usage: swift run RedateSpreadsheetBalances <db-path> [--dry-run]
+// Usage: swift run --package-path Tools RedateSpreadsheetBalances <db-path> [--dry-run]
 //   --dry-run  re-dates and verifies inside the transaction, prints the report, rolls back.
 
 import Foundation
@@ -18,7 +18,7 @@ import BudgetCore
 import GRDB
 
 func usage() -> Never {
-    FileHandle.standardError.write("Usage: RedateSpreadsheetBalances <db-path> [--dry-run]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("Usage: swift run --package-path Tools RedateSpreadsheetBalances <db-path> [--dry-run]\n".data(using: .utf8)!)
     exit(2)
 }
 

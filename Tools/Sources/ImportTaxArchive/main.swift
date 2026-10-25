@@ -15,7 +15,7 @@
 //
 // The settings, the plan and the archive are personal data kept outside the repository.
 //
-// Usage: swift run ImportTaxArchive <db> --library <evidence folder> --folder <archive folder>
+// Usage: swift run --package-path Tools ImportTaxArchive <db> --library <evidence folder> --folder <archive folder>
 //          [--filed <sa_settings.json>] [--plan <tax_data_plan.json>] [--report <out.md>]
 //          [--work <folder>] [--apply] [--allow-app-data] [--force-running] [--no-ocr]
 //   --work            where the rehearsal's copies go, in a fresh subfolder per run (kept; default: a temporary
@@ -35,7 +35,7 @@ import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: ImportTaxArchive <db> --library <evidence folder> --folder <archive folder> [--filed <json>] [--plan <json>]
+        Usage: swift run --package-path Tools ImportTaxArchive <db> --library <evidence folder> --folder <archive folder> [--filed <json>] [--plan <json>]
                  [--report <out.md>] [--work <folder>] [--apply] [--allow-app-data] [--force-running] [--no-ocr]
 
         """.data(using: .utf8)!)

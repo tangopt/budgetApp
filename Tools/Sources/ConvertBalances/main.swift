@@ -11,7 +11,7 @@
 // (TransferCategories.ensure) and files every linked transfer's legs under the other account's
 // (TransferCategories.applyToExistingLinks), printing what moved.
 //
-// Usage: swift run ConvertBalances <db-path> [--dry-run] [--apply-transfer-categories [--tie "<category>=<account name or alias>"]...]
+// Usage: swift run --package-path Tools ConvertBalances <db-path> [--dry-run] [--apply-transfer-categories [--tie "<category>=<account name or alias>"]...]
 //   --dry-run  converts and verifies inside a transaction, prints the report, rolls back.
 
 import Foundation
@@ -19,7 +19,7 @@ import BudgetCore
 import GRDB
 
 func usage() -> Never {
-    FileHandle.standardError.write("Usage: ConvertBalances <db-path> [--dry-run] [--apply-transfer-categories [--tie \"<category>=<account name or alias>\"]...]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("Usage: swift run --package-path Tools ConvertBalances <db-path> [--dry-run] [--apply-transfer-categories [--tie \"<category>=<account name or alias>\"]...]\n".data(using: .utf8)!)
     exit(2)
 }
 

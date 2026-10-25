@@ -7,7 +7,7 @@
 // (reused when the same file is already there) and linked to their receipt. Mismatches are
 // reported and not linked. The folder is only read. Idempotent.
 //
-// Usage: swift run LinkRentReceiptPDFs <db> --folder <dir> --library <evidence-dir> [--report <out.txt>]
+// Usage: swift run --package-path Tools LinkRentReceiptPDFs <db> --folder <dir> --library <evidence-dir> [--report <out.txt>]
 //          [--dry-run] [--allow-app-data] [--force-running]
 //   --dry-run         runs on a temporary copy of the database (the source opened read-only) and a
 //                     temporary library, then deletes both (also on failure): <db> and --library are only read.
@@ -24,7 +24,7 @@ import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: LinkRentReceiptPDFs <db> --folder <dir> --library <evidence-dir> [--report <out.txt>] [--dry-run]
+        Usage: swift run --package-path Tools LinkRentReceiptPDFs <db> --folder <dir> --library <evidence-dir> [--report <out.txt>] [--dry-run]
           [--allow-app-data] [--force-running]
 
         """.data(using: .utf8)!)

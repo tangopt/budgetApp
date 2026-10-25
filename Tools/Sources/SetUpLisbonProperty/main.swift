@@ -12,7 +12,7 @@
 // A real run first writes a backup next to the database
 // (`<db>.pre-lisbon-setup-backup-YYYYMMDD-HHMMSS`). Unknown keys in the plan are refused.
 //
-// Usage: swift run SetUpLisbonProperty <db-path> --plan <plan.json> --receipts <ListaRecibos.xlsx>
+// Usage: swift run --package-path Tools SetUpLisbonProperty <db-path> --plan <plan.json> --receipts <ListaRecibos.xlsx>
 //          [--dry-run] [--tax-year 2025] [--today YYYY-MM-DD]
 //   --dry-run   runs on a temporary copy of the database and deletes it: <db-path> is only read.
 
@@ -22,7 +22,7 @@ import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: SetUpLisbonProperty <db-path> --plan <plan.json> --receipts <xlsx> [--dry-run] [--tax-year YYYY] [--today YYYY-MM-DD]
+        Usage: swift run --package-path Tools SetUpLisbonProperty <db-path> --plan <plan.json> --receipts <xlsx> [--dry-run] [--tax-year YYYY] [--today YYYY-MM-DD]
 
         """.data(using: .utf8)!)
     exit(2)

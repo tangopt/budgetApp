@@ -7,7 +7,7 @@
 // "needs review" — seeds the Lisbon missing-evidence rules, and reports. The source folders
 // are only read. The move maps in Tax/_app-import supply canonical names when present.
 //
-// Usage: swift run ImportExistingEvidence <db-path> --library <evidence-dir> [--dry-run]
+// Usage: swift run --package-path Tools ImportExistingEvidence <db-path> --library <evidence-dir> [--dry-run]
 //          [--min-date 2023-01-01] [--folder <dir>]... [--move-map <csv>]... [--review-limit N]
 //   --dry-run   runs everything on a temporary copy of the database and a temporary library,
 //               prints the report and deletes both: neither <db-path> nor --library is touched.
@@ -20,7 +20,7 @@ import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: ImportExistingEvidence <db-path> --library <evidence-dir> [--dry-run] [--min-date YYYY-MM-DD]
+        Usage: swift run --package-path Tools ImportExistingEvidence <db-path> --library <evidence-dir> [--dry-run] [--min-date YYYY-MM-DD]
                  [--folder <dir>]... [--move-map <csv>]... [--review-limit N]
 
         """.data(using: .utf8)!)

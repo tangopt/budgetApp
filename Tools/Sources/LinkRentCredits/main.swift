@@ -12,7 +12,7 @@
 //      statement reference (role "Payment proof").
 // The folders are only read. Idempotent: a second run links nothing new.
 //
-// Usage: swift run LinkRentCredits <db> --library <evidence-dir> [--folder <dir>]... [--report <out.txt>]
+// Usage: swift run --package-path Tools LinkRentCredits <db> --library <evidence-dir> [--folder <dir>]... [--report <out.txt>]
 //          [--dry-run] [--allow-app-data] [--force-running]
 //   --dry-run         runs on a temporary copy of the database (the source opened read-only) and a
 //                     temporary library, then deletes both (also on failure): <db> and --library are only read.
@@ -29,7 +29,7 @@ import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: LinkRentCredits <db> --library <evidence-dir> [--folder <dir>]... [--report <out.txt>] [--dry-run]
+        Usage: swift run --package-path Tools LinkRentCredits <db> --library <evidence-dir> [--folder <dir>]... [--report <out.txt>] [--dry-run]
           [--allow-app-data] [--force-running]
 
         """.data(using: .utf8)!)

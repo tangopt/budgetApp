@@ -11,7 +11,7 @@
 //
 // The plan is a personal data file kept outside the repository.
 //
-// Usage: swift run RebuildRechargesFromTracker <db> --plan <plan.json> [--library <evidence-dir>] [--report <out.txt>]
+// Usage: swift run --package-path Tools RebuildRechargesFromTracker <db> --plan <plan.json> [--library <evidence-dir>] [--report <out.txt>]
 //          [--dry-run] [--allow-app-data]
 //   --library         the evidence library, only read: documents without stored text are read from their files
 //                     for the reading check. Nothing is written to it.
@@ -29,7 +29,7 @@ import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: RebuildRechargesFromTracker <db> --plan <plan.json> [--library <dir>] [--report <out.txt>] [--dry-run] [--allow-app-data]
+        Usage: swift run --package-path Tools RebuildRechargesFromTracker <db> --plan <plan.json> [--library <dir>] [--report <out.txt>] [--dry-run] [--allow-app-data]
           [--force-running]
 
         """.data(using: .utf8)!)

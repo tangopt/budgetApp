@@ -23,7 +23,7 @@ if let index = arguments.firstIndex(of: "--names") {
     arguments.removeSubrange(index...(index + 1))
 }
 guard let path = arguments.first(where: { !$0.hasPrefix("--") }) else {
-    print("Usage: FillSpreadsheetPlanGaps <path-to-budget.sqlite> [--names <names.json>] [--dry-run]")
+    print("Usage: swift run --package-path Tools FillSpreadsheetPlanGaps <path-to-budget.sqlite> [--names <names.json>] [--dry-run]")
     exit(2)
 }
 print("Database: \(path)\(dryRun ? " (dry run)" : "")")

@@ -11,7 +11,7 @@ import GRDB
 let arguments = Array(CommandLine.arguments.dropFirst())
 let dryRun = arguments.contains("--dry-run")
 guard let path = arguments.first(where: { !$0.hasPrefix("--") }) else {
-    print("Usage: SeedForecastPlan <path-to-budget.sqlite> [--dry-run]")
+    print("Usage: swift run --package-path Tools SeedForecastPlan <path-to-budget.sqlite> [--dry-run]")
     exit(2)
 }
 print("Database: \(path)\(dryRun ? " (dry run)" : "")")

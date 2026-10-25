@@ -10,7 +10,7 @@
 //
 // The plan is a personal data file kept outside the repository; the statements are only read.
 //
-// Usage: swift run ImportBBVAEarlierStatements <db> --plan <plan.json> --statements <folder> [--report <out.txt>]
+// Usage: swift run --package-path Tools ImportBBVAEarlierStatements <db> --plan <plan.json> --statements <folder> [--report <out.txt>]
 //          [--dry-run] [--allow-app-data] [--force-running]
 //   --dry-run         runs on a temporary copy of the database (the source opened read-only), then deletes it
 //                     (also on failure): <db> is only read.
@@ -27,7 +27,7 @@ import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: ImportBBVAEarlierStatements <db> --plan <plan.json> --statements <folder> [--report <out.txt>] [--dry-run]
+        Usage: swift run --package-path Tools ImportBBVAEarlierStatements <db> --plan <plan.json> --statements <folder> [--report <out.txt>] [--dry-run]
           [--allow-app-data] [--force-running]
 
         """.data(using: .utf8)!)

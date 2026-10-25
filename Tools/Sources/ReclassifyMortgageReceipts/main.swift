@@ -7,7 +7,7 @@
 // every evidence rule that accepts a notice (`MortgageReceiptReclassification`). Library files are
 // stored by content hash and never renamed, so the library folder isn't touched. Prints every change.
 //
-// Usage: swift run ReclassifyMortgageReceipts --db <path> [--allow-app-data] [--apply] [--force-running]
+// Usage: swift run --package-path Tools ReclassifyMortgageReceipts --db <path> [--allow-app-data] [--apply] [--force-running]
 //   Without --apply: a dry run; the database is opened read-only and nothing is written.
 //   --apply           writes the changes, in one transaction, after a backup next to the database
 //                     (`<db>.pre-mortgage-receipts-backup-YYYYMMDD-HHMMSS`).
@@ -22,7 +22,7 @@ import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: ReclassifyMortgageReceipts --db <path> [--allow-app-data] [--apply] [--force-running]
+        Usage: swift run --package-path Tools ReclassifyMortgageReceipts --db <path> [--allow-app-data] [--apply] [--force-running]
 
         """.data(using: .utf8)!)
     exit(2)

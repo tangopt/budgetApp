@@ -8,7 +8,7 @@
 //
 // The settings (file paths, filed figures) are personal data kept outside the repository.
 //
-// Usage: swift run SelfAssessmentRegression <db-copy> --settings <sa.json> --evidence <scratch-library-folder>
+// Usage: swift run --package-path Tools SelfAssessmentRegression <db-copy> --settings <sa.json> --evidence <scratch-library-folder>
 //          [--rental-settings <tax_regression_settings.json>] [--report <out.txt>]
 //   The database and the evidence folder are written: never pass the app's own.
 
@@ -17,7 +17,7 @@ import BudgetCore
 import GRDB
 
 func usage() -> Never {
-    FileHandle.standardError.write("Usage: SelfAssessmentRegression <db-copy> --settings <json> --evidence <folder> [--rental-settings <json>] [--report <out.txt>]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("Usage: swift run --package-path Tools SelfAssessmentRegression <db-copy> --settings <json> --evidence <folder> [--rental-settings <json>] [--report <out.txt>]\n".data(using: .utf8)!)
     exit(2)
 }
 

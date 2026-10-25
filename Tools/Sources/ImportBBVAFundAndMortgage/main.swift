@@ -8,7 +8,7 @@
 // fund's values and the mortgage interest, renames "Mortgage" to "Mortgage interest" and moves
 // its learned rule — all in ONE transaction, verified against the statements. Refuses to run twice.
 //
-// Usage: swift run ImportBBVAFundAndMortgage <db-path> --data <fund_mortgage.json> [--dry-run]
+// Usage: swift run --package-path Tools ImportBBVAFundAndMortgage <db-path> --data <fund_mortgage.json> [--dry-run]
 //   --dry-run  imports and verifies inside the transaction, prints the report, rolls back.
 
 import Foundation
@@ -16,7 +16,7 @@ import BudgetCore
 import GRDB
 
 func usage() -> Never {
-    FileHandle.standardError.write("Usage: ImportBBVAFundAndMortgage <db-path> --data <fund_mortgage.json> [--dry-run]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("Usage: swift run --package-path Tools ImportBBVAFundAndMortgage <db-path> --data <fund_mortgage.json> [--dry-run]\n".data(using: .utf8)!)
     exit(2)
 }
 

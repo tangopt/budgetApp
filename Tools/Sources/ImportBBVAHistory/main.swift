@@ -8,7 +8,7 @@
 // the statements (BBVAHistoryImport) — all in ONE transaction. Refuses to run twice. Also
 // creates the "Tenant deposit held" liability: the deposit returned is a transfer to it.
 //
-// Usage: swift run ImportBBVAHistory <db-path> --csv <classified.csv> [--summary <monthly_summary.csv>]
+// Usage: swift run --package-path Tools ImportBBVAHistory <db-path> --csv <classified.csv> [--summary <monthly_summary.csv>]
 //          [--deposit-opening <amount> --deposit-date <yyyy-mm-dd>] [--split-deposit <dd/MM/yyyy>:<amount>]… [--dry-run]
 //   --summary          defaults to monthly_summary.csv next to the classified CSV.
 //   --deposit-opening  the deposit liability's balance at the end of --deposit-date, signed
@@ -23,7 +23,7 @@ import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: ImportBBVAHistory <db-path> --csv <classified.csv> [--summary <monthly_summary.csv>]
+        Usage: swift run --package-path Tools ImportBBVAHistory <db-path> --csv <classified.csv> [--summary <monthly_summary.csv>]
                  [--deposit-opening <amount> --deposit-date <yyyy-mm-dd>] [--split-deposit <dd/MM/yyyy>:<amount>]… [--dry-run]
 
         """.data(using: .utf8)!)

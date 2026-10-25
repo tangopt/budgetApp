@@ -8,7 +8,7 @@
 //
 // The settings and history are personal data files kept outside the repository.
 //
-// Usage: swift run TaxRegression <db-copy> --history <history.csv> --settings <settings.json> [--report <out.txt>] [--no-apply]
+// Usage: swift run --package-path Tools TaxRegression <db-copy> --history <history.csv> --settings <settings.json> [--report <out.txt>] [--no-apply]
 //   The database is written (settings applied): never pass the real one.
 //   --no-apply  compares what the stored records give (the app's own settings), writing nothing but the
 //               rule-alternatives savepoints (rolled back): only the settings' property, personAliases and
@@ -19,7 +19,7 @@ import BudgetCore
 import GRDB
 
 func usage() -> Never {
-    FileHandle.standardError.write("Usage: TaxRegression <db-copy> --history <csv> --settings <json> [--report <out.txt>] [--no-apply]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("Usage: swift run --package-path Tools TaxRegression <db-copy> --history <csv> --settings <json> [--report <out.txt>] [--no-apply]\n".data(using: .utf8)!)
     exit(2)
 }
 

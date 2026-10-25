@@ -251,15 +251,13 @@ Projected everyday install with an incremental arm64 Release build plus export:
 | Touch a Phone file | 4.9 s |
 | Touch a MangoUI file | 4.0 s |
 
-## 6. `TaxFigures.snapshot` on the real data
+## 6. `TaxFigures.snapshot` on the real database (read-only copy)
 
-I profiled on a read-only backup of the real database, which I have since deleted. Only timings and query shapes were looked at, no personal data.
-
-**Data shape:** 10 tax years, 2 people, 1 property, about 3.6k transactions.
+I profiled on a read-only copy of the real database, which I have since deleted. Only timings and query shapes were looked at, no personal data.
 
 ### Timings
 
-| Build | All 10 years | Latest year only | Earliest year only |
+| Build | All years | Latest year only | Earliest year only |
 |---|---|---|---|
 | Release | 493 ms | 494 ms | 27 ms |
 | Debug | 1,446 ms | 1,423 ms | 98 ms |
@@ -270,7 +268,7 @@ Cost of one year in Release, by position from the earliest: 26, 61, 95, 131, 173
 
 `SelfAssessment.compute(year)` calls `compute(year − 1)` for the brought-forward losses and finance costs, all the way back to the earliest year with rules. Each year's return runs `RentalAccounts.compute` for each person and property.
 
-- So the latest year alone does 20 RentalAccounts runs (10 years × 2 people), about 25–37 ms each in Release.
+- So the latest year alone does a RentalAccounts run for every earlier year and person, about 25–37 ms each in Release.
 - `TaxComputationMemo` lives only for one `snapshot` call, so every snapshot starts over.
 
 ### SQL is not the main cost
@@ -300,7 +298,7 @@ The rest is CPU in Swift.
 3. **`RentalAccounts.linkedDocuments`: 25%.**
    - It decodes EvidenceDocument rows by column name, 98 calls per snapshot.
    - Each year reads transactions in a window from 3 years before to 3 years after, so about 7 years of transactions and their documents.
-   - Over 10 years that is roughly 7× more reading and decoding than needed.
+   - Over all the years that is roughly 7× more reading and decoding than needed.
    - Fix: load once per snapshot and slice per year.
 4. **`RentalAccounts.month()` and `monthsLabel()`: about 16%.** They create a new `DateFormatter` on every call, for warning text built on every run. A static formatter, or building the text lazily, fixes it.
 5. **`TaxSplits.share`: 7%. `TaxAttributionRules.effective`: 4%.** Both are per-type lookups repeated for every year, person and property.
@@ -419,7 +417,7 @@ Measured on branch `optimise` at c79ae38, same machine, scratch build folders, o
 | Install, one BudgetCore file touched | about 417 s | **15.4 s** (touch only, no interface change) | met |
 | Install, first run into an empty output folder | 460 s cold | 166.7 s (arm64 Release build into the shared cache) | n/a (one-off) |
 | Fix round: 1 test class + Debug app build + 2-route quick snapshot | about 4.5–5 min without snapshots | **about 2.2 min** (44 s `swift test --filter FiledYearGuardTests` + 28 s incremental app build + 56 s snapshot, which does its own build); 3.0 min as run in one go with a cold app build folder (44 + 78 + 56) | under 5 min: met |
-| `TaxFigures.snapshot` (real data, Release) | 501 ms | 118 ms (Task 4) | at most 0.15 s: met |
+| `TaxFigures.snapshot` (the real database, read-only copy, Release) | 501 ms | 118 ms (Task 4) | at most 0.15 s: met |
 | Clean `swift build` | 59.7 s | 46.5 s | |
 | `swift build` no-op | 2.0–3.0 s | 1.5 s | |
 | Touch one BudgetCore file | 7.8 s | 8.8 s | |

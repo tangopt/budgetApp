@@ -10,7 +10,7 @@
 // The plan (property, tenancy, folders, providers, tracker totals) is a personal data file
 // kept outside the repository.
 //
-// Usage: swift run BackfillRecharges <db> --plan <plan.json> [--library <evidence-dir>] [--report <out.txt>] [--dry-run]
+// Usage: swift run --package-path Tools BackfillRecharges <db> --plan <plan.json> [--library <evidence-dir>] [--report <out.txt>] [--dry-run]
 //          [--allow-app-data]
 //   --dry-run         runs on a temporary copy of the database and a temporary library, then deletes both
 //                     (also on failure): <db> is only read, and --library isn't accepted.
@@ -23,7 +23,7 @@ import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: BackfillRecharges <db> --plan <plan.json> [--library <dir>] [--report <out.txt>] [--dry-run] [--allow-app-data]
+        Usage: swift run --package-path Tools BackfillRecharges <db> --plan <plan.json> [--library <dir>] [--report <out.txt>] [--dry-run] [--allow-app-data]
 
         """.data(using: .utf8)!)
     exit(2)

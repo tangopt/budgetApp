@@ -8,7 +8,7 @@
 // tax years are never touched. Library files are stored by content hash and never renamed, so the
 // library folder isn't touched. Prints every change.
 //
-// Usage: swift run ReclassifyNewKinds --db <path> [--repairs-kinds repairInvoice,other] [--allow-app-data] [--apply] [--force-running]
+// Usage: swift run --package-path Tools ReclassifyNewKinds --db <path> [--repairs-kinds repairInvoice,other] [--allow-app-data] [--apply] [--force-running]
 //   Before running: launch the updated Mango once (it migrates the database: the tool reads columns
 //   those migrations add), then quit it before --apply.
 //   Without --apply: a dry run; the database is opened read-only and nothing is written.
@@ -26,7 +26,7 @@ import GRDB
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: ReclassifyNewKinds --db <path> [--repairs-kinds repairInvoice,other] [--allow-app-data] [--apply] [--force-running]
+        Usage: swift run --package-path Tools ReclassifyNewKinds --db <path> [--repairs-kinds repairInvoice,other] [--allow-app-data] [--apply] [--force-running]
 
         Launch the updated Mango once (migrations) before running; quit it before --apply.
 

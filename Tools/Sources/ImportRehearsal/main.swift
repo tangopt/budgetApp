@@ -3,7 +3,7 @@
 // Rehearses "delete every imported document (not the statements) and import them again" on a
 // copy (`ImportRehearsal` in BudgetCore), and writes a before/after report.
 //
-// Usage: swift run ImportRehearsal --db <path> --library <evidence library folder>
+// Usage: swift run --package-path Tools ImportRehearsal --db <path> --library <evidence library folder>
 //                                  [--allow-app-data] [--out <report folder>] [--keep]
 //   The database is opened read-only and copied (backup) into a temporary folder; the library
 //   folder is copied there too. Only the copies are written; the temporary folder is deleted
@@ -18,7 +18,7 @@ import BudgetCore
 
 func usage() -> Never {
     FileHandle.standardError.write("""
-        Usage: ImportRehearsal --db <path> --library <evidence library folder> [--allow-app-data] [--out <report folder>] [--keep]
+        Usage: swift run --package-path Tools ImportRehearsal --db <path> --library <evidence library folder> [--allow-app-data] [--out <report folder>] [--keep]
 
         """.data(using: .utf8)!)
     exit(2)

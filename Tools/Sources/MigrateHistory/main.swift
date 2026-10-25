@@ -11,7 +11,7 @@
 // synthetic merchant/description, and the transaction date is the midpoint
 // of the month the cell reports on.
 //
-// Usage: swift run MigrateHistory [path/to/historical_transactions.json]
+// Usage: swift run --package-path Tools MigrateHistory [path/to/historical_transactions.json]
 
 import Foundation
 import BudgetCore

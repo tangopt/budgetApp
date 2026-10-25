@@ -21,7 +21,7 @@
 //    transaction history, so the Forecast screen still reflects expected
 //    recurring costs going forward instead of the deleted spreadsheet guesses.
 //
-// Usage: swift run MigrateAccountBalances [path/to/account_balances_real.json]
+// Usage: swift run --package-path Tools MigrateAccountBalances [path/to/account_balances_real.json]
 
 import Foundation
 import BudgetCore

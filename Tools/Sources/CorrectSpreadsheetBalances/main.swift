@@ -10,7 +10,7 @@
 // The corrected values come from the spreadsheet:
 //   python3 -I scripts/spreadsheet-balance-values.py "<copy of>/Budget copy.numbers" > values.json
 //
-// Usage: swift run CorrectSpreadsheetBalances <db-path> --values <values.json> [--dry-run]
+// Usage: swift run --package-path Tools CorrectSpreadsheetBalances <db-path> --values <values.json> [--dry-run]
 //   --dry-run  corrects and verifies inside the transaction, prints the report, rolls back.
 
 import Foundation
@@ -18,7 +18,7 @@ import BudgetCore
 import GRDB
 
 func usage() -> Never {
-    FileHandle.standardError.write("Usage: CorrectSpreadsheetBalances <db-path> --values <values.json> [--dry-run]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("Usage: swift run --package-path Tools CorrectSpreadsheetBalances <db-path> --values <values.json> [--dry-run]\n".data(using: .utf8)!)
     exit(2)
 }
 
