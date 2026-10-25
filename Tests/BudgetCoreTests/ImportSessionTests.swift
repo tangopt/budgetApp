@@ -87,7 +87,11 @@ final class ImportSessionTests: XCTestCase {
         try db.read { db in
             var dump: [String: [Row]] = [:]
             for table in try ImportChangeCapture.trackedTables(db: db) {
-                dump[table] = try Row.fetchAll(db, sql: "SELECT rowid AS rowid_, * FROM \"\(table)\" ORDER BY rowid")
+                // The waiting list's re-read bookkeeping (the demo keeps one letter waiting) is local, kept up to
+                // date by the session after a run, not by the importer's own steps.
+                let columns = try db.columns(in: table).map(\.name).filter { table != ImportWaitingFile.databaseTableName || !["checkedSignature", "suggestion"].contains($0) }
+                    .map { "\"\($0)\"" }.joined(separator: ", ")
+                dump[table] = try Row.fetchAll(db, sql: "SELECT rowid AS rowid_, \(columns) FROM \"\(table)\" ORDER BY rowid")
             }
             return dump
         }
@@ -464,7 +468,7 @@ final class ImportSessionTests: XCTestCase {
         let stages = progress.map(\.stage)
         XCTAssertEqual(stages.first, .reading)
         XCTAssertTrue(stages.contains(.filedYears), "\(stages)")
-        XCTAssertTrue(progress.contains { $0.stage == .reading && $0.total == 9 && $0.completed > 0 }, "\(progress)")
+        XCTAssertTrue(progress.contains { $0.stage == .reading && $0.total == 15 && $0.completed > 0 }, "\(progress)")
 
         // A late report of an earlier stage (files finish out of order) never takes the count back.
         session.start([try pdf("late.pdf", ["Nothing to see"])], entryPoint: "More")
