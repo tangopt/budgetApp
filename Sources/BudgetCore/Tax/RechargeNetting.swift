@@ -53,7 +53,12 @@ public enum RechargeNetting {
     /// The property's utility expense categories: tax type Utilities, or not deductible with a
     /// utility name.
     public static func utilityCategoryIds(db: Database, propertyId: Int64) throws -> Set<Int64> {
-        Set(try TaxExpenseTypeMap.entries(db: db, propertyId: propertyId).filter { entry in
+        utilityCategoryIds(try TaxExpenseTypeMap.entries(db: db, propertyId: propertyId))
+    }
+
+    /// `utilityCategoryIds` of the property's `TaxExpenseTypeMap.entries`.
+    static func utilityCategoryIds(_ entries: [TaxExpenseTypeMap.Entry]) -> Set<Int64> {
+        Set(entries.filter { entry in
             entry.category.type == .expense
                 && (entry.expenseType == .utilities || (entry.expenseType == .notDeductible && isUtilityName(entry.category.name)))
         }.compactMap(\.category.id))

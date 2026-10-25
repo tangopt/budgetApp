@@ -881,7 +881,7 @@ public enum SelfAssessment {
         }
 
         for property in try Properties.all(db: db) {
-            let owners = try Properties.owners(db: db, propertyId: property.id!)
+            let owners = try memo?.reads?.owners(db: db, propertyId: property.id!) ?? Properties.owners(db: db, propertyId: property.id!)
             guard owners.contains(where: { $0.personId == personId }) else { continue }
             if property.country == "GB" {
                 warnings.append("\(property.name) is in the UK: UK property (SA105) isn't computed.")
@@ -970,6 +970,9 @@ final class TaxComputationMemo {
     private var accounts: [AccountsKey: (result: RentalAccounts.Result, tag: Int?)] = [:]
     /// The tag of the entries kept from now on.
     var tag: Int?
+    /// What the current `TaxFigures.snapshot` call has read (`TaxReadCache`): set for that call
+    /// only, and never kept by `keeping(excluding:)`.
+    var reads: TaxReadCache?
     /// The other tags whose entries were used since `tag` was set.
     var usedTags: Set<Int> = []
 

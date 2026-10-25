@@ -110,10 +110,16 @@ public enum TaxSplits {
 
     /// The person's ownership of the property over the UK tax year, weighted by days owned.
     public static func ownershipShare(db: Database, startYear: Int, personId: Int64, propertyId: Int64) throws -> Int {
+        try ownershipShare(db: db, startYear: startYear, personId: personId, propertyId: propertyId, reads: nil)
+    }
+
+    /// `ownershipShare`, the ownership rows taken from `reads` when given.
+    static func ownershipShare(db: Database, startYear: Int, personId: Int64, propertyId: Int64, reads: TaxReadCache?) throws -> Int {
         let interval = UKTaxYear(startYear: startYear).interval
         let total = PropertyFinance.days(interval.start, interval.end)
         var weighted = 0.0
-        for owner in try Properties.owners(db: db, propertyId: propertyId) where owner.personId == personId {
+        let owners = try reads?.owners(db: db, propertyId: propertyId) ?? Properties.owners(db: db, propertyId: propertyId)
+        for owner in owners where owner.personId == personId {
             let from = max(owner.fromDate ?? interval.start, interval.start)
             let to = min(owner.toDate.map(PropertyDates.nextDay) ?? interval.end, interval.end)
             guard from < to else { continue }
