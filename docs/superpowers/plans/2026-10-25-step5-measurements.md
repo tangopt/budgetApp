@@ -403,3 +403,33 @@ I compared test bodies by token similarity (Jaccard of 4-token sequences ≥ 0.6
 - After B, the 56 s ImportRehearsal test (86 s under parallel load) becomes the floor on parallel wall time. Start it first, shrink it, or split it.
 - ImportSession, DemoImportKinds and SyncRehearsal add about 100 s serial of mostly repeated demo setup.
 - Fixing the `TaxFigures.snapshot` hot spots (section 6) takes it from 0.5 s to about 0.1 s in the app and speeds up the FiledYear* tests (82 s serial).
+
+---
+
+## After (2026-10-25)
+
+Measured on branch `optimise` at c79ae38, same machine, scratch build folders, one measurement at a time. The 1-minute load average was under 4 (3.5–3.97) just before each timing; the load shown by `uptime` during a run is the run's own. Nothing outside scratch folders was touched (installs used `--output`).
+
+| Measure | Before | After | Target |
+|---|---|---|---|
+| Full suite, `swift test --parallel` (wall) | 226 s | **118.5 s** and **124.2 s** (CPU user 646 s / 642 s, sys 110 s; was 1,775 s of test time) | under 4 min (aim ~2.5): met |
+| Test count | 3,357 | 3,344 (duplicates removed), no failure lines in either run | |
+| Everyday install, nothing changed | about 420 s | **5.6 s** | under 2 min: met |
+| Install, one App file touched | about 418 s | **12.0 s** | met |
+| Install, one BudgetCore file touched | about 417 s | **15.4 s** (touch only, no interface change) | met |
+| Install, first run into an empty output folder | 460 s cold | 166.7 s (arm64 Release build into the shared cache) | n/a (one-off) |
+| Fix round: 1 test class + Debug app build + 2-route quick snapshot | about 4.5–5 min without snapshots | **about 2.2 min** (44 s `swift test --filter FiledYearGuardTests` + 28 s incremental app build + 56 s snapshot, which does its own build); 3.0 min as run in one go with a cold app build folder (44 + 78 + 56) | under 5 min: met |
+| `TaxFigures.snapshot` (real data, Release) | 501 ms | 118 ms (Task 4) | at most 0.15 s: met |
+| Clean `swift build` | 59.7 s | 46.5 s | |
+| `swift build` no-op | 2.0–3.0 s | 1.5 s | |
+| Touch one BudgetCore file | 7.8 s | 8.8 s | |
+| BudgetCore interface edit (add a public func) | 28.1 s | 17.5 s | |
+| Revert that edit | 28.1 s | 16.1 s | |
+| Quick snapshot, `--routes dashboard-main,sheet-owners` | not available (full run 1,144 s, about 6.6 s per route) | 40 s including build; 3 PNGs (the sheet has an error variant), about 3 s each | |
+| Quick snapshot, `--changed HEAD` with `App/Accounts/AccountFormSheets.swift` edited | not available | 177 s for 53 routes (selected: `accounts`, `sheet-`, `imports-review_remap`), one look each | |
+
+Notes:
+- `--changed` with no argument diffs against the merge-base with main (cec8ab7), which on this branch is a large diff; I used `HEAD` as the base with one temporary edit to show a typical selection, and reverted it.
+- The full parallel runs print no XCTest summary line, so the test and failure counts come from the `[n/3344]` progress lines and the absence of any failure lines; the snapshot wrap probe also reported 0 violations.
+- The 28 s app build in the fix-round estimate is an incremental Debug build after a BudgetCore interface edit; the first build into a fresh DerivedData took 78 s.
+- The full 16-minute snapshot run was not repeated.
