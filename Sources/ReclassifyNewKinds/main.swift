@@ -127,7 +127,7 @@ do {
     stamp.dateFormat = "yyyyMMdd-HHmmss"
     let backupPath = sourcePath + ".pre-new-kinds-backup-" + stamp.string(from: Date())
     if fileManager.fileExists(atPath: backupPath) { fail("The backup \(backupPath) already exists: try again in a second.") }
-    let backup = try DatabaseQueue(path: backupPath)
+    let backup = try ToolDatabase.open(path: backupPath)
     try queue.backup(to: backup)
     try backup.close()
     print("\nBackup: \(backupPath)")
