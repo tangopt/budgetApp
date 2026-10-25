@@ -175,9 +175,9 @@ struct PropertyEditTransactionSheet: View {
         EditTransactionSheet(
             transaction: transaction, categories: model.categories, groups: model.groups, recentIds: model.recentCategoryIds,
             createCategory: model.createCategory, transfer: model.transferActions, manual: model.manualActions,
-            onSave: { changes in
-                guard let id = transaction.id else { return .failed("This transaction hasn't been saved yet.") }
-                return model.saveTransactionEdit(id: id, changes: changes)
+            onSave: { changes, gate, done in
+                guard let id = transaction.id else { return done(.failed("This transaction hasn't been saved yet.")) }
+                model.saveTransactionEdit(id: id, changes: changes, gate: gate, done: done)
             })
     }
 }

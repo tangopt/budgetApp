@@ -18,6 +18,9 @@ public struct ImportRunSummary: Equatable, Sendable {
     public var backupPath: String?
     /// What the run didn't do and why ("Not learnt: different choices for …").
     public var notes: [String] = []
+    /// The files it left unimported that can be set aside (kept for later, copied to a folder): not
+    /// those already waiting, identical to a library document or read from the library.
+    public var setAside: [SetAsideFile] = []
 
     public init(runId: Int64, filed: Int, linked: Int, recorded: Int, transactions: Int, duplicates: Int, leftOut: Int,
                 backupPath: String?) {
@@ -91,6 +94,7 @@ public struct ImportApplier: Sendable {
         try dbQueue.read { db in
             // With sync on, one import is confirmed at a time per household (sync spec §5.2).
             try SyncImportGate.check(db: db, now: now)
+            try Self.checkKinds(db: db, applied, pending: plan.pendingKinds)
             try Self.checkCurrent(db: db, applied)
         }
 
@@ -189,6 +193,62 @@ public struct ImportApplier: Sendable {
 
     // MARK: Outdated plan
 
+    /// Refuses (`.notConfirmable`: the review is read again) when an applied item is filed as a
+    /// saved custom kind that is gone or merged since it was read, or as a new kind the plan
+    /// doesn't hold.
+    static func checkKinds(db: Database, _ items: [ImportItem], pending: [PendingDocumentKind]) throws {
+        let keys = items.compactMap { $0.recognition.kind.customKindKey }
+        guard !keys.isEmpty else { return }
+        let catalog = try DocumentKindCatalog.load(db: db)
+        for key in keys {
+            switch key {
+            case .saved(let id): if catalog.custom(id: id) == nil { throw ImportApplyError.notConfirmable }
+            case .pending(let id): if !pending.contains(where: { $0.id == id }) { throw ImportApplyError.notConfirmable }
+            }
+        }
+    }
+
+    /// The review's new kinds the applied items use, saved (inside the run, so Undo removes them):
+    /// a kind of the same name saved meanwhile (on another device) is that kind, never a second one.
+    /// `notes`: a line for each such kind spelt otherwise or in another area than the review showed.
+    static func savePendingKinds(db: Database, _ items: [ImportItem], pending: [PendingDocumentKind], now: Date) throws
+        -> (saved: [UUID: Int64], notes: [String]) {
+        var used: [UUID] = []
+        for item in items {
+            if case .customEvidence(.pending(let id)) = item.recognition.kind, !used.contains(id) { used.append(id) }
+        }
+        var saved: [UUID: Int64] = [:]
+        var notes: [String] = []
+        guard !used.isEmpty else { return (saved, notes) }
+        // Read once; the kinds saved here are told apart by name (no two pending kinds share one).
+        let catalog = try DocumentKindCatalog.load(db: db)
+        for id in used {
+            guard let kind = pending.first(where: { $0.id == id }) else { throw ImportApplyError.notConfirmable }
+            if let existing = catalog.custom(named: kind.name), let existingId = existing.id {
+                saved[id] = existingId
+                // Spelt otherwise or in another area than the review showed: the summary says so.
+                if existing.name != kind.name || existing.area != kind.area {
+                    notes.append("\(kind.name) (\(kind.area.libraryArea)) was filed under the kind \u{201C}\(existing.name)\u{201D} (\(existing.area.libraryArea)), saved meanwhile")
+                }
+            } else {
+                guard let newId = try CustomDocumentKinds.create(db: db, name: kind.name, area: kind.area, now: now).id else {
+                    throw ImportApplyError.notConfirmable
+                }
+                saved[id] = newId
+            }
+        }
+        return (saved, notes)
+    }
+
+    /// The canonical name of an item filed as the custom kind `kind`, from its facts and the kind's
+    /// current name and area.
+    static func canonicalName(of item: ImportItem, as kind: CustomDocumentKind) -> String? {
+        guard let id = kind.id else { return item.placement?.canonicalName }
+        let custom = ImportCustomKind(key: .saved(id), name: kind.name, area: kind.area)
+        return ImportNaming.placement(kind: .customEvidence(.saved(id)), facts: item.facts, file: item.file,
+                                      persons: item.placement?.metadata.persons ?? [], customKind: custom).canonicalName
+    }
+
     /// Refuses (`.planOutdated`) when a record an applied item writes to or links to no longer
     /// exists: each certain link's record; the export's property; the receipt PDF's receipt and
     /// tenancy; the advice's credits; the invoice's provider and debit; the payroll form's
@@ -248,6 +308,7 @@ public struct ImportApplier: Sendable {
 
     private func applyAll(db: Database, plan: ImportPlan, applied: [ImportItem], entryPoint: String, reasons: [UUID: String], appUserId: Int64?,
                        backupPath: String?, folderRoots: [Int64: URL], now: Date, placed: inout [URL]) throws -> ImportRunSummary {
+        try Self.checkKinds(db: db, applied, pending: plan.pendingKinds)
         try Self.checkCurrent(db: db, applied)
         try SyncImportGate.require(db: db, now: now)
         // Everything the run writes from here on is one sync batch (sync spec §5.2).
@@ -260,11 +321,26 @@ public struct ImportApplier: Sendable {
         // The figures as stored, before any change (not after a matching baseline).
         let raw = try TaxFigures.snapshot(db: db)
         let folders = try SourceFolder.fetchAll(db)
+        // The review's new kinds first, so the documents can be filed under them.
+        let (newKinds, kindNotes) = try Self.savePendingKinds(db: db, applied, pending: plan.pendingKinds, now: now)
+        // The custom kinds as they are now: documents are named after the kind's current name and
+        // area (renamed during the review, or a kind of the same name saved meanwhile).
+        let kindsNow = try DocumentKindCatalog.load(db: db)
 
         var documents: [UUID: Int64] = [:]
         var touched: Set<Int64>? = []
         for item in applied {
-            let filing = Self.metadata(for: item, folders: folders)
+            var filing = Self.metadata(for: item, folders: folders)
+            if case .customEvidence(let key) = item.recognition.kind {
+                filing.kind = .other
+                switch key {
+                case .saved(let id): filing.customKindId = id
+                case .pending(let id): filing.customKindId = newKinds[id]
+                }
+                if let id = filing.customKindId, let kind = kindsNow.custom(id: id) {
+                    filing.canonicalName = Self.canonicalName(of: item, as: kind)
+                }
+            }
             let documentId: Int64
             if let parentId = item.parentId, let parentDocument = documents[parentId] {
                 // Part of a file already filed (a statement's child): the same document.
@@ -297,7 +373,22 @@ public struct ImportApplier: Sendable {
         try Self.recordSourceFiles(db: db, plan: plan, documents: documents)
         // What the review's corrections taught, and the learnt rules the items used: inside the run.
         // Items that taught different things about one issuer (and family) teach none of them.
-        let (learnable, learningNotes) = ImportLearning.learnable(applied.flatMap(\.ruleDrafts))
+        let drafts = applied.flatMap(\.ruleDrafts).compactMap { draft -> ImportRuleDraft? in
+            var resolved = draft
+            if let pending = draft.pendingKindId {
+                // A new kind's rule names the id it was saved with.
+                guard let id = newKinds[pending], let json = ImportLearning.encode(DocumentKindAction(kind: .other, customKindId: id)) else { return nil }
+                resolved.actionJSON = json
+                resolved.pendingKindId = nil
+            }
+            // Labelled with the kind's name as it is now.
+            if resolved.kind == .documentKind, let id = ImportLearning.decode(DocumentKindAction.self, resolved.actionJSON)?.customKindId,
+               let kind = kindsNow.custom(id: id) {
+                resolved.actionLabel = "Kind: \(kind.name)"
+            }
+            return resolved
+        }
+        let (learnable, learningNotes) = ImportLearning.learnable(drafts)
         for draft in learnable {
             try ImportRuleStore.learn(db: db, kind: draft.kind, key: draft.key, matchLabel: draft.matchLabel,
                                       actionJSON: draft.actionJSON, actionLabel: draft.actionLabel, now: now, by: appUserId)
@@ -313,7 +404,7 @@ public struct ImportApplier: Sendable {
 
         var summary = ImportRunSummary(runId: runId, filed: 0, linked: 0, recorded: 0, transactions: 0, duplicates: 0, leftOut: 0,
                                        backupPath: backupPath)
-        summary.notes = learningNotes
+        summary.notes = kindNotes + learningNotes
         let leftOut = Self.leftOutIds(plan)
         let byId = Dictionary(uniqueKeysWithValues: plan.items.map { ($0.id, $0) })
         summary.filed = Set(documents.values).count
@@ -353,6 +444,13 @@ public struct ImportApplier: Sendable {
             try file.insert(db)
         }
         _ = try ImportChangeCapture.finish(db: db, runId: runId)
+        // After the capture: Undo leaves the mark, and a run undone lists its waiting files again
+        // (`ImportWaitingList.waiting`). Inside the run's sync batch.
+        try ImportWaitingList.markImported(db: db, runId: runId, sha256s: Set(applied.filter { documents[$0.id] != nil }.map(\.file.sha256)))
+        let waiting = try ImportWaitingList.waitingHashes(db: db)
+        let libraryPath = library.root.standardizedFileURL.path + "/"
+        summary.setAside = ImportSetAside.candidates(plan, discarding: false, names: ImportKindNames(catalog: kindsNow, pending: plan.pendingKinds))
+            .filter { !waiting.contains($0.sha256.lowercased()) && !$0.url.standardizedFileURL.path.hasPrefix(libraryPath) }
         run.summary = summary.text
         try run.update(db)
         try SyncBatch.open(runId: runId, since: syncMark, db: db)

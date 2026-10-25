@@ -495,7 +495,7 @@ final class ImportUndoTests: XCTestCase {
             try ImportRuleStore.markUsed(db: db, ids: [original.id!], now: Date())
         }
         // Edited on the Rules page.
-        try manager.dbQueue.write { db in try ImportRuleEditing.update(db: db, id: original.id!, edit: .documentKind(.utilityInvoice)) }
+        try manager.dbQueue.write { db in try ImportRuleEditing.update(db: db, id: original.id!, edit: .documentKind(.builtIn(.utilityInvoice))) }
         XCTAssertEqual(try ImportUndo.conflicts(dbQueue: manager.dbQueue, runId: a), [])
         let result = try ImportUndo.undo(dbQueue: manager.dbQueue, library: library, runId: a)
         let kept = try XCTUnwrap(try rule(original.id!))

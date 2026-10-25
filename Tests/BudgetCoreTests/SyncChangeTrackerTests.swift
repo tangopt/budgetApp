@@ -244,7 +244,7 @@ final class SyncChangeTrackerTests: XCTestCase {
     func testSchemaHashIsPinnedToItsVersion() throws {
         // Changing SyncSchema or the trigger template changes the hash: bump SyncSchema.version and
         // update this pin, so an older build can tell its triggers are older than the database's.
-        XCTAssertEqual(SyncSchema.version, 6)
+        XCTAssertEqual(SyncSchema.version, 7)
         XCTAssertEqual(SyncChangeTracker.schemaHash(SyncSchema.tables), Self.pinnedHash)
     }
 
@@ -583,6 +583,26 @@ final class SyncChangeTrackerTests: XCTestCase {
 
     // MARK: Incoming applies
 
+    /// Re-filing an apply makes is tracked (it must reach the other devices), except on a read-only device, which
+    /// never sends anything: there it would only pile up pending rows (final review M4).
+    func testTrackedWritesInsideAReadOnlyApplyQueueNothing() throws {
+        try manager.dbQueue.write { db in
+            try SyncChangeTracker.applyingIncoming(db: db) {
+                _ = try SyncChangeTracker.trackingWrites(db: db) { try insertAccount(db, "Re-filed here") }
+            }
+        }
+        XCTAssertEqual(try pending().count, 1, "a writable device sends what it re-filed")
+        try manager.dbQueue.write { db in
+            try SyncChangeTracker.readOnlyApply(db: db) {
+                try SyncChangeTracker.applyingIncoming(db: db) {
+                    _ = try SyncChangeTracker.trackingWrites(db: db) { try insertAccount(db, "Re-filed on the phone") }
+                }
+            }
+            XCTAssertFalse(try SyncChangeTracker.inReadOnlyApply(db: db), "the marker goes with the apply")
+        }
+        XCTAssertEqual(try pending().count, 1, "a read-only device queues nothing")
+    }
+
     func testIncomingApplyIsNotTracked() throws {
         try manager.dbQueue.write { db in
             try SyncChangeTracker.applyingIncoming(db: db) {
@@ -704,6 +724,6 @@ final class SyncChangeTrackerTests: XCTestCase {
         }
     }
 
-    /// `SyncChangeTracker.schemaHash(SyncSchema.tables)` for `SyncSchema.version` 6.
-    private static let pinnedHash = "2d8570dd3810fe793ceb43462c175f7e48da7c1bf57e2e878daaa41941b58b0c"
+    /// `SyncChangeTracker.schemaHash(SyncSchema.tables)` for `SyncSchema.version` 7.
+    private static let pinnedHash = "10d64be2d7c51541219e33e0ae8190489f9bde25c45c1fbcc28fa075420e88b2"
 }

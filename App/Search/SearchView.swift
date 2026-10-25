@@ -67,6 +67,7 @@ struct SearchView: View {
             // A save or a narrower search can drop selected rows.
             selection.formIntersection(ids)
         }
+        .filedYearGate(viewModel.filedYearGate)
         .sheet(item: $editingTransaction) { transaction in
             EditTransactionSheet(
                 transaction: transaction,
@@ -76,9 +77,9 @@ struct SearchView: View {
                 createCategory: viewModel.createCategory,
                 transfer: viewModel.transferActions,
                 manual: viewModel.manualActions,
-                onSave: { changes in
-                    guard let id = transaction.id else { return .failed("This transaction hasn't been saved yet.") }
-                    return viewModel.saveTransactionEdit(id: id, changes: changes)
+                onSave: { changes, gate, done in
+                    guard let id = transaction.id else { return done(.failed("This transaction hasn't been saved yet.")) }
+                    viewModel.saveTransactionEdit(id: id, changes: changes, gate: gate, done: done)
                 }
             )
         }

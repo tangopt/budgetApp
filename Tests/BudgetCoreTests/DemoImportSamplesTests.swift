@@ -4,8 +4,10 @@ import GRDB
 @testable import BudgetDemo
 
 /// The demo's import samples (`DemoImportSamples`, the Imports snapshot routes' files): read by
-/// the real pipeline over the demo database, they fill Ready (four: a BBVA statement and a new
-/// utility invoice among them), Duplicates (two) and Needs you (three: one held by a filed return, a UK CSV with no account).
+/// the real pipeline over the demo database, they fill Ready (eight: a BBVA statement and a new
+/// utility invoice among them, a repair bill with its payment proof and debit advice, a stamp duty note), Duplicates (two)
+/// and Needs you (five: one held by a filed return, a UK CSV with no account, an instalment pair, two unknown letters).
+/// `DemoImportKindsScenarioTests` drives the new ones through `ImportSession`.
 final class DemoImportSamplesTests: XCTestCase {
     private var folder: URL!
 
@@ -26,7 +28,7 @@ final class DemoImportSamplesTests: XCTestCase {
         try DemoDatabase.build(dbQueue: manager.dbQueue, evidenceRoot: evidence)
         let samples = try DemoImportSamples.write(into: folder.appendingPathComponent("ImportSamples", isDirectory: true),
                                                   dbQueue: manager.dbQueue)
-        XCTAssertEqual(samples.count, 9)
+        XCTAssertEqual(samples.count, 15)
 
         let library = EvidenceLibrary(root: evidence, database: manager.dbQueue)
         let pipeline = ImportPipeline(dbQueue: manager.dbQueue, library: library,
@@ -35,9 +37,9 @@ final class DemoImportSamplesTests: XCTestCase {
         let described = plan.items.map { "\($0.file.fileName): \($0.section) \($0.needsYouReasons) \($0.duplicate?.of ?? "")" }
             .joined(separator: "\n")
 
-        XCTAssertEqual(plan.items(in: .ready).count, 4, described)
+        XCTAssertEqual(plan.items(in: .ready).count, 8, described)
         XCTAssertEqual(plan.items(in: .duplicates).count, 2, described)
-        XCTAssertEqual(plan.items(in: .needsYou).count, 3, described)
+        XCTAssertEqual(plan.items(in: .needsYou).count, 5, described)
         XCTAssertTrue(plan.items(in: .needsYou).contains { $0.issues.contains { if case .filedYear = $0.kind { true } else { false } } },
                       described)
         // Each sample where it is meant to be: the receipt and the insurance receipt linked,
@@ -71,7 +73,7 @@ final class DemoImportSamplesTests: XCTestCase {
         let csv = try XCTUnwrap(plan.items.first { $0.recognition.kind == .bankStatementCSV }, described)
         XCTAssertEqual(csv.section, .needsYou, described)
         XCTAssertTrue(csv.issues.contains { $0.kind == .statement(.unknownAccount) && !$0.offers.isEmpty }, described)
-        // Written again (MakeDemoDatabase --force), the folder holds the same nine.
+        // Written again (MakeDemoDatabase --force), the folder holds the same fifteen.
         XCTAssertEqual(try DemoImportSamples.write(into: folder.appendingPathComponent("ImportSamples", isDirectory: true),
                                                    dbQueue: manager.dbQueue).map(\.lastPathComponent),
                        samples.map(\.lastPathComponent))

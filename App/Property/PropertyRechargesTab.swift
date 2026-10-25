@@ -117,42 +117,44 @@ final class RechargesModel: ObservableObject {
         return (UtilityKind.allCases.filter(kinds.contains).map(\.displayName) + manual).joined(separator: " · ")
     }
 
-    private func write(_ body: (Database) throws -> Void) {
-        do {
-            try dbQueue.write(body)
-            errorMessage = nil
-        } catch {
-            errorMessage = RechargeMessages.text(for: error)
+    /// The tab's matching and links through the filed-year check (plan Task 14): rent and recharges
+    /// received feed the rental accounts. Its question shows on the tab.
+    let filedYearGate = FiledYearGate()
+
+    /// `body` through the filed-year check, off the main thread, then reloads.
+    private func write(_ edit: String, _ body: @escaping (Database) throws -> Void) {
+        filedYearGate.run(dbQueue, edit: edit, scope: .everyYear, body) { [weak self] result in
+            self?.errorMessage = result.failure.map(RechargeMessages.text(for:))
+            self?.load()
         }
-        load()
     }
 
     /// Rent matching, then exact recharge payments.
     func matchPayments() {
-        write { [propertyId] db in
+        write("Rent and recharge payments matched") { [propertyId] db in
             _ = try RentReceiptMatching.match(db: db, propertyId: propertyId)
             _ = try Recharges.matchPayments(db: db, propertyId: propertyId)
         }
     }
 
     func accept(_ suggestion: Recharges.PaymentSuggestion) {
-        write { db in
+        write("Recharge payment linked") { db in
             try Recharges.linkPayment(db: db, statementId: suggestion.statement.id!, transactionId: suggestion.transaction.id!,
                                       amountMinorUnits: suggestion.amountMinorUnits)
         }
     }
 
     func unlink(_ payment: RechargePayment) {
-        write { db in _ = try Recharges.unlinkPayment(db: db, statementId: payment.statementId, transactionId: payment.transactionId) }
+        write("Recharge payment unlinked") { db in _ = try Recharges.unlinkPayment(db: db, statementId: payment.statementId, transactionId: payment.transactionId) }
     }
 
     /// Back to draft (sent, nothing paying it).
     func reopen(_ statement: RechargeStatement) {
-        write { db in _ = try Recharges.reopen(db: db, statementId: statement.id!) }
+        write("Recharge statement reopened") { db in _ = try Recharges.reopen(db: db, statementId: statement.id!) }
     }
 
     func delete(_ statement: RechargeStatement) {
-        write { db in _ = try Recharges.deleteStatement(db: db, id: statement.id!) }
+        write("Recharge statement deleted") { db in _ = try Recharges.deleteStatement(db: db, id: statement.id!) }
     }
 
     // MARK: Presentation
@@ -331,6 +333,7 @@ struct RechargesTenancyView: View {
             statementsPanel
         }
         .onAppear { model.load() }
+        .filedYearGate(model.filedYearGate)
         .onChange(of: refreshToken) { _, _ in model.load() }
         // The side panel's statement sheet closed: what it changed shows here too.
         .onChange(of: viewModel.rechargesRevision) { _, _ in model.load() }

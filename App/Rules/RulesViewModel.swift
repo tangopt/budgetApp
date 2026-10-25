@@ -80,7 +80,7 @@ final class RulesViewModel: ObservableObject {
         } catch ImportRuleEditError.noLetters {
             return "Enter text with at least one letter."
         } catch ImportRuleEditError.missingTarget {
-            return "That record no longer exists: choose another."
+            return "That record or kind no longer exists: choose another."
         } catch {
             return "Couldn't save the rule: \(error.localizedDescription)"
         }
@@ -89,7 +89,7 @@ final class RulesViewModel: ObservableObject {
     }
 
     /// What the Edit Rule sheet needs: the rule's action as an edit, the accounts, the records a
-    /// link can go to.
+    /// link can go to, the document kinds (custom ones included).
     func importRuleEditContext(id: Int64) throws -> ImportRuleEditContext? {
         try dbQueue.read { db in
             guard let rule = try ImportRule.fetchOne(db, key: id), let edit = ImportRuleEditing.currentEdit(rule) else { return nil }
@@ -97,8 +97,10 @@ final class RulesViewModel: ObservableObject {
             if case .link(let entity) = edit { current = entity }
             let accounts = try Account.order(Column("name").collating(.localizedCaseInsensitiveCompare), Column("id")).fetchAll(db)
                 .compactMap { account in account.id.map { (id: $0, name: account.displayName) } }
+            let catalog = try DocumentKindCatalog.load(db: db)
             return ImportRuleEditContext(ruleId: id, kind: rule.kind, when: rule.matchLabel, edit: edit, accounts: accounts,
-                                         linkTargets: try ImportRuleEditing.linkTargets(db: db, current: current))
+                                         linkTargets: try ImportRuleEditing.linkTargets(db: db, current: current),
+                                         documentKinds: catalog.all.map { (ref: $0, name: catalog.displayName($0)) })
         }
     }
 
@@ -123,27 +125,35 @@ final class RulesViewModel: ObservableObject {
         try await dbQueue.read { db in try Rules.preview(db: db, pattern: pattern, matchType: matchType) }
     }
 
-    /// Saves the rule sheet: adds a rule, or edits `ruleId`'s. Returns the error to show, or
-    /// nil once saved.
-    func save(ruleId: Int64?, pattern: String, matchType: RuleMatchType, categoryId: Int64, applyToUncategorised: Bool) -> String? {
-        do {
-            _ = try dbQueue.write { db in
-                if let ruleId {
-                    try Rules.update(db: db, id: ruleId, pattern: pattern, matchType: matchType, categoryId: categoryId,
+    /// Saves the rule sheet: adds a rule, or edits `ruleId`'s; `done` gets the error to show, or
+    /// nil once saved. Filing the uncategorised matches is one batch through the filed-year check
+    /// (plan Task 14): when it would change a filed return, `gate` asks once.
+    func save(ruleId: Int64?, pattern: String, matchType: RuleMatchType, categoryId: Int64, applyToUncategorised: Bool,
+              gate: FiledYearGate, done: @escaping (String?) -> Void) {
+        let name = categories.first { $0.id == categoryId }?.name ?? "its category"
+        let edit = "Rule “\(pattern.trimmingCharacters(in: .whitespacesAndNewlines))” filed into \(name)"
+        gate.run(dbQueue, edit: edit, scope: { db in
+            applyToUncategorised
+                ? .categorising(try Rules.uncategorisedMatchIds(db: db, pattern: pattern, matchType: matchType), as: categoryId)
+                : FiledYearEditCheck.Scope()
+        }, { db in
+            if let ruleId {
+                _ = try Rules.update(db: db, id: ruleId, pattern: pattern, matchType: matchType, categoryId: categoryId,
                                      applyToUncategorised: applyToUncategorised)
-                } else {
-                    try Rules.add(db: db, pattern: pattern, matchType: matchType, categoryId: categoryId,
+            } else {
+                _ = try Rules.add(db: db, pattern: pattern, matchType: matchType, categoryId: categoryId,
                                   applyToUncategorised: applyToUncategorised)
-                }
             }
-        } catch let error as RuleSaveError {
-            return error.message
-        } catch {
-            return "Couldn't save the rule: \(error.localizedDescription)"
-        }
-        try? load()
-        if applyToUncategorised { onTransactionsCategorised?() }
-        return nil
+        }, done: { [weak self] result in
+            switch result.failure {
+            case let error as RuleSaveError: return done(error.message)
+            case let error?: return done("Couldn't save the rule: \(error.localizedDescription)")
+            case nil: break
+            }
+            try? self?.load()
+            if applyToUncategorised { self?.onTransactionsCategorised?() }
+            done(nil)
+        })
     }
 
     /// The picker's "New category…": creates the category and adds it to the list.
@@ -162,5 +172,7 @@ struct ImportRuleEditContext: Identifiable {
     let edit: ImportRuleEdit
     let accounts: [(id: Int64, name: String)]
     let linkTargets: [ImportRuleTarget]
+    /// The built-in kinds by name, then the custom kinds by name.
+    var documentKinds: [(ref: DocumentKindRef, name: String)] = []
     var id: Int64 { ruleId }
 }

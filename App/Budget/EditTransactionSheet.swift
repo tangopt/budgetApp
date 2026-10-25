@@ -26,8 +26,9 @@ struct EditTransactionSheet: View {
     let recentIds: [Int64]
     let createCategory: CreateCategory
     /// Saves everything in one write and reloads; `.failed` keeps the sheet open with the
-    /// message (nothing was saved).
-    let onSave: (TransactionEditChanges) -> SaveOutcome
+    /// message (nothing was saved). A save that would change a filed return asks first
+    /// (`.asks`, nothing written; plan Task 14) and is saved again with the answer.
+    let onSave: CheckedSave<TransactionEditChanges>
     let transfer: TransferLinkActions?
     /// Edit and Delete… for a transaction added by hand; nil (or an imported transaction)
     /// keeps those fields read-only.
@@ -37,6 +38,8 @@ struct EditTransactionSheet: View {
     @State private var categoryId: Int64?
     @State private var note: String
     @State private var errorMessage: String?
+    /// Saves and deletes through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
     /// The transaction's linked legs when the sheet opened.
     private let counterparts: [TransferCounterpart]
     @State private var transferError: String?
@@ -71,7 +74,7 @@ struct EditTransactionSheet: View {
     init(transaction: Transaction, categories: [Category], groups: [CategoryGroup], recentIds: [Int64],
          createCategory: @escaping CreateCategory, transfer: TransferLinkActions? = nil,
          manual: ManualTransactionActions? = nil,
-         onSave: @escaping (TransactionEditChanges) -> SaveOutcome) {
+         onSave: @escaping CheckedSave<TransactionEditChanges>) {
         self.transaction = transaction
         self.categories = categories
         self.groups = groups
@@ -127,7 +130,7 @@ struct EditTransactionSheet: View {
     var body: some View {
         SheetScaffold(title: "Edit transaction", subtitle: transaction.isManual ? "Added by hand" : nil,
                       error: errorMessage, width: editsManually ? 480 : 460, onCancel: { dismiss() },
-                      primary: SheetAction("Save", isEnabled: canSave, action: save),
+                      primary: SheetAction("Save", isEnabled: canSave && !gate.isRunning, action: save),
                       destructive: editsManually ? SheetAction("Delete…") { confirmingDelete = true } : nil) {
             SheetForm {
                 if editsManually, let manual {
@@ -182,6 +185,7 @@ struct EditTransactionSheet: View {
         .onChange(of: draft) { _, _ in errorMessage = nil }
         .onChange(of: pendingTransfer) { _, _ in errorMessage = nil }
         .onAppear { eurToGbpRate = transfer?.eurToGbpRate() }
+        .filedYearGate(gate)
         .alert("Delete this transaction?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive, action: delete)
             Button("Cancel", role: .cancel) {}
@@ -363,7 +367,13 @@ struct EditTransactionSheet: View {
         }
         let changes = TransactionEditChanges(categoryId: categoryId, note: note, manual: manualFields,
                                              transfer: pendingTransfer?.change, documents: documentsModel.staging.changes)
-        switch onSave(changes) {
+        errorMessage = nil
+        onSave(changes, gate, finish)
+    }
+
+    /// What a save or delete through the gate came to: closes, or keeps the sheet open with the message.
+    private func finish(_ outcome: SaveOutcome) {
+        switch outcome {
         case .saved, .savedButReloadFailed: dismiss()
         case .failed(let message): errorMessage = message
         }
@@ -373,9 +383,7 @@ struct EditTransactionSheet: View {
 private extension EditTransactionSheet {
     func delete() {
         guard let manual, let id = transaction.id else { return }
-        switch manual.delete(id) {
-        case .saved, .savedButReloadFailed: dismiss()
-        case .failed(let message): errorMessage = message
-        }
+        errorMessage = nil
+        manual.delete(id, gate, finish)
     }
 }

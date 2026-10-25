@@ -250,15 +250,18 @@ final class ImportReviewLinkingTests: XCTestCase {
         XCTAssertEqual(ImportPlan.summary([receiptItem()]), "1 insurance receipt document → filed")
     }
 
-    func testALinkChangeThatMakesTwoItemsClaimOneTransactionAsksAgain() async throws {
+    /// Linking makes two receipts of one day claim one transaction: the user chose that link, so
+    /// neither asks (spec §4b: links chosen by the user never raise a claim alert).
+    func testALinkTheUserChoseNeverMakesTwoItemsClaimingOneTransactionAsk() async throws {
         let other = ImportItem(file: file("receipt-2.pdf"), recognition: certain(.evidence(.insuranceReceipt)), title: "Receipt 2",
+                               facts: [ImportFact(field: .docDate, value: .date(Self.date(2025, 3, 1)), source: .textLayer, confidence: .certain, reason: "Read")],
                                links: [ProposedLink(entity: .transaction(id("alpha")), label: "SHOP ALPHA", confidence: .certain, reasons: ["Same amount"])],
                                effect: .file, groupKey: "Other documents")
         let item = receiptItem()
         let plan = try await pipeline.resolve(ImportPlan(items: [item, other]), itemId: item.id, .linkTransactions([id("alpha")]))
         for checked in plan.items {
-            XCTAssertTrue(checked.issues.contains { $0.id == "sharedTransaction.\(self.id("alpha"))" }, "\(checked.title): \(checked.issues)")
-            XCTAssertEqual(checked.section, .needsYou)
+            XCTAssertFalse(checked.issues.contains { $0.id.hasSuffix(".\(self.id("alpha"))") }, "\(checked.title): \(checked.issues)")
+            XCTAssertEqual(checked.section, .ready, "\(checked.title): \(checked.needsYouReasons)")
         }
     }
 

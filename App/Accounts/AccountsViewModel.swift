@@ -221,22 +221,23 @@ final class AccountsViewModel: ObservableObject {
 
     /// Add transaction…'s save (`ManualTransactions.add`), then the screen reloads (an
     /// imported account's balance includes it) and `onTransactionAdded` runs.
-    func addTransaction(_ input: ManualTransactionInput) -> SaveOutcome {
-        do {
-            try dbQueue.write { db in
-                _ = try ManualTransactions.add(db: db, accountId: input.accountId, date: input.date, description: input.description,
-                                               amountMinorUnits: input.amountMinorUnits, categoryId: input.categoryId, note: input.note)
+    /// One that would change a filed return asks first (`.asks`, nothing written; plan Task 14).
+    func addTransaction(_ input: ManualTransactionInput, gate: FiledYearGate, done: @escaping (SaveOutcome) -> Void) {
+        let edit = input.categoryId.map { FiledYearEditNames.categorised($0, categories: categories) + ", added by hand" } ?? "Added by hand"
+        gate.run(dbQueue, edit: edit, scope: .adding(date: input.date, categoryId: input.categoryId), { db in
+            _ = try ManualTransactions.add(db: db, accountId: input.accountId, date: input.date, description: input.description,
+                                           amountMinorUnits: input.amountMinorUnits, categoryId: input.categoryId, note: input.note)
+        }, done: { [weak self] result in
+            guard let self else { return }
+            if let error = result.failure { return done(.failed(ManualFormat.errorMessage(for: error))) }
+            let reloaded = self.load()
+            self.onTransactionAdded?()
+            guard reloaded else {
+                self.errorMessage = "Saved, but " + (self.errorMessage.map { $0.prefix(1).lowercased() + $0.dropFirst() } ?? "couldn't reload accounts.")
+                return done(.savedButReloadFailed)
             }
-        } catch {
-            return .failed(ManualFormat.errorMessage(for: error))
-        }
-        let reloaded = load()
-        onTransactionAdded?()
-        guard reloaded else {
-            errorMessage = "Saved, but " + (errorMessage.map { $0.prefix(1).lowercased() + $0.dropFirst() } ?? "couldn't reload accounts.")
-            return .savedButReloadFailed
-        }
-        return .saved
+            done(.saved)
+        })
     }
 
     private func updateSelectedHistory() {

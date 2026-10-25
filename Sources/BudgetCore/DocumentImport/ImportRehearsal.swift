@@ -193,7 +193,7 @@ public enum ImportRehearsal {
 
         // The delete, as the Documents screen does it.
         for original in originals where original.exportedName != nil {
-            try library.remove(original.id, force: true)
+            try library.remove(original.id, force: true, guardingFiledYears: false)
         }
         let afterDelete = try await queue.read { db in try FiledYearGuard.filedChanges(db: db, from: before) }
 

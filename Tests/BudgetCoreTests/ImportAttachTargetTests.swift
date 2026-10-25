@@ -540,7 +540,7 @@ final class ImportAttachTargetTests: XCTestCase {
     /// The item's evidence kind is the expected kind: a file nothing recognises is filed as it
     /// (the declared-kind rule), linked to the item's record.
     func testMissingEvidenceUnrecognisedFileIsFiledAsTheItemsKind() async throws {
-        let shortcut = ImportShortcut.attach(.transaction(id("debit")), role: nil, from: .missingEvidence, expected: .insuranceReceipt)
+        let shortcut = ImportShortcut.attach(.transaction(id("debit")), role: nil, from: .missingEvidence, expected: .builtIn(.insuranceReceipt))
         XCTAssertEqual(shortcut.entryPoint, "Missing evidence ▸ Add")
         XCTAssertEqual(shortcut.intent.expected, .evidence(.insuranceReceipt))
         let url = try drop(EvidenceTestPDFs.textPDF(["Clause one and clause two", "Synthetic words only"], name: "scan 9.pdf"), as: "scan 9.pdf")
@@ -556,7 +556,7 @@ final class ImportAttachTargetTests: XCTestCase {
 
     /// A file recognised as another kind than the item asks for stays a kind mismatch.
     func testMissingEvidenceContradictingFileIsKindMismatch() async throws {
-        let shortcut = ImportShortcut.attach(.transaction(id("debit")), role: nil, from: .missingEvidence, expected: .bankStatement)
+        let shortcut = ImportShortcut.attach(.transaction(id("debit")), role: nil, from: .missingEvidence, expected: .builtIn(.bankStatement))
         let plan = try await pipeline.plan([try p60()], intent: shortcut.intent)
         let item = try XCTUnwrap(plan.items.first { $0.parentId == nil })
         XCTAssertEqual(item.section, .needsYou)
@@ -569,7 +569,7 @@ final class ImportAttachTargetTests: XCTestCase {
     /// reader, a statement read as BBVA's or a CSV, a utility invoice the invoice reader reads.
     func testMissingEvidenceKindMatchesWhicheverReaderReadsIt() {
         func issue(_ expected: DocumentKind, _ found: ImportKind) -> ImportIssue? {
-            let intent = ImportShortcut.attach(.transaction(1), role: nil, from: .missingEvidence, expected: expected).intent
+            let intent = ImportShortcut.attach(.transaction(1), role: nil, from: .missingEvidence, expected: .builtIn(expected)).intent
             return ImportDetector.intentIssue(ImportRecognition(kind: found, confidence: .certain, reason: "test"), intent: intent)
         }
         XCTAssertNil(issue(.p60, .payrollForm(.p60)))
@@ -593,7 +593,7 @@ final class ImportAttachTargetTests: XCTestCase {
 
     /// A document with no period of its own gets the item's (its last day the slot's end − 1).
     func testMissingEvidencePeriodFillsADocumentWithoutOne() async throws {
-        let shortcut = ImportShortcut.attach(.transaction(id("debit")), role: nil, from: .missingEvidence, expected: .insuranceReceipt,
+        let shortcut = ImportShortcut.attach(.transaction(id("debit")), role: nil, from: .missingEvidence, expected: .builtIn(.insuranceReceipt),
                                              period: Self.january)
         XCTAssertEqual(shortcut.intent.period, Self.january)
         let plan = try await pipeline.plan([try insurancePDF()], intent: shortcut.intent)
@@ -611,7 +611,7 @@ final class ImportAttachTargetTests: XCTestCase {
 
     /// A document that has its own period keeps it.
     func testMissingEvidencePeriodNeverReplacesTheDocumentsOwn() async throws {
-        let shortcut = ImportShortcut.attach(.transaction(id("debit")), role: nil, from: .missingEvidence, expected: .rentReceipt,
+        let shortcut = ImportShortcut.attach(.transaction(id("debit")), role: nil, from: .missingEvidence, expected: .builtIn(.rentReceipt),
                                              period: DateInterval(start: Self.date(2024, 3, 1), end: Self.date(2024, 4, 1)))
         let plan = try await pipeline.plan([try receiptPDF("1")], intent: shortcut.intent)
         let item = try XCTUnwrap(plan.items.first { $0.parentId == nil })

@@ -54,7 +54,7 @@ struct ImportRulesTab: View {
                     }
                     if row.targetMissing {
                         StatusPill("Target missing", tone: .warning,
-                                   help: "Its account or record no longer exists: the importer skips this rule. Edit it or delete it.")
+                                   help: "Its account, record or kind no longer exists: the importer skips this rule. Edit it or delete it.")
                     }
                 }
             }
@@ -164,8 +164,8 @@ private struct ImportRuleSheet: View {
             return context.accounts.contains { $0.id == id }
         case .link(let entity):
             return context.linkTargets.contains { $0.entity == entity }
-        case .documentKind:
-            return true
+        case .documentKind(let kind):
+            return context.documentKinds.contains { $0.ref == kind }
         }
     }
 
@@ -199,7 +199,9 @@ private struct ImportRuleSheet: View {
         case .documentKind(let kind):
             LabeledContent("Document type") {
                 Picker("Document type", selection: Binding(get: { kind }, set: { edit = .documentKind($0) })) {
-                    ForEach(DocumentKind.allCases, id: \.self) { kind in Text(kind.displayName).tag(kind) }
+                    // A custom kind gone since: shown until another is chosen (Save waits for one).
+                    if !context.documentKinds.contains(where: { $0.ref == kind }) { Text("Choose a kind").tag(kind) }
+                    ForEach(context.documentKinds, id: \.ref) { option in Text(option.name).tag(option.ref) }
                 }
                 .labelsHidden().frame(maxWidth: 260)
             }

@@ -34,7 +34,7 @@ final class DocumentsViewModel: ObservableObject {
         didSet { if queryText != oldValue { scheduleQuery() } }
     }
     @Published private(set) var index = EvidenceDocumentSearch.Index(entries: []) {
-        didSet { overview = LibrarySummary(index.entries) }
+        didSet { overview = LibrarySummary(index.entries, catalog: index.catalog) }
     }
     @Published private(set) var entries: [EvidenceDocumentSearch.Entry] = [] {
         didSet { sections = YearSection.sections(entries) }
@@ -184,6 +184,9 @@ final class DocumentsViewModel: ObservableObject {
         return try? library.document(id: id)
     }
 
+    /// A kind's name, a custom kind's included (as the library was last read).
+    func kindName(_ ref: DocumentKindRef) -> String { index.catalog.displayName(ref) }
+
     func entry(_ id: Int64?) -> EvidenceDocumentSearch.Entry? {
         guard let id else { return nil }
         return index.entries.first { $0.id == id }
@@ -256,8 +259,11 @@ final class DocumentsViewModel: ObservableObject {
 
     private func refreshSuggestions() {
         guard let document = selected, let catalog else { suggestions = []; return }
-        let linked = Set(links.filter { $0.link.entityType == .transaction }.map(\.link.entityId))
-        suggestions = EvidenceMatcher.suggestions(document: document, index: catalog.matcherIndex, limit: 8)
+        let linkedIds = links.filter { $0.link.entityType == .transaction }.map(\.link.entityId)
+        let linked = Set(linkedIds)
+        // A part-paid document proposes a debit of its rest.
+        let paid = catalog.matcherIndex.linkedDebits(linkedIds, currency: document.currency)
+        suggestions = EvidenceMatcher.suggestions(document: document, index: catalog.matcherIndex, limit: 8, linkedDebits: paid)
             .filter { !linked.contains($0.transactionId) }
     }
 
@@ -292,56 +298,112 @@ final class DocumentsViewModel: ObservableObject {
 
     // MARK: Editing
 
-    /// Saves the selected document's details; false (with the reason shown) when refused.
-    @discardableResult
-    func saveDetails(_ details: EvidenceDocumentDetails) -> Bool {
-        guard let id = selected?.id else { return false }
-        do {
-            selected = try library.updateDetails(id, details)
-            errorMessage = nil
-            refreshSuggestions()
-            refreshEntries(for: [id])
-            return true
-        } catch {
-            errorMessage = error.localizedDescription
-            return false
+    /// A guarded edit (a linked document's details, a link, an unlink, a delete) is checking the filed
+    /// returns off the main thread: "Checking filed returns…" shows and the screen waits for it.
+    @Published private(set) var isCheckingFiledYears = false
+
+    /// `body` off the main thread with `isCheckingFiledYears` on; nil (nothing run) while another runs.
+    private func guarded<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async -> Result<T, Error>? {
+        guard !isCheckingFiledYears else { return nil }
+        isCheckingFiledYears = true
+        defer { isCheckingFiledYears = false }
+        return await Task.detached(priority: .userInitiated) { Result { try body() } }.value
+    }
+
+    /// Saves the selected document's details, off the main thread (a linked document's are checked against the
+    /// filed returns, `EvidenceLibrary.updateDetails`); `saved` gets the stored document, and a refusal shows.
+    func saveDetails(_ details: EvidenceDocumentDetails, saved: @escaping (EvidenceDocument) -> Void = { _ in }) {
+        guard let id = selected?.id else { return }
+        let library = library
+        Task {
+            guard let result = await guarded({ try library.updateDetails(id, details) }) else { return }
+            switch result {
+            case .success(let document):
+                errorMessage = nil
+                refreshSuggestions()
+                refreshEntries(for: [id])
+                // Another document selected meanwhile: its inspector keeps its own draft.
+                if selectedId == id {
+                    selected = document
+                    saved(document)
+                }
+            case .failure(let error):
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
     func link(transactionId: Int64, role: String?) {
         guard let id = selected?.id else { return }
-        write { try self.library.link(id, to: .transaction(transactionId), role: role) }
+        let library = library
+        write { _ = try library.link(id, to: .transaction(transactionId), role: role) }
     }
 
     func unlink(_ row: LinkRow) {
-        write { try self.library.unlink(row.link.documentId, from: row.link.entity) }
+        let library = library, documentId = row.link.documentId, entity = row.link.entity
+        write { _ = try library.unlink(documentId, from: entity) }
     }
 
     func setRole(_ role: String?, for row: LinkRow) {
-        write { try self.library.setRole(role, documentId: row.link.documentId, entity: row.link.entity) }
+        let library = library, documentId = row.link.documentId, entity = row.link.entity
+        write { _ = try library.setRole(role, documentId: documentId, entity: entity) }
     }
 
-    /// Deletes the document and its copy (and its links).
+    /// Deletes the document and its copy (and its links), off the main thread (its links are checked).
     func remove(_ documentId: Int64) {
-        do {
-            try library.remove(documentId, force: true)
-            if selectedId == documentId { selectedId = nil }
-            refreshEntries(for: [documentId])
-        } catch {
-            errorMessage = error.localizedDescription
+        let library = library
+        Task {
+            guard let result = await guarded({ try library.remove(documentId, force: true) }) else { return }
+            switch result {
+            case .success:
+                errorMessage = nil
+                if selectedId == documentId { selectedId = nil }
+                refreshEntries(for: [documentId])
+            case .failure(let error):
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
-    private func write(_ body: () throws -> Void) {
-        do {
-            try body()
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
+    /// A link change, off the main thread through `guarded`; the links and suggestions are read again after.
+    private func write(_ body: @escaping @Sendable () throws -> Void) {
+        Task {
+            guard let result = await guarded(body) else { return }
+            errorMessage = result.failure?.localizedDescription
+            loadLinks()
+            refreshSuggestions()
+            if let id = selected?.id { refreshEntries(for: [id]) }
         }
-        loadLinks()
-        refreshSuggestions()
-        if let id = selected?.id { refreshEntries(for: [id]) }
+    }
+
+    // MARK: Kinds
+
+    /// The custom kinds with their document counts, read off the main thread (the Kinds sheet).
+    func loadKinds() async -> Result<[CustomKindRow], Error> {
+        let dbQueue = dbQueue
+        return await Task.detached(priority: .userInitiated) {
+            Result { try dbQueue.read { db in try CustomDocumentKinds.rows(db: db) } }
+        }.value
+    }
+
+    /// Applies the Kinds sheet's staged edits in one write, off the main thread; the library is read
+    /// again after (names, kinds and filters change). Returns what changed, or the refusal (a taken
+    /// name, a kind gone, a filed year that would move: nothing is written).
+    func saveKinds(_ edits: [KindEdit]) async -> Result<KindSaveResult, Error> {
+        let dbQueue = dbQueue, now = AppClock.now
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try dbQueue.write { db in try CustomDocumentKinds.save(db: db, edits: edits, now: now) } }
+        }.value
+        if case .success = result {
+            // A kind merged away can't stay the filter.
+            let merged = Set(edits.compactMap { edit -> Int64? in
+                if case .merge = edit.change { return edit.kindId }
+                return nil
+            })
+            if case .custom(let id)? = filter.kind, merged.contains(id) { filter.kind = nil }
+            reloadIndex(select: selectedId)
+        }
+        return result
     }
 
     // MARK: Files
@@ -406,26 +468,28 @@ extension DocumentsViewModel {
         var unlinked = 0
         /// Scans and photos: no text to search or match.
         var imageOnly = 0
-        /// Documents per kind, most first.
-        var byKind: [(kind: DocumentKind, count: Int)] = []
+        /// Documents per kind (custom kinds by their own name), most first.
+        var byKind: [(kind: DocumentKindRef, name: String, count: Int)] = []
         /// The newest-added documents not linked to anything yet.
         var recentUnlinked: [EvidenceDocumentSearch.Entry] = []
 
-        init(_ entries: [EvidenceDocumentSearch.Entry], unlinkedShown: Int = 8) {
+        init(_ entries: [EvidenceDocumentSearch.Entry], catalog: DocumentKindCatalog = DocumentKindCatalog(customKinds: []),
+             unlinkedShown: Int = 8) {
             total = entries.count
             linked = entries.filter { $0.linkCount > 0 }.count
             unlinked = total - linked
             imageOnly = entries.filter { $0.summary.textStatus == .image }.count
-            var counts: [DocumentKind: Int] = [:]
-            for entry in entries { counts[entry.summary.kind, default: 0] += 1 }
-            byKind = counts.map { (kind: $0.key, count: $0.value) }
-                .sorted { ($0.count, $1.kind.displayName) > ($1.count, $0.kind.displayName) }
+            var counts: [DocumentKindRef: Int] = [:]
+            for entry in entries { counts[entry.summary.kindRef, default: 0] += 1 }
+            byKind = counts.map { (kind: $0.key, name: catalog.displayName($0.key), count: $0.value) }
+                .sorted { ($0.count, $1.name) > ($1.count, $0.name) }
             recentUnlinked = Array(entries.filter { $0.linkCount == 0 }.prefix(unlinkedShown))
         }
 
         static func == (lhs: LibrarySummary, rhs: LibrarySummary) -> Bool {
             lhs.total == rhs.total && lhs.linked == rhs.linked && lhs.imageOnly == rhs.imageOnly
-                && lhs.byKind.map(\.kind) == rhs.byKind.map(\.kind) && lhs.byKind.map(\.count) == rhs.byKind.map(\.count)
+                && lhs.byKind.map(\.kind) == rhs.byKind.map(\.kind) && lhs.byKind.map(\.name) == rhs.byKind.map(\.name)
+                && lhs.byKind.map(\.count) == rhs.byKind.map(\.count)
                 && lhs.recentUnlinked == rhs.recentUnlinked
         }
     }

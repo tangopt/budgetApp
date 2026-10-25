@@ -684,7 +684,7 @@ final class BBVAStatementApplyTests: XCTestCase {
         XCTAssertEqual(statements.count, 2)
         let processed = try XCTUnwrap(statements.first { $0.duplicate == nil }, "\(statements.map { $0.duplicate?.of ?? "-" })")
         XCTAssertEqual(statements.filter { $0.duplicate == nil }.count, 1, "\(statements.map { $0.duplicate?.of ?? "-" })")
-        XCTAssertEqual(statements.first { $0.duplicate != nil }?.duplicate?.of, "Same file as \(filed.name)")
+        XCTAssertEqual(statements.first { $0.duplicate != nil }?.duplicate?.of, "Identical file: already in the library as \(filed.name)")
         let issue = try XCTUnwrap(processed.issues.first { $0.id.hasPrefix("instalmentMismatch.estimate.") }, "\(processed.issues.map(\.reason))")
         plan = try await pipeline.resolve(plan, itemId: processed.id, issueId: issue.id, .acknowledge)
         _ = try applier.apply(plan, entryPoint: "Test")

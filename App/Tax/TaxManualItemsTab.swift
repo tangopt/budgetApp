@@ -138,7 +138,7 @@ struct TaxManualItemsTab: View {
         }
         .confirmationDialog("Delete “\(deleting?.label ?? "")”?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
             Button("Delete", role: .destructive) {
-                if let id = deleting?.id { viewModel.deleteManualItem(id) }
+                if let id = deleting?.id { viewModel.deleteManualItem(id, label: deleting?.label ?? "") }
                 deleting = nil
             }
         } message: {
@@ -206,6 +206,8 @@ struct TaxManualItemSheet: View {
     @State private var isWholeProperty: Bool
     @State private var notes: String
     @State private var error: String?
+    /// Saves through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
 
     init(viewModel: TaxYearsViewModel, draft: ManualItemDraft) {
         self.viewModel = viewModel
@@ -278,6 +280,7 @@ struct TaxManualItemSheet: View {
                 }
             }
         }
+        .filedYearGate(gate)
     }
 
     private func save() {
@@ -290,8 +293,10 @@ struct TaxManualItemSheet: View {
         item.date = hasDate ? date : nil
         item.isWholeProperty = draft.item.propertyId != nil && isWholeProperty
         item.notes = notes
-        error = viewModel.saveManualItem(item, documents: documents.staging.changes)
-        if error == nil { dismiss() }
+        viewModel.saveManualItem(item, documents: documents.staging.changes, gate: gate) { message in
+            error = message
+            if message == nil { dismiss() }
+        }
     }
 }
 

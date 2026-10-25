@@ -18,7 +18,7 @@ final class TransactionDocumentCounts: ObservableObject {
     func start(dbQueue: DatabaseQueue) {
         task?.cancel()
         let values = ValueObservation
-            .tracking { db in try EvidenceLinks.linkCounts(db: db, .transaction) }
+            .tracking { db in try TransactionDocuments.allCounts(db: db) }
             .removeDuplicates()
             .values(in: dbQueue)
         task = Task { [weak self] in
@@ -47,7 +47,7 @@ struct DocumentCountBadge: View {
     var body: some View {
         let badge = HStack(spacing: 1) {
             Image(systemName: "paperclip")
-            if count > 1 { Text("\(count)").monospacedDigit() }
+            if count > 1 { Text("\(count)").monospacedDigit().figureText() }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -63,13 +63,26 @@ struct DocumentCountBadge: View {
     }
 }
 
-/// The paperclip for one transaction, read from `TransactionDocumentCounts`.
+/// The paperclip for one transaction, read from `TransactionDocumentCounts`. Click it for the
+/// transaction's documents (`TransactionDocumentsPopover`): a thumbnail and Quick Look.
 struct TransactionDocumentBadge: View {
     let transactionId: Int64?
     @ObservedObject private var counts = TransactionDocumentCounts.shared
+    @State private var showing = false
 
     var body: some View {
-        DocumentCountBadge(count: counts.count(transactionId), keepsPlace: false)
+        let count = counts.count(transactionId)
+        if let transactionId, count > 0 {
+            Button { showing = true } label: {
+                DocumentCountBadge(count: count, keepsPlace: false)
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showing, arrowEdge: .bottom) {
+                TransactionDocumentsPopover(transactionId: transactionId)
+            }
+        } else {
+            DocumentCountBadge(count: count, keepsPlace: false)
+        }
     }
 }
 
@@ -235,10 +248,11 @@ struct PickerLinkedMark: View {
 struct EvidenceDocumentPickRow: View {
     let summary: EvidenceDocumentSummary
     var reasons: [String] = []
+    @Environment(\.documentKinds) private var kinds
 
     var body: some View {
-        let caption = DocumentFormat.caption(kind: summary.kind, date: summary.docDate, amountMinorUnits: summary.amountMinorUnits,
-                                             currency: summary.currency)
+        let caption = DocumentFormat.caption(kindName: kinds.displayName(of: summary), date: summary.docDate,
+                                             amountMinorUnits: summary.amountMinorUnits, currency: summary.currency)
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: DocumentFormat.icon(summary.textStatus))
                 .foregroundStyle(.secondary)
@@ -246,8 +260,8 @@ struct EvidenceDocumentPickRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(summary.displayName).lineLimit(1).truncationMode(.middle)
-                DocumentCaptionLine(kind: summary.kind, date: summary.docDate, amountMinorUnits: summary.amountMinorUnits,
-                                    currency: summary.currency)
+                DocumentCaptionLine(kindName: kinds.displayName(of: summary), date: summary.docDate,
+                                    amountMinorUnits: summary.amountMinorUnits, currency: summary.currency)
                     .font(.caption).foregroundStyle(.secondary)
                 if !reasons.isEmpty {
                     Text(reasons.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -261,7 +275,8 @@ struct EvidenceDocumentPickRow: View {
 /// `DocumentFormat.caption` on one line — "Mortgage notice · 31 Jan 2024 · €1,234.56" — where
 /// the kind truncates and the day and amount never do.
 struct DocumentCaptionLine: View {
-    let kind: DocumentKind
+    /// The kind's name, a custom kind's included (`DocumentKindCatalog.displayName(of:)`).
+    let kindName: String
     let date: Date?
     let amountMinorUnits: Int?
     let currency: Currency?
@@ -270,7 +285,7 @@ struct DocumentCaptionLine: View {
         let figures = [date.map(DocumentFormat.day),
                        amountMinorUnits.flatMap { amount in currency.map { Money.format(amount, currency: $0) } }].compactMap { $0 }
         HStack(spacing: 0) {
-            Text(kind.displayName).lineLimit(1)
+            Text(kindName).lineLimit(1)
             if !figures.isEmpty {
                 Text(" · " + figures.joined(separator: " · ")).figureText()
             }
@@ -294,8 +309,8 @@ enum DocumentFormat {
     }
 
     /// "Mortgage notice · 31 Jan 2024 · €1,234.56".
-    static func caption(kind: DocumentKind, date: Date?, amountMinorUnits: Int?, currency: Currency?) -> String {
-        var parts = [kind.displayName]
+    static func caption(kindName: String, date: Date?, amountMinorUnits: Int?, currency: Currency?) -> String {
+        var parts = [kindName]
         if let date { parts.append(day(date)) }
         if let amount = amountMinorUnits, let currency { parts.append(Money.format(amount, currency: currency)) }
         return parts.joined(separator: " · ")

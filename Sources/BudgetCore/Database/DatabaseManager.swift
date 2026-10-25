@@ -140,5 +140,9 @@ public final class DatabaseManager {
         registerAppUserMigration(&migrator)
         registerSyncMigration(&migrator)
         registerPropertyAddressMigration(&migrator)
+        registerCustomDocumentKindMigration(&migrator)
+        registerCustomDocumentKindMergedIntoMigration(&migrator)
+        registerSyncRedirectStampMigration(&migrator)
+        registerImportWaitingFileMigration(&migrator)
     }
 }

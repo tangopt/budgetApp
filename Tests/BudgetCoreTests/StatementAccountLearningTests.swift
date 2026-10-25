@@ -404,6 +404,6 @@ final class StatementAccountLearningTests: XCTestCase {
         pipeline.discardPlanningCopy()
         let again = try item("a.csv", in: try await pipeline.plan([try csv("a.csv", fileA)]))
         XCTAssertEqual(again.section, .duplicates, "\(again.needsYouReasons)")
-        XCTAssertTrue(again.duplicate?.of.hasPrefix("Already in the library as") == true, "\(String(describing: again.duplicate))")
+        XCTAssertTrue(again.duplicate?.of.hasPrefix("Identical file: already in the library as") == true, "\(String(describing: again.duplicate))")
     }
 }

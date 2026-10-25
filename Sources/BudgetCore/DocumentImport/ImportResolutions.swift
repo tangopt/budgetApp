@@ -9,6 +9,32 @@ public enum ImportResolutionError: Error, Equatable {
     case transactionNotFound(Int64)
     /// Import anyway needs a reason that isn't blank.
     case reasonRequired
+    /// "New kind…" with a name a built-in, a saved custom kind or another of the review's new
+    /// kinds already has (ignoring case and accents): that kind's name.
+    case kindNameTaken(String)
+    /// "New kind…" with a blank name.
+    case kindNameEmpty
+}
+
+extension ImportResolutionError: LocalizedError {
+    /// A "New kind…" name that can't be used (blank or taken): said beside the question.
+    public var isKindName: Bool {
+        switch self {
+        case .kindNameTaken, .kindNameEmpty: return true
+        default: return false
+        }
+    }
+
+    public var errorDescription: String? {
+        switch self {
+        case .itemNotFound: return "That document is no longer in the review."
+        case .notOffered: return "That answer isn't offered for this document."
+        case .transactionNotFound: return "That transaction no longer exists."
+        case .reasonRequired: return "Write why it is imported anyway first."
+        case .kindNameTaken(let name): return "There's already a kind called \u{201C}\(name)\u{201D}."
+        case .kindNameEmpty: return "Give the kind a name."
+        }
+    }
 }
 
 /// The user's answers to an item's questions, as pure edits of the item. Only offered
@@ -21,7 +47,8 @@ public enum ImportResolutions {
     /// every issue that takes it (`.acknowledge`: the first). Throws `notOffered` otherwise.
     ///
     /// - `.leaveOut`: in or out of the import (again: back in).
-    /// - `.acknowledge`: the issue is dropped.
+    /// - `.acknowledge`: the issue is dropped; on instalments (`EvidenceDocumentReader.instalmentsIssueId`)
+    ///   both proposed links become certain ("Checked by you").
     /// - `.chooseLink`: the link becomes certain ("Chosen by you"), the other candidates go; a
     ///   utility invoice's debit becomes the chosen transaction.
     /// - `.fileWithoutLink`: the issue goes with the links it questioned (and an effect's link);
@@ -36,7 +63,8 @@ public enum ImportResolutions {
     ///   `.setIssuer`) resolves the model's question once no model figure or kind is left.
     /// - `.linkTransactions`, `.addTransactionLink`, `.unlink`: the item's transaction links as
     ///   the user set them (`withTransactionLinks`); `transactions` names each chosen
-    ///   transaction that exists (`transactionNotFound` otherwise).
+    ///   transaction that exists (`transactionNotFound` otherwise). `.linkTransactions` also
+    ///   answers the pair an instalments question offers: both its debits, certain.
     ///
     /// Corrections (a kind, a figure, a target, links) are taken on any item that is not held
     /// (a filed return, a failed check, an unreadable file: only leaving out), left out or a
@@ -56,7 +84,7 @@ public enum ImportResolutions {
             edited.isLeftOut.toggle()
             return edited
 
-        case .chooseKind:
+        case .chooseKind, .chooseCustomKind, .createKind:
             guard !accepting.isEmpty || (issueId == nil && (item.recognition.confidence == .needsReview || isCorrectable(item))) else {
                 throw refuse()
             }
@@ -68,7 +96,8 @@ public enum ImportResolutions {
             return nil
 
         case .linkTransactions(let ids):
-            guard issueId == nil, isCorrectable(item), !ids.isEmpty, Set(ids).count == ids.count else { throw refuse() }
+            // A correction, or the pair a question offers (`EvidenceDocumentReader.instalmentPairsIssueId`).
+            guard issueId == nil || !accepting.isEmpty, isCorrectable(item), !ids.isEmpty, Set(ids).count == ids.count else { throw refuse() }
             return try withTransactionLinks(item, ids, chosen: Set(ids), labels: transactions)
 
         case .addTransactionLink(let id):
@@ -96,7 +125,8 @@ public enum ImportResolutions {
             edited.facts.append(ImportFact(field: .issuer, value: .text(trimmed), source: .user, confidence: .certain, reason: "Named by you"))
             if edited.placement != nil {
                 edited.placement = ImportNaming.placement(kind: edited.recognition.kind, facts: edited.facts, file: edited.file,
-                                                          persons: item.placement?.metadata.persons ?? [])
+                                                          persons: item.placement?.metadata.persons ?? [],
+                                                customKind: item.placement?.customKind)
             }
             edited.effect = effect(edited.effect, with: .issuer, .text(trimmed))
             ImportModelProposals.settle(&edited)
@@ -125,6 +155,14 @@ public enum ImportResolutions {
         case .acknowledge:
             guard let first = accepting.first, let index = edited.issues.firstIndex(of: first) else { throw refuse() }
             edited.issues.remove(at: index)
+            if first.id == EvidenceDocumentReader.instalmentsIssueId {
+                // Keep both links: the instalments it proposed become certain, checked by the user.
+                for l in edited.links.indices where edited.links[l].entity.type == .transaction && edited.links[l].confidence == .needsReview {
+                    edited.links[l].confidence = .certain
+                    if !edited.links[l].reasons.contains(ImportChecks.checkedReason) { edited.links[l].reasons.append(ImportChecks.checkedReason) }
+                }
+                edited.notes.removeAll { $0.hasPrefix("Not linked:") }
+            }
             return edited
 
         case .confirmFigureRemembering(let field, let value):
@@ -149,7 +187,8 @@ public enum ImportResolutions {
                                            reason: existed ? "Checked by you" : enteredReason))
             if edited.placement != nil {
                 edited.placement = ImportNaming.placement(kind: edited.recognition.kind, facts: edited.facts, file: edited.file,
-                                                          persons: item.placement?.metadata.persons ?? [])
+                                                          persons: item.placement?.metadata.persons ?? [],
+                                                customKind: item.placement?.customKind)
             }
             edited.effect = effect(edited.effect, with: field, value)
             // A model figure corrected: the model's reading resolved field by field.
@@ -187,7 +226,8 @@ public enum ImportResolutions {
             // Filed with the total the rows give (as a corrected figure is).
             if edited.placement != nil {
                 edited.placement = ImportNaming.placement(kind: edited.recognition.kind, facts: edited.facts, file: edited.file,
-                                                          persons: item.placement?.metadata.persons ?? [])
+                                                          persons: item.placement?.metadata.persons ?? [],
+                                                customKind: item.placement?.customKind)
             }
             return edited
 
@@ -232,6 +272,10 @@ public enum ImportResolutions {
                 if case .chooseLink(let candidates) = issue.kind { dropped.formUnion(candidates.map(\.entity)) }
                 if let id = transactionId(inIssueId: issue.id) { dropped.insert(.transaction(id)) }
                 if let id = tenancyId(inIssueId: issue.id) { dropped.insert(.tenancy(id)) }
+                // The instalments it proposed.
+                if isInstalmentsQuestion(issue) {
+                    dropped.formUnion(unsure.filter { $0.entity.type == .transaction }.map(\.entity))
+                }
             }
             edited.issues.removeAll { accepting.contains($0) }
             if let corrected = accepting.first(where: { ImportDuplicates.isCorrectedVersion($0.id) }) {
@@ -290,6 +334,11 @@ public enum ImportResolutions {
             }
             return edited
         }
+    }
+
+    /// Whether the issue asks about instalments the reader proposed (one pair, or which pair).
+    static func isInstalmentsQuestion(_ issue: ImportIssue) -> Bool {
+        issue.id == EvidenceDocumentReader.instalmentsIssueId || issue.id == EvidenceDocumentReader.instalmentPairsIssueId
     }
 
     static let chosenReason = "Chosen by you"
@@ -358,6 +407,8 @@ public enum ImportResolutions {
             }
             return false
         }
+        // The transactions set by the user answer the instalments questions too.
+        edited.issues.removeAll(where: isInstalmentsQuestion)
         edited.links.removeAll { $0.entity.type == .transaction }
         var adviceRole: String?
         if case .transferAdvice = item.effect {
@@ -493,7 +544,8 @@ public enum ImportResolutions {
         if case .filedYear = issue.kind { return false }
         if issue.id == FiledYearGuard.checkFailedIssueId { return false }
         switch (issue.kind, resolution) {
-        case (.unknownKind, .chooseKind), (.kindMismatch, .chooseKind), (.kindMismatch, .acknowledge), (.confirmModelReading, .acceptModelReading):
+        case (.unknownKind, .chooseKind), (.kindMismatch, .chooseKind), (.kindMismatch, .acknowledge), (.confirmModelReading, .acceptModelReading),
+             (.unknownKind, .chooseCustomKind), (.kindMismatch, .chooseCustomKind), (.unknownKind, .createKind), (.kindMismatch, .createKind):
             return true
         case (.confirmFigure(let field), .confirmFigure(let chosen, let value)), (.missingFigure(let field), .confirmFigure(let chosen, let value)):
             return field == chosen && fits(value, chosen)
@@ -517,6 +569,14 @@ public enum ImportResolutions {
         }
     }
 
+    /// The import kind a kind, built-in or custom, is read as.
+    static func importKind(for ref: DocumentKindRef, fileExtension: String) -> ImportKind {
+        switch ref {
+        case .builtIn(let kind): return importKind(for: kind, fileExtension: fileExtension)
+        case .custom(let id): return .customEvidence(.saved(id))
+        }
+    }
+
     /// The import kind a chosen document kind is read as.
     static func importKind(for kind: DocumentKind, fileExtension: String) -> ImportKind {
         switch kind {
@@ -529,9 +589,9 @@ public enum ImportResolutions {
         }
     }
 
-    /// The transaction a duplicate-pass issue is about ("transactionHasDocument.<id>", "sharedTransaction.<id>").
+    /// The transaction a duplicate-pass issue is about ("sameKindOnTransaction.<id>", "checkLink.<id>").
     static func transactionId(inIssueId id: String) -> Int64? {
-        for prefix in ["transactionHasDocument.", "sharedTransaction."] where id.hasPrefix(prefix) {
+        for prefix in [ImportDuplicates.sameKindOnTransactionPrefix, ImportDuplicates.checkLinkPrefix] where id.hasPrefix(prefix) {
             return Int64(id.dropFirst(prefix.count))
         }
         return nil

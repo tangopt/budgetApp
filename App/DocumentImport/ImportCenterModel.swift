@@ -45,6 +45,8 @@ final class ImportCenterModel: ObservableObject {
     var targetNames: ImportTargetNames { session.targetNames }
     /// The accounts by id: a statement's layout wizard and its account picker.
     var accounts: [Int64: Account] { session.accounts }
+    /// A kind's name, a custom kind's included.
+    func kindLabel(_ kind: ImportKind) -> String { session.kindLabel(kind) }
     /// The last answer refused beside its question.
     var answerProblem: AnswerProblem? {
         get { session.answerProblem }
@@ -86,6 +88,15 @@ final class ImportCenterModel: ObservableObject {
     }
     /// How many library documents each library shortcut would bring (its "From library (N)").
     var libraryCounts: ImportLibraryCounts { session.libraryCounts }
+
+    /// The files kept for later, newest first (Waiting for later).
+    var waiting: [ImportWaitingFile] { session.waiting }
+    /// Whether the waiting file is in the open review (its copy is read there: not to discard meanwhile).
+    func isInOpenReview(_ file: ImportWaitingFile) -> Bool { session.isInOpenReview(file) }
+    /// The files the finished run left unimported, once per run (`ImportSession.takeSetAsideOffer`).
+    func takeSetAsideOffer() -> [SetAsideFile] { session.takeSetAsideOffer() }
+    /// The open review's files that can be set aside before it is discarded.
+    func setAsideCandidates() -> [SetAsideFile] { session.setAsideCandidates() }
 
     /// The signed-in app user, read when Confirm is pressed; nil: nobody.
     private let currentAppUserId: () -> Int64?
@@ -357,11 +368,78 @@ final class ImportCenterModel: ObservableObject {
     }
     #endif
 
+    // MARK: Set aside and the waiting list
+
+    /// Re-reads the waiting list (purged, re-read when the recognisers changed). Call on opening the
+    /// Imports screen and after a kind is saved; Confirm import, Undo, keeping and discarding do it themselves.
+    func refreshWaiting() {
+        session.refreshWaiting()
+    }
+
+    /// Keeps `files` for later in Mango's own copy (off the main actor). Throws when the list can't be written;
+    /// files that can't be kept are in the result's `failed`.
+    func keepForLater(_ files: [SetAsideFile]) async throws -> ImportWaitingList.KeepResult {
+        try await session.keep(files)
+    }
+
+    /// Asks for a folder (Mango's open panel), nil when cancelled.
+    static func chooseFolder(message: String) -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Copy here"
+        panel.message = message
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        // Mango locked while the panel was open (the lock cancels it, but a choice may have just landed).
+        guard SessionModel.appCanActOnData else { return nil }
+        return url
+    }
+
+    /// Copies `files` to a folder the user chooses (the original when it still exists, else Mango's copy);
+    /// nil when the panel was cancelled. The copying runs off the main actor; nothing is overwritten.
+    func copyToFolder(_ files: [SetAsideFile]) async -> SetAsideCopyOutcome? {
+        guard let folder = Self.chooseFolder(message: files.count == 1 ? "Choose where to copy the file." : "Choose where to copy the files.")
+        else { return nil }
+        let list = session.waitingList, waiting = session.waiting
+        let wanted = Set(files.map { $0.sha256.lowercased() })
+        // Only the files being copied are looked up, off the main actor.
+        let result = await Task.detached(priority: .userInitiated) {
+            let copies = Dictionary(waiting.filter { wanted.contains($0.sha256) }.compactMap { row in list.fileURL(row).map { (row.sha256, $0) } },
+                                    uniquingKeysWith: { first, _ in first })
+            return ImportSetAside.copy(files, waitingCopy: { copies[$0.lowercased()] }, to: folder)
+        }.value
+        return SetAsideCopyOutcome(folder: folder, copied: result.copied.count, failed: result.failed)
+    }
+
+    /// `copyToFolder` for a waiting file (Mango's copy); an outcome with a failure when its copy isn't here.
+    func copyToFolder(_ file: ImportWaitingFile) async -> SetAsideCopyOutcome? {
+        guard let setAside = session.waitingList.setAsideFile(file) else {
+            return SetAsideCopyOutcome(folder: nil, copied: 0, failed: [ImportSetAsideFailure(fileName: file.originalFileName, reason: "Mango's copy isn't here")])
+        }
+        return await copyToFolder([setAside])
+    }
+
+    /// Removes the waiting files `ids` and Mango's copies (the user confirmed).
+    func discardWaiting(_ ids: [Int64]) async throws {
+        try await session.discardWaiting(ids)
+    }
+
+    /// Reads the waiting files `ids` into a review (`ImportSession.importWaiting`); false when none of them is here.
+    @discardableResult
+    func importWaiting(_ ids: [Int64]) -> Bool {
+        guard session.importWaiting(ids) else { return false }
+        onShow?()
+        return true
+    }
+
     // MARK: History
 
     /// Re-reads the import history, newest first, with each run's files.
     func loadRuns() {
         session.loadRuns()
+        session.refreshWaiting()
     }
 
     /// `loadRuns`, finished when the history is read.
@@ -381,4 +459,12 @@ extension ImportCenterModel {
     func dismissUndoRefusal(_ runId: Int64) {
         session.dismissUndoRefusal(runId)
     }
+}
+
+/// What copying files to a folder did: how many were copied, and the files that couldn't be, with why.
+struct SetAsideCopyOutcome: Equatable {
+    /// The folder copied to.
+    var folder: URL?
+    var copied: Int
+    var failed: [ImportSetAsideFailure]
 }

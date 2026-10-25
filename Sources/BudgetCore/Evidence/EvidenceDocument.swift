@@ -24,6 +24,9 @@ public enum DocumentKind: String, Codable, CaseIterable, Sendable {
     /// the contract the tenancy asks for, nor evidence of a transaction.
     case tenancyAddendum
     case utilityInvoice
+    /// A tradesperson's or shop's invoice or receipt for repairs or maintenance of a property
+    /// (canalizador, eletricista, obras): the evidence of the tax "Repairs and maintenance" line.
+    case repairInvoice
     case accountantInvoice
     case legalInvoice
     /// A court fee (Portuguese DUC to IGFEJ, "taxa de justiça").
@@ -48,6 +51,10 @@ public enum DocumentKind: String, Codable, CaseIterable, Sendable {
     case ptIRSAssessment
     case ptIRSPaymentNote
     case ptIRSPaymentProof
+    /// The Portuguese Imposto do Selo: its note of payment (documento / nota de cobrança,
+    /// liquidação), the tax authority's receipt, or the bank's "Pagamentos ao Estado" advice
+    /// for it. Never a loan letter's stamp-duty line.
+    case stampDuty
     // Banking
     case bankTransferProof
     /// A bank's advice of a debit from the account (BBVA "Pagamentos – Serviços/Compras",
@@ -75,6 +82,7 @@ extension DocumentKind {
         case .rentContract: return "Rent contract"
         case .tenancyAddendum: return "Tenancy addendum"
         case .utilityInvoice: return "Utility invoice"
+        case .repairInvoice: return "Repair bill"
         case .accountantInvoice: return "Accountant invoice"
         case .legalInvoice: return "Legal invoice"
         case .courtFee: return "Court fee"
@@ -93,6 +101,7 @@ extension DocumentKind {
         case .ptIRSAssessment: return "PT IRS assessment"
         case .ptIRSPaymentNote: return "PT IRS payment note"
         case .ptIRSPaymentProof: return "PT IRS payment proof"
+        case .stampDuty: return "Stamp duty"
         case .bankTransferProof: return "Bank transfer proof"
         case .bankDebitAdvice: return "Bank debit advice"
         case .bankStatement: return "Bank statement"
@@ -150,12 +159,15 @@ public struct EvidenceDocument: Codable, Equatable, Identifiable, FetchableRecor
     public var sourceModifiedAt: Date?
     public var addedAt: Date
     public var note: String?
+    /// The custom kind the document is (`kind` is then `other`); `nil` for a built-in kind.
+    public var customKindId: Int64?
 
     public init(id: Int64? = nil, sha256: String, storedRelativePath: String, originalFileName: String, byteCount: Int64,
                 canonicalName: String? = nil, kind: DocumentKind = .other, docDate: Date? = nil, periodStart: Date? = nil,
                 periodEnd: Date? = nil, amountMinorUnits: Int? = nil, currency: Currency? = nil, persons: [String] = [],
                 textStatus: DocumentTextStatus = .unknown, extractedText: String? = nil, sourceFolderId: Int64? = nil,
-                sourceRelativePath: String? = nil, sourceModifiedAt: Date? = nil, addedAt: Date, note: String? = nil) {
+                sourceRelativePath: String? = nil, sourceModifiedAt: Date? = nil, addedAt: Date, note: String? = nil,
+                customKindId: Int64? = nil) {
         self.id = id
         self.sha256 = sha256
         self.storedRelativePath = storedRelativePath
@@ -176,6 +188,7 @@ public struct EvidenceDocument: Codable, Equatable, Identifiable, FetchableRecor
         self.sourceModifiedAt = sourceModifiedAt
         self.addedAt = addedAt
         self.note = note
+        self.customKindId = customKindId
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -183,6 +196,11 @@ public struct EvidenceDocument: Codable, Equatable, Identifiable, FetchableRecor
     }
 
     public static let databaseTableName = "document"
+
+    /// The document's kind: its custom kind when it has one, else its built-in kind.
+    public var kindRef: DocumentKindRef {
+        customKindId.map(DocumentKindRef.custom) ?? .builtIn(kind)
+    }
 
     /// The name to show: the canonical name, else the original file name.
     public var displayName: String {
@@ -217,12 +235,14 @@ public struct EvidenceDocumentSummary: Codable, Equatable, Identifiable, Fetchab
     public var sourceModifiedAt: Date?
     public var addedAt: Date
     public var note: String?
+    public var customKindId: Int64?
 
     public static let databaseTableName = EvidenceDocument.databaseTableName
 
     enum CodingKeys: String, CodingKey, CaseIterable {
         case id, sha256, storedRelativePath, originalFileName, byteCount, canonicalName, kind, docDate, periodStart, periodEnd,
-             amountMinorUnits, currency, persons, textStatus, sourceFolderId, sourceRelativePath, sourceModifiedAt, addedAt, note
+             amountMinorUnits, currency, persons, textStatus, sourceFolderId, sourceRelativePath, sourceModifiedAt, addedAt, note,
+             customKindId
     }
 
     public static var databaseSelection: [any SQLSelectable] { CodingKeys.allCases.map { Column($0.rawValue) } }
@@ -235,6 +255,11 @@ public struct EvidenceDocumentSummary: Codable, Equatable, Identifiable, Fetchab
     public var displayName: String {
         if let canonicalName, !canonicalName.isEmpty { return canonicalName }
         return originalFileName
+    }
+
+    /// The document's kind: its custom kind when it has one, else its built-in kind.
+    public var kindRef: DocumentKindRef {
+        customKindId.map(DocumentKindRef.custom) ?? .builtIn(kind)
     }
 }
 

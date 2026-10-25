@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 import BudgetCore
 
-/// Nine synthetic files for the document importer, made from the demo database when it is built
+/// Fifteen synthetic files for the document importer, made from the demo database when it is built
 /// (`MakeDemoDatabase` writes them to `ImportSamples` beside it) for the Imports snapshot routes
 /// and for trying the importer by hand. Read by the real pipeline over the demo, they fill each
 /// section of the review:
@@ -17,6 +17,10 @@ import BudgetCore
 ///   a corrected version; the filed 2024/25 return holds it); `Letter.pdf`, with no wording any
 ///   reader knows; a UK bank CSV no account's saved profile reads (its account to choose, then
 ///   its columns to map).
+/// - Import kinds (the last six): a repair bill, its receipt and the bank's debit advice, all of one
+///   debit (Ready together, no duplicate alert); a stamp duty note linked to its debit; an invoice
+///   paid in two instalments (asked: keep both links or none); `Fogo Limpo note.pdf`, a letter no
+///   reader knows, to leave out and set aside.
 /// Every name, number and figure is invented (the demo's own).
 public enum DemoImportSamples {
     /// The file a samples folder holds, so it is only ever replaced by the demo.
@@ -34,7 +38,7 @@ public enum DemoImportSamples {
         }
     }
 
-    /// Writes the nine samples into `folder` (replacing an earlier set there; refusing a folder
+    /// Writes the fifteen samples into `folder` (replacing an earlier set there; refusing a folder
     /// that holds anything else), in the order above; returns their URLs.
     @discardableResult
     public static func write(into folder: URL, dbQueue: DatabaseQueue) throws -> [URL] {
@@ -51,7 +55,8 @@ public enum DemoImportSamples {
 
         let samples = try dbQueue.read { db in
             [try rentReceipt(db), try insuranceReceipt(db), copyOfLibraryDocument(), try reissuedInvoice(db), try p60(db), letter(),
-             try bbvaStatement(db), try ukStatementCSV(db), try nextInvoice(db)]
+             try bbvaStatement(db), try ukStatementCSV(db), try nextInvoice(db),
+             try repairBill(db), try repairReceipt(db), try repairDebitAdvice(db), try stampDutyNote(db), try instalmentInvoice(db), unknownNote()]
         }
         var urls: [URL] = []
         for (name, data) in samples {
@@ -175,6 +180,103 @@ public enum DemoImportSamples {
             ("Direct debit", "On the 20th")
         ])
         return ("\(provider.name) invoice \(number).pdf", DemoPDF.data(page))
+    }
+
+    // MARK: Import kinds
+
+    /// The sample repair debit (`DemoDatabase.Builder.sampleRepairDebit`) as stored.
+    private static func debit(_ db: Database, _ description: String, _ date: Date? = nil) throws -> Transaction {
+        var request = Transaction.filter(Column("rawDescription") == description)
+        if let date { request = request.filter(Column("date") == date) }
+        guard let found = try request.order(Column("date")).fetchOne(db) else { throw SampleError.missing("debit \(description)") }
+        return found
+    }
+
+    /// `1.234,56` as a Portuguese bill writes an amount.
+    private static func pt(_ minorUnits: Int) -> String { String(format: "%d,%02d", abs(minorUnits) / 100, abs(minorUnits) % 100) }
+
+    private static func slashDate(_ date: Date) -> String {
+        let (year, month) = MonthRange.components(of: date)
+        return String(format: "%02d/%02d/%04d", DemoDatabase.calendar.component(.day, from: date), month, year)
+    }
+
+    private static let plumber = "Exemplo Serviços Lda"
+
+    /// The plumber's fatura-recibo for the sample repair debit.
+    private static func repairBill(_ db: Database) throws -> Sample {
+        let sample = try debit(db, DemoDatabase.Builder.sampleRepairDebit.description)
+        let page = DemoDatabase.page(issuer: plumber, title: "Fatura-recibo FR 2026/31", lines: [
+            ("NIF", "503504564"),
+            ("Data", slashDate(sample.date)),
+            ("Reparação", "Substituição de torneira e sifão"),
+            ("Total", "\(pt(sample.amountMinorUnits)) EUR")
+        ])
+        return ("Exemplo Serviços FR 2026-31.pdf", DemoPDF.data(page))
+    }
+
+    /// The same plumber's receipt for that payment.
+    private static func repairReceipt(_ db: Database) throws -> Sample {
+        let sample = try debit(db, DemoDatabase.Builder.sampleRepairDebit.description)
+        let page = DemoDatabase.page(issuer: plumber, title: "Recibo RC 2026/22", lines: [
+            ("NIF", "503504564"),
+            ("Data", slashDate(sample.date)),
+            ("Recebemos", "\(pt(sample.amountMinorUnits)) EUR"),
+            ("Referente a", "Fatura FR 2026/31"),
+            ("Pago por", "Transferência bancária")
+        ])
+        return ("Exemplo Serviços RC 2026-22.pdf", DemoPDF.data(page))
+    }
+
+    /// The bank's advice of that debit, laid out as BBVA prints a services payment.
+    private static func repairDebitAdvice(_ db: Database) throws -> Sample {
+        let sample = try debit(db, DemoDatabase.Builder.sampleRepairDebit.description)
+        let (year, month) = MonthRange.components(of: sample.date)
+        let lines = ["Exmo(a). Senhor(a)", String(format: "DATA: %04d-%02d-%02d", year, month, DemoDatabase.calendar.component(.day, from: sample.date)),
+                     "PAGAMENTOS - SERVIÇOS/COMPRAS", "CLIENT ALPHA", "CONTA N : 000",
+                     "QUEIRA(M) NOTAR QUE, NESTA DATA, DEBITÁMOS NA CONTA DE V.EXA(S) O(S) SEGUINTE(S) MOVIMENTO(S):",
+                     "ENTIDADE: 21000", "REFERÊNCIA: 123 456 789", "DESCRITIVO: \(sample.rawDescription)",
+                     "MONTANTE:", pt(sample.amountMinorUnits), "COMISSÃO: 0,00", "EUR", "BBVA"]
+        typealias P = DemoPDF.Placed
+        let placed = lines.enumerated().map { index, line in P(line, 20, 800 - Double(index) * 16, size: 9, bold: index == 2) }
+        return (String(format: "BBVA aviso de débito %04d-%02d-%02d.pdf", year, month, DemoDatabase.calendar.component(.day, from: sample.date)),
+                DemoPDF.data(placed: placed))
+    }
+
+    /// A tax authority's nota de cobrança of stamp duty, for the sample stamp duty debit.
+    private static func stampDutyNote(_ db: Database) throws -> Sample {
+        let sample = try debit(db, DemoDatabase.Builder.sampleStampDutyDebit.description)
+        let page = DemoDatabase.page(issuer: "Autoridade Tributária (demo)", title: "Nota de cobrança", lines: [
+            ("Tributo", "Imposto do Selo"),
+            ("Data", slashDate(sample.date)),
+            ("Referência", "000 111 222 333"),
+            ("Valor a pagar", "\(pt(sample.amountMinorUnits)) EUR")
+        ])
+        return ("Nota de cobrança Imposto do Selo.pdf", DemoPDF.data(page))
+    }
+
+    /// An invoice for the two sample instalment debits together.
+    private static func instalmentInvoice(_ db: Database) throws -> Sample {
+        let pair = DemoDatabase.Builder.sampleInstalmentDebits
+        let first = try debit(db, pair.description, pair.first)
+        let total = pair.each * 2
+        let page = DemoDatabase.page(issuer: "Carpintaria Exemplo Lda", title: "Fatura FT 2026/57", lines: [
+            ("NIF", "503504564"),
+            ("Data", slashDate(first.date)),
+            ("Trabalhos", "Reparação de portas e janelas"),
+            ("Total", "\(pt(total)) EUR"),
+            ("Pagamento", "Em duas prestações")
+        ])
+        return ("Carpintaria Exemplo FT 2026-57.pdf", DemoPDF.data(page))
+    }
+
+    /// A note none of the readers knows, to leave out and set aside.
+    private static func unknownNote() -> Sample {
+        let page = DemoDatabase.page(issuer: "Fogo Limpo Lda", title: "A note about the chimney", lines: [
+            ("Subject", "Sweep and inspection"),
+            ("Message", "We can visit in the spring."),
+            ("From", "The office")
+        ])
+        return ("Fogo Limpo note.pdf", DemoPDF.data(page))
     }
 
     // MARK: Needs you

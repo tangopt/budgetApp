@@ -16,7 +16,7 @@ struct TaxReturnTab: View {
     var body: some View {
         if let result = page.selfAssessment {
             VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
-                TaxSelfAssessmentWarnings(result: result)
+                TaxSelfAssessmentWarnings(result: result, changedAfterFiling: page.row.changedAfterFiling)
                 Text("Box values are whole pounds, as the return takes them: income rounded down; expenses, tax paid, finance costs and losses rounded up. SA110 keeps pence. The copy icon puts a value on the clipboard as HMRC online takes it; the chevron shows how it's worked out.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -189,11 +189,21 @@ struct TaxBoxValueText: View {
     }
 }
 
-/// The computation's warnings, as one banner.
+/// The computation's warnings, as one banner; then what was saved anyway after the year was
+/// filed (plan Task 14), as another.
 struct TaxSelfAssessmentWarnings: View {
     let result: SelfAssessment.Result
+    var changedAfterFiling: [String] = []
 
     var body: some View {
+        if !changedAfterFiling.isEmpty {
+            InlineBanner(.warning) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("The figures differ from the filed return:").fontWeight(.medium)
+                    ForEach(changedAfterFiling, id: \.self) { Text($0.figuresUnbroken) }
+                }
+            }
+        }
         if !result.warnings.isEmpty {
             InlineBanner(.warning) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -231,7 +241,7 @@ struct TaxCalculationTab: View {
         if let result = page.selfAssessment {
             let waterfall = TaxReturnFormat.waterfall(result)
             VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
-                TaxSelfAssessmentWarnings(result: result)
+                TaxSelfAssessmentWarnings(result: result, changedAfterFiling: page.row.changedAfterFiling)
                 Panel("Summary", subtitle: "\(page.row.year.label), in GBP") {
                     FigureStrip(TaxReturnFormat.headline(result, status: page.row.status, payments: page.income.payments))
                 }

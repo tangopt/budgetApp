@@ -218,6 +218,7 @@ public enum ImportModelProposals {
     private static func replace(_ item: inout ImportItem) {
         guard item.placement != nil else { return }
         item.placement = ImportNaming.placement(kind: item.recognition.kind, facts: item.facts, file: item.file,
-                                                persons: item.placement?.metadata.persons ?? [])
+                                                persons: item.placement?.metadata.persons ?? [],
+                                                customKind: item.placement?.customKind)
     }
 }

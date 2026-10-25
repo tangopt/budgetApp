@@ -327,7 +327,7 @@ public actor SyncEngineCore {
         let keyRecords = Array(zoneKeys.values)
         let now = clock()
         try Task.checkCancellation()
-        return try await db.write { db in
+        let (pulled, discarded) = try await db.write { db -> (SyncPullReport, [String]) in
             var report = SyncPullReport()
             report.alreadyHeld = skipped
             report.received = ordered.count + skipped
@@ -356,6 +356,14 @@ public actor SyncEngineCore {
                     report.waitingForKey += 1
                 }
             }
+            // Files kept for later deleted on another device: their hashes, so the copies here go once the rows have.
+            var waitingDeleted: [String] = []
+            for case (let name, .delete) in ordered {
+                if let id = try SyncRecordStore.localId(table: SyncFileTables.importWaitingFile, uuid: name, db: db),
+                   let sha = try String.fetchOne(db, sql: "SELECT sha256 FROM importWaitingFile WHERE id = ?", arguments: [id]) {
+                    waitingDeleted.append(sha)
+                }
+            }
             // Sync spec §5.4: the apply (and the batches it completes or flushes) is kept only while it moves no
             // figure on a filed or paid return; the records that would are held, the rest applies.
             // Staged records left by an older build are retried here, through the check (not at open).
@@ -364,7 +372,9 @@ public actor SyncEngineCore {
             let closedWaiting = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncBatch WHERE state = 'closed')") ?? true
             let baseline = incoming.isEmpty && !closedWaiting && !retryAll ? FiledYearBaseline.none : try FiledYearSyncCheck.baseline(db: db)
             // Caught up: a closed batch that can't complete any more applies now (`SyncBatch.flushClosed`, inside).
-            let outcome = try FiledYearSyncCheck.apply(incoming, baseline: baseline, db: db, deviceUser: user, now: now, retryAll: retryAll)
+            // Read-only (the phone): re-filing the apply does here stays untracked, since it is never sent.
+            let applyAll = { try FiledYearSyncCheck.apply(incoming, baseline: baseline, db: db, deviceUser: user, now: now, retryAll: retryAll) }
+            let outcome = try self.readOnly ? SyncChangeTracker.readOnlyApply(db: db, applyAll) : applyAll()
             if retryAll { try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [Self.retryStagedKey]) }
             let results = outcome.results
             report.filedYearAlert = outcome.alert
@@ -386,8 +396,13 @@ public actor SyncEngineCore {
                 report.reconciled = try SyncTranslator.reconcile(zone: zone, listed: reconcile, db: db, now: now).count
             }
             if let finalToken { try Self.setToken(finalToken, zone: zone, db: db, now: now) }
-            return report
+            return (report, waitingDeleted)
         }
+        // A row deleted remotely takes its local copy with it (never one whose hash has a row here again).
+        if let documents, !discarded.isEmpty {
+            ImportWaitingList(root: documents.waitingRoot, database: db).removeCopies(sha256s: discarded)
+        }
+        return pulled
     }
 
     // MARK: Push
@@ -579,6 +594,15 @@ public actor SyncEngineCore {
                     delta.saved += 1
                 case .changed:
                     guard let (payload, server) = serverRecords[result.recordName] else { continue }
+                    if try SyncTombstoneRow.fetchOne(db, key: result.recordName)?.mergedInto != nil {
+                        // A redirect: merged here, so the server's version (edited elsewhere meanwhile) is that record's
+                        // past; the redirect is sent again over it.
+                        try db.execute(sql: "UPDATE syncTombstone SET systemFields = ? WHERE uuid = ?",
+                                       arguments: [server.stamp.systemFields, result.recordName])
+                        // Not an error: it goes again in this push, like a merged save.
+                        delta.merged += 1
+                        continue
+                    }
                     guard let payload else {
                         // The server's version can't be read: kept (sealed, when only its key is missing here, else
                         // for attention); the local edit waits for it.
@@ -593,6 +617,13 @@ public actor SyncEngineCore {
                     merges.append(payload)
                     mergeStamps[result.recordName] = server.stamp
                 case .deleted:
+                    if try SyncTombstoneRow.fetchOne(db, key: result.recordName)?.mergedInto != nil {
+                        // A redirect whose record the server no longer has: saved afresh (its stale stamp would be
+                        // refused on every push). Not a resurrected edit (R12): nothing to reconcile.
+                        try db.execute(sql: "UPDATE syncTombstone SET systemFields = NULL WHERE uuid = ?", arguments: [result.recordName])
+                        needsPull = true
+                        continue
+                    }
                     try Self.clearStamp(uuid: result.recordName, db: db)
                     try db.execute(sql: "UPDATE syncPending SET resent = ? WHERE uuid = ? AND kind <> 'delete'",
                                    arguments: [SyncTranslator.resentAfterServerDelete, result.recordName])
@@ -842,8 +873,14 @@ public actor SyncEngineCore {
         return result
     }
 
+    /// The server version a save names: the record's, or for a redirect (its row merged into another here) the
+    /// one its tombstone kept.
     static func systemFields(uuid: String, db: Database) throws -> Data? {
-        try Data.fetchOne(db.cachedStatement(sql: "SELECT systemFields FROM syncRecord WHERE uuid = ?"), arguments: [uuid])
+        if try Bool.fetchOne(db.cachedStatement(sql: "SELECT EXISTS (SELECT 1 FROM syncRecord WHERE uuid = ?)"), arguments: [uuid]) ?? false {
+            return try Data.fetchOne(db.cachedStatement(sql: "SELECT systemFields FROM syncRecord WHERE uuid = ?"), arguments: [uuid])
+        }
+        return try Data.fetchOne(db.cachedStatement(sql: "SELECT systemFields FROM syncTombstone WHERE uuid = ? AND mergedInto IS NOT NULL"),
+                                 arguments: [uuid])
     }
 
     static func storeStamp(_ stamp: SyncServerStamp, uuid: String, db: Database) throws {

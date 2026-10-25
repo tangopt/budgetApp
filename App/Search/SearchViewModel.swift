@@ -31,6 +31,8 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var transferCounterparts: [Int64: [TransferCounterpart]] = [:]
     @Published private(set) var recentCategoryIds: [Int64] = []
     @Published var errorMessage: String?
+    /// Set category… through the filed-year check (plan Task 14); its question shows on the screen.
+    let filedYearGate = FiledYearGate()
     /// Bumped by ⌘F: the screen focuses its search field.
     @Published private(set) var focusRequest = 0
     /// Runs after a save here (the uncategorised count may change).
@@ -174,37 +176,52 @@ final class SearchViewModel: ObservableObject {
 
     /// Set category… for the selected rows; with `remember`, learns a rule per description
     /// (`TransactionEditing.setCategory`: balance adjustments and market movements are left
-    /// alone, and transfer legs never teach a rule).
+    /// alone, and transfer legs never teach a rule). Through the filed-year check, off the main
+    /// thread: when it would change a filed return, `filedYearGate` asks once for all the rows.
     func setCategory(ids: [Int64], categoryId: Int64, remember: Bool) {
         guard !ids.isEmpty else { return }
         errorMessage = nil
-        let result: SetCategoryResult
-        do {
-            result = try dbQueue.write { db in try TransactionEditing.setCategory(db: db, ids: ids, categoryId: categoryId, remember: remember) }
-        } catch let error as LocalizedError where error.errorDescription != nil {
-            errorMessage = error.errorDescription
-            return
-        } catch {
-            errorMessage = "Couldn't set the category: \(error.localizedDescription)"
-            return
-        }
-        load()
-        if result.skippedBuiltInCount > 0 {
-            let count = result.skippedBuiltInCount
-            errorMessage = "\(count) balance adjustment\(count == 1 ? " was" : "s were") left as \(count == 1 ? "it was" : "they were"): their category is set by the Accounts screen."
-        }
-        onTransactionEdited?()
+        let edit = FiledYearEditNames.categorised(categoryId, categories: categories)
+        filedYearGate.run(dbQueue, edit: edit, scope: .categorising(ids, as: categoryId), { db in
+            try TransactionEditing.setCategory(db: db, ids: ids, categoryId: categoryId, remember: remember)
+        }, done: { [weak self] outcome in
+            guard let self else { return }
+            let result: SetCategoryResult
+            switch outcome {
+            case .success(let saved): result = saved
+            case .failure(let error as LocalizedError) where error.errorDescription != nil:
+                self.errorMessage = error.errorDescription
+                return
+            case .failure(let error):
+                self.errorMessage = "Couldn't set the category: \(error.localizedDescription)"
+                return
+            }
+            self.load()
+            if result.skippedBuiltInCount > 0 {
+                let count = result.skippedBuiltInCount
+                self.errorMessage = "\(count) balance adjustment\(count == 1 ? " was" : "s were") left as \(count == 1 ? "it was" : "they were"): their category is set by the Accounts screen."
+            }
+            self.onTransactionEdited?()
+        })
     }
 
-    /// The Edit transaction sheet's Save (`TransactionEditing.save`), then reload.
-    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges) -> SaveOutcome {
-        manualWrite { db in try TransactionEditing.save(db: db, id: id, changes: changes) }
+    /// The Edit transaction sheet's Save (`TransactionEditing.save`), then reload; an edit that
+    /// would change a filed return asks first (`FiledYearEditCheck`, plan Task 14).
+    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges, gate: FiledYearGate, done: @escaping (SaveOutcome) -> Void) {
+        let edit = FiledYearEditNames.transactionEdit(changes, transactionId: id)
+        checkedWrite(edit: edit, scope: .transactionEdit(id: id, changes: changes), gate: gate, done: done) { db in
+            try TransactionEditing.save(db: db, id: id, changes: changes)
+        }
     }
 
     var manualActions: ManualTransactionActions {
         ManualTransactionActions(
             accounts: accounts,
-            delete: { [unowned self] id in manualWrite { db in try ManualTransactions.delete(db: db, id: id) } }
+            delete: { [unowned self] id, gate, done in
+                checkedWrite(edit: { _ in "Deleted" }, scope: FiledYearEditCheck.Scope(transactionIds: [id]), gate: gate, done: done) { db in
+                    try ManualTransactions.delete(db: db, id: id)
+                }
+            }
         )
     }
 
@@ -218,6 +235,20 @@ final class SearchViewModel: ObservableObject {
         } catch {
             return .failed(ManualFormat.errorMessage(for: error))
         }
+        return afterManualWrite()
+    }
+
+    /// A transaction write through the filed-year check (off the main thread; a question shows on
+    /// `gate`), then as `manualWrite`. Nothing is reloaded while the question waits.
+    private func checkedWrite(edit: @escaping (Database) throws -> String, scope: FiledYearEditCheck.Scope, gate: FiledYearGate,
+                              done: @escaping (SaveOutcome) -> Void, _ apply: @escaping (Database) throws -> Void) {
+        gate.run(dbQueue, edit: edit, scope: { _ in scope }, apply) { [weak self] result in
+            if let error = result.failure { return done(.failed(ManualFormat.errorMessage(for: error))) }
+            done(self?.afterManualWrite() ?? .saved)
+        }
+    }
+
+    private func afterManualWrite() -> SaveOutcome {
         errorMessage = nil
         load()
         onTransactionEdited?()

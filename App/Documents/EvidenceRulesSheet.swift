@@ -82,7 +82,7 @@ struct EvidenceRulesSheet: View {
     }
 
     private func details(_ requirement: EvidenceRequirement) -> String {
-        var parts = ["Needs " + MissingEvidenceViewModel.kindsText(requirement.kinds)]
+        var parts = ["Needs " + viewModel.kindsText(requirement)]
         if let source = requirement.usualSource { parts.append("From \(source)") }
         return parts.joined(separator: " · ")
     }
@@ -108,7 +108,7 @@ struct EvidenceRuleEditorSheet: View {
     init(viewModel: MissingEvidenceViewModel, requirement: EvidenceRequirement?) {
         self.viewModel = viewModel
         self.requirement = requirement
-        _draft = State(initialValue: EvidenceRuleDraft(requirement))
+        _draft = State(initialValue: EvidenceRuleDraft(requirement, catalog: viewModel.kindCatalog))
     }
 
     var body: some View {
@@ -131,7 +131,7 @@ struct EvidenceRuleEditorSheet: View {
                     }
                     scopeRows
                     LabeledContent("Satisfied by") {
-                        CheckboxList(options: DocumentKind.byDisplayName.map { ($0, $0.displayName) }, selection: $draft.kinds, height: 120)
+                        CheckboxList(options: kindOptions, selection: $draft.kinds, height: 120)
                             .sheetFieldNote(draft.kinds.isEmpty ? "None ticked: any document counts." : nil)
                     }
                     LabeledContent("Usual source") {
@@ -276,6 +276,12 @@ struct EvidenceRuleEditorSheet: View {
     private var accountOptions: [(Int64, String)] {
         viewModel.accounts.compactMap { a in a.id.map { ($0, a.displayName) } }
     }
+
+    /// The built-in kinds by name, then the kinds the user made, by name.
+    private var kindOptions: [(DocumentKindRef, String)] {
+        DocumentKind.byDisplayName.map { (DocumentKindRef.builtIn($0), $0.displayName) }
+            + viewModel.kindCatalog.customKinds.compactMap { kind in kind.id.map { (DocumentKindRef.custom($0), kind.name) } }
+    }
 }
 
 /// The editor's fields, turned into a requirement on Save.
@@ -309,7 +315,10 @@ struct EvidenceRuleDraft {
     var descriptionContains = ""
     var entity: EvidenceEntity?
     var every = EvidencePeriodicity.month
-    var kinds: Set<DocumentKind> = []
+    /// Built-in and custom kinds that satisfy the rule.
+    var kinds: Set<DocumentKindRef> = []
+    /// Custom kinds the rule names that this device doesn't have (not arrived yet): kept on Save.
+    var unknownCustomKindIds: [Int64] = []
     var direction = EvidenceTransactionDirection.outflows
     var excludedAccountIds: Set<Int64> = []
     var usualSource = ""
@@ -336,7 +345,7 @@ struct EvidenceRuleDraft {
         ScopeKind.allCases.filter { $0 != .propertyRecords || propertyRecordsScope != nil }
     }
 
-    init(_ requirement: EvidenceRequirement?) {
+    init(_ requirement: EvidenceRequirement?, catalog: DocumentKindCatalog = DocumentKindCatalog(customKinds: [])) {
         guard let requirement else { return }
         name = requirement.name
         switch requirement.scope {
@@ -362,7 +371,8 @@ struct EvidenceRuleDraft {
             scopeKind = .propertyRecords
             propertyRecordsScope = requirement.scope
         }
-        kinds = Set(requirement.kinds)
+        kinds = Set(requirement.knowingOnly(catalog).kindRefs)
+        unknownCustomKindIds = requirement.customKindIds.filter { catalog.custom(id: $0) == nil }
         direction = requirement.direction
         excludedAccountIds = Set(requirement.excludedAccountIds)
         usualSource = requirement.usualSource ?? ""
@@ -404,10 +414,12 @@ struct EvidenceRuleDraft {
 
     /// The requirement to save: `base`'s id and creation date kept.
     func requirement(base: EvidenceRequirement?) -> EvidenceRequirement {
-        let kindOrder = DocumentKind.allCases.filter(kinds.contains)
+        let kindOrder = DocumentKind.allCases.filter { kinds.contains(.builtIn($0)) }
+        let customIds = kinds.compactMap { kind -> Int64? in if case .custom(let id) = kind { return id } else { return nil } }.sorted()
         let isTransactionScope = scopeKind.isTransactionScope
         var requirement = EvidenceRequirement(
-            id: base?.id, name: name, scope: scope ?? .single(entity: .account(0)), kinds: kindOrder, direction: direction,
+            id: base?.id, name: name, scope: scope ?? .single(entity: .account(0)), kinds: kindOrder,
+            customKindIds: customIds + unknownCustomKindIds.filter { !customIds.contains($0) }, direction: direction,
             excludedAccountIds: isTransactionScope ? excludedAccountIds.sorted() : [], usualSource: usualSource,
             activeFrom: hasFrom ? PayCalendar.utcDay(sameDayAs: from, in: .current) : nil,
             activeTo: hasUntil ? PayCalendar.utcDay(sameDayAs: until, in: .current).addingTimeInterval(86_400) : nil,
@@ -533,7 +545,7 @@ struct PropertyRulesSheet: View {
     private var previewColumns: [DataTableColumn<PreviewRow>] {
         [
             .text("Rule", { preview[$0.id].name }, detail: { viewModel.scopeSummary(preview[$0.id]) }),
-            .text("Needs", width: .fit, { MissingEvidenceViewModel.kindsText(preview[$0.id].kinds) }),
+            .text("Needs", width: .fit, { viewModel.kindsText(preview[$0.id]) }),
             // "—" on screen for no usual source; nothing to VoiceOver.
             DataTableColumn("From", accessibilityValue: { preview[$0.id].usualSource }) { row, _ in
                 Text(preview[row.id].usualSource ?? "—").lineLimit(1)

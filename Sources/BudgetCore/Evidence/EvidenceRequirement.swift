@@ -71,13 +71,15 @@ public enum EvidenceRequirementError: Error, Equatable {
 
 /// A rule for what evidence the records need (spec §7), stored as data so new years
 /// generate their checklist automatically. A requirement is met by a linked document of
-/// any of `kinds` (an empty list accepts any document).
+/// any of `kinds` or `customKindIds` (both empty accepts any document).
 public struct EvidenceRequirement: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var id: Int64?
     public var name: String
     public var scope: EvidenceRequirementScope
     /// The document kinds that satisfy it, any of; empty = any document.
     public var kinds: [DocumentKind]
+    /// The custom document kinds that satisfy it too, any of (`customDocumentKind` ids).
+    public var customKindIds: [Int64]
     /// For transaction scopes: which signs count. Ignored by periodic and single scopes.
     public var direction: EvidenceTransactionDirection
     /// For transaction scopes: accounts whose transactions are left out (e.g. the mortgage
@@ -92,13 +94,14 @@ public struct EvidenceRequirement: Codable, Equatable, Identifiable, FetchableRe
     public var notes: String?
     public var createdAt: Date
 
-    public init(id: Int64? = nil, name: String, scope: EvidenceRequirementScope, kinds: [DocumentKind],
+    public init(id: Int64? = nil, name: String, scope: EvidenceRequirementScope, kinds: [DocumentKind], customKindIds: [Int64] = [],
                 direction: EvidenceTransactionDirection = .outflows, excludedAccountIds: [Int64] = [], usualSource: String? = nil,
                 activeFrom: Date? = nil, activeTo: Date? = nil, notes: String? = nil, createdAt: Date = Date()) {
         self.id = id
         self.name = name
         self.scope = scope
         self.kinds = kinds
+        self.customKindIds = customKindIds
         self.direction = direction
         self.excludedAccountIds = excludedAccountIds
         self.usualSource = usualSource
@@ -114,9 +117,34 @@ public struct EvidenceRequirement: Codable, Equatable, Identifiable, FetchableRe
 
     public static let databaseTableName = "evidenceRequirement"
 
-    /// Whether a document of `kind` satisfies the rule.
+    /// Whether a document of the built-in `kind` satisfies the rule.
     public func accepts(_ kind: DocumentKind) -> Bool {
-        kinds.isEmpty || kinds.contains(kind)
+        accepts(.builtIn(kind))
+    }
+
+    /// Whether a document of `ref` satisfies the rule: any document when both lists are empty.
+    /// A custom id that can't name a kind (0: one that hadn't arrived or was gone when the rule
+    /// synced) is ignored, as if it weren't there.
+    public func accepts(_ ref: DocumentKindRef) -> Bool {
+        let customKindIds = customKindIds.filter { $0 > 0 }
+        if kinds.isEmpty && customKindIds.isEmpty { return true }
+        switch ref {
+        case .builtIn(let kind): return kinds.contains(kind)
+        case .custom(let id): return customKindIds.contains(id)
+        }
+    }
+
+    /// The rule without custom ids that name no kind in `catalog` (deleted, merged away on
+    /// another device, or not yet arrived): it then reads exactly as if they weren't there.
+    public func knowingOnly(_ catalog: DocumentKindCatalog) -> EvidenceRequirement {
+        var known = self
+        known.customKindIds = customKindIds.filter { catalog.custom(id: $0) != nil }
+        return known
+    }
+
+    /// The kinds that satisfy it, built-ins first; empty = any document.
+    public var kindRefs: [DocumentKindRef] {
+        kinds.map(DocumentKindRef.builtIn) + customKindIds.filter { $0 > 0 }.map(DocumentKindRef.custom)
     }
 
     /// The part of `period` the rule is active in (half-open), or `nil` when none.
@@ -187,6 +215,7 @@ public enum EvidenceRequirements {
         requirement.notes = Transaction.normalizedNote(requirement.notes)
         requirement.excludedAccountIds = requirement.excludedAccountIds.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
         requirement.kinds = requirement.kinds.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
+        requirement.customKindIds = requirement.customKindIds.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
         try requirement.save(db)
     }
 

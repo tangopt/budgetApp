@@ -21,9 +21,21 @@ struct ImportIssueControls: View {
     /// An answer for the item rather than this question (a model figure corrected field by
     /// field); nil: `resolve`.
     var resolveItem: ((ImportResolution) -> Void)? = nil
+    /// A kind's name, a custom kind's (saved or new in this review) included (`ImportSession.kindLabel`).
+    var kindLabel: (ImportKind) -> String = { $0.displayName }
     let resolve: (ImportResolution) -> Void
 
+    @Environment(\.theme) private var theme
+
     static let leaveOutTitle = "Leave out of this import"
+
+    /// "What is this?" or "Expected …, this looks like …": answered with the kind chooser.
+    private var isKindQuestion: Bool {
+        switch issue.kind {
+        case .unknownKind, .kindMismatch: return true
+        default: return false
+        }
+    }
     /// A BBVA statement's "Replace the estimate?" question (`BBVAStatementReader`).
     static let estimateIssuePrefix = "instalmentMismatch.estimate."
 
@@ -49,7 +61,13 @@ struct ImportIssueControls: View {
                     .font(.callout)
                 }
                 if !ImportResolutions.onlyLeavesOut(issue, in: item) {
+                    pairRows
                     answers
+                }
+                // A new kind's name refused beside its question (a statement's answers show their own).
+                if let answerProblem, isKindQuestion {
+                    Text(answerProblem.figuresUnbroken).font(.caption).foregroundStyle(theme.expense)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 // Leaving the item out is offered once, after all its questions (the preview).
                 let offers = ImportResolutions.onlyLeavesOut(issue, in: item) ? [] : extraOffers
@@ -74,12 +92,12 @@ struct ImportIssueControls: View {
     private var answers: some View {
         switch issue.kind {
         case .unknownKind(let proposed):
-            ImportKindChooser(initial: proposed ?? .other, keep: nil, resolve: resolve)
+            ImportKindChooser(initial: .evidence(proposed ?? .other), keep: nil, resolve: resolve)
                 .id("\(item.id)-\(issue.id)")
         case .kindMismatch(let expected, let found):
             // "Keep as <found>" is its acknowledge, whether the kind takes it or the issue offers it.
-            ImportKindChooser(initial: Self.documentKind(expected) ?? Self.documentKind(found) ?? .other,
-                              keep: ImportResolutions.accepts(issue, .acknowledge) ? "Keep as \(found.displayName)" : nil,
+            ImportKindChooser(initial: Self.documentKind(expected) == nil && !Self.isCustom(expected) ? found : expected,
+                              keep: ImportResolutions.accepts(issue, .acknowledge) ? title(of: .acknowledge) : nil,
                               resolve: resolve)
                 .id("\(item.id)-\(issue.id)")
         case .confirmFigure(let field), .missingFigure(let field):
@@ -114,11 +132,36 @@ struct ImportIssueControls: View {
         }
     }
 
+    /// "Which pair is it?" (`EvidenceDocumentReader.instalmentPairsIssueId`): each pair's two
+    /// debits, with Keep this pair (both links kept).
+    @ViewBuilder
+    private var pairRows: some View {
+        if issue.id == EvidenceDocumentReader.instalmentPairsIssueId {
+            ForEach(Array(issue.offers.enumerated()), id: \.offset) { _, offer in
+                if case .linkTransactions(let ids) = offer {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(ids, id: \.self) { id in
+                                Text(item.links.first { $0.entity == .transaction(id) }?.label ?? "Transaction #\(id)")
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head) // the date and amount tell the pairs apart
+                            }
+                        }
+                        Spacer(minLength: 6)
+                        Button("Keep this pair") { resolve(offer) }
+                            .controlSize(.small)
+                    }
+                }
+            }
+        }
+    }
+
     /// What the issue offers beyond its kind's controls (and leaving out, which is always last).
     private var extraOffers: [ImportResolution] {
         issue.offers.filter { offer in
             switch (offer, issue.kind) {
             case (.leaveOut, _): return false
+            // Its pair rows make these.
+            case (.linkTransactions, _) where issue.id == EvidenceDocumentReader.instalmentPairsIssueId: return false
             // The controls above already make these.
             case (.chooseLink(let entity), .chooseLink(let candidates)): return !candidates.contains { $0.entity == entity }
             case (.chooseKind, .unknownKind), (.chooseKind, .kindMismatch), (.acknowledge, .kindMismatch): return false
@@ -135,16 +178,19 @@ struct ImportIssueControls: View {
     func title(of offer: ImportResolution) -> String {
         switch offer {
         case .acknowledge:
-            if case .kindMismatch(_, let found) = issue.kind { return "Keep as \(found.displayName)" }
+            if case .kindMismatch(_, let found) = issue.kind { return "Keep as \(found == item.recognition.kind ? item.kindName : kindLabel(found))" }
             if issue.id == ImportDuplicates.correctedVersionIssueId { return "Import as the newer version" }
             // A BBVA receipt whose interest the fund/mortgage tool estimated otherwise.
             if issue.id.hasPrefix(Self.estimateIssuePrefix) { return "Replace the estimate" }
+            if issue.id == EvidenceDocumentReader.instalmentsIssueId { return "Keep both links" }
             return "Got it"
         case .fileWithoutLink:
             let documentOnly = issue.id == UtilityInvoiceImportReader.documentOnlyIssueId || ImportDuplicates.isCorrectedVersion(issue.id)
                 || issue.id == UtilityInvoiceImportReader.chooseInvoiceIssueId
             return documentOnly ? "File the document only" : "File without a link"
         case .chooseKind(let kind): return "File as \(kind.displayName)"
+        case .chooseCustomKind(let key): return "File as \(kindLabel(.customEvidence(key)))"
+        case .createKind(let name, _): return "File as \(name)"
         case .chooseLink(let entity): return "Link to \(entity.type.displayName.lowercased()) #\(entity.id)"
         case .confirmFigure(let field, _), .confirmFigureRemembering(let field, _): return "Use this \(field.displayName.lowercased())"
         case .chooseTarget(let kind, let id): return "Use \(targetNames.name(kind, id))"
@@ -178,6 +224,12 @@ struct ImportIssueControls: View {
         case .rentReceiptPDF: return .rentReceipt
         default: return nil
         }
+    }
+
+    /// Whether `kind` is a custom kind (saved or made in this review).
+    static func isCustom(_ kind: ImportKind) -> Bool {
+        if case .customEvidence = kind { return true }
+        return false
     }
 
     /// The currency an amount is entered in: the document's, else pounds for a payroll form, else euros.
@@ -412,36 +464,85 @@ struct ImportStatementIssueAnswers: View {
     }
 }
 
-/// "What is this?": the library's kinds by name, and "Use this kind" (with "Keep as …" when
-/// the file may stay what it was recognised as).
+/// "What is this?": the review's kinds (`ImportSession.kindChoices`: the built-ins by name, the
+/// saved custom kinds, then the ones made in this review), "New kind…" last, and "Use this kind"
+/// (with "Keep as …" when the file may stay what it was recognised as). New kind… asks a name and
+/// an area and files the document as it at once (`ImportResolution.createKind`).
 struct ImportKindChooser: View {
     let keep: String?
     let resolve: (ImportResolution) -> Void
-    @State private var kind: DocumentKind
+    @Environment(\.importKindChoices) private var choices
+    @State private var selection: Selection
+    @State private var creating = false
 
-    private static let kinds = DocumentKind.allCases.sorted {
-        $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+    /// A kind, or "New kind…" (it opens the popover and goes back to the kind shown before).
+    enum Selection: Hashable {
+        case kind(ImportKind)
+        case newKind
     }
 
-    init(initial: DocumentKind, keep: String?, resolve: @escaping (ImportResolution) -> Void) {
+    static let newKindTitle = "New kind…"
+
+    init(initial: ImportKind, keep: String?, resolve: @escaping (ImportResolution) -> Void) {
         self.keep = keep
         self.resolve = resolve
-        _kind = State(initialValue: initial)
+        _selection = State(initialValue: .kind(Self.choiceKind(initial)))
+    }
+
+    /// The chooser's kind for what an item was recognised as (a library kind or a custom one); Other otherwise.
+    static func choiceKind(_ kind: ImportKind) -> ImportKind {
+        if case .customEvidence = kind { return kind }
+        return .evidence(ImportIssueControls.documentKind(kind) ?? .other)
+    }
+
+    private var builtIns: [ImportKindChoice] { choices.filter { if case .evidence = $0.kind { return true } else { return false } } }
+    private var custom: [ImportKindChoice] { choices.filter { if case .customEvidence = $0.kind { return true } else { return false } } }
+
+    /// The kind chosen, when it is one the chooser offers (else Other).
+    private var chosen: ImportKindChoice? {
+        guard case .kind(let kind) = selection else { return nil }
+        return choices.first { $0.kind == kind } ?? choices.first { $0.kind == .evidence(.other) }
     }
 
     var body: some View {
         HStack(spacing: 6) {
-            Picker("Kind", selection: $kind) {
-                ForEach(Self.kinds, id: \.self) { Text($0.displayName).tag($0) }
+            Picker("Kind", selection: Binding(get: { pickerSelection }, set: { choose($0) })) {
+                ForEach(builtIns, id: \.self) { Text($0.label).tag(Selection.kind($0.kind)) }
+                if !custom.isEmpty {
+                    Divider()
+                    ForEach(custom, id: \.self) { Text($0.label).tag(Selection.kind($0.kind)) }
+                }
+                Divider()
+                Text(Self.newKindTitle).tag(Selection.newKind)
             }
             .labelsHidden()
             .frame(maxWidth: 180)
-            Button("Use this kind") { resolve(.chooseKind(kind)) }
+            .popover(isPresented: $creating, arrowEdge: .bottom) {
+                NewKindPopover(choices: choices, create: { name, area in
+                    creating = false
+                    resolve(.createKind(name: name, area: area))
+                }, cancel: { creating = false })
+            }
+            Button("Use this kind") { if let resolution = chosen?.resolution { resolve(resolution) } }
+                .disabled(chosen?.resolution == nil)
             if let keep {
                 Button(keep) { resolve(.acknowledge) }
             }
         }
         .controlSize(.small)
+    }
+
+    /// What the picker shows: the chosen kind, Other when it isn't offered.
+    private var pickerSelection: Selection {
+        chosen.map { .kind($0.kind) } ?? .kind(.evidence(.other))
+    }
+
+    private func choose(_ value: Selection) {
+        if value == .newKind {
+            creating = true
+        } else {
+            selection = value
+        }
     }
 }
 
@@ -673,12 +774,9 @@ struct ImportItemChecks: View {
         }
     }
 
-    /// Links to check that no "which one?" offers.
+    /// Links to check that no question ("which one?", instalments) already asks about.
     private var links: [ProposedLink] {
-        let asked = Set(item.issues.flatMap { issue -> [EvidenceEntity] in
-            if case .chooseLink(let candidates) = issue.kind { return candidates.map(\.entity) }
-            return []
-        })
+        let asked = item.linksAskedByIssues
         return item.links.filter { $0.confidence == .needsReview && !asked.contains($0.entity) }
     }
 
@@ -688,8 +786,7 @@ struct ImportItemChecks: View {
             VStack(alignment: .leading, spacing: 10) {
                 if asksKind {
                     check(item.recognition.reason) {
-                        ImportKindChooser(initial: ImportIssueControls.documentKind(item.recognition.kind) ?? .other,
-                                          keep: nil, resolve: resolve)
+                        ImportKindChooser(initial: item.recognition.kind, keep: nil, resolve: resolve)
                     }
                 }
                 ForEach(facts, id: \.field) { fact in
@@ -766,7 +863,7 @@ struct ImportModelReading: View {
                 if proposesKind {
                     GridRow {
                         label("Kind")
-                        Text(item.recognition.kind.displayName).font(.callout).figureText()
+                        Text(item.kindName).font(.callout).figureText()
                             .frame(maxWidth: .infinity, alignment: .leading)
                         pencil(Self.kindRow, "kind")
                     }
@@ -781,7 +878,7 @@ struct ImportModelReading: View {
                 }
             }
             if editing == Self.kindRow {
-                ImportKindChooser(initial: ImportIssueControls.documentKind(item.recognition.kind) ?? .other, keep: nil) { resolution in
+                ImportKindChooser(initial: item.recognition.kind, keep: nil) { resolution in
                     editing = nil
                     resolve(resolution)
                 }

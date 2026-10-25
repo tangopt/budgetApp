@@ -121,7 +121,7 @@ final class SyncReferenceClassificationTests: XCTestCase {
         ImportRuleKind.allCases.flatMap { kind -> [String] in
             switch kind {
             case .statementAccount: return [json(StatementAccountAction(accountId: 21))]
-            case .documentKind: return [json(DocumentKindAction(kind: .utilityInvoice))]
+            case .documentKind: return [json(DocumentKindAction(kind: .utilityInvoice)), json(DocumentKindAction(kind: .other, customKindId: 7))]
             case .issuer: return [json(IssuerAction(name: "Synthetic issuer"))]
             case .link: return [json(LinkAction(entity: EvidenceEntity(type: .rentReceipt, id: 22), role: "r", descriptionKey: "k")),
                                 json(LinkAction(descriptionKey: "merchant"))]
@@ -144,6 +144,7 @@ final class SyncReferenceClassificationTests: XCTestCase {
         [
             "evidenceRequirement.scope": scopes().map(json),
             "evidenceRequirement.excludedAccountIds": [json([41, 42] as [Int64])],
+            "evidenceRequirement.customKindIds": [json([43, 44] as [Int64])],
             "importRule.actionJSON": actions(),
             "scenarioApplication.journal": [journal()],
             "document.persons": [json(["Person A"])],
@@ -256,6 +257,16 @@ final class SyncReferenceClassificationTests: XCTestCase {
             if !present { problems.append("declared unique key \(key.table)(\(key.columns.joined(separator: ", "))) doesn't exist") }
         }
         return problems
+    }
+
+    /// Custom document kinds (import set-aside and kinds, task 4): one kind per name on every device, and an
+    /// evidence rule's custom kinds travel as UUIDs.
+    func testCustomDocumentKindsAreClassified() {
+        XCTAssertEqual(SyncSchema.uniqueKey(table: "customDocumentKind", columns: ["name"])?.resolution, .identity)
+        XCTAssertEqual(SyncSchema.jsonReferences.first { $0.table == "evidenceRequirement" && $0.column == "customKindIds" },
+                       SyncJSONReference(table: "evidenceRequirement", column: "customKindIds",
+                                         content: .rules([SyncJSONRule("[]", .row("customDocumentKind"))]), plainNumbers: []))
+        XCTAssertEqual(SyncSchema.table("document")?.foreignKeys["customKindId"], "customDocumentKind")
     }
 
     func testEveryUniqueKeyHasAResolution() throws {

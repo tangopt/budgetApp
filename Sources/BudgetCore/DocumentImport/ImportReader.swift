@@ -14,6 +14,9 @@ public struct ImportContext: Sendable {
     public var learntFigures: [ImportRule]
     /// The known parties' NIFs (`IssuerKey.knownParties`), never an issuer's key.
     public var knownParties: Set<String>
+    /// The custom kinds a file may be read as: the saved ones, and the review's pending ones
+    /// (`pending(_:)`).
+    public var customKinds = ImportKindNames()
 
     public init(intent: ImportIntent = .none, properties: [Property] = [], people: [Person] = [], accounts: [Account] = [],
                 providers: [UtilityProvider] = [], now: Date = Date(), learntFigures: [ImportRule] = [], knownParties: Set<String> = []) {
@@ -31,6 +34,23 @@ public struct ImportContext: Sendable {
         ImportContext(intent: intent, properties: try Properties.all(db: db), people: try Person.fetchAll(db),
                       accounts: try Account.fetchAll(db), providers: try UtilityProvider.fetchAll(db), now: now,
                       learntFigures: try ImportLearning.figureRules(db: db), knownParties: try IssuerKey.knownParties(db: db))
+            .withCustomKinds(ImportKindNames(catalog: try DocumentKindCatalog.load(db: db), pending: []))
+    }
+
+    func withCustomKinds(_ kinds: ImportKindNames) -> ImportContext {
+        var context = self
+        context.customKinds = kinds
+        return context
+    }
+
+    /// The context with the review's pending kinds (`ImportPlan.pendingKinds`) besides the saved ones.
+    func pending(_ kinds: [PendingDocumentKind]) -> ImportContext {
+        guard !kinds.isEmpty else { return self }
+        var context = self
+        for kind in kinds {
+            context.customKinds.kinds[.pending(kind.id)] = ImportCustomKind(key: .pending(kind.id), name: kind.name, area: kind.area)
+        }
+        return context
     }
 
     /// The context without the learnt rules the user overrode on an item (`declined`).

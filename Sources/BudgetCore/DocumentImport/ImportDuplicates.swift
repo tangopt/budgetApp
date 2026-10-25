@@ -5,8 +5,9 @@ import Foundation
 ///
 /// Strong identities — `"atcud:<code>"`, `"invoice:<providerId>:<number>"`,
 /// `"receipt:<contract>:<number>"`, `"payroll:<form>:<taxYear>:<employer>:<personId>"` — make a
-/// copy a duplicate. Weak keys — `"ref:<payment reference>"` (9+ digits) and
-/// `"ida:<issuer>:<yyyyMMdd>:<amount minor>"` (issuer + date + amount) — only ever ask the user.
+/// copy of the same kind (role) a duplicate. Weak keys — `"ref:<payment reference>"` (9+ digits)
+/// and `"ida:<role>:<issuer>:<yyyyMMdd>:<amount minor>"` (kind + issuer + date + amount) — only
+/// ever ask the user.
 public enum DocumentIdentity {
     /// A money figure a document holds.
     struct Figure: Equatable {
@@ -23,8 +24,18 @@ public enum DocumentIdentity {
         var weak: Set<String> = []
         /// The kind-based `ida:` key (matches only where one side names no issuer).
         var kindKey: String?
-        var kind: DocumentKind?
+        /// The kind it is filed as: `"<DocumentKind.rawValue>"` for a built-in kind, `"custom:<id>"`
+        /// or `"pending:<uuid>"` for a custom one (`CustomKindKey.token`).
+        var kindToken: String?
+        /// The part it plays (`ImportDuplicates.claimRole`): what "the same kind" compares.
+        var role: String?
         var day: String?
+        /// The period it covers ("yyyyMMdd"…"yyyyMMdd"), when it states one.
+        var period: ClosedRange<String>?
+        /// The issuer as written (for the wording).
+        var issuerName: String?
+        /// The currency of its amount, when known (for the wording).
+        var currency: Currency?
         /// Sign-free.
         var amount: Int?
         /// Normalised.
@@ -45,17 +56,21 @@ public enum DocumentIdentity {
             strong.formUnion(other.strong)
             weak.formUnion(other.weak)
             kindKey = kindKey ?? other.kindKey
-            kind = kind ?? other.kind
+            kindToken = kindToken ?? other.kindToken
+            role = role ?? other.role
             day = day ?? other.day
+            period = period ?? other.period
             amount = amount ?? other.amount
             issuer = issuer ?? other.issuer
+            issuerName = issuerName ?? other.issuerName
+            currency = currency ?? other.currency
             figures.merge(other.figures) { own, _ in own }
         }
     }
 
-    /// Every key of the document: the strong ones, `"ref:…"`, and `"ida:…"` twice — by issuer
-    /// with the amount's sign (a credit note is not the invoice) when an issuer fact exists,
-    /// and by the document kind, sign-free (library documents store amounts sign-free).
+    /// Every key of the document: the strong ones, `"ref:…"`, and `"ida:…"` twice — by role and
+    /// issuer with the amount's sign (a credit note is not the invoice) when an issuer fact
+    /// exists, and by role alone, sign-free (library documents store amounts sign-free).
     /// Statements (checked by their transactions), receipts exports, unknown files and `.other`
     /// documents have none.
     public static func keys(kind: ImportKind, text: String?, facts: [ImportFact], providerId: Int64?, personId: Int64? = nil) -> Set<String> {
@@ -64,8 +79,10 @@ public enum DocumentIdentity {
 
     static func identity(kind: ImportKind, text: String?, facts: [ImportFact], providerId: Int64?, personId: Int64?) -> Identity {
         var identity = Identity()
-        guard let documentKind = documentKind(of: kind), documentKind != .bankStatement, documentKind != .other else { return identity }
-        identity.kind = documentKind
+        guard let token = kindToken(of: kind), token != DocumentKind.bankStatement.rawValue, token != DocumentKind.other.rawValue else { return identity }
+        let role = ImportDuplicates.claimRole(token: token, text: text)
+        identity.kindToken = token
+        identity.role = role
         if let text, !text.isEmpty {
             let source = text as NSString
             for match in atcudPattern.matches(in: text, range: NSRange(location: 0, length: source.length)) {
@@ -81,18 +98,21 @@ public enum DocumentIdentity {
             identity.strong.insert("receipt:\(contract):\(number)")
         }
         identity.issuer = textFact(.issuer, facts).map(normalisedIssuer).flatMap { $0.isEmpty ? nil : $0 }
+        if identity.issuer != nil { identity.issuerName = textFact(.issuer, facts) }
         if case .payrollForm(let form) = kind, let personId, let employer = identity.issuer, let year = yearFact(facts) {
             identity.strong.insert(payrollKey(form: form.rawValue, year: year, employer: employer, personId: personId))
         }
         identity.day = dateFact(facts).map(dayKey)
+        identity.period = period(facts)
         let signed = signedAmountFact(facts)
         identity.amount = signed.map(abs)
+        identity.currency = moneyFact(.amount, facts)?.currency
         for field in DocumentIdentity.comparedFigures {
             if let value = moneyFact(field, facts) { identity.figures[field] = Figure(amount: abs(value.amount), currency: value.currency) }
         }
         if let day = identity.day, let signed {
-            if let issuer = identity.issuer { identity.weak.insert("ida:\(issuer):\(day):\(signed)") }
-            let kindKey = "ida:\(documentKind.rawValue):\(day):\(abs(signed))"
+            if let issuer = identity.issuer { identity.weak.insert("ida:\(role):\(issuer):\(day):\(signed)") }
+            let kindKey = "ida:\(role):\(day):\(abs(signed))"
             identity.weak.insert(kindKey)
             identity.kindKey = kindKey
         }
@@ -101,6 +121,41 @@ public enum DocumentIdentity {
 
     static func payrollKey(form: String, year: Int, employer: String, personId: Int64) -> String {
         "payroll:\(form):\(year):\(employer):\(personId)"
+    }
+
+    /// The kind token of a recognised file (`"<DocumentKind.rawValue>"`, a custom kind's
+    /// `"custom:<id>"` / `"pending:<uuid>"`); `nil` for receipts exports and unknown files.
+    static func kindToken(of kind: ImportKind) -> String? {
+        if case .customEvidence(let key) = kind { return key.token }
+        return documentKind(of: kind)?.rawValue
+    }
+
+    /// A library document's kind token (`kindToken(of:)`).
+    static func kindToken(of document: EvidenceDocument) -> String {
+        document.customKindId.map { CustomKindKey.saved($0).token } ?? document.kind.rawValue
+    }
+
+    /// The period the facts state ("yyyyMMdd"…"yyyyMMdd"): start and end, either alone a single day.
+    static func period(_ facts: [ImportFact]) -> ClosedRange<String>? {
+        func date(_ field: ImportFigureField) -> String? {
+            for fact in facts where fact.field == field {
+                if case .date(let date) = fact.value { return dayKey(date) }
+            }
+            return nil
+        }
+        switch (date(.periodStart), date(.periodEnd)) {
+        case let (start?, end?): return min(start, end)...max(start, end)
+        case let (start?, nil): return start...start
+        case let (nil, end?): return end...end
+        default: return nil
+        }
+    }
+
+    /// "2023-03-05" for "20230305".
+    static func isoDay(fromKey key: String) -> String {
+        guard key.count == 8 else { return key }
+        let chars = Array(key)
+        return "\(String(chars[0..<4]))-\(String(chars[4..<6]))-\(String(chars[6..<8]))"
     }
 
     /// The library kind a recognised file is filed as; `nil` for receipts exports and unknown files.
@@ -112,6 +167,7 @@ public enum DocumentIdentity {
         case .payrollForm(let form): return form.documentKind
         case .bankStatementCSV, .bankStatementPDF, .bbvaStatement: return .bankStatement
         case .evidence(let documentKind): return documentKind
+        case .customEvidence: return .other
         case .rentReceiptsExport, .unknown: return nil
         }
     }
@@ -172,7 +228,7 @@ public enum DocumentIdentity {
         String(text.uppercased().filter { !$0.isWhitespace })
     }
 
-    private static func textFact(_ field: ImportFigureField, _ facts: [ImportFact]) -> String? {
+    static func textFact(_ field: ImportFigureField, _ facts: [ImportFact]) -> String? {
         for fact in facts where fact.field == field {
             if case .text(let text) = fact.value { return text }
         }
@@ -224,10 +280,15 @@ public struct DocumentIdentityIndex {
                 facts.append(ImportFact(field: .amount, value: .money(amount, document.currency ?? .eur), source: .matchedRecord,
                                         confidence: .certain, reason: ""))
             }
-            var identity = DocumentIdentity.identity(kind: .evidence(document.kind), text: document.extractedText, facts: facts,
+            for (field, date) in [(ImportFigureField.periodStart, document.periodStart), (.periodEnd, document.periodEnd)] {
+                if let date { facts.append(ImportFact(field: field, value: .date(date), source: .matchedRecord, confidence: .certain, reason: "")) }
+            }
+            let kind: ImportKind = document.customKindId.map { .customEvidence(.saved($0)) } ?? .evidence(document.kind)
+            var identity = DocumentIdentity.identity(kind: kind, text: document.extractedText, facts: facts,
                                                      providerId: nil, personId: nil)
             // The amount as the document states it (its currency unknown when it has none).
             identity.figures[.amount] = document.amountMinorUnits.map { DocumentIdentity.Figure(amount: abs($0), currency: document.currency) }
+            identity.currency = document.currency
             documents[id] = Entry(documentId: id, label: document.displayName, identity: identity)
             order.append(id)
         }
@@ -237,7 +298,7 @@ public struct DocumentIdentityIndex {
         }
         // Recorded utility invoices: number per provider, provider + date + signed amount.
         let providers = Dictionary(uniqueKeysWithValues: try UtilityProvider.fetchAll(db).compactMap { provider in
-            provider.id.map { ($0, DocumentIdentity.normalisedIssuer(provider.name)) }
+            provider.id.map { ($0, (key: DocumentIdentity.normalisedIssuer(provider.name), name: provider.name)) }
         })
         for invoice in try UtilityInvoice.filter(Column("documentId") != nil).fetchAll(db) {
             guard let documentId = invoice.documentId else { continue }
@@ -246,9 +307,11 @@ public struct DocumentIdentityIndex {
                     identity.strong.insert("invoice:\(invoice.providerId):\(number)")
                 }
                 let day = DocumentIdentity.dayKey(invoice.issueDate)
-                if let issuer = providers[invoice.providerId], !issuer.isEmpty {
-                    identity.issuer = issuer
-                    identity.weak.insert("ida:\(issuer):\(day):\(invoice.amountMinorUnits)")
+                if let provider = providers[invoice.providerId], !provider.key.isEmpty {
+                    let role = identity.role ?? DocumentKind.utilityInvoice.rawValue
+                    identity.issuer = provider.key
+                    identity.issuerName = provider.name
+                    identity.weak.insert("ida:\(role):\(provider.key):\(day):\(invoice.amountMinorUnits)")
                 }
                 identity.day = identity.day ?? day
                 identity.amount = identity.amount ?? abs(invoice.amountMinorUnits)
@@ -308,8 +371,10 @@ public struct DocumentIdentityIndex {
             guard !employer.isEmpty else { continue }
             let key = DocumentIdentity.payrollKey(form: row[1], year: row[2], employer: employer, personId: row[4])
             let pay: Int? = row[5], tax: Int? = row[6]
+            let employerName: String = row[3]
             enrich(row[0]) { identity in
                 identity.strong.insert(key)
+                if identity.issuer == nil { identity.issuerName = employerName }
                 identity.issuer = identity.issuer ?? employer
                 // The stored pay and tax of the employment the form gave.
                 if let pay { identity.figures[.pay] = DocumentIdentity.Figure(amount: abs(pay), currency: .gbp) }
@@ -338,22 +403,26 @@ public struct DocumentIdentityIndex {
         sameDocument(identity).map(Match.same) ?? possibleDocument(identity).map(Match.possible)
     }
 
-    /// The entry sharing a strong identity with `identity`, the strongest first.
+    /// The entry of the same role sharing a strong identity with `identity`, the strongest first.
     func sameDocument(_ identity: DocumentIdentity.Identity) -> Entry? {
-        let order = ["atcud:", "invoice:", "receipt:", "payroll:"]
-        func rank(_ key: String) -> Int { order.firstIndex { key.hasPrefix($0) } ?? order.count }
-        for key in identity.strong.sorted(by: { (rank($0), $0) < (rank($1), $1) }) {
-            if let entry = entries[key]?.first { return entry }
+        for key in DocumentIdentityIndex.strongestFirst(identity.strong) {
+            if let entry = entries[key]?.first(where: { $0.identity.role == identity.role }) { return entry }
         }
         return nil
     }
 
-    /// Every entry sharing a strong identity with `identity`, the strongest key first, each once.
-    func sameDocuments(_ identity: DocumentIdentity.Identity) -> [Entry] {
+    /// Strong keys, the strongest type first (ATCUD, invoice, receipt, payroll).
+    static func strongestFirst(_ keys: Set<String>) -> [String] {
         let order = ["atcud:", "invoice:", "receipt:", "payroll:"]
         func rank(_ key: String) -> Int { order.firstIndex { key.hasPrefix($0) } ?? order.count }
+        return keys.sorted { (rank($0), $0) < (rank($1), $1) }
+    }
+
+    /// Every entry sharing a strong identity with `identity`, the strongest key first, each once
+    /// (of any kind: the caller compares roles).
+    func sameDocuments(_ identity: DocumentIdentity.Identity) -> [Entry] {
         var found: [Entry] = []
-        for key in identity.strong.sorted(by: { (rank($0), $0) < (rank($1), $1) }) {
+        for key in DocumentIdentityIndex.strongestFirst(identity.strong) {
             for entry in entries[key] ?? [] where !found.contains(where: { $0.documentId == entry.documentId && $0.label == entry.label }) {
                 found.append(entry)
             }
@@ -362,7 +431,7 @@ public struct DocumentIdentityIndex {
     }
 
     /// The entry sharing a weak key with `identity` that nothing vetoes (`excluding`: library
-    /// documents never offered).
+    /// documents never offered). Only of the same role (the keys hold it) and period.
     func possibleDocument(_ identity: DocumentIdentity.Identity, excluding: Set<Int64> = []) -> Entry? {
         let own = identity.strongByType
         for key in identity.weak.sorted(by: { ($0.hasPrefix("ref:") ? 1 : 0, $0) < ($1.hasPrefix("ref:") ? 1 : 0, $1) }) {
@@ -374,10 +443,13 @@ public struct DocumentIdentityIndex {
                 if let issuer = identity.issuer, let otherIssuer = other.issuer, issuer != otherIssuer { continue }
                 // The kind stands for the issuer only where one side names none (either way round).
                 if key == identity.kindKey, identity.issuer != nil, other.issuer != nil { continue }
+                // Of another kind (role) or another period: another document.
+                guard identity.role == other.role else { continue }
+                if let period = identity.period, let otherPeriod = other.period, !period.overlaps(otherPeriod) { continue }
                 if key.hasPrefix("ref:") {
                     // Corroboration only: same kind, date and amount, all known.
-                    guard let kind = identity.kind, let day = identity.day, let amount = identity.amount,
-                          kind == other.kind, day == other.day, amount == other.amount else { continue }
+                    guard let role = identity.role, let day = identity.day, let amount = identity.amount,
+                          role == other.role, day == other.day, amount == other.amount else { continue }
                 }
                 return entry
             }
@@ -388,12 +460,17 @@ public struct DocumentIdentityIndex {
 
 /// The batch-level duplicate pass over a plan's items, after the readers.
 public enum ImportDuplicates {
-    /// In order: same hash as a library document (`.file` "Already in the library as <name>"),
-    /// as an earlier item (`.file` "Same file as <file>"), a strong identity of a library document
-    /// (`.document` "Same document as <name>"), of an earlier item (`.document` "Same document as
-    /// <file>") — always naming the original, never a copy. A weak key only (issuer + date +
-    /// amount, payment reference) is a Needs-you issue "Possibly the same document as <name>".
-    /// Of the documents sharing a strong identity (the library's, then the batch's), the first
+    /// An alert only for an identical file or a document of the same kind (`claimRole`) and
+    /// period, worded with what it compares. In order: same hash as a library document (`.file`
+    /// "Identical file: already in the library as <name>"), as an earlier item (`.file` "Identical
+    /// file: same as <file> in this import"), a strong identity of a library document or an
+    /// earlier item of the same kind (`.document` "Duplicate of <name>: the same <kind>, <ATCUD|
+    /// invoice number|receipt number|form> <value>") — always naming the original, never a copy.
+    /// A strong identity shared with a document of another kind is a note only ("Refers to
+    /// <name>: same ATCUD <code>"). A weak key only (kind + issuer + date + amount, payment
+    /// reference) is a Needs-you issue "Possibly a duplicate of <name>: also <a kind> from
+    /// <issuer> dated <day> for <amount>".
+    /// Of the documents of its kind sharing a strong identity (the library's, then the batch's), the first
     /// whose money figures (amount, pay, tax, with their currency) agree is the one this
     /// copies. When every one differs from what it holds — the document's own figures, else the
     /// recorded invoice or receipt's, the stored pay and tax — it is a Needs-you "Possibly a
@@ -409,12 +486,15 @@ public enum ImportDuplicates {
     /// the library as <name>", and filing it returns that document. A second copy of a
     /// statement in the batch (checked before the library) is a duplicate unless it holds rows.
     /// Two items attaching their document to the same recorded invoice: the later one is a copy
-    /// of the earlier (`.document` "Same document as <file>").
+    /// of the earlier (`.document` "Duplicate of <file>: the same utility invoice, invoice number <n>").
     /// The first of a pair stays as it was; items a reader already marked, child rows and
-    /// left-out items are left alone. Then transaction claims: items of one kind certain of the same transaction
-    /// all need the user, and a certain link to a transaction that already has a document of
-    /// the same kind (in the library or this import) needs the user's go, as does a rent contract
-    /// certain of a tenancy that already has one (a tenancy's addenda never claim it).
+    /// left-out items are left alone. Then transaction claims: a certain link to a transaction
+    /// that already has a document of the same kind and period (in the library or this import)
+    /// needs the user's go ("Possibly a duplicate: <name> is also <a kind> dated <day> on this
+    /// transaction", `sameKindOnTransaction.<id>`), as does a rent contract certain of a tenancy
+    /// that already has one (a tenancy's addenda never claim it); items of one kind and different
+    /// periods automatically linked (certain) to one transaction become "check the link"
+    /// questions (`checkLink.<id>`), never for links the user chose.
     /// `library`: the library's index when already read from `db` (the pipeline reads it once
     /// per planning copy); else it is read here.
     /// What a later item may copy: a library document, or an item of the batch (`itemId`).
@@ -422,6 +502,9 @@ public enum ImportDuplicates {
         var label: String
         var documentId: Int64?
         var itemId: UUID?
+        /// The file of this import whose bytes a later copy has, when the library doesn't hold them
+        /// (the item may itself be a document duplicate of `label`).
+        var fileLabel: String?
 
         init(label: String, documentId: Int64?, itemId: UUID? = nil) {
             self.label = label
@@ -429,14 +512,36 @@ public enum ImportDuplicates {
             self.itemId = itemId
         }
 
-        func duplicate(_ level: ImportDuplicate.Level, _ prefix: String) -> ImportDuplicate {
-            ImportDuplicate(level: level, of: "\(prefix) \(label)", existingDocumentId: documentId,
+        /// "Identical file: already in the library as <name>" / "Identical file: same as <file> in this import".
+        func identicalFile() -> ImportDuplicate {
+            let sentence = fileLabel.map { "Identical file: same as \($0) in this import" }
+                ?? (documentId != nil ? "Identical file: already in the library as \(label)" : "Identical file: same as \(label) in this import")
+            return ImportDuplicate(level: .file, of: sentence, existingDocumentId: documentId, originalItemId: documentId == nil ? itemId : nil)
+        }
+
+        /// "Duplicate of <name>: <what>" ("the same insurance receipt, ATCUD …").
+        func sameDocument(_ what: String) -> ImportDuplicate {
+            ImportDuplicate(level: .document, of: "Duplicate of \(label): \(what)", existingDocumentId: documentId,
                             originalItemId: documentId == nil ? itemId : nil)
         }
     }
 
-    public static func annotate(_ items: [ImportItem], db: Database, library: DocumentIdentityIndex? = nil) throws -> [ImportItem] {
+    /// `pendingKinds`: the review's new kinds, named in the wording as the saved ones are.
+    public static func annotate(_ items: [ImportItem], db: Database, library: DocumentIdentityIndex? = nil,
+                                pendingKinds: [PendingDocumentKind] = []) throws -> [ImportItem] {
         let library = try library ?? DocumentIdentityIndex.load(db: db)
+        let catalog = try DocumentKindCatalog.load(db: db)
+        let names = ImportKindNames(catalog: catalog, pending: pendingKinds).byToken
+        // A new kind whose name a saved kind has now (saved meanwhile, on another device) is that kind:
+        // Confirm files it there, so it is compared as it.
+        var aliases: [UUID: Int64] = [:]
+        for kind in pendingKinds {
+            if let id = catalog.custom(named: kind.name)?.id { aliases[kind.id] = id }
+        }
+        func compared(_ kind: ImportKind) -> ImportKind {
+            if case .customEvidence(.pending(let id)) = kind, let saved = aliases[id] { return .customEvidence(.saved(saved)) }
+            return kind
+        }
         var batch = DocumentIdentityIndex()
         /// Hash → the original's name, library id and (when in the batch only) item.
         var batchFiles: [String: Original] = [:]
@@ -451,9 +556,9 @@ public enum ImportDuplicates {
             // column mapping… with the file already imported saves the mapping).
             let awaitsMapping = StatementChecks.awaitsMapping(result[i])
             if isStatement || awaitsMapping { result[i].notes.removeAll { $0.hasPrefix(libraryNotePrefix) } }
-            result[i].notes.removeAll { $0 == libraryInvoiceNote }
+            result[i].notes.removeAll { $0 == libraryInvoiceNote || $0.hasPrefix(refersToNotePrefix) }
             let item = result[i]
-            let identity = DocumentIdentity.identity(kind: item.recognition.kind, text: item.file.text, facts: item.facts,
+            let identity = DocumentIdentity.identity(kind: compared(item.recognition.kind), text: item.file.text, facts: item.facts,
                                                      providerId: providerId(item), personId: personId(item))
             var original = Original(label: item.file.fileName, documentId: nil, itemId: item.id)
             if let duplicate = item.duplicate {
@@ -466,7 +571,7 @@ public enum ImportDuplicates {
                 // holds its rows, estimates and valuation. One that still holds rows (never,
                 // while the first is in the import) isn't a copy.
                 if !StatementChecks.holdsRows(item) {
-                    result[i].duplicate = earlier.duplicate(.file, "Same file as")
+                    result[i].duplicate = earlier.identicalFile()
                 }
                 original = earlier
             } else if let found = library.byHash[item.file.sha256] {
@@ -480,57 +585,136 @@ public enum ImportDuplicates {
                     // library"): read again and recorded on that document (the library returns it)
                     // — once: a second copy of the file in the batch is that one's.
                     if let earlier = batchFiles[item.file.sha256] {
-                        result[i].duplicate = earlier.duplicate(.file, "Same file as")
+                        result[i].duplicate = earlier.identicalFile()
                     } else {
                         result[i].notes.append(libraryInvoiceNote)
                     }
                 } else {
-                    result[i].duplicate = ImportDuplicate(level: .file, of: "Already in the library as \(found.label)", existingDocumentId: found.documentId)
+                    result[i].duplicate = Original(label: found.label, documentId: found.documentId).identicalFile()
                 }
                 original = Original(label: found.label, documentId: found.documentId)
             } else if let earlier = batchFiles[item.file.sha256] {
-                result[i].duplicate = earlier.duplicate(.file, "Same file as")
+                result[i].duplicate = earlier.identicalFile()
                 original = earlier
             } else {
                 // Strong before weak. Of the documents sharing a strong identity (the library's,
                 // then the batch's), the first whose figures agree is the one this copies; when
                 // every one differs, it is possibly a corrected version of the newest.
                 // The documents the item replaces on its record (Replace PDF…) aren't what it copies.
+                // Only a document of the same kind (role) is what it copies: one of another kind
+                // sharing a code (a receipt quoting its invoice's ATCUD) is a note.
                 let replaced = Set(item.links.flatMap(\.replacing))
-                let libraryStrong = library.sameDocuments(identity).filter { $0.documentId.map(replaced.contains) != true }
-                let batchStrong = batch.sameDocuments(identity)
+                let libraryAll = library.sameDocuments(identity).filter { $0.documentId.map(replaced.contains) != true }
+                let batchAll = batch.sameDocuments(identity)
+                let libraryStrong = libraryAll.filter { $0.identity.role == identity.role }
+                let batchStrong = batchAll.filter { $0.identity.role == identity.role }
                 let strong = libraryStrong + batchStrong
                 if let copied = strong.first(where: { changes(from: $0, to: item).isEmpty }) {
                     let copy = Original(label: copied.label, documentId: copied.documentId, itemId: copied.itemId)
-                    result[i].duplicate = copy.duplicate(.document, "Same document as")
+                    result[i].duplicate = copy.sameDocument(sameDocumentWording(identity, copied, facts: item.facts, names: names))
                     original = copy
                 } else if let newest = batchStrong.last ?? libraryStrong.max(by: { ($0.documentId ?? 0) < ($1.documentId ?? 0) }) {
                     // Another amount, pay or tax than every original holds: the user decides
                     // (and the filed-year guard still sees it).
                     result[i].issues.append(try correctedVersion(of: newest, item: item, db: db))
-                } else if let entry = library.possibleDocument(identity, excluding: replaced) ?? batch.possibleDocument(identity) {
-                    let reason = "Possibly the same document as \(entry.label)"
-                    result[i].issues.append(ImportIssue(id: "possibleDuplicate", kind: .readerProblem(reason), reason: reason,
-                                                        offers: [.acknowledge, .leaveOut]))
+                } else {
+                    for entry in libraryAll + batchAll where entry.identity.role != identity.role {
+                        guard let key = sharedStrongKey(identity, entry.identity) else { continue }
+                        let shared = describe(strongKey: key, facts: item.facts)
+                        let note = "\(refersToNotePrefix)\(entry.label): same \(shared.name) \(shared.value)"
+                        if !result[i].notes.contains(note) { result[i].notes.append(note) }
+                    }
+                    if let entry = library.possibleDocument(identity, excluding: replaced) ?? batch.possibleDocument(identity) {
+                        let reason = possibleDuplicateReason(identity, entry, names: names)
+                        result[i].issues.append(ImportIssue(id: "possibleDuplicate", kind: .readerProblem(reason), reason: reason,
+                                                            offers: [.acknowledge, .leaveOut]))
+                    }
                 }
             }
             if result[i].duplicate == nil, case .attachToInvoice(let invoiceId) = item.effect {
                 // A recorded invoice takes one document: another file of it in the batch is a copy.
                 if let earlier = attaching[invoiceId] {
-                    result[i].duplicate = earlier.duplicate(.document, "Same document as")
+                    let number = try UtilityInvoice.fetchOne(db, key: invoiceId)?.invoiceNumber.flatMap { $0.isEmpty ? nil : $0 }
+                    let kind = lowered(DocumentKind.utilityInvoice.displayName)
+                    result[i].duplicate = earlier.sameDocument(number.map { "the same \(kind), invoice number \($0)" } ?? "the same \(kind)")
                     result[i].issues.removeAll { $0.id == "possibleDuplicate" }
                 } else {
                     attaching[invoiceId] = original
                 }
             }
-            if batchFiles[item.file.sha256] == nil { batchFiles[item.file.sha256] = original }
+            if batchFiles[item.file.sha256] == nil {
+                var identical = original
+                if library.byHash[item.file.sha256] == nil { identical.fileLabel = item.file.fileName }
+                batchFiles[item.file.sha256] = identical
+            }
             batch.add(.init(documentId: original.documentId, label: original.label, identity: identity,
                             itemId: original.documentId == nil ? original.itemId : nil))
         }
         // A changed source-folder file takes its previous version's links before the claims are checked.
         for i in result.indices { result[i] = try ImportPipeline.withPreviousVersion(result[i], db: db) }
-        try annotateClaims(&result, db: db)
+        let tokenAliases = Dictionary(uniqueKeysWithValues: aliases.map { (CustomKindKey.pending($0.key).token, CustomKindKey.saved($0.value).token) })
+        try annotateClaims(&result, db: db, names: names, aliases: tokenAliases)
         return result
+    }
+
+    /// The note of an item sharing a code with a document of another kind ("Refers to <name>:
+    /// same ATCUD <code>"): not a duplicate.
+    public static let refersToNotePrefix = "Refers to "
+
+    /// The strong key `identity` shares with `other`, the strongest first.
+    static func sharedStrongKey(_ identity: DocumentIdentity.Identity, _ other: DocumentIdentity.Identity) -> String? {
+        DocumentIdentityIndex.strongestFirst(identity.strong.intersection(other.strong)).first
+    }
+
+    /// What a strong key compares, as shown: ("ATCUD", "ABCD1234-77"), ("invoice number", "FT 1/23"),
+    /// ("receipt number", "12"), ("form", "P60 2022-23"). A number as the file prints it when its facts hold it.
+    static func describe(strongKey key: String, facts: [ImportFact]) -> (name: String, value: String) {
+        let parts = key.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        func shown(_ field: ImportFigureField, _ compact: String) -> String {
+            DocumentIdentity.textFact(field, facts).flatMap { DocumentIdentity.compact($0) == compact ? $0 : nil } ?? compact
+        }
+        switch parts.first {
+        case "atcud": return ("ATCUD", parts.dropFirst().joined(separator: ":"))
+        case "invoice": return ("invoice number", shown(.invoiceNumber, parts.dropFirst(2).joined(separator: ":")))
+        case "receipt": return ("receipt number", shown(.receiptNumber, parts.last ?? ""))
+        case "payroll":
+            let form = parts.count > 1 ? parts[1] : ""
+            let name = DocumentKind(rawValue: form)?.displayName ?? form.uppercased()
+            guard parts.count > 2, let year = Int(parts[2]) else { return ("form", name) }
+            return ("form", "\(name) \(year)-\(String(format: "%02d", (year + 1) % 100))")
+        default: return ("code", key)
+        }
+    }
+
+    /// "the same insurance receipt, ATCUD ABCD1234-77".
+    static func sameDocumentWording(_ identity: DocumentIdentity.Identity, _ entry: DocumentIdentityIndex.Entry, facts: [ImportFact],
+                                    names: [String: String] = [:]) -> String {
+        let kind = lowered(kindName(identity.role ?? entry.identity.role, names: names))
+        guard let key = sharedStrongKey(identity, entry.identity) else { return "the same \(kind)" }
+        let shared = describe(strongKey: key, facts: facts)
+        return "the same \(kind), \(shared.name) \(shared.value)"
+    }
+
+    /// "Possibly a duplicate of <name>: also an insurance receipt from <issuer> dated 2023-03-05 for €120.00"
+    /// (what is unknown left out).
+    static func possibleDuplicateReason(_ identity: DocumentIdentity.Identity, _ entry: DocumentIdentityIndex.Entry,
+                                        names: [String: String] = [:]) -> String {
+        var reason = "Possibly a duplicate of \(entry.label): also \(article(kindName(entry.identity.role ?? identity.role, names: names)))"
+        if let issuer = identity.issuerName ?? entry.identity.issuerName { reason += " from \(issuer)" }
+        if let day = identity.day ?? entry.identity.day { reason += " dated \(DocumentIdentity.isoDay(fromKey: day))" }
+        if let amount = identity.amount ?? entry.identity.amount {
+            reason += " for \(Money.format(amount, currency: identity.currency ?? entry.identity.currency ?? .eur))"
+        }
+        return reason
+    }
+
+    /// A kind token's name ("Insurance receipt"; a custom kind's from `names`, by token).
+    static func kindName(_ token: String?, names: [String: String] = [:]) -> String {
+        guard let token else { return DocumentKind.other.displayName }
+        if let name = names[token] { return name }
+        if let kind = DocumentKind(rawValue: token) { return kind.displayName }
+        // A custom kind the review doesn't know (gone meanwhile) reads as Other.
+        return token.hasPrefix("custom:") || token.hasPrefix("pending:") ? DocumentKind.other.displayName : token
     }
 
     /// The note of a utility invoice whose file is already in the library but isn't recorded as
@@ -615,94 +799,169 @@ public enum ImportDuplicates {
         return nil
     }
 
-    /// The library kind of an item that will be imported as a document (not a statement,
-    /// duplicate, left out or row).
-    private static func claimingKind(_ item: ImportItem) -> DocumentKind? {
+    /// The kind token (`DocumentIdentity.kindToken`) of an item that will be imported as a
+    /// document (not a statement, duplicate, left out or row); a custom kind is a kind like any other.
+    private static func claimingKind(_ item: ImportItem) -> String? {
         guard item.parentId == nil, item.duplicate == nil, !item.isLeftOut,
-              let kind = DocumentIdentity.documentKind(of: item.recognition.kind), kind != .bankStatement else { return nil }
-        return kind
+              let token = DocumentIdentity.kindToken(of: item.recognition.kind), token != DocumentKind.bankStatement.rawValue,
+              // Unrecognised documents are no kind to compare: never competing on a transaction.
+              token != DocumentKind.other.rawValue else { return nil }
+        return token
     }
 
-    private struct Claim: Hashable {
-        var transactionId: Int64
-        var kind: DocumentKind
-    }
-
-    /// The part a document plays on its transaction: the bank's proof of the movement (a debit
-    /// advice or transfer proof, or the bank's advice of the movement filed under another kind,
-    /// `IssuerKey.isBankMovementAdvice`) or the underlying receipt or invoice (its kind). A receipt
-    /// and the bank's advice of its debit share a transaction by nature; two of one part don't.
-    /// A mortgage notice and receipt are the bank's own letters (worded as advices of the
-    /// movement) yet each its own part: a notice and a receipt of one instalment are a pair.
-    static func claimRole(kind: DocumentKind, text: String?) -> DocumentKind {
-        if kind == .bankDebitAdvice || kind == .bankTransferProof || kind == .mortgageNotice || kind == .mortgageReceipt { return kind }
-        if let text, IssuerKey.isBankMovementAdvice(text) { return .bankDebitAdvice }
-        return kind
+    /// The part a document plays on its transaction, as a kind token: the bank's proof of the
+    /// movement (a debit advice or transfer proof, or the bank's advice of the movement filed
+    /// under another kind, `IssuerKey.isBankMovementAdvice`) or the underlying receipt or invoice
+    /// (its kind). A receipt and the bank's advice of its debit share a transaction by nature;
+    /// two of one part may not. A mortgage notice and receipt are the bank's own letters (worded
+    /// as advices of the movement) yet each its own part: a notice and a receipt of one
+    /// instalment are a pair. What "the same kind" compares for every duplicate rule.
+    public static func claimRole(token: String, text: String?) -> String {
+        let own: Set<DocumentKind> = [.bankDebitAdvice, .bankTransferProof, .mortgageNotice, .mortgageReceipt]
+        if let kind = DocumentKind(rawValue: token), own.contains(kind) { return token }
+        if let text, IssuerKey.isBankMovementAdvice(text) { return DocumentKind.bankDebitAdvice.rawValue }
+        return token
     }
 
     /// The id prefix of "That tenancy already has a rent contract" (the tenancy's id follows).
     static let tenancyHasContractPrefix = "tenancyHasContract."
+    /// The id prefix of "Possibly a duplicate: <name> is also <a kind> dated <day> on this transaction".
+    public static let sameKindOnTransactionPrefix = "sameKindOnTransaction."
+    /// The id prefix of "<a> and <b> — both <kind>, <period a> and <period b> — were matched to the same transaction".
+    public static let checkLinkPrefix = "checkLink."
 
-    private static func annotateClaims(_ items: inout [ImportItem], db: Database) throws {
-        // Items of one kind (one role, `claimRole`) certain of the same transaction: the user
-        // decides (an invoice and its transfer proof or debit advice on one debit is normal).
-        var claimants: [Claim: [(item: Int, link: Int)]] = [:]
+    /// The day and the period a document states: two of one kind are the same document's when
+    /// their periods overlap (both stating one), else when they are of the same day.
+    struct ClaimPeriod {
+        var day: String?
+        var period: ClosedRange<String>?
+
+        init(facts: [ImportFact]) {
+            day = DocumentIdentity.dateFact(facts).map(DocumentIdentity.dayKey)
+            period = DocumentIdentity.period(facts)
+        }
+
+        init(document: EvidenceDocument) {
+            day = document.docDate.map(DocumentIdentity.dayKey)
+            var facts: [ImportFact] = []
+            for (field, date) in [(ImportFigureField.periodStart, document.periodStart), (.periodEnd, document.periodEnd)] {
+                if let date { facts.append(ImportFact(field: field, value: .date(date), source: .matchedRecord, confidence: .certain, reason: "")) }
+            }
+            period = DocumentIdentity.period(facts)
+        }
+
+        func isSame(as other: ClaimPeriod) -> Bool {
+            if let period, let otherPeriod = other.period { return period.overlaps(otherPeriod) }
+            guard let day else { return false }
+            return day == other.day
+        }
+
+        var periodText: String? {
+            period.map { $0.lowerBound == $0.upperBound ? DocumentIdentity.isoDay(fromKey: $0.lowerBound)
+                : "\(DocumentIdentity.isoDay(fromKey: $0.lowerBound)) to \(DocumentIdentity.isoDay(fromKey: $0.upperBound))" }
+        }
+
+        /// What a same-period match says of `self`, the other document: "covering <period>" when
+        /// the periods were compared, else "dated <day>".
+        func matchWording(against own: ClaimPeriod) -> String {
+            if own.period != nil, let periodText { return "covering \(periodText)" }
+            return "dated \(day.map(DocumentIdentity.isoDay(fromKey:)) ?? periodText ?? "")"
+        }
+        var isUndated: Bool { day == nil && period == nil }
+
+        /// Its period, else its day ("2023-01-01 to 2023-01-31", "2023-03-05", "undated").
+        var described: String { periodText ?? day.map(DocumentIdentity.isoDay(fromKey:)) ?? "undated" }
+    }
+
+    private struct Claimant {
+        var item: Int
+        var link: Int
+        var role: String
+        var period: ClaimPeriod
+    }
+
+    private struct Claim: Hashable {
+        var transactionId: Int64
+        var role: String
+    }
+
+    /// `aliases`: new kinds' tokens compared as the saved kind of their name.
+    private static func annotateClaims(_ items: inout [ImportItem], db: Database, names: [String: String] = [:],
+                                       aliases: [String: String] = [:]) throws {
+        func role(_ i: Int) -> String? {
+            claimingKind(items[i]).map { claimRole(token: aliases[$0] ?? $0, text: items[i].file.text) }
+        }
+        // First: items of one kind (role) and different periods certain of the same transaction:
+        // not duplicates, but one of the automatic links is likely wrong. Links the user chose
+        // never ask. A link asked about is no longer certain: the same-kind check below passes it
+        // by, so an item asks one question per transaction.
+        var claimants: [Claim: [Claimant]] = [:]
         var order: [Claim] = []
         for i in items.indices {
-            guard let claimed = claimingKind(items[i]) else { continue }
-            let kind = claimRole(kind: claimed, text: items[i].file.text)
+            guard let ownRole = role(i) else { continue }
+            let period = ClaimPeriod(facts: items[i].facts)
             for (l, link) in items[i].links.enumerated() where link.entity.type == .transaction && link.confidence == .certain {
-                let claim = Claim(transactionId: link.entity.id, kind: kind)
+                let claim = Claim(transactionId: link.entity.id, role: ownRole)
                 if claimants[claim] == nil { order.append(claim) }
-                claimants[claim, default: []].append((i, l))
+                claimants[claim, default: []].append(Claimant(item: i, link: l, role: ownRole, period: period))
             }
         }
+        func chosen(_ claimant: Claimant) -> Bool { isChosen(items[claimant.item].links[claimant.link]) }
         for claim in order {
             guard let claiming = claimants[claim], claiming.count >= 2 else { continue }
-            let reason = "\(claiming.count) documents in this import claim the same transaction"
-            for (i, l) in claiming {
-                let link = items[i].links[l]
-                items[i].links[l].confidence = .needsReview
-                items[i].issues.append(ImportIssue(id: "sharedTransaction.\(claim.transactionId)",
-                                                   kind: .chooseLink([LinkCandidate(entity: link.entity, label: link.label, reasons: link.reasons)]),
-                                                   reason: reason, offers: [.fileWithoutLink]))
+            let asking = claiming.compactMap { own -> (Claimant, Claimant)? in
+                guard !chosen(own),
+                      let other = claiming.first(where: { $0.item != own.item && !chosen($0) && !$0.period.isSame(as: own.period) }) else { return nil }
+                return (own, other)
+            }
+            for (own, other) in asking {
+                let link = items[own.item].links[own.link]
+                let periods = own.period.isUndated && other.period.isUndated ? "neither dated" : "\(own.period.described) and \(other.period.described)"
+                let reason = "\(items[own.item].file.fileName) and \(items[other.item].file.fileName) — both \(plural(lowered(kindName(claim.role, names: names)))), "
+                    + "\(periods) — were matched to the same transaction"
+                items[own.item].links[own.link].confidence = .needsReview
+                items[own.item].issues.append(ImportIssue(id: "\(checkLinkPrefix)\(claim.transactionId)",
+                                                          kind: .chooseLink([LinkCandidate(entity: link.entity, label: link.label, reasons: link.reasons)]),
+                                                          reason: reason, offers: [.fileWithoutLink]))
             }
         }
-        // A certain link to a transaction that already has a document of the same kind: in the
-        // library, or another item of this import linked to it (certain or not).
+        // Then: a certain link (not chosen by the user) to a transaction that already has a
+        // document of the same kind (role) and period: in the library, or another item of this
+        // import linked to it (certain or not, not chosen by the user).
         for i in items.indices {
             // A corrected version filed only is linked where its original is, on purpose.
-            guard let kind = claimingKind(items[i]), !ImportResolutions.isFiledAsCorrectedVersion(items[i]) else { continue }
-            let role = claimRole(kind: kind, text: items[i].file.text)
-            for link in items[i].links where link.entity.type == .transaction && link.confidence == .certain {
+            guard let kind = claimingKind(items[i]), let ownRole = role(i), !ImportResolutions.isFiledAsCorrectedVersion(items[i]) else { continue }
+            let period = ClaimPeriod(facts: items[i].facts)
+            for link in items[i].links where link.entity.type == .transaction && link.confidence == .certain && !isChosen(link) {
                 // Never the item's own file, already in the library (read again to be recorded), nor a
                 // document the link replaces there (a previous version, a replaced PDF). Of the same
                 // part (`claimRole`), whatever kind each was filed as: a receipt beside the bank's
                 // advice of its debit is normal, the same advice filed again under another kind is not.
                 var existing = try EvidenceLinks.documents(db: db, for: link.entity)
                     .first { document in
-                        claimRole(kind: document.kind, text: document.extractedText) == role
+                        claimRole(token: DocumentIdentity.kindToken(of: document), text: document.extractedText) == ownRole
                             && document.sha256 != items[i].file.sha256 && !link.replacing.contains(document.id ?? 0)
-                    }.map { (kind: $0.kind, name: $0.displayName) }
+                            && ClaimPeriod(document: document).isSame(as: period)
+                    }.map { (name: $0.displayName, period: ClaimPeriod(document: $0)) }
                 if existing == nil {
                     existing = items.indices.first { j in
-                        guard j != i, let other = claimingKind(items[j]) else { return false }
-                        return claimRole(kind: other, text: items[j].file.text) == role && items[j].links.contains { $0.entity == link.entity }
-                    }.map { (kind: claimingKind(items[$0]) ?? kind, name: items[$0].file.fileName) }
+                        guard j != i, role(j) == ownRole else { return false }
+                        return items[j].links.contains { $0.entity == link.entity && !isChosen($0) } && ClaimPeriod(facts: items[j].facts).isSame(as: period)
+                    }.map { (name: items[$0].file.fileName, period: ClaimPeriod(facts: items[$0].facts)) }
                 }
                 guard let existing else { continue }
-                let reason = "That transaction already has \(article(existing.kind.displayName)) (\(existing.name))"
-                items[i].issues.append(ImportIssue(id: "transactionHasDocument.\(link.entity.id)", kind: .readerProblem(reason), reason: reason,
+                let reason = "Possibly a duplicate: \(existing.name) is also \(article(kindName(ownRole, names: names))) \(existing.period.matchWording(against: period)) on this transaction"
+                items[i].issues.append(ImportIssue(id: "\(sameKindOnTransactionPrefix)\(link.entity.id)", kind: .readerProblem(reason), reason: reason,
                                                    offers: [.acknowledge, .fileWithoutLink]))
             }
             // A contract certain of a tenancy that already has one (in the library, or another item
             // of this import): two contracts of one tenancy ask. Its addenda never claim it.
-            for link in items[i].links where kind == .rentContract && link.entity.type == .tenancy && link.confidence == .certain {
+            for link in items[i].links where kind == DocumentKind.rentContract.rawValue && link.entity.type == .tenancy && link.confidence == .certain {
                 var existing = try EvidenceLinks.documents(db: db, for: link.entity)
                     .first { $0.kind == .rentContract && $0.sha256 != items[i].file.sha256 && !link.replacing.contains($0.id ?? 0) }?.displayName
                 if existing == nil {
                     existing = items.indices.first { j in
-                        j != i && claimingKind(items[j]) == .rentContract && items[j].links.contains { $0.entity == link.entity }
+                        j != i && claimingKind(items[j]) == DocumentKind.rentContract.rawValue && items[j].links.contains { $0.entity == link.entity }
                     }.map { items[$0].file.fileName }
                 }
                 guard let existing else { continue }
@@ -713,13 +972,33 @@ public enum ImportDuplicates {
         }
     }
 
+    /// Chosen by the user, or proposed and checked by them (instalments kept): never alerts.
+    private static func isChosen(_ link: ProposedLink) -> Bool {
+        link.reasons.contains(ImportResolutions.chosenReason) || link.reasons.contains(ImportChecks.checkedReason)
+    }
+
     /// "an insurance receipt", "a P60", "an IMI notice": lower case unless an acronym leads.
     static func article(_ name: String) -> String {
-        let isAcronym = name.count >= 2 && name.prefix(2).allSatisfy { $0.isUppercase || $0.isNumber }
-        let shown = isAcronym ? name : name.prefix(1).lowercased() + name.dropFirst()
+        let shown = lowered(name)
+        let isAcronym = shown.count >= 2 && shown.prefix(2).allSatisfy { $0.isUppercase || $0.isNumber }
         let first = shown.first.map(String.init) ?? ""
-        let vowelSound = isAcronym ? "AEFHILMNORSX".contains(first) : "aeiou".contains(first)
+        // "a utility invoice": a "you" sound takes "a".
+        let youSound = ["uni", "uti", "use", "usu", "eu"].contains { shown.hasPrefix($0) }
+        let vowelSound = isAcronym ? "AEFHILMNORSX".contains(first) : "aeiou".contains(first) && !youSound
         return (vowelSound ? "an " : "a ") + shown
+    }
+
+    /// "insurance receipt", "P60", "IMI notice": a kind's name lower case unless an acronym leads.
+    static func lowered(_ name: String) -> String {
+        let isAcronym = name.count >= 2 && name.prefix(2).allSatisfy { $0.isUppercase || $0.isNumber }
+        return isAcronym ? name : name.prefix(1).lowercased() + name.dropFirst()
+    }
+
+    /// "insurance receipts", "stamp duties", "P60s".
+    static func plural(_ name: String) -> String {
+        if name.hasSuffix("y"), let before = name.dropLast().last, !"aeiou".contains(before) { return name.dropLast() + "ies" }
+        if name.hasSuffix("s") || name.hasSuffix("x") || name.hasSuffix("ch") || name.hasSuffix("sh") { return name + "es" }
+        return name + "s"
     }
 }
 

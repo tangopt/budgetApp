@@ -37,7 +37,7 @@ public enum ImportShortcut: Equatable, Sendable {
     /// evidence ▸ Add: the item's kind), matched by library kind whichever reader reads the file
     /// (`ImportIntent.expectedByDocumentKind`); nil: any file. `period`: the slot the record asks
     /// a document for (`[start, end)`), given to a document that has no period of its own.
-    case attach(EvidenceEntity, role: String?, from: AttachOrigin, expected: DocumentKind? = nil, period: DateInterval? = nil)
+    case attach(EvidenceEntity, role: String?, from: AttachOrigin, expected: DocumentKindRef? = nil, period: DateInterval? = nil)
 
     /// What the shortcut pre-sets, with its entry point.
     public var intent: ImportIntent {
@@ -64,9 +64,15 @@ public enum ImportShortcut: Equatable, Sendable {
         case .attach(let entity, let role, _, let expected, let period):
             intent = ImportIntent(target: .init(entity: entity, role: role))
             intent.period = period
-            if let expected {
-                intent.expected = .evidence(expected)
+            switch expected {
+            case .builtIn(let kind)?:
+                intent.expected = .evidence(kind)
                 intent.expectedByDocumentKind = true
+            case .custom(let id)?:
+                // A custom kind is matched as itself.
+                intent.expected = .customEvidence(.saved(id))
+            case nil:
+                break
             }
         }
         intent.entryPoint = entryPoint

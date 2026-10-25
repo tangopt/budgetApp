@@ -116,7 +116,7 @@ final class StatementChecksTests: XCTestCase {
         // Dropped again, every row saved: now a duplicate.
         pipeline.discardPlanningCopy()
         let again = try await pipeline.plan([a], intent: intent)
-        XCTAssertEqual(try item("a.csv", in: again).duplicate?.of, "Already in the library as \(filed.displayName)")
+        XCTAssertEqual(try item("a.csv", in: again).duplicate?.of, "Identical file: already in the library as \(filed.displayName)")
     }
 
     // MARK: Balance mismatch and import anyway

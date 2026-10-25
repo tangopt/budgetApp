@@ -10,7 +10,7 @@ public enum EvidenceInitialImport {
     /// The kinds the import brings in: evidence for the property's transactions and PT tax.
     public static let relevantKinds: Set<DocumentKind> = [
         .mortgageNotice, .mortgageReceipt, .mortgageInterestStatement, .insuranceReceipt, .insurancePolicy, .imiNotice, .imiPayment,
-        .condominioReceipt, .accountantInvoice, .legalInvoice, .courtFee, .lettingAgentFee,
+        .condominioReceipt, .repairInvoice, .accountantInvoice, .legalInvoice, .courtFee, .lettingAgentFee,
         .ptIRSDeclaration, .ptIRSAssessment, .ptIRSPaymentNote, .ptIRSPaymentProof, .utilityInvoice, .bankTransferProof
     ]
 

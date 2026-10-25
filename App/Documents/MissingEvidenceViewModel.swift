@@ -29,6 +29,8 @@ final class MissingEvidenceViewModel: ObservableObject {
     struct Snapshot: Equatable, Sendable {
         var requirements: [EvidenceRequirement]
         var items: [MissingEvidence.Item]
+        /// The custom kinds (the rules' names for them, the editor's choices).
+        var customKinds: [CustomDocumentKind] = []
     }
 
     let dbQueue: DatabaseQueue
@@ -47,6 +49,8 @@ final class MissingEvidenceViewModel: ObservableObject {
     /// The tax years offered, latest first.
     @Published private(set) var years: [UKTaxYear]
     @Published private(set) var requirements: [EvidenceRequirement] = []
+    /// Every kind's name, the custom kinds included (read with the rules).
+    @Published private(set) var kindCatalog = DocumentKindCatalog(customKinds: [])
     /// The whole checklist for the period (the filters don't change it).
     @Published private(set) var items: [MissingEvidence.Item] = [] {
         didSet {
@@ -122,12 +126,14 @@ final class MissingEvidenceViewModel: ObservableObject {
 
     func loadReferenceData() {
         do {
-            let (accounts, categories, groups, earliest, titles) = try dbQueue.read { db in
+            let (accounts, categories, groups, earliest, titles, kinds) = try dbQueue.read { db in
                 (try Account.fetchAll(db), try Category.order(Column("name").collating(.localizedCaseInsensitiveCompare)).fetchAll(db),
                  try CategoryGroup.order(Column("name").collating(.localizedCaseInsensitiveCompare)).fetchAll(db),
-                 try Date.fetchOne(db, sql: "SELECT MIN(date) FROM transaction_"), try PropertyEvidence.entityTitles(db: db))
+                 try Date.fetchOne(db, sql: "SELECT MIN(date) FROM transaction_"), try PropertyEvidence.entityTitles(db: db),
+                 try DocumentKindCatalog.load(db: db))
             }
             entityTitles = titles
+            kindCatalog = kinds
             self.accounts = accounts.sortedForDisplay()
             self.categories = categories
             categoryGroups = groups
@@ -181,7 +187,7 @@ final class MissingEvidenceViewModel: ObservableObject {
                     let related = try PropertyEvidence.relatedRequirementIds(db: db, propertyId: propertyId)
                     items = items.filter { $0.requirement.id.map(related.contains) ?? false }
                 }
-                return Snapshot(requirements: requirements, items: items)
+                return Snapshot(requirements: requirements, items: items, customKinds: try CustomDocumentKind.fetchAll(db))
             }
             .removeDuplicates()
             .values(in: dbQueue)
@@ -190,6 +196,7 @@ final class MissingEvidenceViewModel: ObservableObject {
                 for try await snapshot in values {
                     guard let self, !Task.isCancelled else { return }
                     self.requirements = snapshot.requirements
+                    self.kindCatalog = DocumentKindCatalog(customKinds: snapshot.customKinds)
                     self.items = snapshot.items
                     self.isLoading = false
                 }
@@ -212,16 +219,32 @@ final class MissingEvidenceViewModel: ObservableObject {
 
     /// Links a library document to the item's record (Link existing…), filling in its kind
     /// or period, in one write. Returns what happened, for the caller to show.
-    func link(documentId: Int64, to item: MissingEvidence.Item) -> Result<String, Error> {
-        Result { try Self.linkFillingIn(library: library, documentId: documentId, item: item) }
+    /// A link or an unlink is checking the filed returns off the main thread (`EvidenceLinkGuard`):
+    /// "Checking filed returns…" shows and the screen waits for it.
+    @Published private(set) var isCheckingFiledYears = false
+
+    /// `body` off the main thread with `isCheckingFiledYears` on; nil (nothing run) while another runs.
+    private func guarded<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async -> Result<T, Error>? {
+        guard !isCheckingFiledYears else { return nil }
+        isCheckingFiledYears = true
+        defer { isCheckingFiledYears = false }
+        return await Task.detached(priority: .userInitiated) { Result { try body() } }.value
+    }
+
+    /// Links (off the main thread, checked against the filed returns); `done` gets what happened.
+    func link(documentId: Int64, to item: MissingEvidence.Item, done: @escaping (Result<String, Error>) -> Void) {
+        let library = library
+        Task {
+            guard let result = await guarded({ try Self.linkFillingIn(library: library, documentId: documentId, item: item) }) else { return }
+            done(result)
+        }
     }
 
     func unlink(documentId: Int64, from item: MissingEvidence.Item) {
-        do {
-            try library.unlink(documentId, from: item.target.entity)
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
+        let library = library, entity = item.target.entity
+        Task {
+            guard let result = await guarded({ _ = try library.unlink(documentId, from: entity) }) else { return }
+            errorMessage = result.failure?.localizedDescription
         }
     }
 
@@ -388,7 +411,17 @@ final class MissingEvidenceViewModel: ObservableObject {
     }
 
     static func kindsText(_ kinds: [DocumentKind]) -> String {
-        kinds.isEmpty ? "Any document" : kinds.map(\.displayName).joined(separator: " or ")
+        kindsText(names: kinds.map(\.displayName))
+    }
+
+    /// The kinds that satisfy a rule by name, its custom kinds included (those not known here left out).
+    func kindsText(_ requirement: EvidenceRequirement) -> String {
+        Self.kindsText(names: requirement.knowingOnly(kindCatalog).kindRefs.map(kindCatalog.displayName))
+    }
+
+    /// An item's kinds by name (custom kinds included); none = any document.
+    static func kindsText(names: [String]) -> String {
+        names.isEmpty ? "Any document" : names.joined(separator: " or ")
     }
 
     /// The usual sources the rules name, for the editor's suggestions.

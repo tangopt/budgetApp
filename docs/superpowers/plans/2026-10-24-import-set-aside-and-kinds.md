@@ -454,3 +454,13 @@ UI: the popover (width ≤ 560) lists kind, canonical name (truncating in the mi
 - [ ] **Step 3:** Run the app on the demo database: import the demo samples — the three documents of one debit import with no alert; the instalment pair is asked; leave the unknown file out → Set aside sheet → Keep for later; create "New kind…" for it in a new import → the waiting file is suggested again.
 - [ ] **Step 4: Commit** — `"Demo: import samples for repair bills, stamp duty, instalments and set-aside"`
 - [ ] **Step 5:** After merge to main: `xcodegen generate`, `scripts/install-app.sh`. Then the controller (user's go, 2026-10-24): quit Mango, back up the real database, run `ReclassifyNewKinds` dry, check the plan, then `--apply --repairs-kinds repairInvoice,other`, and report what changed.
+
+### Task 14: Warn before an edit changes a filed or paid year (added 2026-10-24)
+
+**Why:** on 2026-10-24 categorising a refund (an uncategorised 2022/23 debit/credit) as Repairs silently changed the filed 2022/23 figures; the controller restored them with a "not claimed" mark. Filed returns must never change.
+
+**Files:** BudgetCore (a `FiledYearEditCheck` built on `FiledYearGuard`/`TaxFigures.snapshot`), App edit paths (Edit transaction, category change in the grid/search, bulk recategorise, rule application, evidence/linking that changes tax attribution, manual tax items).
+
+- [ ] Before saving any edit, compute the affected filed/paid years' figures with and without the change (cheap: only years containing the transaction's date or the item); if any filed figure would change, the save sheet shows "This changes your filed 2022/23 return: <box> £x → £y" with three choices: **Mark as not counted for 2022/23 and save** (TaxNotClaimedSources.set with a note), **Save anyway** (the year then shows as differing), **Cancel**.
+- [ ] Imports and rule application batch the same check (one summary question per import).
+- [ ] Tests: synthetic filed year; categorising a transaction into a deductible line triggers the question; choosing "not counted" leaves TaxFigures.snapshot identical; open years never ask.

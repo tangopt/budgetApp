@@ -561,6 +561,7 @@ public struct EvidenceDocumentReader: ImportReader {
         // Bank debit advices have their own reader (`BBVADebitAdviceReader`), which hands back
         // the ones it can't read.
         if case .evidence(let documentKind) = kind { return documentKind != .bankDebitAdvice }
+        if case .customEvidence = kind { return true }
         return kind == .unknown
     }
 
@@ -580,16 +581,47 @@ public struct EvidenceDocumentReader: ImportReader {
 
     /// Suggestions this close to the best are as good: the user picks.
     static let tieMargin = 20
+    /// The question of a document two debits of one merchant may have paid in instalments
+    /// (`EvidenceMatcher.instalments`): `.acknowledge` keeps both links, `.fileWithoutLink` drops them.
+    public static let instalmentsIssueId = "instalments"
+    /// The question of a document several pairs of debits may have paid: each pair is an offer
+    /// (`.linkTransactions` of both debits, which keeps both), or `.fileWithoutLink`.
+    public static let instalmentPairsIssueId = "instalmentPairs"
+
+    /// The debits that already carry a library document of `kind`: never another one's instalments.
+    static func transactionsWithDocument(of kind: DocumentKindRef, db: Database) throws -> Set<Int64> {
+        let builtIn: DocumentKind, customId: Int64?
+        switch kind {
+        case .builtIn(let k): (builtIn, customId) = (k, nil)
+        case .custom(let id): (builtIn, customId) = (.other, id)
+        }
+        return Set(try Int64.fetchAll(db, sql: """
+            SELECT l.entityId FROM documentLink l JOIN \(EvidenceDocument.databaseTableName) d ON d.id = l.documentId
+            WHERE l.entityType = ? AND d.kind = ? AND d.customKindId IS ?
+            """, arguments: [EvidenceEntityType.transaction.rawValue, builtIn.rawValue, customId]))
+    }
+    /// A custom kind's amount, guessed as the largest on the document.
+    public static let guessedAmountReason = "Amount guessed (the largest on the document): check it"
 
     /// `readings`: the issuer's learnt positions, as read.
     private func item(file: ImportFile, recognition: ImportRecognition, context: ImportContext, index: EvidenceMatcher.Index,
                       targetLabel: String?, db: Database, readings: inout [LearntFigures.Reading]) throws -> ImportItem {
-        guard case .evidence(let kind) = recognition.kind else {
+        // A custom kind is read as Other, then named and filed as itself (a kind that's gone: Other).
+        var custom: ImportCustomKind?
+        let kind: DocumentKind
+        switch recognition.kind {
+        case .evidence(let evidenceKind):
+            kind = evidenceKind
+        case .customEvidence(let key):
+            kind = .other
+            custom = context.customKinds[key]
+        default:
             var item = ImportItem(file: file, recognition: recognition, title: file.fileName, groupKey: "Other documents")
             item.issues.append(ImportIssue(id: "unknownKind", kind: .unknownKind(proposed: nil), reason: "What kind of document is this?"))
             item.placement = ImportNaming.placement(kind: .unknown, facts: [], file: file, persons: [])
             return item
         }
+        let kindName = custom?.name ?? kind.displayName
         let analysis = EvidenceAnalyzer.analyze(text: file.text, textStatus: file.textStatus, fileName: file.fileName)
         var metadata = analysis.metadata
         // The issuer's learnt positions, before the transaction is matched on them (`LearntFigures.apply` names them).
@@ -606,6 +638,13 @@ public struct EvidenceDocumentReader: ImportReader {
         }
         let source: ImportFactSource = file.usedOCR ? .ocr : .textLayer
         let body = file.text.map(EvidenceText.fold) ?? ""
+        // A custom kind has no labels of its own: the analyzer's general guess, to check.
+        var amountGuessed = false
+        if custom != nil, metadata.amountMinorUnits == nil, let guess = EvidenceAnalyzer.largestAmount(in: body) {
+            metadata.amountMinorUnits = guess.minorUnits
+            metadata.currency = guess.currency ?? EvidenceAnalyzer.defaultCurrency(for: .other, text: body)
+            amountGuessed = true
+        }
 
         var facts: [ImportFact] = []
         if let date = metadata.docDate {
@@ -622,8 +661,9 @@ public struct EvidenceDocumentReader: ImportReader {
             facts.append(ImportFact(field: .periodEnd, value: .date(end), source: source, confidence: .certain, reason: "Period on the document"))
         }
         if let amount = metadata.amountMinorUnits, let currency = metadata.currency {
-            facts.append(ImportFact(field: .amount, value: .money(amount, currency), source: source, confidence: .certain,
-                                    reason: "Amount on the document"))
+            facts.append(ImportFact(field: .amount, value: .money(amount, currency), source: source,
+                                    confidence: amountGuessed ? .needsReview : .certain,
+                                    reason: amountGuessed ? Self.guessedAmountReason : "Amount on the document"))
         }
         // A mortgage receipt's instalment ("193/480"), named in its canonical name.
         if kind == .mortgageReceipt, let instalment = MortgageReceipt.instalment(text: file.text, fileName: file.fileName) {
@@ -636,10 +676,10 @@ public struct EvidenceDocumentReader: ImportReader {
             return try addendumItem(file: file, recognition: recognition, facts: facts, date: metadata.docDate, context: context,
                                     targetLabel: targetLabel, db: db)
         }
-        var item = ImportItem(file: file, recognition: recognition, title: kind.displayName, facts: facts,
-                              groupKey: "\(kind.displayName) documents")
-        item.placement = ImportNaming.placement(kind: recognition.kind, facts: facts, file: file, persons: [])
-        if let date = metadata.docDate { item.title = "\(kind.displayName) of \(isoDay(date))" }
+        var item = ImportItem(file: file, recognition: recognition, title: kindName, facts: facts,
+                              groupKey: "\(kindName) documents")
+        item.placement = ImportNaming.placement(kind: recognition.kind, facts: facts, file: file, persons: [], customKind: custom)
+        if let date = metadata.docDate { item.title = "\(kindName) of \(isoDay(date))" }
 
         // The link, by fixed rules: the user's target, a single clear match, else the user picks.
         if let target = context.intent.target {
@@ -656,7 +696,8 @@ public struct EvidenceDocumentReader: ImportReader {
                                         byteCount: file.byteCount, kind: kind, docDate: metadata.docDate,
                                         periodStart: metadata.periodStart, periodEnd: metadata.periodEnd,
                                         amountMinorUnits: metadata.amountMinorUnits, currency: metadata.currency,
-                                        textStatus: file.textStatus, extractedText: file.text, addedAt: context.now)
+                                        textStatus: file.textStatus, extractedText: file.text, addedAt: context.now,
+                                        customKindId: custom?.key.savedId)
         let suggestions = EvidenceMatcher.suggestions(document: document, index: index)
         func candidate(_ suggestion: EvidenceMatcher.Suggestion) throws -> LinkCandidate {
             LinkCandidate(entity: .transaction(suggestion.transactionId), label: try entityLabel(db: db, .transaction(suggestion.transactionId)),
@@ -667,9 +708,33 @@ public struct EvidenceDocumentReader: ImportReader {
             suggestions.contains { $0.transactionId != match.transactionId && $0.amountMatched && match.score - $0.score <= Self.tieMargin }
                 ? nil : match
         }
+        // No debit of its amount: perhaps two of one merchant paid it in instalments (only ever asked).
+        let instalments = confident == nil && !suggestions.contains(where: \.amountMatched)
+            ? EvidenceMatcher.instalments(document: document, index: index,
+                                          excluding: try Self.transactionsWithDocument(of: document.kindRef, db: db)) : []
         if let match = confident {
             item.links = [ProposedLink(entity: .transaction(match.transactionId), label: try entityLabel(db: db, .transaction(match.transactionId)),
                                        confidence: .certain, reasons: match.reasons)]
+        } else if instalments.count == 1, let pair = instalments.first {
+            let reason = pair.reasons.joined(separator: "; ")
+            item.links = try pair.transactionIds.map { id in
+                ProposedLink(entity: .transaction(id), label: try entityLabel(db: db, .transaction(id)), confidence: .needsReview, reasons: pair.reasons)
+            }
+            item.issues.append(ImportIssue(id: Self.instalmentsIssueId, kind: .readerProblem(reason), reason: reason,
+                                           offers: [.acknowledge, .fileWithoutLink]))
+        } else if instalments.count > 1 {
+            // Each pair is one answer, keeping both its debits; every debit of the pairs is
+            // proposed (unsure) until one is chosen.
+            var seen = Set<Int64>()
+            for pair in instalments {
+                for id in pair.transactionIds where seen.insert(id).inserted {
+                    item.links.append(ProposedLink(entity: .transaction(id), label: try entityLabel(db: db, .transaction(id)),
+                                                   confidence: .needsReview, reasons: pair.reasons))
+                }
+            }
+            let reason = "It may have been paid in 2 instalments, and \(instalments.count) pairs of payments add up to it: which pair is it?"
+            item.issues.append(ImportIssue(id: Self.instalmentPairsIssueId, kind: .readerProblem(reason), reason: reason,
+                                           offers: instalments.map { .linkTransactions($0.transactionIds) } + [.fileWithoutLink]))
         } else if suggestions.count == 1, let only = suggestions.first, only.amountMatched, !only.dateInWindow, !only.referenceMatched {
             item.issues.append(ImportIssue(id: "chooseLink", kind: .chooseLink([try candidate(only)]), reason: "Matched on amount only",
                                            offers: [.fileWithoutLink]))

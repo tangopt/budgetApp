@@ -232,4 +232,54 @@ final class ImportRuleEditingTests: XCTestCase {
         XCTAssertEqual(skipped.appliedRules, [])
         XCTAssertEqual(try rows().map(\.targetMissing), [true])
     }
+
+    // MARK: Custom kinds (import set-aside and kinds, Task 7)
+
+    func testACustomKindRuleIsEditedAsThatKindNeverAsOther() throws {
+        let kind = try db.write { db in try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: now) }
+        let id = try XCTUnwrap(kind.id)
+        let rule = try learn(.documentKind, key: "nif:503504568", label: "Example Caldeiras",
+                             action: DocumentKindAction(kind: .other, customKindId: id), actionLabel: "Kind: Boiler service")
+        XCTAssertEqual(ImportRuleEditing.currentEdit(rule), .documentKind(.custom(id)), "the sheet opens on the custom kind, not Other")
+
+        // Saved unchanged: still the custom kind.
+        try db.write { db in try ImportRuleEditing.update(db: db, id: rule.id!, edit: .documentKind(.custom(id))) }
+        var saved = try XCTUnwrap(try db.read { db in try ImportRule.fetchOne(db, key: rule.id!) })
+        XCTAssertEqual(ImportLearning.decode(DocumentKindAction.self, saved.actionJSON), DocumentKindAction(kind: .other, customKindId: id))
+        XCTAssertEqual(saved.actionLabel, "Kind: Boiler service")
+
+        // The row names the kind as it is called now (a rename made outside the Kinds sheet's relabelling too).
+        try db.write { db in try db.execute(sql: "UPDATE customDocumentKind SET name = 'Boiler check' WHERE id = ?", arguments: [id]) }
+        XCTAssertEqual(try rows().first?.then, "Kind: Boiler check")
+        XCTAssertEqual(try rows().first?.targetMissing, false)
+
+        // To a built-in: the custom id goes.
+        try db.write { db in try ImportRuleEditing.update(db: db, id: rule.id!, edit: .documentKind(.builtIn(.repairInvoice))) }
+        saved = try XCTUnwrap(try db.read { db in try ImportRule.fetchOne(db, key: rule.id!) })
+        XCTAssertEqual(saved.actionJSON, "{\"kind\":\"repairInvoice\"}")
+        XCTAssertEqual(saved.actionLabel, "Kind: \(DocumentKind.repairInvoice.displayName)")
+
+        // Back to the custom kind, by its current name; a kind that doesn't exist is refused.
+        try db.write { db in
+            try ImportRuleEditing.update(db: db, id: rule.id!, edit: .documentKind(.custom(id)))
+            XCTAssertThrowsError(try ImportRuleEditing.update(db: db, id: rule.id!, edit: .documentKind(.custom(9_999)))) {
+                XCTAssertEqual($0 as? ImportRuleEditError, .missingTarget)
+            }
+        }
+        saved = try XCTUnwrap(try db.read { db in try ImportRule.fetchOne(db, key: rule.id!) })
+        XCTAssertEqual(ImportLearning.decode(DocumentKindAction.self, saved.actionJSON), DocumentKindAction(kind: .other, customKindId: id))
+        XCTAssertEqual(saved.actionLabel, "Kind: Boiler check")
+    }
+
+    func testARuleWhoseCustomKindIsGoneIsFlagged() throws {
+        let kind = try db.write { db in try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: now) }
+        try learn(.documentKind, key: "nif:503504568", label: "Example Caldeiras",
+                  action: DocumentKindAction(kind: .other, customKindId: kind.id!), actionLabel: "Kind: Boiler service")
+        try learn(.documentKind, key: "nif:503504564", label: "Example Seguros, S.A.",
+                  action: DocumentKindAction(kind: .insuranceReceipt), actionLabel: "Kind: Insurance receipt")
+        try db.write { db in _ = try CustomDocumentKind.deleteOne(db, key: kind.id!) }
+        let rows = try rows()
+        XCTAssertEqual(rows.map(\.targetMissing), [true, false])
+        XCTAssertEqual(rows.first?.then, "Kind: Boiler service", "the name it was learnt with")
+    }
 }

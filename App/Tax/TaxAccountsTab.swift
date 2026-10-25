@@ -466,6 +466,8 @@ struct TaxLineSourcesSheet: View {
     /// A not-claimed mark (or its removal) waiting for its confirmation.
     @State private var pendingMark: PendingMark?
     @State private var error: String?
+    /// Marks and claims through the filed-year check; its question shows on this sheet.
+    @StateObject private var gate = FiledYearGate()
 
     /// A source as a table row (or the total).
     private struct SourceRow: Identifiable {
@@ -522,12 +524,13 @@ struct TaxLineSourcesSheet: View {
             }
         }
         .onAppear(perform: loadDocuments)
+        .filedYearGate(gate)
         // A mark moves a source between the two tables: the documents follow the references.
         .onChange(of: current.sources.map(\.reference) + current.notClaimedSources.map(\.reference)) { _, _ in loadDocuments() }
         .confirmationDialog(confirmationTitle, isPresented: Binding(get: { pendingMark != nil }, set: { if !$0 { pendingMark = nil } }),
                             titleVisibility: .visible, presenting: pendingMark) { pending in
             Button(pending.notClaimed ? "Mark not claimed" : "Claim it again") {
-                error = viewModel.setNotClaimed(pending.source.reference, notClaimed: pending.notClaimed)
+                viewModel.setNotClaimed(pending.source.reference, notClaimed: pending.notClaimed, gate: gate) { error = $0 }
             }
             Button("Cancel", role: .cancel) {}
         } message: { pending in

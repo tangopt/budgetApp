@@ -160,6 +160,10 @@ public enum SyncTranslator {
         }
     }
 
+    /// The tables whose records can bring a retired custom kind, or something filed under one (`settleRetired`).
+    static let kindTables: Set<String> = [CustomDocumentKind.databaseTableName, EvidenceDocument.databaseTableName,
+                                          EvidenceRequirement.databaseTableName, ImportRule.databaseTableName]
+
     /// `apply` without batch routing: what `SyncBatch` applies once a batch is complete. `revivals`: records
     /// an Undo brings back (deleted here; ruling R7), by UUID, with the local id they had here.
     static func applyChanges(_ changes: [SyncIncomingChange], db: Database, deviceUser: String?, now: Date,
@@ -191,14 +195,25 @@ public enum SyncTranslator {
                 // A delete of a record of unknown type may be what anything waits for.
                 if let table { arrived.insert(table) } else { unknownArrived = true }
             }
+            // Whether this apply can have brought a retired kind or something filed under one (final review M5).
+            var touchesKinds = saves.contains { Self.kindTables.contains($0.recordType) }
+                || deleteTables.contains { $0.map(Self.kindTables.contains) ?? true }
+            var retried: [String: IncomingResult] = [:]
             if !retry {
                 // The caller retries staging itself.
             } else if unknownArrived || retryAll {
-                for (name, result) in try retryStaged(db: db, deviceUser: deviceUser, now: now) { results[name] = result }
+                retried = try retryStaged(db: db, deviceUser: deviceUser, now: now)
             } else if !arrived.isEmpty {
-                for (name, result) in try retryStaged(db: db, deviceUser: deviceUser, now: now, arrived: arrived) { results[name] = result }
+                retried = try retryStaged(db: db, deviceUser: deviceUser, now: now, arrived: arrived)
+            }
+            for (name, result) in retried {
+                results[name] = result
+                // A staged record of any table applied now (its table isn't known here): settle to be safe.
+                if case .staged = result {} else { touchesKinds = true }
             }
             try retireRemoved(db: db, now: now)
+            // Custom kinds merged into a built-in kind (here or elsewhere): what still names them is re-filed.
+            if touchesKinds { try CustomDocumentKinds.settleRetired(db: db) }
             return results
         }
     }
@@ -305,6 +320,12 @@ public enum SyncTranslator {
            let tombstone = try SyncTombstoneRow.fetchOne(db, key: payload.recordName), let target = tombstone.mergedInto {
             // A save of a record merged into another here (from a device that hasn't merged yet) is that one.
             try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [payload.recordName])
+            if schema.name == CustomDocumentKind.databaseTableName, try !CustomDocumentKinds.isSameKind(payload, as: target, db: db) {
+                // Except a custom kind merged into another kind (Kinds sheet): its name and area are the merged
+                // one's, not the target's (what was filed under it follows the redirect). A kind merged by identity
+                // (the same name made on two devices) is the same kind: its edits merge.
+                return .discarded("merged into another kind here")
+            }
             payload.recordName = target
             redirected = true
         }
@@ -413,6 +434,12 @@ public enum SyncTranslator {
         if row != nil {
             if try SyncRecordStore.localId(table: schema.name, uuid: target, db: db) == nil {
                 try SyncMerge.rekey(from: old, to: target, db: db)
+            } else if schema.name == CustomDocumentKind.databaseTableName, let oldId = row,
+                      let targetId = try SyncRecordStore.localId(table: schema.name, uuid: target, db: db) {
+                // A custom kind merged into another elsewhere: what this device files under it moves to the target.
+                try CustomDocumentKinds.absorbIncomingMerge(db: db, from: oldId, into: targetId, oldUUID: old, targetUUID: target,
+                                                            deviceUser: deviceUser, now: now)
+                return .applied
             } else {
                 // Both records are rows here: they can't be fused by a redirect; both stay.
                 log.error("Sync redirect of a \(schema.name, privacy: .public) record whose target is another row here; both kept")

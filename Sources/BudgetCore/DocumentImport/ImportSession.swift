@@ -44,6 +44,17 @@ public final class ImportSession {
     /// The names of the properties, people, accounts, tenancies and providers a "which one?"
     /// question offers, read when a review opens.
     public private(set) var targetNames = ImportTargetNames()
+    /// The custom kinds in use, read with the target names (`kindChoices`, `kindLabel`).
+    public private(set) var kindCatalog = DocumentKindCatalog(customKinds: [])
+    /// The kinds the review's chooser offers: the built-ins, the saved custom kinds, then the
+    /// review's new (pending) ones, each by name.
+    public var kindChoices: [ImportKindChoice] {
+        ImportKindChoice.choices(catalog: kindCatalog, pending: plan?.pendingKinds ?? [])
+    }
+    /// An import kind's name, a custom kind's (saved or new in this review) included.
+    public func kindLabel(_ kind: ImportKind) -> String {
+        ImportKindNames(catalog: kindCatalog, pending: plan?.pendingKinds ?? []).displayName(kind)
+    }
     /// The accounts by id, read with the target names: a statement's layout wizard and its
     /// account picker (bank region first).
     public private(set) var accounts: [Int64: Account] = [:]
@@ -72,6 +83,9 @@ public final class ImportSession {
     /// user to say whether those changes go too.
     public var pendingUndo: PendingUndo?
 
+    /// The files kept for later (spec 2026-10-24 §1), newest first, as last read (`refreshWaiting`).
+    public private(set) var waiting: [ImportWaitingFile] = []
+
     /// Each phase as it is set (the Mac's model republishes it; tests record it).
     @ObservationIgnored public var onPhaseChange: (@MainActor (Phase) -> Void)?
     /// An import was applied or undone: the screens showing what it changed re-read.
@@ -83,6 +97,8 @@ public final class ImportSession {
     @ObservationIgnored public let pipeline: ImportPipeline
     /// Confirm import's writer.
     @ObservationIgnored private let applier: ImportApplier
+    /// The waiting list and Mango's copies of its files.
+    @ObservationIgnored public let waitingList: ImportWaitingList
 
     /// The people's and tenants' NIFs, never an issuer's (`IssuerKey.knownParties`): read with the target names.
     /// Nil until first read: no issuer key is worked out before (a person's own NIF would key one).
@@ -117,8 +133,9 @@ public final class ImportSession {
 
     /// `modelReader`: the on-device model asked about what nothing else recognises (nil: never asked).
     /// `now`: the current time as the app sees it (runs and undos are stamped with it).
+    /// `waitingRoot`: where kept files are copied (nil: `Waiting` beside the library's folder).
     public init(dbQueue: DatabaseQueue, databasePath: String?, library: EvidenceLibrary, categorizationService: CategorizationService,
-                modelReader: (any DocumentModelReading)?, now: @escaping @MainActor () -> Date = { Date() }) {
+                modelReader: (any DocumentModelReading)?, waitingRoot: URL? = nil, now: @escaping @MainActor () -> Date = { Date() }) {
         self.dbQueue = dbQueue
         self.library = library
         self.now = now
@@ -126,6 +143,8 @@ public final class ImportSession {
         self.pipeline = ImportPipeline(dbQueue: dbQueue, library: library, categorizationService: categorizationService,
                                        modelReader: modelReader)
         self.applier = ImportApplier(dbQueue: dbQueue, databasePath: databasePath, library: library)
+        self.waitingList = ImportWaitingList(root: waitingRoot ?? library.root.deletingLastPathComponent().appendingPathComponent("Waiting", isDirectory: true),
+                                             database: dbQueue)
     }
 
     /// Whether a review is open (reading more files into it counts).
@@ -443,6 +462,9 @@ public final class ImportSession {
             case .failure(ImportResolutionError.reasonRequired):
                 // Beside the question: the item stays in Needs you as it was.
                 self.answerProblem = AnswerProblem(itemId: itemId, issueId: issueId, message: "Write why it is imported anyway first")
+            case .failure(let error as ImportResolutionError) where error.isKindName:
+                // "New kind…" with a name that can't be used: said beside the question.
+                self.answerProblem = AnswerProblem(itemId: itemId, issueId: issueId, message: error.localizedDescription)
             case .failure(let error):
                 self.logger.error("Resolving an import item failed: \(error.localizedDescription, privacy: .public)")
                 self.problem = Problem(title: "Couldn't apply that answer: \(error.localizedDescription)", lines: [])
@@ -488,6 +510,18 @@ public final class ImportSession {
             // The batch would move a filed return: every item is checked again so the holds
             // land on the items that cause it.
             var rechecked: ImportPlan?
+            if case .failure(ImportApplyError.notConfirmable) = result {
+                // A kind the items are filed as was merged or deleted since: those items are read
+                // again (Needs you), never left Ready behind a Confirm that keeps failing.
+                do {
+                    if let reread = try await DetachedWork.run(priority: .userInitiated, { try await pipeline.rereadingChangedKinds(plan) }) {
+                        self.applyFinished(.failure(ImportApplyError.notConfirmable), rechecked: reread, kindsChanged: true)
+                        return
+                    }
+                } catch {
+                    self.logger.error("Reading again the items whose kind changed failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
             if case .failure(ImportApplyError.filedYearChanged(_)) = result {
                 do {
                     rechecked = try await DetachedWork.run(priority: .userInitiated) { try await pipeline.recheckFiledYears(plan) }
@@ -499,7 +533,10 @@ public final class ImportSession {
         }
     }
 
-    private func applyFinished(_ result: Result<ImportRunSummary, Error>, rechecked: ImportPlan? = nil) {
+    /// The problem shown when Confirm import found a kind merged or deleted since the review read it.
+    public static let kindsChangedProblem = "A kind these documents were filed as was merged or deleted: they were read again. Check them in Needs you"
+
+    private func applyFinished(_ result: Result<ImportRunSummary, Error>, rechecked: ImportPlan? = nil, kindsChanged: Bool = false) {
         switch result {
         case .success(let summary):
             logger.notice("Import confirmed: run \(summary.runId, privacy: .public), \(summary.filed, privacy: .public) filed, \(summary.linked, privacy: .public) linked, \(summary.recorded, privacy: .public) recorded, \(summary.transactions, privacy: .public) transactions")
@@ -507,6 +544,8 @@ public final class ImportSession {
             phase = .finished(summary)
             selectedRunId = summary.runId
             loadRuns()
+            // Imported waiting files leave the list; a rule learnt may suggest others.
+            refreshWaiting()
             libraryCounts.invalidate()
             onDataChanged?()
         case .failure(let error):
@@ -515,7 +554,9 @@ public final class ImportSession {
                 plan = rechecked
                 if let held = rechecked.items.first(where: \.isHeldByFiledYear) { selectedItemId = held.id }
             }
-            let shown = Self.problem(for: error, held: rechecked?.items.filter(\.isHeldByFiledYear).map(\.title) ?? [])
+            if kindsChanged, let rechecked, let first = rechecked.items(in: .needsYou).first { selectedItemId = first.id }
+            let shown = kindsChanged ? Problem(title: Self.kindsChangedProblem, lines: [])
+                : Self.problem(for: error, held: rechecked?.items.filter(\.isHeldByFiledYear).map(\.title) ?? [])
             problem = shown
             // No review left to show the problem in: the failure is the phase.
             if plan == nil { phase = .failed(shown.title) }
@@ -663,11 +704,14 @@ public final class ImportSession {
     private func loadTargetNames() {
         let dbQueue = dbQueue
         spawn { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { () -> Result<(ImportTargetNames, [Account], Set<String>), Error> in
-                Result { try dbQueue.read { db in (try ImportTargetNames.read(db), try Account.fetchAll(db), try IssuerKey.knownParties(db: db)) } }
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<(ImportTargetNames, [Account], Set<String>, DocumentKindCatalog), Error> in
+                Result { try dbQueue.read { db in
+                    (try ImportTargetNames.read(db), try Account.fetchAll(db), try IssuerKey.knownParties(db: db), try DocumentKindCatalog.load(db: db))
+                } }
             }.value
             switch result {
-            case .success(let (names, accounts, parties)):
+            case .success(let (names, accounts, parties, catalog)):
+                self?.kindCatalog = catalog
                 if self?.knownParties != parties {
                     self?.knownParties = parties
                     self?.issuerKeys = [:]
@@ -723,6 +767,8 @@ public final class ImportSession {
         case .success:
             undoRefusals[runId] = nil
             loadRuns()
+            // Its waiting files come back.
+            refreshWaiting()
             libraryCounts.invalidate()
             onDataChanged?()
             return []
@@ -737,5 +783,89 @@ public final class ImportSession {
     /// Hides why a run's undo was refused.
     public func dismissUndoRefusal(_ runId: Int64) {
         undoRefusals[runId] = nil
+    }
+
+    // MARK: Set aside and the waiting list
+
+    /// Whether the waiting file is in the open review (its copy is read there: not to discard meanwhile).
+    public func isInOpenReview(_ file: ImportWaitingFile) -> Bool {
+        plan?.items.contains { $0.parentId == nil && $0.file.sha256.lowercased() == file.sha256 } ?? false
+    }
+
+    /// The run whose unimported files were already offered to set aside (the sheet is offered once per run,
+    /// wherever the user goes meanwhile).
+    public private(set) var setAsideOfferedRunId: Int64?
+
+    /// The files the finished run left unimported, to offer once: empty when there are none, or this run's
+    /// were offered already (leaving the Imports screen and coming back doesn't offer them again).
+    public func takeSetAsideOffer() -> [SetAsideFile] {
+        guard case .finished(let summary) = phase, !summary.setAside.isEmpty, setAsideOfferedRunId != summary.runId else { return [] }
+        setAsideOfferedRunId = summary.runId
+        return summary.setAside
+    }
+
+    /// The entry point of a review of waiting files.
+    public static let waitingEntryPoint = "Waiting list"
+
+    /// The open review's files that can be set aside before it is discarded
+    /// (`ImportSetAside.candidates`, discarding): not those already waiting or read from the library.
+    public func setAsideCandidates() -> [SetAsideFile] {
+        guard let plan else { return [] }
+        let waitingHashes = Set(waiting.map(\.sha256))
+        let libraryPath = library.root.standardizedFileURL.path + "/"
+        return ImportSetAside.candidates(plan, discarding: true, names: ImportKindNames(catalog: kindCatalog, pending: plan.pendingKinds))
+            .filter { !waitingHashes.contains($0.sha256.lowercased()) && !$0.url.standardizedFileURL.path.hasPrefix(libraryPath) }
+    }
+
+    /// Re-reads the waiting list off the main actor: rows imported by a run standing 30 days purged,
+    /// files read again when the recognisers changed (`ImportWaitingList.recheck`), then listed.
+    /// Call on opening the Imports screen and after a kind is created, renamed or merged; Confirm
+    /// import, Undo, keeping and discarding call it themselves.
+    public func refreshWaiting() {
+        spawn { [weak self] in await self?.reloadWaiting() }
+    }
+
+    /// `refreshWaiting`, finished when the list is read.
+    public func reloadWaiting() async {
+        let list = waitingList, pipeline = pipeline, dbQueue = dbQueue, now = now()
+        let result = await Task.detached(priority: .utility) { () -> Result<[ImportWaitingFile], Error> in
+            Result {
+                try list.purgeImported(now: now)
+                let reading = try dbQueue.read { db in try pipeline.waitingRecogniser(db: db) }
+                try list.recheck(recognise: reading.recognise, kindName: reading.kindName, signature: reading.signature)
+                return try list.waiting()
+            }
+        }.value
+        switch result {
+        case .success(let rows):
+            waiting = rows
+        case .failure(let error):
+            logger.error("Reading the waiting list failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Keeps `files` for later (off the main actor), then re-reads the list.
+    public func keep(_ files: [SetAsideFile]) async throws -> ImportWaitingList.KeepResult {
+        let list = waitingList, now = now()
+        let result = try await Task.detached(priority: .userInitiated) { try list.keep(files, now: now) }.value
+        refreshWaiting()
+        return result
+    }
+
+    /// Removes the waiting files `ids` and Mango's copies (the user confirmed), then re-reads the list.
+    public func discardWaiting(_ ids: [Int64]) async throws {
+        let list = waitingList
+        try await Task.detached(priority: .userInitiated) { try list.discard(ids) }.value
+        refreshWaiting()
+    }
+
+    /// Reads the waiting files `ids` (Mango's copies) into a review, entry point "Waiting list" — or into
+    /// the open one. False when none of them is here (a copy not arrived yet).
+    @discardableResult
+    public func importWaiting(_ ids: [Int64]) -> Bool {
+        let wanted = Set(ids)
+        let urls = waiting.filter { $0.id.map(wanted.contains) == true }.compactMap(waitingList.fileURL)
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        return start(urls, entryPoint: Self.waitingEntryPoint)
     }
 }

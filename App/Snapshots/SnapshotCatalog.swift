@@ -2,6 +2,7 @@
 #if SNAPSHOTS
 import SwiftUI
 import CoreText
+import CryptoKit
 import BudgetCore
 import GRDB
 import struct BudgetCore.Transaction
@@ -28,11 +29,11 @@ struct SnapshotMissing: Error, CustomStringConvertible {
 /// link the demo builder (`BudgetDemo`).
 @MainActor
 enum SnapshotCatalog {
-    /// `importRoutes` last: `imports-history` writes to the demo copy; the attribution check after them
+    /// `importRoutes` then `kindRoutes` last: `imports-history` writes to the demo copy, the kind routes add custom kinds to it; the attribution check after them
     /// (it imports too). `settings-sign-in` and the check add synthetic app users to the demo copy.
     static var routes: [SnapshotRoute] {
         screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + AuthSnapshots.routes + [AuthSnapshots.lockedContentRoute] + AuthSnapshots.lockedToolbarRoutes + importRoutes
-            + [AuthSnapshots.attributionRoute, AuthSnapshots.launchLoadsOnceRoute]
+            + kindRoutes + waitingRoutes + transactionDocumentsRoutes + [AuthSnapshots.attributionRoute, AuthSnapshots.launchLoadsOnceRoute]
     }
 
     // MARK: Imports, from the demo's samples
@@ -257,6 +258,17 @@ enum SnapshotCatalog {
                     center.showSnapshotPlan(plan, selecting: item.id)
                 })))
             },
+            // "New kind…": the letter nothing recognises filed as a kind made in this review (saved at Confirm import).
+            SnapshotRoute(name: "imports-review_new_kind", title: "Imports: the samples, a letter filed as a new kind", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                var plan = try await center.snapshotPlan(try importSamples(context))
+                guard let letter = plan.items.first(where: { $0.file.fileName == "Letter.pdf" }) else { throw SnapshotMissing("The sample letter") }
+                plan = try await center.snapshotResolve(plan, itemId: letter.id, .createKind(name: "Boiler service", area: .property))
+                let made = plan
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in
+                    center.showSnapshotPlan(made, selecting: letter.id)
+                })))
+            },
             SnapshotRoute(name: "imports-history", title: "Imports: the samples imported, in the history", settleFactor: 1.5) { context in
                 let center = context.environment.importCenter
                 center.discard()
@@ -295,6 +307,200 @@ enum SnapshotCatalog {
                     throw SnapshotMissing("Everyday Current")
                 }
                 return AnyView(CSVMappingWizardView(account: account, csvText: item.file.text ?? "", existingProfile: saved) { _ in })
+            }
+        ]
+    }
+
+    // MARK: Set aside and the waiting list
+
+    /// Invented files an import left out (written beside the demo copy; nothing personal): the sheet's rows and the
+    /// waiting list's. The first has a long name, to check it truncates in the middle.
+    private static func setAsideDemoFiles(_ context: SnapshotContext) throws -> [SetAsideFile] {
+        guard let path = context.environment.databasePath else { throw SnapshotMissing("The demo copy") }
+        let folder = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("SetAsideDemo", isDirectory: true)
+        try? FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let specs: [(String, [String], String, String)] = [
+            ("Example Seguros home insurance renewal notice and schedule of cover 2025-2026 final version.pdf",
+             ["Example Seguros, S.A. NIF 503504564", "Apolice 0001 - aviso de renovacao", "Synthetic demo document - not a real record."],
+             "Not recognised", "Unknown"),
+            ("Scan 0042.pdf", ["Synthetic demo scan 0042", "Synthetic demo document - not a real record."], ImportSetAside.leftOutReason, "Other"),
+            ("Invoice 12 copy.pdf", ["Example Energia, S.A. NIF 500000000", "Fatura 12", "Synthetic demo document - not a real record."],
+             "Possibly a duplicate of Invoice 12.pdf", "Utility invoice"),
+            ("Boiler service note.pdf", ["Boiler service - Flat 3", "Synthetic demo document - not a real record."], ImportSetAside.leftOutReason, "Other")
+        ]
+        return try specs.map { name, lines, reason, kind in
+            let url = folder.appendingPathComponent(name)
+            try textPDF(lines, to: url)
+            let data = try Data(contentsOf: url)
+            let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            return SetAsideFile(url: url, fileName: name, sha256: sha, byteCount: Int64(data.count), text: nil, textStatus: .unknown,
+                                reason: reason, recognisedAs: kind)
+        }
+    }
+
+    /// "Files not imported" over the Imports screen's window, and "Waiting for later" above the history with the
+    /// files kept for later (the real keep, then the real re-read: a file the recognisers now know shows its suggestion).
+    static var waitingRoutes: [SnapshotRoute] {
+        [
+            SnapshotRoute(name: "imports-set_aside", title: "Imports: Files not imported, the sheet", settleFactor: 1) { context in
+                let files = try setAsideDemoFiles(context)
+                let sheet = SetAsideSheet(files: files, actions: .of(context.environment.importCenter), done: {})
+                return AnyView(SnapshotSheetCanvas(sheet: sheet))
+            },
+            SnapshotRoute(name: "imports-waiting", title: "Imports: Waiting for later above the history", settleFactor: 1.5) { context in
+                let center = context.environment.importCenter
+                center.discard()
+                let files = try setAsideDemoFiles(context)
+                let kept = try await center.keepForLater(files)
+                if !kept.failed.isEmpty || kept.kept.count != files.count { throw SnapshotMissing("Every demo file kept (\(kept))") }
+                await center.session.reloadWaiting()
+                await center.reloadRuns()
+                return AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .imports, prepare: { _ in })))
+            }
+        ]
+    }
+
+    // MARK: A transaction's documents
+
+    /// The paperclip's popover over a debit with three invented documents (adds them to the demo copy, after the imports):
+    /// a repair invoice also on another transaction, a transfer proof, and a receipt whose file isn't on this Mac.
+    static var transactionDocumentsRoutes: [SnapshotRoute] {
+        [
+            SnapshotRoute(name: "budget-transaction-documents", title: "Budget: a transaction's documents (paperclip popover)", settleFactor: 1.2) { context in
+                let id = try context.transactionId(description: "BOILER REPAIR LDA")
+                let other = try await context.dbQueue.read { db in
+                    try Int64.fetchOne(db, sql: "SELECT id FROM transaction_ WHERE id != ? ORDER BY id LIMIT 1", arguments: [id])
+                }
+                guard let other, let path = context.environment.databasePath else { throw SnapshotMissing("A second transaction") }
+                let folder = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("TransactionDocuments", isDirectory: true)
+                try? FileManager.default.removeItem(at: folder)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                func day(_ month: Int, _ d: Int) -> Date {
+                    var calendar = Calendar(identifier: .gregorian)
+                    calendar.timeZone = TimeZone(identifier: "UTC")!
+                    return calendar.date(from: DateComponents(year: 2025, month: month, day: d))!
+                }
+                @MainActor func add(_ name: String, _ kind: DocumentKind, _ date: Date, _ amount: Int, canonical: String, role: String?, alsoOn: Int64? = nil,
+                         onThisMac: Bool = true) throws {
+                    let url = folder.appendingPathComponent(name)
+                    try textPDF([canonical, "Synthetic demo document - not a real record."], to: url)
+                    let metadata = EvidenceMetadata(kind: kind, docDate: date, amountMinorUnits: amount, currency: .eur, canonicalName: canonical)
+                    let document = try context.library.add(url, metadata: metadata).document
+                    guard let documentId = document.id else { throw SnapshotMissing("A document id") }
+                    _ = try context.library.link(documentId, to: .transaction(id), role: role)
+                    if let alsoOn { _ = try context.library.link(documentId, to: .transaction(alsoOn)) }
+                    if !onThisMac { try FileManager.default.removeItem(at: context.library.fileURL(for: document)) }
+                }
+                try add("repair-invoice.pdf", .repairInvoice, day(3, 2), 28_000, canonical: "20250302 - Property - Repair bill - Boiler Repair Lda - 280.00",
+                        role: "Invoice", alsoOn: other)
+                try add("transfer-proof.pdf", .bankTransferProof, day(3, 4), 28_000, canonical: "20250304 - Bank - Transfer proof - Boiler Repair Lda", role: "Payment proof")
+                try add("receipt-elsewhere.pdf", .other, day(3, 9), 28_000, canonical: "20250309 - Other - Receipt - Boiler Repair Lda - signed by the engineer on site",
+                        role: nil, onThisMac: false)
+                let documents = try await context.dbQueue.read { db in
+                    try TransactionDocuments.documents(db: db, transactionId: id, catalog: DocumentKindCatalog.load(db: db))
+                }
+                return AnyView(SnapshotSheetCanvas(sheet: TransactionDocumentsList(documents: documents, library: context.library,
+                    onDevice: Set(documents.filter { context.library.isOnThisDevice(storedRelativePath: $0.storedRelativePath) }.map(\.id)),
+                    selected: documents.last?.id)))
+            }
+        ]
+    }
+
+    // MARK: Custom kinds
+
+    /// Custom kinds in the demo copy (after the imports: they write to it): the Documents screen with a
+    /// document of a custom kind selected (its pill and kind picker), the Kinds sheet with a rename and
+    /// a merge staged, the same sheet refusing a Save that would change a filed year, and New kind…
+    /// with a name that's already a kind's.
+    static var kindRoutes: [SnapshotRoute] {
+        [
+            screen("documents", "kinds", "Documents: a document of a custom kind selected", .documents) { models, context in
+                models.documents.selectedId = (try? context.demoCustomKinds())?.documentId
+            },
+            sheet("document_kinds", "Kinds (a rename and a merge staged)", settle: 1) { context in
+                let kinds = try context.demoCustomKinds()
+                let model = DocumentsViewModel(dbQueue: context.dbQueue, library: context.library)
+                var draft = CustomKindsDraft(rows: try await context.dbQueue.read { db in try CustomDocumentKinds.rows(db: db) })
+                draft.rename(kinds.lift, name: "Lift maintenance", area: .property)
+                draft.merge(kinds.fees, into: .builtIn(.other))
+                let editing = DocumentKindsSheet.Editing(kindId: kinds.boiler, mode: .merge, name: "Boiler service", area: .property,
+                                                         target: .builtIn(.repairInvoice))
+                return AnyView(DocumentKindsSheet(viewModel: model, initial: draft, editing: editing))
+            },
+            sheet("document_kinds_refused", "Kinds (Save refused: a filed year would change)", settle: 1) { context in
+                let kinds = try context.demoCustomKinds()
+                let model = DocumentsViewModel(dbQueue: context.dbQueue, library: context.library)
+                var draft = CustomKindsDraft(rows: try await context.dbQueue.read { db in try CustomDocumentKinds.rows(db: db) })
+                draft.merge(kinds.boiler, into: .builtIn(.repairInvoice))
+                let refusal = CustomDocumentKinds.Failure.changesFiledYear(
+                    years: ["2024/25"], documents: ["20250310 - Property - Boiler service - Boiler Repair Lda"])
+                return AnyView(DocumentKindsSheet(viewModel: model, initial: draft, error: DocumentKindsSheet.refusal(refusal, draft: draft)))
+            },
+            // A custom-kind document wherever documents are listed: a tenancy's documents, the property's
+            // profile, a transaction's documents, the document picker (Lift service, not linked yet).
+            sheet("tenancy_documents_custom_kind", "Tenancy documents (a custom-kind document)", settle: 1) { context in
+                try context.demoCustomKinds()
+                let model = await context.propertyModel()
+                guard let tenancy = model.snapshot.tenancies.last else { throw SnapshotMissing("a tenancy") }
+                return AnyView(PropertyDocumentsSheet(viewModel: model, entity: EvidenceEntity(type: .tenancy, id: tenancy.id!),
+                                                      title: "Documents · \(tenancy.referenceLabel)"))
+            },
+            screen("property", "profile_custom_kind", "Property: Profile, a custom-kind document", .property, settle: 1.3) { models, context in
+                _ = try? context.demoCustomKinds()
+                models.property.tab = .profile
+            },
+            sheet("link_document_custom_kind", "Link document (a custom-kind document to pick)", settle: 1.2) { context in
+                try context.demoCustomKinds()
+                let id = try context.transactionId(description: "BOILER REPAIR LDA")
+                let model = TransactionDocumentsModel(transactionId: id, library: context.library, dbQueue: context.dbQueue)
+                model.load()
+                return AnyView(LinkDocumentSheet(model: model, transactionName: "BOILER REPAIR LDA"))
+            },
+            sheet("edit_transaction_custom_kind", "Edit transaction (its custom-kind document)", settle: 1.2) { context in
+                try context.demoCustomKinds()
+                let model = SearchViewModel(dbQueue: context.dbQueue)
+                model.load()
+                let id = try context.transactionId(description: "BOILER REPAIR LDA")
+                guard let transaction = try await context.dbQueue.read({ db in try Transaction.fetchOne(db, key: id) }) else {
+                    throw SnapshotMissing("a transaction")
+                }
+                return AnyView(EditTransactionSheet(
+                    transaction: transaction, categories: model.categories, groups: model.groups, recentIds: model.recentCategoryIds,
+                    createCategory: model.createCategory, transfer: model.transferActions, manual: model.manualActions,
+                    onSave: { _, _, done in done(.saved) }))
+            },
+            sheet("new_kind", "New kind… (a name that's already a kind's)") { context in
+                _ = try context.demoCustomKinds()
+                let catalog = try await context.dbQueue.read { db in try DocumentKindCatalog.load(db: db) }
+                return AnyView(NewKindPopover(choices: ImportKindChoice.choices(catalog: catalog, pending: []), initialName: "repair bill",
+                                              create: { _, _ in }, cancel: {}))
+            },
+            sheet("filed_year_edit", "An edit that would change a filed return (plan Task 14)") { _ in
+                // Synthetic: a debit categorised as Repairs in a filed 2022/23 with a loss carried forward.
+                typealias Line = FiledYearEditCheck.Question.Line
+                let question = FiledYearEditCheck.Question(edit: "Categorised as Repairs", years: [
+                    .init(startYear: 2022, isPaid: false, people: ["Person A"], lines: [
+                        Line(person: nil, box: "SA106 Land and property abroad box 17 Allowable property expenses", before: "£1,100.00", after: "£1,350.00"),
+                        Line(person: nil, box: "SA106 Land and property abroad box 18 Net profit or loss", before: "£8,900.00", after: "£8,650.00"),
+                        Line(person: nil, box: "SA106 Land and property abroad box 24 Adjusted profit or loss for the year", before: "£8,900.00", after: "£8,650.00")
+                    ]),
+                    .init(startYear: 2023, isPaid: true, people: ["Person A"], lines: [
+                        Line(person: nil, box: "SA calculation: payments on account", before: "£6,172.80", after: "£6,147.80")
+                    ])
+                ], markYears: [2022])
+                return AnyView(FiledYearEditSheet(question: question, onAnswer: { _ in }))
+            },
+            sheet("filed_year_checking", "A save being checked against the filed returns (plan Task 14)") { _ in
+                AnyView(SheetScaffold(title: "Edit Rule", subtitle: "Transactions whose description matches are filed into the category when imported.",
+                                      width: 480, onCancel: {}, primary: SheetAction("Save") {}) {
+                    SheetForm {
+                        LabeledContent("Pattern") { Text("BUILDER LTD") }
+                        LabeledContent("Category") { Text("Repairs") }
+                    }
+                    Color.clear.frame(height: 48)
+                }
+                .filedYearGate(FiledYearGate.checking()))
             }
         ]
     }
@@ -436,6 +642,16 @@ enum SnapshotCatalog {
                 let demo = ImportReviewDemo.make(context)
                 context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.learntId)
             },
+            // A repair bill two debits of one merchant add up to: Keep both links, or File without a link.
+            screen("imports", "review_instalments", "Imports: review, a bill paid in two instalments", .imports, settle: 1.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.instalmentsId)
+            },
+            // A bill several pairs of debits add up to: Keep this pair, for each.
+            screen("imports", "review_instalment_pairs", "Imports: review, which pair of instalments", .imports, settle: 1.5) { _, context in
+                let demo = ImportReviewDemo.make(context)
+                context.environment.importCenter.showSnapshotPlan(demo.plan, selecting: demo.pairsId)
+            },
             // A Ready receipt linked to a demo debit, its peek opened in place.
             screen("imports", "review_peek", "Imports: review, a linked transaction's peek opened", .imports, settle: 1.5) { _, context in
                 let demo = ImportReviewDemo.make(context)
@@ -564,7 +780,10 @@ enum SnapshotCatalog {
     static func sheet(_ name: String, _ title: String, settle: Double = 0.6,
                       _ make: @escaping @MainActor (SnapshotContext) async throws -> AnyView) -> SnapshotRoute {
         SnapshotRoute(name: "sheet-\(name)", title: "Sheet: \(title)", settleFactor: settle) { context in
-            AnyView(SnapshotSheetCanvas(sheet: try await make(context)))
+            let sheet = try await make(context)
+            // The kinds' names, custom ones included, as ContentView hands them to its sheets.
+            let kinds = (try? await context.dbQueue.read { db in try DocumentKindCatalog.load(db: db) }) ?? DocumentKindCatalog(customKinds: [])
+            return AnyView(SnapshotSheetCanvas(sheet: sheet).environment(\.documentKinds, kinds))
         }
     }
 
@@ -590,9 +809,20 @@ enum SnapshotCatalog {
                     throw SnapshotMissing("Person A and Person B")
                 }
                 let purchase = model.property?.purchaseDate
-                let error = model.setOwners([PropertyOwner(propertyId: propertyId, personId: a, shareBasisPoints: 6_000, fromDate: purchase),
-                                             PropertyOwner(propertyId: propertyId, personId: b, shareBasisPoints: 3_000, fromDate: purchase)])
-                    ?? "The shares don't add up to 100%."
+                // Tried and rolled back: the write's own refusal.
+                let owners = [PropertyOwner(propertyId: propertyId, personId: a, shareBasisPoints: 6_000, fromDate: purchase),
+                              PropertyOwner(propertyId: propertyId, personId: b, shareBasisPoints: 3_000, fromDate: purchase)]
+                var error = "The shares don't add up to 100%."
+                do {
+                    try await context.dbQueue.write { db in
+                        try db.inSavepoint {
+                            _ = try Properties.setOwners(db: db, propertyId: propertyId, owners)
+                            return .rollback
+                        }
+                    }
+                } catch let refusal {
+                    error = PropertyMessages.text(for: refusal)
+                }
                 return AnyView(OwnersSheet(viewModel: model, rows: [OwnersSheet.Row(personId: a, shareText: "60", from: purchase),
                                                                     OwnersSheet.Row(personId: b, shareText: "30", from: purchase)],
                                            error: error))
@@ -797,7 +1027,7 @@ enum SnapshotCatalog {
                 return AnyView(EditTransactionSheet(
                     transaction: transaction, categories: model.categories, groups: model.groups, recentIds: model.recentCategoryIds,
                     createCategory: model.createCategory, transfer: model.transferActions, manual: model.manualActions,
-                    onSave: { _ in .saved }))
+                    onSave: { _, _, done in done(.saved) }))
             }
         ]
     }
@@ -848,6 +1078,47 @@ extension SnapshotContext {
     func propertyId() throws -> Int64 {
         guard let id = try dbQueue.read({ db in try Property.order(Column("id")).fetchOne(db)?.id }) else { throw SnapshotMissing("a property") }
         return id
+    }
+
+    /// The demo copy's custom kinds (made once): Boiler service — the demo's boiler repair invoice
+    /// filed under it and linked to the property and its tenancies too — Lift service (the first
+    /// document not linked to anything, filed under it) and Club fees.
+    @discardableResult
+    func demoCustomKinds() throws -> (boiler: Int64, lift: Int64, fees: Int64, documentId: Int64?) {
+        let made = try dbQueue.write { db -> (boiler: Int64, lift: Int64, fees: Int64, documentId: Int64?) in
+            let catalog = try DocumentKindCatalog.load(db: db)
+            func kind(_ name: String, _ area: DocumentArea) throws -> Int64 {
+                if let id = catalog.custom(named: name)?.id { return id }
+                guard let id = try CustomDocumentKinds.create(db: db, name: name, area: area, now: AppClock.now).id else {
+                    throw SnapshotMissing("The custom kind \(name)")
+                }
+                return id
+            }
+            let boiler = try kind("Boiler service", .property), lift = try kind("Lift service", .property), fees = try kind("Club fees", .other)
+            var document = try EvidenceDocument.filter(Column("originalFileName") == "Boiler repair invoice.pdf").fetchOne(db)
+            if document?.customKindId == nil, document?.kind == .other {
+                document?.customKindId = boiler
+                try document?.update(db)
+            }
+            if try EvidenceDocument.filter(Column("customKindId") == lift).fetchCount(db) == 0,
+               var unlinked = try EvidenceDocument.fetchOne(db, sql: """
+                   SELECT * FROM \(EvidenceDocument.databaseTableName) WHERE id NOT IN (SELECT documentId FROM \(DocumentLink.databaseTableName))
+                   ORDER BY id LIMIT 1
+                   """) {
+                unlinked.kind = .other
+                unlinked.customKindId = lift
+                try unlinked.update(db)
+            }
+            return (boiler, lift, fees, document?.id)
+        }
+        if let documentId = made.documentId {
+            let tenancyIds = try dbQueue.read { db in try Tenancy.fetchAll(db).compactMap(\.id) }
+            for entity in [try? propertyId()].compactMap({ $0 }).map({ EvidenceEntity(type: .property, id: $0) })
+                + tenancyIds.map({ EvidenceEntity(type: .tenancy, id: $0) }) {
+                _ = try? library.link(documentId, to: entity)
+            }
+        }
+        return made
     }
 
     func documentId(kind: DocumentKind) -> Int64? {

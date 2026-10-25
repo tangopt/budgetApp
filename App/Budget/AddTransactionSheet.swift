@@ -13,17 +13,21 @@ struct AddTransactionSheet: View {
     let recentIds: [Int64]
     let createCategory: CreateCategory
     /// Saves and reloads; `.failed` keeps the sheet open with the message.
-    let onSave: (ManualTransactionInput) -> SaveOutcome
+    /// Saves the transaction; one that would change a filed return asks first (`.asks`, plan
+    /// Task 14) and is saved again with the answer.
+    let onSave: CheckedSave<ManualTransactionInput>
     @Environment(\.dismiss) private var dismiss
 
     @State private var draft: ManualTransactionDraft
     @State private var categoryId: Int64?
     @State private var note = ""
+    /// Save waiting on the filed-year question.
+    @StateObject private var gate = FiledYearGate()
     @State private var errorMessage: String?
 
     /// `accountId` and `categoryId` preselect (an unknown account falls back to the first).
     init(accounts: [Account], accountId: Int64?, categoryId: Int64? = nil, categories: [Category], groups: [CategoryGroup],
-         recentIds: [Int64], createCategory: @escaping CreateCategory, onSave: @escaping (ManualTransactionInput) -> SaveOutcome) {
+         recentIds: [Int64], createCategory: @escaping CreateCategory, onSave: @escaping CheckedSave<ManualTransactionInput>) {
         self.accounts = accounts
         self.categories = categories
         self.groups = groups
@@ -63,13 +67,17 @@ struct AddTransactionSheet: View {
         }
         .onChange(of: draft) { _, _ in errorMessage = nil }
         .onChange(of: categoryId) { _, _ in errorMessage = nil }
+        .filedYearGate(gate)
     }
 
     private func save() {
         guard let input = draft.input(categoryId: categoryId, note: note) else { return }
-        switch onSave(input) {
-        case .saved, .savedButReloadFailed: dismiss()
-        case .failed(let message): errorMessage = message
+        errorMessage = nil
+        onSave(input, gate) { outcome in
+            switch outcome {
+            case .saved, .savedButReloadFailed: dismiss()
+            case .failed(let message): errorMessage = message
+            }
         }
     }
 }

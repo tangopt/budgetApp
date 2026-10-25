@@ -141,6 +141,17 @@ public struct SyncStateRow: Codable, Equatable, FetchableRecord, PersistableReco
     public static let databaseTableName = "syncState"
 }
 
+/// A redirect made from a record the server already has must be saved over that record's server version:
+/// the tombstone keeps the record's `systemFields` (the server version it last saw), as `syncRecord` did.
+func registerSyncRedirectStampMigration(_ migrator: inout DatabaseMigrator) {
+    // Only adds a nullable column to a local table.
+    migrator.registerMigration("syncTombstoneSystemFields") { db in
+        try db.alter(table: "syncTombstone") { t in
+            t.add(column: "systemFields", .blob)
+        }
+    }
+}
+
 func registerSyncMigration(_ migrator: inout DatabaseMigrator) {
     // Only adds tables: no existing table, column or value changes.
     migrator.registerMigration("createSync") { db in

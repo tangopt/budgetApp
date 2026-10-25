@@ -28,7 +28,7 @@ public enum LearntFigures {
     /// Whether figure positions are learnt from and read on documents of `kind`.
     public static func learns(_ kind: ImportKind) -> Bool {
         switch kind {
-        case .evidence, .utilityInvoice, .payrollForm: return true
+        case .evidence, .customEvidence, .utilityInvoice, .payrollForm: return true
         default: return false
         }
     }
@@ -181,7 +181,8 @@ public enum LearntFigures {
         }
         if changed, item.placement != nil {
             item.placement = ImportNaming.placement(kind: item.recognition.kind, facts: item.facts, file: item.file,
-                                                    persons: item.placement?.metadata.persons ?? [])
+                                                    persons: item.placement?.metadata.persons ?? [],
+                                                customKind: item.placement?.customKind)
         }
     }
 

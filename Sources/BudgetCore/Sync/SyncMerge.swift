@@ -377,12 +377,15 @@ public enum SyncMerge {
         try db.execute(sql: "DELETE FROM syncPending WHERE uuid = ?", arguments: [old])
     }
 
-    /// Remembers that `old` is `new` now: a tombstone with `mergedInto`.
-    static func redirect(_ old: String, to new: String, table: String, localId: Int64, zone: String, by: String?, now: Date, db: Database) throws {
+    /// Remembers that `old` is `new` now: a tombstone with `mergedInto`. `systemFields`: the server version of
+    /// `old` this device last saw, when it had one, so the redirect can be saved over it.
+    static func redirect(_ old: String, to new: String, table: String, localId: Int64, zone: String, by: String?, now: Date,
+                         systemFields: Data? = nil, db: Database) throws {
         try db.execute(sql: """
-            INSERT INTO syncTombstone(uuid, tableName, localId, zone, deletedBy, deletedAt, mergedInto) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(uuid) DO UPDATE SET mergedInto = excluded.mergedInto, deletedAt = excluded.deletedAt
-            """, arguments: [old, table, localId, zone, by, now, new])
+            INSERT INTO syncTombstone(uuid, tableName, localId, zone, deletedBy, deletedAt, mergedInto, systemFields) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(uuid) DO UPDATE SET mergedInto = excluded.mergedInto, deletedAt = excluded.deletedAt,
+                systemFields = COALESCE(excluded.systemFields, syncTombstone.systemFields)
+            """, arguments: [old, table, localId, zone, by, now, new, systemFields])
     }
 
     /// Rows whose synced references (declared, logical, polymorphic, or ids inside JSON) name `table`'s row

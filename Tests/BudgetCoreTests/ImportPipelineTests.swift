@@ -209,7 +209,7 @@ final class ImportPipelineTests: XCTestCase {
         XCTAssertEqual(plan.items.count, 2)
         XCTAssertEqual(plan.items(in: .ready).map(\.file.fileName), ["r1.pdf"])
         XCTAssertEqual(plan.items(in: .duplicates).first?.duplicate,
-                       ImportDuplicate(level: .file, of: "Same file as r1.pdf", originalItemId: plan.items(in: .ready).first?.id))
+                       ImportDuplicate(level: .file, of: "Identical file: same as r1.pdf in this import", originalItemId: plan.items(in: .ready).first?.id))
         XCTAssertTrue(plan.canConfirm)
     }
 
@@ -473,7 +473,7 @@ final class ImportPipelineTests: XCTestCase {
                                                    ImportFact(field: .amount, value: .money(12000, .eur), source: .textLayer, confidence: .certain, reason: "test")])
         }
         let annotated = try await db.read { try ImportDuplicates.annotate([receipt("a.pdf"), receipt("b.pdf")], db: $0) }
-        XCTAssertEqual(annotated[1].needsYouReasons, ["Possibly the same document as a.pdf"])
+        XCTAssertEqual(annotated[1].needsYouReasons, ["Possibly a duplicate of a.pdf: also an insurance receipt dated 2023-03-05 for €120.00"])
         let acknowledged = try await pipeline.resolve(ImportPlan(items: annotated), itemId: annotated[1].id, .acknowledge)
         XCTAssertEqual(acknowledged.items.map(\.section), [.ready, .ready])
         // Another resolution re-runs the duplicate pass: the acknowledgement holds.
@@ -770,7 +770,7 @@ final class ImportPipelineTests: XCTestCase {
         }
         let refreshed = try await pipeline.plan(adding: [], to: acknowledged, intent: .none)
         let again = try await pipeline.resolve(refreshed, itemId: annotated[0].id, .leaveOut)
-        XCTAssertEqual(again.items[1].needsYouReasons, ["Possibly the same document as Insurance March"])
+        XCTAssertEqual(again.items[1].needsYouReasons, ["Possibly a duplicate of Insurance March: also an insurance receipt dated 2023-03-05 for €120.00"])
     }
 
     func testReadyGroupCopyForExportsAndAdvices() {

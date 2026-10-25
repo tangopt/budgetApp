@@ -134,6 +134,8 @@ private struct RuleSheet: View {
     @State private var previewKey: PreviewKey?
     @State private var previewError: String?
     @State private var error: String?
+    /// Saves through the filed-year check (filing the matches may change a filed return); its question shows here.
+    @StateObject private var gate = FiledYearGate()
 
     init(draft: RuleDraft, viewModel: RulesViewModel, dismiss: @escaping () -> Void) {
         self.draft = draft
@@ -165,7 +167,7 @@ private struct RuleSheet: View {
             error: error,
             width: 480,
             onCancel: dismiss,
-            primary: SheetAction(draft.ruleId == nil ? "Add Rule" : "Save", isEnabled: canSave, action: save)
+            primary: SheetAction(draft.ruleId == nil ? "Add Rule" : "Save", isEnabled: canSave && !gate.isRunning, action: save)
         ) {
             SheetForm {
                 LabeledContent("Pattern") {
@@ -195,6 +197,7 @@ private struct RuleSheet: View {
             }
             previewSection
         }
+        .filedYearGate(gate)
         .task(id: PreviewKey(pattern: pattern, matchType: matchType)) {
             // A short pause so typing doesn't run a search per keystroke.
             try? await Task.sleep(for: .milliseconds(150))
@@ -269,8 +272,10 @@ private struct RuleSheet: View {
 
     private func save() {
         guard canSave, let categoryId else { return }
-        error = viewModel.save(ruleId: draft.ruleId, pattern: pattern, matchType: matchType, categoryId: categoryId,
-                               applyToUncategorised: appliesNow)
-        if error == nil { dismiss() }
+        viewModel.save(ruleId: draft.ruleId, pattern: pattern, matchType: matchType, categoryId: categoryId,
+                       applyToUncategorised: appliesNow, gate: gate) { message in
+            error = message
+            if message == nil { dismiss() }
+        }
     }
 }

@@ -78,7 +78,28 @@ public enum DemoDatabase {
         let library = EvidenceLibrary(root: evidenceRoot, database: dbQueue)
         let added = try builder.addDocuments(library: library, scratch: scratch)
         try dbQueue.write { db in try builder.linkDocuments(db, added: added) }
+        try keepWaitingFile(dbQueue: dbQueue, evidenceRoot: evidenceRoot, scratch: scratch, asOf: builder.asOf)
+        builder.count("waiting files")
         return builder.report
+    }
+
+    /// A letter the importer set aside "for later", in Mango's own copy under `Waiting` beside the evidence folder.
+    static let waitingLetter = (fileName: "Heating inspection letter.pdf", issuer: "Fogo Limpo Lda", title: "Chimney inspection reminder",
+                                lines: [("Property", "Property A"), ("Inspection due", "March 2027"), ("Message", "Please book a visit.")])
+
+    private static func keepWaitingFile(dbQueue: DatabaseQueue, evidenceRoot: URL, scratch: URL, asOf: Date) throws {
+        let letter = waitingLetter
+        let file = scratch.appendingPathComponent("waiting-\(letter.fileName)")
+        let data = DemoPDF.data(page(issuer: letter.issuer, title: letter.title, lines: letter.lines))
+        try data.write(to: file)
+        let sha = try EvidenceLibrary.sha256(of: file)
+        let waitingRoot = evidenceRoot.deletingLastPathComponent().appendingPathComponent("Waiting", isDirectory: true)
+        // A demo rebuilt beside an older one: its copy of this one letter goes first.
+        try? FileManager.default.removeItem(at: waitingRoot.appendingPathComponent(sha))
+        let text = ([letter.issuer, letter.title] + letter.lines.map { "\($0.0) \($0.1)" }).joined(separator: "\n")
+        let setAside = SetAsideFile(url: file, fileName: letter.fileName, sha256: sha, byteCount: Int64(data.count), text: text,
+                                    textStatus: .text, reason: "Not recognised", recognisedAs: "Unknown")
+        _ = try ImportWaitingList(root: waitingRoot, database: dbQueue).keep([setAside], now: asOf)
     }
 
     // MARK: Dates
@@ -677,6 +698,7 @@ extension DemoDatabase {
                             lines: [("Work", "Pressure valve replaced"), ("Amount", "€320.00")], date: date(2025, 2, 10), amount: 32_000,
                             links: [.transaction(repair.id!)]))
             try tx(db, "Euro Current", date(2026, 3, 5), "PLUMBER SERVICES", -14_500, "Repairs")
+            try repairs(db)
             docs.append(doc("Bank statement 2025.pdf", kind: .bankStatement, issuer: "Banco Exemplo", title: "Annual statement of fees 2025",
                             lines: [("Account", "Euro Current"), ("Fees", "€49.92")], date: date(2026, 1, 15), amount: 4_992,
                             links: bankFees2025.map { .transaction($0) }))
@@ -702,6 +724,54 @@ extension DemoDatabase {
             let periodEnd = day(year, month, 14)
             let periodStart = calendar.date(byAdding: .month, value: -months, to: day(year, month, 15))!
             utilityDebits.append((kind, debit, amount, row.id!, (periodStart, periodEnd), day(year, month, issueDay)))
+        }
+
+        /// What the import samples are made from (`DemoImportSamples`): debits of Repairs, with no
+        /// document yet, that repair bills, a stamp duty note and an instalment invoice belong to.
+        static let sampleRepairDebit = (description: "CANALIZACOES EXEMPLO LDA", day: DemoDatabase.date(2026, 8, 18), amount: -18_450)
+        static let sampleInstalmentDebits = (description: "CARPINTARIA EXEMPLO LDA", first: DemoDatabase.date(2026, 8, 25),
+                                             second: DemoDatabase.date(2026, 9, 24), each: -25_000)
+        static let sampleStampDutyDebit = (description: "IMPOSTO DO SELO", day: DemoDatabase.date(2026, 9, 2), amount: -480)
+
+        var boilerServiceKindId: Int64 = 0
+
+        /// Repairs on the Euro Current account: one debit with three documents (the bill, its
+        /// receipt and the bank's advice), one invoice paid in two debits, a custom kind
+        /// ("Boiler service") with a certificate, and the debits the import samples are made for.
+        func repairs(_ db: Database) throws {
+            var kind = CustomDocumentKind(name: "Boiler service", area: .property, createdAt: date(2026, 2, 20))
+            try kind.insert(db)
+            boilerServiceKindId = kind.id!
+            count("custom document kinds")
+            docs.append(doc("Boiler service 2026.pdf", kind: .other, issuer: "Calor Seguro Lda", title: "Annual boiler service certificate",
+                            lines: [("Appliance", "Gas boiler"), ("Serviced", "18 Feb 2026"), ("Next service", "Feb 2027"), ("Amount", "€95.00")],
+                            date: date(2026, 2, 18), amount: 9_500, links: [EvidenceEntity(type: .property, id: propertyId)],
+                            customKindId: kind.id))
+
+            // One debit, three documents.
+            let tiling = try tx(db, "Euro Current", date(2026, 4, 9), "TILING EXEMPLO LDA", -21_800, "Repairs", note: "Bathroom tiles")
+            let tilingLink: [EvidenceEntity] = [.transaction(tiling.id!)]
+            docs.append(doc("Tiling invoice FR 2026-18.pdf", kind: .repairInvoice, issuer: "Tiling Exemplo Lda", title: "Fatura-recibo FR 2026/18",
+                            lines: [("Work", "Bathroom wall tiles"), ("Amount", "€218.00")], date: date(2026, 4, 9), amount: 21_800, links: tilingLink))
+            docs.append(doc("Tiling receipt RC 2026-18.pdf", kind: .other, issuer: "Tiling Exemplo Lda", title: "Receipt RC 2026/18",
+                            lines: [("Paid", "€218.00"), ("Method", "Bank transfer")], date: date(2026, 4, 9), amount: 21_800, links: tilingLink))
+            docs.append(doc("Tiling debit advice.pdf", kind: .bankDebitAdvice, issuer: "Banco Exemplo", title: "Debit advice",
+                            lines: [("Date", "9 Apr 2026"), ("Beneficiary", "TILING EXEMPLO LDA"), ("Amount", "€218.00")],
+                            date: date(2026, 4, 9), amount: 21_800, links: tilingLink))
+
+            // One invoice, two debits.
+            let first = try tx(db, "Euro Current", date(2026, 6, 12), "SHUTTERS EXEMPLO LDA", -30_000, "Repairs", note: "Shutters, first half")
+            let second = try tx(db, "Euro Current", date(2026, 7, 10), "SHUTTERS EXEMPLO LDA", -30_000, "Repairs", note: "Shutters, second half")
+            docs.append(doc("Shutters invoice FT 2026-41.pdf", kind: .repairInvoice, issuer: "Shutters Exemplo Lda", title: "Fatura FT 2026/41",
+                            lines: [("Work", "Shutters replaced"), ("Total", "€600.00"), ("Payment", "Two instalments of €300.00")],
+                            date: date(2026, 6, 1), amount: 60_000, links: [.transaction(first.id!), .transaction(second.id!)]))
+
+            // For the import samples: no document yet.
+            let sample = Builder.sampleRepairDebit, pair = Builder.sampleInstalmentDebits, duty = Builder.sampleStampDutyDebit
+            try tx(db, "Euro Current", sample.day, sample.description, sample.amount, "Repairs")
+            try tx(db, "Euro Current", pair.first, pair.description, pair.each, "Repairs")
+            try tx(db, "Euro Current", pair.second, pair.description, pair.each, "Repairs")
+            try tx(db, "Euro Current", duty.day, duty.description, duty.amount, "Bank fees")
         }
 
         func rentHistory(_ db: Database) throws {
@@ -1030,14 +1100,14 @@ extension DemoDatabase {
         // MARK: Documents
 
         func doc(_ fileName: String, kind: DocumentKind, issuer: String, title: String, lines: [(String, String)], date: Date,
-                 amount: Int?, links: [EvidenceEntity]) -> DocSpec {
+                 amount: Int?, links: [EvidenceEntity], customKindId: Int64? = nil) -> DocSpec {
             let currency: Currency? = [.p60, .p11d, .hmrcPaymentProof].contains(kind) ? .gbp : (amount == nil ? nil : .eur)
-            return DocSpec(fileName: fileName, page: DemoDatabase.page(issuer: issuer, title: title, lines: lines),
-                           metadata: EvidenceMetadata(kind: kind, docDate: date, amountMinorUnits: amount, currency: currency,
+            var metadata = EvidenceMetadata(kind: kind, docDate: date, amountMinorUnits: amount, currency: currency,
                                                       canonicalName: fileName.replacingOccurrences(of: ".pdf", with: ""),
                                                       textStatus: .text,
-                                                      extractedText: ([issuer, title] + lines.map { "\($0.0) \($0.1)" }).joined(separator: "\n")),
-                           links: links)
+                                                      extractedText: ([issuer, title] + lines.map { "\($0.0) \($0.1)" }).joined(separator: "\n"))
+            metadata.customKindId = customKindId
+            return DocSpec(fileName: fileName, page: DemoDatabase.page(issuer: issuer, title: title, lines: lines), metadata: metadata, links: links)
         }
 
         /// Generates and adds every document (outside a write: the library writes itself).

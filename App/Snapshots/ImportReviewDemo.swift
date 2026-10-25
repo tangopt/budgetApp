@@ -29,6 +29,10 @@ enum ImportReviewDemo {
         let rowId: UUID
         /// A receipt read with learnt rules, a date to check (with "Remember for this issuer") and what it will remember.
         let learntId: UUID
+        /// A repair bill two debits of one merchant add up to: "Keep both links" or "File without a link".
+        let instalmentsId: UUID
+        /// A bill several pairs of debits add up to: "Keep this pair" for each.
+        let pairsId: UUID
     }
 
     static func day(_ year: Int, _ month: Int, _ day: Int) -> Date {
@@ -201,7 +205,7 @@ enum ImportReviewDemo {
         let duplicate = ImportItem(
             file: file("EDP invoice FT 0451-41022.pdf"), recognition: certain(.utilityInvoice, "EDP layout"),
             title: "EDP invoice FT 0451/41022", effect: .none,
-            duplicate: ImportDuplicate(level: .document, of: "Same document as EDP invoice FT 0451/41022 of 1 May 2026"),
+            duplicate: ImportDuplicate(level: .document, of: "Duplicate of EDP invoice FT 0451/41022 of 1 May 2026: the same utility invoice, invoice number FT 0451/41022"),
             groupKey: "Utility invoices")
 
         let leftOut = ImportItem(
@@ -234,12 +238,47 @@ enum ImportReviewDemo {
                                              actionJSON: "{\"descriptionKey\":\"EXAMPLE SEGUROS\"}", actionLabel: "Paid by “EXAMPLE SEGUROS”",
                                              replaces: "Paid by “EXAMPLE INSURANCE”")]
 
-        let plan = ImportPlan(items: [invoice, held, figures, scan, learnt, statement, statementRows, checked, row, skipped, receipt(51, 5), receipt(52, 6),
-                                      insurance, duplicate, leftOut],
+        // A plumber's bill paid in two instalments: both links proposed, asked (never certain on their own).
+        let instalmentsId = UUID()
+        let instalmentsReason = "Paid in 2 instalments: €40.00 + €39.95"
+        let instalments = ImportItem(
+            id: instalmentsId, file: file("Fatura canalizador.pdf"), recognition: certain(.evidence(.repairInvoice), "Repair bill wording"),
+            title: "Repair bill of 2026-03-05",
+            facts: [fact(.amount, .money(7_995, .eur)), fact(.docDate, .date(day(2026, 3, 5)))],
+            placement: ImportPlacement(metadata: EvidenceMetadata(kind: .repairInvoice, docDate: day(2026, 3, 5), amountMinorUnits: 7_995, currency: .eur),
+                                       canonicalName: "20260305 - Property - Repair bill - Canalizacoes Exemplo"),
+            links: [ProposedLink(entity: .transaction(9_001), label: "PAG CANALIZACOES EXEMPLO · 5 Mar 2026 · −€40.00", confidence: .needsReview,
+                                 reasons: [instalmentsReason]),
+                    ProposedLink(entity: .transaction(9_002), label: "PAG CANALIZACOES EXEMPLO · 25 Mar 2026 · −€39.95", confidence: .needsReview,
+                                 reasons: [instalmentsReason])],
+            issues: [ImportIssue(id: EvidenceDocumentReader.instalmentsIssueId, kind: .readerProblem(instalmentsReason), reason: instalmentsReason,
+                                 offers: [.acknowledge, .fileWithoutLink])],
+            groupKey: "Repair bill documents")
+
+        // Several pairs fit: each one kept whole with "Keep this pair".
+        let pairsId = UUID()
+        let pairReason = "Paid in 2 instalments: €60.00 + €60.50"
+        let pairDebits: [(Int64, String)] = [(9_011, "PAG ELECTRICISTA DEMO · 2 Apr 2026 · −€60.00"), (9_012, "PAG ELECTRICISTA DEMO · 20 Apr 2026 · −€60.50"),
+                                             (9_013, "PAG ELECTRICISTA DEMO · 22 Apr 2026 · −€60.50"), (9_014, "PAG ELECTRICISTA DEMO · 3 Apr 2026 · −€60.00")]
+        let pairsQuestion = "It may have been paid in 2 instalments, and 3 pairs of payments add up to it: which pair is it?"
+        let pairs = ImportItem(
+            id: pairsId, file: file("Fatura electricista.pdf"), recognition: certain(.evidence(.repairInvoice), "Repair bill wording"),
+            title: "Repair bill of 2026-04-01",
+            facts: [fact(.amount, .money(12_050, .eur)), fact(.docDate, .date(day(2026, 4, 1)))],
+            placement: ImportPlacement(metadata: EvidenceMetadata(kind: .repairInvoice, docDate: day(2026, 4, 1), amountMinorUnits: 12_050, currency: .eur),
+                                       canonicalName: "20260401 - Property - Repair bill - Electricista Demo"),
+            links: pairDebits.map { ProposedLink(entity: .transaction($0.0), label: $0.1, confidence: .needsReview, reasons: [pairReason]) },
+            issues: [ImportIssue(id: EvidenceDocumentReader.instalmentPairsIssueId, kind: .readerProblem(pairsQuestion), reason: pairsQuestion,
+                                 offers: [.linkTransactions([9_011, 9_012]), .linkTransactions([9_011, 9_013]), .linkTransactions([9_014, 9_012]),
+                                          .fileWithoutLink])],
+            groupKey: "Repair bill documents")
+
+        let plan = ImportPlan(items: [invoice, held, figures, scan, learnt, instalments, pairs, statement, statementRows, checked, row, skipped, receipt(51, 5),
+                                      receipt(52, 6), insurance, duplicate, leftOut],
                               ignoredFiles: [".DS_Store"])
         return Demo(plan: plan, invoiceId: invoiceId, heldId: heldId, scanId: scanId, statementId: statementId, figuresId: figuresId,
                     insuranceId: insuranceId, linkedTransactionId: debit?.transaction.id, checkedId: checkedId, rowId: rowId,
-                    learntId: learntId)
+                    learntId: learntId, instalmentsId: instalmentsId, pairsId: pairsId)
     }
 }
 

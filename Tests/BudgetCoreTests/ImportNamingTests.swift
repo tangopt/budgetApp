@@ -73,7 +73,8 @@ final class ImportNamingTests: XCTestCase {
 
     func testEvidenceGroups() {
         let cases: [(DocumentKind, String)] = [(.insurancePolicy, "Property"), (.sa302, "Tax UK"), (.ptIRSAssessment, "Tax PT"),
-                                               (.bankStatement, "Bank"), (.other, "Other")]
+                                               (.bankStatement, "Bank"), (.other, "Other"),
+                                               (.repairInvoice, "Property"), (.stampDuty, "Tax PT")]
         for (kind, area) in cases {
             let p = place(.evidence(kind), [fact(.docDate, .date(day(2026, 3, 4))), fact(.issuer, .text("Demo Co"))])
             XCTAssertEqual(p.canonicalName, "20260304 - \(area) - \(kind.displayName) - Demo Co", "\(kind)")

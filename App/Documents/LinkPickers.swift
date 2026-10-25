@@ -59,6 +59,7 @@ struct LinkTransactionSheet: View {
             .frame(height: 380)
             .sheetListFrame()
         }
+        .checkingFiledYears(viewModel.isCheckingFiledYears)
         .task(id: SearchKey(text: query, isReady: viewModel.catalog != nil)) {
             let text = query.trimmingCharacters(in: .whitespaces)
             guard !text.isEmpty, let catalog = viewModel.catalog else { results = []; return }
@@ -126,7 +127,7 @@ struct LinkDocumentSheet: View {
                         }
                     }
                 }
-                Section(query.trimmingCharacters(in: .whitespaces).isEmpty ? "Not linked yet" : "Search results") {
+                Section(query.trimmingCharacters(in: .whitespaces).isEmpty ? "Not linked yet, or partly paid" : "Search results") {
                     if results.isEmpty, model.pickerIndex != nil {
                         Text("No documents.").foregroundStyle(.secondary)
                     }
@@ -142,7 +143,8 @@ struct LinkDocumentSheet: View {
             let text = query.trimmingCharacters(in: .whitespaces)
             if !text.isEmpty { try? await Task.sleep(for: .milliseconds(150)) }
             guard !Task.isCancelled else { return }
-            let filter = EvidenceDocumentSearch.Filter(text: text, linkState: text.isEmpty ? .unlinked : .any)
+            // Before typing: documents not linked yet, and part-paid ones (the rest of a bill paid in instalments).
+            let filter = EvidenceDocumentSearch.Filter(text: text, linkState: text.isEmpty ? .unlinkedOrPartlyPaid : .any)
             let found = await Task.detached(priority: .userInitiated) {
                 Array(EvidenceDocumentSearch.entries(index, filter: filter).prefix(100))
             }.value
@@ -153,7 +155,8 @@ struct LinkDocumentSheet: View {
     private func pickRow(_ entry: EvidenceDocumentSearch.Entry, reasons: [String] = []) -> some View {
         let summary = entry.summary
         return HStack(spacing: 10) {
-            EvidenceDocumentPickRow(summary: summary, reasons: reasons)
+            // A part-paid document says so where nothing else is said about it.
+            EvidenceDocumentPickRow(summary: summary, reasons: reasons.isEmpty && entry.isPartlyPaid ? ["Partly paid"] : reasons)
             Spacer(minLength: 8)
             if model.staging.isLinked(summary.id) {
                 PickerLinkedMark(title: model.staging.willLink(summary.id) ? "Will be linked" : "Linked")

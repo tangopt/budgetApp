@@ -9,6 +9,7 @@ import BudgetCore
 /// row actions as icons, each panel's own action in its corner.
 struct PropertyProfileTab: View {
     @ObservedObject var viewModel: PropertyViewModel
+    @Environment(\.documentKinds) private var kinds
 
     @State private var editingProperty: PropertyDraft?
     @State private var editingOwners = false
@@ -58,7 +59,7 @@ struct PropertyProfileTab: View {
         }
         .onChange(of: viewModel.propertyId) { _, _ in locator.reset() }
         .confirmationDialog(snapshot.property.map { "Delete “\($0.name)”?" } ?? "Delete the property?", isPresented: $confirmingDelete) {
-            Button("Delete property", role: .destructive) { viewModel.errorMessage = viewModel.deleteProperty() }
+            Button("Delete property", role: .destructive) { viewModel.deleteProperty() }
         } message: {
             Text("Its owners, account and group links, tenancies, rents, receipts and their credit links go. Transactions and documents stay. This can't be undone.")
         }
@@ -194,7 +195,7 @@ struct PropertyProfileTab: View {
                     // No accessibility value: the picker stays its own element, so VoiceOver reaches it.
                     DataTableColumn("Role") { link, _ in
                         Picker("Role", selection: Binding(get: { link.role },
-                                                          set: { viewModel.errorMessage = viewModel.setAccount(link.accountId, role: $0) })) {
+                                                          set: { viewModel.setAccount(link.accountId, role: $0) })) {
                             ForEach(PropertyAccountRole.allCases, id: \.self) { Text(PropertyFormat.role($0)).tag($0) }
                         }
                         .labelsHidden()
@@ -343,7 +344,7 @@ struct PropertyProfileTab: View {
                         }
                         .help(document.displayName)
                     },
-                    .status("Kind") { StatusPill($0.kind.displayName) },
+                    .status("Kind") { StatusPill(kinds.displayName(of: $0)) },
                     .date("Date") { $0.docDate },
                     .actions { document in
                         [DataTableAction("Open \(document.displayName)", systemImage: "arrow.up.forward.square", inline: true) {

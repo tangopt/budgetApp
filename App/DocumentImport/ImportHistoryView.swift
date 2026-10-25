@@ -9,6 +9,7 @@ import BudgetCore
 struct ImportHistoryView: View {
     @ObservedObject var center: ImportCenterModel
     let pickFiles: () -> Void
+    @State private var setAsideFiles: [SetAsideFile]?
 
     static let tableMinimumWidth: CGFloat = 400
     static let detailWidth: CGFloat = 340
@@ -30,7 +31,7 @@ struct ImportHistoryView: View {
             default:
                 EmptyView()
             }
-            if center.runs.isEmpty, center.phase == .idle {
+            if center.runs.isEmpty, center.waiting.isEmpty, center.phase == .idle {
                 EmptyState(systemImage: "tray.and.arrow.down", title: "Import documents",
                            message: "Drop files or folders anywhere in the window, or choose File ▸ Import… (⇧⌘I). Each file is recognised and placed for you to review; nothing is saved until you confirm the import.") {
                     Button("Import…", action: pickFiles).buttonStyle(.borderedProminent)
@@ -42,6 +43,9 @@ struct ImportHistoryView: View {
                         .font(.callout).foregroundStyle(.secondary).lineLimit(1)
                     Spacer(minLength: 8)
                     Button("Import…", action: pickFiles).buttonStyle(.borderedProminent)
+                }
+                if !center.waiting.isEmpty {
+                    ImportWaitingPanel(center: center)
                 }
                 HStack(alignment: .top, spacing: ScreenMetrics.spacing) {
                     ScrollView {
@@ -64,6 +68,22 @@ struct ImportHistoryView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear(perform: offerSetAside)
+        .onChange(of: finishedRunId) { offerSetAside() }
+        .sheet(isPresented: Binding(get: { setAsideFiles != nil }, set: { if !$0 { setAsideFiles = nil } })) {
+            SetAsideSheet(files: setAsideFiles ?? [], actions: .of(center), done: { setAsideFiles = nil })
+        }
+    }
+
+    private var finishedRunId: Int64? {
+        if case .finished(let summary) = center.phase { return summary.runId }
+        return nil
+    }
+
+    /// A finished run that left files unimported opens the sheet, once (the session remembers the run it was offered for).
+    private func offerSetAside() {
+        let offer = center.takeSetAsideOffer()
+        if !offer.isEmpty { setAsideFiles = offer }
     }
 }
 
@@ -92,7 +112,16 @@ struct ImportHistoryTable: View {
         [
             .date("Date") { $0.confirmedAt },
             .text("Entry point", width: .fit) { $0.entryPoint },
-            .text("Summary", width: .fill(min: 160), { $0.summary }, detail: { $0.undoSummary }),
+            // A sentence of figures: it wraps (the figures in it stay whole) rather than truncate at 1100×700.
+            DataTableColumn("Summary", width: .fill(min: 160), accessibilityValue: { [$0.summary, $0.undoSummary].compactMap { $0 }.joined(separator: ", ") }) { run, _ in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(run.summary.figuresUnbroken).fixedSize(horizontal: false, vertical: true)
+                    if let undo = run.undoSummary {
+                        Text(undo.figuresUnbroken).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.vertical, 3)
+            },
             .status("") { run in
                 run.undoneAt == nil ? nil : StatusPill("Undone", tone: .neutral, help: run.undoSummary)
             }

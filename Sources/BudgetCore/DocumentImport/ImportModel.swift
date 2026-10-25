@@ -6,8 +6,13 @@ public enum ImportKind: Hashable, Codable, Sendable {
     case payrollForm(PayrollFormKind)
     case bankStatementCSV, bankStatementPDF, bbvaStatement
     case evidence(DocumentKind)
+    /// A custom kind (spec 2026-10-24 §2), saved or pending in the review: read like
+    /// `.evidence(.other)`, then named and filed as the custom kind.
+    case customEvidence(CustomKindKey)
     case unknown
 
+    /// The kind's name; a custom kind's needs the catalog and the review's pending kinds
+    /// (`ImportKindNames`): here "Custom kind".
     public var displayName: String {
         switch self {
         case .rentReceiptsExport: return "Rent receipts export"
@@ -19,8 +24,134 @@ public enum ImportKind: Hashable, Codable, Sendable {
         case .bankStatementPDF: return "Bank statement (PDF)"
         case .bbvaStatement: return "BBVA statement"
         case .evidence(let kind): return kind.displayName
+        case .customEvidence: return "Custom kind"
         case .unknown: return "Unknown"
         }
+    }
+
+    /// The custom kind it is, if it is one.
+    public var customKindKey: CustomKindKey? {
+        if case .customEvidence(let key) = self { return key }
+        return nil
+    }
+}
+
+/// A custom kind as the review knows it: saved (`customDocumentKind` id) or created in this
+/// review and saved only at Confirm (`PendingDocumentKind.id`).
+public enum CustomKindKey: Hashable, Codable, Sendable {
+    case saved(Int64)
+    case pending(UUID)
+
+    /// The saved kind's id (nil for a pending one).
+    public var savedId: Int64? {
+        if case .saved(let id) = self { return id }
+        return nil
+    }
+
+    /// The kind token the duplicate rules compare: `"custom:<id>"`, `"pending:<uuid>"`.
+    var token: String {
+        switch self {
+        case .saved(let id): return "custom:\(id)"
+        case .pending(let id): return "pending:\(id.uuidString)"
+        }
+    }
+}
+
+/// A kind made with "New kind…" in the review: part of the plan until Confirm inserts it
+/// (Discard forgets it).
+public struct PendingDocumentKind: Equatable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var area: DocumentArea
+
+    public init(id: UUID = UUID(), name: String, area: DocumentArea) {
+        self.id = id
+        self.name = name
+        self.area = area
+    }
+}
+
+/// A custom kind's name and area as an item is named and filed with them.
+public struct ImportCustomKind: Equatable, Sendable {
+    public var key: CustomKindKey
+    public var name: String
+    public var area: DocumentArea
+
+    public init(key: CustomKindKey, name: String, area: DocumentArea) {
+        self.key = key
+        self.name = name
+        self.area = area
+    }
+}
+
+/// The custom kinds a review can name: the saved ones in use (`DocumentKindCatalog`) and the
+/// review's pending ones.
+public struct ImportKindNames: Equatable, Sendable {
+    public var kinds: [CustomKindKey: ImportCustomKind]
+
+    public init(catalog: DocumentKindCatalog, pending: [PendingDocumentKind]) {
+        var kinds: [CustomKindKey: ImportCustomKind] = [:]
+        for kind in catalog.customKinds {
+            guard let id = kind.id else { continue }
+            kinds[.saved(id)] = ImportCustomKind(key: .saved(id), name: kind.name, area: kind.area)
+        }
+        for kind in pending { kinds[.pending(kind.id)] = ImportCustomKind(key: .pending(kind.id), name: kind.name, area: kind.area) }
+        self.kinds = kinds
+    }
+
+    public init(_ kinds: [CustomKindKey: ImportCustomKind] = [:]) {
+        self.kinds = kinds
+    }
+
+    public subscript(key: CustomKindKey) -> ImportCustomKind? { kinds[key] }
+
+    /// The kind's name: a custom kind's from the catalog or the review, else its own.
+    public func displayName(_ kind: ImportKind) -> String {
+        if case .customEvidence(let key) = kind, let custom = kinds[key] { return custom.name }
+        return kind.displayName
+    }
+
+    /// The names by duplicate token (`CustomKindKey.token`), for the duplicate wording.
+    var byToken: [String: String] {
+        Dictionary(uniqueKeysWithValues: kinds.map { ($0.key.token, $0.value.name) })
+    }
+}
+
+/// One kind the review's chooser offers (built-ins, saved custom kinds, then the review's
+/// pending ones), with its label.
+public struct ImportKindChoice: Hashable, Sendable {
+    public var kind: ImportKind
+    public var label: String
+
+    public init(kind: ImportKind, label: String) {
+        self.kind = kind
+        self.label = label
+    }
+
+    /// The answer that files an item as it.
+    public var resolution: ImportResolution? {
+        switch kind {
+        case .evidence(let builtIn): return .chooseKind(builtIn)
+        case .customEvidence(let key): return .chooseCustomKind(key)
+        default: return nil
+        }
+    }
+
+    /// The label of the choice `name` would repeat, ignoring case, accents and surrounding spaces
+    /// (as "New kind…" refuses it, `ImportResolutionError.kindNameTaken`); nil when it is free or blank.
+    public static func takenName(_ name: String, among choices: [ImportKindChoice]) -> String? {
+        let key = DocumentKindCatalog.key(name)
+        guard !key.isEmpty else { return nil }
+        return choices.first { DocumentKindCatalog.key($0.label) == key }?.label
+    }
+
+    /// The built-in kinds by name, the saved custom kinds by name, then `pending` by name.
+    public static func choices(catalog: DocumentKindCatalog, pending: [PendingDocumentKind]) -> [ImportKindChoice] {
+        func ordered(_ a: ImportKindChoice, _ b: ImportKindChoice) -> Bool { a.label.localizedStandardCompare(b.label) == .orderedAscending }
+        let builtIns = DocumentKind.allCases.map { ImportKindChoice(kind: .evidence($0), label: $0.displayName) }.sorted(by: ordered)
+        let saved = catalog.customKinds.compactMap { kind in kind.id.map { ImportKindChoice(kind: .customEvidence(.saved($0)), label: kind.name) } }
+        let review = pending.map { ImportKindChoice(kind: .customEvidence(.pending($0.id)), label: $0.name) }.sorted(by: ordered)
+        return builtIns + saved + review
     }
 }
 
@@ -140,24 +271,38 @@ public struct ImportRuleDraft: Equatable, Sendable {
     /// The action of the learnt rule this draft will replace (its label), when there is one that
     /// does something else: "Will remember … (replaces: …)".
     public var replaces: String?
+    /// A `documentKind` draft for a kind made in this review: its action names no kind yet
+    /// (`{"kind":"other"}`); Confirm import fills in the id the kind is saved with.
+    public var pendingKindId: UUID?
 
-    public init(kind: ImportRuleKind, key: String, matchLabel: String, actionJSON: String, actionLabel: String, replaces: String? = nil) {
+    public init(kind: ImportRuleKind, key: String, matchLabel: String, actionJSON: String, actionLabel: String, replaces: String? = nil,
+                pendingKindId: UUID? = nil) {
         self.kind = kind
         self.key = key
         self.matchLabel = matchLabel
         self.actionJSON = actionJSON
         self.actionLabel = actionLabel
         self.replaces = replaces
+        self.pendingKindId = pendingKindId
+    }
+
+    /// What the draft does, as compared between drafts: its action, and the pending kind it names.
+    var actionIdentity: String {
+        pendingKindId.map { "\(actionJSON)#pending:\($0.uuidString)" } ?? actionJSON
     }
 }
 
 public struct ImportPlacement: Equatable, Sendable {
     public var metadata: EvidenceMetadata
     public var canonicalName: String
+    /// The custom kind it is filed as (its name and area), kept so the placement can be worked
+    /// out again from the facts (`ImportNaming.placement(customKind:)`).
+    public var customKind: ImportCustomKind?
 
-    public init(metadata: EvidenceMetadata, canonicalName: String) {
+    public init(metadata: EvidenceMetadata, canonicalName: String, customKind: ImportCustomKind? = nil) {
         self.metadata = metadata
         self.canonicalName = canonicalName
+        self.customKind = customKind
     }
 }
 
@@ -233,6 +378,9 @@ public struct ImportIntent: Equatable, Sendable {
     /// document matches (Missing evidence ▸ Add: a P60 read by the payroll reader is the P60 the
     /// item asks for; a BBVA extrato or a CSV is a bank statement).
     public var expectedByDocumentKind = false
+    /// The name of the custom kind `expected` names (set when the files are planned), for the
+    /// mismatch wording ("Expected a <name>…").
+    public var expectedKindName: String?
     /// The period the target record asks a document for (`[start, end)`; Missing evidence ▸ Add's
     /// slot): a filed document without period facts gets it (`ImportPipeline.withIntentPeriod`).
     public var period: DateInterval?
@@ -271,8 +419,8 @@ public struct ImportDuplicate: Equatable, Sendable {
     public enum Level: String, Sendable { case file, document, transactions }
 
     public var level: Level
-    /// What it duplicates, as a whole sentence shown as it is ("Same file as a.pdf",
-    /// "Already in the library as …", "3 rows already imported").
+    /// What it duplicates, as a whole sentence shown as it is ("Identical file: same as a.pdf in this import",
+    /// "Identical file: already in the library as …", "3 rows already imported").
     public var of: String
     public var existingDocumentId: Int64?
     /// The item of the same import it duplicates, when its original is in the batch and not yet
@@ -371,6 +519,12 @@ public struct ImportIssue: Equatable, Identifiable, Sendable {
 public enum ImportResolution: Equatable, Sendable {
     case leaveOut
     case chooseKind(DocumentKind)
+    /// A custom kind, saved or pending in the review (spec 2026-10-24 §2).
+    case chooseCustomKind(CustomKindKey)
+    /// "New kind…": a pending kind added to the plan, then chosen as `.chooseCustomKind(.pending(id))`.
+    /// Refused when a built-in, a saved custom kind or another pending kind has the name
+    /// (ignoring case and accents): `ImportResolutionError.kindNameTaken`.
+    case createKind(name: String, area: DocumentArea)
     case chooseLink(EvidenceEntity)
     case fileWithoutLink
     case confirmFigure(ImportFigureField, ImportFactValue)
@@ -660,15 +814,24 @@ public struct ImportItem: Equatable, Identifiable, Sendable {
             default: reasons.append(fact.reason)
             }
         }
-        // A link an issue already asks about (a choice offering it) says so once.
-        let asked = Set(issues.flatMap { issue -> [EvidenceEntity] in
-            if case .chooseLink(let candidates) = issue.kind { return candidates.map(\.entity) }
-            return []
-        })
+        // A link an issue already asks about says so once.
+        let asked = linksAskedByIssues
         for link in links where link.confidence == .needsReview && !asked.contains(link.entity) {
             reasons.append("Link to \(link.label): check it")
         }
         return reasons
+    }
+
+    /// The links an issue already asks about: a choice offering them, or instalments proposing
+    /// them (`ImportResolutions.isInstalmentsQuestion`: its unsure transaction links).
+    public var linksAskedByIssues: Set<EvidenceEntity> {
+        Set(issues.flatMap { issue -> [EvidenceEntity] in
+            if case .chooseLink(let candidates) = issue.kind { return candidates.map(\.entity) }
+            if ImportResolutions.isInstalmentsQuestion(issue) {
+                return links.filter { $0.entity.type == .transaction && $0.confidence == .needsReview }.map(\.entity)
+            }
+            return []
+        })
     }
 }
 
@@ -690,6 +853,16 @@ public struct ImportReadyGroup: Equatable, Identifiable, Sendable {
 public struct ImportPlan: Equatable, Sendable {
     public var items: [ImportItem]
     public var ignoredFiles: [String]
+    /// The kinds made with "New kind…" in this review: inserted first at Confirm, forgotten on Discard.
+    public var pendingKinds: [PendingDocumentKind] = []
+    /// Whether a document of the review is filed as a saved custom kind: only then can a kind merged
+    /// or deleted since make Confirm fail and the review be read again (`ImportPipeline.rereadingChangedKinds`).
+    public var usesSavedCustomKinds: Bool {
+        items.contains { item in
+            guard item.parentId == nil, case .customEvidence(.saved) = item.recognition.kind else { return false }
+            return true
+        }
+    }
     /// What the pipeline remembers between resolutions (`ImportPipeline`).
     var state = ImportPlanState()
 
@@ -787,12 +960,16 @@ public struct ImportPlan: Equatable, Sendable {
             let labels = years.sorted().map { UKTaxYear(startYear: $0).label }
             return labels.isEmpty ? "\(what) → employment" : "\(what) → employment\(labels.count > 1 ? "s" : "") \(labels.joined(separator: ", "))"
         }
-        let documentKinds = kinds.compactMap { kind -> DocumentKind? in
-            if case .evidence(let documentKind) = kind { return documentKind }
-            return nil
+        // A custom kind by the name it is filed under.
+        let documentKinds = members.compactMap { item -> String? in
+            switch item.recognition.kind {
+            case .evidence(let documentKind): return documentKind.displayName
+            case .customEvidence: return item.kindName
+            default: return nil
+            }
         }
         if documentKinds.count == n, let first = documentKinds.first {
-            let named = documentKinds.allSatisfy { $0 == first } ? Self.lowercasedName(first.displayName) + " " : ""
+            let named = documentKinds.allSatisfy { $0 == first } ? Self.lowercasedName(first) + " " : ""
             let linked = members.filter(\.linksToTransaction).count
             let links = linked == 0 ? "" : (n == 1 ? ", linked to its transaction" : linked == n ? ", linked to their transactions" : ", \(linked) linked to transactions")
             return "\(n) \(named)document\(n == 1 ? "" : "s") → filed" + links
@@ -860,6 +1037,12 @@ struct ImportPlanState: Equatable, Sendable {
 }
 
 extension ImportItem {
+    /// The name of the kind it is recognised as: a custom kind's as it is filed (its placement).
+    public var kindName: String {
+        if case .customEvidence = recognition.kind, let custom = placement?.customKind { return custom.name }
+        return recognition.kind.displayName
+    }
+
     /// Whether confirming it links the document to a transaction (a certain link).
     public var linksToTransaction: Bool {
         links.contains { $0.entity.type == .transaction && $0.confidence == .certain }

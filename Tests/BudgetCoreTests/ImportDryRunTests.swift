@@ -39,12 +39,12 @@ final class ImportDryRunTests: XCTestCase {
 
         let report = try await ImportDryRun.run(databasePath: databaseURL.path, files: [folder.appendingPathComponent("ImportSamples", isDirectory: true)])
 
-        XCTAssertEqual(report.sections[.ready], 4, report.text)
+        XCTAssertEqual(report.sections[.ready], 8, report.text)
         XCTAssertEqual(report.sections[.duplicates], 2, report.text)
-        XCTAssertEqual(report.sections[.needsYou], 3, report.text)
-        XCTAssertEqual(report.needsYou.count, 3, report.text)
+        XCTAssertEqual(report.sections[.needsYou], 5, report.text)
+        XCTAssertEqual(report.needsYou.count, 5, report.text)
         XCTAssertTrue(report.needsYou.contains { $0.hasPrefix("Letter.pdf") }, report.text)
-        for heading in ["== Baseline drift", "== Timings ==", "filed-year guard", "== Sections ==", "Needs you: 3", "== Needs you =="] {
+        for heading in ["== Baseline drift", "== Timings ==", "filed-year guard", "== Sections ==", "Needs you: 5", "== Needs you =="] {
             XCTAssertTrue(report.text.contains(heading), "\(heading) missing from\n\(report.text)")
         }
         XCTAssertEqual(try digest(databaseURL), before, "the source database is only read")

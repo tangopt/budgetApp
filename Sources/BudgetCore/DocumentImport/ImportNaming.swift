@@ -3,7 +3,10 @@ import Foundation
 /// Decides where a recognised document is filed in the evidence library: its canonical name
 /// and library metadata, from the kind, the facts read and the file itself.
 public enum ImportNaming {
-    public static func placement(kind: ImportKind, facts: [ImportFact], file: ImportFile, persons: [String]) -> ImportPlacement {
+    /// `customKind`: the name and area of the custom kind `kind` names (`.customEvidence`); a
+    /// custom kind it doesn't give is filed as Other - Document.
+    public static func placement(kind: ImportKind, facts: [ImportFact], file: ImportFile, persons: [String],
+                                 customKind: ImportCustomKind? = nil) -> ImportPlacement {
         let docDate = date(.docDate, facts)
         let periodStart = date(.periodStart, facts)
         let periodEnd = date(.periodEnd, facts)
@@ -23,6 +26,7 @@ public enum ImportNaming {
         if case .payrollForm = kind, docDate == nil, let end = taxYearEnd(facts) { nameDate = end }
 
         var documentKind = DocumentKind.other
+        var custom: ImportCustomKind?
         var name: String?
         func build(area: String, type: String, detail: String?, precision: EvidenceNaming.DatePrecision = .day,
                    withPeriod: Bool = false, withAmount: Bool = true) -> String {
@@ -65,6 +69,14 @@ public enum ImportNaming {
         case .evidence(let evidenceKind):
             documentKind = evidenceKind
             name = build(area: area(of: evidenceKind), type: evidenceKind.displayName, detail: issuer, withPeriod: true)
+        case .customEvidence(let key):
+            // Filed as Other with the custom kind's id (a pending kind gets it at Confirm).
+            if let customKind, customKind.key == key {
+                custom = customKind
+                name = build(area: customKind.area.libraryArea, type: customKind.name, detail: issuer, withPeriod: true)
+            } else {
+                name = build(area: "Other", type: "Document", detail: issuer, withPeriod: true)
+            }
         case .bankStatementCSV, .bankStatementPDF, .bbvaStatement:
             documentKind = .bankStatement
             name = build(area: "Bank", type: "Statement", detail: reference ?? issuer, precision: .month, withPeriod: true,
@@ -79,18 +91,25 @@ public enum ImportNaming {
                                         canonicalName: canonical, sourceFolderId: file.sourceFolderId,
                                         sourceRelativePath: file.sourceRelativePath, sourceModifiedAt: file.sourceModifiedAt,
                                         textStatus: file.textStatus, extractedText: file.text)
-        return ImportPlacement(metadata: metadata, canonicalName: canonical)
+        var placed = metadata
+        placed.customKindId = custom?.key.savedId
+        return ImportPlacement(metadata: placed, canonicalName: canonical, customKind: custom)
+    }
+
+    /// The library area of a kind, built-in or custom (a custom kind that's gone files as Other).
+    public static func area(of ref: DocumentKindRef, catalog: DocumentKindCatalog) -> String {
+        catalog.libraryArea(ref)
     }
 
     /// The library area of a document kind.
     static func area(of kind: DocumentKind) -> String {
         switch kind {
         case .mortgageNotice, .mortgageReceipt, .mortgageInterestStatement, .mortgageContract, .insuranceReceipt, .insurancePolicy, .imiNotice,
-             .imiPayment, .condominioReceipt, .rentReceipt, .rentContract, .tenancyAddendum, .utilityInvoice, .accountantInvoice, .legalInvoice,
+             .imiPayment, .condominioReceipt, .rentReceipt, .rentContract, .tenancyAddendum, .utilityInvoice, .repairInvoice, .accountantInvoice, .legalInvoice,
              .courtFee, .lettingAgentFee, .propertyDeed, .certificate:
             return "Property"
         case .p60, .p45, .p11d, .taxCodeNotice, .hmrcPaymentProof, .sa302, .taxReturn, .hmrcLetter: return "Tax UK"
-        case .ptIRSDeclaration, .ptIRSAssessment, .ptIRSPaymentNote, .ptIRSPaymentProof: return "Tax PT"
+        case .ptIRSDeclaration, .ptIRSAssessment, .ptIRSPaymentNote, .ptIRSPaymentProof, .stampDuty: return "Tax PT"
         case .bankTransferProof, .bankDebitAdvice, .bankStatement: return "Bank"
         case .other: return "Other"
         }

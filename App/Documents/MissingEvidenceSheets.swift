@@ -29,7 +29,7 @@ struct LinkEvidenceSheet: View {
                       cancelTitle: "Done", onCancel: { dismiss() }) {
             HStack(spacing: 8) {
                 SearchField("Search names, kinds, notes, text or an amount", text: $query)
-                if !item.expectedKinds.isEmpty {
+                if !item.expectedKindRefs.isEmpty {
                     Toggle("Any kind", isOn: $anyKind)
                         .toggleStyle(.checkbox)
                         .fixedSize()
@@ -66,16 +66,17 @@ struct LinkEvidenceSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .checkingFiledYears(viewModel.isCheckingFiledYears)
         .task { await load() }
         .task(id: SearchKey(text: query, anyKind: anyKind, generation: generation)) {
             guard let index else { results = []; return }
             let text = query.trimmingCharacters(in: .whitespaces)
             if !text.isEmpty { try? await Task.sleep(for: .milliseconds(150)) }
             guard !Task.isCancelled else { return }
-            let requirement = item.requirement, anyKind = anyKind || item.expectedKinds.isEmpty
+            let requirement = item.requirement, anyKind = anyKind || item.expectedKindRefs.isEmpty
             let found = await Task.detached(priority: .userInitiated) {
                 Array(EvidenceDocumentSearch.entries(index, filter: EvidenceDocumentSearch.Filter(text: text))
-                    .filter { anyKind || requirement.accepts($0.summary.kind) }
+                    .filter { anyKind || requirement.accepts($0.summary.kindRef) }
                     .prefix(100))
             }.value
             if !Task.isCancelled { results = found }
@@ -86,12 +87,12 @@ struct LinkEvidenceSheet: View {
         var parts = [item.title]
         if let date = item.expectedDate { parts.append(DocumentFormat.day(date).unbroken) }
         if let slot = item.expectedPeriod { parts.append(MissingEvidenceFormat.slot(slot).unbroken) }
-        return parts.joined(separator: " · ") + "\nNeeds: " + MissingEvidenceViewModel.kindsText(item.expectedKinds)
+        return parts.joined(separator: " · ") + "\nNeeds: " + MissingEvidenceViewModel.kindsText(names: item.expectedKindNames)
     }
 
     private var sectionTitle: String {
         if !query.trimmingCharacters(in: .whitespaces).isEmpty { return "Search results" }
-        return anyKind || item.expectedKinds.isEmpty ? "All documents" : "Documents of the expected kind"
+        return anyKind || item.expectedKindRefs.isEmpty ? "All documents" : "Documents of the expected kind"
     }
 
     private func entry(_ id: Int64) -> EvidenceDocumentSearch.Entry? {
@@ -101,11 +102,13 @@ struct LinkEvidenceSheet: View {
     private func load() async {
         let dbQueue = viewModel.dbQueue, item = item
         do {
-            let (index, linked, documents) = try await Task.detached(priority: .userInitiated) {
+            let (index, linked, documents, paid) = try await Task.detached(priority: .userInitiated) {
                 try dbQueue.read { db in
-                    (try EvidenceDocumentSearch.Index(db: db),
-                     Set(try EvidenceLinks.documents(db: db, for: item.target.entity).compactMap(\.id)),
-                     item.target.entity.type == .transaction ? try EvidenceDocument.fetchAll(db) : [])
+                    let isTransaction = item.target.entity.type == .transaction
+                    return (try EvidenceDocumentSearch.Index(db: db),
+                            Set(try EvidenceLinks.documents(db: db, for: item.target.entity).compactMap(\.id)),
+                            isTransaction ? try EvidenceDocument.fetchAll(db) : [],
+                            isTransaction ? try EvidenceMatcher.linkedDebits(db: db) : [:])
                 }
             }.value
             self.index = index
@@ -117,9 +120,9 @@ struct LinkEvidenceSheet: View {
                 let transactionId = item.target.entity.id
                 ranked = await Task.detached(priority: .userInitiated) {
                     EvidenceMatcher.documentSuggestions(for: transactionId, documents: documents, index: catalog.matcherIndex,
-                                                        excluding: linked, limit: 8)
+                                                        excluding: linked, linkedDebits: paid, limit: 8)
                         .filter { suggestion in
-                            documents.first { $0.id == suggestion.documentId }.map { item.requirement.accepts($0.kind) } ?? false
+                            documents.first { $0.id == suggestion.documentId }.map { item.requirement.accepts($0.kindRef) } ?? false
                         }
                         .map { MissingEvidence.Candidate(documentId: $0.documentId, score: $0.score, reasons: $0.reasons) }
                 }.value
@@ -141,15 +144,17 @@ struct LinkEvidenceSheet: View {
                 PickerLinkedMark()
             } else {
                 PickerLinkButton(accessibilityTitle: "Link \(summary.displayName)", help: "Link to this item") {
-                    switch viewModel.link(documentId: summary.id, to: item) {
-                    case .success(let note):
-                        infoMessage = note
-                        errorMessage = nil
-                        linkedIds.insert(summary.id)
-                        // Its kind or period may have been filled in: re-read the list.
-                        Task { await load() }
-                    case .failure(let error):
-                        errorMessage = error.localizedDescription
+                    viewModel.link(documentId: summary.id, to: item) { result in
+                        switch result {
+                        case .success(let note):
+                            infoMessage = note
+                            errorMessage = nil
+                            linkedIds.insert(summary.id)
+                            // Its kind or period may have been filled in: re-read the list.
+                            Task { await load() }
+                        case .failure(let error):
+                            errorMessage = error.localizedDescription
+                        }
                     }
                 }
             }

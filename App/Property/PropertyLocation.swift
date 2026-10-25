@@ -124,6 +124,7 @@ struct PropertyAddressSheet: View {
     @State private var address: PropertyAddress
     @State private var error: String?
     @State private var askingToReplace: String?
+    @StateObject private var gate = FiledYearGate()
 
     init(viewModel: PropertyViewModel, property: Property, onLookUp: @escaping (String) -> Void) {
         self.viewModel = viewModel
@@ -133,6 +134,10 @@ struct PropertyAddressSheet: View {
     }
 
     var body: some View {
+        form.filedYearGate(gate)
+    }
+
+    private var form: some View {
         SheetScaffold(title: "Edit address", subtitle: "Saving a changed address finds it on the map with Apple Maps.",
                       error: error, width: SheetMetrics.compactWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", action: save)) {
@@ -176,16 +181,15 @@ struct PropertyAddressSheet: View {
     }
 
     private func commit(clearingLocation: Bool, lookUp: String?) {
-        var updated = viewModel.property ?? property
-        updated.setAddress(address)
-        if clearingLocation { updated.setLocation(nil, source: nil) }
-        switch viewModel.saveProperty(updated) {
-        case .success(let id):
-            viewModel.onPropertiesChanged?(id)
-            dismiss()
-            if let lookUp { onLookUp(lookUp) }
-        case .failure(let failure):
-            error = PropertyMessages.text(for: failure)
+        viewModel.saveAddress(address, of: viewModel.property ?? property, clearingLocation: clearingLocation, gate: gate) { result in
+            switch result {
+            case .success(let id):
+                viewModel.onPropertiesChanged?(id)
+                dismiss()
+                if let lookUp { onLookUp(lookUp) }
+            case .failure(let failure):
+                error = PropertyMessages.text(for: failure)
+            }
         }
     }
 }

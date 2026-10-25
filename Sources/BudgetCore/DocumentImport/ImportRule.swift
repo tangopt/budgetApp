@@ -65,8 +65,19 @@ public struct StatementAccountAction: Codable, Equatable, Sendable {
 /// The kind chosen for an issuer's documents.
 public struct DocumentKindAction: Codable, Equatable, Sendable {
     public var kind: DocumentKind
+    /// A custom kind (`customDocumentKind` id), with `kind` `.other`; absent from the JSON when nil,
+    /// so rules learnt before custom kinds read the same.
+    public var customKindId: Int64?
 
-    public init(kind: DocumentKind) { self.kind = kind }
+    public init(kind: DocumentKind, customKindId: Int64? = nil) {
+        self.kind = kind
+        self.customKindId = customKindId
+    }
+
+    /// The kind the rule files documents as.
+    public var kindRef: DocumentKindRef {
+        customKindId.map(DocumentKindRef.custom) ?? .builtIn(kind)
+    }
 }
 
 /// The name chosen for an issuer.

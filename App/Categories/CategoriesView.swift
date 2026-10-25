@@ -168,13 +168,16 @@ struct CategoriesView: View {
             }
         }
         .sheet(item: $newGroupDraft) { draft in
-            NewGroupSheet(draft: draft, create: { name, type, ids in try viewModel.createGroup(name: name, type: type, moving: ids) }) { group in
+            NewGroupSheet(draft: draft, create: { name, type, ids, gate, done in
+                viewModel.createGroup(name: name, type: type, moving: ids, gate: gate, done: done)
+            }) { group in
                 reveal(group)
             }
         }
         .newCategorySheet(draft: $newCategoryDraft, groups: viewModel.groups, create: viewModel.createCategory) { category in
             if let id = category.id { selection = [.category(id)] }
         }
+        .filedYearGate(viewModel.filedYearGate)
         .sheet(item: $renaming) { target in
             switch target {
             case .category(let category):

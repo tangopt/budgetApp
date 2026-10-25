@@ -89,7 +89,7 @@ public struct ImportReviewState: Sendable {
         canPutBack = Set((bySection[.leftOut] ?? []).filter { item in
             item.parentId.flatMap { byId[$0] }?.isLeftOut != true
         }.map(\.id))
-        leftOut = (bySection[.leftOut] ?? []).map { Row(item: $0, detail: $0.recognition.kind.displayName, figure: $0.headlineFigure) }
+        leftOut = (bySection[.leftOut] ?? []).map { Row(item: $0, detail: $0.kindName, figure: $0.headlineFigure) }
         // Ready's groups and summaries without the statements' rows (a kept row is its statement's).
         ready = ImportPlan(items: documents).readyGroups.map { group in
             Group(id: group.id, title: group.title, summary: group.summary,
