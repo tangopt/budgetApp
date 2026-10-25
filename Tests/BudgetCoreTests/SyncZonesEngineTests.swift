@@ -738,4 +738,238 @@ final class SyncZonesEngineTests: XCTestCase {
                                    ifUnchanged: [uuid: try XCTUnwrap(server).stamp.systemFields], atomic: false)
         XCTAssertTrue(h.audit.householdViolations(router: h.adminRouter()).contains { $0.contains(uuid) && $0.contains("placed privately") })
     }
+
+    // MARK: Fix round 2
+
+    private func macZone(_ device: TwoPersonHousehold.Device, _ uuid: String) throws -> String? {
+        try read(device) { db in try String.fetchOne(db, sql: "SELECT zone FROM syncRecord WHERE uuid = ?", arguments: [uuid]) }
+    }
+
+    private func unfinishedMoves(_ device: TwoPersonHousehold.Device, _ uuid: String) throws -> [SyncZoneMoves.Unfinished] {
+        try read(device) { db in try SyncZoneMoves.unfinished(db: db).filter { $0.uuid == uuid } }
+    }
+
+    /// N-1 (probe A): the server takes a moving transaction's new copy, but the reply is lost; later syncs finish the
+    /// move (the server's copy in A's zone counts as the save done) and mark the household copy.
+    func testALostReplyOnTheNewZoneSaveStillFinishesTheMove() async throws {
+        let h = try TwoPersonHousehold.make()
+        let f = h.fixture
+        try await h.syncAll()
+        let moved = try h.uuid("transaction_", f.transferOut)
+        try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
+        try h.requeueEverythingOnTheMac()
+        h.macTransport.loseReply(to: moved, in: f.privateZone)
+        do { _ = try await h.adminMac.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
+        for _ in 1...3 { _ = try await h.adminMac.engine.syncNow() }
+        let left = try await stored(h, moved, in: SyncZones.household)
+        XCTAssertEqual(left?.movedTo, f.privateZone)
+        XCTAssertEqual(try macZone(h.adminMac, moved), f.privateZone)
+        XCTAssertEqual(try unfinishedMoves(h.adminMac, moved), [])
+        assertNoHouseholdLeak(h)
+    }
+
+    /// N-1 (probe B): the same for a document: its household file record goes too.
+    func testALostReplyOnAMovingDocumentsSaveStillDeletesItsHouseholdFile() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("zones-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let (h, document) = try householdWithDocument(folder)
+        let f = h.fixture
+        try await h.syncAll()
+        let uuid = try h.uuid("document", document)
+        try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
+        try h.requeueEverythingOnTheMac()
+        h.macTransport.loseReply(to: uuid, in: f.privateZone)
+        do { _ = try await h.adminMac.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
+        for _ in 1...3 { _ = try await h.adminMac.engine.syncNow() }
+        let left = try await stored(h, uuid, in: SyncZones.household)
+        XCTAssertEqual(left?.movedTo, f.privateZone)
+        let householdFiles = await files(h, of: uuid, in: SyncZones.household)
+        XCTAssertEqual(householdFiles, [], "the household file record goes")
+        let moved = try await stored(h, uuid, in: f.privateZone)
+        let reference = try read(h.adminMac) { db in try SyncDocumentFile.reference(uuid: uuid, db: db) }
+        XCTAssertEqual(reference?.recordName, moved?.documentFile?.recordName, "the Mac names the file its A copy names")
+        let privateFiles = await files(h, of: uuid, in: f.privateZone)
+        XCTAssertTrue(privateFiles.contains(try XCTUnwrap(moved?.documentFile?.recordName)))
+        XCTAssertEqual(try unfinishedMoves(h.adminMac, uuid), [])
+        assertNoHouseholdLeak(h)
+    }
+
+    /// N-2 (probe C): the document's household marker keeps failing; the level goes back to Everything. Its household
+    /// copy keeps (and names) its file, and the copy left in A's zone is marked and its file deleted.
+    func testMovingBackWhileTheMarkerIsPendingKeepsTheHouseholdFile() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("zones-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let (h, document) = try householdWithDocument(folder)
+        let f = h.fixture
+        try await h.syncAll()
+        let uuid = try h.uuid("document", document)
+        try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
+        try h.requeueEverythingOnTheMac()
+        h.macTransport.failSaves(of: uuid, in: SyncZones.household)
+        _ = try await h.adminMac.engine.pushPending()
+        try write(h.adminMac) { db in _ = try SharingLevels.set(.everything, accountId: f.shared, actor: f.admin, db: db) }
+        try h.requeueEverythingOnTheMac()
+        h.macTransport.restore()
+        _ = try await h.adminMac.engine.pull()
+        _ = try await h.adminMac.engine.pushPending()
+        for _ in 1...2 { _ = try await h.adminMac.engine.syncNow() }
+
+        let storedHousehold = try await stored(h, uuid, in: SyncZones.household)
+        let household = try XCTUnwrap(storedHousehold)
+        XCTAssertNil(household.movedTo, "the household holds the document")
+        let file = try XCTUnwrap(household.documentFile?.recordName)
+        let householdFiles = await files(h, of: uuid, in: SyncZones.household)
+        XCTAssertTrue(householdFiles.contains(file), "the file it names is still there")
+        let privateCopy = try await stored(h, uuid, in: f.privateZone)
+        XCTAssertEqual(privateCopy?.movedTo, SyncZones.household, "A's copy is a marker")
+        let privateFiles = await files(h, of: uuid, in: f.privateZone)
+        XCTAssertEqual(privateFiles, [], "and its file is deleted")
+        XCTAssertEqual(try macZone(h.adminMac, uuid), SyncZones.household)
+        XCTAssertEqual(try unfinishedMoves(h.adminMac, uuid), [])
+        assertNoHouseholdLeak(h)
+    }
+
+    /// Probe D: a lost reply on the marker: the next syncs converge.
+    func testALostReplyOnTheMarkerConverges() async throws {
+        let h = try TwoPersonHousehold.make()
+        let f = h.fixture
+        try await h.syncAll()
+        let moved = try h.uuid("transaction_", f.transferOut)
+        try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
+        try h.requeueEverythingOnTheMac()
+        h.macTransport.loseReply(to: moved, in: SyncZones.household)
+        do { _ = try await h.adminMac.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
+        for _ in 1...2 { _ = try await h.adminMac.engine.syncNow() }
+        let left = try await stored(h, moved, in: SyncZones.household)
+        XCTAssertEqual(left?.movedTo, f.privateZone)
+        XCTAssertEqual(try unfinishedMoves(h.adminMac, moved), [])
+        assertNoHouseholdLeak(h)
+    }
+
+    /// N-3 (probe E): a database synced before `syncPresence` gets it filled from what it had saved; moves and deletes
+    /// then work as usual.
+    func testPresenceIsFilledFromWhatWasAlreadySaved() async throws {
+        let h = try TwoPersonHousehold.make()
+        let f = h.fixture
+        try await h.syncAll()
+        try write(h.adminMac) { db in
+            try db.execute(sql: "DELETE FROM syncPresence")
+            try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [SyncEngineCore.presenceKey])
+        }
+        let moved = try h.uuid("transaction_", f.transferOut)
+        try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
+        try h.requeueEverythingOnTheMac()
+        _ = try await h.adminMac.engine.pushPending()
+        let left = try await stored(h, moved, in: SyncZones.household)
+        XCTAssertEqual(left?.movedTo, f.privateZone, "the move's marker was accepted")
+        let shared = try h.uuid("transaction_", f.jointTransaction)
+        try write(h.adminMac) { db in try db.execute(sql: "DELETE FROM transaction_ WHERE id = ?", arguments: [f.jointTransaction]) }
+        _ = try await h.adminMac.engine.pushPending()
+        let still = try await h.cloud.fetch(shared, zone: SyncZones.household)
+        XCTAssertNil(still, "an earlier-uploaded record's delete reaches the household")
+        assertNoHouseholdLeak(h)
+    }
+
+    /// M-N4: a household save of a record this device places privately, held in staging and applied later, is refused
+    /// like one arriving directly.
+    func testAHeldHouseholdSaveOfAPrivateRecordIsRefusedWhenItApplies() async throws {
+        let h = try TwoPersonHousehold.make()
+        let f = h.fixture
+        try await h.syncAll()
+        let uuid = try h.uuid("transaction_", f.privateTransaction)
+        try write(h.adminMac) { db in
+            var payload = try XCTUnwrap(try SyncTranslator.outgoing(PendingChange(table: "transaction_", localId: f.privateTransaction, uuid: uuid,
+                                                                                  kind: .update), db: db))
+            payload.zone = SyncZones.household
+            payload.fields["note"] = .string("Synthetic household edit")
+            payload.clocks["note"] = SyncClock(at: Date(timeIntervalSince1970: 1_900_000_000), by: nil)
+            let json = String(decoding: try JSONEncoder().encode(payload), as: UTF8.self)
+            try db.execute(sql: """
+                INSERT INTO syncStaging(tableName, uuid, payloadJSON, reason, importRunUuid, receivedAt, firstSeenAt, attempts)
+                VALUES ('transaction_', ?, ?, 'waiting for account', NULL, ?, ?, 0)
+                """, arguments: [uuid, json, Date(), Date()])
+            try SyncEngineCore.requestStagedRetry(db: db)
+        }
+        _ = try await h.adminMac.engine.pull()
+        let note = try read(h.adminMac) { db in try String.fetchOne(db, sql: "SELECT note FROM transaction_ WHERE id = ?", arguments: [f.privateTransaction]) }
+        XCTAssertNil(note, "not taken")
+        XCTAssertEqual(try macZone(h.adminMac, uuid), f.privateZone)
+        XCTAssertEqual(try count(h.adminMac, "SELECT COUNT(*) FROM syncStaging WHERE uuid = ?", [uuid]), 0)
+        let logged = try read(h.adminMac) { db in try String.fetchAll(db, sql: "SELECT losingValueJSON FROM syncConflict WHERE uuid = ?", arguments: [uuid]) }
+        XCTAssertTrue(logged.contains { $0.contains("private here") })
+    }
+
+    /// M-N6: a move row keeps every old file record still to delete.
+    func testAMoveKeepsEveryOldFileStillToDelete() throws {
+        let queue = try TestDatabase.migrated()
+        try queue.write { db in
+            try SyncZoneMoves.record(uuid: "u", tableName: "document", from: SyncZones.household, to: "private-p", systemFields: nil, oldFile: "u.file.1", db: db)
+            try SyncZoneMoves.record(uuid: "u", tableName: "document", from: SyncZones.household, to: "private-p", systemFields: nil, oldFile: "u.file.2", db: db)
+            XCTAssertEqual(try SyncZoneMoves.unfinished(db: db).first?.oldFiles, ["u.file.1", "u.file.2"])
+            try SyncZoneMoves.filesDone(["u.file.1"], uuid: "u", zone: SyncZones.household, db: db)
+            XCTAssertEqual(try SyncZoneMoves.unfinished(db: db).first?.oldFiles, ["u.file.2"])
+        }
+    }
+
+    /// Two writer devices of the admin's move the same record (one lowers the level, the other raises it again) with
+    /// lost replies on the way: both end the same, and nothing private is left in the household.
+    func testTwoOwnerDevicesMovingTheSameRecordConverge() async throws {
+        let h = try TwoPersonHousehold.make()
+        let f = h.fixture
+        try await h.syncAll()
+        _ = try await h.adminMac2.engine.syncNow()
+        let moved = try h.uuid("transaction_", f.transferOut)
+        let account = try h.uuid("account", f.shared)
+
+        // The first Mac lowers Shared; the reply of the private save is lost.
+        try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
+        try h.requeueEverythingOnTheMac()
+        h.macTransport.loseReply(to: moved, in: f.privateZone)
+        do { _ = try await h.adminMac.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
+        // The second Mac hears of it and moves its own copies too (its marker's reply is lost).
+        _ = try await h.adminMac2.engine.pull()
+        try h.requeueEverything(on: h.adminMac2)
+        h.mac2Transport.loseReply(to: moved, in: SyncZones.household)
+        do { _ = try await h.adminMac2.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
+        for _ in 1...2 {
+            _ = try await h.adminMac.engine.syncNow()
+            _ = try await h.adminMac2.engine.syncNow()
+        }
+        let lowered = try await stored(h, moved, in: SyncZones.household)
+        XCTAssertEqual(lowered?.movedTo, f.privateZone, "the household holds a marker")
+
+        // The second Mac raises it back; the household save's reply is lost.
+        try write(h.adminMac2) { db in
+            let id = try XCTUnwrap(try SyncRecordStore.localId(table: "account", uuid: account, db: db))
+            try db.execute(sql: "UPDATE account SET sharingLevel = ? WHERE id = ?", arguments: [SharingLevel.everything.rawValue, id])
+        }
+        try h.requeueEverything(on: h.adminMac2)
+        h.mac2Transport.loseReply(to: moved, in: SyncZones.household)
+        do { _ = try await h.adminMac2.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
+        for _ in 1...3 {
+            _ = try await h.adminMac2.engine.syncNow()
+            _ = try await h.adminMac.engine.syncNow()
+        }
+        _ = try await h.adminMac2.engine.syncNow()
+
+        let storedRaised = try await stored(h, moved, in: SyncZones.household)
+        let raised = try XCTUnwrap(storedRaised)
+        XCTAssertNil(raised.movedTo, "back in the household")
+        XCTAssertFalse(raised.fields.isEmpty)
+        let privateCopy = try await stored(h, moved, in: f.privateZone)
+        XCTAssertEqual(privateCopy?.movedTo, SyncZones.household, "A's copy is a marker")
+        for device in [h.adminMac, h.adminMac2] {
+            XCTAssertEqual(try macZone(device, moved), SyncZones.household)
+            XCTAssertEqual(try unfinishedMoves(device, moved), [])
+            XCTAssertEqual(try count(device, "SELECT COUNT(*) FROM syncPending"), 0)
+        }
+        let levels = try [h.adminMac, h.adminMac2].map { device in
+            try read(device) { db in try String.fetchOne(db, sql: """
+                SELECT a.sharingLevel FROM account a JOIN syncRecord s ON s.tableName = 'account' AND s.localId = a.id WHERE s.uuid = ?
+                """, arguments: [account]) }
+        }
+        XCTAssertEqual(levels, [SharingLevel.everything.rawValue, SharingLevel.everything.rawValue])
+        assertNoHouseholdLeak(h)
+        XCTAssertEqual(h.audit2.householdViolations(router: TwoPersonHousehold.router(h.adminMac2.db)), [])
+    }
 }

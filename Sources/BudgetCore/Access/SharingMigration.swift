@@ -88,14 +88,18 @@ enum SharingMigration {
             t.column("pending", .integer).notNull().defaults(to: 1)
             t.primaryKey(["uuid", "zone"])
         }
-        // A move's destination, the file record it leaves behind in the zone it left (deleted once the server
-        // confirms), and how many pushes have tried to finish it.
+        // A move's destination and the file record its new copy names there, the file records it left behind in the
+        // zone it left (`oldFile`: a JSON list, each deleted once the server confirms), and how many pushes have tried
+        // to finish it.
         let moveColumns = Set(try db.columns(in: "syncZoneMove").map(\.name))
         if !moveColumns.contains("toZone") {
             try db.alter(table: "syncZoneMove") { t in t.add(column: "toZone", .text) }
         }
         if !moveColumns.contains("oldFile") {
             try db.alter(table: "syncZoneMove") { t in t.add(column: "oldFile", .text) }
+        }
+        if !moveColumns.contains("toFile") {
+            try db.alter(table: "syncZoneMove") { t in t.add(column: "toFile", .text) }
         }
         if !moveColumns.contains("attempts") {
             try db.alter(table: "syncZoneMove") { t in t.add(column: "attempts", .integer).notNull().defaults(to: 0) }
@@ -113,6 +117,7 @@ enum SharingMigration {
             t.column("recordName", .text).notNull()
             t.primaryKey(["zone", "recordName"])
         }
+        try SyncPresence.backfill(db: db)
         // Server stamps of companion records (an `accountDetails` record beside a household account stub).
         try db.create(table: "syncCompanion", options: .ifNotExists) { t in
             t.column("recordType", .text).notNull()

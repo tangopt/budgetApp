@@ -24,19 +24,32 @@ public enum SyncZoneMoves {
         public var zone: String
         public var toZone: String?
         public var markerPending: Bool
-        public var oldFile: String?
+        /// File records the record left in `zone`, each still to delete there.
+        public var oldFiles: [String]
+        /// The file record its copy in `toZone` names (to clean up if it comes back).
+        public var toFile: String?
         public var attempts: Int
+    }
+
+    static func files(_ json: String?) -> [String] {
+        json.flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) } ?? []
+    }
+
+    static func json(_ files: [String]) -> String? {
+        let unique = Array(Set(files)).sorted()
+        guard !unique.isEmpty else { return nil }
+        return String(decoding: (try? JSONEncoder().encode(unique)) ?? Data(), as: UTF8.self)
     }
 
     /// Moves still to finish (a marker to save or an old file record to delete), oldest first.
     public static func unfinished(db: Database) throws -> [Unfinished] {
         try Row.fetchAll(db, sql: """
-            SELECT uuid, tableName, zone, toZone, pending, oldFile, attempts FROM syncZoneMove
-            WHERE pending = 1 OR oldFile IS NOT NULL ORDER BY rowid
+            SELECT uuid, tableName, zone, toZone, toFile, pending, oldFile, attempts FROM syncZoneMove
+            WHERE pending = 1 OR oldFile IS NOT NULL OR toZone IS NOT NULL ORDER BY rowid
             """).map {
             Unfinished(uuid: $0["uuid"], tableName: $0["tableName"], zone: $0["zone"], toZone: $0["toZone"],
-                       markerPending: ($0["pending"] as Int) == 1, oldFile: $0["oldFile"], attempts: $0["attempts"])
-        }
+                       markerPending: ($0["pending"] as Int) == 1, oldFiles: files($0["oldFile"]), toFile: $0["toFile"], attempts: $0["attempts"])
+        }.filter { $0.markerPending || !$0.oldFiles.isEmpty || $0.toZone != nil }
     }
 
     /// Markers still to save: the record, its table and the zone it left.
@@ -44,15 +57,27 @@ public enum SyncZoneMoves {
         try unfinished(db: db).filter(\.markerPending).map { (uuid: $0.uuid, tableName: $0.tableName, zone: $0.zone) }
     }
 
-    /// The record's new copy in `toZone` is saved: it left `zone`, where its old copy is at the version `systemFields`
-    /// names and `oldFile` (if any) is the file record it left there. A marker and that delete go next.
+    /// The record's new copy in `toZone` is saved (naming `toFile`): it left `zone`, where its old copy is at the
+    /// version `systemFields` names and `oldFile` (if any) is a file record it left there. A marker and the deletes of
+    /// every old file record still listed go next (an earlier one still to delete is kept).
     static func record(uuid: String, tableName: String, from zone: String, to toZone: String, systemFields: Data?, oldFile: String?,
-                       db: Database) throws {
+                       toFile: String? = nil, db: Database) throws {
+        let earlier = files(try String.fetchOne(db, sql: "SELECT oldFile FROM syncZoneMove WHERE uuid = ? AND zone = ?", arguments: [uuid, zone]))
         try db.execute(sql: """
-            INSERT INTO syncZoneMove(uuid, zone, tableName, systemFields, pending, toZone, oldFile, attempts) VALUES (?, ?, ?, ?, 1, ?, ?, 0)
+            INSERT INTO syncZoneMove(uuid, zone, tableName, systemFields, pending, toZone, toFile, oldFile, attempts) VALUES (?, ?, ?, ?, 1, ?, ?, ?, 0)
             ON CONFLICT(uuid, zone) DO UPDATE SET tableName = excluded.tableName, systemFields = excluded.systemFields, pending = 1,
-                toZone = excluded.toZone, oldFile = COALESCE(excluded.oldFile, syncZoneMove.oldFile), attempts = 0
-            """, arguments: [uuid, zone, tableName, systemFields, toZone, oldFile])
+                toZone = excluded.toZone, toFile = excluded.toFile, oldFile = excluded.oldFile, attempts = 0
+            """, arguments: [uuid, zone, tableName, systemFields, toZone, toFile, json(earlier + [oldFile].compactMap { $0 })])
+    }
+
+    /// The move's new copy names `file` now (taken from the server's copy).
+    static func setToFile(uuid: String, zone: String, file: String?, db: Database) throws {
+        try db.execute(sql: "UPDATE syncZoneMove SET toFile = ? WHERE uuid = ? AND zone = ?", arguments: [file, uuid, zone])
+    }
+
+    /// The move's destination is dealt with (the record left it again, or came back): nothing more to follow there.
+    static func forgetDestination(uuid: String, zone: String, db: Database) throws {
+        try db.execute(sql: "UPDATE syncZoneMove SET toZone = NULL, toFile = NULL WHERE uuid = ? AND zone = ?", arguments: [uuid, zone])
     }
 
     /// The marker in `zone` is on the server at `stamp` (nil: nothing is there any more, the old copy was deleted or its
@@ -62,9 +87,12 @@ public enum SyncZoneMoves {
                        arguments: [stamp?.systemFields, uuid, zone])
     }
 
-    /// The old file record in `zone` is deleted on the server.
-    static func fileDeleted(uuid: String, zone: String, db: Database) throws {
-        try db.execute(sql: "UPDATE syncZoneMove SET oldFile = NULL WHERE uuid = ? AND zone = ?", arguments: [uuid, zone])
+    /// These old file records in `zone` need no delete any more: the server took it, or the record's copy there names
+    /// the file again.
+    static func filesDone(_ done: [String], uuid: String, zone: String, db: Database) throws {
+        let left = files(try String.fetchOne(db, sql: "SELECT oldFile FROM syncZoneMove WHERE uuid = ? AND zone = ?", arguments: [uuid, zone]))
+            .filter { !done.contains($0) }
+        try db.execute(sql: "UPDATE syncZoneMove SET oldFile = ? WHERE uuid = ? AND zone = ?", arguments: [json(left), uuid, zone])
     }
 
     /// A push tried to finish the move and couldn't: counted; logged for attention once it has taken too long.
@@ -78,7 +106,7 @@ public enum SyncZoneMoves {
 
     /// Someone else's version is over the old copy in `zone` (an edit there, seen on a pull or a refused save): the
     /// marker goes again over it.
-    static func markerAgain(uuid: String, tableName: String, zone: String, systemFields: Data, db: Database) throws {
+    static func markerAgain(uuid: String, tableName: String, zone: String, systemFields: Data?, db: Database) throws {
         try db.execute(sql: """
             INSERT INTO syncZoneMove(uuid, zone, tableName, systemFields, pending, attempts) VALUES (?, ?, ?, ?, 1, 0)
             ON CONFLICT(uuid, zone) DO UPDATE SET systemFields = excluded.systemFields, pending = 1
@@ -106,10 +134,10 @@ public enum SyncZoneMoves {
                           arguments: [uuid, zone]) ?? false
     }
 
-    /// The record is back in `zone`: its marker there is gone (the record's save replaced it). An old file record
-    /// still to delete there stays to delete (the new copy carries its own).
+    /// The record is back in `zone`: its marker there is gone (the record's save replaced it). Old file records still
+    /// to delete there, and where the record had gone, stay for `finishMoves` to settle against its copy now.
     static func arrived(uuid: String, zone: String, db: Database) throws {
-        try db.execute(sql: "DELETE FROM syncZoneMove WHERE uuid = ? AND zone = ? AND oldFile IS NULL", arguments: [uuid, zone])
+        try db.execute(sql: "DELETE FROM syncZoneMove WHERE uuid = ? AND zone = ? AND oldFile IS NULL AND toZone IS NULL", arguments: [uuid, zone])
         try db.execute(sql: "UPDATE syncZoneMove SET pending = 0, systemFields = NULL WHERE uuid = ? AND zone = ?", arguments: [uuid, zone])
     }
 
@@ -135,6 +163,16 @@ enum SyncPresence {
 
     static func zones(uuid: String, db: Database) throws -> [String] {
         try String.fetchAll(db.cachedStatement(sql: "SELECT zone FROM syncPresence WHERE uuid = ? ORDER BY zone"), arguments: [uuid])
+    }
+
+    /// What this device saved or saw on the server before `syncPresence` existed: every record with a server stamp (in
+    /// its zone) and every marker it knows. Idempotent.
+    static func backfill(db: Database) throws {
+        try db.execute(sql: """
+            INSERT OR IGNORE INTO syncPresence(uuid, zone)
+            SELECT uuid, zone FROM syncRecord WHERE systemFields IS NOT NULL OR changeTag IS NOT NULL
+            """)
+        try db.execute(sql: "INSERT OR IGNORE INTO syncPresence(uuid, zone) SELECT uuid, zone FROM syncZoneMove")
     }
 
     static func isIn(uuid: String, zone: String, db: Database) throws -> Bool {

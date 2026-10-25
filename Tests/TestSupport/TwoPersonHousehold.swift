@@ -15,9 +15,16 @@ public final class TwoPersonHousehold {
     public let audit: ZoneAuditingTransport
     /// The member's device's transport, judged by her device's own router.
     public let memberAudit: ZoneAuditingTransport
+    /// The second Mac's transport, judged by its own router.
+    public let audit2: ZoneAuditingTransport
     public let adminKeys: InMemorySyncKeyStore
     public let memberKeys: InMemorySyncKeyStore
     public let adminMac: Device
+    /// A second writer device of the admin's (another Mac), sharing `adminKeys`.
+    public let adminMac2: Device
+    /// The Macs' transports (over `audit`): a test can lose a save's reply or fail a record's saves on either.
+    public let macTransport: LossyTransport
+    public let mac2Transport: LossyTransport
     public let adminPhone: Device
     public let memberDevice: Device
     public let fixture: SharingFixture
@@ -25,14 +32,19 @@ public final class TwoPersonHousehold {
     public let personBUuid: String
     public let memberZone: String
 
-    private init(cloud: FakeCloud, audit: ZoneAuditingTransport, memberAudit: ZoneAuditingTransport, adminKeys: InMemorySyncKeyStore, memberKeys: InMemorySyncKeyStore,
-                 adminMac: Device, adminPhone: Device, memberDevice: Device, fixture: SharingFixture, personBUuid: String) {
+    private init(cloud: FakeCloud, audit: ZoneAuditingTransport, memberAudit: ZoneAuditingTransport, audit2: ZoneAuditingTransport, adminKeys: InMemorySyncKeyStore, memberKeys: InMemorySyncKeyStore,
+                 adminMac: Device, adminMac2: Device, macTransport: LossyTransport, mac2Transport: LossyTransport,
+                 adminPhone: Device, memberDevice: Device, fixture: SharingFixture, personBUuid: String) {
         self.cloud = cloud
         self.audit = audit
         self.memberAudit = memberAudit
+        self.audit2 = audit2
         self.adminKeys = adminKeys
         self.memberKeys = memberKeys
         self.adminMac = adminMac
+        self.adminMac2 = adminMac2
+        self.macTransport = macTransport
+        self.mac2Transport = mac2Transport
         self.adminPhone = adminPhone
         self.memberDevice = memberDevice
         self.fixture = fixture
@@ -67,13 +79,20 @@ public final class TwoPersonHousehold {
             try SyncChangeTracker.setWriter(adminUser, db: db)
             return (fixture, adminUser, memberUser, personB)
         }
+        let mac2 = try TestDatabase.migrated()
+        try mac2.write { db in try SyncChangeTracker.setWriter(adminUser, db: db) }
         let phone = try TestDatabase.migrated()
         try phone.write { db in try SyncChangeTracker.setWriter(adminUser, db: db) }
         let member = try TestDatabase.migrated()
         try member.write { db in try SyncChangeTracker.setWriter(memberUser, db: db) }
 
         let admin = SyncViewer(personUuid: fixture.personAUuid)
-        let macEngine = SyncEngineCore(db: mac, transport: audit, device: SyncDevice(id: "admin-mac", name: "Mac"), keyStore: adminKeys,
+        let macTransport = LossyTransport(audit)
+        let audit2 = ZoneAuditingTransport(wrapping: cloud, keyStore: adminKeys)
+        let mac2Transport = LossyTransport(audit2)
+        let mac2Engine = SyncEngineCore(db: mac2, transport: mac2Transport, device: SyncDevice(id: "admin-mac-2", name: "Mac 2"), keyStore: adminKeys,
+                                        viewer: admin)
+        let macEngine = SyncEngineCore(db: mac, transport: macTransport, device: SyncDevice(id: "admin-mac", name: "Mac"), keyStore: adminKeys,
                                        documents: macDocuments, viewer: admin)
         let phoneEngine = SyncEngineCore(db: phone, transport: audit, device: SyncDevice(id: "admin-phone", name: "iPhone"), keyStore: adminKeys,
                                          documents: phoneDocuments, readOnly: true, viewer: admin)
@@ -81,8 +100,10 @@ public final class TwoPersonHousehold {
                                           viewer: SyncViewer(personUuid: personB))
         audit.judge(with: router(mac))
         memberAudit.judge(with: router(member))
-        return TwoPersonHousehold(cloud: cloud, audit: audit, memberAudit: memberAudit, adminKeys: adminKeys, memberKeys: memberKeys,
-                                  adminMac: (mac, macEngine), adminPhone: (phone, phoneEngine), memberDevice: (member, memberEngine),
+        audit2.judge(with: router(mac2))
+        return TwoPersonHousehold(cloud: cloud, audit: audit, memberAudit: memberAudit, audit2: audit2, adminKeys: adminKeys, memberKeys: memberKeys,
+                                  adminMac: (mac, macEngine), adminMac2: (mac2, mac2Engine), macTransport: macTransport,
+                                  mac2Transport: mac2Transport, adminPhone: (phone, phoneEngine), memberDevice: (member, memberEngine),
                                   fixture: fixture, personBUuid: personB)
     }
 
@@ -100,7 +121,7 @@ public final class TwoPersonHousehold {
     }
 
     /// Where `device` places each record now (by UUID; nil for one it doesn't hold or can't place).
-    static func router(_ mac: DatabaseQueue) -> @Sendable (String) -> ZoneAssignment? {
+    public static func router(_ mac: DatabaseQueue) -> @Sendable (String) -> ZoneAssignment? {
         { uuid in
             try? mac.read { db -> ZoneAssignment? in
                 guard let row = try Row.fetchOne(db, sql: "SELECT tableName, localId FROM syncRecord WHERE uuid = ?", arguments: [uuid]) else {
@@ -114,7 +135,12 @@ public final class TwoPersonHousehold {
     /// Queues every record on the admin's Mac to be sent again (no data written): what a level change does for the
     /// records it moves (step 6 Task 8), so the next push places each one again.
     public func requeueEverythingOnTheMac() throws {
-        try adminMac.db.write { db in
+        try requeueEverything(on: adminMac)
+    }
+
+    /// `requeueEverythingOnTheMac` on any writer device.
+    public func requeueEverything(on device: Device) throws {
+        try device.db.write { db in
             let base = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(revision), 0) FROM syncPending") ?? 0
             try db.execute(sql: """
                 INSERT INTO syncPending(uuid, tableName, localId, kind, revision)
