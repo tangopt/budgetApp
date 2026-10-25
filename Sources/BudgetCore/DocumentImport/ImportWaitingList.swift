@@ -57,10 +57,13 @@ public struct ImportWaitingFile: Codable, Equatable, Identifiable, FetchableReco
 public struct ImportSetAsideFailure: Equatable, Sendable {
     public var fileName: String
     public var reason: String
+    /// The file's hash (lowercase), which tells apart two files of one name; empty when not known.
+    public var sha256: String
 
-    public init(fileName: String, reason: String) {
+    public init(fileName: String, reason: String, sha256: String = "") {
         self.fileName = fileName
         self.reason = reason
+        self.sha256 = sha256.lowercased()
     }
 }
 
@@ -124,14 +127,14 @@ public struct ImportWaitingList: Sendable {
                 continue
             }
             guard let path = Self.storedPath(sha256: sha, name: file.fileName) else {
-                result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: "Its name can't be used for Mango's copy"))
+                result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: "Its name can't be used for Mango's copy", sha256: sha))
                 continue
             }
             let placed: Placed
             do {
                 placed = try place(file, sha256: sha, path: path)
             } catch {
-                result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: Self.copyFailure(file, error)))
+                result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: Self.copyFailure(file, error), sha256: sha))
                 continue
             }
             do {

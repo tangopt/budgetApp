@@ -123,6 +123,55 @@ final class ImportWaitingListTests: XCTestCase {
         XCTAssertEqual(again.kept.count, 1)
     }
 
+    // MARK: Own folder
+
+    /// `isOwnFolder`: a folder is Mango's only when nothing on its way, itself included, leaves the root.
+    func testIsOwnFolderTable() throws {
+        let manager = FileManager.default
+        let outside = folder.appendingPathComponent("Outside", isDirectory: true)
+        try manager.createDirectory(at: outside, withIntermediateDirectories: true)
+        try manager.createDirectory(at: root.appendingPathComponent("real", isDirectory: true), withIntermediateDirectories: true)
+        try manager.createSymbolicLink(at: root.appendingPathComponent("toOutside"), withDestinationURL: outside)
+        try manager.createSymbolicLink(at: root.appendingPathComponent("toInside"), withDestinationURL: root.appendingPathComponent("real"))
+        try manager.createSymbolicLink(at: root.appendingPathComponent("dangling"), withDestinationURL: folder.appendingPathComponent("Nowhere"))
+        try Data("x".utf8).write(to: root.appendingPathComponent("plainFile"))
+        func own(_ path: String) -> Bool { ImportWaitingList.isOwnFolder(root.appendingPathComponent(path), root: root) }
+        XCTAssertTrue(own("real"))
+        XCTAssertTrue(own("missing"), "A folder not made yet is Mango's to make")
+        XCTAssertTrue(own("real/deeper/missing"))
+        XCTAssertFalse(own("toOutside"), "A linked hash folder")
+        XCTAssertFalse(own("toOutside/missing"), "A missing folder under a linked intermediate")
+        XCTAssertFalse(own("toInside"), "Even a link to inside the root is not a real folder")
+        XCTAssertFalse(own("dangling"))
+        XCTAssertFalse(own("plainFile"))
+        XCTAssertFalse(own("../Outside"), "A ../ escape")
+        XCTAssertFalse(own("real/../../Outside"))
+        let spelled = URL(fileURLWithPath: "/private" + root.path)
+        if manager.fileExists(atPath: spelled.path) {
+            XCTAssertTrue(ImportWaitingList.isOwnFolder(spelled.appendingPathComponent("missing"), root: spelled))
+            XCTAssertTrue(ImportWaitingList.isOwnFolder(spelled.appendingPathComponent("real"), root: spelled))
+            XCTAssertFalse(ImportWaitingList.isOwnFolder(spelled.appendingPathComponent("toOutside"), root: spelled))
+        }
+    }
+
+    /// A hash folder that is a link to elsewhere: that file is refused with the reason and its hash, nothing is
+    /// written through the link, and a file beside it is kept.
+    func testKeepRefusesALinkedHashFolder() throws {
+        let manager = FileManager.default
+        let linked = try dropped("linked.txt", "Behind a link")
+        let fine = try dropped("fine.txt", "Not behind a link")
+        let outside = folder.appendingPathComponent("Outside", isDirectory: true)
+        try manager.createDirectory(at: outside, withIntermediateDirectories: true)
+        try manager.createDirectory(at: root, withIntermediateDirectories: true)
+        try manager.createSymbolicLink(at: root.appendingPathComponent(linked.sha256), withDestinationURL: outside)
+        let result = try list.keep([linked, fine], now: Self.now)
+        XCTAssertEqual(result.failed, [ImportSetAsideFailure(fileName: "linked.txt",
+                                                             reason: "Mango's folder for it is a link to somewhere else: not copied", sha256: linked.sha256)])
+        XCTAssertEqual(result.kept.map(\.originalFileName), ["fine.txt"])
+        XCTAssertEqual(try manager.contentsOfDirectory(atPath: outside.path), [])
+        XCTAssertEqual(try rows().map(\.originalFileName), ["fine.txt"])
+    }
+
     func testKeepingTheSameFileTwiceIsAlreadyWaiting() throws {
         let file = try dropped("twice.txt", "The same bytes")
         _ = try list.keep([file], now: Self.now)

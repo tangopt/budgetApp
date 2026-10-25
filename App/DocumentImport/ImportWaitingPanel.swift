@@ -11,6 +11,7 @@ struct ImportWaitingPanel: View {
 
     @State private var discarding: ImportWaitingFile?
     @State private var notice: String?
+    @State private var copiedNote: String?
     @State private var failures: [ImportSetAsideFailure] = []
     @State private var isWorking = false
 
@@ -32,6 +33,7 @@ struct ImportWaitingPanel: View {
             }
         }) {
             VStack(alignment: .leading, spacing: 8) {
+                if let copiedNote { InlineBanner(.success, copiedNote, onDismiss: { self.copiedNote = nil }) }
                 if let notice { InlineBanner(.info, notice, onDismiss: { self.notice = nil }) }
                 if !failures.isEmpty {
                     InlineBanner(.warning, onDismiss: { failures = [] }) {
@@ -111,8 +113,12 @@ struct ImportWaitingPanel: View {
     private func copy(_ file: ImportWaitingFile) {
         isWorking = true
         notice = nil
+        copiedNote = nil
         Task {
-            if let outcome = await center.copyToFolder(file) { failures = outcome.failed }
+            if let outcome = await center.copyToFolder(file) {
+                failures = outcome.failed
+                if outcome.copied > 0, let folder = outcome.folder { copiedNote = "Copied \(file.originalFileName) to \(folder.lastPathComponent)." }
+            }
             isWorking = false
         }
     }

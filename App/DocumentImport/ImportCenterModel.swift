@@ -93,6 +93,8 @@ final class ImportCenterModel: ObservableObject {
     var waiting: [ImportWaitingFile] { session.waiting }
     /// Whether the waiting file is in the open review (its copy is read there: not to discard meanwhile).
     func isInOpenReview(_ file: ImportWaitingFile) -> Bool { session.isInOpenReview(file) }
+    /// The files the finished run left unimported, once per run (`ImportSession.takeSetAsideOffer`).
+    func takeSetAsideOffer() -> [SetAsideFile] { session.takeSetAsideOffer() }
     /// The open review's files that can be set aside before it is discarded.
     func setAsideCandidates() -> [SetAsideFile] { session.setAsideCandidates() }
 
@@ -400,20 +402,21 @@ final class ImportCenterModel: ObservableObject {
     func copyToFolder(_ files: [SetAsideFile]) async -> SetAsideCopyOutcome? {
         guard let folder = Self.chooseFolder(message: files.count == 1 ? "Choose where to copy the file." : "Choose where to copy the files.")
         else { return nil }
-        let list = session.waitingList
-        var copies: [String: URL] = [:]
-        for row in session.waiting { if let url = list.fileURL(row) { copies[row.sha256] = url } }
-        let byHash = copies
+        let list = session.waitingList, waiting = session.waiting
+        let wanted = Set(files.map { $0.sha256.lowercased() })
+        // Only the files being copied are looked up, off the main actor.
         let result = await Task.detached(priority: .userInitiated) {
-            ImportSetAside.copy(files, waitingCopy: { byHash[$0.lowercased()] }, to: folder)
+            let copies = Dictionary(waiting.filter { wanted.contains($0.sha256) }.compactMap { row in list.fileURL(row).map { (row.sha256, $0) } },
+                                    uniquingKeysWith: { first, _ in first })
+            return ImportSetAside.copy(files, waitingCopy: { copies[$0.lowercased()] }, to: folder)
         }.value
-        return SetAsideCopyOutcome(copied: result.copied.count, failed: result.failed)
+        return SetAsideCopyOutcome(folder: folder, copied: result.copied.count, failed: result.failed)
     }
 
     /// `copyToFolder` for a waiting file (Mango's copy); an outcome with a failure when its copy isn't here.
     func copyToFolder(_ file: ImportWaitingFile) async -> SetAsideCopyOutcome? {
         guard let setAside = session.waitingList.setAsideFile(file) else {
-            return SetAsideCopyOutcome(copied: 0, failed: [ImportSetAsideFailure(fileName: file.originalFileName, reason: "Mango's copy isn't here")])
+            return SetAsideCopyOutcome(folder: nil, copied: 0, failed: [ImportSetAsideFailure(fileName: file.originalFileName, reason: "Mango's copy isn't here")])
         }
         return await copyToFolder([setAside])
     }
@@ -460,6 +463,8 @@ extension ImportCenterModel {
 
 /// What copying files to a folder did: how many were copied, and the files that couldn't be, with why.
 struct SetAsideCopyOutcome: Equatable {
+    /// The folder copied to.
+    var folder: URL?
     var copied: Int
     var failed: [ImportSetAsideFailure]
 }

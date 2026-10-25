@@ -261,6 +261,10 @@ final class ImportSessionTests: XCTestCase {
         XCTAssertEqual(summary.setAside.map(\.fileName), ["b.pdf"])
         XCTAssertEqual(summary.setAside.first?.reason, reason)
         XCTAssertEqual(session.waiting, [])
+        // Offered once per run: asking again (the screen rebuilt) offers nothing.
+        XCTAssertEqual(session.takeSetAsideOffer().map(\.fileName), ["b.pdf"])
+        XCTAssertEqual(session.takeSetAsideOffer(), [])
+        XCTAssertEqual(session.setAsideOfferedRunId, summary.runId)
 
         let kept = try await session.keep(summary.setAside)
         XCTAssertEqual(kept.kept.map(\.originalFileName), ["b.pdf"])

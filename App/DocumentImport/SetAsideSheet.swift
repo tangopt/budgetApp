@@ -75,10 +75,10 @@ struct SetAsideSheet: View {
         .frame(width: SheetMetrics.listWidth, alignment: .topLeading)
     }
 
-    private var allKept: Bool { files.allSatisfy { results[$0.sha256, default: []].contains(.kept) } }
+    private var allKept: Bool { files.allSatisfy { results[$0.sha256.lowercased(), default: []].contains(.kept) } }
 
     private func row(_ file: SetAsideFile) -> some View {
-        let done = results[file.sha256, default: []]
+        let done = results[file.sha256.lowercased(), default: []]
         return HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(file.fileName).lineLimit(1).truncationMode(.middle).help(file.fileName)
@@ -106,8 +106,8 @@ struct SetAsideSheet: View {
         Task {
             do {
                 let result = try await actions.keep(batch)
-                let failed = Set(result.failed.map(\.fileName))
-                for file in batch where !failed.contains(file.fileName) { results[file.sha256, default: []].insert(.kept) }
+                let failed = Set(result.failed.map(\.sha256))
+                for file in batch where !failed.contains(file.sha256.lowercased()) { results[file.sha256.lowercased(), default: []].insert(.kept) }
                 failures = result.failed
             } catch {
                 self.error = "Couldn't keep the files: \(error.localizedDescription)"
@@ -121,8 +121,8 @@ struct SetAsideSheet: View {
         error = nil
         Task {
             if let outcome = await actions.copy(batch) {
-                let failed = Set(outcome.failed.map(\.fileName))
-                for file in batch where !failed.contains(file.fileName) { results[file.sha256, default: []].insert(.copied) }
+                let failed = Set(outcome.failed.map(\.sha256))
+                for file in batch where !failed.contains(file.sha256.lowercased()) { results[file.sha256.lowercased(), default: []].insert(.copied) }
                 failures = outcome.failed
             }
             isWorking = false

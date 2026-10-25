@@ -9,8 +9,6 @@ import BudgetCore
 struct ImportHistoryView: View {
     @ObservedObject var center: ImportCenterModel
     let pickFiles: () -> Void
-    /// The finished run whose unimported files the sheet was shown for (once per run).
-    @State private var setAsideShownFor: Int64?
     @State private var setAsideFiles: [SetAsideFile]?
 
     static let tableMinimumWidth: CGFloat = 400
@@ -82,11 +80,10 @@ struct ImportHistoryView: View {
         return nil
     }
 
-    /// A finished run that left files unimported opens the sheet, once.
+    /// A finished run that left files unimported opens the sheet, once (the session remembers the run it was offered for).
     private func offerSetAside() {
-        guard case .finished(let summary) = center.phase, !summary.setAside.isEmpty, setAsideShownFor != summary.runId else { return }
-        setAsideShownFor = summary.runId
-        setAsideFiles = summary.setAside
+        let offer = center.takeSetAsideOffer()
+        if !offer.isEmpty { setAsideFiles = offer }
     }
 }
 
@@ -115,7 +112,16 @@ struct ImportHistoryTable: View {
         [
             .date("Date") { $0.confirmedAt },
             .text("Entry point", width: .fit) { $0.entryPoint },
-            .text("Summary", width: .fill(min: 160), { $0.summary }, detail: { $0.undoSummary }),
+            // A sentence of figures: it wraps (the figures in it stay whole) rather than truncate at 1100×700.
+            DataTableColumn("Summary", width: .fill(min: 160), accessibilityValue: { [$0.summary, $0.undoSummary].compactMap { $0 }.joined(separator: ", ") }) { run, _ in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(run.summary.figuresUnbroken).fixedSize(horizontal: false, vertical: true)
+                    if let undo = run.undoSummary {
+                        Text(undo.figuresUnbroken).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.vertical, 3)
+            },
             .status("") { run in
                 run.undoneAt == nil ? nil : StatusPill("Undone", tone: .neutral, help: run.undoSummary)
             }

@@ -792,6 +792,18 @@ public final class ImportSession {
         plan?.items.contains { $0.parentId == nil && $0.file.sha256.lowercased() == file.sha256 } ?? false
     }
 
+    /// The run whose unimported files were already offered to set aside (the sheet is offered once per run,
+    /// wherever the user goes meanwhile).
+    public private(set) var setAsideOfferedRunId: Int64?
+
+    /// The files the finished run left unimported, to offer once: empty when there are none, or this run's
+    /// were offered already (leaving the Imports screen and coming back doesn't offer them again).
+    public func takeSetAsideOffer() -> [SetAsideFile] {
+        guard case .finished(let summary) = phase, !summary.setAside.isEmpty, setAsideOfferedRunId != summary.runId else { return [] }
+        setAsideOfferedRunId = summary.runId
+        return summary.setAside
+    }
+
     /// The entry point of a review of waiting files.
     public static let waitingEntryPoint = "Waiting list"
 

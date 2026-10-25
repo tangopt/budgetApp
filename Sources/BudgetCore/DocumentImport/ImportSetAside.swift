@@ -74,13 +74,13 @@ public enum ImportSetAside {
             } else if let copy = waitingCopy(file.sha256), manager.fileExists(atPath: copy.path) {
                 source = copy
             } else {
-                result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: "Neither the original nor Mango's copy can be found"))
+                result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: "Neither the original nor Mango's copy can be found", sha256: file.sha256))
                 continue
             }
             do {
                 result.copied.append(try copyUnique(source, named: file.fileName, into: folder))
             } catch {
-                result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: "Couldn't copy it: \(error.localizedDescription)"))
+                result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: "Couldn't copy it: \(error.localizedDescription)", sha256: file.sha256))
             }
         }
         return result
