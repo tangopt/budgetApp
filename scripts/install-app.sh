@@ -98,11 +98,15 @@ elif [[ -n "$TEAM" ]]; then
     # (their -Owholemodule), so one BudgetCore change rebuilt all of BudgetCore (about 3-4 min). File by
     # file it is seconds, for about 7% slower code (TaxFigures.snapshot, measured 2026-10-25).
     ARCH="$(uname -m)"
+    # The cache keeps the previous build's app, so its presence proves nothing: check xcodebuild itself.
+    BUILD_OK=1
     xcodebuild -project Mango.xcodeproj -scheme Mango -configuration Release \
         -destination "platform=macOS,arch=$ARCH" -derivedDataPath "$CACHE_DIR/team" \
         -allowProvisioningUpdates ARCHS="$ARCH" ONLY_ACTIVE_ARCH=YES \
         SWIFT_COMPILATION_MODE=singlefile SWIFT_OPTIMIZATION_LEVEL=-O build \
-        | grep -E "error:|warning:|BUILD" | grep -v appintents || true
+        > "$BUILD_DIR/build.log" 2>&1 || BUILD_OK=0
+    grep -E "error:|warning:|BUILD" "$BUILD_DIR/build.log" | grep -v appintents || true
+    (( BUILD_OK )) || { echo "Build failed." >&2; exit 1; }
     BUILT="$CACHE_DIR/team/Build/Products/Release/Mango.app"
     [[ -x "$BUILT/Contents/MacOS/Mango" ]] || { echo "Build failed." >&2; exit 1; }
 
