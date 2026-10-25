@@ -97,3 +97,31 @@ below Everything ever in the household zone (an assertion over every batch).
 - How the existing write paths receive the actor (one `Actor` passed through BudgetCore services).
 - Summary rebuild triggers and batching.
 - The lock badge and summary-row design, matching the existing account rows.
+
+## 10. Answers after the builder check (2026-10-25)
+
+- **Property money in private accounts (user: option a):** transactions in property categories (and the
+  property/tax rows that point at them: receipts, invoices, recharge and rent-receipt payments, tax owner
+  and not-claimed marks) are always shared, even from an account below Everything. Nothing else from that
+  account is shared. Every device therefore computes the same rental and Self Assessment figures.
+- **Which permission an incoming change needs (my call):** by origin, not by table. Rows written by an
+  import batch count as Import; recharge, rent-receipt and invoice matching count as Property; document
+  links count as Documents. The member may set category and notes on transactions of Everything property
+  accounts and on property-category transactions; any other transaction edit needs Budget & accounts. Each
+  change carries its origin so the Mac's re-validation can judge it.
+- **iPhone (my call):** shows the levels read-only in step 6 (it doesn't write yet); levels are changed on
+  the Mac.
+- **Balance only (my call):** publishes the balance at each pay-month end plus the current balance, never
+  daily balances.
+- **What a private account shows the other person (my call):** a household stub with name, bank and type;
+  account numbers, IBAN, sort code, statement-check columns, import profiles, the import change log, and
+  forecast/plan entries for that account stay in the owner's private zone. Transfers between a private and
+  a shared account show on the shared side only.
+- **Tax years and income (my call):** Everything or Hidden only; both start at Everything; the code that
+  moves records when it's lowered is deferred until someone asks for it (the picker shows Hidden as "not
+  available yet").
+- **Real sync for the real database (user, 2026-10-25: "do an iPhone build with my real data"):** step 6
+  ends with the Mac's "Turn on sync" (sync spec §8 migration: timestamped backup, ownership sheet, levels,
+  upload to Production, records sealed and placed in the right zone from the first upload). It needs the
+  Production schema deployed by the user in the CloudKit Console, and the user's go at the moment of the
+  first upload. Then a TestFlight build lets the iPhone pull the real data.
