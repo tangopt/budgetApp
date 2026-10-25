@@ -463,6 +463,19 @@ final class ImportWaitingListTests: XCTestCase {
         XCTAssertEqual(try rows(), [])
     }
 
+    /// Final review M2: a pull that deletes this hash's row lands between the keep's copy and its row, and its
+    /// `removeCopies` (seeing no row) takes the copy just placed. The keep places it again: the row it writes
+    /// never stands without its copy.
+    func testAPullRemovingTheCopyBeforeTheRowIsWrittenLeavesTheCopy() throws {
+        let file = try dropped("raced.txt", "Kept while a pull ran")
+        var racing = list
+        racing.afterPlacingForTesting = { [root, db] sha in ImportWaitingList(root: root, database: db).removeCopies(sha256s: [sha]) }
+        let kept = try XCTUnwrap(try racing.keep([file], now: Self.now).kept.first)
+        let copy = root.appendingPathComponent(file.sha256).appendingPathComponent("raced.txt")
+        XCTAssertEqual(list.fileURL(kept), copy)
+        XCTAssertEqual(try Data(contentsOf: copy), try Data(contentsOf: file.url))
+    }
+
     /// M1: a copy folder whose hash has a row again (kept meanwhile) is never removed.
     func testRemovingCopiesSparesAHashKeptAgain() throws {
         let file = try dropped("again.txt", "Kept again")

@@ -160,6 +160,10 @@ public enum SyncTranslator {
         }
     }
 
+    /// The tables whose records can bring a retired custom kind, or something filed under one (`settleRetired`).
+    static let kindTables: Set<String> = [CustomDocumentKind.databaseTableName, EvidenceDocument.databaseTableName,
+                                          EvidenceRequirement.databaseTableName, ImportRule.databaseTableName]
+
     /// `apply` without batch routing: what `SyncBatch` applies once a batch is complete. `revivals`: records
     /// an Undo brings back (deleted here; ruling R7), by UUID, with the local id they had here.
     static func applyChanges(_ changes: [SyncIncomingChange], db: Database, deviceUser: String?, now: Date,
@@ -191,16 +195,25 @@ public enum SyncTranslator {
                 // A delete of a record of unknown type may be what anything waits for.
                 if let table { arrived.insert(table) } else { unknownArrived = true }
             }
+            // Whether this apply can have brought a retired kind or something filed under one (final review M5).
+            var touchesKinds = saves.contains { Self.kindTables.contains($0.recordType) }
+                || deleteTables.contains { $0.map(Self.kindTables.contains) ?? true }
+            var retried: [String: IncomingResult] = [:]
             if !retry {
                 // The caller retries staging itself.
             } else if unknownArrived || retryAll {
-                for (name, result) in try retryStaged(db: db, deviceUser: deviceUser, now: now) { results[name] = result }
+                retried = try retryStaged(db: db, deviceUser: deviceUser, now: now)
             } else if !arrived.isEmpty {
-                for (name, result) in try retryStaged(db: db, deviceUser: deviceUser, now: now, arrived: arrived) { results[name] = result }
+                retried = try retryStaged(db: db, deviceUser: deviceUser, now: now, arrived: arrived)
+            }
+            for (name, result) in retried {
+                results[name] = result
+                // A staged record of any table applied now (its table isn't known here): settle to be safe.
+                if case .staged = result {} else { touchesKinds = true }
             }
             try retireRemoved(db: db, now: now)
             // Custom kinds merged into a built-in kind (here or elsewhere): what still names them is re-filed.
-            try CustomDocumentKinds.settleRetired(db: db)
+            if touchesKinds { try CustomDocumentKinds.settleRetired(db: db) }
             return results
         }
     }

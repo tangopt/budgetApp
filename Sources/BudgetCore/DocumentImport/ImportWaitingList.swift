@@ -79,6 +79,8 @@ public struct ImportWaitingList: Sendable {
 
     public let root: URL
     public let database: any DatabaseWriter
+    /// Tests only: runs between a keep's copy and its row (where a pull's `removeCopies` can land).
+    var afterPlacingForTesting: (@Sendable (String) -> Void)?
 
     public init(root: URL = ImportWaitingList.defaultRoot, database: any DatabaseWriter) {
         self.root = root
@@ -137,6 +139,7 @@ public struct ImportWaitingList: Sendable {
                 result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: Self.copyFailure(file, error), sha256: sha))
                 continue
             }
+            afterPlacingForTesting?(sha)
             do {
                 let row = try database.write { db -> ImportWaitingFile in
                     if var row = try Self.row(db: db, sha256: sha) {
@@ -166,6 +169,15 @@ public struct ImportWaitingList: Sendable {
                 case .alreadyThere: break
                 }
                 throw error
+            }
+            // A pull that deleted this hash's row (dismissed on another device) between the copy and the row
+            // removed the copy with it (`removeCopies` saw no row): placed again. From here on the row protects it.
+            if !Self.isRegularFile(root.appendingPathComponent(path)) {
+                do {
+                    _ = try place(file, sha256: sha, path: path)
+                } catch {
+                    result.failed.append(ImportSetAsideFailure(fileName: file.fileName, reason: Self.copyFailure(file, error), sha256: sha))
+                }
             }
             // Kept again under another name: the copy under the old name goes.
             Self.removeOtherFiles(in: root.appendingPathComponent(sha, isDirectory: true), keeping: file.fileName)
