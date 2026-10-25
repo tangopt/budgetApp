@@ -409,6 +409,25 @@ struct SyncJSONTranslator {
         return edits.applied(to: raw)
     }
 
+    /// The ids a fingerprint names, as written (local ids or UUIDs), with their tables; "-" (no id) left out.
+    static func fingerprintTokens(_ raw: String) -> [(table: String, token: String)] {
+        let whole = NSRange(raw.startIndex..., in: raw)
+        guard let match = fingerprintPattern.firstMatch(in: raw, range: whole) else { return [] }
+        var tokens: [(table: String, token: String)] = []
+        func add(_ range: NSRange, _ table: String) {
+            guard range.location != NSNotFound, let swiftRange = Range(range, in: raw) else { return }
+            let value = String(raw[swiftRange])
+            if value != "-" { tokens.append((table, value)) }
+        }
+        add(match.range(at: 1), "forecastGroup")
+        add(match.range(at: 2), "category")
+        add(match.range(at: 5), "account")
+        for exception in exceptionPattern.matches(in: raw, range: match.range(at: 6)) {
+            add(exception.range(at: 1), "category")
+        }
+        return tokens
+    }
+
     // MARK: Rows recorded by ImportChangeCapture
 
     /// A row of `table` as `ImportChangeCapture` records it, with every reference the table declares

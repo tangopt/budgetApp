@@ -13,8 +13,8 @@ public enum SyncRecordStoreError: Error, Equatable {
 /// UUID that names its CloudKit record. Local ids stay local; the UUID is what other devices see.
 /// The tracking triggers (`SyncChangeTracker`) create identities as rows are written.
 public enum SyncRecordStore {
-    /// Every row's zone in build step 3.
-    public static let householdZone = "household"
+    /// The household zone (`SyncZones.household`).
+    public static let householdZone = SyncZones.household
 
     /// A random version 4 UUID in its canonical lowercase form (8-4-4-4-12 hex digits, version digit 4,
     /// variant digit 8, 9, a or b), made by SQLite so the triggers and Swift share one format.
