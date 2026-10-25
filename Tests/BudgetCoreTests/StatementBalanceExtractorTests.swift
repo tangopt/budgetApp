@@ -36,18 +36,18 @@ final class StatementBalanceExtractorTests: XCTestCase {
     }
 
     // The real bank export is newest-first, with several rows per day in reverse order.
-    func testNewestFirstFileWithSameDayRowsResolvesOrder() {
-        let newestFirst = Array(chronological.reversed())
-        XCTAssertEqual(points(StatementBalanceExtractor.extract(from: newestFirst)), expectedPoints)
-    }
-
-    func testOldestFirstFileGivesTheSamePoints() {
-        XCTAssertEqual(points(StatementBalanceExtractor.extract(from: chronological)), expectedPoints)
-    }
-
-    // The 1 Feb point is the balance after BOTH rows dated 1 Feb (the rent and the refund).
-    func testBalanceOnTheFirstIncludesThatDaysTransactions() {
-        XCTAssertEqual(points(StatementBalanceExtractor.extract(from: chronological)).first?.balanceMinorUnits, 99_500)
+    func testEitherFileOrderResolvesToTheSamePoints() {
+        let cases: [(name: String, rows: [ParsedTransaction])] = [
+            // The real bank export is newest-first, with several rows per day in reverse order.
+            ("newest-first file with same-day rows", Array(chronological.reversed())),
+            ("oldest-first file", chronological),
+        ]
+        for c in cases {
+            let result = points(StatementBalanceExtractor.extract(from: c.rows))
+            XCTAssertEqual(result, expectedPoints, c.name)
+            // The 1 Feb point is the balance after BOTH rows dated 1 Feb (the rent and the refund).
+            XCTAssertEqual(result.first?.balanceMinorUnits, 99_500, c.name)
+        }
     }
 
     func testQuietFirstOfMonthCarriesThePreviousBalance() {
@@ -87,19 +87,20 @@ final class StatementBalanceExtractorTests: XCTestCase {
         ])
     }
 
-    func testBalancesThatDoNotAddUpAreUnverified() {
-        var rows = chronological
-        rows[3] = row(2026, 2, 1, 3000, 123_456) // breaks the chain
-        guard case .unverified = StatementBalanceExtractor.extract(from: rows) else {
-            return XCTFail("expected .unverified")
-        }
-    }
-
-    func testOneMissingBalanceIsUnverified() {
-        var rows = chronological
-        rows[2] = row(2026, 2, 1, -500, nil)
-        guard case .unverified = StatementBalanceExtractor.extract(from: rows) else {
-            return XCTFail("expected .unverified")
+    func testBalancesThatCannotBeVerifiedAreUnverified() {
+        var broken = chronological
+        broken[3] = row(2026, 2, 1, 3000, 123_456) // breaks the chain
+        var missing = chronological
+        missing[2] = row(2026, 2, 1, -500, nil)
+        let cases: [(name: String, rows: [ParsedTransaction])] = [
+            ("balances that do not add up", broken),
+            ("one missing balance", missing),
+        ]
+        for c in cases {
+            guard case .unverified = StatementBalanceExtractor.extract(from: c.rows) else {
+                XCTFail("expected .unverified: \(c.name)")
+                continue
+            }
         }
     }
 

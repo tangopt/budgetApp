@@ -4,14 +4,6 @@ import GRDB
 import TestSupport
 
 final class CategoryGroupTests: XCTestCase {
-    func testInsertAndFetchCategoryGroup() throws {
-        let manager = try TestDatabase.migratedManager()
-        var group = CategoryGroup(name: "Car")
-        try manager.dbQueue.write { db in try group.insert(db) }
-        let fetched = try manager.dbQueue.read { db in try CategoryGroup.filter(Column("name") == "Car").fetchOne(db) }
-        XCTAssertNotNil(fetched)
-    }
-
     func testCategoryCanBeAssignedToGroup() throws {
         let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in

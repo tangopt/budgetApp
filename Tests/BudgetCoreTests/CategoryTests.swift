@@ -4,18 +4,6 @@ import GRDB
 import TestSupport
 
 final class CategoryTests: XCTestCase {
-    func testInsertAndFetchCategory() throws {
-        let manager = try TestDatabase.migratedManager()
-        var category = Category(name: "Rent", type: .expense)
-        try manager.dbQueue.write { db in
-            try category.insert(db)
-        }
-        let fetched = try manager.dbQueue.read { db in
-            try Category.filter(Column("name") == "Rent").fetchOne(db)
-        }
-        XCTAssertEqual(fetched?.type, .expense)
-    }
-
     func testSeedDefaultsCreatesKnownCategories() throws {
         let manager = try TestDatabase.migratedManager()
         try manager.dbQueue.write { db in

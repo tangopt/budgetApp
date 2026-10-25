@@ -38,15 +38,17 @@ final class CoverWindowPolicyTests: XCTestCase {
 
     /// Back in front after a relock in the background: the cover was already up (privacy), and now shows the lock
     /// screen to an active scene, so VoiceOver hears it.
-    func testBecomingActiveWhileLockedAnnouncesTheLockScreen() {
-        let state = CoverWindowPolicy.state(locked: true, active: true, wasShown: true, wasActive: false)
-        XCTAssertTrue(state.isShown)
-        XCTAssertTrue(state.announcesScreenChange)
-    }
-
-    func testNoRepeatAnnouncementWhileItStaysLockedAndActive() {
-        let state = CoverWindowPolicy.state(locked: true, active: true, wasShown: true, wasActive: true)
-        XCTAssertTrue(state.isShown)
-        XCTAssertFalse(state.announcesScreenChange)
+    func testAnnouncementWhileLockedAndActive() {
+        let cases: [(name: String, wasActive: Bool, announces: Bool)] = [
+            // Back in front after a relock in the background: the cover was already up (privacy), and now shows the lock
+            // screen to an active scene, so VoiceOver hears it.
+            ("becoming active while locked announces the lock screen", false, true),
+            ("no repeat announcement while it stays locked and active", true, false),
+        ]
+        for c in cases {
+            let state = CoverWindowPolicy.state(locked: true, active: true, wasShown: true, wasActive: c.wasActive)
+            XCTAssertTrue(state.isShown, c.name)
+            XCTAssertEqual(state.announcesScreenChange, c.announces, c.name)
+        }
     }
 }
