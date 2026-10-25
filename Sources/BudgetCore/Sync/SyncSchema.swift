@@ -84,8 +84,9 @@ public enum SyncSchema {
         // Files kept for later (spec 2026-10-24 §1): the household's list; each device reads the text
         // and suggests on its own.
         SyncTableSchema("importWaitingFile",
-                        synced: ["sha256", "originalFileName", "byteCount", "storedRelativePath", "reason", "recognisedAs", "keptAt", "importedRunId"],
-                        foreignKeys: ["importedRunId": "importRun"],
+                        synced: ["sha256", "originalFileName", "byteCount", "storedRelativePath", "reason", "recognisedAs", "keptAt", "importedRunId",
+                                 "keptByAppUserId"],
+                        foreignKeys: ["importedRunId": "importRun", "keptByAppUserId": "appUser"],
                         localOnly: ["text", "textStatus", "suggestion", "checkedSignature"]),
         SyncTableSchema("importBatch",
                         synced: ["accountId", "sourceFileName", "importedAt", "importRunId"],

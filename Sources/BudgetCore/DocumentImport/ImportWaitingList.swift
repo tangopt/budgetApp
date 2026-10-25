@@ -29,10 +29,13 @@ public struct ImportWaitingFile: Codable, Equatable, Identifiable, FetchableReco
     public var keptAt: Date
     /// The run that imported it (it leaves the list while that run stands).
     public var importedRunId: Int64?
+    /// The app user who kept it (synced): a kept file is never shared, it lives in that person's private zone
+    /// (`SyncZoneRouter` rule 10). Nil when no one was signed in.
+    public var keptByAppUserId: Int64?
 
     public init(id: Int64? = nil, sha256: String, originalFileName: String, byteCount: Int64, storedRelativePath: String,
                 text: String?, textStatus: DocumentTextStatus, reason: String, recognisedAs: String, suggestion: String? = nil,
-                checkedSignature: String = "", keptAt: Date, importedRunId: Int64? = nil) {
+                checkedSignature: String = "", keptAt: Date, importedRunId: Int64? = nil, keptByAppUserId: Int64? = nil) {
         self.id = id
         self.sha256 = sha256
         self.originalFileName = originalFileName
@@ -46,6 +49,7 @@ public struct ImportWaitingFile: Codable, Equatable, Identifiable, FetchableReco
         self.checkedSignature = checkedSignature
         self.keptAt = EvidenceLinks.wholeSeconds(keptAt)
         self.importedRunId = importedRunId
+        self.keptByAppUserId = keptByAppUserId
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
@@ -150,13 +154,14 @@ public struct ImportWaitingList: Sendable {
                         row.recognisedAs = file.recognisedAs
                         row.keptAt = EvidenceLinks.wholeSeconds(now)
                         row.importedRunId = nil
+                        row.keptByAppUserId = try Self.signedInAppUserId(db: db)
                         if row.text == nil { row.text = file.text; row.textStatus = file.textStatus }
                         try row.update(db)
                         return row
                     }
                     var row = ImportWaitingFile(sha256: sha, originalFileName: file.fileName, byteCount: file.byteCount, storedRelativePath: path,
                                                 text: file.text, textStatus: file.textStatus, reason: file.reason, recognisedAs: file.recognisedAs,
-                                                keptAt: now)
+                                                keptAt: now, keptByAppUserId: try Self.signedInAppUserId(db: db))
                     try row.insert(db)
                     return row
                 }
@@ -238,6 +243,15 @@ public struct ImportWaitingList: Sendable {
 
     /// Whether `folder` (a hash folder under `root`) is Mango's own: absent (to be created), or a real folder,
     /// not a symbolic link, that resolves inside `root`.
+    /// The app user signed in on this connection (`syncWriter`), by local id; nil when no one is.
+    static func signedInAppUserId(db: Database) throws -> Int64? {
+        guard try db.tableExists("syncWriter") else { return nil }
+        return try Int64.fetchOne(db, sql: """
+            SELECT s.localId FROM syncWriter w JOIN syncRecord s ON s.tableName = 'appUser' AND s.uuid = w.appUserUuid
+            WHERE w.id = 1
+            """)
+    }
+
     static func isOwnFolder(_ folder: URL, root: URL) -> Bool {
         let manager = FileManager.default
         if let type = (try? manager.attributesOfItem(atPath: folder.path))?[.type] as? FileAttributeType, type != .typeDirectory { return false }

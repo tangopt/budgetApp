@@ -151,7 +151,12 @@ public struct SyncZoneGuard {
     ///   fields (or batch tag, redirect, deleted references) contain a private record's UUID, a stub account's
     ///   UUID outside `SyncZones.stubReferences`, or an account's private details;
     /// - a payload in a zone that is neither `household` nor a person's private zone;
-    /// - an `accountDetails` record that isn't a stub's, in its owner's zone, with its private columns only.
+    /// - an `accountDetails` record that isn't a stub's, in its owner's zone, with its private columns only;
+    /// - a move marker carrying anything but where the record went (`movedTo`, another zone of this household);
+    /// - a payload carrying (a value or a clock of) a field its `omittedFields` leaves out, or leaving out a
+    ///   column that doesn't sync.
+    /// A household move marker is the one household payload that may name a private record: the record's old copy
+    /// is already there, and the marker replaces it with nothing.
     public func check(_ payloads: [SyncPayload]) throws {
         for payload in payloads {
             try check(payload)
@@ -184,7 +189,31 @@ public struct SyncZoneGuard {
             }
             return
         }
-        guard SyncSchema.table(payload.recordType) != nil else { throw violation("none", "not a synced record type") }
+        guard let schema = SyncSchema.table(payload.recordType) else { throw violation("none", "not a synced record type") }
+        if let target = payload.movedTo {
+            // A move marker names the record (its old copy is already there) and where it went; nothing else.
+            guard payload.fields.isEmpty, payload.clocks.isEmpty, payload.mergedInto == nil, payload.importRunUuid == nil,
+                  payload.batchGeneration == nil, payload.manifest == nil, payload.deletedReferences == nil, payload.largePayload == nil,
+                  payload.documentFile == nil, payload.omittedFields == nil else {
+                throw violation("none", "a move marker carrying more than where the record went")
+            }
+            guard payload.zone == SyncZones.household || privateZones.contains(payload.zone) else {
+                throw violation("none", "not a zone of this household")
+            }
+            guard target != payload.zone, target == SyncZones.household || privateZones.contains(target) else {
+                throw violation("none", "a move marker to a zone that isn't another of this household")
+            }
+            return
+        }
+        if let omitted = payload.omittedFields {
+            let synced = Set(schema.syncedColumns)
+            if let unknown = omitted.first(where: { !synced.contains($0) }) {
+                throw violation("none", "leaves out \(unknown), which isn't a synced column")
+            }
+            if let carried = omitted.sorted().first(where: { payload.fields[$0] != nil || payload.clocks[$0] != nil }) {
+                throw violation("none", "carries \(carried), which it leaves out")
+            }
+        }
         guard payload.zone == SyncZones.household else {
             guard privateZones.contains(payload.zone) else { throw violation("none", "not a zone of this household") }
             return

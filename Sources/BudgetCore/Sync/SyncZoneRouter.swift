@@ -112,8 +112,8 @@ public enum SyncZoneRouterError: Error, Equatable {
 ///    to the admin's private zone without one.
 /// 9. A learnt **merchant link rule** follows the account it was learnt from (`LinkAction.sourceAccountId`),
 ///    and goes to the admin's private zone when that is unknown.
-/// 10. A **waiting file** (kept for later) is never shared: the private zone of whoever kept it (the last
-///    writer), else the admin's.
+/// 10. A **waiting file** (kept for later) is never shared: the private zone of whoever kept it
+///    (`keptByAppUserId`), else the admin's.
 /// 11. A record that would still be `household` but quotes an account's private details
 ///    (`SyncPrivateDetails`, as the guard checks) goes to that account's owner's private zone.
 /// A table without a rule is refused (`unknownTable`); `SyncZoneRouterTests` lists every table's rule.
@@ -421,14 +421,13 @@ public final class SyncZoneRouter {
         return ZoneAssignment(zone: try adminZone())
     }
 
-    /// Rule 10: the private zone of the person whose device kept the file (its last writer), else the admin's.
+    /// Rule 10: the private zone of the person who kept the file (`keptByAppUserId`), else the admin's.
     private func waitingFileZone(_ localId: Int64) throws -> ZoneAssignment {
         let keeper = try String.fetchOne(db.cachedStatement(sql: """
-            SELECT person.uuid FROM syncRecord kept
-            JOIN syncRecord user ON user.tableName = 'appUser' AND user.uuid = kept.modifiedBy
-            JOIN appUser ON appUser.id = user.localId
+            SELECT person.uuid FROM importWaitingFile kept
+            JOIN appUser ON appUser.id = kept.keptByAppUserId
             JOIN syncRecord person ON person.tableName = 'person' AND person.localId = appUser.personId
-            WHERE kept.tableName = 'importWaitingFile' AND kept.localId = ?
+            WHERE kept.id = ?
             """), arguments: [localId])
         return ZoneAssignment(zone: try keeper.map(SyncZones.privateZone(personUuid:)) ?? adminZone())
     }

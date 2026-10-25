@@ -30,6 +30,15 @@ public struct SyncDocumentFiles: Sendable {
     public var tables: [SyncFileTable] { SyncFileTables.standard(libraryRoot: root, waitingRoot: waitingRoot) }
 
     func table(_ name: String) -> SyncFileTable? { tables.first { $0.table == name } }
+
+    /// Whether this device holds the file of `payload`'s row (at the path its hash gives, a regular file), so it can
+    /// seal it again (a record moving to another zone, step 6).
+    func canSeal(_ payload: SyncPayload) -> Bool {
+        guard let table = table(payload.recordType),
+              case .string(let sha) = payload.fields["sha256"], case .string(let stored) = payload.fields["storedRelativePath"],
+              let path = table.safePath(stored: stored, sha256: sha) else { return false }
+        return SyncFileTables.isRegularFile(table.root.appendingPathComponent(path))
+    }
 }
 
 /// A synced table whose rows each carry one file (sync spec §9.1): the row's record holds the reference of a
@@ -525,13 +534,15 @@ extension SyncEngineCore {
     /// couldn't be uploaded now waits: in `deferred`) and how many files were sealed.
     /// A device that doesn't sync files (no `SyncDocumentFiles`) still sends the references it holds, so an
     /// edit never drops a file from its record.
-    func attachDocumentFiles(_ payloads: [SyncPayload], key: HouseholdKey, keys: [String: SymmetricKey]) async throws
+    /// `zone`: the zone of every payload; files are sealed with its key and saved there (step 6).
+    func attachDocumentFiles(_ payloads: [SyncPayload], key: HouseholdKey, keys: [String: SymmetricKey], zone: String = SyncRecordStore.householdZone) async throws
         -> (payloads: [SyncPayload], deferred: Set<String>, sealed: Int) {
-        @Sendable func carriesFile(_ payload: SyncPayload) -> Bool { SyncFileTables.names.contains(payload.recordType) && payload.mergedInto == nil }
+        @Sendable func carriesFile(_ payload: SyncPayload) -> Bool {
+            SyncFileTables.names.contains(payload.recordType) && payload.mergedInto == nil && payload.movedTo == nil
+        }
         guard payloads.contains(where: carriesFile) else {
             return (payloads, [], 0)
         }
-        let zone = SyncRecordStore.householdZone
         let now = clock()
         var references = try await db.read { db in
             try payloads.reduce(into: [String: SyncDocumentFileReference]()) { result, payload in
@@ -721,16 +732,17 @@ extension SyncEngineCore {
     /// its table's root. Problems that need a person are logged (once per reference) and thrown.
     func download(uuid: String) async throws -> URL {
         guard let documents else { throw SyncDocumentError.notConfigured }
-        let zone = SyncRecordStore.householdZone
         let tables = documents.tables
-        let found = try await db.read { db -> (SyncFileTable, String, String, SyncDocumentFileReference?)? in
+        // The file record is in its row's zone (step 6), sealed with that zone's key.
+        let found = try await db.read { db -> (SyncFileTable, String, String, SyncDocumentFileReference?, String)? in
             guard let (name, id) = try SyncFileTables.row(uuid: uuid, db: db), let table = tables.first(where: { $0.table == name }),
                   let row = try Row.fetchOne(db, sql: "SELECT sha256, storedRelativePath FROM \(SyncChangeTracker.quoted(name)) WHERE id = ?",
                                              arguments: [id])
             else { return nil }
-            return (table, row["sha256"], row["storedRelativePath"], try SyncDocumentFile.reference(uuid: uuid, db: db))
+            let zone = try String.fetchOne(db, sql: "SELECT zone FROM syncRecord WHERE uuid = ?", arguments: [uuid]) ?? SyncRecordStore.householdZone
+            return (table, row["sha256"], row["storedRelativePath"], try SyncDocumentFile.reference(uuid: uuid, db: db), zone)
         }
-        guard let (table, sha, stored, reference) = found else { throw SyncDocumentError.documentNotFound }
+        guard let (table, sha, stored, reference, zone) = found else { throw SyncDocumentError.documentNotFound }
         guard let reference else { throw SyncDocumentError.noFile }
         func attention(_ error: SyncDocumentError, _ message: String) async throws -> Never {
             let now = clock()

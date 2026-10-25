@@ -143,6 +143,16 @@ public struct SyncPayload: Codable, Equatable, Sendable {
     /// On a `document` record (sync spec §9.1): the record holding its file sealed under a random data key,
     /// and that key wrapped with the zone key. Nil when no device has uploaded the file.
     public var documentFile: SyncDocumentFileReference?
+    /// Synced columns this copy leaves out (a household stub of an account below Everything, a §10 transaction
+    /// without its private batch; `ZoneAssignment.omittedFields`). Receivers that hold the owner's private zone
+    /// keep their own values; the others hold NULL. Names only, never values.
+    public var omittedFields: [String]?
+    /// What made the last write (`syncRecord.origin`; step 6 Task 9 judges incoming changes by it).
+    public var origin: String?
+    /// A move marker, not a record: the record now lives in this zone (step 6). It has no fields; it is saved
+    /// over the record's old copy so nothing readable stays behind. Receivers that sync that zone ignore it; the
+    /// others drop their row (no tombstone: a later move back applies).
+    public var movedTo: String?
 
     public init(recordType: String, recordName: String, zone: String, fields: [String: SyncValue],
                 clocks: [String: SyncClock] = [:], modifiedBy: String? = nil, modifiedAt: Date? = nil, mergedInto: String? = nil,

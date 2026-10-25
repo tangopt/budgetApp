@@ -725,5 +725,5 @@ final class SyncChangeTrackerTests: XCTestCase {
     }
 
     /// `SyncChangeTracker.schemaHash(SyncSchema.tables)` for `SyncSchema.version` 8.
-    private static let pinnedHash = "fb1a98a1eb783ec74ad677b925bc99bf00a077192a44a7e91d8390b440b13fa6"
+    private static let pinnedHash = "1aa656bebc49d4b6f0766e4817d60ebdd1d3c104acc418c2981bffd674a5c6b2"
 }

@@ -50,6 +50,9 @@ public struct SyncBatchManifest: Codable, Equatable, Sendable {
 ///   every record of it applies (a record waiting for a parent outside the batch holds it all back);
 /// - a closed batch whose counts can't be met any more (a member edited since by a device that didn't tag
 ///   it, or deleted) applies at `flushClosed`, which the engine calls once a fetch has caught up.
+/// The zone a record (by UUID) goes to now; nil when it can't be told (no such record here).
+public typealias SyncZoneLookup = (String) throws -> String?
+
 public enum SyncBatch {
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
@@ -142,19 +145,30 @@ public enum SyncBatch {
     ///   since by a device that doesn't know it, or deleted after the close, makes the count unreachable;
     ///   such a batch applies at `flushClosed`.
     /// - Received: as received (a device re-sending a run it received passes the sender's manifest on).
-    public static func manifest(runUuid run: String, db: Database) throws -> SyncBatchManifest? {
+    ///
+    /// With `zones` (step 6, records placed in zones): only the members placed in the run's own zone count, and only
+    /// the deletes of records that were there; the rest travel untagged (a receiver applies them on their own).
+    public static func manifest(runUuid run: String, db: Database, zones: SyncZoneLookup? = nil) throws -> SyncBatchManifest? {
         guard let batch = try batch(run: run, db: db) else { return nil }
+        let runZone: String? = try zones.flatMap { try $0(run) }
         switch batch.state {
         case .sending:
-            let counts = try liveCounts(run: run, generation: batch.generation, db: db)
-            let deletes = try String.fetchAll(db, sql: """
+            let counts = try liveCounts(run: run, generation: batch.generation, db: db, zones: zones, runZone: runZone)
+            var deletes = try String.fetchAll(db, sql: """
                 SELECT m.uuid FROM syncBatchMember m
                 WHERE m.runUuid = ? AND m.generation = ? AND NOT EXISTS (SELECT 1 FROM syncRecord s WHERE s.uuid = m.uuid)
                 ORDER BY m.uuid
                 """, arguments: [run, batch.generation])
+            if zones != nil {
+                deletes = try deletes.filter { name in
+                    guard let runZone else { return false }
+                    return try String.fetchOne(db, sql: "SELECT zone FROM syncTombstone WHERE uuid = ?", arguments: [name]) == runZone
+                }
+            }
             return SyncBatchManifest(generation: batch.generation, isOpen: true, counts: counts, deletes: deletes, revives: batch.revives.sorted())
         case .sent:
-            return SyncBatchManifest(generation: batch.generation, isOpen: false, counts: try liveCounts(run: run, generation: nil, db: db))
+            return SyncBatchManifest(generation: batch.generation, isOpen: false,
+                                     counts: try liveCounts(run: run, generation: nil, db: db, zones: zones, runZone: runZone))
         case .open, .complete:
             return batch.manifest ?? SyncBatchManifest(generation: batch.generation, isOpen: true)
         case .closed, .done:
@@ -167,26 +181,40 @@ public enum SyncBatch {
     }
 
     /// Members with a record here, by type: of one generation, or of every one.
-    private static func liveCounts(run: String, generation: Int?, db: Database) throws -> [String: Int] {
+    private static func liveCounts(run: String, generation: Int?, db: Database, zones: SyncZoneLookup? = nil,
+                                   runZone: String? = nil) throws -> [String: Int] {
         var counts: [String: Int] = [:]
+        guard let zones else {
+            for row in try Row.fetchAll(db, sql: """
+                SELECT m.tableName, COUNT(*) FROM syncBatchMember m JOIN syncRecord s ON s.uuid = m.uuid
+                WHERE m.runUuid = ? AND (? IS NULL OR m.generation = ?) GROUP BY m.tableName
+                """, arguments: [run, generation, generation]) {
+                counts[row[0]] = row[1]
+            }
+            return counts
+        }
         for row in try Row.fetchAll(db, sql: """
-            SELECT m.tableName, COUNT(*) FROM syncBatchMember m JOIN syncRecord s ON s.uuid = m.uuid
-            WHERE m.runUuid = ? AND (? IS NULL OR m.generation = ?) GROUP BY m.tableName
+            SELECT m.uuid, m.tableName FROM syncBatchMember m JOIN syncRecord s ON s.uuid = m.uuid
+            WHERE m.runUuid = ? AND (? IS NULL OR m.generation = ?) ORDER BY m.uuid
             """, arguments: [run, generation, generation]) {
-            counts[row[0]] = row[1]
+            guard let runZone, try zones(row[0]) == runZone else { continue }
+            counts[row[1], default: 0] += 1
         }
         return counts
     }
 
     /// Tags an outgoing payload: a member of a run's batch gets its run and generation; a run's record gets
-    /// its manifest.
-    static func decorate(_ payload: inout SyncPayload, db: Database) throws {
+    /// its manifest. With `zones` (step 6): a member is tagged only when it goes to its run's zone, so a shared
+    /// record of a private run never names the run (and its receivers apply it on its own).
+    static func decorate(_ payload: inout SyncPayload, db: Database, zones: SyncZoneLookup? = nil) throws {
         if payload.recordType == ImportRun.databaseTableName {
-            payload.manifest = try manifest(runUuid: payload.recordName, db: db)
+            payload.manifest = try manifest(runUuid: payload.recordName, db: db, zones: zones)
         }
         if let row = try Row.fetchOne(db.cachedStatement(sql: "SELECT runUuid, generation FROM syncBatchMember WHERE uuid = ?"),
                                       arguments: [payload.recordName]) {
-            payload.importRunUuid = row[0]
+            let run: String = row[0]
+            if let zones, try zones(run) != payload.zone { return }
+            payload.importRunUuid = run
             payload.batchGeneration = row[1]
         }
     }

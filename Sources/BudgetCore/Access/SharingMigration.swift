@@ -65,6 +65,13 @@ enum SharingMigration {
         try db.execute(sql: "CREATE INDEX IF NOT EXISTS importRunFile_on_runId ON importRunFile(runId)")
         try db.execute(sql: "CREATE INDEX IF NOT EXISTS importRunFile_on_documentId ON importRunFile(documentId)")
 
+        // Who kept each waiting file (synced): a kept file lives in its keeper's private zone.
+        if !(try db.columns(in: "importWaitingFile").map(\.name).contains("keptByAppUserId")) {
+            try db.alter(table: "importWaitingFile") { t in
+                t.add(column: "keptByAppUserId", .integer).references("appUser", onDelete: .setNull)
+            }
+        }
+
         // Local only. The write origin the triggers copy from `syncWriter` into `syncRecord`.
         if !(try db.columns(in: "syncRecord").map(\.name).contains("origin")) {
             try db.alter(table: "syncRecord") { t in t.add(column: "origin", .text) }

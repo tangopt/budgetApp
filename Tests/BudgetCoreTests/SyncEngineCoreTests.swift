@@ -1194,6 +1194,9 @@ final class FakeCloudTests: XCTestCase {
         original.largePayload = SyncLargePayloadReference(assetField: "payload")
         original.resent = true
         original.documentFile = SyncDocumentFileReference(recordName: "r1.file.1", wrappedKey: Data([4, 5, 6]))
+        original.omittedFields = ["note"]
+        original.origin = "edit"
+        original.movedTo = "private-p"
         // Every property is set: a property added later without a value here fails this.
         for child in Mirror(reflecting: original).children {
             XCTAssertNotEqual(String(describing: child.value), "nil", "\(child.label ?? "?") is set in this test")

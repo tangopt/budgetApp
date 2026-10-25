@@ -536,8 +536,11 @@ final class SyncZoneRouterTests: XCTestCase {
             let memberZone = SyncZones.privateZone(personUuid: try SyncRecordStore.uuid(for: "person", localId: f.personB, db: db))
             let kept = try addProbeWaitingFile(db, "4")
             _ = try SyncRecordStore.uuid(for: "importWaitingFile", localId: kept, db: db)
+            try db.execute(sql: "UPDATE importWaitingFile SET keptByAppUserId = ? WHERE id = ?", arguments: [memberUser, kept])
+            // Whoever wrote it last doesn't matter (the admin, here): the keeper does.
             try db.execute(sql: "UPDATE syncRecord SET modifiedBy = ? WHERE tableName = 'importWaitingFile' AND localId = ?",
-                           arguments: [memberUuid, kept])
+                           arguments: [try SyncRecordStore.uuid(for: "appUser", localId: f.admin.appUserId, db: db), kept])
+            _ = memberUuid
             let router = try SyncZoneRouter(db: db)
             XCTAssertEqual(try router.assignment(table: "importWaitingFile", localId: unknown), ZoneAssignment(zone: f.privateZone))
             XCTAssertEqual(try router.assignment(table: "importWaitingFile", localId: kept), ZoneAssignment(zone: memberZone))
