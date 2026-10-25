@@ -26,8 +26,9 @@ struct EditTransactionSheet: View {
     let recentIds: [Int64]
     let createCategory: CreateCategory
     /// Saves everything in one write and reloads; `.failed` keeps the sheet open with the
-    /// message (nothing was saved).
-    let onSave: (TransactionEditChanges) -> SaveOutcome
+    /// message (nothing was saved). A save that would change a filed return asks first
+    /// (`.asks`, nothing written; plan Task 14) and is saved again with the answer.
+    let onSave: (TransactionEditChanges, FiledYearEditCheck.Resolution?) -> CheckedSaveOutcome
     let transfer: TransferLinkActions?
     /// Edit and Delete… for a transaction added by hand; nil (or an imported transaction)
     /// keeps those fields read-only.
@@ -37,6 +38,8 @@ struct EditTransactionSheet: View {
     @State private var categoryId: Int64?
     @State private var note: String
     @State private var errorMessage: String?
+    /// Save waiting on the filed-year question.
+    @State private var filedYearQuestion: FiledYearPending?
     /// The transaction's linked legs when the sheet opened.
     private let counterparts: [TransferCounterpart]
     @State private var transferError: String?
@@ -71,7 +74,7 @@ struct EditTransactionSheet: View {
     init(transaction: Transaction, categories: [Category], groups: [CategoryGroup], recentIds: [Int64],
          createCategory: @escaping CreateCategory, transfer: TransferLinkActions? = nil,
          manual: ManualTransactionActions? = nil,
-         onSave: @escaping (TransactionEditChanges) -> SaveOutcome) {
+         onSave: @escaping (TransactionEditChanges, FiledYearEditCheck.Resolution?) -> CheckedSaveOutcome) {
         self.transaction = transaction
         self.categories = categories
         self.groups = groups
@@ -182,6 +185,7 @@ struct EditTransactionSheet: View {
         .onChange(of: draft) { _, _ in errorMessage = nil }
         .onChange(of: pendingTransfer) { _, _ in errorMessage = nil }
         .onAppear { eurToGbpRate = transfer?.eurToGbpRate() }
+        .filedYearQuestion($filedYearQuestion)
         .alert("Delete this transaction?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive, action: delete)
             Button("Cancel", role: .cancel) {}
@@ -355,7 +359,9 @@ struct EditTransactionSheet: View {
     }
 
     /// Writes the fields and the pending transfer change in one go; a refusal saves nothing.
-    private func save() {
+    private func save() { save(resolution: nil) }
+
+    private func save(resolution: FiledYearEditCheck.Resolution?) {
         var manualFields: TransactionEditChanges.ManualFields?
         if editsManually {
             guard let fields = draft.fields else { return }
@@ -363,19 +369,30 @@ struct EditTransactionSheet: View {
         }
         let changes = TransactionEditChanges(categoryId: categoryId, note: note, manual: manualFields,
                                              transfer: pendingTransfer?.change, documents: documentsModel.staging.changes)
-        switch onSave(changes) {
-        case .saved, .savedButReloadFailed: dismiss()
-        case .failed(let message): errorMessage = message
+        switch onSave(changes, resolution) {
+        case .done(.saved), .done(.savedButReloadFailed): dismiss()
+        case .done(.failed(let message)): errorMessage = message
+        case .asks(let question):
+            errorMessage = nil
+            filedYearQuestion = FiledYearPending(question: question) { answer in save(resolution: answer) }
         }
     }
 }
 
 private extension EditTransactionSheet {
-    func delete() {
+    func delete() { delete(resolution: nil) }
+
+    func delete(resolution: FiledYearEditCheck.Resolution?) {
         guard let manual, let id = transaction.id else { return }
-        switch manual.delete(id) {
-        case .saved, .savedButReloadFailed: dismiss()
-        case .failed(let message): errorMessage = message
+        switch manual.delete(id, resolution) {
+        case .done(.saved), .done(.savedButReloadFailed): dismiss()
+        case .done(.failed(let message)): errorMessage = message
+        case .asks(let question):
+            errorMessage = nil
+            // After the confirmation alert has closed.
+            DispatchQueue.main.async {
+                filedYearQuestion = FiledYearPending(question: question) { answer in delete(resolution: answer) }
+            }
         }
     }
 }

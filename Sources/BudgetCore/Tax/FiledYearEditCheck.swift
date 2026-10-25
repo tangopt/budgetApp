@@ -12,7 +12,8 @@ import SQLite3
 ///   a note naming the edit and the day), so the filed figures stay as filed. Offered only when
 ///   that keeps every filed figure (`Question.canMarkNotCounted`).
 /// - **Save anyway** (`.saveAnyway`): saved as it is; the year's `TaxYear.notes` records what changed
-///   after filing (`changedAfterFilingPrefix`).
+///   after filing (`changedAfterFilingPrefix`), which the year's return shows as differing from the
+///   filed one (`TaxOverview.YearRow.changedAfterFiling`).
 /// - **Cancel**: `save` was asked without a resolution and wrote nothing.
 ///
 /// `save` runs the edit in savepoints that are rolled back to look at it, so `apply` may run up to

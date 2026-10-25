@@ -16,6 +16,9 @@ public enum TaxOverview {
         public var eurRate: HMRCRate?
         /// The properties the person owns a share of during the year.
         public var properties: [Property]
+        /// What was saved anyway after the year was filed, one line each, oldest first
+        /// (`FiledYearEditCheck.changesAfterFiling`, from the year's notes).
+        public var changedAfterFiling: [String] = []
 
         public var id: String { "\(person.id ?? 0)-\(year.startYear)" }
         public var deadlines: TaxYearDeadlines { year.deadlines }
@@ -53,7 +56,8 @@ public enum TaxOverview {
                 let record = personRecords.first { $0.startYear == startYear }
                 rows.append(YearRow(person: person, year: year, status: record?.status ?? .preparing, taxYearId: record?.id,
                                     eurRate: try HMRCRates.rate(db: db, startYear: startYear, currencyCode: "EUR"),
-                                    properties: try propertiesOwned(db: db, personId: personId, year: year)))
+                                    properties: try propertiesOwned(db: db, personId: personId, year: year),
+                                    changedAfterFiling: FiledYearEditCheck.changesAfterFiling(record?.notes)))
             }
         }
         return rows.sorted { ($1.year.startYear, $0.person.name) < ($0.year.startYear, $1.person.name) }

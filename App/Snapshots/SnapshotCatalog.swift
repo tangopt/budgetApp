@@ -468,13 +468,28 @@ enum SnapshotCatalog {
                 return AnyView(EditTransactionSheet(
                     transaction: transaction, categories: model.categories, groups: model.groups, recentIds: model.recentCategoryIds,
                     createCategory: model.createCategory, transfer: model.transferActions, manual: model.manualActions,
-                    onSave: { _ in .saved }))
+                    onSave: { _, _ in .done(.saved) }))
             },
             sheet("new_kind", "New kind… (a name that's already a kind's)") { context in
                 _ = try context.demoCustomKinds()
                 let catalog = try await context.dbQueue.read { db in try DocumentKindCatalog.load(db: db) }
                 return AnyView(NewKindPopover(choices: ImportKindChoice.choices(catalog: catalog, pending: []), initialName: "repair bill",
                                               create: { _, _ in }, cancel: {}))
+            },
+            sheet("filed_year_edit", "An edit that would change a filed return (plan Task 14)") { _ in
+                // Synthetic: a debit categorised as Repairs in a filed 2022/23 with a loss carried forward.
+                typealias Line = FiledYearEditCheck.Question.Line
+                let question = FiledYearEditCheck.Question(edit: "Categorised as Repairs", years: [
+                    .init(startYear: 2022, isPaid: false, people: ["Person A"], lines: [
+                        Line(person: nil, box: "SA106 Land and property abroad box 17 Allowable property expenses", before: "£1,100.00", after: "£1,350.00"),
+                        Line(person: nil, box: "SA106 Land and property abroad box 18 Net profit or loss", before: "£8,900.00", after: "£8,650.00"),
+                        Line(person: nil, box: "SA106 Land and property abroad box 24 Adjusted profit or loss for the year", before: "£8,900.00", after: "£8,650.00")
+                    ]),
+                    .init(startYear: 2023, isPaid: true, people: ["Person A"], lines: [
+                        Line(person: nil, box: "SA calculation: payments on account", before: "£6,172.80", after: "£6,147.80")
+                    ])
+                ], markYears: [2022])
+                return AnyView(FiledYearEditSheet(question: question, onAnswer: { _ in }))
             }
         ]
     }
@@ -972,7 +987,7 @@ enum SnapshotCatalog {
                 return AnyView(EditTransactionSheet(
                     transaction: transaction, categories: model.categories, groups: model.groups, recentIds: model.recentCategoryIds,
                     createCategory: model.createCategory, transfer: model.transferActions, manual: model.manualActions,
-                    onSave: { _ in .saved }))
+                    onSave: { _, _ in .done(.saved) }))
             }
         ]
     }

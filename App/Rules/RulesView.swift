@@ -134,6 +134,8 @@ private struct RuleSheet: View {
     @State private var previewKey: PreviewKey?
     @State private var previewError: String?
     @State private var error: String?
+    /// Save waiting on the filed-year question (filing the matches would change a filed return).
+    @State private var filedYearQuestion: FiledYearPending?
 
     init(draft: RuleDraft, viewModel: RulesViewModel, dismiss: @escaping () -> Void) {
         self.draft = draft
@@ -195,6 +197,7 @@ private struct RuleSheet: View {
             }
             previewSection
         }
+        .filedYearQuestion($filedYearQuestion)
         .task(id: PreviewKey(pattern: pattern, matchType: matchType)) {
             // A short pause so typing doesn't run a search per keystroke.
             try? await Task.sleep(for: .milliseconds(150))
@@ -267,10 +270,21 @@ private struct RuleSheet: View {
         applyNow && previewKey == PreviewKey(pattern: pattern, matchType: matchType) && preview.uncategorisedCount > 0
     }
 
-    private func save() {
+    private func save() { save(resolution: nil) }
+
+    private func save(resolution: FiledYearEditCheck.Resolution?) {
         guard canSave, let categoryId else { return }
-        error = viewModel.save(ruleId: draft.ruleId, pattern: pattern, matchType: matchType, categoryId: categoryId,
-                               applyToUncategorised: appliesNow)
-        if error == nil { dismiss() }
+        let applies = appliesNow
+        switch viewModel.save(ruleId: draft.ruleId, pattern: pattern, matchType: matchType, categoryId: categoryId,
+                              applyToUncategorised: applies, resolution: resolution) {
+        case .done(.failed(let message)):
+            error = message
+        case .done:
+            error = nil
+            dismiss()
+        case .asks(let question):
+            error = nil
+            filedYearQuestion = FiledYearPending(question: question) { answer in save(resolution: answer) }
+        }
     }
 }

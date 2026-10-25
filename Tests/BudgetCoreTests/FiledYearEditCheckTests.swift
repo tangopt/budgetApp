@@ -169,6 +169,9 @@ final class FiledYearEditCheckTests: XCTestCase {
         let change = try XCTUnwrap(changes.first)
         XCTAssertTrue(change.hasPrefix("Changed after filing on 2026-10-25 (Edit transaction): "), change)
         XCTAssertTrue(change.contains("£100.00 → £350.00"), change)
+        // The year's row carries it (the return shows it as differing from the filed one).
+        let row = try db.read { db in try TaxOverview.rows(db: db, now: Self.now) }.first { $0.year.startYear == 2022 }
+        XCTAssertEqual(row?.changedAfterFiling, [change])
     }
 
     func testTakingACostOffAFiledLineCantBeMarkedNotCounted() throws {

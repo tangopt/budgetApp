@@ -273,16 +273,24 @@ final class CategoriesViewModel: ObservableObject {
 
     /// The Edit transaction sheet's Save: category and note (or a manual transaction's
     /// fields) and the pending transfer change, in one write via `TransactionEditing.save`
-    /// (no rule learned), then reload. A refusal writes nothing.
-    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges) -> SaveOutcome {
-        manualWrite { db in try TransactionEditing.save(db: db, id: id, changes: changes) }
+    /// (no rule learned), then reload. A refusal writes nothing; an edit that would change a
+    /// filed return asks first (`FiledYearEditCheck`, plan Task 14).
+    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges, resolution: FiledYearEditCheck.Resolution? = nil) -> CheckedSaveOutcome {
+        let edit = FiledYearEditNames.transactionEdit(changes, transactionId: id, dbQueue: dbQueue, categories: categories)
+        return FiledYearCheckedSave.save(edit: edit, resolution: resolution, through: manualWrite) { db in
+            try TransactionEditing.save(db: db, id: id, changes: changes)
+        }
     }
 
     /// Edit transaction's Delete… for a transaction added by hand (`ManualTransactions.delete`), then reload.
     var manualActions: ManualTransactionActions {
         ManualTransactionActions(
             accounts: accounts,
-            delete: { [unowned self] id in manualWrite { db in try ManualTransactions.delete(db: db, id: id) } }
+            delete: { [unowned self] id, resolution in
+                FiledYearCheckedSave.save(edit: "Deleted", resolution: resolution, through: manualWrite) { db in
+                    try ManualTransactions.delete(db: db, id: id)
+                }
+            }
         )
     }
 

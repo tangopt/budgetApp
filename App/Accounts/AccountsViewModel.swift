@@ -221,22 +221,26 @@ final class AccountsViewModel: ObservableObject {
 
     /// Add transaction…'s save (`ManualTransactions.add`), then the screen reloads (an
     /// imported account's balance includes it) and `onTransactionAdded` runs.
-    func addTransaction(_ input: ManualTransactionInput) -> SaveOutcome {
+    /// One that would change a filed return asks first (`.asks`, nothing written; plan Task 14).
+    func addTransaction(_ input: ManualTransactionInput, resolution: FiledYearEditCheck.Resolution?) -> CheckedSaveOutcome {
         do {
-            try dbQueue.write { db in
+            let edit = input.categoryId.map { FiledYearEditNames.categorised($0, categories: categories) + ", added by hand" } ?? "Added by hand"
+            if case .asks(let question) = try dbQueue.checkedWrite(edit: edit, resolution: resolution, { db in
                 _ = try ManualTransactions.add(db: db, accountId: input.accountId, date: input.date, description: input.description,
                                                amountMinorUnits: input.amountMinorUnits, categoryId: input.categoryId, note: input.note)
+            }) {
+                return .asks(question)
             }
         } catch {
-            return .failed(ManualFormat.errorMessage(for: error))
+            return .done(.failed(ManualFormat.errorMessage(for: error)))
         }
         let reloaded = load()
         onTransactionAdded?()
         guard reloaded else {
             errorMessage = "Saved, but " + (errorMessage.map { $0.prefix(1).lowercased() + $0.dropFirst() } ?? "couldn't reload accounts.")
-            return .savedButReloadFailed
+            return .done(.savedButReloadFailed)
         }
-        return .saved
+        return .done(.saved)
     }
 
     private func updateSelectedHistory() {

@@ -932,15 +932,21 @@ final class BudgetGridViewModel: ObservableObject {
     /// The Edit transaction sheet's Save (spec §5): category and note (or a manual
     /// transaction's fields) and the pending transfer change, in one write via
     /// `TransactionEditing.save` (no rule learned); then the grid reloads and
-    /// `onTransactionEdited` runs. A refusal writes nothing.
-    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges) -> SaveOutcome {
-        manualWrite { db in try TransactionEditing.save(db: db, id: id, changes: changes) }
+    /// `onTransactionEdited` runs. A refusal writes nothing; an edit that would change a filed
+    /// return asks first (`FiledYearEditCheck`, plan Task 14).
+    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges, resolution: FiledYearEditCheck.Resolution? = nil) -> CheckedSaveOutcome {
+        let edit = FiledYearEditNames.transactionEdit(changes, transactionId: id, dbQueue: dbQueue, categories: categories)
+        return FiledYearCheckedSave.save(edit: edit, resolution: resolution, through: manualWrite) { db in
+            try TransactionEditing.save(db: db, id: id, changes: changes)
+        }
     }
 
     /// Add transaction… (spec 2026-10-14 §2, `ManualTransactions.add`): the grid reloads and
     /// `onTransactionEdited` runs.
-    func addTransaction(_ input: ManualTransactionInput) -> SaveOutcome {
-        manualWrite { db in
+    /// One that would change a filed return asks first (`.asks`, nothing written; plan Task 14).
+    func addTransaction(_ input: ManualTransactionInput, resolution: FiledYearEditCheck.Resolution?) -> CheckedSaveOutcome {
+        let edit = input.categoryId.map { FiledYearEditNames.categorised($0, categories: categories) + ", added by hand" } ?? "Added by hand"
+        return FiledYearCheckedSave.save(edit: edit, resolution: resolution, through: manualWrite) { db in
             _ = try ManualTransactions.add(db: db, accountId: input.accountId, date: input.date, description: input.description,
                                            amountMinorUnits: input.amountMinorUnits, categoryId: input.categoryId, note: input.note)
         }
@@ -950,7 +956,11 @@ final class BudgetGridViewModel: ObservableObject {
     var manualActions: ManualTransactionActions {
         ManualTransactionActions(
             accounts: accounts,
-            delete: { [unowned self] id in manualWrite { db in try ManualTransactions.delete(db: db, id: id) } }
+            delete: { [unowned self] id, resolution in
+                FiledYearCheckedSave.save(edit: "Deleted", resolution: resolution, through: manualWrite) { db in
+                    try ManualTransactions.delete(db: db, id: id)
+                }
+            }
         )
     }
 

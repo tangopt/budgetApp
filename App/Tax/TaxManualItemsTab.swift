@@ -136,9 +136,10 @@ struct TaxManualItemsTab: View {
         .sheet(item: $editing) { draft in
             TaxManualItemSheet(viewModel: viewModel, draft: draft)
         }
+        .filedYearQuestion($viewModel.filedYearQuestion)
         .confirmationDialog("Delete “\(deleting?.label ?? "")”?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
             Button("Delete", role: .destructive) {
-                if let id = deleting?.id { viewModel.deleteManualItem(id) }
+                if let id = deleting?.id { viewModel.deleteManualItem(id, label: deleting?.label ?? "") }
                 deleting = nil
             }
         } message: {
@@ -206,6 +207,8 @@ struct TaxManualItemSheet: View {
     @State private var isWholeProperty: Bool
     @State private var notes: String
     @State private var error: String?
+    /// Save waiting on the filed-year question.
+    @State private var filedYearQuestion: FiledYearPending?
 
     init(viewModel: TaxYearsViewModel, draft: ManualItemDraft) {
         self.viewModel = viewModel
@@ -278,6 +281,7 @@ struct TaxManualItemSheet: View {
                 }
             }
         }
+        .filedYearQuestion($filedYearQuestion)
     }
 
     private func save() {
@@ -290,8 +294,20 @@ struct TaxManualItemSheet: View {
         item.date = hasDate ? date : nil
         item.isWholeProperty = draft.item.propertyId != nil && isWholeProperty
         item.notes = notes
-        error = viewModel.saveManualItem(item, documents: documents.staging.changes)
-        if error == nil { dismiss() }
+        save(item, resolution: nil)
+    }
+
+    private func save(_ item: TaxManualItem, resolution: FiledYearEditCheck.Resolution?) {
+        switch viewModel.saveManualItem(item, documents: documents.staging.changes, resolution: resolution) {
+        case .done(.failed(let message)):
+            error = message
+        case .done:
+            error = nil
+            dismiss()
+        case .asks(let question):
+            error = nil
+            filedYearQuestion = FiledYearPending(question: question) { answer in save(item, resolution: answer) }
+        }
     }
 }
 

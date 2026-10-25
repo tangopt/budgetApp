@@ -31,6 +31,8 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var transferCounterparts: [Int64: [TransferCounterpart]] = [:]
     @Published private(set) var recentCategoryIds: [Int64] = []
     @Published var errorMessage: String?
+    /// Set category… waiting on the filed-year question (plan Task 14).
+    @Published var filedYearQuestion: FiledYearPending?
     /// Bumped by ⌘F: the screen focuses its search field.
     @Published private(set) var focusRequest = 0
     /// Runs after a save here (the uncategorised count may change).
@@ -174,13 +176,28 @@ final class SearchViewModel: ObservableObject {
 
     /// Set category… for the selected rows; with `remember`, learns a rule per description
     /// (`TransactionEditing.setCategory`: balance adjustments and market movements are left
-    /// alone, and transfer legs never teach a rule).
-    func setCategory(ids: [Int64], categoryId: Int64, remember: Bool) {
+    /// alone, and transfer legs never teach a rule). When that would change a filed return, it
+    /// asks first (`filedYearQuestion`; one question for all the rows) and runs again with the answer.
+    func setCategory(ids: [Int64], categoryId: Int64, remember: Bool, resolution: FiledYearEditCheck.Resolution? = nil) {
         guard !ids.isEmpty else { return }
         errorMessage = nil
         let result: SetCategoryResult
         do {
-            result = try dbQueue.write { db in try TransactionEditing.setCategory(db: db, ids: ids, categoryId: categoryId, remember: remember) }
+            let edit = FiledYearEditNames.categorised(categoryId, categories: categories)
+            switch try dbQueue.checkedWrite(edit: edit, resolution: resolution, { db in
+                try TransactionEditing.setCategory(db: db, ids: ids, categoryId: categoryId, remember: remember)
+            }) {
+            case .saved(let saved):
+                result = saved
+            case .asks(let question):
+                // After the picker's popover has closed (a sheet presented while it closes can fail to appear).
+                DispatchQueue.main.async {
+                    self.filedYearQuestion = FiledYearPending(question: question) { [weak self] answer in
+                        self?.setCategory(ids: ids, categoryId: categoryId, remember: remember, resolution: answer)
+                    }
+                }
+                return
+            }
         } catch let error as LocalizedError where error.errorDescription != nil {
             errorMessage = error.errorDescription
             return
@@ -196,15 +213,23 @@ final class SearchViewModel: ObservableObject {
         onTransactionEdited?()
     }
 
-    /// The Edit transaction sheet's Save (`TransactionEditing.save`), then reload.
-    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges) -> SaveOutcome {
-        manualWrite { db in try TransactionEditing.save(db: db, id: id, changes: changes) }
+    /// The Edit transaction sheet's Save (`TransactionEditing.save`), then reload; an edit that
+    /// would change a filed return asks first (`FiledYearEditCheck`, plan Task 14).
+    func saveTransactionEdit(id: Int64, changes: TransactionEditChanges, resolution: FiledYearEditCheck.Resolution? = nil) -> CheckedSaveOutcome {
+        let edit = FiledYearEditNames.transactionEdit(changes, transactionId: id, dbQueue: dbQueue, categories: categories)
+        return FiledYearCheckedSave.save(edit: edit, resolution: resolution, through: manualWrite) { db in
+            try TransactionEditing.save(db: db, id: id, changes: changes)
+        }
     }
 
     var manualActions: ManualTransactionActions {
         ManualTransactionActions(
             accounts: accounts,
-            delete: { [unowned self] id in manualWrite { db in try ManualTransactions.delete(db: db, id: id) } }
+            delete: { [unowned self] id, resolution in
+                FiledYearCheckedSave.save(edit: "Deleted", resolution: resolution, through: manualWrite) { db in
+                    try ManualTransactions.delete(db: db, id: id)
+                }
+            }
         )
     }
 

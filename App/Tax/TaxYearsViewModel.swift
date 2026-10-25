@@ -73,6 +73,8 @@ final class TaxYearsViewModel: ObservableObject {
     @Published private(set) var isFetchingRate = false
     @Published var errorMessage: String?
     @Published var infoMessage: String?
+    /// A manual item's deletion waiting on the filed-year question (plan Task 14).
+    @Published var filedYearQuestion: FiledYearPending?
 
     private var observationTask: Task<Void, Never>?
     private var isActive = false
@@ -239,15 +241,42 @@ final class TaxYearsViewModel: ObservableObject {
         errorMessage = write { db in _ = try TaxExpenseTypeMap.seed(db: db, propertyId: propertyId) }
     }
 
-    func saveManualItem(_ item: TaxManualItem, documents: EvidenceLinkChanges) -> String? {
-        write { db in
+    /// Saves a manual item; one that would change a filed return asks first (`.asks`, nothing
+    /// written; plan Task 14) and is saved again with the answer.
+    func saveManualItem(_ item: TaxManualItem, documents: EvidenceLinkChanges,
+                        resolution: FiledYearEditCheck.Resolution? = nil) -> CheckedSaveOutcome {
+        let edit = (item.id == nil ? "Manual item “\(item.label)” added" : "Manual item “\(item.label)” edited")
+        return checked(edit: edit, resolution: resolution) { db in
             var item = item
             try TaxManualItems.save(db: db, &item, documents: documents)
         }
     }
 
-    func deleteManualItem(_ id: Int64) {
-        errorMessage = write { db in _ = try TaxManualItems.delete(db: db, id: id) }
+    /// Deletes a manual item; one whose deletion would change a filed return asks first
+    /// (`filedYearQuestion`).
+    func deleteManualItem(_ id: Int64, label: String = "", resolution: FiledYearEditCheck.Resolution? = nil) {
+        switch checked(edit: "Manual item “\(label)” deleted", resolution: resolution, { db in _ = try TaxManualItems.delete(db: db, id: id) }) {
+        case .done(.failed(let message)): errorMessage = message
+        case .done: errorMessage = nil
+        case .asks(let question):
+            // After the confirmation dialog has closed.
+            DispatchQueue.main.async {
+                self.filedYearQuestion = FiledYearPending(question: question) { [weak self] answer in
+                    self?.deleteManualItem(id, label: label, resolution: answer)
+                }
+            }
+        }
+    }
+
+    /// A write through the filed-year check; the error's text when it fails.
+    private func checked(edit: String, resolution: FiledYearEditCheck.Resolution?,
+                         _ body: (Database) throws -> Void) -> CheckedSaveOutcome {
+        do {
+            if case .asks(let question) = try dbQueue.checkedWrite(edit: edit, resolution: resolution, body) { return .asks(question) }
+            return .done(.saved)
+        } catch {
+            return .done(.failed(TaxMessages.text(for: error)))
+        }
     }
 
     /// Marks a source "deductible, not claimed" in the year on show (or claims it again).

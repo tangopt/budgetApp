@@ -15,6 +15,8 @@ final class UncategorizedViewModel: ObservableObject {
     @Published var categoryGroups: [CategoryGroup] = []
     @Published var recentCategoryIds: [Int64] = []
     @Published var errorMessage: String?
+    /// A category assignment waiting on the filed-year question (plan Task 14).
+    @Published var filedYearQuestion: FiledYearPending?
     /// Each account's currency (rows show their own) and the stored rate (a group mixing
     /// currencies totals in GBP).
     @Published private(set) var conversion = CurrencyConversion.none
@@ -138,14 +140,33 @@ final class UncategorizedViewModel: ObservableObject {
             updated.categorizedBy = .manual
             return (updated, remember(target))
         }
+        return write(updates, categoryId: categoryId, ids: ids, resolution: nil)
+    }
+
+    /// `assignCategory`'s write, through the filed-year check (plan Task 14): when it would change a
+    /// filed return, nothing is written, `filedYearQuestion` asks (one question for all the rows)
+    /// and the answer writes it again.
+    private func write(_ updates: [(row: Transaction, learn: Bool)], categoryId: Int64, ids: Set<Int64>,
+                       resolution: FiledYearEditCheck.Resolution?) -> Bool {
+        errorMessage = nil
         do {
-            try dbQueue.write { db in
+            let edit = FiledYearEditNames.categorised(categoryId, categories: categories)
+            let outcome = try dbQueue.checkedWrite(edit: edit, resolution: resolution) { db in
                 for update in updates {
                     try update.row.update(db)
                     if update.learn {
                         try RuleLearner.learn(description: update.row.rawDescription, categoryId: categoryId, db: db)
                     }
                 }
+            }
+            if case .asks(let question) = outcome {
+                // After the picker's popover has closed (a sheet presented while it closes can fail to appear).
+                DispatchQueue.main.async {
+                    self.filedYearQuestion = FiledYearPending(question: question) { [weak self] answer in
+                        _ = self?.write(updates, categoryId: categoryId, ids: ids, resolution: answer)
+                    }
+                }
+                return false
             }
         } catch {
             errorMessage = "Couldn't assign this category: \(error.localizedDescription)"

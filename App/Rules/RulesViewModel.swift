@@ -125,11 +125,15 @@ final class RulesViewModel: ObservableObject {
         try await dbQueue.read { db in try Rules.preview(db: db, pattern: pattern, matchType: matchType) }
     }
 
-    /// Saves the rule sheet: adds a rule, or edits `ruleId`'s. Returns the error to show, or
-    /// nil once saved.
-    func save(ruleId: Int64?, pattern: String, matchType: RuleMatchType, categoryId: Int64, applyToUncategorised: Bool) -> String? {
+    /// Saves the rule sheet: adds a rule, or edits `ruleId`'s. `.failed` holds the error to show.
+    /// Filing the uncategorised matches is one batch: when it would change a filed return, it
+    /// asks once (`.asks`, nothing written; plan Task 14) and is saved again with the answer.
+    func save(ruleId: Int64?, pattern: String, matchType: RuleMatchType, categoryId: Int64, applyToUncategorised: Bool,
+              resolution: FiledYearEditCheck.Resolution? = nil) -> CheckedSaveOutcome {
         do {
-            _ = try dbQueue.write { db in
+            let name = categories.first { $0.id == categoryId }?.name ?? "its category"
+            let edit = "Rule “\(pattern.trimmingCharacters(in: .whitespacesAndNewlines))” filed into \(name)"
+            let outcome = try dbQueue.checkedWrite(edit: edit, resolution: resolution) { db in
                 if let ruleId {
                     try Rules.update(db: db, id: ruleId, pattern: pattern, matchType: matchType, categoryId: categoryId,
                                      applyToUncategorised: applyToUncategorised)
@@ -138,14 +142,15 @@ final class RulesViewModel: ObservableObject {
                                   applyToUncategorised: applyToUncategorised)
                 }
             }
+            if case .asks(let question) = outcome { return .asks(question) }
         } catch let error as RuleSaveError {
-            return error.message
+            return .done(.failed(error.message))
         } catch {
-            return "Couldn't save the rule: \(error.localizedDescription)"
+            return .done(.failed("Couldn't save the rule: \(error.localizedDescription)"))
         }
         try? load()
         if applyToUncategorised { onTransactionsCategorised?() }
-        return nil
+        return .done(.saved)
     }
 
     /// The picker's "New category…": creates the category and adds it to the list.

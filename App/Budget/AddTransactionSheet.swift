@@ -13,17 +13,21 @@ struct AddTransactionSheet: View {
     let recentIds: [Int64]
     let createCategory: CreateCategory
     /// Saves and reloads; `.failed` keeps the sheet open with the message.
-    let onSave: (ManualTransactionInput) -> SaveOutcome
+    /// Saves the transaction; one that would change a filed return asks first (`.asks`, plan
+    /// Task 14) and is saved again with the answer.
+    let onSave: (ManualTransactionInput, FiledYearEditCheck.Resolution?) -> CheckedSaveOutcome
     @Environment(\.dismiss) private var dismiss
 
     @State private var draft: ManualTransactionDraft
     @State private var categoryId: Int64?
     @State private var note = ""
+    /// Save waiting on the filed-year question.
+    @State private var filedYearQuestion: FiledYearPending?
     @State private var errorMessage: String?
 
     /// `accountId` and `categoryId` preselect (an unknown account falls back to the first).
     init(accounts: [Account], accountId: Int64?, categoryId: Int64? = nil, categories: [Category], groups: [CategoryGroup],
-         recentIds: [Int64], createCategory: @escaping CreateCategory, onSave: @escaping (ManualTransactionInput) -> SaveOutcome) {
+         recentIds: [Int64], createCategory: @escaping CreateCategory, onSave: @escaping (ManualTransactionInput, FiledYearEditCheck.Resolution?) -> CheckedSaveOutcome) {
         self.accounts = accounts
         self.categories = categories
         self.groups = groups
@@ -63,13 +67,21 @@ struct AddTransactionSheet: View {
         }
         .onChange(of: draft) { _, _ in errorMessage = nil }
         .onChange(of: categoryId) { _, _ in errorMessage = nil }
+        .filedYearQuestion($filedYearQuestion)
     }
 
     private func save() {
         guard let input = draft.input(categoryId: categoryId, note: note) else { return }
-        switch onSave(input) {
-        case .saved, .savedButReloadFailed: dismiss()
-        case .failed(let message): errorMessage = message
+        save(input, resolution: nil)
+    }
+
+    private func save(_ input: ManualTransactionInput, resolution: FiledYearEditCheck.Resolution?) {
+        switch onSave(input, resolution) {
+        case .done(.saved), .done(.savedButReloadFailed): dismiss()
+        case .done(.failed(let message)): errorMessage = message
+        case .asks(let question):
+            errorMessage = nil
+            filedYearQuestion = FiledYearPending(question: question) { answer in save(input, resolution: answer) }
         }
     }
 }
