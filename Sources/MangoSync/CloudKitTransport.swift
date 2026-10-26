@@ -28,6 +28,12 @@ import BudgetCore
 /// Build step 3: the household zone in the admin's **private** database. Not reachable from the UI: only the
 /// DEBUG `--sync-demo` launch argument with a demo database makes one (`SyncDemoMode`).
 /// Shared by the Mac and iOS apps through the `MangoSync` target (step 4).
+///
+/// Step 7a: over the **shared** database (a member's device), `zoneOwnerName` names the owner of the zones it
+/// reaches. Every record read carries the server's writer (`SyncServerRecord.lastModifiedBy`, from
+/// `lastModifiedUserRecordID`); CloudKit names the current user `CKCurrentUserDefaultName`, so the current user's
+/// record name is fetched once (`container.userRecordID()`) before the first read or save. Sharing:
+/// `CloudKitTransport+Sharing.swift`.
 public final class CloudKitTransport: SyncTransport {
     public static let containerIdentifier = "iCloud.ubberninja.mango"
     /// The key-store scope for `--sync-demo` (Mac and iPhone): demo keys never share the real data's scope.
@@ -40,25 +46,52 @@ public final class CloudKitTransport: SyncTransport {
     }
     private static let log = Logger(subsystem: "com.personal.budget", category: "Sync")
 
-    private let database: CKDatabase
+    let database: CKDatabase
+    private let container: CKContainer
+    /// The zones' owner (the shared database); nil: the current user's own zones.
+    private let zoneOwnerName: String?
+    /// The current user's record name, once fetched.
+    private let currentUserName = OSAllocatedUnfairLock<String?>(initialState: nil)
     /// This instance's folder for asset files waiting for an upload (one subfolder per operation). Other
     /// instances' folders are never touched unless a day old.
     private let assetFolder: URL
 
+    /// `database`: the container's private database by default, or its shared database with `zoneOwnerName`.
     public init(database: CKDatabase = CKContainer(identifier: CloudKitTransport.containerIdentifier).privateCloudDatabase,
+         zoneOwnerName: String? = nil,
+         container: CKContainer = CKContainer(identifier: CloudKitTransport.containerIdentifier),
          assetRoot: URL = FileManager.default.temporaryDirectory.appendingPathComponent("MangoSyncAssets", isDirectory: true),
          now: Date = Date()) {
         self.database = database
+        self.container = container
+        self.zoneOwnerName = zoneOwnerName
         assetFolder = assetRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
         CloudKitAssetFolders.sweepStale(in: assetRoot, now: now)
     }
 
     deinit { try? FileManager.default.removeItem(at: assetFolder) }
 
+    /// The owner name zone and record IDs carry here.
+    var ownerName: String { zoneOwnerName ?? CKCurrentUserDefaultName }
+
+    func zoneID(_ zone: String) -> CKRecordZone.ID { CloudKitRecordMapping.zoneID(zone, ownerName: ownerName) }
+
+    /// The current user's iCloud record name, fetched once.
+    func currentUser() async throws -> String {
+        if let name = currentUserName.withLock({ $0 }) { return name }
+        do {
+            let name = try await container.userRecordID().recordName
+            currentUserName.withLock { $0 = name }
+            return name
+        } catch {
+            throw CloudKitRecordMapping.operationError(error, zone: "")
+        }
+    }
+
     public func operationLimits() async -> SyncOperationLimits { CloudKitRecordMapping.operationLimits }
 
     public func createZone(_ zone: String) async throws {
-        let operation = CKModifyRecordZonesOperation(recordZonesToSave: [CKRecordZone(zoneID: CloudKitRecordMapping.zoneID(zone))],
+        let operation = CKModifyRecordZonesOperation(recordZonesToSave: [CKRecordZone(zoneID: zoneID(zone))],
                                                      recordZoneIDsToDelete: nil)
         try await run(operation, zone: zone, perRecordResults: false) { finish in
             operation.modifyRecordZonesResultBlock = { result in finish(result) }
@@ -69,7 +102,7 @@ public final class CloudKitTransport: SyncTransport {
     /// container's demo zone); no sync path does. Throws `zoneNotFound` when it is already gone.
     public func deleteZone(_ zone: String) async throws {
         let operation = CKModifyRecordZonesOperation(recordZonesToSave: nil,
-                                                     recordZoneIDsToDelete: [CloudKitRecordMapping.zoneID(zone)])
+                                                     recordZoneIDsToDelete: [zoneID(zone)])
         try await run(operation, zone: zone, perRecordResults: false) { finish in
             operation.modifyRecordZonesResultBlock = { result in finish(result) }
         }
@@ -77,13 +110,15 @@ public final class CloudKitTransport: SyncTransport {
 
     public func save(_ records: [SyncWireRecord], ifUnchanged: [String: Data], atomic: Bool) async throws -> [SaveResult] {
         guard !records.isEmpty else { return [] }
+        let me = try await currentUser()
         let folder = assetFolder.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         var built: [CKRecord] = []
         var refused: [String: SaveResult.Outcome] = [:]
         for wire in records {
             do {
-                built.append(try CloudKitRecordMapping.record(from: wire, systemFields: ifUnchanged[wire.recordName], assetDirectory: folder))
+                built.append(try CloudKitRecordMapping.record(from: wire, systemFields: ifUnchanged[wire.recordName], assetDirectory: folder,
+                                                          ownerName: ownerName))
             } catch {
                 Self.log.error("Sync record not sent: \(String(describing: error), privacy: .public)")
                 refused[wire.recordName] = .failed("not sent: \(error)")
@@ -98,7 +133,7 @@ public final class CloudKitTransport: SyncTransport {
         try await run(operation, zone: records[0].zone, perRecordResults: true) { finish in
             operation.perRecordSaveBlock = { id, result in
                 guard let wire = wires[id.recordName] else { return }
-                let saved = CloudKitRecordMapping.saveResult(wire, result)
+                let saved = CloudKitRecordMapping.saveResult(wire, result, currentUser: me)
                 taken.withLock { $0[id.recordName] = saved }
             }
             operation.modifyRecordsResultBlock = { result in finish(result) }
@@ -107,7 +142,8 @@ public final class CloudKitTransport: SyncTransport {
     }
 
     public func changes(since token: Data?, zone: String) async throws -> SyncChanges {
-        let zoneID = CloudKitRecordMapping.zoneID(zone)
+        let me = try await currentUser()
+        let zoneID = self.zoneID(zone)
         let configuration = CKFetchRecordZoneChangesOperation.ZoneConfiguration()
         configuration.previousServerChangeToken = try token.map(CloudKitRecordMapping.unarchiveToken)
         let operation = CKFetchRecordZoneChangesOperation(recordZoneIDs: [zoneID], configurationsByRecordZoneID: [zoneID: configuration])
@@ -122,7 +158,7 @@ public final class CloudKitTransport: SyncTransport {
         let page = OSAllocatedUnfairLock(initialState: Page())
         try await run(operation, zone: zone, perRecordResults: true) { finish in
             operation.recordWasChangedBlock = { id, result in
-                switch CloudKitRecordMapping.feedChange(id, result, zone: zone) {
+                switch CloudKitRecordMapping.feedChange(id, result, zone: zone, currentUser: me) {
                 case .change(let change): page.withLock { $0.changes.append(change) }
                 case .failPage(let error): page.withLock { $0.failure = $0.failure ?? error }
                 }
@@ -154,7 +190,7 @@ public final class CloudKitTransport: SyncTransport {
     public func delete(_ recordNames: [String], zone: String) async throws {
         guard !recordNames.isEmpty else { return }
         let operation = CKModifyRecordsOperation(recordsToSave: nil,
-                                                 recordIDsToDelete: recordNames.map { CloudKitRecordMapping.recordID($0, zone: zone) })
+                                                 recordIDsToDelete: recordNames.map { CloudKitRecordMapping.recordID($0, zone: zone, ownerName: ownerName) })
         operation.isAtomic = false
         let failure = OSAllocatedUnfairLock<Error?>(initialState: nil)
         try await run(operation, zone: zone, perRecordResults: true) { finish in
@@ -171,7 +207,8 @@ public final class CloudKitTransport: SyncTransport {
     }
 
     public func fetch(_ recordName: String, zone: String) async throws -> SyncServerRecord? {
-        let id = CloudKitRecordMapping.recordID(recordName, zone: zone)
+        let me = try await currentUser()
+        let id = CloudKitRecordMapping.recordID(recordName, zone: zone, ownerName: ownerName)
         let operation = CKFetchRecordsOperation(recordIDs: [id])
         let fetched = OSAllocatedUnfairLock<Result<SyncServerRecord?, Error>?>(initialState: nil)
         try await run(operation, zone: zone, perRecordResults: true) { finish in
@@ -179,7 +216,7 @@ public final class CloudKitTransport: SyncTransport {
                 let value: Result<SyncServerRecord?, Error>
                 switch result {
                 case .success(let record):
-                    value = Result { try CloudKitRecordMapping.serverRecord(record) }
+                    value = Result { try CloudKitRecordMapping.serverRecord(record, currentUser: me) }
                 case .failure(let error) where CloudKitRecordMapping.isMissingRecord(error):
                     value = .success(nil)
                 case .failure(let error):
@@ -197,7 +234,7 @@ public final class CloudKitTransport: SyncTransport {
     /// Adds `operation` to the database and waits for its final block; cancelling the task cancels the operation.
     /// `configure` sets the blocks and hands the final one to `finish`. The final error is mapped
     /// (`CloudKitRecordMapping.finalError`: with per-record results a `partialFailure` is theirs, not the call's).
-    private func run(_ operation: CKDatabaseOperation, zone: String, perRecordResults: Bool,
+    func run(_ operation: CKDatabaseOperation, zone: String, perRecordResults: Bool,
                      configure: (@escaping @Sendable (Result<Void, Error>) -> Void) -> Void) async throws {
         operation.qualityOfService = .utility
         // A task already cancelled never adds the operation: CloudKit isn't guaranteed to call the final block of an
