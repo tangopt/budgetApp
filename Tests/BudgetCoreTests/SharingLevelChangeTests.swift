@@ -734,12 +734,15 @@ final class SharingLevelChangeTests: XCTestCase {
         }
         let adminUser = try Int64.fetchOne(db, sql: "SELECT id FROM appUser WHERE isAdmin = 1 ORDER BY id LIMIT 1")!
         let admin = try AccessActor.load(appUserId: adminUser, db: db)
-        var rows = try SharingSetup.proposal(admin: admin, db: db)
-        if !rows.isEmpty {
-            rows[0].owner = .joint
-            rows[0].level = .everything
+        // The demo comes with its ownership saved (`DemoSharing`); a database without it gets it here.
+        if try !SharingSetup.isConfirmed(db: db) {
+            var rows = try SharingSetup.proposal(admin: admin, db: db)
+            if !rows.isEmpty {
+                rows[0].owner = .joint
+                rows[0].level = .everything
+            }
+            try SharingSetup.save(rows, admin: admin, db: db, now: Date(timeIntervalSince1970: 0))
         }
-        try SharingSetup.save(rows, admin: admin, db: db, now: Date(timeIntervalSince1970: 0))
         try SyncRecordStore.backfill(db: db)
         return admin
     }

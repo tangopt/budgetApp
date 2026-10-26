@@ -126,6 +126,8 @@ struct ContentView: View {
     /// Kept for the app session: the year on show and its tab survive navigation.
     @StateObject private var taxYearsViewModel: TaxYearsViewModel
 
+    /// Who the screens last read their data for: another person signing in reads them again.
+    @State private var shownForUserId: Int64?
     private let profileStore: ImportProfileStore
     /// The snapshot harness only: the screen to open on and the state to set up on it.
     private let snapshotSetup: SnapshotSetup?
@@ -133,6 +135,7 @@ struct ContentView: View {
     init(environment: AppEnvironment, snapshotSetup: SnapshotSetup? = nil) {
         self.environment = environment
         self.snapshotSetup = snapshotSetup
+        _shownForUserId = State(initialValue: environment.session.currentAppUserId)
         if let screen = snapshotSetup?.screen {
             _selection = State(initialValue: screen)
             _sidebarSelection = State(initialValue: .screen(screen))
@@ -355,6 +358,13 @@ struct ContentView: View {
             refreshUncategorizedCount()
         }
         .onChange(of: sidebarSelection) { _, newValue in sidebarSelectionChanged(to: newValue) }
+        // Someone else signed in: the screens show what they can see (`SharedActualsSource`), so the one on show
+        // reads again; the others read on appearing.
+        .onReceive(environment.session.$state.compactMap(\.signedInId).removeDuplicates()) { id in
+            guard id != shownForUserId else { return }
+            shownForUserId = id
+            reloadForSignedInUser()
+        }
         // Observes the phase alone, so the window isn't redrawn by every progress tick.
         .onReceive(environment.importCenter.$phase.map(Self.isActiveImport).removeDuplicates()) { importActive = $0 }
         // ⌘F (Edit ▸ Search Transactions) and File ▸ Import… (⇧⌘I) in this window, only while signed in.
@@ -397,6 +407,18 @@ struct ContentView: View {
     /// The window's document importer: File ▸ Import…, the toolbar button, screens' shortcuts.
     private var documentImport: DocumentImportAction {
         DocumentImportAction.forCenter(environment.importCenter)
+    }
+
+    /// The screen on show, read again as the person now signed in sees it.
+    private func reloadForSignedInUser() {
+        switch selection {
+        case .dashboard: dashboardViewModel.load()
+        case .accounts: accountsViewModel.load()
+        case .budgetGrid: try? budgetGridViewModel.load(horizon: forecastHorizon)
+        case .forecast: scenarioLabViewModel.load()
+        case .categories: categoriesViewModel.load()
+        default: break
+        }
     }
 
     /// A document import was applied or undone: what it may have changed is read again.

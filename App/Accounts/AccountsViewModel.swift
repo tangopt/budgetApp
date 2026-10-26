@@ -28,6 +28,8 @@ final class AccountsViewModel: ObservableObject {
     @Published private(set) var importedThrough: [Int64: Date] = [:]
     /// The screen's banner error (load failures, "Saved, but …"). Sheets keep their own.
     @Published var errorMessage: String?
+    /// Who the screen is shown to: their own accounts below Everything carry a lock badge (`SharingBadge`).
+    @Published private(set) var viewer = SharingViewer(personId: nil)
     /// What the last Update balance did, one line per account ("added a Market movement of
     /// £120.00", "balance already matches").
     @Published var balanceMessages: [String] = []
@@ -56,10 +58,15 @@ final class AccountsViewModel: ObservableObject {
     @discardableResult
     func load() -> Bool {
         do {
-            let (accounts, snapshots, transactions, rate, builtIns, batches) = try dbQueue.read { db in
-                (try Account.fetchAll(db), try BalanceSnapshot.fetchAll(db), try Transaction.fetchAll(db), try ExchangeRateSetting.currentOrDefault(db: db),
-                 try Category.filter(Column("builtInRole") != nil).fetchAll(db), try ImportBatch.fetchAll(db))
+            // As the person signed in sees them (`SharedActualsSource`): the other person's accounts below Everything
+            // with the balances they publish, their Hidden ones not at all.
+            let (viewer, accounts, snapshots, transactions, rate, builtIns, batches) = try dbQueue.read { db in
+                let actuals = try SignedInActor.actuals(db: db, today: AppClock.now)
+                return (actuals.viewer, try actuals.accounts(db), try actuals.balanceSnapshots(db), try actuals.transactions(db),
+                        try ExchangeRateSetting.currentOrDefault(db: db),
+                        try Category.filter(Column("builtInRole") != nil).fetchAll(db), try ImportBatch.fetchAll(db))
             }
+            self.viewer = viewer
             self.accounts = accounts.sortedForDisplay()
             self.snapshots = snapshots
             self.transactions = transactions

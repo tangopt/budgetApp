@@ -35,7 +35,7 @@ struct AccountsView: View {
                 HStack(alignment: .top, spacing: 0) {
                     VStack(alignment: .leading, spacing: 8) {
                         AccountsListView(groups: overview.groups, selection: $viewModel.selectedAccountId,
-                                         importedThrough: viewModel.importedThrough,
+                                         importedThrough: viewModel.importedThrough, viewer: viewModel.viewer,
                                          onAddTransaction: addTransaction(in:), onSetMain: { viewModel.setMain($0) },
                                          onSetIncludeInNetWorth: { viewModel.setIncludeInNetWorth($0, $1) }) { group, from, to in
                             viewModel.moveAccounts(ids: group.rows.map(\.id), fromOffsets: from, toOffset: to)
@@ -152,6 +152,7 @@ struct AccountsView: View {
     private var detail: some View {
         AccountDetailView(
             row: viewModel.selectedRow,
+            sharingLevel: viewModel.selectedRow.flatMap { viewModel.viewer.badgeLevel($0.account) },
             importedThrough: viewModel.selectedRow.flatMap { viewModel.importedThrough[$0.id] },
             history: viewModel.selectedHistory,
             importCenter: environment.importCenter,
@@ -343,6 +344,8 @@ private struct AccountsListView: View {
     @Binding var selection: Int64?
     /// Each account's latest imported transaction date (absent: nothing imported).
     let importedThrough: [Int64: Date]
+    /// Who the list is shown to: their own accounts below Everything carry the lock badge.
+    let viewer: SharingViewer
     /// Add transaction… from a row's context menu.
     let onAddTransaction: (Int64) -> Void
     /// Set as main account / Unset main account (nil) from a row's context menu.
@@ -379,7 +382,7 @@ private struct AccountsListView: View {
             ForEach(groups) { group in
                 Section {
                     ForEach(group.rows) { row in
-                        AccountListRow(row: row, importedThrough: importedThrough[row.id]).tag(row.id)
+                        AccountListRow(row: row, importedThrough: importedThrough[row.id], sharingLevel: viewer.badgeLevel(row.account)).tag(row.id)
                             .contextMenu {
                                 Button("Add transaction…") { onAddTransaction(row.id) }
                                 Menu("Import statement") {
@@ -421,6 +424,8 @@ private struct AccountsListView: View {
 private struct AccountListRow: View {
     let row: AccountRow
     let importedThrough: Date?
+    /// The lock badge's level: one of the viewer's own accounts shared below Everything.
+    var sharingLevel: SharingLevel? = nil
 
     static let dateColumnWidth: Double = 92
     static let balanceColumnWidth: Double = 132
@@ -437,16 +442,18 @@ private struct AccountListRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(row.account.displayName).lineLimit(1)
+                    Text(row.account.displayName).lineLimit(1).truncationMode(.middle)
                     flags
                 }
-                // The nickname's account name truncates; the import date never does.
-                HStack(spacing: 0) {
+                // The nickname's account name truncates; the import date never does. The lock badge (one of your
+                // accounts shared below Everything) follows, on this line so the name keeps its room.
+                HStack(spacing: 6) {
                     if row.account.displayName != row.account.name {
-                        Text(row.account.name).lineLimit(1)
-                    } else {
+                        Text(row.account.name).lineLimit(1).truncationMode(.middle)
+                    } else if sharingLevel == nil {
                         Text(" ")
                     }
+                    if let sharingLevel { SharingBadge(level: sharingLevel) }
                 }
                 .font(.caption).foregroundStyle(.secondary)
             }
@@ -555,6 +562,8 @@ private struct AccountBankDetails: View {
 
 private struct AccountDetailView: View {
     let row: AccountRow?
+    /// The lock badge's level: one of the viewer's own accounts shared below Everything.
+    let sharingLevel: SharingLevel?
     @Environment(\.theme) private var theme
     /// The account's latest imported transaction date; nil: nothing imported.
     let importedThrough: Date?
@@ -591,6 +600,7 @@ private struct AccountDetailView: View {
                             if !row.account.includeInNetWorth {
                                 NotInNetWorthBadge()
                             }
+                            if let sharingLevel { SharingBadge(level: sharingLevel) }
                         }
                     }
                     VStack(alignment: .leading, spacing: 2) {

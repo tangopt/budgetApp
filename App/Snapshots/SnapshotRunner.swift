@@ -204,8 +204,12 @@ final class SnapshotSession {
             options.only.isEmpty || options.only.contains { route.name.contains($0) }
         }
         print("Rendering \(routes.count) routes × \(options.appearances.count) appearances × \(themes.count) themes to \(options.outDir.path)")
+        // A route may sign someone else in (the sharing routes' member), or lock a session of its own (which publishes
+        // "signed out" as the app's writer): each route starts signed in as the snapshot user again.
+        let snapshotUser = environment.session.currentUser
         for route in routes {
             let started = Date()
+            if let snapshotUser { environment.session.snapshotSignIn(snapshotUser) }
             let content: AnyView
             do {
                 content = try await route.makeView(context)

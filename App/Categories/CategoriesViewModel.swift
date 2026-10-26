@@ -49,6 +49,8 @@ final class CategoriesViewModel: ObservableObject {
     /// Runs after an Edit transaction save (the uncategorised count may change).
     var onTransactionEdited: (() -> Void)?
     private let dbQueue: DatabaseQueue
+    /// Whose actuals the screen shows, from the last load (`SharedActualsSource`).
+    private var actuals = SharedActualsSource(viewer: SharingViewer(personId: nil), today: AppClock.now)
 
     init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
@@ -56,15 +58,19 @@ final class CategoriesViewModel: ObservableObject {
 
     func load() {
         do {
-            let (categories, groups, all, closes, links, counterparts, accounts, rate) = try dbQueue.read { db in
-                (try Category.fetchAll(db), try CategoryGroup.fetchAll(db), try Transaction.fetchAll(db), try PayMonthClose.fetchAll(db),
-                 try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db), try Account.fetchAll(db), try ExchangeRateSetting.currentOrDefault(db: db))
+            // As the person signed in sees them (`SharedActualsSource`), with the pay months the owner published.
+            let (actuals, categories, groups, all, closes, links, counterparts, accounts, rate, published) = try dbQueue.read { db in
+                let actuals = try SignedInActor.actuals(db: db, today: AppClock.now)
+                return (actuals, try Category.fetchAll(db), try CategoryGroup.fetchAll(db), try actuals.transactions(db), try PayMonthClose.fetchAll(db),
+                        try TransferLink.fetchAll(db), try TransferLinks.counterparts(db: db), try actuals.accounts(db), try ExchangeRateSetting.currentOrDefault(db: db),
+                        try actuals.publishedCloses(db))
             }
             propertyGroupIds = (try? dbQueue.read { db in Set(try Int64.fetchAll(db, sql: "SELECT categoryGroupId FROM propertyCategoryGroup")) }) ?? []
+            self.actuals = actuals
             self.categories = categories
             self.accounts = accounts.sortedForDisplay()
             self.groups = groups
-            payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: all, categories: categories),
+            payCalendar = PayCalendar(salaryDates: PaydaySource.paydayDates(transactions: all, categories: categories, publishedCloses: published),
                                       manualCloses: closes, today: AppClock.now)
             transferCounterparts = counterparts
             transactions = TransferLinks.budgetFacing(all, links: links).filter { $0.status == .confirmed && $0.categoryId != nil }
@@ -256,6 +262,17 @@ final class CategoriesViewModel: ObservableObject {
     /// members) in the pay-month `year` (nil = all years).
     func transactions(forCategoryIds ids: Set<Int64>, year: Int?) -> [Transaction] {
         transactions.filter { $0.categoryId.map(ids.contains) == true && (year == nil || payYear(of: $0) == year) }
+    }
+
+    /// The other person's private accounts in the panel, one line each (`SharedActuals.privateLines`), over the days
+    /// the year's summary rows fall on; read off the main thread, once per category and year shown.
+    func privateLines(forCategoryIds ids: Set<Int64>, year: Int?) async -> [SharedActuals.PrivateLine] {
+        let dates = transactions(forCategoryIds: ids, year: year).filter(SharedActuals.isSummary).map(\.date)
+        guard let from = dates.min(), let to = dates.max() else { return [] }
+        let (viewer, today) = (actuals.viewer, actuals.today)
+        return (try? await dbQueue.read { db in
+            try SharedActuals.privateLines(categoryIds: ids, from: from, to: to, viewer: viewer, today: today, db: db)
+        }) ?? []
     }
 
     /// The years the panel's filter offers: the current one, then any with transactions, newest first.

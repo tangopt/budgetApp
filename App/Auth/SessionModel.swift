@@ -46,6 +46,12 @@ final class SessionModel: ObservableObject {
         case notSetUp
         case locked
         case signedIn(AppUser)
+
+        /// Who is signed in; nil while locked or before sign-in is set up.
+        var signedInId: Int64? {
+            if case .signedIn(let user) = self { return user.id }
+            return nil
+        }
     }
 
     enum SignInResult: Equatable {

@@ -11,6 +11,8 @@ public protocol ActualsSource {
     /// Pay-month closes published by the other person's devices for accounts this device doesn't hold in full,
     /// for the pay calendar (`PayCalendar.forData(publishedCloses:)`): the reader's pay months follow the owner's.
     func publishedCloses(_ db: Database) throws -> [Date]
+    /// The accounts the screens list: every one, or (`SharedActualsSource`) all but the other person's Hidden ones.
+    func accounts(_ db: Database) throws -> [Account]
 }
 
 extension ActualsSource {
@@ -19,6 +21,10 @@ extension ActualsSource {
     }
 
     public func publishedCloses(_ db: Database) throws -> [Date] { [] }
+
+    public func accounts(_ db: Database) throws -> [Account] {
+        try Account.fetchAll(db)
+    }
 }
 
 /// All local transactions: the same set the screens read before the seam existed.

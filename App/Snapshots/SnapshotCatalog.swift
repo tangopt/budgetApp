@@ -30,9 +30,10 @@ struct SnapshotMissing: Error, CustomStringConvertible {
 @MainActor
 enum SnapshotCatalog {
     /// `importRoutes` then `kindRoutes` last: `imports-history` writes to the demo copy, the kind routes add custom kinds to it; the attribution check after them
-    /// (it imports too). `settings-sign-in` and the check add synthetic app users to the demo copy.
+    /// (it imports too). `settings-sign-in` and the check add synthetic app users to the demo copy; the sharing routes
+    /// before them (`SharingSnapshots`) add Person B as a member with no password, so she stays a member there.
     static var routes: [SnapshotRoute] {
-        screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + AuthSnapshots.routes + [AuthSnapshots.lockedContentRoute] + AuthSnapshots.lockedToolbarRoutes + importRoutes
+        screens + propertyTabs + taxTabs + sheets + ComponentGallery.routes + SharingSnapshots.routes + AuthSnapshots.routes + [AuthSnapshots.lockedContentRoute] + AuthSnapshots.lockedToolbarRoutes + importRoutes
             + kindRoutes + waitingRoutes + transactionDocumentsRoutes + [AuthSnapshots.attributionRoute, AuthSnapshots.launchLoadsOnceRoute]
     }
 

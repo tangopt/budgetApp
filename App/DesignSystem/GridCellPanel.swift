@@ -64,6 +64,9 @@ protocol GridCellPanelModel: ObservableObject {
     func totalsOccurrences(_ row: BudgetTotals.Row, year: Int, month: Int) -> [PlannedRow]
     /// What's left of the reserves' allowances in the month, for a Totals panel (0 for Total in).
     func totalsReserved(_ row: BudgetTotals.Row, year: Int, month: Int) -> Int
+    /// The other person's private accounts' lines in `categoryIds` (`SharedActuals.privateLines`), read once per
+    /// cell opened, off the main thread.
+    func privateLines(forCategoryIds categoryIds: Set<Int64>, from startDate: Date, to endDate: Date) async -> [SharedActuals.PrivateLine]
 }
 
 /// A grid's side panel for the selected cell: `TransactionsSidePanel` with the cell's
@@ -83,11 +86,32 @@ struct GridCellPanel<Model: GridCellPanelModel>: View {
     @State private var removing: PlannedRow?
     /// A failed Remove… (an Edit… failure shows in its own sheet).
     @State private var planError: String?
+    /// The other person's private accounts in the cell, one line each, read when the cell opens (`privateLinesKey`).
+    @State private var privateLines: [SharedActuals.PrivateLine] = []
 
-    /// The transactions listed: a Totals row's, else the cell's categories'.
-    private var transactions: [Transaction] {
+    /// Everything the cell's actuals (with the summary rows in them) and the panel's own list.
+    private var cellTransactions: [Transaction] {
         if let row = target.totals { return model.totalsTransactions(row, from: target.start, to: target.end) }
         return model.transactions(forCategoryIds: target.categoryIds, from: target.start, to: target.end)
+    }
+
+    /// The transactions listed: the cell's real ones. The summary rows standing for the other person's private
+    /// accounts show as `privateLines` instead.
+    private var transactions: [Transaction] {
+        cellTransactions.filter { !SharedActuals.isSummary($0) }
+    }
+
+    /// The cell whose private lines are read: a new one reads them again, a re-render doesn't.
+    private struct PrivateLinesKey: Hashable {
+        let title: String
+        let categoryIds: Set<Int64>
+        let start: Date
+        let end: Date
+        let isTotals: Bool
+    }
+
+    private var privateLinesKey: PrivateLinesKey {
+        PrivateLinesKey(title: target.title, categoryIds: target.categoryIds, start: target.start, end: target.end, isTotals: target.totals != nil)
     }
 
     var body: some View {
@@ -100,6 +124,7 @@ struct GridCellPanel<Model: GridCellPanelModel>: View {
             transfers: model.transferCounterparts,
             conversion: model.conversion,
             showsTransactions: target.showsTransactions,
+            privateLines: target.showsTransactions ? privateLines : [],
             onAdd: target.showsTransactions ? onAdd : nil,
             plannedSection: {
                 if let plan = target.plan, model.panelShowsPlan {
@@ -112,6 +137,13 @@ struct GridCellPanel<Model: GridCellPanelModel>: View {
         )
         // Another cell's panel: a stale Remove… error doesn't carry over.
         .onChange(of: target.title) { _, _ in planError = nil }
+        .task(id: privateLinesKey) {
+            // A Totals row's summary rows name their categories; any other cell asks for its own.
+            let summaries = cellTransactions.filter(SharedActuals.isSummary)
+            guard !summaries.isEmpty else { privateLines = []; return }
+            let categories = target.totals == nil ? target.categoryIds : Set(summaries.compactMap(\.categoryId))
+            privateLines = await model.privateLines(forCategoryIds: categories, from: target.start, to: target.end)
+        }
         .plannedOccurrenceEditing(editing: $editing, removing: $removing, planError: $planError,
                                   categories: model.categories, actions: model.planEditActions, accountOptions: model.planAccountOptions)
     }

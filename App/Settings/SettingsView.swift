@@ -4,17 +4,19 @@ import BudgetCore
 
 /// Budget ▸ Settings… (⌘,): Appearance (System / Light / Dark) and Theme (the swatch grid) —
 /// both apply immediately, app-wide, and are remembered (`appAppearance`, `appTheme`) — and
-/// Evidence (the source folders scanned for documents), Sign-in (auth spec §6) and Sync (off for the
-/// real database in this build).
+/// Evidence (the source folders scanned for documents), Sign-in (auth spec §6), Sharing (who owns each account and
+/// how much of it the other person sees, sharing spec §7) and Sync (off for the real database in this build).
 struct SettingsView: View {
-    enum Pane: Hashable { case appearance, theme, evidence, signIn, sync }
+    enum Pane: Hashable { case appearance, theme, evidence, signIn, sharing, sync }
     @State private var pane: Pane
     private let signInModel: SignInSettingsModel?
+    private let sharingModel: SharingSettingsModel?
 
-    /// `signInModel`: snapshot routes only.
-    init(pane: Pane = .appearance, signInModel: SignInSettingsModel? = nil) {
+    /// `signInModel`, `sharingModel`: snapshot routes only.
+    init(pane: Pane = .appearance, signInModel: SignInSettingsModel? = nil, sharingModel: SharingSettingsModel? = nil) {
         _pane = State(initialValue: pane)
         self.signInModel = signInModel
+        self.sharingModel = sharingModel
     }
 
     var body: some View {
@@ -30,6 +32,9 @@ struct SettingsView: View {
             }
             Tab("Sign-in", systemImage: "person.badge.key", value: Pane.signIn) {
                 SignInSettings(model: signInModel)
+            }
+            Tab(SharingCopy.paneTitle, systemImage: "person.2.badge.key", value: Pane.sharing) {
+                SharingSettings(model: sharingModel)
             }
             Tab("Sync", systemImage: "arrow.triangle.2.circlepath.icloud", value: Pane.sync) {
                 SyncSettings()

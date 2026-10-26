@@ -63,6 +63,58 @@ public enum SharingCopy {
         return "Moves \(number) \(count == 1 ? "record" : "records")"
     }
 
+    // MARK: Settings ▸ Sharing (Mac)
+
+    public static let paneTitle = "Sharing"
+    public static let setupExplanation = "Before anything is shared, say who owns each account. You do this once. Afterwards each owner chooses how much of their accounts the other person sees, one account at a time."
+    public static let setOwnersButton = "Set owners…"
+    /// A member before the admin has saved the ownership sheet.
+    public static let waitingForOwners = "The admin hasn't said who owns each account yet. Once they have, your accounts and their levels show here."
+    public static let myAccounts = "My accounts"
+    public static let myAccountsNote = "How much of each of your accounts the other person sees."
+    public static let noOwnAccounts = "You don't own any accounts in Mango yet."
+    public static let jointAccounts = "Joint accounts"
+    public static let jointAccountsNote = "Joint accounts are always shared in full."
+    public static let taxAndIncome = "My tax years and income"
+    public static let taxAndIncomeNote = "Your tax years, employment and payroll documents and HMRC pages. Taxes stay shared in full for now."
+    public static let badgeHelp = "How much of this account the other person sees. Change it in Settings ▸ Sharing."
+    /// When the household has nobody else yet.
+    public static let otherPersonFallback = "The other person"
+
+    // MARK: The ownership sheet's table
+
+    public static let accountColumn = "Account"
+    public static let bankColumn = "Bank"
+    public static let ownerColumn = "Owner"
+    public static let levelColumn = "Shared as"
+
+    // MARK: Changing a level
+
+    public static func changeTitle(account: String) -> String { "Change sharing for \(account)?" }
+    public static func changeSummary(from: SharingLevel, to: SharingLevel) -> String { "From \(from.title) to \(to.title)." }
+    public static let changeButton = "Change"
+    public static let counting = "Counting the records to move…"
+    public static let changing = "Changing the level…"
+    public static func blockedTitle(account: String) -> String { "\(account) can't be hidden yet" }
+    public static let blockedNote = "Hidden shares nothing, and these still need the account shared. Change or remove them first."
+
+    /// Why a sharing change was refused, as the Mac shows it.
+    public static func error(_ error: SharingError) -> String {
+        switch error {
+        case .notAdmin: return "Only the admin says who owns each account."
+        case .alreadyConfirmed: return "The owners have already been set."
+        case .ownershipNotConfirmed: return "Set the owners first."
+        case .rowsDoNotMatchAccounts: return "The accounts changed while the sheet was open. Close it and open it again."
+        case .accountAlreadyOwned: return "An account on the sheet already has an owner. Close it and open it again."
+        case .ownerMustBeAdminOrJoint: return "Each account is yours or Joint."
+        case .notOwner: return "Only the account's owner changes how much of it is shared."
+        case .jointMustBeEverything: return "Joint accounts are always shared in full."
+        case .blocked(let blockers): return "Hidden isn't possible yet: " + blockers.map(blocker).joined(separator: "; ") + "."
+        case .notAvailableYet: return hiddenNotAvailable
+        case .accountNotFound: return "That account no longer exists."
+        }
+    }
+
     // MARK: What blocks Hidden
 
     public static func blocker(_ blocker: SharingLevels.Blocker) -> String {

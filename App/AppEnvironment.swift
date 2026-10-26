@@ -47,6 +47,16 @@ enum SignedInActor {
     }
 
     static func actor(db: Database) throws -> AccessActor? { try actor(for: state, db: db) }
+
+    /// Whose figures the screens show (`SharingViewer`): the signed-in user; everything before sign-in is set up.
+    static func viewer(db: Database) throws -> SharingViewer {
+        try SharingViewer.load(appUserId: appUserId, db: db)
+    }
+
+    /// The screens' actuals as the signed-in user sees them (`SharedActualsSource`).
+    static func actuals(db: Database, today: Date) throws -> SharedActualsSource {
+        SharedActualsSource(viewer: try viewer(db: db), today: today)
+    }
 }
 
 /// A data write asked for while nobody is signed in: refused, nothing written.
@@ -75,6 +85,26 @@ extension DatabaseWriter {
                 try body(db)
             }
         }
+    }
+
+    /// A write whose rule is who you are, not an area (sharing: the ownership sheet is the admin's, a level its
+    /// account owner's): BudgetCore checks the actor and stamps them (`SharingSetup.save`, `SharingLevels.set`).
+    /// Refused while nobody is signed in, and before sign-in is set up (nobody to check).
+    func writeAsSignedInUser<T: Sendable>(_ body: @escaping @Sendable (Database, AccessActor) throws -> T) async throws -> T {
+        let state = SignedInActor.state
+        guard case .signedIn = state else { throw SignedOutWrite() }
+        return try await write { db in
+            guard let actor = try SignedInActor.actor(for: state, db: db) else { throw SignedOutWrite() }
+            return try body(db, actor)
+        }
+    }
+
+    /// `signedInActor()` off the main thread: the signed-in user's actor (its writer UUID made if new); nil before
+    /// sign-in is set up; throws `SignedOutWrite` while nobody is signed in.
+    func loadSignedInActor() async throws -> AccessActor? {
+        let state = SignedInActor.state
+        guard state != .signedOut else { throw SignedOutWrite() }
+        return try await write { db in try SignedInActor.actor(for: state, db: db) }
     }
 
     /// The signed-in user's actor, for BudgetCore entry points that write by themselves (`EvidenceLibrary.link`);
@@ -231,9 +261,11 @@ final class AppEnvironment: ObservableObject {
         let databaseId: String
         let snapshotUser: AppUser?
 
-        /// The demo database's first app user, else a stand-in for its first person (snapshot build only).
+        /// The demo database's first app user who can sign in, else its admin (`DemoSharing`'s, with no password),
+        /// else a stand-in for its first person (snapshot build only).
         static func snapshotUser(_ db: Database) throws -> AppUser? {
             if let user = try AppUserStore.signInCandidates(db).first { return user }
+            if let admin = try AppUser.filter(Column("isAdmin") == true).order(Column("id")).fetchOne(db) { return admin }
             guard let person = try Person.order(Column("id")).fetchOne(db), let personId = person.id else { return nil }
             return AppUser(personId: personId, displayName: person.name, isAdmin: true, createdAt: AppClock.now)
         }

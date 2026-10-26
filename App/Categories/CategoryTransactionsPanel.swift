@@ -26,6 +26,13 @@ struct CategoryTransactionsPanel: View {
     @State private var editingTransaction: Transaction?
     /// Read when Edit… is clicked, for the sheet's picker.
     @State private var editingRecentIds: [Int64] = []
+    /// The other person's private accounts here, one line each, read when the category or year changes.
+    @State private var privateLines: [SharedActuals.PrivateLine] = []
+
+    private struct PrivateLinesKey: Hashable {
+        let subject: String
+        let year: Int?
+    }
 
     init(subject: CategoryPanelSubject, viewModel: CategoriesViewModel, onClose: @escaping () -> Void) {
         self.subject = subject
@@ -37,9 +44,11 @@ struct CategoryTransactionsPanel: View {
     var body: some View {
         TransactionsSidePanel(
             title: subject.title,
-            transactions: viewModel.transactions(forCategoryIds: subject.categoryIds, year: year),
+            // The summary rows standing for the other person's private accounts show as `privateLines`.
+            transactions: viewModel.transactions(forCategoryIds: subject.categoryIds, year: year).filter { !SharedActuals.isSummary($0) },
             transfers: viewModel.transferCounterparts,
             conversion: viewModel.conversion,
+            privateLines: privateLines,
             accessory: AnyView(yearPicker),
             onEdit: { transaction in
                 editingRecentIds = viewModel.recentCategoryIds()
@@ -49,6 +58,9 @@ struct CategoryTransactionsPanel: View {
         )
         // Another category or group: back to the current year.
         .onChange(of: subject.key) { _, _ in year = viewModel.payCalendar.current.year }
+        .task(id: PrivateLinesKey(subject: subject.key, year: year)) {
+            privateLines = await viewModel.privateLines(forCategoryIds: subject.categoryIds, year: year)
+        }
         .sheet(item: $editingTransaction) { transaction in
             EditTransactionSheet(
                 transaction: transaction,

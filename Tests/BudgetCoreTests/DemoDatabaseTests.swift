@@ -3,6 +3,7 @@ import GRDB
 import PDFKit
 @testable import BudgetCore
 @testable import BudgetDemo
+import TestSupport
 
 /// The synthetic demo database (`DemoDatabase`, the UI snapshot harness's data): it builds,
 /// it's deterministic, and the screens' main computations run on it without the warnings that
@@ -202,6 +203,79 @@ final class DemoDatabaseTests: XCTestCase {
             XCTAssertTrue(rows.contains { $0.status == .filed })
             XCTAssertTrue(rows.contains { $0.status == .preparing })
         }
+    }
+
+    // MARK: Sharing (step 6)
+
+    /// `DemoSharing`: Person A is the admin and owns or shares every account, so A's figures are the local ledger's,
+    /// while Person B sees summaries for the accounts below Everything.
+    func testDemoSharingKeepsAdminFigures() throws {
+        let (_, a, b) = try ids()
+        try db.read { db in
+            XCTAssertTrue(try SharingSetup.isConfirmed(db: db))
+            let admin = try XCTUnwrap(try AppUser.filter(Column("isAdmin") == true).fetchOne(db))
+            XCTAssertEqual(admin.personId, a)
+            XCTAssertEqual(admin.displayName, DemoSharing.adminDisplayName)
+            XCTAssertEqual(try LocalCredential.fetchCount(db), 0, "no password")
+            let accounts = Dictionary(uniqueKeysWithValues: try Account.fetchAll(db).map { ($0.name, $0) })
+            XCTAssertNil(accounts[DemoSharing.jointAccount]?.ownerPersonId)
+            XCTAssertEqual(accounts[DemoSharing.jointAccount]?.sharingLevel, .everything)
+            XCTAssertEqual(accounts[DemoSharing.categoryTotalsAccount]?.sharingLevel, .categoryTotals)
+            XCTAssertEqual(accounts[DemoSharing.balanceOnlyAccount]?.sharingLevel, .balanceOnly)
+            XCTAssertEqual(accounts["Euro Current"]?.sharingLevel, .everything, "property-linked: the default")
+            XCTAssertEqual(accounts["Index Fund ISA"]?.sharingLevel, .balanceOnly, "personal: the default")
+            XCTAssertTrue(accounts.values.filter { $0.name != DemoSharing.jointAccount }.allSatisfy { $0.ownerPersonId == a })
+            // Summaries rebuilt: points for the accounts below Everything, category totals for the card.
+            let card = try XCTUnwrap(accounts[DemoSharing.categoryTotalsAccount]?.id)
+            XCTAssertGreaterThan(try AccountSummaryMonth.filter(Column("accountId") == card).fetchCount(db), 0)
+            XCTAssertGreaterThan(try AccountBalancePoint.filter(Column("accountId") == accounts[DemoSharing.balanceOnlyAccount]!.id!).fetchCount(db), 0)
+            XCTAssertFalse(try AccountSummaryBuilder.isDirty(db: db))
+
+            let today = DemoDatabase.defaultAsOf
+            let local = try DashboardInput.load(db: db, today: today)
+            for viewer in [SharingViewer(personId: a), SharingViewer(personId: nil)] {
+                let source = SharedActualsSource(viewer: viewer, today: today)
+                XCTAssertEqual(try source.transactions(db), try Transaction.fetchAll(db))
+                XCTAssertEqual(try source.balanceSnapshots(db), try BalanceSnapshot.fetchAll(db))
+                XCTAssertEqual(try source.publishedCloses(db), [])
+                let shared = try DashboardInput.load(db: db, today: today, actuals: source)
+                XCTAssertEqual(DashboardCalculator.netWorthSeries(shared), DashboardCalculator.netWorthSeries(local))
+                XCTAssertEqual(DashboardCalculator.accountSummaries(shared), DashboardCalculator.accountSummaries(local))
+                XCTAssertFalse(viewer.seesOnlyPart(of: try Account.fetchAll(db)))
+            }
+            // Person B sees A's accounts below Everything only as summaries.
+            let member = SharingViewer(personId: b)
+            XCTAssertTrue(member.seesOnlyPart(of: try Account.fetchAll(db)))
+            let lines = try SharedActuals.privateLines(categoryIds: Set(try Int64.fetchAll(db, sql: "SELECT id FROM category")),
+                                                       from: DemoDatabase.historyStart, to: today, viewer: member, today: today, db: db)
+            XCTAssertEqual(lines.map(\.id), [card])
+        }
+    }
+
+    /// The whole demo pushed into `FakeCloud` as Person A's Mac: the guard (`SyncZoneGuard`) accepts every save,
+    /// nothing placed privately reaches the household, and A's private zone gets the private records.
+    func testDemoRoutesWithoutHouseholdViolations() async throws {
+        let cloud = FakeCloud()
+        let keys = InMemorySyncKeyStore()
+        try keys.store(DocumentCrypto.newZoneKey(), zone: SyncZones.household)
+        let audit = ZoneAuditingTransport(wrapping: cloud, keyStore: keys)
+        let personUuid = try await db.write { db -> String in
+            let a = try XCTUnwrap(try Int64.fetchOne(db, sql: "SELECT personId FROM appUser WHERE isAdmin = 1"))
+            try SyncChangeTracker.setWriter(try AccessActor.admin(db: db).appUserUuid, db: db)
+            return try SyncRecordStore.uuid(for: "person", localId: a, db: db)
+        }
+        audit.judge(with: TwoPersonHousehold.router(db))
+        let engine = SyncEngineCore(db: db, transport: audit, device: SyncDevice(id: "demo-mac", name: "Mac"), keyStore: keys,
+                                    viewer: SyncViewer(personUuid: personUuid))
+        let report = try await engine.pushPending()
+        XCTAssertNil(report.keyWait)
+        XCTAssertEqual(report.refused, 0)
+        XCTAssertGreaterThan(report.saved, 1_000)
+        let pending = try await db.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncPending") }
+        XCTAssertEqual(pending, 0, "everything went")
+        XCTAssertEqual(audit.householdViolations(router: TwoPersonHousehold.router(db)), [])
+        let privateSaves = audit.savesByZone[SyncZones.privateZone(personUuid: personUuid)]?.count ?? 0
+        XCTAssertGreaterThan(privateSaves, 100)
     }
 }
 

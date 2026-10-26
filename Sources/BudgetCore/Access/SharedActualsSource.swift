@@ -22,6 +22,24 @@ public struct SharingViewer: Equatable, Sendable {
         guard let personId else { return true }
         return account.sharingLevel == .everything || account.ownerPersonId == nil || account.ownerPersonId == personId
     }
+
+    /// Whether the account is on the viewer's screens at all: the other person's Hidden accounts aren't.
+    public func shows(_ account: Account) -> Bool {
+        seesInFull(account) || account.sharingLevel != .hidden
+    }
+
+    /// Whether any of `accounts` reaches the viewer only as summaries or not at all (net worth's "Includes
+    /// everything you can see").
+    public func seesOnlyPart(of accounts: [Account]) -> Bool {
+        accounts.contains { !seesInFull($0) }
+    }
+
+    /// The level of one of the viewer's own accounts shared below Everything, for its lock badge
+    /// (`SharingCopy.badge`); nil for any other account, and for a nil viewer.
+    public func badgeLevel(_ account: Account) -> SharingLevel? {
+        guard let personId, account.ownerPersonId == personId, account.sharingLevel < .everything else { return nil }
+        return account.sharingLevel
+    }
 }
 
 /// The viewer's actuals (sync spec §6.1 "How totals count"). For accounts seen in full: their transactions and
@@ -56,6 +74,11 @@ public struct SharedActualsSource: ActualsSource {
     public func transactions(_ db: Database) throws -> [Transaction] {
         guard let view = try SharedView(viewer: viewer, today: today, db: db) else { return try Transaction.fetchAll(db) }
         return view.kept + view.summaries
+    }
+
+    /// Every account but the other person's Hidden ones.
+    public func accounts(_ db: Database) throws -> [Account] {
+        try Account.fetchAll(db).filter(viewer.shows)
     }
 
     public func balanceSnapshots(_ db: Database) throws -> [BalanceSnapshot] {
