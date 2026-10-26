@@ -30,7 +30,7 @@
 - **Tests are synthetic:** `TestDatabase.migrated()` / `TestDatabase.demo()` (Tests/TestSupport), `FakeCloud`, `InMemorySyncKeyStore`; two simulated people through `TwoPersonHousehold` (Task 5).
 - **Sync schema:** `SyncSchema.version` 7 → **8**, once (Task 1), with `SyncChangeTrackerTests.pinnedHash` re-pinned; migrations append-only, each guarded so a second run is a no-op.
 - **Copy rules:** "Mango"; levels shown as "Everything", "Category totals", "Balance only", "Hidden"; no figure wraps or truncates at 1100×700 (Mac) and at default and `xxxLarge` (iPhone); edits save only on Save.
-- **Commands** (`S6=/private/tmp/claude-501/-Users-pablo-dimenza-Documents-Code-budget/5fac4f61-c0c9-436b-881b-aebe445aa967/scratchpad/build-s6`; `swift test` needs a scratch path outside `~/Documents` because of iCloud CodeSign):
+- **Commands** (`S6=<scratchpad>`; `swift test` needs a scratch path outside `~/Documents` because of iCloud CodeSign):
   - targeted: `swift test --scratch-path $S6 --filter '<Tests>'`
   - full suite, once at the end of each task: `swift test --scratch-path $S6 --parallel`
   - UI fix rounds: `scripts/render-snapshots.sh $S6/snaps --quick --routes <a,b> --size 1100x700`; the full harness once before merge.
