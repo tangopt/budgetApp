@@ -43,6 +43,8 @@ public enum SyncTurnOn {
     /// Why sync can't be turned on now. Each has its copy (`text`).
     public enum Blocker: Equatable, Sendable {
         case notAdmin
+        /// The window opened a copy of the database (`BUDGET_DB_PATH`), not Mango's own (`SyncActivation.isAppDatabase`).
+        case notAppDatabase
         case wrongEnvironment
         case noEntitlement
         case demoDatabase
@@ -51,6 +53,31 @@ public enum SyncTurnOn {
         /// A zone's key marker is already on the server: sync was turned on before; never merged into silently.
         case syncedBefore
         case noICloudAccount
+        /// The household's admin already names another iCloud user than the one this Mac is signed in to.
+        case differentICloudUser
+    }
+
+    /// The signed-in iCloud user against the one the admin's app user names (`cloudKitUserRecordName`, written when
+    /// the upload began), checked at every launch with real sync on (`iCloudUserCheck`).
+    public enum ICloudUserCheck: Equatable, Sendable {
+        case matches
+        /// The admin's app user names no iCloud user yet (before the upload began).
+        case notRecordedYet
+        /// This Mac is signed in to another iCloud user: never synced as them.
+        case different
+        /// CloudKit couldn't say who is signed in (offline, no account): asked again later.
+        case unknown
+    }
+
+    public static func iCloudUserCheck(signedIn: String?, recorded: String?) -> ICloudUserCheck {
+        guard let signedIn, !signedIn.isEmpty else { return .unknown }
+        guard let recorded, !recorded.isEmpty else { return .notRecordedYet }
+        return signedIn == recorded ? .matches : .different
+    }
+
+    /// The iCloud user the household's admin names (nil: none yet).
+    public static func adminICloudUser(db: Database) throws -> String? {
+        try String.fetchOne(db, sql: "SELECT cloudKitUserRecordName FROM appUser WHERE isAdmin = 1 ORDER BY id LIMIT 1")
     }
 
     /// What the key store holds for a zone and what the server's key marker says (`keyFacts`).
@@ -121,6 +148,7 @@ public enum SyncTurnOn {
     public static func text(_ blocker: Blocker) -> String {
         switch blocker {
         case .notAdmin: return "Only the household's admin can turn on sync."
+        case .notAppDatabase: return "This window opened a copy of your data, not Mango's own database."
         case .wrongEnvironment: return "This build syncs with iCloud's development environment, not your data's."
         case .noEntitlement: return "This build isn't signed for iCloud."
         case .demoDatabase: return "This is the demo database."
@@ -128,6 +156,7 @@ public enum SyncTurnOn {
         case .strayPrivateKey: return "iCloud Keychain already holds a key for your private data from a test. Remove it before turning on sync."
         case .syncedBefore: return "Sync was turned on before from another Mac or an earlier attempt."
         case .noICloudAccount: return "Sign in to iCloud in System Settings first."
+        case .differentICloudUser: return TurnOnError.differentICloudUser.errorDescription ?? ""
         }
     }
 
@@ -141,11 +170,15 @@ public enum SyncTurnOn {
     ///   (`syncedBefore`): never merged into silently. The user removes a stray key; the app never deletes a real one.
     /// - From `keysReady` on, the turn-on's own keys (and markers naming them) are never in the way; any other key or
     ///   marker still is.
-    public static func blockers(isAdmin: Bool, isProduction: Bool, hasEntitlement: Bool, isDemoDatabase: Bool, iCloudAvailable: Bool,
-                                stage: Stage, turnOnKeyIds: [String: String], keys: [ZoneKeyFacts]) -> [Blocker] {
+    /// `isAppDatabase`: the window opened Mango's own database (a copy never turns on sync). `iCloudUser`: the
+    /// signed-in iCloud user against the admin's (`.different` blocks; `.unknown` doesn't, `beginUpload` checks again).
+    public static func blockers(isAdmin: Bool, isAppDatabase: Bool, isProduction: Bool, hasEntitlement: Bool, isDemoDatabase: Bool,
+                                iCloudAvailable: Bool, iCloudUser: ICloudUserCheck, stage: Stage, turnOnKeyIds: [String: String],
+                                keys: [ZoneKeyFacts]) -> [Blocker] {
         var found: [Blocker] = []
         func add(_ blocker: Blocker) { if !found.contains(blocker) { found.append(blocker) } }
         if !isAdmin { add(.notAdmin) }
+        if !isAppDatabase { add(.notAppDatabase) }
         if !isProduction { add(.wrongEnvironment) }
         if !hasEntitlement { add(.noEntitlement) }
         if isDemoDatabase { add(.demoDatabase) }
@@ -161,6 +194,7 @@ public enum SyncTurnOn {
         for blocker in [Blocker.strayHouseholdKey, .strayPrivateKey] where strays.contains(blocker) { add(blocker) }
         if syncedBefore { add(.syncedBefore) }
         if !iCloudAvailable { add(.noICloudAccount) }
+        if iCloudUser == .different { add(.differentICloudUser) }
         return found
     }
 
@@ -265,10 +299,22 @@ public enum SyncTurnOn {
     /// until the upload begins (a fresh backup replaces the path recorded); the stage becomes at least `backedUp`.
     @discardableResult
     public static func backUp(manager: DatabaseManager, now: Date,
-                              writeBackup: MigrationBackup.BackupWriter = MigrationBackup.copyDatabase) throws -> URL {
-        let current = try manager.dbQueue.read { db in try stage(db: db) }
+                              writeBackup: @escaping MigrationBackup.BackupWriter = MigrationBackup.copyDatabase) throws -> URL {
+        try backUp(queue: manager.dbQueue, now: now) { partial in try writeBackup(manager, partial) }
+    }
+
+    /// `backUp(manager:…)` for the app's open queue (the Mac's sheet): the same copy, check and stage; `writeBackup`
+    /// writes the copy to the temporary path it is given (by default SQLite's backup API from `queue`).
+    @discardableResult
+    public static func backUp(queue: DatabaseQueue, now: Date, writeBackup: ((URL) throws -> Void)? = nil) throws -> URL {
+        let writeBackup = writeBackup ?? { partial in
+            let destination = try DatabaseQueue(path: partial.path)
+            try queue.backup(to: destination)
+            try destination.close()
+        }
+        let current = try queue.read { db in try stage(db: db) }
         guard current < .uploading else { throw TurnOnError.wrongStage(current) }
-        let databasePath = manager.dbQueue.path
+        let databasePath = queue.path
         guard databasePath.hasPrefix("/") else { throw TurnOnError.notAFileDatabase }
         let fileManager = FileManager.default
         let formatter = DateFormatter()
@@ -290,14 +336,14 @@ public enum SyncTurnOn {
         }
         do {
             removePartial()
-            try writeBackup(manager, partial)
-            try check(backup: partial, against: manager.dbQueue)
+            try writeBackup(partial)
+            try check(backup: partial, against: queue)
             try fileManager.moveItem(at: partial, to: target)
         } catch {
             removePartial()
             throw error
         }
-        try manager.dbQueue.write { db in
+        try queue.write { db in
             try setText(target.path, key: backupPathKey, db: db, now: now)
             try advance(to: .backedUp, db: db, now: now)
         }

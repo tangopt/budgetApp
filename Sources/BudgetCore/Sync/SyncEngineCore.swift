@@ -78,6 +78,11 @@ public struct SyncViewer: Equatable, Sendable {
 public struct SyncReport: Equatable, Sendable {
     public var pull: SyncPullReport
     public var push: SyncPushReport
+
+    public init(pull: SyncPullReport, push: SyncPushReport) {
+        self.pull = pull
+        self.push = push
+    }
 }
 
 /// The sync engine's core (plan Task 5), written against `SyncTransport` (shaped like `CKDatabase`

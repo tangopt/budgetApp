@@ -549,10 +549,11 @@ final class AccountSummaryBuilderTests: XCTestCase {
             return (f.personA, accounts)
         }
         try queue.write { db in
-            let started = Date()
+            // The thread's CPU time, not the wall clock: other work on the machine (`--parallel`) never makes it flake.
+            let started = ThreadCPUTime.seconds()
             let outcome = try AccountSummaryBuilder.rebuild(ownerPersonId: owner, db: db, today: today)
-            let seconds = Date().timeIntervalSince(started)
-            print("AccountSummaryBuilderTests: ten years, 48,000 transactions, \(outcome.inserted) summaries in \(String(format: "%.3f", seconds)) s")
+            let seconds = ThreadCPUTime.seconds() - started
+            print("AccountSummaryBuilderTests: ten years, 48,000 transactions, \(outcome.inserted) summaries in \(String(format: "%.3f", seconds)) s of CPU")
             XCTAssertGreaterThan(try AccountBalancePoint.filter(accounts.contains(Column("accountId"))).fetchCount(db), 6 * 119)
             XCTAssertLessThan(seconds, 1)
         }

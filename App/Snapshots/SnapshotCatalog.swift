@@ -722,7 +722,7 @@ enum SnapshotCatalog {
             },
             SnapshotRoute(name: "settings-sync_demo", title: "Settings ▸ Sync, the demo syncing") { _ in
                 AnyView(SnapshotStandaloneCanvas(content: SyncSettingsPane(status: .syncing(.pulling), isRunning: true, report: nil,
-                                                                           onSyncNow: {})
+                                                                           onSyncNow: {}, isDemo: true)
                     .scenePadding().frame(width: 640)))
             }
         ]

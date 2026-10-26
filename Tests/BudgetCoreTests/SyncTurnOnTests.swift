@@ -293,8 +293,8 @@ final class SyncTurnOnTests: XCTestCase {
     private func keyBlockers(stage: SyncTurnOn.Stage, zones: [String], keys: any SyncKeyStore, cloud: FakeCloud,
                              ours: [String: String] = [:]) async throws -> [SyncTurnOn.Blocker] {
         let facts = try await SyncTurnOn.keyFacts(zones: zones, keyStore: keys, transport: cloud)
-        return SyncTurnOn.blockers(isAdmin: true, isProduction: true, hasEntitlement: true, isDemoDatabase: false, iCloudAvailable: true,
-                                   stage: stage, turnOnKeyIds: ours, keys: facts)
+        return SyncTurnOn.blockers(isAdmin: true, isAppDatabase: true, isProduction: true, hasEntitlement: true, isDemoDatabase: false,
+                                   iCloudAvailable: true, iCloudUser: .notRecordedYet, stage: stage, turnOnKeyIds: ours, keys: facts)
     }
 
     private let privateZone = SyncZones.privateZone(personUuid: "6c1e0e0a-3f4b-4c2d-9a1b-2c3d4e5f6a7b")
@@ -425,12 +425,17 @@ final class SyncTurnOnTests: XCTestCase {
     func testEveryBlockerHasItsCopyInOrder() {
         let stray = SyncTurnOn.ZoneKeyFacts(zone: SyncZones.household, heldKeyIds: ["k"], serverHasMarker: false, serverMarkerKeyId: nil)
         let marked = SyncTurnOn.ZoneKeyFacts(zone: privateZone, heldKeyIds: ["p"], serverHasMarker: true, serverMarkerKeyId: nil)
-        XCTAssertEqual(SyncTurnOn.blockers(isAdmin: false, isProduction: false, hasEntitlement: false, isDemoDatabase: true, iCloudAvailable: false,
-                                           stage: .notStarted, turnOnKeyIds: [:], keys: [stray, marked]),
-                       [.notAdmin, .wrongEnvironment, .noEntitlement, .demoDatabase, .strayHouseholdKey, .strayPrivateKey, .syncedBefore,
-                        .noICloudAccount])
-        XCTAssertEqual(SyncTurnOn.blockers(isAdmin: true, isProduction: true, hasEntitlement: true, isDemoDatabase: false, iCloudAvailable: true,
-                                           stage: .notStarted, turnOnKeyIds: [:], keys: []), [])
+        XCTAssertEqual(SyncTurnOn.blockers(isAdmin: false, isAppDatabase: false, isProduction: false, hasEntitlement: false, isDemoDatabase: true,
+                                           iCloudAvailable: false, iCloudUser: .different, stage: .notStarted, turnOnKeyIds: [:], keys: [stray, marked]),
+                       [.notAdmin, .notAppDatabase, .wrongEnvironment, .noEntitlement, .demoDatabase, .strayHouseholdKey, .strayPrivateKey,
+                        .syncedBefore, .noICloudAccount, .differentICloudUser])
+        for check in [SyncTurnOn.ICloudUserCheck.matches, .notRecordedYet, .unknown] {
+            XCTAssertEqual(SyncTurnOn.blockers(isAdmin: true, isAppDatabase: true, isProduction: true, hasEntitlement: true, isDemoDatabase: false,
+                                               iCloudAvailable: true, iCloudUser: check, stage: .notStarted, turnOnKeyIds: [:], keys: []), [])
+        }
+        XCTAssertEqual(SyncTurnOn.text(.notAppDatabase), "This window opened a copy of your data, not Mango's own database.")
+        XCTAssertEqual(SyncTurnOn.text(.differentICloudUser),
+                       "This household's admin is signed in to a different iCloud account. Sign in to that account first.")
         XCTAssertEqual(SyncTurnOn.text(.notAdmin), "Only the household's admin can turn on sync.")
         XCTAssertEqual(SyncTurnOn.text(.wrongEnvironment), "This build syncs with iCloud's development environment, not your data's.")
         XCTAssertEqual(SyncTurnOn.text(.noEntitlement), "This build isn't signed for iCloud.")

@@ -51,6 +51,7 @@ enum SharingSnapshots {
                 model.snapshotShowRefusal(refusal, for: member.id)
                 return AnyView(LockScreen(model: model))
             },
+        ] + turnOnRoutes + [
             SnapshotCatalog.screen("accounts", "sharing_badges", "Accounts: lock badges on A's accounts below Everything", .accounts) { models, context in
                 models.accounts.selectedAccountId = context.accountId("Travel Card")
             },
@@ -85,6 +86,64 @@ enum SharingSnapshots {
                 try await signInMember(context)
                 return AnyView(SnapshotStandaloneCanvas(content: SettingsView(pane: .sharing)))
             },
+        ]
+    }
+
+    /// "Turn on sync…" at each step and Settings ▸ Sync around it (step 6 Task 13), from synthetic facts: nothing here
+    /// touches iCloud, the Keychain or a database.
+    static var turnOnRoutes: [SnapshotRoute] {
+        func sheet(_ name: String, _ title: String, _ facts: SyncTurnOnFlow.Facts, error: String? = nil) -> SnapshotRoute {
+            SnapshotRoute(name: name, title: title) { _ in
+                AnyView(SnapshotSheetCanvas(sheet: TurnOnSyncSheetContent(screen: SyncTurnOnFlow.screen(facts), error: error, onBackUp: {},
+                                                                          onSetOwners: {}, onStartUpload: {}, onClose: {})))
+            }
+        }
+        func pane(_ name: String, _ title: String, status: SyncStatus, running: Bool, report: SyncReport?, real: SyncSettingsPane.Real) -> SnapshotRoute {
+            SnapshotRoute(name: name, title: title) { _ in
+                AnyView(SnapshotStandaloneCanvas(content: SyncSettingsPane(status: status, isRunning: running, report: report,
+                                                                           onSyncNow: running ? {} : nil, real: real, onTurnOn: {})
+                    .scenePadding().frame(width: 640)))
+            }
+        }
+        let backup = "/synthetic/Budget/" + SyncTurnOn.backupPrefix + "20261026-101500"
+        func facts(_ stage: SyncTurnOn.Stage, confirmed: Bool = true, blockers: [SyncTurnOn.Blocker] = [], sent: Int = 0, total: Int = 0,
+                   status: SyncStatus = .off, refusal: String? = nil) -> SyncTurnOnFlow.Facts {
+            SyncTurnOnFlow.Facts(progress: SyncTurnOn.Progress(stage: stage, backupPath: stage >= .backedUp ? backup : nil, total: total, sent: sent),
+                                 ownershipConfirmed: confirmed, blockers: blockers, checked: true, syncStatus: status, syncRefusal: refusal)
+        }
+        // The status line reads the real clock (`TimelineView`): two minutes before now.
+        let lastSync = Date().addingTimeInterval(-120)
+        var pulled = SyncPullReport()
+        pulled.received = 12
+        var pushed = SyncPushReport()
+        pushed.saved = 4
+        let report = SyncReport(pull: pulled, push: pushed)
+        return [
+            sheet("settings-sync-turn_on", "Turn on sync: blocked by a test's key and no iCloud account",
+                  facts(.notStarted, confirmed: false, blockers: [.strayHouseholdKey, .strayPrivateKey, .noICloudAccount])),
+            sheet("settings-sync-turn_on-ownership", "Turn on sync: backed up, owners next",
+                  facts(.backedUp, confirmed: false)),
+            sheet("settings-sync-turn_on-ready", "Turn on sync: owners set, ready to start the upload",
+                  facts(.ownershipConfirmed)),
+            sheet("settings-sync-turn_on-uploading", "Turn on sync: uploading",
+                  facts(.uploading, sent: 1_248, total: 3_006, status: .syncing(.pushing))),
+            sheet("settings-sync-turn_on-paused", "Turn on sync: upload paused while offline",
+                  facts(.uploading, sent: 1_248, total: 3_006, status: .offline(since: lastSync, retryAt: nil))),
+            sheet("settings-sync-turn_on-done", "Turn on sync: done",
+                  facts(.done, sent: 3_006, total: 3_006, status: .idle(lastSync: lastSync))),
+            pane("settings-sync-off", "Settings ▸ Sync: off, Turn on sync…", status: .off, running: false, report: nil,
+                 real: SyncSettingsPane.Real(stage: .notStarted, uploadLine: nil, refusal: nil, blockerLines: [], offersTurnOn: true)),
+            pane("settings-sync-blocked", "Settings ▸ Sync: a build that can't turn sync on", status: .off, running: false, report: nil,
+                 real: SyncSettingsPane.Real(stage: .notStarted, uploadLine: nil, refusal: nil,
+                                             blockerLines: [SyncTurnOn.text(.wrongEnvironment)], offersTurnOn: false)),
+            pane("settings-sync-uploading", "Settings ▸ Sync: the first upload running", status: .syncing(.pushing), running: true, report: nil,
+                 real: SyncSettingsPane.Real(stage: .uploading, uploadLine: SyncTurnOnFlow.uploading(sent: 1_248, total: 3_006), refusal: nil,
+                                             blockerLines: [], offersTurnOn: true)),
+            pane("settings-sync-on", "Settings ▸ Sync: on, up to date", status: .idle(lastSync: lastSync), running: true, report: report,
+                 real: SyncSettingsPane.Real(stage: .done, uploadLine: nil, refusal: nil, blockerLines: [], offersTurnOn: true)),
+            pane("settings-sync-wrong_user", "Settings ▸ Sync: this Mac signed in to another iCloud user", status: .off, running: false, report: nil,
+                 real: SyncSettingsPane.Real(stage: .done, uploadLine: nil, refusal: SyncTurnOnFlow.differentICloudUserAtLaunch,
+                                             blockerLines: [], offersTurnOn: true)),
         ]
     }
 

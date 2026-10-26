@@ -127,13 +127,16 @@ final class AppEnvironment: ObservableObject {
     /// Set once, right after launch, only if the fetched rate actually differs from the
     /// last saved one at 2 decimal places. `AccountsView` displays and dismisses it.
     @Published var exchangeRateBanner: String?
-    /// What Settings ▸ Sync shows. `.off` unless a DEBUG `--sync-demo` launch on the demo database runs the
-    /// scheduler (`SyncDemoMode`): the real database never syncs in this build (`SyncActivation`).
+    /// What Settings ▸ Sync shows for a DEBUG `--sync-demo` launch on the demo database (`SyncDemoMode`); the real
+    /// database's status is `realSync`'s.
     @Published var syncStatus: SyncStatus = .off
-    /// The last sync's report in that demo (Settings ▸ Sync's counts); nil until one has finished.
+    /// The last sync's report (Settings ▸ Sync's counts); nil until one has finished.
     @Published var syncLastReport: SyncReport?
-    /// The demo's scheduler; nil whenever sync is off.
+    /// The demo's scheduler; nil unless the demo syncs.
     var syncScheduler: SyncScheduler?
+    /// The real database's sync (step 6 Task 13): runs once "Turn on sync…" has begun the upload, on Mango's own
+    /// database in a Production build (`SyncActivation.realDecision`). One per database: windows share it.
+    let realSync: RealSync
     /// HMRC's average rates the ended tax years lack, fetched in the background (after
     /// launch, and whenever the Tax years screen appears).
     let hmrcRateAutoFetch: HMRCRateAutoFetch
@@ -153,17 +156,20 @@ final class AppEnvironment: ObservableObject {
         // Read when Confirm import is pressed: whoever is signed in then (auth spec §6).
         currentAppUserId: { [weak self] in self?.session.currentAppUserId })
 
-    private init(dbQueue: DatabaseQueue, databasePath: String?, evidenceRoot: URL, auth: LaunchAuth, session existing: SessionModel?) {
+    private init(dbQueue: DatabaseQueue, databasePath: String?, evidenceRoot: URL, auth: LaunchAuth, session existing: SessionModel?,
+                 realSync existingSync: RealSync?) {
         self.dbQueue = dbQueue
         self.databasePath = databasePath
         self.evidenceRoot = evidenceRoot
         // A second window on the same database shares the first one's session: one sign-in for every window.
         // The snapshot build never touches the Keychain or the app's own preferences.
-        self.session = existing ?? (SnapshotMode.isActive
+        let session = existing ?? (SnapshotMode.isActive
             ? SessionModel(dbQueue: dbQueue, isSetUp: auth.isSetUp,
                            biometrics: BiometricUnlock.snapshot(scope: auth.databaseId, defaults: SnapshotMode.defaults),
                            defaults: SnapshotMode.defaults, snapshotUser: auth.snapshotUser)
             : SessionModel(dbQueue: dbQueue, isSetUp: auth.isSetUp, biometrics: BiometricUnlock.make(scope: auth.databaseId)))
+        self.session = session
+        self.realSync = existingSync ?? RealSync(dbQueue: dbQueue, databasePath: databasePath, evidenceRoot: evidenceRoot, session: session)
         self.hmrcRateAutoFetch = HMRCRateAutoFetch(dbQueue: dbQueue)
         self.interestIndexAutoFetch = InterestIndexAutoFetch(dbQueue: dbQueue)
 
@@ -243,14 +249,23 @@ final class AppEnvironment: ObservableObject {
         // `Evidence` next to the database: `Application Support/Budget/Evidence` normally, and
         // beside a `BUDGET_DB_PATH` copy when testing against one.
         let evidenceRoot = URL(fileURLWithPath: dbPath).deletingLastPathComponent().appendingPathComponent("Evidence", isDirectory: true)
-        let existing = Current.shared.environment.flatMap { $0.databasePath == dbPath ? $0.session : nil }
-        let environment = AppEnvironment(dbQueue: dbQueue, databasePath: dbPath, evidenceRoot: evidenceRoot, auth: auth, session: existing)
+        let sameDatabase = Current.shared.environment.flatMap { $0.databasePath == dbPath ? $0 : nil }
+        // A second window's queue is its own; the real sync stays the first window's (one engine per database).
+        let environment = AppEnvironment(dbQueue: dbQueue, databasePath: dbPath, evidenceRoot: evidenceRoot, auth: auth,
+                                         session: sameDatabase?.session, realSync: sameDatabase?.realSync)
         AppEnvironment.Current.shared.environment = environment
         // Every transaction's paperclip count, kept current from here on.
         TransactionDocumentCounts.shared.start(dbQueue: dbQueue)
         #if DEBUG
         SyncDemoMode.start(environment)
+        let demoLaunch = SyncDemoMode.isRequested
+        #else
+        let demoLaunch = false
         #endif
+        // The real database's sync resumes by itself once its upload began (never with --sync-demo, never snapshots).
+        if !demoLaunch && !SnapshotMode.isActive {
+            Task { await environment.realSync.startIfAllowed() }
+        }
         return environment
     }
 
@@ -277,13 +292,16 @@ final class AppEnvironment: ObservableObject {
         try await dbQueue.write(area, origin: origin, body)
     }
 
-    /// Sync runs in this window's database (only a DEBUG `--sync-demo` launch on the demo database).
+    /// The DEBUG `--sync-demo` launch's sync runs in this window's database.
     var isSyncRunning: Bool { syncScheduler != nil }
 
     /// Settings ▸ Sync's "Sync now": pulls then pushes through the scheduler and keeps the report. Nothing when
     /// sync is off.
     func syncNow() async {
-        guard let scheduler = syncScheduler else { return }
+        guard let scheduler = syncScheduler else {
+            if let report = await realSync.syncNow() { syncLastReport = report }
+            return
+        }
         do {
             syncLastReport = try await scheduler.syncNowAndWait()
         } catch {

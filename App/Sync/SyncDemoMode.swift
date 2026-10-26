@@ -19,6 +19,11 @@ import MangoSync
 /// - `--sync-demo --print-demo-key`: as `--sync-demo`, and once the launch sync has put the key's marker on the
 ///   server, the demo household key goes to stderr as 64 hex (the simulator's `MANGO_DEMO_HOUSEHOLD_KEY`). Demo
 ///   scope only.
+/// - `--sync-demo --seed-schema`: one placeholder record of every record type the engine can save
+///   (`SyncSchemaSeed`: no data, the demo database's or any other) saved into a scratch zone of the **Development**
+///   container, then the zone deleted, so CloudKit's Development schema has every type and field and can be deployed to
+///   Production (CloudKit Console ▸ Deploy Schema Changes). Sealed under a key held in memory only (no Keychain item).
+///   Prints "Seeded <n> record types" and exits (0; 1 when it didn't finish). Refused in a Production-signed build.
 /// - `--sync-demo --sync-demo-reset`: deletes the demo zone, removes the key the earlier demo runs kept under the
 ///   real scope, forgets the zone in the demo database (`SyncDemoReset`), and exits. Nothing else runs.
 enum SyncDemoMode {
@@ -28,7 +33,9 @@ enum SyncDemoMode {
     static var isRequested: Bool { CommandLine.arguments.contains(argument) }
     private static var asksForDemoTool: Bool {
         CommandLine.arguments.contains(SyncDemoReset.resetArgument) || CommandLine.arguments.contains(SyncDemoReset.printKeyArgument)
+            || CommandLine.arguments.contains(SyncSchemaSeed.argument)
     }
+    static var isSeedRequested: Bool { CommandLine.arguments.contains(SyncSchemaSeed.argument) }
     static var isResetRequested: Bool { CommandLine.arguments.contains(SyncDemoReset.resetArgument) }
     static var isPrintKeyRequested: Bool { CommandLine.arguments.contains(SyncDemoReset.printKeyArgument) }
 
@@ -39,16 +46,14 @@ enum SyncDemoMode {
         let decision = SyncActivation.decision(databasePath: environment["BUDGET_DB_PATH"], arguments: arguments,
                                                isDebug: true, hasCloudKitEntitlement: hasCloudKitEntitlement())
         if let tool = SyncDemoReset.refusal(arguments: arguments, decision: decision) { return tool }
+        if decision.allowed, arguments.contains(SyncSchemaSeed.argument), MacBuild.isProduction() {
+            return "\(SyncSchemaSeed.argument) seeds only the Development container; this build is signed for Production."
+        }
         return decision.allowed ? nil : decision.reason
     }
 
     /// Whether this process is signed with the iCloud container entitlement for Mango's container.
-    static func hasCloudKitEntitlement() -> Bool {
-        guard let task = SecTaskCreateFromSelf(nil),
-              let value = SecTaskCopyValueForEntitlement(task, "com.apple.developer.icloud-container-identifiers" as CFString, nil),
-              let containers = value as? [String] else { return false }
-        return containers.contains(CloudKitTransport.containerIdentifier)
-    }
+    static func hasCloudKitEntitlement() -> Bool { MacBuild.hasCloudKitEntitlement() }
 
     /// Called first thing at launch: a refused demo launch stops here, before any database is opened.
     static func checkOrExit() {
@@ -69,6 +74,10 @@ enum SyncDemoMode {
         started = true
         if isResetRequested {
             reset(environment)
+            return
+        }
+        if isSeedRequested {
+            seedSchema()
             return
         }
         let dbQueue = environment.dbQueue
@@ -117,6 +126,29 @@ enum SyncDemoMode {
             }
         } catch {
             FileHandle.standardError.write(Data("Mango: the demo household key couldn't be read (\(String(describing: type(of: error)))).\n".utf8))
+        }
+    }
+
+    /// `--seed-schema`: the placeholders saved in the scratch zone, the zone deleted, then exit. Nothing from the demo
+    /// database (opened only because `--sync-demo` needs it) goes up, and no key reaches the Keychain.
+    @MainActor
+    private static func seedSchema() {
+        Task.detached {
+            let transport = CloudKitTransport()
+            do {
+                let count = try await SyncSchemaSeed.run(transport: transport, keys: InMemorySyncKeyStore(),
+                                                         deleteZone: { zone in try await transport.deleteZone(zone) })
+                FileHandle.standardError.write(Data("Seeded \(count) record types\n".utf8))
+                exit(0)
+            } catch let error as SyncSchemaSeed.SeedError {
+                if case .notSaved(let types) = error {
+                    FileHandle.standardError.write(Data("Mango: schema seed stopped; not saved: \(types.joined(separator: ", "))\n".utf8))
+                }
+                exit(1)
+            } catch {
+                FileHandle.standardError.write(Data("Mango: schema seed stopped (\(String(describing: type(of: error))): \(error))\n".utf8))
+                exit(1)
+            }
         }
     }
 

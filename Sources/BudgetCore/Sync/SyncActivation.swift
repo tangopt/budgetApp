@@ -55,6 +55,17 @@ public enum SyncActivation {
         return .allow
     }
 
+    /// Whether the database a Mac window opened (`openedPath`, the file it actually opened) is Mango's own
+    /// (`appDatabasePath`, `Application Support/Budget/budget.sqlite`): the same file once symbolic links are resolved
+    /// (compared case-insensitively, as APFS is), and there. A copy anywhere else, even one moved back beside it under
+    /// another name, is not: `realDecision`'s `isAppDatabase`.
+    public static func isAppDatabase(openedPath: String?, appDatabasePath: String, fileManager: FileManager = .default) -> Bool {
+        guard let openedPath, openedPath.hasPrefix("/") else { return false }
+        let opened = TaxRegression.resolvedPath(openedPath, fileManager: fileManager)
+        guard fileManager.fileExists(atPath: opened) else { return false }
+        return opened.lowercased() == TaxRegression.resolvedPath(appDatabasePath, fileManager: fileManager).lowercased()
+    }
+
     /// A developer's flag: a Debug Mac build may sync the real database only when launched with it (and everything
     /// else `realDecision` asks holds, Production included).
     public static let realInDebugArgument = "--sync-real-in-debug"
