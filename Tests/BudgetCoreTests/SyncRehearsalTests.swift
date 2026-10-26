@@ -336,7 +336,17 @@ final class SyncRehearsalTests: XCTestCase {
         XCTAssertEqual(report.member.privateAccountFieldsHeld, 0)
         XCTAssertEqual(report.member.stagingRows, 0)
         XCTAssertEqual(report.member.unreadable, 0)
+        // Every device computes the same figures (sharing spec §10): the member's equal the owner's, nothing held.
+        XCTAssertEqual(report.member.taxFiguresChanged, 0)
+        XCTAssertEqual(report.member.held, 0)
+        XCTAssertNil(report.turnOnError)
         XCTAssertTrue(report.passed, report.text)
+        var differs = report
+        differs.member.taxFiguresChanged = 1
+        XCTAssertFalse(differs.passed, "a member figure that differs fails the rehearsal")
+        var held = report
+        held.member.held = 1
+        XCTAssertFalse(held.passed, "a change held by the member's filed-year check fails the rehearsal")
         XCTAssertTrue(report.text.contains("Member stand-in"))
         XCTAssertFalse(report.text.contains(DemoSharing.balanceOnlyAccount), "counts only, never names")
     }
@@ -378,5 +388,42 @@ final class SyncRehearsalTests: XCTestCase {
         XCTAssertThrowsError(try flags.addJoint("x")) { XCTAssertEqual($0 as? RehearsalOwnership.ParseError, .notAnAccountId("x")) }
         XCTAssertThrowsError(try flags.addLevel("7")) { XCTAssertEqual($0 as? RehearsalOwnership.ParseError, .notALevel("7")) }
         XCTAssertThrowsError(try flags.addLevel("7=Everything")) { XCTAssertEqual($0 as? RehearsalOwnership.ParseError, .notALevel("Everything")) }
+    }
+
+    /// Review I-3: a refused choice is reported with counts and kinds only, never a name, as a bad argument.
+    func testARefusedChoicePrintsCountsOnly() async throws {
+        let (database, _, _) = try unconfirmedDemo()
+        let source = try DatabaseQueue(path: database)
+        let (linked, names) = try await source.read { db -> (Int64, [String]) in
+            let linked = try Int64.fetchOne(db, sql: "SELECT accountId FROM propertyAccount ORDER BY accountId LIMIT 1")!
+            var names: [String] = []
+            for sql in ["SELECT name FROM account", "SELECT name FROM property", "SELECT name FROM category", "SELECT name FROM person"] {
+                names += try String.fetchAll(db, sql: sql)
+            }
+            return (linked, names.filter { $0.count >= 4 })
+        }
+        try source.close()
+        XCTAssertGreaterThan(names.count, 20)
+        do {
+            _ = try await SyncRehearsal.run(databasePath: database, libraryPath: nil, ownership: RehearsalOwnership(levels: [linked: .hidden]))
+            XCTFail("Hidden on a property-linked account is refused")
+        } catch {
+            guard case .choiceRefused(let account, let reasons)? = error as? SyncRehearsal.RehearsalError else {
+                return XCTFail("refused as a choice, not \(type(of: error))")
+            }
+            XCTAssertEqual(account, linked)
+            XCTAssertFalse(reasons.isEmpty)
+            let failure = SyncRehearsal.failure(error)
+            XCTAssertEqual(failure.exitCode, 2)
+            XCTAssertTrue(failure.message.contains("\(linked)"), failure.message)
+            for name in names { XCTAssertFalse(failure.message.contains(name), "the message names \(name)") }
+        }
+        // Any other error: its kind only, never its text (a database error can quote values).
+        let leaky = DatabaseError(resultCode: .SQLITE_CONSTRAINT, message: "UNIQUE constraint failed: Synthetic Secret Name")
+        let failure = SyncRehearsal.failure(leaky)
+        XCTAssertEqual(failure.exitCode, 1)
+        XCTAssertFalse(failure.message.contains("Synthetic Secret Name"), failure.message)
+        XCTAssertEqual(SyncRehearsal.failure(SyncRehearsal.RehearsalError.unknownAccounts([7])).exitCode, 2)
+        XCTAssertEqual(SyncRehearsal.failure(SyncRehearsal.RehearsalError.ownershipAlreadyConfirmed).exitCode, 2)
     }
 }

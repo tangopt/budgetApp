@@ -4,17 +4,18 @@ import os
 
 /// Turning on sync for the real database, on the admin's Mac (sharing spec 2026-10-25 §10, sync spec §8): a
 /// timestamped backup, then the ownership sheet confirmed (nothing goes up before every account has its owner and
-/// level), then the first upload — every record sealed under its zone's key and placed in its zone by the router,
+/// level), then the zone keys made (the household's and the admin's private zone's, refused while any key or marker
+/// from before exists), then the first upload — every record sealed under its zone's key and placed in its zone by the router,
 /// checked by the guard on every save — then done. The Mac's sheet (Task 13) drives these stages and shows
 /// `progress`; the engine does the upload itself, resumably: a halt (offline, a quit, a guard refusal) leaves what
 /// wasn't acknowledged pending, and the next sync continues from there.
 ///
-/// The stage lives in `syncState` (`turnOn.stage`, `turnOn.backupPath`, `turnOn.total`), local to this Mac and never
-/// synced. It only moves forward. `SyncActivation.realDecision` lets the real database sync only once the stage is
+/// The stage lives in `syncState` (`turnOn.stage`, `turnOn.backupPath`, `turnOn.keyIds`, `turnOn.total`, …), local to
+/// this Mac and never synced. It only moves forward. `SyncActivation.realDecision` lets the real database sync only once the stage is
 /// `uploading` or `done`.
 public enum SyncTurnOn {
     public enum Stage: String, Codable, Sendable, CaseIterable, Comparable {
-        case notStarted, backedUp, ownershipConfirmed, uploading, done
+        case notStarted, backedUp, ownershipConfirmed, keysReady, uploading, done
 
         var order: Int { Self.allCases.firstIndex(of: self) ?? 0 }
 
@@ -27,7 +28,8 @@ public enum SyncTurnOn {
         public var backupPath: String?
         /// Records queued for the first upload when it began (0 before).
         public var total: Int
-        /// How many of them the server has taken: `total` − still pending (never below 0 nor above `total`).
+        /// How many of them the server holds (counted by their server stamps, so edits and new records during the
+        /// upload never make it go back; at most `total`).
         public var sent: Int
 
         public init(stage: Stage, backupPath: String?, total: Int, sent: Int) {
@@ -45,7 +47,27 @@ public enum SyncTurnOn {
         case noEntitlement
         case demoDatabase
         case strayHouseholdKey
+        case strayPrivateKey
+        /// A zone's key marker is already on the server: sync was turned on before; never merged into silently.
+        case syncedBefore
         case noICloudAccount
+    }
+
+    /// What the key store holds for a zone and what the server's key marker says (`keyFacts`).
+    public struct ZoneKeyFacts: Equatable, Sendable {
+        public var zone: String
+        /// Ids of every key held here for the zone.
+        public var heldKeyIds: Set<String>
+        public var serverHasMarker: Bool
+        /// The key id the server's marker names (nil: no marker, or one that can't be read).
+        public var serverMarkerKeyId: String?
+
+        public init(zone: String, heldKeyIds: Set<String>, serverHasMarker: Bool, serverMarkerKeyId: String?) {
+            self.zone = zone
+            self.heldKeyIds = heldKeyIds
+            self.serverHasMarker = serverHasMarker
+            self.serverMarkerKeyId = serverMarkerKeyId
+        }
     }
 
     /// A stage asked for out of order, or a step refused (nothing is written then).
@@ -62,6 +84,12 @@ public enum SyncTurnOn {
         case uploadNotFinished(remaining: Int)
         /// The backup copy doesn't open as a sound database.
         case backupUnreadable
+        /// The backup copy's row counts differ from the database's in this many tables.
+        case backupIncomplete(tables: Int)
+        /// The database isn't a file (an in-memory one): there is nowhere beside it for the backup.
+        case notAFileDatabase
+        /// A blocker stops the step (the keys: a stray key, a marker from before).
+        case blocked(Blocker)
 
         public var errorDescription: String? {
             switch self {
@@ -71,6 +99,9 @@ public enum SyncTurnOn {
             case .differentICloudUser: return "This household's admin is signed in to a different iCloud account. Sign in to that account first."
             case .uploadNotFinished(let remaining): return "\(remaining) records are still waiting to go up."
             case .backupUnreadable: return "The backup couldn't be checked, so sync stays off. Try again."
+            case .backupIncomplete: return "The backup doesn't hold everything the database does, so sync stays off. Try again."
+            case .notAFileDatabase: return "This database isn't a file, so it can't be backed up."
+            case .blocked(let blocker): return text(blocker)
             }
         }
     }
@@ -79,6 +110,10 @@ public enum SyncTurnOn {
     static let stageKey = "turnOn.stage"
     static let backupPathKey = "turnOn.backupPath"
     static let totalKey = "turnOn.total"
+    static let keyIdsKey = "turnOn.keyIds"
+    /// The highest `syncRecord` rowid when the upload began, and how many of those rows had a server stamp then.
+    static let snapshotRowidKey = "turnOn.snapshotRowid"
+    static let stampedBeforeKey = "turnOn.stampedBefore"
     private static let log = Logger(subsystem: "com.personal.budget", category: "SyncTurnOn")
 
     // MARK: Copy
@@ -90,44 +125,99 @@ public enum SyncTurnOn {
         case .noEntitlement: return "This build isn't signed for iCloud."
         case .demoDatabase: return "This is the demo database."
         case .strayHouseholdKey: return "iCloud Keychain already holds a household key from a test. Remove it before turning on sync."
+        case .strayPrivateKey: return "iCloud Keychain already holds a key for your private data from a test. Remove it before turning on sync."
+        case .syncedBefore: return "Sync was turned on before from another Mac or an earlier attempt."
         case .noICloudAccount: return "Sign in to iCloud in System Settings first."
         }
     }
 
     // MARK: Blockers
 
-    /// Everything that stops the flow from starting, in a fixed order. `keyStoreHoldsHouseholdKey` and
-    /// `serverHasHouseholdMarker` come from `keyFacts`: a household key held here while the server has no marker
-    /// naming one is a leftover (a test's) that the first upload would otherwise adopt and seal everything with
-    /// (`strayHouseholdKey`); the user removes it — the app never deletes a real key.
-    public static func blockers(isAdmin: Bool, isProduction: Bool, hasEntitlement: Bool, isDemoDatabase: Bool,
-                                keyStoreHoldsHouseholdKey: Bool, serverHasHouseholdMarker: Bool, iCloudAvailable: Bool) -> [Blocker] {
+    /// Everything that stops the flow, in a fixed order. `keys` come from `keyFacts` for `turnOnZones` (the household
+    /// and the admin's private zone); `turnOnKeyIds` are the keys this turn-on made (`turnOnKeyIds(db:)`).
+    /// - Before the turn-on made its keys (stage below `keysReady`), any key held for a zone is a leftover (a test's,
+    ///   or a copy of this database tested with sync) that the first upload would otherwise adopt and seal with
+    ///   (`strayHouseholdKey`, `strayPrivateKey`), and any marker on the server means sync was turned on before
+    ///   (`syncedBefore`): never merged into silently. The user removes a stray key; the app never deletes a real one.
+    /// - From `keysReady` on, the turn-on's own keys (and markers naming them) are never in the way; any other key or
+    ///   marker still is.
+    public static func blockers(isAdmin: Bool, isProduction: Bool, hasEntitlement: Bool, isDemoDatabase: Bool, iCloudAvailable: Bool,
+                                stage: Stage, turnOnKeyIds: [String: String], keys: [ZoneKeyFacts]) -> [Blocker] {
         var found: [Blocker] = []
-        if !isAdmin { found.append(.notAdmin) }
-        if !isProduction { found.append(.wrongEnvironment) }
-        if !hasEntitlement { found.append(.noEntitlement) }
-        if isDemoDatabase { found.append(.demoDatabase) }
-        if keyStoreHoldsHouseholdKey, !serverHasHouseholdMarker { found.append(.strayHouseholdKey) }
-        if !iCloudAvailable { found.append(.noICloudAccount) }
+        func add(_ blocker: Blocker) { if !found.contains(blocker) { found.append(blocker) } }
+        if !isAdmin { add(.notAdmin) }
+        if !isProduction { add(.wrongEnvironment) }
+        if !hasEntitlement { add(.noEntitlement) }
+        if isDemoDatabase { add(.demoDatabase) }
+        var strays: [Blocker] = []
+        var syncedBefore = false
+        for facts in keys {
+            let ours = stage >= .keysReady ? turnOnKeyIds[facts.zone] : nil
+            if !facts.heldKeyIds.subtracting(ours.map { [$0] } ?? []).isEmpty {
+                strays.append(facts.zone == SyncZones.household ? .strayHouseholdKey : .strayPrivateKey)
+            }
+            if facts.serverHasMarker, ours == nil || facts.serverMarkerKeyId != ours { syncedBefore = true }
+        }
+        for blocker in [Blocker.strayHouseholdKey, .strayPrivateKey] where strays.contains(blocker) { add(blocker) }
+        if syncedBefore { add(.syncedBefore) }
+        if !iCloudAvailable { add(.noICloudAccount) }
         return found
     }
 
-    /// What `blockers` needs to know about the household key: whether `keyStore` holds any key for the household zone,
-    /// and whether the server has the household's key marker (a missing zone: no marker). Reads only: never creates a
-    /// zone, a key or a marker, never removes a key. Throws the transport's error when the server can't be asked.
-    /// Only the household zone is checked: the admin's private zone is named after their person's random UUID, which
-    /// no test outside this database has used, so no stray key can wait under it.
-    public static func keyFacts(keyStore: any SyncKeyStore, transport: any SyncTransport) async throws
-        -> (keyStoreHoldsHouseholdKey: Bool, serverHasHouseholdMarker: Bool) {
-        let zone = SyncZones.household
-        let holds = !(try keyStore.allKeys(zone: zone)).isEmpty
-        let marker: SyncServerRecord?
-        do {
-            marker = try await transport.fetch(SyncZoneKeys.recordName(zone: zone), zone: zone)
-        } catch SyncTransportError.zoneNotFound {
-            marker = nil
+    /// The zones the turn-on makes keys for: the household and `admin`'s private zone.
+    public static func turnOnZones(admin: AccessActor, db: Database) throws -> [String] {
+        let personUuid = try SyncRecordStore.uuid(for: "person", localId: admin.personId, db: db)
+        return [SyncZones.household, SyncZones.privateZone(personUuid: personUuid)]
+    }
+
+    /// What `blockers` needs about each of `zones`: the key ids `keyStore` holds, and the server's key marker (a
+    /// missing zone: no marker). Reads only: never creates a zone, a key or a marker, never removes a key. Throws the
+    /// transport's error when the server can't be asked.
+    public static func keyFacts(zones: [String], keyStore: any SyncKeyStore, transport: any SyncTransport) async throws -> [ZoneKeyFacts] {
+        var facts: [ZoneKeyFacts] = []
+        for zone in zones {
+            let held = Set(try keyStore.allKeys(zone: zone).keys)
+            let marker: SyncServerRecord?
+            do {
+                marker = try await transport.fetch(SyncZoneKeys.recordName(zone: zone), zone: zone)
+            } catch SyncTransportError.zoneNotFound {
+                marker = nil
+            }
+            facts.append(ZoneKeyFacts(zone: zone, heldKeyIds: held, serverHasMarker: marker != nil,
+                                      serverMarkerKeyId: marker.flatMap { try? SyncZoneKeys.marker(from: $0.wire).keyId }))
         }
-        return (holds, marker != nil)
+        return facts
+    }
+
+    /// The key this turn-on made for each zone, by zone.
+    public static func turnOnKeyIds(db: Database) throws -> [String: String] {
+        guard let json = try text(key: keyIdsKey, db: db) else { return [:] }
+        return (try? JSONDecoder().decode([String: String].self, from: Data(json.utf8))) ?? [:]
+    }
+
+    /// Step 3, at stage `ownershipConfirmed` (again at `keysReady`: nothing new): a new key for each of `zones`
+    /// (`turnOnZones`) in `keyStore`, its id recorded first (so a quit in between leaves the key known as this
+    /// turn-on's). A zone whose key store already holds a key that isn't this turn-on's is refused
+    /// (`blocked(.strayHouseholdKey / .strayPrivateKey)`) and nothing is made; no key is ever removed. The engine then
+    /// seals with these keys and publishes their markers. The stage becomes `keysReady`.
+    public static func prepareKeys(zones: [String], keyStore: any SyncKeyStore, db: Database, now: Date) throws {
+        let current = try stage(db: db)
+        guard current == .ownershipConfirmed || current == .keysReady else { throw TurnOnError.wrongStage(current) }
+        var ids = try turnOnKeyIds(db: db)
+        for zone in zones {
+            let held = Set(try keyStore.allKeys(zone: zone).keys)
+            if !held.isEmpty, held != Set([ids[zone]].compactMap { $0 }) {
+                throw TurnOnError.blocked(zone == SyncZones.household ? .strayHouseholdKey : .strayPrivateKey)
+            }
+        }
+        for zone in zones where try keyStore.allKeys(zone: zone).isEmpty {
+            let key = DocumentCrypto.newZoneKey()
+            ids[zone] = DocumentCrypto.zoneKeyId(key)
+            let json = String(decoding: try JSONEncoder().encode(ids), as: UTF8.self)
+            try setText(json, key: keyIdsKey, db: db, now: now)
+            try keyStore.store(key, zone: zone)
+        }
+        try advance(to: .keysReady, db: db, now: now)
     }
 
     // MARK: Engine role
@@ -162,21 +252,24 @@ public enum SyncTurnOn {
         let sent: Int
         switch stage {
         case .done: sent = total
-        case .uploading: sent = min(total, max(0, total - (try pendingCount(db: db))))
+        case .uploading: sent = min(total, max(0, try stampedSinceSnapshot(db: db)))
         default: sent = 0
         }
         return Progress(stage: stage, backupPath: backupPath, total: total, sent: sent)
     }
 
-    /// Step 1: a full copy of the open database beside it, `budget.sqlite.pre-sync-backup-yyyyMMdd-HHmmss` (local time,
-    /// as `MigrationBackup`; a same-second one gets a suffix), written under a temporary name, checked to open as a
-    /// sound database, then moved into place. Any failure throws with no backup left and the stage unchanged. Allowed
+    /// Step 1: a full copy of the database `manager` opened, beside its file,
+    /// `budget.sqlite.pre-sync-backup-yyyyMMdd-HHmmss` (local time, as `MigrationBackup`; a same-second one gets a
+    /// suffix), written under a temporary name, checked (SQLite's quick check, and every table's row count equal to the
+    /// database's), then moved into place. Any failure throws with no backup left and the stage unchanged. Allowed
     /// until the upload begins (a fresh backup replaces the path recorded); the stage becomes at least `backedUp`.
     @discardableResult
-    public static func backUp(manager: DatabaseManager, databasePath: String, now: Date,
+    public static func backUp(manager: DatabaseManager, now: Date,
                               writeBackup: MigrationBackup.BackupWriter = MigrationBackup.copyDatabase) throws -> URL {
         let current = try manager.dbQueue.read { db in try stage(db: db) }
         guard current < .uploading else { throw TurnOnError.wrongStage(current) }
+        let databasePath = manager.dbQueue.path
+        guard databasePath.hasPrefix("/") else { throw TurnOnError.notAFileDatabase }
         let fileManager = FileManager.default
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -198,7 +291,7 @@ public enum SyncTurnOn {
         do {
             removePartial()
             try writeBackup(manager, partial)
-            try check(backup: partial)
+            try check(backup: partial, against: manager.dbQueue)
             try fileManager.moveItem(at: partial, to: target)
         } catch {
             removePartial()
@@ -212,14 +305,26 @@ public enum SyncTurnOn {
         return target
     }
 
-    /// Opens `url` read-only and runs SQLite's quick check: anything but "ok" is `backupUnreadable`.
-    private static func check(backup url: URL) throws {
+    /// Opens `url` read-only and runs SQLite's quick check (anything but "ok" is `backupUnreadable`), then compares
+    /// every table's row count with `source`'s (`backupIncomplete` with how many differ).
+    private static func check(backup url: URL, against source: DatabaseQueue) throws {
         var configuration = Configuration()
         configuration.readonly = true
         let queue = try DatabaseQueue(path: url.path, configuration: configuration)
         defer { try? queue.close() }
         let result = try queue.read { db in try String.fetchOne(db, sql: "PRAGMA quick_check") }
         guard result == "ok" else { throw TurnOnError.backupUnreadable }
+        let counts = { (db: Database) throws -> [String: Int] in
+            var counts: [String: Int] = [:]
+            for table in try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'") {
+                counts[table] = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(SyncChangeTracker.quoted(table))") ?? 0
+            }
+            return counts
+        }
+        let expected = try source.read(counts)
+        let found = try queue.read(counts)
+        let differing = Set(expected.keys).union(found.keys).filter { expected[$0] != found[$0] }.count
+        guard differing == 0 else { throw TurnOnError.backupIncomplete(tables: differing) }
     }
 
     /// Step 2: the ownership sheet has been saved (`SharingSetup.isConfirmed`), after the backup. Refuses before the
@@ -232,7 +337,7 @@ public enum SyncTurnOn {
         try advance(to: .ownershipConfirmed, db: db, now: now)
     }
 
-    /// Step 3, at stage `ownershipConfirmed` only, by the household's admin: records the admin's iCloud user on their
+    /// Step 4, at stage `keysReady` only, by the household's admin: records the admin's iCloud user on their
     /// app user (`cloudKitUserRecordName`, so the iPhone finds its viewer and private zone), gives every row its sync
     /// identity and queues it (`SyncRecordStore.backfill`, and any identity never uploaded that isn't queued), rebuilds
     /// the admin's summaries, turns sync on for imports (`SyncImportGate`), and stores how many records wait to go up.
@@ -241,7 +346,7 @@ public enum SyncTurnOn {
     @discardableResult
     public static func beginUpload(admin: AccessActor, cloudKitUserRecordName: String, db: Database, now: Date) throws -> Int {
         let current = try stage(db: db)
-        guard current == .ownershipConfirmed else { throw TurnOnError.wrongStage(current) }
+        guard current == .keysReady else { throw TurnOnError.wrongStage(current) }
         let adminId = try AccessActor.admin(db: db).appUserId
         guard admin.isAdmin, adminId == admin.appUserId else { throw TurnOnError.notAdmin }
         guard try SharingSetup.isConfirmed(db: db) else { throw TurnOnError.ownershipNotConfirmed }
@@ -259,15 +364,19 @@ public enum SyncTurnOn {
             try queueNeverUploaded(db: db)
             try AccountSummaryBuilder.rebuild(ownerPersonId: admin.personId, db: db, today: now)
             try SyncImportGate.setSyncOn(true, db: db, now: now)
-            total = try pendingCount(db: db)
+            total = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncPending WHERE kind <> 'delete'") ?? 0
+            let snapshot = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(rowid), 0) FROM syncRecord") ?? 0
+            let stamped = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncRecord WHERE systemFields IS NOT NULL") ?? 0
             try setText(String(total), key: totalKey, db: db, now: now)
+            try setText(String(snapshot), key: snapshotRowidKey, db: db, now: now)
+            try setText(String(stamped), key: stampedBeforeKey, db: db, now: now)
             try advance(to: .uploading, db: db, now: now)
             return .commit
         }
         return total
     }
 
-    /// Step 4: the first upload has finished (nothing pending). Refuses before the upload began and while records wait;
+    /// Step 5: the first upload has finished (nothing pending). Refuses before the upload began and while records wait;
     /// once done it changes nothing.
     public static func markDone(db: Database, now: Date) throws {
         let current = try stage(db: db)
@@ -294,6 +403,17 @@ public enum SyncTurnOn {
                 ON CONFLICT(uuid) DO NOTHING
                 """, arguments: [base, table.name])
         }
+    }
+
+    /// Rows that were there when the upload began and have a server stamp now, less those that had one then. A stamp
+    /// stays through later edits, so this never goes back while the zones stay (a zone the server lost clears its
+    /// stamps and its records go up again).
+    private static func stampedSinceSnapshot(db: Database) throws -> Int {
+        let snapshot = Int64(try text(key: snapshotRowidKey, db: db) ?? "") ?? 0
+        let before = Int(try text(key: stampedBeforeKey, db: db) ?? "") ?? 0
+        let now = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncRecord WHERE rowid <= ? AND systemFields IS NOT NULL",
+                                   arguments: [snapshot]) ?? 0
+        return now - before
     }
 
     static func pendingCount(db: Database) throws -> Int {

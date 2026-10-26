@@ -133,6 +133,9 @@ case .success(let report):
     }
     if keep { print("Working copy: \(report.workFolder.path)") }
     exit(report.passed ? 0 : 1)
-case .failure(let error): fail("failed: \((error as? LocalizedError)?.errorDescription ?? String(describing: error))")
+case .failure(let error):
+    // Counts and kinds only (`SyncRehearsal.failure`): never an error's own text, which may quote a value.
+    let failure = SyncRehearsal.failure(error)
+    fail("failed: \(failure.message)", code: failure.exitCode)
 case nil: fail("failed: no result")
 }

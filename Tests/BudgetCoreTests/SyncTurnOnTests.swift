@@ -68,6 +68,17 @@ final class SyncTurnOnTests: XCTestCase {
         }
     }
 
+    /// Backup, ownership (already confirmed by the fixture), keys in `keys`, upload begun: the total.
+    @discardableResult
+    private func begin(_ manager: DatabaseManager, _ keys: any SyncKeyStore) throws -> Int {
+        try SyncTurnOn.backUp(manager: manager, now: day)
+        try write(manager.dbQueue) { db in try SyncTurnOn.markOwnershipConfirmed(db: db, now: day) }
+        try prepareKeys(manager.dbQueue, keys)
+        return try write(manager.dbQueue) { db in
+            try SyncTurnOn.beginUpload(admin: try AccessActor.admin(db: db), cloudKitUserRecordName: "_admin", db: db, now: day)
+        }
+    }
+
     /// An engine of the admin's Mac (its viewer, re-validating) over `transport`.
     private func macEngine(_ queue: DatabaseQueue, _ transport: any SyncTransport, keys: any SyncKeyStore, batchSize: Int = 200) throws -> SyncEngineCore {
         let role = try read(queue) { db in try SyncTurnOn.macEngineRole(signedIn: try AccessActor.admin(db: db), db: db) }
@@ -75,8 +86,15 @@ final class SyncTurnOnTests: XCTestCase {
                               viewer: role.viewer, revalidatesAccess: role.revalidatesAccess)
     }
 
+    /// The turn-on's keys for the household and the admin's private zone, made in `keys` (stage `keysReady`).
+    private func prepareKeys(_ queue: DatabaseQueue, _ keys: any SyncKeyStore) throws {
+        try write(queue) { db in
+            try SyncTurnOn.prepareKeys(zones: try SyncTurnOn.turnOnZones(admin: try AccessActor.admin(db: db), db: db), keyStore: keys, db: db, now: day)
+        }
+    }
+
     func testStagesAdvanceInOrderAndNeverBack() async throws {
-        let (manager, path, admin) = try unconfirmed()
+        let (manager, _, admin) = try unconfirmed()
         let queue = manager.dbQueue
         XCTAssertEqual(try progress(queue), SyncTurnOn.Progress(stage: .notStarted, backupPath: nil, total: 0, sent: 0))
 
@@ -87,7 +105,7 @@ final class SyncTurnOnTests: XCTestCase {
         }
         assertThrows(.wrongStage(.notStarted)) { try self.write(queue) { db in try SyncTurnOn.markDone(db: db, now: self.day) } }
 
-        let first = try SyncTurnOn.backUp(manager: manager, databasePath: path, now: day)
+        let first = try SyncTurnOn.backUp(manager: manager, now: day)
         XCTAssertEqual(try progress(queue), SyncTurnOn.Progress(stage: .backedUp, backupPath: first.path, total: 0, sent: 0))
         // Ownership not saved yet: refused, the stage stays.
         assertThrows(.ownershipNotConfirmed) { try self.write(queue) { db in try SyncTurnOn.markOwnershipConfirmed(db: db, now: self.day) } }
@@ -102,15 +120,25 @@ final class SyncTurnOnTests: XCTestCase {
         }
         XCTAssertEqual(try progress(queue).stage, .ownershipConfirmed)
         // A fresh backup before the upload: recorded, the stage doesn't go back.
-        let second = try SyncTurnOn.backUp(manager: manager, databasePath: path, now: day.addingTimeInterval(60))
+        let second = try SyncTurnOn.backUp(manager: manager, now: day.addingTimeInterval(60))
         XCTAssertEqual(try progress(queue), SyncTurnOn.Progress(stage: .ownershipConfirmed, backupPath: second.path, total: 0, sent: 0))
         assertThrows(.wrongStage(.ownershipConfirmed)) { try self.write(queue) { db in try SyncTurnOn.markDone(db: db, now: self.day) } }
 
+        // The keys come before the upload.
+        assertThrows(.wrongStage(.ownershipConfirmed)) {
+            _ = try self.write(queue) { db in try SyncTurnOn.beginUpload(admin: admin, cloudKitUserRecordName: "_user", db: db, now: self.day) }
+        }
+        let keys = InMemorySyncKeyStore()
+        try prepareKeys(queue, keys)
+        XCTAssertEqual(try progress(queue).stage, .keysReady)
+        try prepareKeys(queue, keys)
+        XCTAssertEqual(try progress(queue).stage, .keysReady, "making the keys again keeps the turn-on's own")
+        XCTAssertEqual(try keys.allKeys(zone: SyncZones.household).count, 1)
         let total = try write(queue) { db in try SyncTurnOn.beginUpload(admin: admin, cloudKitUserRecordName: "_user", db: db, now: day) }
         XCTAssertGreaterThan(total, 0)
         XCTAssertEqual(try progress(queue), SyncTurnOn.Progress(stage: .uploading, backupPath: second.path, total: total, sent: 0))
         // Past the upload's start: no new backup, no second start, earlier steps change nothing.
-        XCTAssertThrowsError(try SyncTurnOn.backUp(manager: manager, databasePath: path, now: day)) { error in
+        XCTAssertThrowsError(try SyncTurnOn.backUp(manager: manager, now: day)) { error in
             XCTAssertEqual(error as? SyncTurnOn.TurnOnError, .wrongStage(.uploading))
         }
         try write(queue) { db in try SyncTurnOn.markOwnershipConfirmed(db: db, now: day) }
@@ -122,7 +150,6 @@ final class SyncTurnOnTests: XCTestCase {
 
         // The upload.
         let cloud = FakeCloud()
-        let keys = InMemorySyncKeyStore()
         let audit = ZoneAuditingTransport(wrapping: cloud, keyStore: keys)
         audit.judge(with: TwoPersonHousehold.router(queue))
         try await macEngine(queue, audit, keys: keys).pushPending()
@@ -141,7 +168,7 @@ final class SyncTurnOnTests: XCTestCase {
     func testBackupIsTimestampedBesideTheDatabase() throws {
         let (manager, path, _) = try household()
         let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
-        let backup = try SyncTurnOn.backUp(manager: manager, databasePath: path, now: day)
+        let backup = try SyncTurnOn.backUp(manager: manager, now: day)
 
         XCTAssertEqual(backup.deletingLastPathComponent().standardizedFileURL.path, directory.standardizedFileURL.path)
         let name = backup.lastPathComponent
@@ -169,34 +196,49 @@ final class SyncTurnOnTests: XCTestCase {
         XCTAssertEqual(try read(manager.dbQueue) { db in try SyncTurnOn.stage(db: db) }, .backedUp)
 
         // A second in the same second gets a suffix, never overwrites.
-        let again = try SyncTurnOn.backUp(manager: manager, databasePath: path, now: day)
+        let again = try SyncTurnOn.backUp(manager: manager, now: day)
         XCTAssertEqual(again.lastPathComponent, name + "-2")
         XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path))
     }
 
     func testAFailedBackupStopsTheFlowAndLeavesNothing() throws {
         let (manager, path, _) = try household()
+        // The backup goes beside the database the manager opened; an in-memory database has no such place.
+        XCTAssertThrowsError(try SyncTurnOn.backUp(manager: try TestDatabase.migratedManager(), now: day)) { error in
+            XCTAssertEqual(error as? SyncTurnOn.TurnOnError, .notAFileDatabase)
+        }
         let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
         struct Refused: Error {}
         // The copy fails half-way.
-        XCTAssertThrowsError(try SyncTurnOn.backUp(manager: manager, databasePath: path, now: day, writeBackup: { _, partial in
+        XCTAssertThrowsError(try SyncTurnOn.backUp(manager: manager, now: day, writeBackup: { _, partial in
             try Data("half a copy".utf8).write(to: partial)
             throw Refused()
         }))
         // The copy "succeeds" but isn't a database.
-        XCTAssertThrowsError(try SyncTurnOn.backUp(manager: manager, databasePath: path, now: day, writeBackup: { _, partial in
+        XCTAssertThrowsError(try SyncTurnOn.backUp(manager: manager, now: day, writeBackup: { _, partial in
             try Data(repeating: 7, count: 8_192).write(to: partial)
         }))
+        // The copy is a sound database but misses rows (review M-3): every table's rows are counted against the source.
+        XCTAssertThrowsError(try SyncTurnOn.backUp(manager: manager, now: day, writeBackup: { manager, partial in
+            try MigrationBackup.copyDatabase(manager, partial)
+            let copy = try DatabaseQueue(path: partial.path)
+            try copy.write { db in try db.execute(sql: "DELETE FROM documentLink") }
+            try copy.close()
+        })) { error in
+            guard case .backupIncomplete(let tables)? = error as? SyncTurnOn.TurnOnError else { return XCTFail("\(error)") }
+            XCTAssertGreaterThan(tables, 0)
+        }
         let left = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix(SyncTurnOn.backupPrefix) }
         XCTAssertEqual(left, [])
         XCTAssertEqual(try progress(manager.dbQueue), SyncTurnOn.Progress(stage: .notStarted, backupPath: nil, total: 0, sent: 0))
     }
 
     func testBeginUploadSetsICloudUserAndQueuesEverything() throws {
-        let (manager, path, fixture) = try household()
+        let (manager, _, fixture) = try household()
         let queue = manager.dbQueue
-        try SyncTurnOn.backUp(manager: manager, databasePath: path, now: day)
+        try SyncTurnOn.backUp(manager: manager, now: day)
         try write(queue) { db in try SyncTurnOn.markOwnershipConfirmed(db: db, now: day) }
+        try prepareKeys(queue, InMemorySyncKeyStore())
         let member = try read(queue) { db in
             try AccessActor.load(appUserId: try Int64.fetchOne(db, sql: "SELECT id FROM appUser WHERE isAdmin = 0")!, db: db)
         }
@@ -213,7 +255,7 @@ final class SyncTurnOnTests: XCTestCase {
         assertThrows(.differentICloudUser) {
             _ = try self.write(queue) { db in try SyncTurnOn.beginUpload(admin: fixture.admin, cloudKitUserRecordName: "_admin", db: db, now: self.day) }
         }
-        XCTAssertEqual(try progress(queue).stage, .ownershipConfirmed)
+        XCTAssertEqual(try progress(queue).stage, .keysReady)
         XCTAssertFalse(try read(queue) { db in try SyncImportGate.isSyncOn(db: db) })
         try write(queue) { db in try db.execute(sql: "UPDATE appUser SET cloudKitUserRecordName = NULL WHERE id = ?", arguments: [fixture.admin.appUserId]) }
         // Identities whose queue entries are gone (records never uploaded, not waiting): the first upload still sends them.
@@ -247,47 +289,148 @@ final class SyncTurnOnTests: XCTestCase {
         }
     }
 
+    /// The blockers for `zones` now, everything else fine.
+    private func keyBlockers(stage: SyncTurnOn.Stage, zones: [String], keys: any SyncKeyStore, cloud: FakeCloud,
+                             ours: [String: String] = [:]) async throws -> [SyncTurnOn.Blocker] {
+        let facts = try await SyncTurnOn.keyFacts(zones: zones, keyStore: keys, transport: cloud)
+        return SyncTurnOn.blockers(isAdmin: true, isProduction: true, hasEntitlement: true, isDemoDatabase: false, iCloudAvailable: true,
+                                   stage: stage, turnOnKeyIds: ours, keys: facts)
+    }
+
+    private let privateZone = SyncZones.privateZone(personUuid: "6c1e0e0a-3f4b-4c2d-9a1b-2c3d4e5f6a7b")
+
     func testTurnOnRefusesWhenAStrayHouseholdKeyIsHeld() async throws {
         let cloud = FakeCloud()
         let keys = InMemorySyncKeyStore()
-        func blockers() async throws -> [SyncTurnOn.Blocker] {
-            let facts = try await SyncTurnOn.keyFacts(keyStore: keys, transport: cloud)
-            return SyncTurnOn.blockers(isAdmin: true, isProduction: true, hasEntitlement: true, isDemoDatabase: false,
-                                       keyStoreHoldsHouseholdKey: facts.keyStoreHoldsHouseholdKey,
-                                       serverHasHouseholdMarker: facts.serverHasHouseholdMarker, iCloudAvailable: true)
-        }
+        let zones = [SyncZones.household, privateZone]
         // A fresh start: no key, no marker.
-        let fresh = try await blockers()
+        let fresh = try await keyBlockers(stage: .notStarted, zones: zones, keys: keys, cloud: cloud)
         XCTAssertEqual(fresh, [])
 
         // A key left by a test, no marker on the server (no zone yet, then an empty zone): refused, with what to do.
-        let stray = DocumentCrypto.newZoneKey()
-        try keys.store(stray, zone: SyncZones.household)
-        let noZone = try await blockers()
+        try keys.store(DocumentCrypto.newZoneKey(), zone: SyncZones.household)
+        let noZone = try await keyBlockers(stage: .notStarted, zones: zones, keys: keys, cloud: cloud)
         XCTAssertEqual(noZone, [.strayHouseholdKey])
         try await cloud.createZone(SyncZones.household)
-        let emptyZone = try await blockers()
+        let emptyZone = try await keyBlockers(stage: .ownershipConfirmed, zones: zones, keys: keys, cloud: cloud)
         XCTAssertEqual(emptyZone, [.strayHouseholdKey])
         XCTAssertEqual(SyncTurnOn.text(.strayHouseholdKey),
                        "iCloud Keychain already holds a household key from a test. Remove it before turning on sync.")
+        // Making the turn-on's keys is refused too, and the key is left as it is.
+        let (manager, _, _) = try household()
+        try SyncTurnOn.backUp(manager: manager, now: day)
+        try write(manager.dbQueue) { db in try SyncTurnOn.markOwnershipConfirmed(db: db, now: day) }
+        XCTAssertThrowsError(try prepareKeys(manager.dbQueue, keys)) { error in
+            XCTAssertEqual(error as? SyncTurnOn.TurnOnError, .blocked(.strayHouseholdKey))
+        }
+        XCTAssertEqual(try progress(manager.dbQueue).stage, .ownershipConfirmed)
         // The check never removes a key, nor creates a marker.
         XCTAssertEqual(try keys.allKeys(zone: SyncZones.household).count, 1)
         let stored = await cloud.storedRecords()
         XCTAssertEqual(stored, [])
+    }
 
-        // The household's marker on the server: the key held is the household's, not a stray.
-        _ = try await cloud.save([SyncZoneKeys.wire(.init(keyId: DocumentCrypto.zoneKeyId(stray), createdAt: day), zone: SyncZones.household)],
+    func testTurnOnRefusesAStrayKeyForTheAdminsPrivateZone() async throws {
+        let (manager, _, _) = try household()
+        let queue = manager.dbQueue
+        let zones = try read(queue) { db in try SyncTurnOn.turnOnZones(admin: try AccessActor.admin(db: db), db: db) }
+        XCTAssertEqual(zones.count, 2)
+        XCTAssertEqual(zones.first, SyncZones.household)
+        let adminZone = zones[1]
+        let cloud = FakeCloud()
+        let keys = InMemorySyncKeyStore()
+        // A key under the admin's private zone (a copy of this database tested with sync): refused, with what to do.
+        try keys.store(DocumentCrypto.newZoneKey(), zone: adminZone)
+        let found = try await keyBlockers(stage: .notStarted, zones: zones, keys: keys, cloud: cloud)
+        XCTAssertEqual(found, [.strayPrivateKey])
+        XCTAssertEqual(SyncTurnOn.text(.strayPrivateKey),
+                       "iCloud Keychain already holds a key for your private data from a test. Remove it before turning on sync.")
+        try SyncTurnOn.backUp(manager: manager, now: day)
+        try write(queue) { db in try SyncTurnOn.markOwnershipConfirmed(db: db, now: day) }
+        XCTAssertThrowsError(try prepareKeys(queue, keys)) { error in
+            XCTAssertEqual(error as? SyncTurnOn.TurnOnError, .blocked(.strayPrivateKey))
+        }
+        XCTAssertEqual(try keys.allKeys(zone: adminZone).count, 1)
+        XCTAssertEqual(try keys.allKeys(zone: SyncZones.household).count, 0, "nothing made while refused")
+        XCTAssertEqual(try progress(queue).stage, .ownershipConfirmed)
+    }
+
+    func testAMarkerAlreadyOnTheServerBlocks() async throws {
+        let cloud = FakeCloud()
+        let keys = InMemorySyncKeyStore()
+        let zones = [SyncZones.household, privateZone]
+        let other = DocumentCrypto.newZoneKey()
+        try await cloud.createZone(SyncZones.household)
+        _ = try await cloud.save([SyncZoneKeys.wire(.init(keyId: DocumentCrypto.zoneKeyId(other), createdAt: day), zone: SyncZones.household)],
                                  ifUnchanged: [:], atomic: false)
-        let marked = try await blockers()
-        XCTAssertEqual(marked, [])
+        // Before this turn-on made its keys, any marker means sync was turned on before: never merged into silently.
+        let before = try await keyBlockers(stage: .notStarted, zones: zones, keys: keys, cloud: cloud)
+        XCTAssertEqual(before, [.syncedBefore])
+        XCTAssertEqual(SyncTurnOn.text(.syncedBefore), "Sync was turned on before from another Mac or an earlier attempt.")
+        // Even with that marker's key held here.
+        try keys.store(other, zone: SyncZones.household)
+        let held = try await keyBlockers(stage: .backedUp, zones: zones, keys: keys, cloud: cloud)
+        XCTAssertEqual(held, [.strayHouseholdKey, .syncedBefore])
+        // After this turn-on made its keys: a marker naming its own key is its own; any other is still refused.
+        let ours = DocumentCrypto.newZoneKey()
+        let mine = [SyncZones.household: DocumentCrypto.zoneKeyId(ours)]
+        let foreign = try await keyBlockers(stage: .uploading, zones: [SyncZones.household], keys: InMemorySyncKeyStore(), cloud: cloud, ours: mine)
+        XCTAssertEqual(foreign, [.syncedBefore])
+        let record = await cloud.record(named: SyncZoneKeys.recordName(zone: SyncZones.household))
+        _ = try await cloud.save([SyncZoneKeys.wire(.init(keyId: DocumentCrypto.zoneKeyId(ours), createdAt: day), zone: SyncZones.household)],
+                                 ifUnchanged: [SyncZoneKeys.recordName(zone: SyncZones.household): try XCTUnwrap(record).stamp.systemFields], atomic: false)
+        let ownKeys = InMemorySyncKeyStore()
+        try ownKeys.store(ours, zone: SyncZones.household)
+        let own = try await keyBlockers(stage: .uploading, zones: [SyncZones.household], keys: ownKeys, cloud: cloud, ours: mine)
+        XCTAssertEqual(own, [])
+    }
+
+    /// Review M-1: the app quits while the first marker save fails. The keys are in the key store, no marker on the
+    /// server: they are the turn-on's own, never a stray, and the upload resumes with them.
+    func testTheTurnOnsOwnKeysAreNeverStrayWhenTheMarkerSaveFails() async throws {
+        let (manager, _, _) = try household()
+        let queue = manager.dbQueue
+        let keys = InMemorySyncKeyStore()
+        let total = try begin(manager, keys)
+        let zones = try read(queue) { db in try SyncTurnOn.turnOnZones(admin: try AccessActor.admin(db: db), db: db) }
+        let ours = try read(queue) { db in try SyncTurnOn.turnOnKeyIds(db: db) }
+        XCTAssertEqual(Set(ours.keys), Set(zones))
+        let cloud = FakeCloud()
+        let audit = ZoneAuditingTransport(wrapping: cloud, keyStore: keys)
+        audit.judge(with: TwoPersonHousehold.router(queue))
+        await cloud.failSaveOperations(after: 0)
+        // The marker can't be published: the push waits for it, sending nothing.
+        let halted = try await macEngine(queue, audit, keys: keys).pushPending()
+        XCTAssertEqual(halted.keyWait, .unavailable)
+        XCTAssertEqual(halted.saved, 0)
+        let markers = await cloud.storedRecords().filter { $0.recordType == SyncZoneKeys.recordType }
+        XCTAssertEqual(markers, [], "the marker save was the operation that failed")
+        // Read as the turn-on's own keys at its stage; the same keys before the turn-on made them would be strays.
+        let after = try await keyBlockers(stage: try progress(queue).stage, zones: zones, keys: keys, cloud: cloud, ours: ours)
+        XCTAssertEqual(after, [])
+        let early = try await keyBlockers(stage: .ownershipConfirmed, zones: zones, keys: keys, cloud: cloud, ours: ours)
+        XCTAssertEqual(early, [.strayHouseholdKey, .strayPrivateKey])
+
+        await cloud.restoreConnection()
+        try await macEngine(queue, audit, keys: keys).pushPending()
+        XCTAssertEqual(try progress(queue).sent, total)
+        for zone in zones {
+            XCTAssertEqual(Array(try keys.allKeys(zone: zone).keys), [ours[zone]!], "one key per zone, the turn-on's")
+            let marker = await cloud.record(named: SyncZoneKeys.recordName(zone: zone))
+            XCTAssertEqual(try SyncZoneKeys.marker(from: try XCTUnwrap(marker).wire).keyId, ours[zone])
+        }
+        XCTAssertEqual(audit.householdViolations(router: TwoPersonHousehold.router(queue)), [])
     }
 
     func testEveryBlockerHasItsCopyInOrder() {
-        XCTAssertEqual(SyncTurnOn.blockers(isAdmin: false, isProduction: false, hasEntitlement: false, isDemoDatabase: true,
-                                           keyStoreHoldsHouseholdKey: true, serverHasHouseholdMarker: false, iCloudAvailable: false),
-                       [.notAdmin, .wrongEnvironment, .noEntitlement, .demoDatabase, .strayHouseholdKey, .noICloudAccount])
-        XCTAssertEqual(SyncTurnOn.blockers(isAdmin: true, isProduction: true, hasEntitlement: true, isDemoDatabase: false,
-                                           keyStoreHoldsHouseholdKey: false, serverHasHouseholdMarker: true, iCloudAvailable: true), [])
+        let stray = SyncTurnOn.ZoneKeyFacts(zone: SyncZones.household, heldKeyIds: ["k"], serverHasMarker: false, serverMarkerKeyId: nil)
+        let marked = SyncTurnOn.ZoneKeyFacts(zone: privateZone, heldKeyIds: ["p"], serverHasMarker: true, serverMarkerKeyId: nil)
+        XCTAssertEqual(SyncTurnOn.blockers(isAdmin: false, isProduction: false, hasEntitlement: false, isDemoDatabase: true, iCloudAvailable: false,
+                                           stage: .notStarted, turnOnKeyIds: [:], keys: [stray, marked]),
+                       [.notAdmin, .wrongEnvironment, .noEntitlement, .demoDatabase, .strayHouseholdKey, .strayPrivateKey, .syncedBefore,
+                        .noICloudAccount])
+        XCTAssertEqual(SyncTurnOn.blockers(isAdmin: true, isProduction: true, hasEntitlement: true, isDemoDatabase: false, iCloudAvailable: true,
+                                           stage: .notStarted, turnOnKeyIds: [:], keys: []), [])
         XCTAssertEqual(SyncTurnOn.text(.notAdmin), "Only the household's admin can turn on sync.")
         XCTAssertEqual(SyncTurnOn.text(.wrongEnvironment), "This build syncs with iCloud's development environment, not your data's.")
         XCTAssertEqual(SyncTurnOn.text(.noEntitlement), "This build isn't signed for iCloud.")
@@ -295,15 +438,82 @@ final class SyncTurnOnTests: XCTestCase {
         XCTAssertEqual(SyncTurnOn.text(.noICloudAccount), "Sign in to iCloud in System Settings first.")
     }
 
+    /// Review M-5: what the sheet shows never goes back, whatever is edited or added during the upload.
+    func testProgressNeverGoesBack() async throws {
+        let (manager, _, fixture) = try household()
+        let queue = manager.dbQueue
+        let keys = InMemorySyncKeyStore()
+        let total = try begin(manager, keys)
+        let cloud = FakeCloud()
+        let audit = ZoneAuditingTransport(wrapping: cloud, keyStore: keys)
+        audit.judge(with: TwoPersonHousehold.router(queue))
+        await cloud.failSaveOperations(after: 4)
+        _ = try? await macEngine(queue, audit, keys: keys, batchSize: 10).pushPending()
+        let halfway = try progress(queue)
+        XCTAssertGreaterThan(halfway.sent, 0)
+        XCTAssertLessThan(halfway.sent, total)
+        // Edits to what already went (queued again) and a new record (queued for the first time).
+        let sentAccount = try read(queue) { db in
+            try Int64.fetchOne(db, sql: """
+                SELECT s.localId FROM syncRecord s WHERE s.tableName = 'account' AND s.systemFields IS NOT NULL ORDER BY s.localId LIMIT 1
+                """)
+        }
+        try write(queue) { db in
+            if let sentAccount { try db.execute(sql: "UPDATE account SET name = name || ' (edited)' WHERE id = ?", arguments: [sentAccount]) }
+            try db.execute(sql: "UPDATE account SET name = name || ' (edited)' WHERE id = ?", arguments: [fixture.shared])
+            try db.execute(sql: "INSERT INTO categoryGroup(name, type) VALUES ('Synthetic added', 'expense')")
+        }
+        XCTAssertNotNil(sentAccount, "an account went up before the halt")
+        let edited = try progress(queue)
+        XCTAssertEqual(edited.total, total)
+        XCTAssertGreaterThanOrEqual(edited.sent, halfway.sent)
+        await cloud.restoreConnection()
+        try await macEngine(queue, audit, keys: keys, batchSize: 10).pushPending()
+        XCTAssertEqual(try progress(queue).sent, total)
+    }
+
+    /// Review M-7: the server takes a private zone's save but the reply is lost; the next push finishes, with every
+    /// record once in its zone and nothing private in the household.
+    func testTurnOnResumesAfterALostReplyWithZones() async throws {
+        let (manager, _, fixture) = try household()
+        let queue = manager.dbQueue
+        let keys = InMemorySyncKeyStore()
+        let total = try begin(manager, keys)
+        let cloud = FakeCloud()
+        let audit = ZoneAuditingTransport(wrapping: cloud, keyStore: keys)
+        audit.judge(with: TwoPersonHousehold.router(queue))
+        let lossy = LossyTransport(audit)
+        let privateName = try read(queue) { db in
+            try XCTUnwrap(try SyncRecordStore.existingUUID(table: "transaction_", localId: fixture.privateTransaction, db: db))
+        }
+        lossy.loseReply(to: privateName, in: fixture.privateZone)
+        do {
+            try await macEngine(queue, lossy, keys: keys, batchSize: 5).pushPending()
+            XCTFail("the lost reply should have stopped the push")
+        } catch let error as SyncTransportError {
+            XCTAssertEqual(error, .networkUnavailable)
+        }
+        let landed = await cloud.record(named: privateName)
+        XCTAssertNotNil(landed, "the server took it")
+        XCTAssertEqual(try progress(queue).stage, .uploading)
+
+        try await macEngine(queue, lossy, keys: keys, batchSize: 5).pushPending()
+        XCTAssertEqual(try progress(queue).sent, total)
+        try write(queue) { db in try SyncTurnOn.markDone(db: db, now: day) }
+        let stored = await cloud.storedRecords().filter {
+            ![SyncZoneKeys.recordType, SyncDocumentFile.recordType, SyncZoneRouter.companionRecordType].contains($0.recordType)
+        }
+        XCTAssertEqual(stored.count, total, "every record once")
+        XCTAssertEqual(Set(stored.map(\.recordName)).count, total)
+        XCTAssertEqual(stored.first { $0.recordName == privateName }?.zone, fixture.privateZone)
+        XCTAssertEqual(audit.householdViolations(router: TwoPersonHousehold.router(queue)), [])
+    }
+
     func testTurnOnResumesAfterQuit() async throws {
         let (manager, path, _) = try household()
-        try SyncTurnOn.backUp(manager: manager, databasePath: path, now: day)
-        let total = try write(manager.dbQueue) { db -> Int in
-            try SyncTurnOn.markOwnershipConfirmed(db: db, now: day)
-            return try SyncTurnOn.beginUpload(admin: try AccessActor.admin(db: db), cloudKitUserRecordName: "_admin", db: db, now: day)
-        }
-        let cloud = FakeCloud()
         let keys = InMemorySyncKeyStore()
+        let total = try begin(manager, keys)
+        let cloud = FakeCloud()
         let audit = ZoneAuditingTransport(wrapping: cloud, keyStore: keys)
         audit.judge(with: TwoPersonHousehold.router(manager.dbQueue))
         // The connection drops part-way through the upload; the app quits.
