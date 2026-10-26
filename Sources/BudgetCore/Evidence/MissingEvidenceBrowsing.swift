@@ -177,9 +177,12 @@ extension MissingEvidence {
     /// (`filledIn`), in the caller's one write.
     /// On a transaction, a link (with what it fills in) that would move a filed or paid return is
     /// refused (`EvidenceLinkGuard`).
-    public static func link(db: Database, documentId: Int64, to item: Item) throws -> LinkOutcome {
-        guard item.target.entity.type == .transaction else { return try linking(db: db, documentId: documentId, to: item) }
-        return try EvidenceLinkGuard.checked(db: db) { try linking(db: db, documentId: documentId, to: item) }
+    /// Written as `actor` (nil: the admin, as a tool) with Documents' permission and the document-link origin (step 6).
+    public static func link(db: Database, documentId: Int64, to item: Item, actor: AccessActor? = nil) throws -> LinkOutcome {
+        try ActorWrite.perform(orAdmin: actor, area: .documents, origin: .documentLink, db: db) {
+            guard item.target.entity.type == .transaction else { return try linking(db: db, documentId: documentId, to: item) }
+            return try EvidenceLinkGuard.checked(db: db) { try linking(db: db, documentId: documentId, to: item) }
+        }
     }
 
     private static func linking(db: Database, documentId: Int64, to item: Item) throws -> LinkOutcome {

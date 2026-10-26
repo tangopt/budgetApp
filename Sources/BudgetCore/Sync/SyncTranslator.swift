@@ -466,6 +466,22 @@ public enum SyncTranslator {
         if let omitted = payload.omittedFields, !omitted.isEmpty {
             cleared = try leftOut(omitted, payload: payload, schema: schema, columns: columns, existing: existing, values: &values, db: db)
         }
+        // Step 6 Task 9: on the Mac, what the writer had no permission for is reverted (`AccessRevalidation`).
+        var reverts: [AccessRevalidation.Revert] = []
+        var selfUser: String?
+        if AccessRevalidation.isOn(db: db), !redirected {
+            selfUser = try AccessRevalidation.selfUser(deviceUser: deviceUser, db: db)
+            if !AccessRevalidation.mayNeedJudging(payload, selfUser: selfUser) {
+                // Only the Mac's own user wrote it: nothing to judge.
+            } else if let localId = existing {
+                let local = try outgoing(PendingChange(table: schema.name, localId: localId, uuid: uuid, kind: .update), db: db)?.fields
+                reverts = try AccessRevalidation.reverts(for: payload, local: local ?? [:], selfUser: selfUser, db: db)
+                for field in reverts.flatMap(\.fields) { values[field] = nil }
+            } else if let revert = try AccessRevalidation.reverts(for: payload, local: nil, selfUser: selfUser, db: db).first {
+                try AccessRevalidation.remove(revert, payload: payload, selfUser: selfUser, db: db, now: now)
+                return .discarded("no permission")
+            }
+        }
         // One payload's failure (a constraint this device's data refuses) mustn't undo the others: it is
         // staged with the SQLite code, never the values.
         let savepoint = "syncApplySave"
@@ -475,6 +491,9 @@ public enum SyncTranslator {
             if let localId = existing {
                 result = try SyncMerge.merge(payload, into: localId, values: values, held: held, schema: schema, db: db, deviceUser: deviceUser,
                                              adopted: redirected, now: now)
+                if !reverts.isEmpty {
+                    try AccessRevalidation.restamp(reverts, payload: payload, table: schema.name, localId: localId, selfUser: selfUser, db: db, now: now)
+                }
                 if !cleared.isEmpty {
                     try db.execute(sql: "UPDATE \(SyncChangeTracker.quoted(schema.name)) SET \(cleared.map { "\(SyncChangeTracker.quoted($0)) = NULL" }.joined(separator: ", ")) WHERE \(SyncChangeTracker.quoted(schema.localIdColumn)) = ?",
                                    arguments: [localId])
@@ -970,6 +989,9 @@ public enum SyncTranslator {
     // MARK: Deletes
 
     private static func applyDelete(uuid: String, recordType: String?, db: Database, deviceUser: String?, now: Date) throws -> IncomingResult {
+        if AccessRevalidation.isOn(db: db) {
+            AccessRevalidation.logUnjudgedDelete(table: try recordType ?? String.fetchOne(db, sql: "SELECT tableName FROM syncRecord WHERE uuid = ?", arguments: [uuid]))
+        }
         let staged = try SyncStagingRow.filter(Column("uuid") == uuid).fetchOne(db)
         try db.execute(sql: "DELETE FROM syncStaging WHERE uuid = ?", arguments: [uuid])
         if try SyncTombstoneRow.fetchOne(db, key: uuid)?.mergedInto != nil {

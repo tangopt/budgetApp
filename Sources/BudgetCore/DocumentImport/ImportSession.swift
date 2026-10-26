@@ -483,6 +483,11 @@ public final class ImportSession {
     /// user signed in when Confirm import was pressed; nil: nobody). If it can't be applied (a
     /// filed return would move, the plan is out of date) nothing is written and the review
     /// stays open with why.
+    /// `confirm(confirmedBy:)` for `actor`: written as them, only with Edit on Import (step 6).
+    public func confirm(actor: AccessActor) {
+        confirm(confirmedBy: actor.appUserId)
+    }
+
     public func confirm(confirmedBy: Int64?) {
         guard phase == .review, let reviewed = plan else {
             logger.notice("Confirm import ignored: no review open (\(String(describing: self.phase), privacy: .public))")
@@ -756,12 +761,14 @@ public final class ImportSession {
 
     /// Undoes a confirmed run. Returns why it can't be undone now (nothing was changed), or
     /// nothing when it was undone; throws when the run is gone or already undone.
-    public func undo(_ runId: Int64) async throws -> [ImportUndoConflict] {
+    /// `actor` (else app user `undoneBy`): who undoes it (neither: the admin, as a tool); without Edit on Import it
+    /// throws `AccessDenied`.
+    public func undo(_ runId: Int64, actor: AccessActor? = nil, undoneBy: Int64? = nil) async throws -> [ImportUndoConflict] {
         let dbQueue = dbQueue
         let library = library
         let now = now()
         let result = await Task.detached(priority: .userInitiated) { () -> Result<ImportUndoResult, Error> in
-            Result { try ImportUndo.undo(dbQueue: dbQueue, library: library, runId: runId, now: now) }
+            Result { try ImportUndo.undo(dbQueue: dbQueue, library: library, runId: runId, actor: actor, undoneBy: undoneBy, now: now) }
         }.value
         switch result {
         case .success:

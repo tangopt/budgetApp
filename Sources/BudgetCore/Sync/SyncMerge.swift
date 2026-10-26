@@ -138,21 +138,15 @@ public enum SyncMerge {
             let remoteClock = payload.clock(field)
             let baseClock = base[field] ?? base[insertClock]
             let localChanged = adopted || !same(localClock, baseClock)
-            let remoteChanged = adopted || !same(remoteClock, baseClock)
             let remoteWins = wins(remoteClock, theirs, over: localClock, mine)
             if identical(mine, theirs) {
                 if remoteWins { taken[field] = remoteClock }
                 continue
             }
-            let takeRemote: Bool
-            switch (localChanged, remoteChanged) {
-            case (true, true):
-                takeRemote = remoteWins
+            let takeRemote = takesRemote(local: localClock, remote: remoteClock, base: baseClock, remoteWins: remoteWins, adopted: adopted)
+            if localChanged, adopted || !same(remoteClock, baseClock) {
                 losers.append(takeRemote ? (field, mine, remoteClock?.by, localClock?.by ?? deviceUser)
                                          : (field, theirs, localClock?.by ?? deviceUser, remoteClock?.by))
-            case (false, true): takeRemote = true
-            case (true, false): takeRemote = false
-            case (false, false): takeRemote = remoteWins
             }
             if takeRemote {
                 writes[field] = theirs
@@ -187,6 +181,39 @@ public enum SyncMerge {
         outcome.conflicts = Array(Set(outcome.conflicts)).sorted()
         outcome.taken = taken.compactMapValues { $0 }
         return outcome
+    }
+
+    /// Whether the merge takes the incoming value of a field whose two values differ: the side that changed it
+    /// since the base wins; both changed (or neither): the later clock (`wins`).
+    static func takesRemote(local: SyncClock?, remote: SyncClock?, base: SyncClock?, remoteWins: Bool, adopted: Bool = false) -> Bool {
+        let localChanged = adopted || !same(local, base)
+        let remoteChanged = adopted || !same(remote, base)
+        switch (localChanged, remoteChanged) {
+        case (true, true): return remoteWins
+        case (false, true): return true
+        case (true, false): return false
+        case (false, false): return remoteWins
+        }
+    }
+
+    /// The fields of `payload` whose value differs from this device's (`local`, as it travels) and that a merge
+    /// into row `localId` would take from the payload (step 6 Task 9 judges exactly those).
+    static func remoteTakes(_ payload: SyncPayload, local: [String: SyncValue], table: String, localId: Int64,
+                            db: Database) throws -> [String] {
+        let clocks = try clocks(table: table, localId: localId, db: db)
+        let base = try bases(table: table, localId: localId, db: db)
+        var result: [String] = []
+        for (field, theirs) in payload.fields {
+            let mine = local[field] ?? .null
+            guard mine != theirs else { continue }
+            let localClock = clocks[field] ?? clocks[insertClock]
+            let remoteClock = payload.clock(field)
+            let remoteWins = wins(remoteClock, theirs.databaseValue, over: localClock, mine.databaseValue)
+            if takesRemote(local: localClock, remote: remoteClock, base: base[field] ?? base[insertClock], remoteWins: remoteWins) {
+                result.append(field)
+            }
+        }
+        return result.sorted()
     }
 
     /// Writes `writes` to the row, dropping the fields a unique key refuses (returned). An exclusive flag the

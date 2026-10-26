@@ -443,10 +443,11 @@ public struct EvidenceLibrary: Sendable {
     // MARK: Links
 
     /// Links by hand; a link to a transaction that would change a filed or paid return is refused
-    /// (`EvidenceLinkGuard`).
+    /// (`EvidenceLinkGuard`). Linking, unlinking and roles write as `actor` (nil: the admin, as a tool) with
+    /// Documents' permission and the document-link origin (step 6).
     @discardableResult
-    public func link(_ documentId: Int64, to entity: EvidenceEntity, role: String? = nil) throws -> DocumentLink {
-        try database.write { db in
+    public func link(_ documentId: Int64, to entity: EvidenceEntity, role: String? = nil, actor: AccessActor? = nil) throws -> DocumentLink {
+        try linking(actor) { db in
             guard entity.type == .transaction else { return try EvidenceLinks.link(db: db, documentId: documentId, to: entity, role: role) }
             return try EvidenceLinkGuard.checked(db: db) { try EvidenceLinks.link(db: db, documentId: documentId, to: entity, role: role) }
         }
@@ -454,17 +455,21 @@ public struct EvidenceLibrary: Sendable {
 
     /// Sets (or, with `nil`, clears) the role of an existing link; `false` when there is none.
     @discardableResult
-    public func setRole(_ role: String?, documentId: Int64, entity: EvidenceEntity) throws -> Bool {
-        try database.write { db in try EvidenceLinks.setRole(db: db, role, documentId: documentId, entity: entity) }
+    public func setRole(_ role: String?, documentId: Int64, entity: EvidenceEntity, actor: AccessActor? = nil) throws -> Bool {
+        try linking(actor) { db in try EvidenceLinks.setRole(db: db, role, documentId: documentId, entity: entity) }
     }
 
     @discardableResult
-    public func unlink(_ documentId: Int64, from entity: EvidenceEntity) throws -> Bool {
-        try database.write { db in
+    public func unlink(_ documentId: Int64, from entity: EvidenceEntity, actor: AccessActor? = nil) throws -> Bool {
+        try linking(actor) { db in
             guard entity.type == .transaction else { return try EvidenceLinks.unlink(db: db, documentId: documentId, from: entity) }
             // Refused, as a link is, when it would move a filed or paid return (`EvidenceLinkGuard`).
             return try EvidenceLinkGuard.checked(db: db) { try EvidenceLinks.unlink(db: db, documentId: documentId, from: entity) }
         }
+    }
+
+    private func linking<T>(_ actor: AccessActor?, _ body: (Database) throws -> T) throws -> T {
+        try database.write { db in try ActorWrite.perform(orAdmin: actor, area: .documents, origin: .documentLink, db: db) { try body(db) } }
     }
 
     public func documents(for entity: EvidenceEntity) throws -> [EvidenceDocument] {

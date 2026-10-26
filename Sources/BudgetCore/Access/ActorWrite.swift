@@ -39,6 +39,25 @@ public enum ActorWrite {
         return try stamped(actor, origin: origin, db: db, body)
     }
 
+    /// `perform` as `actor`, or, for nil, as whoever an enclosing `perform` writes as, else the household's admin (a
+    /// hub job, a tool: sharing plan "hub jobs stay the admin's"). A database with no admin yet (no app users: before
+    /// sign-in was set up) has no permissions to check: `body` runs as it is.
+    public static func perform<T>(orAdmin actor: AccessActor?, area: AccessArea, origin: WriteOrigin = .edit, db: Database,
+                                  _ body: () throws -> T) throws -> T {
+        if let actor { return try perform(actor, area: area, origin: origin, db: db, body) }
+        if let outer = try Row.fetchOne(db, sql: "SELECT appUserUuid FROM syncWriter WHERE id = 1 AND origin IS NOT NULL"),
+           let uuid: String = outer["appUserUuid"], let id = try SyncRecordStore.localId(table: "appUser", uuid: uuid, db: db) {
+            return try perform(try AccessActor.load(appUserId: id, db: db), area: area, origin: origin, db: db, body)
+        }
+        guard try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM appUser WHERE isAdmin = 1)") == true else { return try body() }
+        return try perform(try AccessActor.admin(db: db), area: area, origin: origin, db: db, body)
+    }
+
+    /// The actor of app user `appUserId`, or nil for nil (`perform(orAdmin:)` then writes as the admin).
+    public static func actor(appUserId: Int64?, db: Database) throws -> AccessActor? {
+        try appUserId.map { try AccessActor.load(appUserId: $0, db: db) }
+    }
+
     /// `perform` without the area check, for writes whose rule isn't an area: the caller has already
     /// checked it (an owner setting their own account's level, `SharingLevels`).
     static func stamped<T>(_ actor: AccessActor, origin: WriteOrigin, db: Database, _ body: () throws -> T) throws -> T {

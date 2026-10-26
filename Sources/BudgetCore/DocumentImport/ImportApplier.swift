@@ -83,7 +83,8 @@ public struct ImportApplier: Sendable {
 
     /// `reasons`: the user's reason per item (by item id), kept with the run and on each file.
     /// `confirmedBy`: the app user signed in when Confirm was pressed (nil: a tool), kept with the run
-    /// and on the rules it learns.
+    /// and on the rules it learns. The run writes as them (nil: the admin), and only with Edit on Import
+    /// (`ActorWrite.perform`, origin `.import`): without it nothing is written (`AccessDenied`).
     public func apply(_ plan: ImportPlan, entryPoint: String, reasons: [UUID: String] = [:], confirmedBy appUserId: Int64? = nil,
                       now: Date = Date()) throws -> ImportRunSummary {
         guard plan.canConfirm else { throw ImportApplyError.notConfirmable }
@@ -106,8 +107,11 @@ public struct ImportApplier: Sendable {
             return try withSourceFolders(folderIds) { roots in
                 try dbQueue.write { db in
                     do {
-                        return try applyAll(db: db, plan: plan, applied: applied, entryPoint: entryPoint, reasons: reasons, appUserId: appUserId,
-                                            backupPath: backupPath, folderRoots: roots, now: now, placed: &placed)
+                        // Step 6: as whoever confirmed (nil: the admin, as a tool), with Import's permission and origin.
+                        return try ActorWrite.perform(orAdmin: try ActorWrite.actor(appUserId: appUserId, db: db), area: .import, origin: .import, db: db) {
+                            try applyAll(db: db, plan: plan, applied: applied, entryPoint: entryPoint, reasons: reasons, appUserId: appUserId,
+                                         backupPath: backupPath, folderRoots: roots, now: now, placed: &placed)
+                        }
                     } catch {
                         try? ImportChangeCapture.cancel(db: db)
                         throw error

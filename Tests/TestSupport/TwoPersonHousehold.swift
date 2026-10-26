@@ -54,9 +54,10 @@ public final class TwoPersonHousehold {
 
     /// The household, with `SharingFixture` on the admin's Mac; `levels` (account id to level) replace the
     /// fixture's, written as they are (no blockers checked). `macDocuments` / `phoneDocuments`: where those devices
-    /// keep files, when a test syncs files.
+    /// keep files, when a test syncs files. `revalidatesAccess`: the admin's Mac re-validates what it pulls (step 6
+    /// Task 9), as the app's Mac does.
     public static func make(levels: [Int64: SharingLevel] = [:], macDocuments: SyncDocumentFiles? = nil,
-                            phoneDocuments: SyncDocumentFiles? = nil) throws -> TwoPersonHousehold {
+                            phoneDocuments: SyncDocumentFiles? = nil, revalidatesAccess: Bool = false) throws -> TwoPersonHousehold {
         let cloud = FakeCloud()
         let adminKeys = InMemorySyncKeyStore()
         let memberKeys = InMemorySyncKeyStore()
@@ -93,7 +94,7 @@ public final class TwoPersonHousehold {
         let mac2Engine = SyncEngineCore(db: mac2, transport: mac2Transport, device: SyncDevice(id: "admin-mac-2", name: "Mac 2"), keyStore: adminKeys,
                                         viewer: admin)
         let macEngine = SyncEngineCore(db: mac, transport: macTransport, device: SyncDevice(id: "admin-mac", name: "Mac"), keyStore: adminKeys,
-                                       documents: macDocuments, viewer: admin)
+                                       documents: macDocuments, viewer: admin, revalidatesAccess: revalidatesAccess)
         let phoneEngine = SyncEngineCore(db: phone, transport: audit, device: SyncDevice(id: "admin-phone", name: "iPhone"), keyStore: adminKeys,
                                          documents: phoneDocuments, readOnly: true, viewer: admin)
         let memberEngine = SyncEngineCore(db: member, transport: memberAudit, device: SyncDevice(id: "member-device", name: "iPad"), keyStore: memberKeys,

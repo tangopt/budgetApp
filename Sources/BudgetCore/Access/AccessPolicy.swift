@@ -57,6 +57,12 @@ public enum AccessArea: Hashable, Sendable {
         self = area
     }
 
+    /// Person `personId`'s tax (their tax years and income), read without writing: a person not synced yet (no
+    /// identity) has an area no member row names, so members get the default.
+    public static func tax(ofPerson personId: Int64, db: Database) throws -> AccessArea {
+        .tax(personUuid: try SyncRecordStore.existingUUID(table: "person", localId: personId, db: db) ?? "")
+    }
+
     public var title: String {
         switch self {
         case .budgetAndAccounts: return "Budget & accounts"

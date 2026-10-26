@@ -463,7 +463,11 @@ public actor SyncEngineCore {
             var outcome = FiledYearSyncCheck.Outcome()
             while true {
                 let taking = incoming.filter { refused[$0.recordName] == nil }
-                let applyAll = { try FiledYearSyncCheck.apply(taking, baseline: baseline, db: db, deviceUser: user, now: now, retryAll: retryAll) }
+                let applyAll = {
+                    try self.revalidatingIfAsked(db: db) {
+                        try FiledYearSyncCheck.apply(taking, baseline: baseline, db: db, deviceUser: user, now: now, retryAll: retryAll)
+                    }
+                }
                 var misplaced: [(uuid: String, table: String)] = []
                 try db.inSavepoint {
                     outcome = try self.readOnly ? SyncChangeTracker.readOnlyApply(db: db, applyAll) : applyAll()
@@ -1096,8 +1100,9 @@ public actor SyncEngineCore {
                 // then the server's version is held, without its stamp, and the local edit waits for it. The merged
                 // record goes again next round against the server's version (unless that version waits here).
                 let baseline = try FiledYearSyncCheck.baseline(db: db)
-                let outcome = try FiledYearSyncCheck.apply(merges.map { .save($0) }, baseline: baseline, db: db, deviceUser: user, now: now,
-                                                           flush: false)
+                let outcome = try self.revalidatingIfAsked(db: db) {
+                    try FiledYearSyncCheck.apply(merges.map { .save($0) }, baseline: baseline, db: db, deviceUser: user, now: now, flush: false)
+                }
                 let held = Set(outcome.alert?.records.map(\.recordName) ?? [])
                 for payload in merges {
                     let name = payload.recordName
@@ -1612,6 +1617,12 @@ public actor SyncEngineCore {
 
     static func clearStamp(uuid: String, db: Database) throws {
         try db.execute(sql: "UPDATE syncRecord SET systemFields = NULL, changeTag = NULL WHERE uuid = ?", arguments: [uuid])
+    }
+
+    /// `body` with incoming changes re-validated when this engine `revalidatesAccess` (the Mac; `AccessRevalidation`).
+    nonisolated func revalidatingIfAsked<T>(db: Database, _ body: () throws -> T) throws -> T {
+        guard revalidatesAccess else { return try body() }
+        return try AccessRevalidation.revalidating(db: db, body)
     }
 
     static func deviceUser(db: Database) throws -> String? {

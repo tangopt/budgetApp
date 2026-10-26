@@ -164,6 +164,17 @@ public enum AccessAreaMap {
         return .denied
     }
 
+    /// The area a table's rows belong to when neither an origin nor a special rule decides: what a reverted change
+    /// is logged under when the part it failed names no area (an owner's say, a table nobody may write). Nil for a
+    /// tax table (each row is a person's) and a table no rule knows.
+    static func tableArea(_ table: String) -> AccessArea? {
+        if summaryTables.contains(table) { return .budgetAndAccounts }
+        if let area = byTable[table] { return area }
+        if taxTablesWithPerson.contains(table) || taxTablesWithoutPerson.contains(table) { return nil }
+        if propertyPrefixes.contains(where: { table.hasPrefix($0) }) { return .property }
+        return nil
+    }
+
     /// Whether a change to these fields of `table` includes a part only an owner may make: any write to a
     /// summary table, an account's owner or level, a person's tax-and-income level.
     public static func isOwnerOnly(table: String, fields: Set<String>) -> Bool {
