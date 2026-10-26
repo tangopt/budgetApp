@@ -61,6 +61,9 @@ public enum ActorWrite {
     /// take for nobody's (`AccessRevalidation`). Nothing if the database has no sync tables yet.
     public static func useDefaultWriter(appUserId: Int64?, db: Database) throws {
         guard try db.tableExists("syncWriter"), try db.tableExists("appUser") else { return }
+        // A database not yet at step 6 (opened before `migrate`: the app's launch, every tool) has no write origin:
+        // nothing to set until the sharing migration adds it; `DatabaseManager.migrate` calls this again after.
+        guard try db.columns(in: "syncWriter").contains(where: { $0.name == "origin" }) else { return }
         var uuid: String?
         if let appUserId, try AppUser.fetchOne(db, key: appUserId) != nil {
             uuid = try SyncRecordStore.uuid(for: "appUser", localId: appUserId, db: db)

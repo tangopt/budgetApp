@@ -16,6 +16,31 @@ final class SharingStorageTests: XCTestCase {
         })
     }
 
+    /// The app's launch (and every tool) opens the database before migrating it: a database left at step 3–5's schema
+    /// (sync tables, `syncWriter` without `origin`) must open, then migrate, with no error.
+    func testPreSharingFileDatabaseOpensThenMigrates() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("PreSharing-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appendingPathComponent("budget.sqlite").path
+        do {
+            let old = try DatabaseManager(path: path)
+            try old.migrate(upTo: Self.preSharingMigration)
+            try old.dbQueue.read { db in
+                XCTAssertTrue(try db.tableExists("syncWriter"))
+                XCTAssertFalse(try db.columns(in: "syncWriter").map(\.name).contains("origin"))
+            }
+            try old.dbQueue.close()
+        }
+        let tool = try ToolDatabase.open(path: path)
+        try tool.close()
+        let manager = try DatabaseManager(path: path)
+        try manager.migrate()
+        try manager.dbQueue.read { db in
+            XCTAssertTrue(try db.columns(in: "syncWriter").map(\.name).contains("origin"))
+        }
+    }
+
     func testMigrationAddsColumnsWithEverythingAndNoOwner() throws {
         let manager = try DatabaseManager(path: nil)
         try manager.migrate(upTo: Self.preSharingMigration)
