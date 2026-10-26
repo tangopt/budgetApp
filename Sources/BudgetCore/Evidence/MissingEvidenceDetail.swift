@@ -63,7 +63,8 @@ extension MissingEvidence {
     /// The library documents that could satisfy the item, best first: the matcher's own for its
     /// transaction (`matched`: `EvidenceMatcher.documentSuggestions`) of a kind the rule takes,
     /// then the checklist's `candidates` (an expected kind, dated near it or in its slot, its
-    /// amount sign-free) not already shown. `excluding` (already linked) is left out.
+    /// amount sign-free) not already shown. `excluding` (already linked) is left out, and so is
+    /// any without a strong signal (`isStrongSuggestion`).
     public static func suggestions(for item: Item, summaries: [EvidenceDocumentSummary], matched: [EvidenceMatcher.DocumentSuggestion],
                                    excluding: Set<Int64> = [], limit: Int = 8) -> [Candidate] {
         let byId = Dictionary(summaries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -72,7 +73,23 @@ extension MissingEvidence {
         }
         .map { Candidate(documentId: $0.documentId, score: $0.score, reasons: $0.reasons) }
         let shown = Set(ranked.map(\.documentId))
-        let more = candidates(for: item, documents: summaries, excluding: excluding.union(shown), limit: limit)
-        return Array((ranked + more).prefix(limit))
+        let more = candidates(for: item, documents: summaries, excluding: excluding.union(shown), limit: summaries.count)
+        let strong = (ranked + more).filter { candidate in byId[candidate.documentId].map { isStrongSuggestion($0, for: item) } ?? false }
+        return Array(strong.prefix(limit))
+    }
+
+    /// A suggestion worth showing: of a kind the rule names other than Other (Other is any
+    /// document of no kind), or stating the item's amount within 1% (sign-free).
+    static func isStrongSuggestion(_ document: EvidenceDocumentSummary, for item: Item) -> Bool {
+        let ref = document.kindRef
+        if ref != .builtIn(.other), item.expectedKindRefs.contains(ref) { return true }
+        guard let expected = item.expectedAmountMinorUnits, expected != 0, let amount = document.amountMinorUnits else { return false }
+        return abs(abs(amount) - abs(expected)) * 100 <= abs(expected)
+    }
+
+    /// How many items in both lists have another status in `after` (Change kind…'s "2 items changed status").
+    public static func statusChanges(from before: [Item], to after: [Item]) -> Int {
+        let old = Dictionary(before.map { ($0.id, $0.status) }, uniquingKeysWith: { first, _ in first })
+        return after.filter { item in old[item.id].map { $0 != item.status } ?? false }.count
     }
 }

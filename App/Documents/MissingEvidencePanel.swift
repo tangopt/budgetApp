@@ -4,6 +4,7 @@ import QuickLook
 import BudgetCore
 import struct BudgetCore.Transaction
 import GRDB
+import os
 
 /// What the Missing evidence side panel reads beside the checklist (off the main thread): the
 /// library (searching it, and the documents that could satisfy the item), the transactions the
@@ -60,7 +61,10 @@ final class MissingEvidencePanelModel: ObservableObject {
         guard observation == nil else { return }
         let region = DatabaseRegionObservation(tracking: Transaction.all(), Account.all(), Category.all(),
                                                EvidenceDocument.all(), DocumentLink.all())
-        observation = region.start(in: dbQueue, onError: { _ in }, onChange: { [weak self] _ in
+        observation = region.start(in: dbQueue, onError: { error in
+            Logger(subsystem: "com.personal.budget", category: "MissingEvidencePanel")
+                .error("Watching the library failed (the panel may be out of date): \(error.localizedDescription, privacy: .public)")
+        }, onChange: { [weak self] _ in
             Task { @MainActor in self?.databaseChanged() }
         })
     }
@@ -138,6 +142,12 @@ final class MissingEvidencePanelModel: ObservableObject {
         await checkOnDevice(found.map(\.summary))
     }
 
+    /// How many records the document is linked to (Change kind… warns when it's more than one).
+    func linkCount(_ documentId: Int64) async -> Int {
+        let library = library
+        return await Task.detached(priority: .userInitiated) { (try? library.entities(for: documentId).count) ?? 0 }.value
+    }
+
     func summary(_ documentId: Int64) -> EvidenceDocumentSummary? {
         index?.entries.first { $0.id == documentId }?.summary
     }
@@ -186,8 +196,11 @@ struct MissingEvidencePanel: View {
     /// The attached document whose kind is being changed, and the kind picked.
     @State private var editingKind: (id: Int64, kind: DocumentKindRef)?
     @State private var kindErrors: [Int64: String] = [:]
-    /// What the last change did, or why it was refused.
-    @State private var note: (text: String, isError: Bool)?
+    /// How many records each document whose kind is being changed is linked to.
+    @State private var kindLinkCounts: [Int64: Int] = [:]
+    /// What the last change did, or why it was refused, and when it was said: the item's next
+    /// update right after is the change itself; a later one (made elsewhere) clears it.
+    @State private var note: (text: String, isError: Bool, at: Date)?
     @State private var query = ""
     @State private var sentToImports = false
 
@@ -234,8 +247,14 @@ struct MissingEvidencePanel: View {
             note = nil
             editingKind = nil
             kindErrors = [:]
+            kindLinkCounts = [:]
             query = ""
             sentToImports = false
+        }
+        // The note describes the change just made: the item's update that follows it is that
+        // change; one later (a change elsewhere, a sync) leaves the note out of date, so it goes.
+        .onChange(of: item) {
+            if let note, Date().timeIntervalSince(note.at) > Self.noteSettles { self.note = nil }
         }
     }
 
@@ -261,26 +280,16 @@ struct MissingEvidencePanel: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 statusPill
-                if item.status == .missing, !item.isDone, !attached.isEmpty {
-                    Text(attached.count == 1 ? "1 document attached" : "\(attached.count) documents attached")
-                        .font(.caption).foregroundStyle(.secondary)
+                // Missing with documents attached: none of them counts (each says why below).
+                if item.status == .missing, !attached.isEmpty {
+                    Text(attached.count == 1 ? "1 document attached — doesn't count" : "\(attached.count) documents attached — none counts")
+                        .font(.caption).foregroundStyle(theme.pending)
                         .figureText()
                 }
             }
             Text("Needs " + MissingEvidenceViewModel.kindsText(names: item.expectedKindNames))
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
-            // Why it's still missing (or waived): each attached document that doesn't count.
-            ForEach(item.status == .satisfied ? [] : attached.filter { !$0.counts }) { document in
-                Label {
-                    Text(document.explanation ?? "")
-                        .fixedSize(horizontal: false, vertical: true)
-                } icon: {
-                    Image(systemName: "exclamationmark.triangle").foregroundStyle(theme.pending)
-                }
-                .font(.callout)
-                .help(document.document.displayName)
-            }
             if item.status == .missing, attached.isEmpty {
                 Text("Nothing attached yet.").font(.callout).foregroundStyle(.secondary)
             }
@@ -410,8 +419,9 @@ struct MissingEvidencePanel: View {
                     DocumentCaptionLine(kindName: document.kindName, date: summary.docDate,
                                         amountMinorUnits: summary.amountMinorUnits, currency: summary.currency, stacked: true)
                         .font(.caption).foregroundStyle(.secondary)
-                    if let shortfall = document.shortfall {
-                        Text("Doesn't count: \(shortfall.text)").font(.caption).foregroundStyle(theme.pending)
+                    // Why it doesn't count ("Attached: Bank debit advice — not one of the kinds this needs").
+                    if let explanation = document.explanation {
+                        Text(explanation).font(.caption).foregroundStyle(theme.pending)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -423,8 +433,11 @@ struct MissingEvidencePanel: View {
                     Button("Change kind…") {
                         kindErrors[document.id] = nil
                         editingKind = (document.id, summary.kindRef)
+                        Task { kindLinkCounts[document.id] = await model.linkCount(document.id) }
                     }
+                    .disabled(viewModel.isCheckingFiledYears)
                     Button("Unlink") { unlink(document) }
+                        .disabled(viewModel.isCheckingFiledYears)
                         .help("Remove the link (the document stays in the library)")
                         .accessibilityLabel("Unlink \(summary.displayName)")
                     Spacer(minLength: 0)
@@ -477,6 +490,12 @@ struct MissingEvidencePanel: View {
             }
             .labelsHidden()
             .accessibilityLabel("Kind of \(document.document.displayName)")
+            // The kind is the document's, not the link's: every record it's linked to sees it.
+            if let count = kindLinkCounts[document.id], count > 1 {
+                Label("Linked to \(count) records — changing its kind affects all of them", systemImage: "link")
+                    .font(.caption).foregroundStyle(theme.pending)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: 8) {
                 Spacer(minLength: 0)
                 Button("Cancel") { editingKind = nil }
@@ -492,13 +511,19 @@ struct MissingEvidencePanel: View {
     private func saveKind(_ document: MissingEvidence.AttachedDocument) {
         guard let kind = editingKind?.kind else { return }
         let name = catalog.displayName(kind)
-        viewModel.changeKind(documentId: document.id, to: kind) { error in
-            if let error {
-                kindErrors[document.id] = error
-            } else {
+        viewModel.changeKind(documentId: document.id, to: kind) { result in
+            switch result {
+            case .failure(let error):
+                kindErrors[document.id] = error.message
+            case .success(let changed):
                 editingKind = nil
                 kindErrors[document.id] = nil
-                note = ("Filed “\(document.document.displayName)” as \(name).", false)
+                let status = switch changed {
+                case 0: "No item changed status."
+                case 1: "1 item changed status."
+                default: "\(changed) items changed status."
+                }
+                say("Filed “\(document.document.displayName)” as \(name). \(status)")
                 model.invalidate()
             }
         }
@@ -507,9 +532,9 @@ struct MissingEvidencePanel: View {
     private func unlink(_ document: MissingEvidence.AttachedDocument) {
         viewModel.unlink(documentId: document.id, from: item) { error in
             if let error {
-                note = (error, true)
+                say(error, isError: true)
             } else {
-                note = ("Unlinked “\(document.document.displayName)”.", false)
+                say("Unlinked “\(document.document.displayName)”.")
                 model.invalidate()
             }
         }
@@ -579,11 +604,18 @@ struct MissingEvidencePanel: View {
     private func link(_ summary: EvidenceDocumentSummary) {
         viewModel.link(documentId: summary.id, to: item) { result in
             switch result {
-            case .success(let text): note = (text, false)
-            case .failure(let error): note = (error.localizedDescription, true)
+            case .success(let text): say(text)
+            case .failure(let error): say(error.localizedDescription, isError: true)
             }
             model.invalidate()
         }
+    }
+
+    /// How long after a change its own update can still arrive (the observation's round trip).
+    private static let noteSettles: TimeInterval = 1.5
+
+    private func say(_ text: String, isError: Bool = false) {
+        note = (text, isError, Date())
     }
 
     private struct SearchKey: Equatable {

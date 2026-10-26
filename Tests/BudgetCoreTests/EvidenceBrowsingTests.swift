@@ -124,12 +124,56 @@ final class EvidenceBrowsingTests: XCTestCase {
         }
     }
 
+    func testChangeKindToAndFromACustomKind() throws {
+        let boiler = try manager.dbQueue.write { db in
+            try XCTUnwrap(try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: Date()).id)
+        }
+        let document = try add("service.pdf", "s", EvidenceMetadata(kind: .bankDebitAdvice, docDate: Self.date(2025, 6, 1)))
+        let custom = try library.changeKind(document.id!, to: .custom(boiler))
+        XCTAssertEqual(custom.kindRef, .custom(boiler))
+        XCTAssertEqual(custom.docDate, Self.date(2025, 6, 1))
+        let builtIn = try library.changeKind(document.id!, to: .builtIn(.repairInvoice))
+        XCTAssertEqual(builtIn.kind, .repairInvoice)
+        XCTAssertNil(builtIn.customKindId)
+        XCTAssertEqual(try library.document(id: document.id!)?.kindRef, .builtIn(.repairInvoice))
+    }
+
+    /// Change kind… is a Documents edit: a member who may only view Documents is refused, nothing written.
+    func testChangeKindIsRefusedForAMemberWhoCanOnlyViewDocuments() throws {
+        let document = try add("advice.pdf", "a", EvidenceMetadata(kind: .bankDebitAdvice))
+        let member = try manager.dbQueue.write { db -> AccessActor in
+            try db.execute(sql: "INSERT INTO person(name) VALUES ('Synthetic Admin')")
+            var admin = AppUser(personId: db.lastInsertedRowID, displayName: "Admin", isAdmin: true, createdAt: Date())
+            try admin.insert(db)
+            try db.execute(sql: "INSERT INTO person(name) VALUES ('Synthetic Member')")
+            var user = AppUser(personId: db.lastInsertedRowID, displayName: "Member", isAdmin: false, createdAt: Date())
+            try user.insert(db)
+            var permission = MemberPermission(appUserId: user.id!, area: AccessArea.documents.storageKey, level: .view)
+            try permission.insert(db)
+            return try AccessActor.load(appUserId: user.id!, db: db)
+        }
+        XCTAssertThrowsError(try library.changeKind(document.id!, to: .builtIn(.insuranceReceipt), actor: member)) {
+            XCTAssertEqual($0 as? AccessDenied, AccessDenied(area: .documents))
+        }
+        XCTAssertEqual(try library.document(id: document.id!)?.kind, .bankDebitAdvice)
+    }
+
     func testPersonsFromText() {
         XCTAssertEqual(EvidenceDocumentDetails.persons(from: "Ana, Bruno; ; ana"), ["Ana", "Bruno"])
         XCTAssertEqual(EvidenceDocumentDetails.persons(from: "  "), [])
     }
 
     // MARK: Links
+
+    /// Missing evidence's Unlink on a record the document isn't linked to (a P60 linked to the employment's
+    /// income record instead): nothing to unlink, false, its link elsewhere kept.
+    func testUnlinkFromARecordTheDocumentIsntLinkedToChangesNothing() throws {
+        let ids = try seed()
+        let document = try add("p60.pdf", "p", EvidenceMetadata(kind: .p60))
+        try library.link(document.id!, to: .transaction(ids.bbvaTransaction))
+        XCTAssertFalse(try library.unlink(document.id!, from: .transaction(ids.lloydsTransaction)))
+        XCTAssertEqual(try library.entities(for: document.id!).map(\.entity), [.transaction(ids.bbvaTransaction)])
+    }
 
     func testMoveLinksKeepsRolesAndExistingLinksAndEmptiesTheOldVersion() throws {
         let ids = try seed()

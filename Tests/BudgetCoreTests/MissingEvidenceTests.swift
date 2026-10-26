@@ -877,4 +877,66 @@ final class MissingEvidenceTests: XCTestCase {
         // The text still applies to it.
         XCTAssertEqual(MissingEvidence.filtered(all, missingOnly: true, text: "nothing like it", keeping: done.id), [])
     }
+
+    func testAttachedDocumentsNameACustomAcceptedKind() throws {
+        let (boiler, alarm) = try db.write { db in
+            (try XCTUnwrap(try CustomDocumentKinds.create(db: db, name: "Boiler service", area: .property, now: Date()).id),
+             try XCTUnwrap(try CustomDocumentKinds.create(db: db, name: "Alarm contract", area: .other, now: Date()).id))
+        }
+        try db.write { db in
+            var r = EvidenceRequirement(name: "Repairs", scope: .transactionsInCategory(categoryId: repairs), kinds: [], customKindIds: [boiler])
+            try EvidenceRequirements.save(db: db, &r)
+        }
+        let t = try transaction(Self.date(2025, 5, 2), -8_000, category: repairs)
+        let contract = try document(.other, name: "Alarm", linkedTo: .transaction(t))
+        try db.write { db in try db.execute(sql: "UPDATE document SET customKindId = ? WHERE id = ?", arguments: [alarm, contract]) }
+        let catalog = try db.read { db in DocumentKindCatalog(customKinds: try CustomDocumentKind.fetchAll(db)) }
+
+        let missing = try XCTUnwrap(try items(year2025.interval).first)
+        XCTAssertEqual(missing.status, .missing)
+        let attached = MissingEvidence.attached(missing, catalog: catalog)
+        XCTAssertEqual(attached.map(\.kindName), ["Alarm contract"])
+        XCTAssertEqual(attached.first?.explanation, "Attached: Alarm contract — not one of the kinds this needs")
+
+        // Filed as the custom kind the rule takes, it counts, named by that kind.
+        try db.write { db in try db.execute(sql: "UPDATE document SET customKindId = ? WHERE id = ?", arguments: [boiler, contract]) }
+        let done = try XCTUnwrap(try items(year2025.interval).first)
+        XCTAssertEqual(done.status, .satisfied)
+        let counting = MissingEvidence.attached(done, catalog: catalog)
+        XCTAssertEqual(counting.map(\.kindName), ["Boiler service"])
+        XCTAssertEqual(counting.map(\.shortfall), [nil])
+    }
+
+    /// The panel shows a suggestion only with a strong signal: a kind the rule names (not Other), or the
+    /// item's amount within 1%.
+    func testSuggestionsNeedAnAcceptedKindOrTheAmount() throws {
+        try requirement("Repairs", .transactionsInCategory(categoryId: repairs), kinds: [.repairInvoice, .other])
+        try transaction(Self.date(2025, 5, 2), -14_500, category: repairs)
+        let item = try XCTUnwrap(try items(year2025.interval).first)
+        let bill = try document(.repairInvoice, docDate: Self.date(2025, 5, 20), name: "Repair bill")
+        let tiling = try document(.other, docDate: Self.date(2025, 5, 10), name: "Tiling receipt")
+        let sameAmount = try document(.other, docDate: Self.date(2025, 5, 3), name: "Receipt")
+        try db.write { db in
+            try db.execute(sql: "UPDATE document SET amountMinorUnits = 21800, currency = 'eur' WHERE id = ?", arguments: [tiling])
+            try db.execute(sql: "UPDATE document SET amountMinorUnits = 14600, currency = 'eur' WHERE id = ?", arguments: [sameAmount])
+        }
+        let summaries = try [bill, tiling, sameAmount].map(summary)
+        let suggested = MissingEvidence.suggestions(for: item, summaries: summaries, matched: [])
+        XCTAssertEqual(Set(suggested.map(\.documentId)), [bill, sameAmount], "Other with another amount isn't suggested")
+    }
+
+    /// Change kind…'s note: how many items changed status.
+    func testStatusChangesCountsItemsWhoseStatusMoved() throws {
+        try requirement("IMI", .transactionsInCategory(categoryId: imi), kinds: [.imiNotice])
+        let first = try transaction(Self.date(2025, 5, 2), -100, category: imi)
+        let second = try transaction(Self.date(2025, 6, 2), -200, category: imi)
+        try transaction(Self.date(2025, 7, 2), -300, category: imi)
+        let notice = try document(.bankDebitAdvice, linkedTo: .transaction(first))
+        try db.write { db in _ = try EvidenceLinks.link(db: db, documentId: notice, to: .transaction(second)) }
+        let before = try items(year2025.interval)
+        try db.write { db in try db.execute(sql: "UPDATE document SET kind = ? WHERE id = ?", arguments: [DocumentKind.imiNotice.rawValue, notice]) }
+        let after = try items(year2025.interval)
+        XCTAssertEqual(MissingEvidence.statusChanges(from: before, to: after), 2)
+        XCTAssertEqual(MissingEvidence.statusChanges(from: after, to: after), 0)
+    }
 }

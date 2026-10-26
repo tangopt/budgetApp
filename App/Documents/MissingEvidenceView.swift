@@ -543,6 +543,8 @@ private struct ChecklistTable: View {
     var quickLook: () -> Void = {}
     @Environment(\.theme) private var theme
     @FocusState private var isFocused: Bool
+    /// The highlighted row while the panel is closed (↑/↓ move it, Return opens it).
+    @State private var cursorId: String?
     /// The rows' height, so a short checklist's card ends with its last row.
     @State private var contentHeight: CGFloat = 0
     /// The table's width, measured once for the header and every row (the evidence column).
@@ -563,8 +565,10 @@ private struct ChecklistTable: View {
                                         MissingEvidenceRow(item: item, shaded: index % 2 == 1,
                                                            evidenceWidth: evidenceWidth, actions: actions(item),
                                                            besidePanel: besidePanel, narrow: narrow, isSelected: item.id == selectedId,
+                                                           isCursor: selectedId == nil && item.id == cursorId,
                                                            onSelect: select.map { select in {
                                                                isFocused = true
+                                                               cursorId = item.id
                                                                select(item.id == selectedId ? nil : item.id)
                                                            } })
                                         .id(item.id)
@@ -580,10 +584,24 @@ private struct ChecklistTable: View {
                 .frame(maxHeight: contentHeight > 0 ? contentHeight : .infinity)
                 // The open row in view: when the panel opens on it, and when the panel moves to it.
                 .onAppear { if let selectedId { proxy.scrollTo(selectedId) } }
-                .onChange(of: selectedId) { _, id in if let id { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id) } } }
-                // Up and Down move the panel to the row above or below (folded sources skipped).
+                .onChange(of: selectedId) { _, id in
+                    if let id {
+                        cursorId = id
+                        withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id) }
+                    }
+                }
+                .onChange(of: cursorId) { _, id in
+                    if selectedId == nil, let id { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id) } }
+                }
+                // Up and Down move the panel to the row above or below (folded sources skipped);
+                // with the panel closed, they move the highlight and Return opens it.
                 .onKeyPress(.upArrow) { move(-1, proxy) }
                 .onKeyPress(.downArrow) { move(1, proxy) }
+                .onKeyPress(.return) {
+                    guard let select, selectedId == nil, let cursorId, visibleIds.contains(cursorId) else { return .ignored }
+                    select(cursorId)
+                    return .handled
+                }
                 .onKeyPress(.space) {
                     guard selectedId != nil else { return .ignored }
                     quickLook()
@@ -610,12 +628,12 @@ private struct ChecklistTable: View {
         let ids = visibleIds
         guard !ids.isEmpty else { return .ignored }
         let next: String
-        if let current = selectedId, let index = ids.firstIndex(of: current) {
+        if let current = selectedId ?? cursorId, let index = ids.firstIndex(of: current) {
             next = ids[min(max(index + steps, 0), ids.count - 1)]
         } else {
             next = steps > 0 ? ids[0] : ids[ids.count - 1]
         }
-        select(next)
+        if selectedId != nil { select(next) } else { cursorId = next }
         return .handled
     }
 
@@ -721,6 +739,8 @@ struct MissingEvidenceRow: View {
     var narrow = false
     /// The row the side panel shows.
     var isSelected = false
+    /// The keyboard's highlight with the panel closed.
+    var isCursor = false
     /// A click on the row: opens (or closes) its side panel; nil: rows don't open one.
     var onSelect: (() -> Void)? = nil
     @Environment(\.theme) private var theme
@@ -766,7 +786,7 @@ struct MissingEvidenceRow: View {
         .padding(.horizontal, ChecklistColumns.rowInset)
         .padding(.vertical, 3)
         .frame(minHeight: 28)
-        .background(isSelected ? theme.accent.opacity(0.16) : theme.rowBackground(shaded))
+        .background(isSelected ? theme.accent.opacity(0.16) : isCursor ? theme.accent.opacity(0.08) : theme.rowBackground(shaded))
         .overlay(alignment: .bottom) { Rectangle().frame(height: 1).foregroundStyle(.separator.opacity(0.6)) }
         .contentShape(Rectangle())
         .onTapGesture { onSelect?() }
@@ -807,8 +827,31 @@ struct MissingEvidenceRow: View {
             .accessibilityLabel(title)
     }
 
-    /// What it is, then (secondary) its slot, rule, category and account.
+    /// What it is, then (secondary) its slot, rule, category and account. Narrow: the name on
+    /// its own line (truncated in the middle), the day before the rest under it, so rows that
+    /// differ only by date tell apart.
+    @ViewBuilder
     private var description: some View {
+        if narrow {
+            let detail = caption
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.title).lineLimit(1).truncationMode(.middle)
+                HStack(spacing: 4) {
+                    DateText(date: item.expectedDate ?? item.expectedPeriod?.start, font: .caption).fixedSize()
+                    if !detail.isEmpty {
+                        Text("· " + detail).font(.caption).lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                .foregroundStyle(.secondary)
+            }
+            .help(detail.isEmpty ? item.title : "\(item.title)\n\(detail)")
+            .accessibilityElement(children: .combine)
+        } else {
+            wideDescription
+        }
+    }
+
+    private var wideDescription: some View {
         let detail = caption
         let secondary = Text(verbatim: detail.isEmpty ? "" : "  ·  " + detail).font(.callout).foregroundStyle(.secondary)
         return Text("\(Text(verbatim: item.title))\(secondary)")

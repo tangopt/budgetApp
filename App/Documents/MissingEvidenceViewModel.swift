@@ -194,11 +194,7 @@ final class MissingEvidenceViewModel: ObservableObject {
         let values = ValueObservation
             .tracking { db -> Snapshot in
                 let requirements = try EvidenceRequirements.all(db: db)
-                var items = try MissingEvidence.items(db: db, period: period, requirements: requirements)
-                if let propertyId {
-                    let related = try PropertyEvidence.relatedRequirementIds(db: db, propertyId: propertyId)
-                    items = items.filter { $0.requirement.id.map(related.contains) ?? false }
-                }
+                let items = try Self.checklist(db: db, period: period, propertyId: propertyId, requirements: requirements)
                 return Snapshot(requirements: requirements, items: items, customKinds: try CustomDocumentKind.fetchAll(db))
             }
             .removeDuplicates()
@@ -218,6 +214,18 @@ final class MissingEvidenceViewModel: ObservableObject {
                 self.isLoading = false
             }
         }
+    }
+
+    /// The period's items, only `propertyId`'s rules' when given: what the checklist shows.
+    nonisolated private static func checklist(db: Database, period: DateInterval, propertyId: Int64?,
+                                              requirements: [EvidenceRequirement]? = nil) throws -> [MissingEvidence.Item] {
+        let requirements = try requirements ?? EvidenceRequirements.all(db: db)
+        var items = try MissingEvidence.items(db: db, period: period, requirements: requirements)
+        if let propertyId {
+            let related = try PropertyEvidence.relatedRequirementIds(db: db, propertyId: propertyId)
+            items = items.filter { $0.requirement.id.map(related.contains) ?? false }
+        }
+        return items
     }
 
     private func refreshShown() {
@@ -268,14 +276,26 @@ final class MissingEvidenceViewModel: ObservableObject {
         }
     }
 
+    /// A change refused, in words.
+    struct Refusal: Error {
+        let message: String
+    }
+
     /// Files a document as another kind (the side panel's Change kind…), every other detail kept:
     /// the Documents inspector's save (`EvidenceLibrary.changeKind`), off the main thread and
-    /// checked against the filed returns. `done` gets the refusal's text, if refused.
-    func changeKind(documentId: Int64, to kind: DocumentKindRef, done: @escaping (String?) -> Void) {
-        let library = library
+    /// checked against the filed returns. `done` gets how many of the checklist's items changed
+    /// status (the document may be linked to several), or the refusal.
+    func changeKind(documentId: Int64, to kind: DocumentKindRef, done: @escaping (Result<Int, Refusal>) -> Void) {
+        let library = library, dbQueue = dbQueue, period = period, propertyId = propertyFilter?.propertyId
         Task {
-            guard let result = await guarded({ _ = try library.changeKind(documentId, to: kind, actor: try library.database.signedInActor()) }) else { return }
-            done(result.failure?.localizedDescription)
+            guard let result = await guarded({ () -> Int in
+                let before = try period.map { period in try dbQueue.read { db in try Self.checklist(db: db, period: period, propertyId: propertyId) } }
+                _ = try library.changeKind(documentId, to: kind, actor: try library.database.signedInActor())
+                guard let period, let before else { return 0 }
+                let after = try dbQueue.read { db in try Self.checklist(db: db, period: period, propertyId: propertyId) }
+                return MissingEvidence.statusChanges(from: before, to: after)
+            }) else { return }
+            done(result.mapError { Refusal(message: $0.localizedDescription) })
         }
     }
 
