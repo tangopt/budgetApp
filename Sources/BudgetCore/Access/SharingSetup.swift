@@ -86,7 +86,11 @@ public enum SharingSetup {
         }
 
         try db.inSavepoint {
+            // Records were placed (if at all) with every account joint at Everything: the next push's reconcile moves
+            // those the sheet makes private (`SyncZoneMoves.reconcile`).
+            let before = try SyncZoneMoves.currentFacts(db: db)
             try write(rows, admin: admin, db: db, now: now)
+            try SyncZoneMoves.storeFacts(before, db: db, now: now)
             return .commit
         }
     }

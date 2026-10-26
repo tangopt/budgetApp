@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 
 /// Records that moved between zones (a level change, sharing spec 2026-10-25 §3 goal 4), as this device knows
 /// them, in `syncZoneMove` (local only): one row per record and zone it left.
@@ -143,21 +144,31 @@ public enum SyncZoneMoves {
 
     /// A record a level change places differently: its zone, what it leaves out there or its companion.
     struct PlacementChange: Equatable {
+        typealias Placed = Result<ZoneAssignment, SyncZoneRouterError>
         var uuid: String
         var tableName: String
         var localId: Int64
+        var before: Placed
+        var after: Placed
+
+        /// It goes to another zone (not only in another form).
+        var changesZone: Bool {
+            guard case .success(let old) = before, case .success(let new) = after else { return true }
+            return old.zone != new.zone
+        }
     }
 
-    /// Every record this device tracks whose placement with `levels` (account id to level) in place of the stored
-    /// ones differs from its placement now (sharing spec 2026-10-25 §3 goal 4): what a level change sends again, so
-    /// the push moves it (or resends it without the fields it now leaves out). Reads only. A record the router can't
-    /// place counts when the reason changes (it may become placeable, or stop being); a gone row never counts. Summaries
-    /// never count: the owner's device rebuilds them before the push (`AccountSummaryBuilder`), deleting those the
-    /// new level doesn't allow, and they never leave the household.
-    static func placementChanges(levels: [Int64: SharingLevel], db: Database) throws -> [PlacementChange] {
-        let now = try SyncZoneRouter(db: db)
-        let then = try SyncZoneRouter(db: db, levels: levels)
-        func place(_ router: SyncZoneRouter, _ table: String, _ id: Int64) throws -> Result<ZoneAssignment, SyncZoneRouterError> {
+    /// Every record this device tracks whose placement under the account facts `to` differs from its placement under
+    /// `from` (account id to owner and level; an account in neither is as stored), sharing spec 2026-10-25 §3 goal 4:
+    /// what a level change sends again, so the push moves it (or resends it without the fields it now leaves out).
+    /// Reads only. A record the router can't place counts when the reason changes (it may become placeable, or stop
+    /// being); a gone row never counts. Summaries never count: the owner's device rebuilds them before the push
+    /// (`AccountSummaryBuilder`), deleting those the new level doesn't allow, and they never leave the household.
+    static func placementChanges(from: [Int64: SyncZoneRouter.AccountPlacement], to: [Int64: SyncZoneRouter.AccountPlacement],
+                                 db: Database) throws -> [PlacementChange] {
+        let then = try SyncZoneRouter(db: db, accounts: from)
+        let now = try SyncZoneRouter(db: db, accounts: to)
+        func place(_ router: SyncZoneRouter, _ table: String, _ id: Int64) throws -> PlacementChange.Placed {
             do { return .success(try router.assignment(table: table, localId: id)) } catch let error as SyncZoneRouterError { return .failure(error) }
         }
         var changes: [PlacementChange] = []
@@ -166,11 +177,126 @@ public enum SyncZoneMoves {
             let table: String = row["tableName"]
             let id: Int64 = row["localId"]
             guard SyncZoneRouter.rules[table] != nil, !AccessAreaMap.summaryTables.contains(table) else { continue }
-            if try place(now, table, id) != place(then, table, id) {
-                changes.append(PlacementChange(uuid: row["uuid"], tableName: table, localId: id))
+            let before = try place(then, table, id)
+            let after = try place(now, table, id)
+            if before != after {
+                changes.append(PlacementChange(uuid: row["uuid"], tableName: table, localId: id, before: before, after: after))
             }
         }
         return changes
+    }
+
+    // MARK: The levels records were last placed by
+
+    /// `syncState` key of the account facts (owner and level by account UUID) this device last placed records by.
+    static let placedLevelsKey = "placedLevels"
+
+    struct PlacedFacts: Codable, Equatable {
+        /// The owner's `person` UUID; nil: joint.
+        var owner: String?
+        var level: String
+    }
+
+    /// Every account's owner and level now, by account UUID (accounts with no sync identity aside).
+    static func currentFacts(db: Database) throws -> [String: PlacedFacts] {
+        var facts: [String: PlacedFacts] = [:]
+        for row in try Row.fetchAll(db, sql: """
+            SELECT s.uuid, a.sharingLevel, p.uuid AS ownerUuid FROM account a
+            JOIN syncRecord s ON s.tableName = 'account' AND s.localId = a.id
+            LEFT JOIN syncRecord p ON p.tableName = 'person' AND p.localId = a.ownerPersonId
+            """) {
+            facts[row["uuid"]] = PlacedFacts(owner: row["ownerUuid"], level: row["sharingLevel"])
+        }
+        return facts
+    }
+
+    static func storedFacts(db: Database) throws -> [String: PlacedFacts]? {
+        guard let data = try Data.fetchOne(db.cachedStatement(sql: "SELECT value FROM syncState WHERE key = ?"), arguments: [placedLevelsKey]) else {
+            return nil
+        }
+        return try? JSONDecoder().decode([String: PlacedFacts].self, from: data)
+    }
+
+    static func storeFacts(_ facts: [String: PlacedFacts], db: Database, now: Date) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let data = try encoder.encode(facts)
+        guard try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [placedLevelsKey]) != data else { return }
+        try SyncImportGate.setState(data, key: placedLevelsKey, db: db, now: now)
+    }
+
+    /// The account's entry of the stored facts is now `facts` (a level change whose records were queued here). Nothing
+    /// is stored when there are none yet: the next push's reconcile works them out.
+    static func noteFacts(accountId: Int64, db: Database, now: Date) throws {
+        guard var stored = try storedFacts(db: db),
+              let uuid = try String.fetchOne(db, sql: "SELECT uuid FROM syncRecord WHERE tableName = 'account' AND localId = ?", arguments: [accountId]),
+              let facts = try currentFacts(db: db)[uuid] else { return }
+        stored[uuid] = facts
+        try storeFacts(stored, db: db, now: now)
+    }
+
+    /// How many routings `reconcile` has run (tests: a push with nothing changed routes nothing).
+    static let reconcileRoutings = OSAllocatedUnfairLock(initialState: 0)
+
+    /// Before a push (sharing spec 2026-10-25 §3 goal 4, §5 anti-goal 2): the levels or owners of this person's accounts
+    /// changed since this device last placed their records, by a pull (another device's change), a tool or anything
+    /// that didn't go through `SharingLevels.set`. Their records placed differently are queued, so this push moves
+    /// them. One query when nothing changed. Only `owner`'s accounts (the viewer's): the owner's devices hold both
+    /// zones, another person's device leaves their records to them. With nothing stored yet (an upgrade, a restore):
+    /// every record on the server whose zone here, or on the server as far as this device knows, isn't where it is
+    /// placed now, in a zone this device syncs, and every one placed in a reduced form (a stub, property money leaving
+    /// out its batch). Returns how many records were queued.
+    @discardableResult
+    static func reconcile(owner: Int64?, zones: Set<String>, db: Database, now: Date) throws -> Int {
+        let current = try currentFacts(db: db)
+        let stored = try storedFacts(db: db)
+        if stored == current { return 0 }
+        reconcileRoutings.withLock { $0 += 1 }
+        var changes: [PlacementChange] = []
+        if let stored {
+            var from: [Int64: SyncZoneRouter.AccountPlacement] = [:]
+            for (uuid, old) in stored where current[uuid] != nil && current[uuid] != old {
+                guard let account = try SyncRecordStore.localId(table: "account", uuid: uuid, db: db) else { continue }
+                var oldOwner: Int64?
+                if let person = old.owner {
+                    guard let id = try SyncRecordStore.localId(table: "person", uuid: person, db: db) else { continue }
+                    oldOwner = id
+                }
+                let nowOwner = try Int64.fetchOne(db, sql: "SELECT ownerPersonId FROM account WHERE id = ?", arguments: [account])
+                guard let owner, oldOwner == owner || nowOwner == owner else { continue }
+                from[account] = .init(owner: oldOwner, level: SharingLevel(rawValue: old.level) ?? .hidden)
+            }
+            if !from.isEmpty {
+                // A record that is already where it now goes (another of the owner's devices moved it, and this one
+                // pulled it there) needs nothing more.
+                changes = try placementChanges(from: from, to: [:], db: db).filter { change in
+                    guard change.changesZone, case .success(let placed) = change.after else { return true }
+                    let zone = try String.fetchOne(db, sql: "SELECT zone FROM syncRecord WHERE uuid = ?", arguments: [change.uuid])
+                    guard zone == placed.zone else { return true }
+                    return try !SyncPresence.isIn(uuid: change.uuid, zone: placed.zone, db: db)
+                }
+            }
+        } else {
+            let router = try SyncZoneRouter(db: db)
+            for row in try Row.fetchAll(db, sql: "SELECT uuid, tableName, localId, zone FROM syncRecord WHERE zone <> ? ORDER BY rowid",
+                                        arguments: [SyncZoneSet.deviceOnlyZone]) {
+                let table: String = row["tableName"]
+                let id: Int64 = row["localId"]
+                let uuid: String = row["uuid"]
+                guard SyncZoneRouter.rules[table] != nil, !AccessAreaMap.summaryTables.contains(table),
+                      let placed = try? router.assignment(table: table, localId: id), zones.contains(placed.zone) else { continue }
+                let presence = try SyncPresence.zones(uuid: uuid, db: db)
+                // On the server somewhere, and not (only) where it goes now; or sent in a form that leaves fields out
+                // (a stub, property money): what went before can't be told here, so it goes again (a few records).
+                let reduced = !placed.omittedFields.isEmpty || placed.companion != nil
+                guard !presence.isEmpty, row["zone"] != placed.zone || !presence.contains(placed.zone) || reduced else { continue }
+                let result: PlacementChange.Placed = .success(placed)
+                changes.append(PlacementChange(uuid: uuid, tableName: table, localId: id, before: result, after: result))
+            }
+        }
+        try queue(changes, db: db)
+        try storeFacts(current, db: db, now: now)
+        return changes.count
     }
 
     /// Queues the records to be sent again as updates (`syncPending`; a queued insert stays an insert), with a fresh

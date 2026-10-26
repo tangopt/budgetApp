@@ -51,6 +51,15 @@ public enum SharingCopy {
 
     public static let netWorthNote = "Includes everything you can see"
 
+    /// The level-change warning's count (`SharingLevels.affectedCount`): "Moves 1 record", "Moves 1,204 records".
+    public static func moves(count: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = Locale(identifier: "en_GB")
+        let number = formatter.string(from: NSNumber(value: count)) ?? String(count)
+        return "Moves \(number) \(count == 1 ? "record" : "records")"
+    }
+
     // MARK: What blocks Hidden
 
     public static func blocker(_ blocker: SharingLevels.Blocker) -> String {

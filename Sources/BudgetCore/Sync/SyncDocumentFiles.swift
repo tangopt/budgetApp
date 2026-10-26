@@ -528,19 +528,25 @@ extension SyncEngineCore {
         var references: [String: SyncDocumentFileReference] = [:]
         /// Rows whose file at the hash's path doesn't match the hash (needs attention, never uploaded).
         var mismatched: [(uuid: String, table: String)] = []
-        /// Rows that had to be sealed again (a move) and whose file isn't on this device: they go without one.
+        /// Rows that had to be sealed again (a move) and have no file anywhere (none here, none on the server): they go
+        /// without one, as they came.
         var unsealable: [String] = []
+        /// Moving rows whose file is on the server but couldn't be sealed for the new zone yet (not here, and the old
+        /// zone's file record couldn't be fetched or opened): they wait, still pending, and their old file stays.
+        var held: [String] = []
     }
 
     /// The file-bearing payloads of `zone` (`SyncFileTables`: documents, waiting files) with their file reference:
     /// the stored one (re-wrapped if its key is retired), or, for a row whose file was never uploaded (or that must be
-    /// sealed again, `reseal`: a record moving to another zone), its file (at the path its hash gives, a regular file)
-    /// sealed now under its table's context and the zone's key. Nothing is uploaded or stored here: the caller checks
+    /// sealed again, `reseal`: a record moving to another zone, by the zone it leaves), its file (at the path its hash
+    /// gives, a regular file) sealed now under its table's context and the zone's key. A moving row whose file isn't
+    /// here is sealed from the old zone's file record (this device holds both zones' keys): fetched, opened and checked
+    /// against the hash, never deleted before its new copy exists. Nothing is uploaded or stored here: the caller checks
     /// the payloads, uploads `files` (`uploadFileRecords`) and keeps `references` once the records are saved.
     /// A device that doesn't sync files (no `SyncDocumentFiles`) still sends the references it holds, so an edit
     /// never drops a file from its record.
     func sealDocumentFiles(_ payloads: [SyncPayload], key: HouseholdKey, keys: [String: SymmetricKey], zone: String,
-                           reseal: Set<String> = []) async throws -> SealedFiles {
+                           reseal: [String: String] = [:]) async throws -> SealedFiles {
         @Sendable func carriesFile(_ payload: SyncPayload) -> Bool {
             SyncFileTables.names.contains(payload.recordType) && payload.mergedInto == nil && payload.movedTo == nil
         }
@@ -548,7 +554,7 @@ extension SyncEngineCore {
         guard payloads.contains(where: carriesFile) else { return result }
         let stored = try await db.read { db in
             try payloads.reduce(into: [String: SyncDocumentFileReference]()) { result, payload in
-                if carriesFile(payload), !reseal.contains(payload.recordName),
+                if carriesFile(payload), reseal[payload.recordName] == nil,
                    let reference = try SyncDocumentFile.reference(uuid: payload.recordName, db: db) {
                     result[payload.recordName] = reference
                 }
@@ -556,26 +562,36 @@ extension SyncEngineCore {
         }
         var references = stored
         for payload in payloads where carriesFile(payload) && references[payload.recordName] == nil {
-            guard let table = documents?.table(payload.recordType),
-                  case .string(let sha) = payload.fields["sha256"], case .string(let path) = payload.fields["storedRelativePath"],
-                  let safe = table.safePath(stored: path, sha256: sha) else {
-                // No file here: the record goes without one, as it came.
-                if reseal.contains(payload.recordName) { result.unsealable.append(payload.recordName) }
+            let leaving = reseal[payload.recordName]
+            guard case .string(let sha) = payload.fields["sha256"] else {
+                if leaving != nil { result.unsealable.append(payload.recordName) }
                 continue
             }
-            let url = table.root.appendingPathComponent(safe)
-            guard SyncFileTables.isRegularFile(url), let plaintext = try? Data(contentsOf: url) else {
-                if reseal.contains(payload.recordName) { result.unsealable.append(payload.recordName) }
-                continue
+            var plaintext: Data?
+            if let table = documents?.table(payload.recordType), case .string(let path) = payload.fields["storedRelativePath"],
+               let safe = table.safePath(stored: path, sha256: sha) {
+                let url = table.root.appendingPathComponent(safe)
+                if SyncFileTables.isRegularFile(url), let data = try? Data(contentsOf: url) {
+                    if DocumentCrypto.sha256(data) == sha.lowercased() {
+                        plaintext = data
+                    } else {
+                        result.mismatched.append((payload.recordName, table.table))
+                    }
+                }
             }
-            guard DocumentCrypto.sha256(plaintext) == sha.lowercased() else {
-                result.mismatched.append((payload.recordName, table.table))
-                if reseal.contains(payload.recordName) { result.unsealable.append(payload.recordName) }
-                continue
+            if plaintext == nil, let leaving {
+                // Not here: the file the record leaves behind is sealed again from the old zone's copy.
+                switch try await fileLeftBehind(uuid: payload.recordName, table: payload.recordType, sha256: sha, zone: leaving) {
+                case .opened(let data): plaintext = data
+                case .none: result.unsealable.append(payload.recordName)
+                case .unavailable: result.held.append(payload.recordName)
+                }
             }
+            guard let plaintext else { continue }
             // Sealed under the zone's current key (the push confirmed it with the server's marker).
             let box = try DocumentCrypto.seal(plaintext, zoneKey: key.key,
-                                              authenticating: table.context(uuid: payload.recordName, sha256: sha.lowercased()))
+                                              authenticating: DocumentCrypto.fileContext(table: payload.recordType, uuid: payload.recordName,
+                                                                                         sha256: sha.lowercased()))
             let name = SyncDocumentFile.newRecordName(uuid: payload.recordName)
             let reference = SyncDocumentFileReference(recordName: name, wrappedKey: box.wrappedKey)
             result.files.append((payload.recordName,
@@ -601,6 +617,34 @@ extension SyncEngineCore {
             return payload
         }
         return result
+    }
+
+    enum FileLeftBehind {
+        case opened(Data)
+        /// The record names no file there: nothing to move.
+        case none
+        /// It names one this device can't fetch or open now.
+        case unavailable
+    }
+
+    /// The file a moving row's copy in `zone` names (its stored reference), fetched from there and opened with that
+    /// zone's key, checked against the row's hash.
+    func fileLeftBehind(uuid: String, table: String, sha256 sha: String, zone: String) async throws -> FileLeftBehind {
+        guard let reference = try await db.read({ db in try SyncDocumentFile.reference(uuid: uuid, db: db) }) else { return .none }
+        let record: SyncServerRecord?
+        do {
+            record = try await transport.fetch(reference.recordName, zone: zone)
+        } catch let error as SyncTransportError where error.isPassing {
+            return .unavailable
+        }
+        guard let ciphertext = record?.wire.assets[SyncDocumentFile.assetField],
+              let id = try? DocumentCrypto.zoneKeyId(ofWrapped: reference.wrappedKey),
+              let zoneKey = try keyStore.allKeys(zone: zone)[id],
+              let plaintext = try? DocumentCrypto.open(ciphertext, wrappedKey: reference.wrappedKey, zoneKey: zoneKey,
+                                                      authenticating: DocumentCrypto.fileContext(table: table, uuid: uuid, sha256: sha.lowercased())),
+              DocumentCrypto.sha256(plaintext) == sha.lowercased()
+        else { return .unavailable }
+        return .opened(plaintext)
     }
 
     /// Saves file records (create only); returns the rows whose file record the server took. A passing failure
@@ -632,6 +676,23 @@ extension SyncEngineCore {
         try await db.write { db in
             for item in mismatched {
                 try SyncDocumentFile.logAttention(table: item.table, uuid: item.uuid, message: SyncDocumentFile.senderMismatchMessage, db: db, now: now)
+            }
+        }
+    }
+
+    /// Moving rows whose file couldn't be sealed for their new zone (they wait): logged for attention once each.
+    func logHeldFiles(_ held: [String], tables: [String: String]) async throws {
+        guard !held.isEmpty else { return }
+        Self.documentLog.error("Sync held back \(held.count) moving records whose files couldn't be moved yet")
+        let now = clock()
+        let message = SyncEngineCore.fileNotMovedMessage
+        try await db.write { db in
+            for uuid in held {
+                let logged = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM syncConflict WHERE uuid = ? AND losingValueJSON LIKE ?)",
+                                               arguments: [uuid, "%" + message + "%"]) ?? false
+                if !logged {
+                    try SyncDocumentFile.logAttention(table: tables[uuid] ?? SyncFileTables.document, uuid: uuid, message: message, db: db, now: now)
+                }
             }
         }
     }

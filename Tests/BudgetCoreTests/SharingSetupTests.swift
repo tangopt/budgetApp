@@ -499,6 +499,8 @@ final class SharingSetupTests: XCTestCase {
 
     func testSharingCopy() {
         XCTAssertEqual(SharingCopy.sheetTitle, "Who owns each account?")
+        XCTAssertEqual(SharingCopy.moves(count: 1), "Moves 1 record")
+        XCTAssertEqual(SharingCopy.moves(count: 1_204), "Moves 1,204 records")
         XCTAssertEqual(SharingCopy.sheetNote, "Every account is yours unless you mark it Joint. Joint accounts are always shared in full.")
         XCTAssertEqual(SharingCopy.ownerChoices(adminName: "Admin"), ["Admin", "Joint"])
         XCTAssertEqual(SharingCopy.ownerChoice(.joint, adminName: "Admin"), "Joint")

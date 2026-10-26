@@ -581,6 +581,16 @@ public actor SyncEngineCore {
                 try AccountSummaryBuilder.rebuild(ownerPersonId: person, db: db, today: today)
             }
         }
+        // Step 6: levels or owners that changed since this device last placed its person's records (a pull, a tool):
+        // those records are queued, so this push moves them. One query when nothing changed.
+        let zoneSet = Set(zoneList)
+        let viewerPerson = viewer.personUuid
+        let reconcileTime = clock()
+        try await db.write { db in
+            guard try SharingSetup.isConfirmed(db: db) else { return }
+            let owner = try viewerPerson.flatMap { try SyncRecordStore.localId(table: "person", uuid: $0, db: db) }
+            try SyncZoneMoves.reconcile(owner: owner, zones: zoneSet, db: db, now: reconcileTime)
+        }
         let busy = try await db.read { db in
             try !SyncChangeTracker.pending(db: db).isEmpty || SyncImportGate.heldLease(db: db) != nil
                 || !SyncZoneMoves.unfinished(db: db).isEmpty || !SyncCleanup.all(db: db).isEmpty
@@ -864,8 +874,10 @@ public actor SyncEngineCore {
         for zone in Self.sendingOrder(Set(payloads.map(\.zone))) {
             let key = try await sealingKey(zone: zone)
             let inZone = payloads.filter { $0.zone == zone }
-            let reseal = Set(inZone.filter { items[$0.recordName]?.move != nil && kinds[ZonedName(zone: zone, name: $0.recordName)] != nil }
-                .map(\.recordName))
+            var reseal: [String: String] = [:]
+            for payload in inZone where kinds[ZonedName(zone: zone, name: payload.recordName)] != nil {
+                if let from = items[payload.recordName]?.move?.from { reseal[payload.recordName] = from }
+            }
             let files = try await sealDocumentFiles(inZone, key: key, keys: try keyStore.allKeys(zone: zone), zone: zone, reseal: reseal)
             sealed[zone] = files
             final += files.payloads
@@ -874,6 +886,7 @@ public actor SyncEngineCore {
         // here changes, when any of it would leak.
         try await review(final, guardian: guardian)
         try await logMismatchedFiles(sealed.values.flatMap(\.mismatched))
+        try await logHeldFiles(sealed.values.flatMap(\.held), tables: Dictionary(final.map { ($0.recordName, $0.recordType) }, uniquingKeysWith: { a, _ in a }))
         let resentLogs = built.filter(\.resentReconciled).map(\.change)
         if !resentLogs.isEmpty {
             try await db.write { db in for change in resentLogs { try Self.logResentEdit(change, db: db, now: buildTime) } }
@@ -896,7 +909,9 @@ public actor SyncEngineCore {
         for payload in final {
             let name = ZonedName(zone: payload.zone, name: payload.recordName)
             let needsFile = sealed[payload.zone]?.files.contains { $0.uuid == payload.recordName } ?? false
-            if needsFile, uploaded[payload.zone]?.contains(payload.recordName) != true {
+            let held = sealed[payload.zone]?.held.contains(payload.recordName) ?? false
+            if held || (needsFile && uploaded[payload.zone]?.contains(payload.recordName) != true) {
+                // Its file isn't in the new zone yet: the record waits, still pending, and its old file stays.
                 report.documentsDeferred += 1
                 kinds[name] = nil
                 continue
@@ -964,9 +979,8 @@ public actor SyncEngineCore {
                             if let reference = files.references[name.name] {
                                 try SyncDocumentFile.setReference(reference, uuid: name.name, db: db, now: now)
                             } else if files.unsealable.contains(name.name) {
-                                // Moved without its file (not on this device): the old zone's file record still goes.
+                                // Moved with no file anywhere (none here, none on the server): it goes without one.
                                 try SyncDocumentFile.setReference(nil, uuid: name.name, db: db, now: now)
-                                try SyncDocumentFile.logAttention(table: change.table, uuid: name.name, message: Self.fileNotMovedMessage, db: db, now: now)
                             }
                         }
                         if let stale = builtItems[name.name]?.obsoleteCompanion {
@@ -1115,7 +1129,8 @@ public actor SyncEngineCore {
         return (outcome.1, outcome.2)
     }
 
-    static let fileNotMovedMessage = SyncTranslator.needsAttention + "moved to another zone without its file (not on this device)"
+    static let fileNotMovedMessage = SyncTranslator.needsAttention
+        + "its file couldn't be moved to the other zone yet (not on this device, and the old copy couldn't be fetched); the old copy is kept, still retrying"
 
     /// Ruling R12's line for an edit that brought back a record deleted on iCloud.
     private static func logResentEdit(_ change: PendingChange, db: Database, now: Date) throws {

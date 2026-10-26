@@ -909,14 +909,20 @@ final class SyncZonesEngineTests: XCTestCase {
         let moved = try h.uuid("transaction_", f.transferOut)
         let account = try h.uuid("account", f.shared)
 
-        // The first Mac lowers Shared; the reply of the private save is lost.
+        // The first Mac lowers Shared; the private save of one moving transaction fails there (the level still goes up).
         try write(h.adminMac) { db in _ = try SharingLevels.set(.balanceOnly, accountId: f.shared, actor: f.admin, db: db) }
-        h.macTransport.loseReply(to: moved, in: f.privateZone)
-        do { _ = try await h.adminMac.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
-        // The second Mac hears of it and moves its own copies too (its marker's reply is lost).
+        h.macTransport.failSaves(of: moved, in: f.privateZone)
+        _ = try await h.adminMac.engine.pushPending()
+        // The second Mac pulls the level and moves its own copy (its reconcile queues it); its marker's reply is lost.
         _ = try await h.adminMac2.engine.pull()
         h.mac2Transport.loseReply(to: moved, in: SyncZones.household)
         do { _ = try await h.adminMac2.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
+        XCTAssertEqual(try macZone(h.adminMac2, moved), f.privateZone, "the second Mac saved it in A's zone itself")
+        XCTAssertEqual(try unfinishedMoves(h.adminMac2, moved).map(\.zone), [SyncZones.household], "its marker still to confirm")
+        h.macTransport.restore()
+        // The first Mac's own attempt then finds A's copy there, saved by the second Mac.
+        h.macTransport.loseReply(to: moved, in: f.privateZone)
+        do { _ = try await h.adminMac.engine.pushPending() } catch SyncTransportError.networkUnavailable {}
         for _ in 1...2 {
             _ = try await h.adminMac.engine.syncNow()
             _ = try await h.adminMac2.engine.syncNow()

@@ -234,22 +234,33 @@ public final class SyncZoneRouter {
     private var inProgress: Set<Key> = []
     private var runZones: [Int64: String?] = [:]
 
-    /// Loads the facts. Refuses (`ownershipNotConfirmed`) until the admin has confirmed who owns each account.
-    public convenience init(db: Database) throws {
-        try self.init(db: db, levels: [:])
+    /// An account's owner and level, as routing reads them.
+    struct AccountPlacement: Equatable, Sendable {
+        var owner: Int64?
+        var level: SharingLevel
     }
 
-    /// The facts, with `levels` (account id to level) in place of the stored ones: where records would go after a
-    /// level change (`SyncZoneMoves.placementChanges`), without writing it.
-    init(db: Database, levels: [Int64: SharingLevel]) throws {
+    /// Loads the facts. Refuses (`ownershipNotConfirmed`) until the admin has confirmed who owns each account.
+    public convenience init(db: Database) throws {
+        try self.init(db: db, accounts: [:])
+    }
+
+    /// The facts, with `overrides` (account id to owner and level) in place of the stored ones: where records would go
+    /// after a level change, or went under the levels this device last placed them by (`SyncZoneMoves`), without
+    /// writing anything.
+    init(db: Database, accounts overrides: [Int64: AccountPlacement]) throws {
         guard try SharingSetup.isConfirmed(db: db) else { throw SyncZoneRouterError.ownershipNotConfirmed }
         self.db = db
         var accounts: [Int64: AccountFact] = [:]
         for row in try Row.fetchAll(db, sql: "SELECT id, ownerPersonId, sharingLevel FROM account") {
             let id: Int64 = row["id"]
             let raw: String? = row["sharingLevel"]
+            if let override = overrides[id] {
+                accounts[id] = AccountFact(owner: override.owner, level: override.level)
+                continue
+            }
             // An unknown level is the most private one.
-            accounts[id] = AccountFact(owner: row["ownerPersonId"], level: levels[id] ?? raw.flatMap(SharingLevel.init(rawValue:)) ?? .hidden)
+            accounts[id] = AccountFact(owner: row["ownerPersonId"], level: raw.flatMap(SharingLevel.init(rawValue:)) ?? .hidden)
         }
         self.accounts = accounts
         var people: [Int64: String] = [:]
@@ -262,7 +273,7 @@ public final class SyncZoneRouter {
         propertyCategoryIds = Set(try Int64.fetchAll(db, sql: """
             SELECT id FROM category WHERE groupId IN (SELECT categoryGroupId FROM propertyCategoryGroup)
             """))
-        details = try SyncPrivateDetails(db: db, levels: levels)
+        details = try SyncPrivateDetails(db: db, levels: overrides.mapValues(\.level))
         pinnedTransactionIds = Set(try Int64.fetchAll(db, sql: Self.pinningTables
             .map { "SELECT transactionId FROM \(SyncChangeTracker.quoted($0)) WHERE transactionId IS NOT NULL" }
             .joined(separator: " UNION ")))
