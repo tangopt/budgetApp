@@ -262,11 +262,13 @@ struct TaxMissingEvidenceTab: View {
                 if saved == nil { saved = (viewModel.periodChoice, viewModel.propertyFilter) }
                 // The standalone screen's side panel doesn't follow it here (nor this one back).
                 viewModel.selectedItemId = nil
+                viewModel.taxFiguresOnly = true
                 follow()
             }
             .onChange(of: key) { follow() }
             .onDisappear {
                 viewModel.selectedItemId = nil
+                viewModel.taxFiguresOnly = false
                 if let saved {
                     viewModel.periodChoice = saved.0
                     viewModel.propertyFilter = saved.1

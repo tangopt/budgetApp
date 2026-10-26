@@ -92,6 +92,12 @@ public enum MissingEvidence {
         /// Documents linked to its record that don't count for it (another kind; for a periodic
         /// item, of its kind but with no date or period), the side panel's "why" (`attached`).
         public var otherDocuments: [EvidenceDocumentSummary] = []
+        /// The transaction's category (transaction scopes).
+        public var categoryId: Int64?
+        /// A transaction in a category mapped not deductible (utilities, bank fees, life
+        /// insurance): its document is kept for the recharges and the records, and changes no
+        /// figure of a tax year, so the tax years' checklists leave it out.
+        public var isForRecharges = false
 
         /// The group the checklist shows it in.
         public var sourceName: String { usualSource ?? MissingEvidence.otherSourceName }
@@ -167,7 +173,8 @@ public enum MissingEvidence {
                     result.append(item(requirement: requirement, catalog: catalog, target: target, documents: documents, linked: all, waiver: waiver(target),
                                        date: transaction.date, amount: abs(transaction.amountMinorUnits), currency: account?.currency,
                                        period: nil, title: transaction.rawDescription,
-                                       categoryName: transaction.categoryId.flatMap { categoryNames[$0] }, accountName: account?.displayName))
+                                       categoryName: transaction.categoryId.flatMap { categoryNames[$0] }, accountName: account?.displayName,
+                                       categoryId: transaction.categoryId))
                 }
             case let .periodic(entity, every):
                 let linkedToEntity = try linked.documents(for: entity)
@@ -216,7 +223,30 @@ public enum MissingEvidence {
                 }
             }
         }
+        let notDeductible = try notDeductibleExpenseCategoryIds(db: db)
+        if !notDeductible.isEmpty {
+            for index in result.indices {
+                result[index].isForRecharges = result[index].categoryId.map(notDeductible.contains) ?? false
+            }
+        }
         return result.sorted(by: itemOrder)
+    }
+
+    /// The items that can change a tax year's figures: those not `isForRecharges`.
+    public static func affectingTaxFigures(_ items: [Item]) -> [Item] { items.filter { !$0.isForRecharges } }
+
+    /// The expense categories of any property mapped not deductible (stored, else suggested by
+    /// name: `TaxExpenseTypeMap`). A category some property claims (any other type) is left out.
+    public static func notDeductibleExpenseCategoryIds(db: Database) throws -> Set<Int64> {
+        var notDeductible: Set<Int64> = [], claimed: Set<Int64> = []
+        for property in try Property.fetchAll(db) {
+            guard let propertyId = property.id else { continue }
+            for entry in try TaxExpenseTypeMap.entries(db: db, propertyId: propertyId) where entry.category.type == .expense {
+                guard let id = entry.category.id else { continue }
+                if entry.expenseType == .notDeductible { notDeductible.insert(id) } else { claimed.insert(id) }
+            }
+        }
+        return notDeductible.subtracting(claimed)
     }
 
     /// The slots of `period`, laid out from its start (a tax year's months run 6th to 5th),
@@ -327,14 +357,14 @@ public enum MissingEvidence {
     private static func item(requirement: EvidenceRequirement, catalog: DocumentKindCatalog, target: Target, documents: [EvidenceDocumentSummary],
                              linked: [EvidenceDocumentSummary], waiver: EvidenceWaiver?,
                              date: Date?, amount: Int?, currency: Currency?, period: DateInterval?, title: String,
-                             categoryName: String?, accountName: String?) -> Item {
+                             categoryName: String?, accountName: String?, categoryId: Int64? = nil) -> Item {
         let status: Status = !documents.isEmpty ? .satisfied : (waiver != nil ? .waived : .missing)
         return Item(id: itemId(requirementId: requirement.id ?? 0, target: target), requirement: requirement, target: target,
                     expectedKinds: requirement.kinds, expectedKindRefs: requirement.kindRefs,
                     expectedKindNames: requirement.kindRefs.map(catalog.displayName), expectedDate: date, expectedAmountMinorUnits: amount, currency: currency,
                     expectedPeriod: period, title: title, categoryName: categoryName, accountName: accountName,
                     usualSource: requirement.usualSource, status: status, satisfyingDocuments: documents, waiver: waiver,
-                    otherDocuments: linked.filter { document in !documents.contains { $0.id == document.id } })
+                    otherDocuments: linked.filter { document in !documents.contains { $0.id == document.id } }, categoryId: categoryId)
     }
 
     static func itemId(requirementId: Int64, target: Target) -> String {
