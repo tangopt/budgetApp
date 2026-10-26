@@ -489,8 +489,8 @@ final class HouseholdInviteTests: XCTestCase {
     }
 
     /// Fix round 1 (I2): a document file whose document isn't in the household (an orphan) fails the audit, even when
-    /// this Mac doesn't know the document at all.
-    func testOrphanDocumentFileFailsTheAudit() async throws {
+    /// this Mac doesn't know the document at all. Final review I-1: the invite cleans it first (`HouseholdOrphanFiles`).
+    func testOrphanDocumentFileFailsTheAuditAndTheInviteCleansIt() async throws {
         let h = try await ready()
         let orphan = SyncDocumentFile.newRecordName(uuid: UUID().uuidString.lowercased())
         let inner = SyncWireRecord(recordType: SyncDocumentFile.recordType, recordName: orphan, zone: household,
@@ -500,9 +500,27 @@ final class HouseholdInviteTests: XCTestCase {
 
         let violations = try await HouseholdInvite.auditServer(transport: h.macTransport, keys: h.adminKeys, db: h.adminMac.db)
         XCTAssertEqual(violations.map(\.recordName), [orphan])
-        let result = try await invite(h)
-        XCTAssertEqual(result, .blocked([.householdAudit(1)]))
-        try await noShare(h)
+        _ = try share(try await invite(h))
+        let left = await h.cloud.storedRecords().filter { $0.recordName == orphan }
+        XCTAssertEqual(left, [], "cleaned before the audit")
+        let after = try await HouseholdInvite.auditServer(transport: h.macTransport, keys: h.adminKeys, db: h.adminMac.db)
+        XCTAssertEqual(after, [])
+    }
+
+    /// A file whose record is live in the household is never cleaned.
+    func testFileOfALiveRecordIsNeverCleaned() async throws {
+        let h = try await ready()
+        let stored = await h.cloud.storedRecords()
+        let record = try XCTUnwrap(stored.first { $0.zone == household && $0.recordType == "account" })
+        let file = SyncDocumentFile.newRecordName(uuid: record.recordName)
+        let inner = SyncWireRecord(recordType: SyncDocumentFile.recordType, recordName: file, zone: household,
+                                   assets: ["file": Data("Synthetic bytes".utf8)])
+        let sealed = try FieldSealing.seal(inner, key: try XCTUnwrap(try h.adminKeys.key(zone: household)))
+        _ = try await h.cloud.save([sealed], ifUnchanged: [:], atomic: false)
+        let removed = try await HouseholdOrphanFiles.clean(transport: h.macTransport, keys: h.adminKeys, db: h.adminMac.db)
+        XCTAssertEqual(removed, 0, "its record is live there")
+        let kept = await h.cloud.storedRecords().filter { $0.recordName == file }
+        XCTAssertEqual(kept.count, 1)
     }
 
     func testCopy() {

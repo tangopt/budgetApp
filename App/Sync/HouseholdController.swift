@@ -63,6 +63,15 @@ final class HouseholdController: ObservableObject {
         return made
     }
 
+    /// The iCloud account changed (`RealSync`): the transport (which keeps the iCloud user it first read) and what was
+    /// read through it are dropped, so the next call reads the account signed in now (final review M-5).
+    func accountChanged() {
+        transport = nil
+        share = nil
+        granter = nil
+        request = nil
+    }
+
     private var keys: KeychainSyncKeyStore { KeychainSyncKeyStore(container: CloudKitTransport.keyScope(demo: false)) }
 
     // MARK: Reading

@@ -301,7 +301,14 @@ final class SyncKeyExchangeTests: XCTestCase {
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncStaging") ?? 0
             }
             XCTAssertEqual(staged, 0, "nothing staged on \(device.engine.device.name)")
+            // Final review M-2: quietly, nothing needs attention (the admin's iPhone included).
+            let attention = try await device.db.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM syncConflict") ?? 0
+            }
+            XCTAssertEqual(attention, 0, "nothing needs attention on \(device.engine.device.name)")
         }
+        XCTAssertTrue(SyncEngineCore.reservedRecordTypes.isSuperset(of: [SyncKeyExchange.offerRecordType, SyncKeyExchange.grantRecordType,
+                                                                        SyncKeyExchange.requestRecordType]))
         XCTAssertEqual(h.audit.householdViolations(router: h.adminRouter()), [])
         let findings = try await HouseholdInvite.auditServer(transport: h.macTransport, keys: h.adminKeys, db: h.adminMac.db)
         XCTAssertEqual(findings, [])

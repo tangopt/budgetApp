@@ -283,12 +283,17 @@ final class DeletionAttributionTests: XCTestCase {
             XCTAssertNotNil(try h.localId("document", uuid: uuid, on: device))
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: library.appendingPathComponent(path).path), "the Mac's file stays")
+        // Final review I-1: the deleting device took the file record it knew, so the Mac seals the file again.
         let fileAfter = try await h.adminMac.db.read { db in try SyncDocumentFile.reference(uuid: uuid, db: db) }
-        XCTAssertEqual(fileAfter, fileBefore)
+        XCTAssertNotNil(fileAfter)
+        XCTAssertNotEqual(fileAfter, fileBefore, "sealed again")
         let server = try await serverPayload(h, uuid)
         XCTAssertNil(server?.deleted)
         XCTAssertEqual(server?.resent, true)
-        XCTAssertEqual(server?.documentFile, fileBefore, "sent again with its file")
+        XCTAssertEqual(server?.documentFile, fileAfter, "sent again with its file")
+        let fileRecords = await h.cloud.storedRecords().filter { $0.recordType == SyncDocumentFile.recordType }.map(\.recordName)
+        XCTAssertTrue(fileRecords.contains(try XCTUnwrap(fileAfter).recordName), "its file record is on the server")
+        XCTAssertFalse(fileRecords.contains(try XCTUnwrap(fileBefore).recordName), "the deleted one is gone")
         let logged = try reverts(h)
         XCTAssertTrue(logged.contains("Reverted a delete by B: no permission for Documents"), "\(logged)")
     }

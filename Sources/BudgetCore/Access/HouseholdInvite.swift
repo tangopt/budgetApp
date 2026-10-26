@@ -120,7 +120,7 @@ public enum HouseholdInvite {
         return violations
     }
 
-    /// The invite: the local gate, then the server audit, then the household's zone-wide share (made once: a second
+    /// The invite: the local gate, then the household's orphan files cleaned (`HouseholdOrphanFiles`), the server audit, then the household's zone-wide share (made once: a second
     /// invite gets the same share back). Nothing is shared while anything blocks. A passing transport error (offline,
     /// busy) is `.offline`.
     public static func invite(transport: any SyncTransport & SyncShareTransport, keys: any SyncKeyStore, db: any DatabaseWriter,
@@ -128,6 +128,8 @@ public enum HouseholdInvite {
         let local = try await db.read { db in try localBlockers(db: db) }
         guard local.isEmpty else { return .blocked(local) }
         do {
+            // Final review I-1: files left by household document deletes before deletes took them go first.
+            try await HouseholdOrphanFiles.clean(transport: transport, keys: keys, db: db)
             let violations = try await auditServer(transport: transport, keys: keys, db: db)
             guard violations.isEmpty else { return .blocked([.householdAudit(violations.count)]) }
             // Nothing changed here while the server was read.

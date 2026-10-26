@@ -408,6 +408,8 @@ public actor SyncEngineCore {
         let reconcile = full ? listed : nil
         let keyRecords = Array(zoneKeys.values)
         let now = clock()
+        // A device that writes the zone deletes a deleted row's file there too (final review I-1).
+        let cleansFiles = !readOnly && !householdIsShared
         try Task.checkCancellation()
         let (pulled, discarded) = try await db.write { db -> (SyncPullReport, [String]) in
             var report = SyncPullReport()
@@ -562,7 +564,7 @@ public actor SyncEngineCore {
             report.unreadable += try Self.takeDocumentFiles(zoneKeys: keyRecords,
                                        saves: incoming.compactMap { if case .save(let payload) = $0, !payload.isDeletionMarker { return payload } else { return nil } },
                                        deletions: ordered.compactMap { if case .delete = $0.1 { return $0.0 } else { return nil } } + deletionMarkers,
-                                       zone: zone, keyStore: self.keyStore, db: db, now: now)
+                                       zone: zone, keyStore: self.keyStore, db: db, now: now, cleansFiles: cleansFiles)
             for case .save(let payload) in incoming {
                 guard let prior = before[payload.recordName] else { continue }
                 if case .staged? = results[payload.recordName] { continue }
@@ -639,6 +641,7 @@ public actor SyncEngineCore {
             // every record placed differently now is queued, so this push moves it. One query when nothing changed.
             try SyncPlacementSweep.run(zones: zoneSet, db: db, now: reconcileTime)
         }
+        try await cleanOrphanFilesOnce()
         let busy = try await db.read { db in
             try !SyncChangeTracker.pending(db: db).isEmpty || SyncImportGate.heldLease(db: db) != nil
                 || !SyncZoneMoves.unfinished(db: db).isEmpty || !SyncCleanup.all(db: db).isEmpty
@@ -726,6 +729,7 @@ public actor SyncEngineCore {
                         }
                     }
                     let taken = markerResults
+                    let deleteTime = clock()
                     let done = try await db.write { db -> [PendingChange] in
                         // A delete is done once its marker is on the server (or the record is gone there).
                         var waiting: Set<String> = []
@@ -760,11 +764,26 @@ public actor SyncEngineCore {
                         for change in done {
                             try SyncCompanions.remove(name: SyncZoneRouter.companionRecordName(accountUuid: change.uuid), db: db)
                         }
+                        // Final review I-1: a deleted record's sealed file goes too, in every zone its delete went to
+                        // (durable: `SyncCleanup` tries it on every push until the server takes it). A file record is
+                        // named for its own record only, so no other record's file is ever named here.
+                        let doneNames = Set(done.map(\.uuid))
+                        for (zone, names) in zones {
+                            for name in names where doneNames.contains(name) {
+                                guard let file = try SyncDocumentFile.reference(uuid: name, db: db) else { continue }
+                                try SyncCleanup.add(zone: zone, recordName: file.recordName, db: db)
+                            }
+                        }
+                        for name in doneNames where try SyncDocumentFile.reference(uuid: name, db: db) != nil {
+                            try SyncDocumentFile.setReference(nil, uuid: name, db: db, now: deleteTime)
+                        }
                         _ = try SyncBatch.closeUploaded(db: db)
                         return done
                     }
                     report.deleted += done.count
                 }
+                // The files of what was just deleted (I-1) go in this push.
+                if !deletes.isEmpty { try await cleanUp() }
                 if !missingZones.isEmpty {
                     guard !recovered else { throw SyncTransportError.zoneNotFound(missingZones.sorted().joined(separator: ",")) }
                     recovered = true
@@ -805,6 +824,23 @@ public actor SyncEngineCore {
         }
         try await releaseLeaseIfDone(key)
         return report
+    }
+
+    /// Final review I-1: on the first push after install, the household's orphan file records (`HouseholdOrphanFiles`)
+    /// are deleted, once ownership is confirmed and the household key is here, on a device that owns the household (a
+    /// member's is read-only). A failure is logged and tried again on the next push.
+    private func cleanOrphanFilesOnce() async throws {
+        guard !householdIsShared, zoneList.contains(SyncZones.household) else { return }
+        let due = try await db.read { db in try SharingSetup.isConfirmed(db: db) && !HouseholdOrphanFiles.isDone(db: db) }
+        guard due, (try? keyStore.allKeys(zone: SyncZones.household))?.isEmpty == false else { return }
+        do {
+            try await HouseholdOrphanFiles.clean(transport: transport, keys: keyStore, db: db)
+        } catch {
+            Self.log.error("Sync: the household's orphan files weren't cleaned (\(String(describing: error), privacy: .public)); tried again next push")
+            return
+        }
+        let now = clock()
+        try await db.write { db in try SyncImportGate.setState(Data([1]), key: HouseholdOrphanFiles.doneKey, db: db, now: now) }
     }
 
     /// The zone's current key for this push (made for a zone of this device's own when it has none, ruling R15).

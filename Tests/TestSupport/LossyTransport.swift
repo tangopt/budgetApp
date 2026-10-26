@@ -8,6 +8,7 @@ public final class LossyTransport: SyncTransport, Sendable {
     private struct State {
         var loseReply: (name: String, zone: String)?
         var fail: (name: String, zone: String)?
+        var loseDeleteReply: String?
     }
 
     private let inner: any SyncTransport
@@ -22,6 +23,9 @@ public final class LossyTransport: SyncTransport, Sendable {
 
     /// Every save of `name` in `zone` fails (a passing failure) until `restore()`.
     public func failSaves(of name: String, in zone: String) { state.withLock { $0.fail = (name, zone) } }
+
+    /// The next delete in `zone` is taken by the server, but its reply is lost.
+    public func loseDeleteReply(in zone: String) { state.withLock { $0.loseDeleteReply = zone } }
 
     public func restore() { state.withLock { $0 = State() } }
 
@@ -45,7 +49,15 @@ public final class LossyTransport: SyncTransport, Sendable {
     }
 
     public func changes(since token: Data?, zone: String) async throws -> SyncChanges { try await inner.changes(since: token, zone: zone) }
-    public func delete(_ recordNames: [String], zone: String) async throws { try await inner.delete(recordNames, zone: zone) }
+    public func delete(_ recordNames: [String], zone: String) async throws {
+        try await inner.delete(recordNames, zone: zone)
+        let lost = state.withLock { state -> Bool in
+            guard !recordNames.isEmpty, state.loseDeleteReply == zone else { return false }
+            state.loseDeleteReply = nil
+            return true
+        }
+        if lost { throw SyncTransportError.networkUnavailable }
+    }
     public func fetch(_ recordName: String, zone: String) async throws -> SyncServerRecord? { try await inner.fetch(recordName, zone: zone) }
     public func serverTime() async throws -> Date? { try await inner.serverTime() }
 }
