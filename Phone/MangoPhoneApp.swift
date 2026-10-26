@@ -87,11 +87,6 @@ struct PhoneRoot: View {
                     .sheet(isPresented: $showingSettings) {
                         settings(environment, tabs)
                     }
-                    .onChange(of: sync.viewerRecordName) { _, name in
-                        // This iPhone's iCloud user became known: the screens read as them.
-                        guard !environment.isDemo else { return }
-                        Task { await tabs.setViewer(.iCloudUser(recordName: name)) }
-                    }
             case .failed(let message):
                 ContentUnavailableView("Mango couldn't open its data", systemImage: "exclamationmark.triangle",
                                        description: Text(message))
@@ -133,8 +128,11 @@ struct PhoneRoot: View {
             let hasProperty = await PhoneTabsModel.hasProperty(environment.dbQueue) ?? true
             // Whose figures: demo data's admin, else this iPhone's iCloud user (nobody's own until it is named).
             let viewer: PhoneViewer = environment.isDemo ? .demoAdmin : .iCloudUser(recordName: sync.viewerRecordName)
-            stage = .ready(environment, PhoneTabsModel(dbQueue: environment.dbQueue, today: environment.today,
-                                                       hasProperty: hasProperty, viewer: viewer))
+            let tabs = PhoneTabsModel(dbQueue: environment.dbQueue, today: environment.today, hasProperty: hasProperty, viewer: viewer)
+            // This iPhone's iCloud user, as sync reads it: followed by the model, not by a view, because the content
+            // is out of the view tree while locked and the name is usually read before the first unlock.
+            if !environment.isDemo { tabs.follow(recordNames: sync.$viewerRecordName) }
+            stage = .ready(environment, tabs)
             if !environment.isDemo { await sync.attach(environment) }
         } catch {
             stage = .failed(error.localizedDescription)

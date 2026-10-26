@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import BudgetCore
 import GRDB
@@ -25,6 +26,9 @@ public final class PhoneTabsModel: ObservableObject {
 
     private let dbQueue: any DatabaseReader
     private var loadedKey: Date?
+    /// The iCloud user's record names followed (`follow(recordNames:)`), and the reload the latest one asked for.
+    private var following: AnyCancellable?
+    private var viewerReload: Task<Void, Never>?
 
     /// Whose figures the tabs show (step 6): demo data's admin, or this iPhone's iCloud user.
     public private(set) var viewer: PhoneViewer
@@ -62,13 +66,34 @@ public final class PhoneTabsModel: ObservableObject {
         HomeViewModel.reloadKey(status)
     }
 
+    /// Follows this iPhone's iCloud user as sync reads it (`PhoneSyncController.$viewerRecordName`, on the main actor):
+    /// the name already read first, then each change. This model lives above the lock cover, which keeps the content
+    /// out of the view tree while locked, and the app launches locked: a view's `onChange` there never saw a name read
+    /// before unlocking change, so the tabs kept the unnamed viewer. Held here, nothing read while locked is missed.
+    public func follow<Names: Publisher>(recordNames: Names) where Names.Output == String?, Names.Failure == Never {
+        following = recordNames.sink { [weak self] name in
+            MainActor.assumeIsolated { self?.followed(name) }
+        }
+    }
+
     /// This iPhone's iCloud user became known (or changed): the screens that read through the viewer read again.
-    public func setViewer(_ viewer: PhoneViewer) async {
-        guard viewer != self.viewer else { return }
+    private func followed(_ recordName: String?) {
+        guard assignViewer(.iCloudUser(recordName: recordName)) else { return }
+        viewerReload?.cancel()
+        viewerReload = Task { [weak self] in await self?.reloadViewerScreens() }
+    }
+
+    /// Sets the viewer on every screen that reads through it; false when it is already the one.
+    private func assignViewer(_ viewer: PhoneViewer) -> Bool {
+        guard viewer != self.viewer else { return false }
         self.viewer = viewer
         home.viewer = viewer
         month.viewer = viewer
         accounts.viewer = viewer
+        return true
+    }
+
+    private func reloadViewerScreens() async {
         await home.load()
         await month.load()
         await accounts.load()
