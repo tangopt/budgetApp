@@ -128,7 +128,9 @@ struct EditAccountSheet: View {
     var body: some View {
         SheetScaffold(title: "Edit account", error: error, width: SheetMetrics.formWidth, onCancel: { dismiss() },
                       primary: SheetAction("Save", isEnabled: canPressSave, action: save)) {
-            SheetForm {
+            // The form scrolls within the window (a 1100×700 window included); Cancel and Save stay in view below it.
+            ScrollView(.vertical) {
+                SheetForm {
                 LabeledContent("Name") { TextField("Name", text: $name) }
                 LabeledContent("Currency", value: account.currency.rawValue.uppercased())
                 LabeledContent("Kind") {
@@ -144,7 +146,13 @@ struct EditAccountSheet: View {
                 NetWorthToggle(isOn: $includeInNetWorth)
                 AccountSharingSection(draft: sharing, viewModel: viewModel)
                 AccountDetailsFields(draft: $details, revealAll: revealErrors)
+                }
+                // Room for the focus ring and the scroller beside the fields.
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
             }
+            .scrollIndicators(.automatic)
+            .frame(maxHeight: Self.formMaxHeight)
         }
         .onAppear {
             if let id = account.id { hasHistory = viewModel.hasHistory(id) }
@@ -178,6 +186,8 @@ struct EditAccountSheet: View {
     }
 
     static let mainAccountHelp = "Planned items with no account of their own go to this account"
+    /// The form's tallest view before it scrolls: the whole sheet stays under ~600pt, inside a 700pt-high window.
+    static let formMaxHeight: CGFloat = 460
 }
 
 // MARK: - Shared pieces
