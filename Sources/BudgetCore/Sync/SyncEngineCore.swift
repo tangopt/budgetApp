@@ -117,9 +117,10 @@ public struct SyncReport: Equatable, Sendable {
 /// The public entry points run one at a time, in call order. Stamps are kept in `syncRecord` (the opaque
 /// `systemFields` and the `changeTag` compared); the change token per zone is in `syncState`.
 public actor SyncEngineCore {
-    /// Records in the zone that are the engine's own, never data: the import lease, the zone key marker and the
-    /// sealed document files (sync spec §9.1).
-    static let reservedRecordTypes: Set<String> = [TransportLeaseStore.recordType, SyncZoneKeys.recordType, SyncDocumentFile.recordType]
+    /// Records in the zone that are the engine's own, never data: the import lease, the zone key marker, the
+    /// sealed document files (sync spec §9.1) and the household key exchange's (step 7a Task 8).
+    static let reservedRecordTypes = Set([TransportLeaseStore.recordType, SyncZoneKeys.recordType, SyncDocumentFile.recordType])
+        .union(SyncKeyExchange.recordTypes)
     /// A payload whose record would be larger than this goes as an encrypted asset (ruling R4).
     public static let largePayloadThreshold = 900_000
     /// How many times one push tries one record before leaving it for the next sync.

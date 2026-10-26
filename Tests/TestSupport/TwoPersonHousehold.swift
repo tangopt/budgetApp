@@ -63,10 +63,11 @@ public final class TwoPersonHousehold {
     /// fixture's, written as they are (no blockers checked). `macDocuments` / `phoneDocuments`: where those devices
     /// keep files, when a test syncs files. `revalidatesAccess`: the admin's Mac re-validates what it pulls (step 6
     /// Task 9), as the app's Mac does. `memberInvited` false (step 7a Task 7): the household isn't shared yet, so her
-    /// iCloud user isn't on its share and her appUser has no record name.
+    /// iCloud user isn't on its share and her appUser has no record name. `memberHasHouseholdKey` false (step 7a Task 8):
+    /// her device starts without the household key, as before the key exchange.
     public static func make(levels: [Int64: SharingLevel] = [:], macDocuments: SyncDocumentFiles? = nil,
                             phoneDocuments: SyncDocumentFiles? = nil, revalidatesAccess: Bool = false,
-                            memberInvited: Bool = true) throws -> TwoPersonHousehold {
+                            memberInvited: Bool = true, memberHasHouseholdKey: Bool = true) throws -> TwoPersonHousehold {
         // The admin made the household zone before inviting her (the member can't create it in his database).
         // Its clock keeps up with the devices' (they stamp `Date()`), so the members' clocks aren't all clamped (step 7a).
         let cloud = FakeCloud(start: Date(), zones: [SyncZones.household], ownerRecordName: adminICloudUser, followsWallClock: true)
@@ -78,7 +79,7 @@ public final class TwoPersonHousehold {
         let memberKeys = InMemorySyncKeyStore()
         let householdKey = DocumentCrypto.newZoneKey()
         try adminKeys.store(householdKey, zone: SyncZones.household)
-        try memberKeys.store(householdKey, zone: SyncZones.household)
+        if memberHasHouseholdKey { try memberKeys.store(householdKey, zone: SyncZones.household) }
         let audit = ZoneAuditingTransport(wrapping: cloud, keyStore: adminKeys)
         // Her device's transport: the household through her shared database, her own zone in her private one (both
         // her session here: one fake cloud holds every database).

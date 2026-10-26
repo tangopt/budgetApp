@@ -31,7 +31,10 @@ public enum FakeCloudError: Error, Equatable {
 ///   Anyone else gets `zoneNotFound`, as a zone missing from their databases; a read-only participant's saves fail
 ///   with `permissionFailure`. Every saved version and deletion is stamped with the acting user
 ///   (`SyncServerRecord.lastModifiedBy`, `deletedBy`).
-public actor FakeCloud: SyncTransport, SyncShareTransport {
+/// - the container's public database (step 7a Task 8, `SyncPublicBoard`): every user reads and creates; only a record's
+///   creator replaces or deletes it (`permissionFailure` for anyone else); each version is stamped with its writer and
+///   the server's time. `rewritePublicRecord` and `rewrite` stand in for a server that changes what it stores.
+public actor FakeCloud: SyncTransport, SyncShareTransport, SyncPublicBoard {
     public enum Call: Equatable, Sendable {
         case createZone(String)
         case save([String], atomic: Bool)
@@ -70,6 +73,9 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
     }
 
     private var zones: [String: Zone] = [:]
+
+    /// The public database's records, with who created each.
+    private var publicDatabase: [String: (record: SyncPublicRecord, createdBy: String)] = [:]
 
     /// Who owns each zone and its share, outside the actor so the share sheet's stand-ins (`invite`, `accept`) are
     /// synchronous. A zone's owner is set when it is created (or by an invite made before that), and cleared with it.
@@ -180,6 +186,29 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
         return try SyncLargePayload.payload(from: server.wire, keys: try keys.allKeys(zone: server.wire.zone))
     }
 
+    /// Every record of the public database, by name.
+    public func publicRecords() -> [SyncPublicRecord] {
+        publicDatabase.values.map(\.record).sorted { $0.recordName < $1.recordName }
+    }
+
+    public func publicRecord(named name: String) -> SyncPublicRecord? { publicDatabase[name]?.record }
+
+    /// The server replaces a public record's fields, keeping its writer and time (a server that can't be trusted).
+    public func rewritePublicRecord(named name: String, fields: [String: Data]) {
+        publicDatabase[name]?.record.fields = fields
+    }
+
+    /// The server replaces a stored record's encrypted fields, keeping its writer and version (a server that can't be
+    /// trusted).
+    public func rewrite(recordName: String, encryptedFields: [String: Data]) {
+        for (name, var zone) in zones {
+            guard var stored = zone.records[recordName] else { continue }
+            stored.wire.encryptedFields = encryptedFields
+            zone.records[recordName] = stored
+            zones[name] = zone
+        }
+    }
+
     // MARK: SyncTransport
 
     public func operationLimits() async -> SyncOperationLimits { advertisesLimits ? limits : .unlimited }
@@ -214,6 +243,28 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
     }
     public func removeAllParticipants(zone: String) async throws -> [String] {
         try removeAllParticipants(zone: zone, as: ownerRecordName)
+    }
+
+    // MARK: SyncPublicBoard (as the owner)
+
+    public func postPublic(_ record: SyncPublicRecord) async throws { try postPublic(record, as: ownerRecordName) }
+    public func fetchPublic(_ recordName: String) async throws -> SyncPublicRecord? { publicDatabase[recordName]?.record }
+    public func deletePublic(_ recordName: String) async throws { try deletePublic(recordName, as: ownerRecordName) }
+
+    func postPublic(_ record: SyncPublicRecord, as user: String) throws {
+        let creator = publicDatabase[record.recordName]?.createdBy ?? user
+        guard creator == user else { throw FakeCloudError.permissionFailure }
+        tick()
+        var stored = record
+        stored.lastModifiedBy = user
+        stored.modifiedAt = now
+        publicDatabase[record.recordName] = (stored, creator)
+    }
+
+    func deletePublic(_ recordName: String, as user: String) throws {
+        guard let existing = publicDatabase[recordName] else { return }
+        guard existing.createdBy == user else { throw FakeCloudError.permissionFailure }
+        publicDatabase[recordName] = nil
     }
 
     // MARK: Users and the zone share
@@ -463,7 +514,7 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
 }
 
 /// `FakeCloud` as one iCloud user (`FakeCloud.session(as:)`): their view of the zones, and their writes.
-public struct FakeCloudSession: SyncTransport, SyncShareTransport {
+public struct FakeCloudSession: SyncTransport, SyncShareTransport, SyncPublicBoard {
     public let cloud: FakeCloud
     public let userRecordName: String
 
@@ -496,4 +547,8 @@ public struct FakeCloudSession: SyncTransport, SyncShareTransport {
     public func removeAllParticipants(zone: String) async throws -> [String] {
         try await cloud.removeAllParticipants(zone: zone, as: userRecordName)
     }
+
+    public func postPublic(_ record: SyncPublicRecord) async throws { try await cloud.postPublic(record, as: userRecordName) }
+    public func fetchPublic(_ recordName: String) async throws -> SyncPublicRecord? { try await cloud.fetchPublic(recordName) }
+    public func deletePublic(_ recordName: String) async throws { try await cloud.deletePublic(recordName, as: userRecordName) }
 }

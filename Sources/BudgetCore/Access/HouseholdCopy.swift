@@ -34,6 +34,15 @@ public enum HouseholdCopy {
 
     public static let removeMessage = "Their devices stop syncing and delete the household's data. Your data stays on this Mac."
 
+    // MARK: The household key (Mac and member device, side by side)
+
+    public static func keyRequestTitle(_ name: String) -> String { "\(name)'s device is asking for the household key." }
+    public static func keyRequestCheck(_ code: String) -> String { "Check that it shows this code: \(code)" }
+    public static let giveKeyButton = "Give the key"
+    public static let notNowButton = "Not now"
+    public static func showCode(_ admin: String, _ code: String) -> String { "Show this code to \(admin) on the Mac: \(code)" }
+    public static let waitingForKey = "Waiting for the household key…"
+
     // MARK: Why the invite can't go yet
 
     /// `alreadyShared`: the household's share existed before this invite (an invite again): the audit's copy then says

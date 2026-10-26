@@ -72,6 +72,9 @@ public final class ZoneAuditingTransport: SyncTransport, Sendable {
             switch wire.recordType {
             case TransportLeaseStore.recordType, SyncZoneKeys.recordType:
                 continue
+            case let type where SyncKeyExchange.recordTypes.contains(type):
+                findings += Self.exchangeFindings(wire)
+                continue
             case SyncDocumentFile.recordType:
                 let owner = wire.recordName.components(separatedBy: ".file.").first ?? wire.recordName
                 if standing[wire.recordName] != nil, let placement = router(owner), placement.isPrivate {
@@ -114,11 +117,29 @@ public final class ZoneAuditingTransport: SyncTransport, Sendable {
         return all
     }
 
+    /// A key exchange record in `household` (step 7a Task 8) carries no data and no key in the clear: the Mac's nonce is
+    /// exactly `nonce` (32 bytes), a grant exactly `sealed` and `keyId`; a request never goes there.
+    static func exchangeFindings(_ wire: SyncWireRecord) -> [String] {
+        let fields = Set(wire.encryptedFields.keys)
+        let clean = wire.unencryptedFields.isEmpty && wire.assets.isEmpty
+        switch wire.recordType {
+        case SyncKeyExchange.offerRecordType where clean && fields == [SyncKeyExchange.nonceField]
+            && wire.encryptedFields[SyncKeyExchange.nonceField]?.count == 32:
+            return []
+        case SyncKeyExchange.grantRecordType where clean && fields == [FieldSealing.sealedField, FieldSealing.keyIdField]:
+            return []
+        default:
+            return ["\(wire.recordType) \(wire.recordName): not the key exchange's shape for household"]
+        }
+    }
+
     /// What is wrong with one household save, judged by where its record belongs now.
     private func judged(_ wire: SyncWireRecord, placement: (String) -> ZoneAssignment?) -> [String] {
         switch wire.recordType {
         case TransportLeaseStore.recordType, SyncZoneKeys.recordType:
             return []
+        case let type where SyncKeyExchange.recordTypes.contains(type):
+            return Self.exchangeFindings(wire)
         case SyncDocumentFile.recordType:
             let owner = wire.recordName.components(separatedBy: ".file.").first ?? wire.recordName
             if let placed = placement(owner), placed.isPrivate { return ["documentFile \(wire.recordName): saved to household as the file of a private record"] }
