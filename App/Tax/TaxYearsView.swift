@@ -160,6 +160,7 @@ struct TaxYearPage: View {
         VStack(alignment: .leading, spacing: ScreenMetrics.spacing) {
             header
             TaxBanners(viewModel: viewModel)
+            paidSuggestion
             if viewModel.tab == .missingEvidence {
                 TaxMissingEvidenceTab(viewModel: missingEvidenceViewModel, page: page, openTransaction: openTransaction)
             } else {
@@ -224,6 +225,23 @@ struct TaxYearPage: View {
         }
     }
 
+    /// A filed year whose recorded HMRC payments cover what its return says is due: the status
+    /// change is offered, never made (its button goes through `setStatus`, with its filed-year check).
+    @ViewBuilder
+    private var paidSuggestion: some View {
+        if let result = page.selfAssessment,
+           TaxPaymentCoverage.suggestsMarkingPaid(status: page.row.status, balancingDue: result.calculation.balancingPayment,
+                                                  payments: page.income.payments, startYear: page.row.year.startYear) {
+            InlineBanner(.info, action: {
+                Button("Mark as paid") { viewModel.setStatus(.paid) }
+                    .controlSize(.small)
+                    .help("The balancing payment is recorded: mark \(page.row.year.label) as paid")
+            }) {
+                Text("Payments cover what's due — mark as paid?")
+            }
+        }
+    }
+
     /// Scrolls to the requested step on the next run loop, once the Calculation tab's rows exist.
     private func scroll(_ proxy: ScrollViewProxy) {
         guard let step = viewModel.focusedStep?.title, viewModel.tab == .calculation else { return }
@@ -262,11 +280,13 @@ struct TaxMissingEvidenceTab: View {
                 if saved == nil { saved = (viewModel.periodChoice, viewModel.propertyFilter) }
                 // The standalone screen's side panel doesn't follow it here (nor this one back).
                 viewModel.selectedItemId = nil
+                viewModel.taxFiguresOnly = true
                 follow()
             }
             .onChange(of: key) { follow() }
             .onDisappear {
                 viewModel.selectedItemId = nil
+                viewModel.taxFiguresOnly = false
                 if let saved {
                     viewModel.periodChoice = saved.0
                     viewModel.propertyFilter = saved.1

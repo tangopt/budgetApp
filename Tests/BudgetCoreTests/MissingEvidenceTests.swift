@@ -939,4 +939,27 @@ final class MissingEvidenceTests: XCTestCase {
         XCTAssertEqual(MissingEvidence.statusChanges(from: before, to: after), 2)
         XCTAssertEqual(MissingEvidence.statusChanges(from: after, to: after), 0)
     }
+
+    // MARK: Tax figures
+
+    func testNotDeductibleItemsAreForRechargesAndLeftOutOfTaxYearChecklists() throws {
+        try db.write { db in
+            var property = Property(name: "Property A", country: "PT")
+            try Properties.save(db: db, &property)
+            try Properties.addCategoryGroup(db: db, propertyId: property.id!, categoryGroupId: lisbon)
+        }
+        let utilities = try db.write { try self.insertCategory($0, "Utilities", .expense, group: self.lisbon) }
+        let life = try db.write { try self.insertCategory($0, "Life insurance", .expense, group: self.lisbon) }
+        try requirement("Property costs", .transactionsInCategoryGroup(groupId: lisbon), kinds: [.other])
+        let imiItem = try transaction(Self.date(2025, 5, 2), -31_250, category: imi)
+        let bill = try transaction(Self.date(2025, 5, 3), -4_800, category: utilities)
+        let policy = try transaction(Self.date(2025, 5, 4), -2_000, category: life)
+        let all = try items(year2025.interval)
+        XCTAssertEqual(Set(all.map(\.target)), [.transaction(imiItem), .transaction(bill), .transaction(policy)])
+        XCTAssertEqual(all.filter(\.isForRecharges).map(\.target).count, 2)
+        XCTAssertEqual(MissingEvidence.affectingTaxFigures(all).map(\.target), [.transaction(imiItem)])
+        // A claimed type (stored) puts a category back among the tax items.
+        try db.write { try TaxExpenseTypeMap.set(db: $0, categoryId: utilities, expenseType: .otherExpense) }
+        XCTAssertEqual(try items(year2025.interval).filter(\.isForRecharges).map(\.target), [.transaction(policy)])
+    }
 }

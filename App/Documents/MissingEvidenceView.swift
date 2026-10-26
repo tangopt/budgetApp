@@ -835,7 +835,10 @@ struct MissingEvidenceRow: View {
         if narrow {
             let detail = caption
             VStack(alignment: .leading, spacing: 1) {
-                Text(item.title).lineLimit(1).truncationMode(.middle)
+                HStack(spacing: 6) {
+                    Text(item.title).lineLimit(1).truncationMode(.middle)
+                    if item.isForRecharges { ForRechargesTag() }
+                }
                 HStack(spacing: 4) {
                     DateText(date: item.expectedDate ?? item.expectedPeriod?.start, font: .caption).fixedSize()
                     if !detail.isEmpty {
@@ -851,14 +854,20 @@ struct MissingEvidenceRow: View {
         }
     }
 
+    /// The name truncates in the middle (a bank description's end tells rows apart) and keeps its
+    /// room; the secondary words truncate first.
     private var wideDescription: some View {
         let detail = caption
-        let secondary = Text(verbatim: detail.isEmpty ? "" : "  ·  " + detail).font(.callout).foregroundStyle(.secondary)
-        return Text("\(Text(verbatim: item.title))\(secondary)")
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .help(detail.isEmpty ? item.title : "\(item.title)\n\(detail)")
-            .accessibilityLabel(detail.isEmpty ? item.title : "\(item.title), \(detail)")
+        return HStack(spacing: 0) {
+            Text(verbatim: item.title).lineLimit(1).truncationMode(.middle).layoutPriority(2)
+            if item.isForRecharges { ForRechargesTag().padding(.leading, 6).layoutPriority(3) }
+            if !detail.isEmpty {
+                Text(verbatim: "  ·  " + detail).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+            }
+        }
+        .help(detail.isEmpty ? item.title : "\(item.title)\n\(detail)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel((detail.isEmpty ? item.title : "\(item.title), \(detail)") + (item.isForRecharges ? ", for recharges" : ""))
     }
 
     private var caption: String {
@@ -984,4 +993,18 @@ struct MarkdownDocument: FileDocument {
 extension UTType {
     /// Markdown (`net.daringfireball.markdown`), known to the system.
     static var markdownText: UTType { UTType("net.daringfireball.markdown") ?? .plainText }
+}
+
+/// Marks an item that changes no tax figure (a utility bill, a bank fee, life insurance): its
+/// document is kept for the recharges and the records. Tax years' checklists leave these out.
+struct ForRechargesTag: View {
+    var body: some View {
+        Text("For recharges")
+            .font(.caption.weight(.medium))
+            .lineLimit(1).fixedSize()
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(Capsule().fill(.secondary.opacity(0.15)))
+            .foregroundStyle(.secondary)
+            .help("Not on the tax return: kept for the tenant recharges and the records")
+    }
 }

@@ -16,6 +16,7 @@ final class PropertyViewModel: ObservableObject {
         case overview = "Overview"
         case tenancies = "Tenancies"
         case recharges = "Recharges"
+        case bills = "Bills"
         case money = "Money"
         case calendar = "Calendar"
         case checks = "Checks"
@@ -99,7 +100,12 @@ final class PropertyViewModel: ObservableObject {
         /// A figure of the Money tab (or a cost category): the transactions behind it. `id` is its
         /// row's id in the tab, `title` what the panel is called.
         case figure(id: String, title: String, drillDown: PropertyDrillDown)
+        /// A utility bill (Bills): the provider row's key and the month's first day.
+        case utilityBill(providerKey: String, month: Date, tenancyId: Int64)
     }
+
+    /// The Bills tab's grid, shared with its side panel.
+    let bills = BillsModel()
 
     /// Bumped when the side panel changed recharges (its statement sheet closed), so the
     /// Recharges tab re-reads.
@@ -139,7 +145,7 @@ final class PropertyViewModel: ObservableObject {
     @Published var selectedTenancyId: Int64? {
         didSet {
             switch sidePanel {
-            case let .rechargeStatement(_, tenancyId), let .rechargeMonth(_, tenancyId), let .receipt(_, tenancyId):
+            case let .rechargeStatement(_, tenancyId), let .rechargeMonth(_, tenancyId), let .receipt(_, tenancyId), let .utilityBill(_, _, tenancyId):
                 if tenancyId != selectedTenancy?.id { sidePanel = nil }
             default: break
             }
@@ -651,6 +657,7 @@ final class PropertyViewModel: ObservableObject {
         case .rechargeStatement, .rechargeMonth: if tab != .recharges { sidePanel = nil }
         case .receipt: if tab != .tenancies { sidePanel = nil }
         case .figure: if tab != .money { sidePanel = nil }
+        case .utilityBill: if tab != .bills { sidePanel = nil }
         case nil: break
         }
     }

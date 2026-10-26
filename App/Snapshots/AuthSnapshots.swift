@@ -104,6 +104,23 @@ enum AuthSnapshots {
             SnapshotRoute(name: "auth-locked_over_rules_search", title: "Lock screen over Rules with a search typed: no search text shows", settleFactor: 1.5) { context in
                 try await lockedContent(context, screen: .rules) { $0.rules.snapshotSearchText = rulesSearch }
             },
+            // A sheet open when Mango locks: its cover is as big as the window's content (`SheetCovers`,
+            // `LockCoverPolicy.coveringFrame`), so the lock screen in it runs edge to edge. The harness has no
+            // window sheets: the cover is laid over the locked window at that size, and nothing of a sheet's
+            // frame (the dimmed edge, the rounded border, the shadow) may show.
+            SnapshotRoute(name: "auth-locked_over_sheet", title: "Lock screen with a sheet open: the sheet's cover is window-sized, no sheet frame shows",
+                          settleFactor: 1.5) { context in
+                _ = try await demoUsers(context)
+                let locked = SessionModel(dbQueue: context.dbQueue, isSetUp: true, biometrics: StandInTouchID(enrolled: []),
+                                          defaults: SnapshotMode.defaults)
+                locked.snapshotLock()
+                await locked.refreshCandidates()
+                return AnyView(ZStack {
+                    ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .property, prepare: { _ in }))
+                        .lockOverlay(.main, session: locked)
+                    LockScreenHost(session: locked)
+                })
+            },
             SnapshotRoute(name: "rules-search_typed", title: "Rules with a search typed (unlocked, to compare)", settleFactor: 1.5) { context in
                 AnyView(ContentView(environment: context.environment, snapshotSetup: SnapshotSetup(screen: .rules, prepare: { models in
                     models.rules.snapshotSearchText = rulesSearch

@@ -84,6 +84,11 @@ final class MissingEvidenceViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var infoMessage: String?
     /// Only the items of rules concerning this property (`PropertyEvidence.relatedRequirementIds`).
+    /// Only the items that can change a tax year's figures (Tax years ▸ Missing evidence); the
+    /// standalone screen lists the rest too, tagged "For recharges".
+    @Published var taxFiguresOnly = false {
+        didSet { if taxFiguresOnly != oldValue { restartObservation() } }
+    }
     @Published var propertyFilter: PropertyFilter? {
         didSet { if propertyFilter != oldValue { restartObservation() } }
     }
@@ -191,10 +196,11 @@ final class MissingEvidenceViewModel: ObservableObject {
         }
         isLoading = true
         let propertyId = propertyFilter?.propertyId
+        let taxFiguresOnly = taxFiguresOnly
         let values = ValueObservation
             .tracking { db -> Snapshot in
                 let requirements = try EvidenceRequirements.all(db: db)
-                let items = try Self.checklist(db: db, period: period, propertyId: propertyId, requirements: requirements)
+                let items = try Self.checklist(db: db, period: period, propertyId: propertyId, taxFiguresOnly: taxFiguresOnly, requirements: requirements)
                 return Snapshot(requirements: requirements, items: items, customKinds: try CustomDocumentKind.fetchAll(db))
             }
             .removeDuplicates()
@@ -217,7 +223,7 @@ final class MissingEvidenceViewModel: ObservableObject {
     }
 
     /// The period's items, only `propertyId`'s rules' when given: what the checklist shows.
-    nonisolated private static func checklist(db: Database, period: DateInterval, propertyId: Int64?,
+    nonisolated private static func checklist(db: Database, period: DateInterval, propertyId: Int64?, taxFiguresOnly: Bool = false,
                                               requirements: [EvidenceRequirement]? = nil) throws -> [MissingEvidence.Item] {
         let requirements = try requirements ?? EvidenceRequirements.all(db: db)
         var items = try MissingEvidence.items(db: db, period: period, requirements: requirements)
@@ -225,7 +231,7 @@ final class MissingEvidenceViewModel: ObservableObject {
             let related = try PropertyEvidence.relatedRequirementIds(db: db, propertyId: propertyId)
             items = items.filter { $0.requirement.id.map(related.contains) ?? false }
         }
-        return items
+        return taxFiguresOnly ? MissingEvidence.affectingTaxFigures(items) : items
     }
 
     private func refreshShown() {
@@ -286,13 +292,13 @@ final class MissingEvidenceViewModel: ObservableObject {
     /// checked against the filed returns. `done` gets how many of the checklist's items changed
     /// status (the document may be linked to several), or the refusal.
     func changeKind(documentId: Int64, to kind: DocumentKindRef, done: @escaping (Result<Int, Refusal>) -> Void) {
-        let library = library, dbQueue = dbQueue, period = period, propertyId = propertyFilter?.propertyId
+        let library = library, dbQueue = dbQueue, period = period, propertyId = propertyFilter?.propertyId, taxFiguresOnly = taxFiguresOnly
         Task {
             guard let result = await guarded({ () -> Int in
-                let before = try period.map { period in try dbQueue.read { db in try Self.checklist(db: db, period: period, propertyId: propertyId) } }
+                let before = try period.map { period in try dbQueue.read { db in try Self.checklist(db: db, period: period, propertyId: propertyId, taxFiguresOnly: taxFiguresOnly) } }
                 _ = try library.changeKind(documentId, to: kind, actor: try library.database.signedInActor())
                 guard let period, let before else { return 0 }
-                let after = try dbQueue.read { db in try Self.checklist(db: db, period: period, propertyId: propertyId) }
+                let after = try dbQueue.read { db in try Self.checklist(db: db, period: period, propertyId: propertyId, taxFiguresOnly: taxFiguresOnly) }
                 return MissingEvidence.statusChanges(from: before, to: after)
             }) else { return }
             done(result.mapError { Refusal(message: $0.localizedDescription) })

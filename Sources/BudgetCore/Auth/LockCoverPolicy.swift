@@ -13,4 +13,15 @@ public enum LockCoverPolicy {
         guard let coveredFor, let signedIn, coveredFor == signedIn else { return .dismiss }
         return .restore
     }
+
+    /// The frame (screen coordinates) a sheet takes while a lock covers it: the whole content area of
+    /// the window it hangs from (`contentLayoutRect` is in that window's own coordinates), so the lock
+    /// screen in it reaches the window's edges and nothing of the sheet's own frame shows beside it.
+    /// Never smaller than the sheet itself.
+    public static func coveringFrame(sheet: CGRect, parent: CGRect, contentLayoutRect: CGRect) -> CGRect {
+        let area = CGRect(x: parent.minX + contentLayoutRect.minX, y: parent.minY + contentLayoutRect.minY,
+                          width: contentLayoutRect.width, height: contentLayoutRect.height)
+        guard area.width >= sheet.width, area.height >= sheet.height else { return sheet.union(area) }
+        return area
+    }
 }

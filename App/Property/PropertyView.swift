@@ -97,6 +97,9 @@ struct PropertyView: View {
         case let .rechargeMonth(month, tenancyId):
             RechargeMonthPanel(viewModel: viewModel, month: month, tenancyId: tenancyId, openTransaction: openTransaction)
                 .id(month)
+        case let .utilityBill(key, month, tenancyId):
+            UtilityBillPanel(viewModel: viewModel, bills: viewModel.bills, providerKey: key, month: month, tenancyId: tenancyId,
+                             openTransaction: openTransaction, showDocument: showDocument)
         case let .figure(_, title, drillDown):
             PropertyFigurePanel(viewModel: viewModel, title: title, drillDown: drillDown, openTransaction: openTransaction)
         case let .receipt(id, tenancyId):
@@ -113,6 +116,7 @@ struct PropertyView: View {
         case .overview: PropertyOverviewTab(viewModel: viewModel)
         case .tenancies: PropertyTenanciesTab(viewModel: viewModel, openTransaction: openTransaction, showDocument: showDocument)
         case .recharges: PropertyRechargesTab(viewModel: viewModel)
+        case .bills: PropertyBillsTab(viewModel: viewModel)
         case .money: PropertyMoneyTab(viewModel: viewModel, openTransaction: openTransaction)
         case .calendar: PropertyCalendarTab(viewModel: viewModel)
         case .checks: PropertyChecksTab(viewModel: viewModel, openTransaction: openTransaction, openMissingEvidence: openMissingEvidence)

@@ -840,6 +840,14 @@ enum SnapshotCatalog {
                     models.property.sidePanel = .receipt(id: receipt, tenancyId: tenancy)
                 }
             },
+            // The running tenancy's latest bill that isn't settled yet.
+            screen("property", "bills_panel", "Property: Bills, the latest open bill beside the grid", .property, settle: 1.6) { models, context in
+                models.property.tab = .bills
+                if let (key, month, tenancy) = context.latestOpenBill() {
+                    models.property.selectedTenancyId = tenancy
+                    models.property.sidePanel = .utilityBill(providerKey: key, month: month, tenancyId: tenancy)
+                }
+            },
             screen("property", "recharges_month", "Property: Recharges, August's month open", .property, settle: 1.5) { models, context in
                 models.property.tab = .recharges
                 if let (_, tenancy) = context.latestPaidStatement() {
@@ -1136,6 +1144,17 @@ extension SnapshotContext {
                   let statement = try RechargeStatement.filter(Column("tenancyId") == tenancy && Column("status") == RechargeStatementStatus.paid.rawValue)
                     .order(Column("month").desc).fetchOne(db)?.id else { return nil }
             return (statement, tenancy)
+        }
+    }
+
+    /// The latest tenancy's latest utility bill not yet paid by the tenant: its provider row's key, month and the tenancy.
+    func latestOpenBill() -> (String, Date, Int64)? {
+        try? dbQueue.read { db in
+            guard let tenancy = try Tenancy.order(Column("startDate").desc).fetchOne(db), let id = tenancy.id else { return nil }
+            let grid = try UtilityBills.read(db: db, propertyId: tenancy.propertyId, tenancyId: id)
+            guard let bill = grid.bills.last(where: { $0.stage != .paidByTenant }),
+                  let row = grid.rows.first(where: { $0.providerId == bill.providerId }) else { return nil }
+            return (row.id, bill.month, id)
         }
     }
 
