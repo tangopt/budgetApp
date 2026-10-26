@@ -76,6 +76,8 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
     private struct Sharing {
         var owners: [String: String] = [:]
         var shares: [String: [SyncShareParticipant]] = [:]
+        /// Zones whose share `makeZoneShare` made read-only: every participant reads only.
+        var readOnly: Set<String> = []
     }
 
     private enum Access { case owner, write, read }
@@ -210,6 +212,9 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
     public func removeParticipant(userRecordName: String, zone: String) async throws {
         try removeParticipant(userRecordName: userRecordName, zone: zone, as: ownerRecordName)
     }
+    public func removeAllParticipants(zone: String) async throws -> [String] {
+        try removeAllParticipants(zone: zone, as: ownerRecordName)
+    }
 
     // MARK: Users and the zone share
 
@@ -226,7 +231,9 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
             if sharing.owners[zone] == nil { sharing.owners[zone] = ownerRecordName }
             var participants = sharing.shares[zone] ?? []
             participants.removeAll { $0.userRecordName == userRecordName }
-            participants.append(SyncShareParticipant(userRecordName: userRecordName, status: .invited, canWrite: canWrite))
+            // A read-only share (`makeZoneShare`) gives no one write access, whatever the sheet asked for.
+            participants.append(SyncShareParticipant(userRecordName: userRecordName, status: .invited,
+                                                     canWrite: canWrite && !sharing.readOnly.contains(zone)))
             sharing.shares[zone] = participants
         }
     }
@@ -278,6 +285,8 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
         guard try reachable(zone, by: user) == .owner else { throw FakeCloudError.permissionFailure }
         sharing.withLock { sharing in
             if sharing.shares[zone] == nil { sharing.shares[zone] = [] }
+            sharing.readOnly.insert(zone)
+            for index in sharing.shares[zone]!.indices { sharing.shares[zone]![index].canWrite = false }
         }
         return share(zone)!
     }
@@ -287,6 +296,15 @@ public actor FakeCloud: SyncTransport, SyncShareTransport {
     func removeParticipant(userRecordName: String, zone: String, as user: String) throws {
         guard try reachable(zone, by: user) == .owner else { throw FakeCloudError.permissionFailure }
         sharing.withLock { sharing in sharing.shares[zone]?.removeAll { $0.userRecordName == userRecordName } }
+    }
+
+    func removeAllParticipants(zone: String, as user: String) throws -> [String] {
+        guard try reachable(zone, by: user) == .owner else { throw FakeCloudError.permissionFailure }
+        return sharing.withLock { sharing in
+            let removed = (sharing.shares[zone] ?? []).map(\.userRecordName)
+            if sharing.shares[zone] != nil { sharing.shares[zone] = [] }
+            return removed
+        }
     }
 
     /// The zone-wide share's record name (CloudKit `CKRecordNameZoneWideShare`): a participant deleting it leaves the
@@ -474,5 +492,8 @@ public struct FakeCloudSession: SyncTransport, SyncShareTransport {
     }
     public func removeParticipant(userRecordName: String, zone: String) async throws {
         try await cloud.removeParticipant(userRecordName: userRecordName, zone: zone, as: self.userRecordName)
+    }
+    public func removeAllParticipants(zone: String) async throws -> [String] {
+        try await cloud.removeAllParticipants(zone: zone, as: userRecordName)
     }
 }

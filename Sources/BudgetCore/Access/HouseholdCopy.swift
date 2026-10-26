@@ -23,6 +23,11 @@ public enum HouseholdCopy {
         }
     }
 
+    /// More than one person accepted the invitation (`HouseholdInvite.BindOutcome.ambiguous`).
+    public static func ambiguousParticipants(_ name: String) -> String {
+        "More than one person accepted the invitation, so Mango didn't link anyone to \(name). Remove them from the household, then invite \(name) again."
+    }
+
     public static let removeButton = "Remove from household…"
 
     public static func removeTitle(_ name: String) -> String { "Remove \(name) from the household?" }
@@ -31,7 +36,9 @@ public enum HouseholdCopy {
 
     // MARK: Why the invite can't go yet
 
-    public static func blocker(_ blocker: HouseholdInvite.Blocker) -> String {
+    /// `alreadyShared`: the household's share existed before this invite (an invite again): the audit's copy then says
+    /// nothing new was shared, since the existing share stays as it was.
+    public static func blocker(_ blocker: HouseholdInvite.Blocker, alreadyShared: Bool = false) -> String {
         switch blocker {
         case .ownershipNotConfirmed:
             return "Confirm who owns each account first, in Settings ▸ Sharing."
@@ -46,7 +53,8 @@ public enum HouseholdCopy {
                 ? "1 record isn't in the right place yet. Sync now, then try again."
                 : "\(count) records aren't in the right place yet. Sync now, then try again."
         case .householdAudit(let count):
-            return "\(count) \(count == 1 ? "record" : "records") in the household shouldn't be there. Nothing was shared."
+            let records = "\(count) \(count == 1 ? "record" : "records") in the household shouldn't be there."
+            return alreadyShared ? records + " Nothing new was shared." : records + " Nothing was shared."
         case .offline:
             return "Mango couldn't check iCloud. Try again when you're online."
         }

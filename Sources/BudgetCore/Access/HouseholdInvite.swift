@@ -34,11 +34,6 @@ public enum HouseholdInvite {
         case notInvited, invited, joined
     }
 
-    public enum InviteError: Error, Equatable {
-        /// Removing a member whose iCloud user isn't known yet (she never accepted).
-        case memberNotJoined
-    }
-
     private static let log = Logger(subsystem: "com.personal.budget", category: "Household")
 
     /// The household's member: the app user who isn't an admin (step 7a has one).
@@ -70,8 +65,9 @@ public enum HouseholdInvite {
     }
 
     /// Every record the server's household zone holds (every page, from the start), opened with the household key and
-    /// judged by `SyncZoneGuard` as if this Mac were about to send it there. A record that doesn't open, and a document
-    /// file whose document this Mac keeps in a private zone, count too. Throws the transport's errors.
+    /// judged by `SyncZoneGuard` as if this Mac were about to send it there. A record that doesn't open counts too, and so
+    /// does a document file whose document isn't a live household record there (flagged, a marker, or gone: an orphan
+    /// file fails closed). Throws the transport's errors.
     public static func auditServer(transport: any SyncTransport, keys: any SyncKeyStore, db: any DatabaseReader) async throws
         -> [SyncZoneGuard.Violation] {
         let zone = SyncZones.household
@@ -109,14 +105,11 @@ public enum HouseholdInvite {
         let found = try await db.read { db -> [SyncZoneGuard.Violation] in
             var found = try SyncZoneGuard(db: db).review(payloads).violations
             let flagged = Set(found.map(\.recordName))
-            for file in files {
+            for file in files where flagged.contains(file.owner) || !live.contains(file.owner) {
                 let ownerZone = try String.fetchOne(db, sql: "SELECT zone FROM syncRecord WHERE uuid = ?", arguments: [file.owner])
-                let ownerIsPrivate = ownerZone.map { $0 != SyncZones.household && $0 != SyncZoneSet.deviceOnlyZone } ?? false
-                if flagged.contains(file.owner) || (!live.contains(file.owner) && ownerIsPrivate) {
-                    found.append(SyncZoneGuard.Violation(recordType: SyncDocumentFile.recordType, recordName: file.recordName,
-                                                         expected: ownerZone ?? "private", actual: zone,
-                                                         reason: "the file of a record that isn't the household's"))
-                }
+                found.append(SyncZoneGuard.Violation(recordType: SyncDocumentFile.recordType, recordName: file.recordName,
+                                                     expected: ownerZone ?? "none", actual: zone,
+                                                     reason: "the file of a record that isn't the household's"))
             }
             return found
         }
@@ -140,7 +133,10 @@ public enum HouseholdInvite {
             // Nothing changed here while the server was read.
             let again = try await db.read { db in try localBlockers(db: db) }
             guard again.isEmpty else { return .blocked(again) }
-            return .share(try await transport.makeZoneShare(SyncZones.household, title: title))
+            let share = try await transport.makeZoneShare(SyncZones.household, title: title)
+            // Inviting again: whoever was removed before may be bound once they accept this invitation.
+            try await db.write { db in try db.execute(sql: "DELETE FROM syncState WHERE key = ?", arguments: [removedKey]) }
+            return .share(share)
         } catch let error as SyncTransportError where error.isPassing {
             return .blocked([.offline])
         }
@@ -148,23 +144,36 @@ public enum HouseholdInvite {
 
     // MARK: After the invite
 
-    /// Once she accepts: the one accepted participant no app user holds yet becomes the member's iCloud user (written
-    /// as the admin). Two or more unknown participants bind nobody (logged). False when nothing was written (no
-    /// member, she already has a record name, no one or more than one to bind).
+    /// What `bindAcceptedParticipant` did.
+    public enum BindOutcome: Equatable, Sendable {
+        /// The member's iCloud user is now the one accepted participant.
+        case bound
+        /// Nothing to bind: no member, she is bound already, or no unknown participant has accepted.
+        case nothing
+        /// More than one unknown participant accepted: nobody is bound (`HouseholdCopy.ambiguousParticipants`). The
+        /// admin removes the invitation and invites again; Task 8's side-by-side code is the person check.
+        case ambiguous(Int)
+    }
+
+    /// Once she accepts: the one accepted participant no app user holds yet (and not removed since,
+    /// `remove`) becomes the member's iCloud user (written as the admin). Two or more such participants bind nobody
+    /// (logged, `.ambiguous`).
     @discardableResult
-    public static func bindAcceptedParticipant(share: SyncZoneShare, db: Database) throws -> Bool {
-        guard share.zone == SyncZones.household, let member = try member(db: db), member.cloudKitUserRecordName == nil else { return false }
+    public static func bindAcceptedParticipant(share: SyncZoneShare, db: Database) throws -> BindOutcome {
+        guard share.zone == SyncZones.household, let member = try member(db: db), member.cloudKitUserRecordName == nil else { return .nothing }
         let known = Set(try String.fetchAll(db, sql: "SELECT cloudKitUserRecordName FROM appUser WHERE cloudKitUserRecordName IS NOT NULL"))
+            .union(try removed(db: db))
         let unknown = share.participants.filter { $0.status == .accepted && !known.contains($0.userRecordName) && $0.userRecordName != share.ownerRecordName }
         guard unknown.count == 1 else {
-            if unknown.count > 1 { log.error("Household: \(unknown.count, privacy: .public) unknown participants accepted; nobody bound") }
-            return false
+            guard unknown.count > 1 else { return .nothing }
+            log.error("Household: \(unknown.count, privacy: .public) unknown participants accepted; nobody bound")
+            return .ambiguous(unknown.count)
         }
         let admin = try AccessActor.admin(db: db)
         try ActorWrite.perform(admin, area: .householdSettings, db: db) {
             try db.execute(sql: "UPDATE appUser SET cloudKitUserRecordName = ? WHERE id = ?", arguments: [unknown[0].userRecordName, member.id])
         }
-        return true
+        return .bound
     }
 
     /// Where the member stands: no share yet, shared (she hasn't joined), or joined (her bound iCloud user has accepted).
@@ -178,9 +187,31 @@ public enum HouseholdInvite {
     }
 
     /// Takes her off the household's share: her devices find the zone gone and drop its data
-    /// (`SyncPullReport.leftHousehold`). This Mac keeps everything.
-    public static func remove(transport: any SyncShareTransport, member: AppUser) async throws {
-        guard let name = member.cloudKitUserRecordName else { throw InviteError.memberNotJoined }
-        try await transport.removeParticipant(userRecordName: name, zone: SyncZones.household)
+    /// (`SyncPullReport.leftHousehold`). This Mac keeps everything. Before her iCloud user is bound (invited, or accepted
+    /// but not bound yet), everyone but the owner comes off the share, so no pending invitation stays live. The record
+    /// names taken off are recorded here (local), so a late acceptance from one of them is never bound; the next
+    /// successful invite clears the record.
+    public static func remove(transport: any SyncShareTransport, member: AppUser, db: any DatabaseWriter) async throws {
+        let removedNames: [String]
+        if let name = member.cloudKitUserRecordName {
+            try await transport.removeParticipant(userRecordName: name, zone: SyncZones.household)
+            removedNames = [name]
+        } else {
+            removedNames = try await transport.removeAllParticipants(zone: SyncZones.household)
+        }
+        try await db.write { db in
+            let all = Array(Set(try removed(db: db)).union(removedNames)).sorted()
+            try SyncImportGate.setState(try JSONEncoder().encode(all), key: removedKey, db: db, now: Date())
+        }
+        log.notice("Household: \(removedNames.count, privacy: .public) participant(s) removed from the share")
+    }
+
+    /// `syncState` (local): the record names `remove` took off the share since the last invite.
+    static let removedKey = "householdRemovedParticipants"
+
+    /// The record names taken off the household's share since the last invite (`remove`).
+    public static func removed(db: Database) throws -> [String] {
+        try Data.fetchOne(db, sql: "SELECT value FROM syncState WHERE key = ?", arguments: [removedKey])
+            .flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
     }
 }

@@ -67,4 +67,7 @@ extension LossyTransport: SyncShareTransport {
     public func removeParticipant(userRecordName: String, zone: String) async throws {
         try await sharing.removeParticipant(userRecordName: userRecordName, zone: zone)
     }
+    public func removeAllParticipants(zone: String) async throws -> [String] {
+        try await sharing.removeAllParticipants(zone: zone)
+    }
 }

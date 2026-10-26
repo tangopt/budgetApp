@@ -15,7 +15,17 @@ extension CloudKitTransport: SyncShareTransport {
     }
 
     public func makeZoneShare(_ zone: String, title: String) async throws -> SyncZoneShare {
-        if let existing = try await zoneShare(zone) { return existing }
+        if let existing = try await fetchZoneShare(zone) {
+            // Read-only at the source (step 7a): no public access, and no participant writes, whatever the share sheet set.
+            let writers = existing.participants.filter { $0.role != .owner && $0.permission != .readOnly }
+            guard !writers.isEmpty || existing.publicPermission != .none else {
+                return Self.syncShare(existing, zone: zone, currentUser: try await currentUser())
+            }
+            existing.publicPermission = .none
+            for participant in writers { participant.permission = .readOnly }
+            let saved = try await saveShare(existing, zone: zone)
+            return Self.syncShare(saved, zone: zone, currentUser: try await currentUser())
+        }
         let share = CKShare(recordZoneID: zoneID(zone))
         share[CKShare.SystemFieldKey.title] = title as CKRecordValue
         share.publicPermission = .none
@@ -38,6 +48,17 @@ extension CloudKitTransport: SyncShareTransport {
         guard !matching.isEmpty else { return }
         for participant in matching { share.removeParticipant(participant) }
         _ = try await saveShare(share, zone: zone)
+    }
+
+    public func removeAllParticipants(zone: String) async throws -> [String] {
+        guard let share = try await fetchZoneShare(zone) else { return [] }
+        let me = try await currentUser()
+        let others = share.participants.filter { $0.role != .owner }
+        guard !others.isEmpty else { return [] }
+        let names = others.compactMap { Self.recordName(of: $0, currentUser: me) }
+        for participant in others { share.removeParticipant(participant) }
+        _ = try await saveShare(share, zone: zone)
+        return names
     }
 
     // MARK: Helpers

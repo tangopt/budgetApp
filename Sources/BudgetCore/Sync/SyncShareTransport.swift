@@ -46,10 +46,14 @@ public protocol SyncShareTransport: Sendable {
     func currentUserRecordName() async throws -> String
     /// The zone's share, or nil when it has none.
     func zoneShare(_ zone: String) async throws -> SyncZoneShare?
-    /// Shares the zone (owner only, no public access): returns the existing share when there is one.
+    /// Shares the zone (owner only), read-only: no public access, and every participant can read but not write (step
+    /// 7a: the member views only). Returns the existing share when there is one, made read-only too.
     func makeZoneShare(_ zone: String, title: String) async throws -> SyncZoneShare
     /// Takes the participant off the zone's share: the zone stops being reachable for them.
     func removeParticipant(userRecordName: String, zone: String) async throws
+    /// Takes everyone but the owner off the zone's share, invited or accepted, whether or not their iCloud user is known
+    /// yet. Returns the record names of those it knew (an invitee not yet resolved to an iCloud user has none).
+    func removeAllParticipants(zone: String) async throws -> [String]
 }
 
 /// A wrapping transport (`ZoneAuditingTransport`, a test's lossy one) was asked to share, but what it wraps can't.

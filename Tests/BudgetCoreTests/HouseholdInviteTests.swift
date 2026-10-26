@@ -60,7 +60,7 @@ final class HouseholdInviteTests: XCTestCase {
         h.cloud.accept(zone: household, as: member)
         try write(h.memberDevice.db) { db in try SyncHouseholdMembership.record(ownerRecordName: TwoPersonHousehold.adminICloudUser, db: db) }
         let accepted = try await h.macTransport.zoneShare(household)!
-        XCTAssertTrue(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: accepted, db: db) })
+        XCTAssertEqual(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: accepted, db: db) }, .bound)
         try await settle(h)
         return accepted
     }
@@ -215,6 +215,8 @@ final class HouseholdInviteTests: XCTestCase {
         try await noShare(h)
         XCTAssertEqual(HouseholdCopy.blocker(.householdAudit(1)), "1 record in the household shouldn't be there. Nothing was shared.")
         XCTAssertEqual(HouseholdCopy.blocker(.householdAudit(4)), "4 records in the household shouldn't be there. Nothing was shared.")
+        XCTAssertEqual(HouseholdCopy.blocker(.householdAudit(1), alreadyShared: true),
+                       "1 record in the household shouldn't be there. Nothing new was shared.")
 
         // A record that doesn't open with the household key counts too.
         _ = try await h.cloud.delete([leaking], zone: household)
@@ -267,17 +269,17 @@ final class HouseholdInviteTests: XCTestCase {
         _ = try share(try await invite(h))
         h.cloud.invite(member, zone: household)
         let invited = try await h.macTransport.zoneShare(household)!
-        XCTAssertFalse(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: invited, db: db) }, "not accepted yet")
+        XCTAssertEqual(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: invited, db: db) }, .nothing, "not accepted yet")
         XCTAssertEqual(HouseholdInvite.status(share: invited, member: try memberAppUser(h)), .invited)
 
         h.cloud.accept(zone: household, as: member)
         let accepted = try await h.macTransport.zoneShare(household)!
-        XCTAssertTrue(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: accepted, db: db) })
+        XCTAssertEqual(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: accepted, db: db) }, .bound)
         let bound = try memberAppUser(h)
         XCTAssertEqual(bound.cloudKitUserRecordName, member)
         XCTAssertEqual(HouseholdInvite.status(share: accepted, member: bound), .joined)
         XCTAssertEqual(HouseholdCopy.status(.joined), "Joined")
-        XCTAssertFalse(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: accepted, db: db) }, "already bound")
+        XCTAssertEqual(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: accepted, db: db) }, .nothing, "already bound")
         let pending = try read(h.adminMac.db) { db in try SyncChangeTracker.pending(db: db).map(\.table) }
         XCTAssertEqual(pending, ["appUser"], "the bind syncs")
     }
@@ -290,8 +292,10 @@ final class HouseholdInviteTests: XCTestCase {
             h.cloud.accept(zone: household, as: user)
         }
         let accepted = try await h.macTransport.zoneShare(household)!
-        XCTAssertFalse(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: accepted, db: db) })
+        XCTAssertEqual(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: accepted, db: db) }, .ambiguous(2))
         XCTAssertNil(try memberAppUser(h).cloudKitUserRecordName)
+        XCTAssertEqual(HouseholdCopy.ambiguousParticipants("Person B"),
+                       "More than one person accepted the invitation, so Mango didn't link anyone to Person B. Remove them from the household, then invite Person B again.")
         XCTAssertEqual(try read(h.adminMac.db) { db in try SyncChangeTracker.pending(db: db).count }, 0, "nothing written")
     }
 
@@ -315,7 +319,7 @@ final class HouseholdInviteTests: XCTestCase {
 
         // The Mac binds her; the bind reaches her device; her viewer follows.
         let accepted = try await h.macTransport.zoneShare(household)!
-        XCTAssertTrue(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: accepted, db: db) })
+        XCTAssertEqual(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: accepted, db: db) }, .bound)
         try await settle(h)
         try await first.pull()
         let viewer = try read(h.memberDevice.db) { db in try SyncViewer.forCloudKitUser(recordName: self.member, db: db) }
@@ -408,7 +412,7 @@ final class HouseholdInviteTests: XCTestCase {
         } catch FakeCloudError.permissionFailure {}
 
         let onServer = await h.cloud.storedRecords().filter { $0.zone == household }.count
-        try await HouseholdInvite.remove(transport: h.macTransport, member: try memberAppUser(h))
+        try await HouseholdInvite.remove(transport: h.macTransport, member: try memberAppUser(h), db: h.adminMac.db)
         let after = try await h.cloud.zoneShare(household)
         XCTAssertEqual(after?.participants, [])
         XCTAssertEqual(HouseholdInvite.status(share: after, member: try memberAppUser(h)), .invited)
@@ -425,12 +429,78 @@ final class HouseholdInviteTests: XCTestCase {
         XCTAssertGreaterThan(try uuids(h.adminMac, zoneLike: household).count, 0, "and on the Mac")
         XCTAssertEqual(HouseholdCopy.removedNotice, "You're no longer in this household. Its data was removed from this device.")
 
-        // Removing a member who never joined: nothing to remove by.
-        try write(h.adminMac.db) { db in try db.execute(sql: "UPDATE appUser SET cloudKitUserRecordName = NULL WHERE isAdmin = 0") }
+        XCTAssertEqual(try read(h.adminMac.db) { db in try HouseholdInvite.removed(db: db) }, [member], "the removal is recorded")
+    }
+
+    /// Fix round 1 (I1): Remove before her iCloud user is bound takes every invitee off the share, pending or accepted,
+    /// and a late acceptance from one of them is never bound.
+    func testRemoveBeforeBindingRemovesEveryInvitee() async throws {
+        let h = try await ready()
+        _ = try share(try await invite(h))
+        // One invitation still pending, one accepted but not bound yet.
+        h.cloud.invite(member, zone: household)
+        h.cloud.invite("fake-pending", zone: household)
+        h.cloud.accept(zone: household, as: member)
+        let before = try await h.cloud.zoneShare(household)
+        XCTAssertEqual(before?.participants.count, 2)
+        XCTAssertNil(try memberAppUser(h).cloudKitUserRecordName, "precondition: not bound")
+
+        try await HouseholdInvite.remove(transport: h.macTransport, member: try memberAppUser(h), db: h.adminMac.db)
+        let after = try await h.cloud.zoneShare(household)
+        XCTAssertEqual(after?.participants, [], "nobody left on the share")
+        XCTAssertEqual(try read(h.adminMac.db) { db in try HouseholdInvite.removed(db: db) }, ["fake-member", "fake-pending"])
         do {
-            try await HouseholdInvite.remove(transport: h.macTransport, member: try memberAppUser(h))
-            XCTFail("no record name")
-        } catch HouseholdInvite.InviteError.memberNotJoined {}
+            _ = try await h.cloud.session(as: member).changes(since: nil, zone: household)
+            XCTFail("the household is out of her reach")
+        } catch SyncTransportError.zoneNotFound {}
+
+        // A share listing her as accepted (a stale read, or a late acceptance) binds nobody.
+        let stale = SyncZoneShare(zone: household, url: before?.url, ownerRecordName: TwoPersonHousehold.adminICloudUser,
+                                  participants: [SyncShareParticipant(userRecordName: member, status: .accepted, canWrite: false)])
+        XCTAssertEqual(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: stale, db: db) }, .nothing)
+        XCTAssertNil(try memberAppUser(h).cloudKitUserRecordName)
+
+        // Invited again: the record clears, and her acceptance binds.
+        _ = try share(try await invite(h))
+        XCTAssertEqual(try read(h.adminMac.db) { db in try HouseholdInvite.removed(db: db) }, [])
+        h.cloud.invite(member, zone: household)
+        h.cloud.accept(zone: household, as: member)
+        let accepted = try await h.cloud.zoneShare(household)!
+        XCTAssertEqual(try write(h.adminMac.db) { db in try HouseholdInvite.bindAcceptedParticipant(share: accepted, db: db) }, .bound)
+    }
+
+    /// Fix round 1 (M2): the share is read-only at the source; a participant's save is refused by the server.
+    func testShareIsReadOnlyForParticipants() async throws {
+        let h = try await ready()
+        // Someone on the household's share with write access before the invite (as the share sheet could set it).
+        h.cloud.invite(member, zone: household, canWrite: true)
+        h.cloud.accept(zone: household, as: member)
+        let made = try share(try await invite(h))
+        XCTAssertEqual(made.participants.map(\.canWrite), [false], "made read-only")
+        h.cloud.invite("fake-later", zone: household, canWrite: true)
+        let later = try await h.cloud.zoneShare(household)
+        XCTAssertEqual(later?.participants.map(\.canWrite), [false, false], "a later invitee reads only too")
+
+        let wire = SyncWireRecord(recordType: "transaction_", recordName: UUID().uuidString.lowercased(), zone: household)
+        let results = try await h.cloud.session(as: member).save([wire], ifUnchanged: [:], atomic: false)
+        XCTAssertEqual(results.map(\.outcome), [.failed("permissionFailure")])
+    }
+
+    /// Fix round 1 (I2): a document file whose document isn't in the household (an orphan) fails the audit, even when
+    /// this Mac doesn't know the document at all.
+    func testOrphanDocumentFileFailsTheAudit() async throws {
+        let h = try await ready()
+        let orphan = SyncDocumentFile.newRecordName(uuid: UUID().uuidString.lowercased())
+        let inner = SyncWireRecord(recordType: SyncDocumentFile.recordType, recordName: orphan, zone: household,
+                                   assets: ["file": Data("Synthetic private bytes".utf8)])
+        let sealed = try FieldSealing.seal(inner, key: try XCTUnwrap(try h.adminKeys.key(zone: household)))
+        _ = try await h.cloud.save([sealed], ifUnchanged: [:], atomic: false)
+
+        let violations = try await HouseholdInvite.auditServer(transport: h.macTransport, keys: h.adminKeys, db: h.adminMac.db)
+        XCTAssertEqual(violations.map(\.recordName), [orphan])
+        let result = try await invite(h)
+        XCTAssertEqual(result, .blocked([.householdAudit(1)]))
+        try await noShare(h)
     }
 
     func testCopy() {
@@ -472,4 +542,5 @@ private struct OfflineShareTransport: SyncTransport, SyncShareTransport {
     func zoneShare(_ zone: String) async throws -> SyncZoneShare? { throw SyncTransportError.networkUnavailable }
     func makeZoneShare(_ zone: String, title: String) async throws -> SyncZoneShare { throw SyncTransportError.networkUnavailable }
     func removeParticipant(userRecordName: String, zone: String) async throws { throw SyncTransportError.networkUnavailable }
+    func removeAllParticipants(zone: String) async throws -> [String] { throw SyncTransportError.networkUnavailable }
 }
